@@ -66,6 +66,12 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 3. **The log is a single point of failure.** Accepted for now. Replication is cheap when it's needed.
 4. **Schema evolution.** CUE handles validation, but event schemas will change. Migration story?
 
+## Design notes
+
+Longer thinking on specific subproblems lives in [`design/`](./design):
+
+- [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
+
 ## Status
 
 Sketch. Nothing built yet. This document is the design space, not a plan.

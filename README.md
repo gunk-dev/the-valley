@@ -26,8 +26,8 @@ GitHub bundles seven things. Most of them it does poorly enough that unbundling 
 | Verification        | Slow, YAML-shaped              | `nix flake check` triggered by events                  |
 | Artifacts           | Opaque, ephemeral              | Nix derivations, content-addressed, pushed to a cache  |
 | Automation          | Actions: push-based, brittle   | Reactive controllers subscribing to an event log       |
-| Review              | PR-shaped, poor fit for agents | **Open question.** The most interesting design problem |
-| Issues / discussion | Bolted on                      | Out of scope for now                                   |
+| Observability & feedback | PR-shaped, conflates four concerns | Continuous feedback as events; threads as derived views; priority/routing as a first-class subsystem |
+| Issues / discussion | Bolted on                      | Subsumed into feedback; threads can scope to any change, chain, or topic |
 
 ## Shape of the system
 
@@ -61,7 +61,7 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 
 ## Open questions
 
-1. **Review.** What is the unit of review when most commits come from agents? The PR-as-thread model assumes human authorship and human disagreement. Agent-authored changes arrive with intent, diff, and verification artifacts already bundled — what does a useful review interface look like over that?
+1. **Attention routing.** Once feedback is continuous and event-shaped, the hardest job becomes deciding what reaches a human and when. The priority layer is load-bearing in a way no piece of GitHub is today.
 2. **Discovery.** Without GitHub-the-social-graph, how do humans find each other's repos? Probably out of scope, but worth naming.
 3. **The log is a single point of failure.** Accepted for now. Replication is cheap when it's needed.
 4. **Schema evolution.** CUE handles validation, but event schemas will change. Migration story?
@@ -71,6 +71,7 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 Longer thinking on specific subproblems lives in [`design/`](./design):
 
 - [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
+- [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
 
 ## Status
 

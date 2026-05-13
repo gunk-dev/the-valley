@@ -1,8 +1,6 @@
 # the-valley
 
-> "Ugh, as if a valley were just, like, geography."
-
-Same joke as the philosophical archetype: the low ground everyone writes off as shallow is where everything actually flows from. The Galleria is a watershed.
+> "Whatever."
 
 A space to rethink developer workflow and source management from scratch.
 

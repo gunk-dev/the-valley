@@ -1,8 +1,8 @@
 # the-valley
 
-> 谷神不死，是謂玄牝。玄牝之門，是謂天地根。
-> *The valley spirit never dies. It is called the mysterious female. The gateway of the mysterious female is the root of heaven and earth.*
-> — Tao Te Ching, ch. 6
+> "Ugh, as if a valley were just, like, geography."
+
+Same joke as the philosophical archetype: the low ground everyone writes off as shallow is where everything actually flows from. The Galleria is a watershed.
 
 A space to rethink developer workflow and source management from scratch.
 

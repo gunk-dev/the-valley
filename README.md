@@ -24,6 +24,7 @@ GitHub bundles seven things. Most of them it does poorly enough that unbundling 
 | Verification        | Slow, YAML-shaped              | `nix flake check` triggered by events                  |
 | Artifacts           | Opaque, ephemeral              | Nix derivations, content-addressed, pushed to a cache  |
 | Automation          | Actions: push-based, brittle   | Reactive controllers subscribing to an event log       |
+| Integration / merge | Branch protection in vendor UI | Pull-based integrator controllers reacting to integration-requested events |
 | Observability & feedback | PR-shaped, conflates four concerns | Continuous feedback as events; threads as derived views; priority/routing as a first-class subsystem |
 | Issues / discussion | Bolted on                      | Subsumed into feedback; threads can scope to any change, chain, or topic |
 
@@ -69,6 +70,7 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 Longer thinking on specific subproblems lives in [`design/`](./design):
 
 - [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
+- [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
 
 ## Status

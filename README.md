@@ -72,6 +72,7 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
 - [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
+- [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
 
 ## Status
 

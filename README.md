@@ -26,8 +26,8 @@ GitHub bundles seven things. Most of them it does poorly enough that unbundling 
 | Automation          | Actions: push-based, brittle   | Reactive controllers subscribing to an event log       |
 | Integration / merge | Branch protection in vendor UI | Pull-based integrator controllers reacting to integration-requested events |
 | Observability & feedback | PR-shaped, conflates four concerns | Continuous feedback as events; threads as derived views; priority/routing as a first-class subsystem |
-| Issues / tasks      | Bolted on, opaque to agents    | Git-native structured data, beads-shaped, equally usable by humans and agents |
-| Discussion          | Bundled with issues            | Subsumed into feedback; threads can scope to any change, chain, issue, or topic |
+| Project knowledge   | Scattered: issues, wikis, docs, scratch files, agent histories, heads | Unified typed-node graph in markdown — bugs, principles, decisions, ideas, threads — equally navigable by humans and agents |
+| Discussion          | Bundled with issues            | Threads are themselves nodes in the knowledge graph; scope to any change, chain, node, or topic |
 
 ## Shape of the system
 
@@ -77,7 +77,7 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
 - [`integrator-internals.md`](./design/integrator-internals.md) — *placeholder.* How the integration automation does its job: queue mechanics, conflict resolution, optional agentic fallback.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
-- [`issues.md`](./design/issues.md) — *placeholder.* A minimal, git-native, human-and-agent-friendly issue tracker; beads-shaped data model without the Dolt dependency.
+- [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
 
 ## Status

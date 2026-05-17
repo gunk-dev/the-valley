@@ -117,8 +117,4 @@ On restart, the integrator reads both, computes the set of unprocessed requests,
 
 ## Open questions
 
-- **Policy bootstrap.** Someone has to be able to land the first principle / the first policy change before the policy exists to govern principle changes. v1: integrator-key-holders can land changes to `.the-valley/principles/` directly with relaxed policy. Worked out in a follow-up.
-- **Per-repo integrator configuration.** Where does the integrator's per-repo configuration live — which protected refs, which trust thresholds per ref, which witnesses to wait for? Probably as a `policy` or `config` node in the knowledge graph, queried alongside principles.
-- **Cross-repo coordinated integration.** Two requests in two repos that must succeed together (schema producer + consumer). The integrator pattern can support this — a wrapper controller conditions B on A — but the design is deferred to v2.
-- **Backpressure visibility.** Contributors should see queue depth and estimated wait time. Easy to expose via the same `request-state` query; not strictly part of v1.
-- **Stale-request expiry.** A request that sits stale forever clutters the namespace. Probably a periodic controller that emits `request-abandoned` events after $T of staleness with no owner action, allowing tooling to clean up the request ref.
+See [openquestions.md](./openquestions.md) — items raised here live under *Policy & configuration*, *Cross-repo coordination*, *Attention, routing, and threads*, and *Storage, retention, and evolution*.

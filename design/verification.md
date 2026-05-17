@@ -120,7 +120,4 @@ A few subscribers worth naming:
 
 ## Open questions
 
-- **Bootstrapping trust.** A new contributor has no trust score. Do they get one by default, or do they require gating until $N attestations land cleanly? Probably the latter.
-- **Effectful test catalogue.** Which classes of effectful test can be lifted to `nixosTest` or microVM-sealed environments? Worth maintaining a list — moving a test from effectful to pure is a meaningful security improvement.
-- **Tool distribution.** The attestation tool is a Nix derivation. How is its canonical hash published and pinned? Probably as part of armstrong's own flake, but the bootstrapping is worth thinking through.
-- **Replay timeline.** How long are attestations re-verifiable for? Tied to how long inputs stay resolvable in caches. Affects how long-tail audits work.
+See [openquestions.md](./openquestions.md) — items raised here live under *Identity & trust bootstrapping*, *Storage, retention, and evolution*, and *Verification specifics*.

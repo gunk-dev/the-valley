@@ -103,8 +103,4 @@ The default flow for a well-attested agent change becomes: events flow, controll
 
 ## Open questions
 
-- **Priority layer architecture.** Per-subscriber, learned, both? Probably starts hand-configured and grows.
-- **Thread identity and naming.** UUID? Human-readable slug? Tied to a commit, a chain, a topic?
-- **When does a thread close?** Auto-close on deploy-stable? Explicit close events? Both?
-- **How does feedback reach the author when the author is an agent that has finished its run?** Probably: events spawn new agent runs scoped to acting on them. klaus-shaped.
-- **Cross-repo feedback.** A change in repo A breaks a consumer in repo B. The consumer's event needs to land somewhere visible to A's thread. Cross-repo routing is non-trivial; deferred.
+See [openquestions.md](./openquestions.md) — items raised here live under *Attention, routing, and threads* and *Cross-repo coordination*.

@@ -130,7 +130,4 @@ The complex policy lives in the integrator. The git boundary enforces only the m
 
 ## Open questions
 
-- **Attestation expiry.** If inputs referenced by an attestation get garbage-collected from a Nix cache, re-derivation breaks. What's the retention promise on the binary cache?
-- **Per-repo check-set evolution.** When `flake.nix` adds a new required check, do existing attestations become invalid? Probably: attestations are valid for the check set as of their `issued_at`, and the integrator's policy decides whether the historical check set is sufficient for current integration.
-- **Agent identity.** When an agent (klaus-dispatched or otherwise) is the contributor, what key signs the commit and attestation? Open in [scenarios.md](./scenarios.md); answer affects this protocol.
-- **One attestation per commit, or multiple?** The current shape enforces one (refs are create-only). Multi-signature attestations could change this. A namespace like `refs/the-valley/attestations/<commit-sha>/<signer-id>` would allow multiple, at the cost of more complex lookup.
+See [openquestions.md](./openquestions.md) — items raised here live under *Identity & trust bootstrapping*, *Storage, retention, and evolution*, and *Verification specifics*.

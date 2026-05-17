@@ -63,10 +63,7 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 
 ## Open questions
 
-1. **Attention routing.** Once feedback is continuous and event-shaped, the hardest job becomes deciding what reaches a human and when. The priority layer is load-bearing in a way no piece of GitHub is today.
-2. **Discovery.** Without GitHub-the-social-graph, how do humans find each other's repos? Probably out of scope, but worth naming.
-3. **The log is a single point of failure.** Accepted for now. Replication is cheap when it's needed.
-4. **Schema evolution.** CUE handles validation, but event schemas will change. Migration story?
+Consolidated across the design docs in [`design/openquestions.md`](./design/openquestions.md). Themes: identity & trust bootstrapping, policy & configuration, cross-repo coordination, attention/routing/threads, storage/retention/evolution, knowledge graph specifics, verification specifics, workflow patterns, discovery.
 
 ## Design notes
 
@@ -79,6 +76,7 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
 - [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
+- [`openquestions.md`](./design/openquestions.md) — consolidated open questions across all docs, grouped by theme with origin pointers.
 
 ## Status
 

@@ -80,8 +80,4 @@ Steps in more detail:
 
 ## Open questions
 
-- **Signaling.** Bus event vs. request ref vs. branch convention — best to pick one canonical and treat the others as conveniences. Probably bus event with request ref as a durable replay mechanism.
-- **Dependent changes / stacks.** When B depends on A, the integrator needs to know to integrate them as a unit (or in order). Stacked-diff tooling exists; how does it surface in the request event?
-- **Long-running topic branches.** A topic branch that integrates incrementally over time (not just once). Does each integration request consume one commit, a range, the whole branch? Probably the request specifies a commit range, and the topic branch tip drifts naturally.
-- **Cross-repo integration.** A change in repo A coordinated with a change in repo B. Two integration requests, one logical operation. Possibly a wrapper controller that conditions B's integration on A's success. Out of scope for the first cut.
-- **Integrator identity and bootstrapping.** The integrator is itself code in a repo. How does that code get integrated? Likely the integrator integrates itself with a stricter policy (always require human approval on its own changes), but the chicken-and-egg deserves explicit handling.
+See [openquestions.md](./openquestions.md) — items raised here live under *Workflow patterns*, *Cross-repo coordination*, and *Identity & trust bootstrapping*. The "Signaling" question was resolved by [contribute.md](./contribute.md).

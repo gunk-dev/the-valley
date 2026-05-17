@@ -143,8 +143,4 @@ Mostly for later, but worth naming so the design can grow into them:
 
 ## Open questions
 
-- **Initial node-type set.** Probably: `bug`, `principle`, `decision`, `idea`, `thread` for v1. `task` may collapse into `bug`. `retrospective` may not be needed yet.
-- **Hash-based vs incrementing IDs.** Hash-based is coordination-free (any author or agent can mint an ID locally without conflict) but uglier and not memorable. Incrementing requires coordination (the integrator assigns numbers) but is human-friendly. Probably hash-based for v1; an alias system can layer human-readable names on top later.
-- **Bus event granularity.** One event per node mutation, or batched per commit? Affects subscriber complexity.
-- **Indexer cadence.** On every push? On-demand? Subscriber-driven? The cost is small; freshness expectations drive the choice.
-- **Schema evolution.** Schemas will change. Old nodes remain valid against the version they were created with; agents produce against the latest. Migration tooling deferred.
+See [openquestions.md](./openquestions.md) — items raised here live under *Knowledge graph specifics*, *Cross-repo coordination*, and *Storage, retention, and evolution*.

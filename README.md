@@ -26,23 +26,26 @@ GitHub bundles seven things. Most of them it does poorly enough that unbundling 
 | Automation          | Actions: push-based, brittle   | Reactive controllers subscribing to an event log       |
 | Integration / merge | Branch protection in vendor UI | Pull-based integrator controllers reacting to integration-requested events |
 | Observability & feedback | PR-shaped, conflates four concerns | Continuous feedback as events; threads as derived views; priority/routing as a first-class subsystem |
-| Issues / discussion | Bolted on                      | Subsumed into feedback; threads can scope to any change, chain, or topic |
+| Issues / tasks      | Bolted on, opaque to agents    | Git-native structured data, beads-shaped, equally usable by humans and agents |
+| Discussion          | Bundled with issues            | Subsumed into feedback; threads can scope to any change, chain, issue, or topic |
 
 ## Shape of the system
 
 ```
-  bare git (Tailscale)  ──┐
-  build outputs        ───┤
-  agent runs (klaus)   ───┼──►  event log  ──►  subscribers
-  deploy state         ───┤      (NATS JS)        │
-  external signals     ──┘                        ├──► nix build  (pure reactions)
-                                                  └──► armstrong  (effectful reactions)
+  bare git (Tailscale)  ──┐                       ┌──► nix build       (pure reactions)
+  build outputs        ───┤                       │
+  agent runs (klaus)   ───┼──►  event bus  ──►  subscribers ──► armstrong  (effectful reactions)
+  deploy state         ───┤    (NATS JS)          │
+  external signals     ──┘                        └──► integrator     (per-repo integration)
+
+  attestations published to a Tessera-backed transparency log on every push
 ```
 
 - **Hosting**: bare git over SSH. Each repo is just a directory. `cgit` or similar for browsing if needed.
-- **Bus**: NATS JetStream. Single binary, persistent streams, runs on the same Tailscale box. This is the one piece of unavoidable centralization — append-only ordering needs an authority. Replicate later if the box becomes a constraint.
+- **Bus**: NATS JetStream. Single binary, persistent streams, runs on the same Tailscale box. Carries cross-system events — events whose source isn't a single repo (deploys, metrics, agent runs) and projections of per-repo git events (ref updates, attestations, integration requests) for cross-cutting subscribers. Replicate later if needed.
+- **Transparency log**: Tessera-backed tlog. Every published attestation lands here with an inclusion proof. Independently witnessable; gives non-repudiation and external auditability without depending on any one host.
 - **Pure reactions**: Nix derivations. Inputs are events (refs, flake locks), outputs are content-addressed artifacts. Replayable from the log.
-- **Effectful reactions**: [armstrong](https://github.com/gunk-dev/armstrong) as a Go controller. Subscribes to events and emits side-effects: deploys, notifications, agent dispatches, review-state changes. This is the controller-shaped successor to the current Actions-based armstrong.
+- **Effectful reactions**: [armstrong](https://github.com/gunk-dev/armstrong) as a Go controller. Subscribes to events and emits side-effects: deploys, notifications, agent dispatches, integrator dispatches. The controller-shaped successor to the current Actions-based armstrong.
 - **Schemas**: CUE, already used by armstrong. Shared across event producers and consumers.
 
 ## Why a log, not a workflow engine
@@ -69,9 +72,12 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 
 Longer thinking on specific subproblems lives in [`design/`](./design):
 
+- [`contribute.md`](./design/contribute.md) — the tight contributor protocol: signed commit, local hermetic checks, signed attestation, tlog publication, atomic push of branch + attestation + integration request.
 - [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
 - [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
+- [`integrator-internals.md`](./design/integrator-internals.md) — *placeholder.* How the integration automation does its job: queue mechanics, conflict resolution, optional agentic fallback.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
+- [`issues.md`](./design/issues.md) — *placeholder.* A minimal, git-native, human-and-agent-friendly issue tracker; beads-shaped data model without the Dolt dependency.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
 
 ## Status

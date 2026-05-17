@@ -32,8 +32,9 @@ Without a TEE, attestations are exactly as trustworthy as the signing key. That'
 | Hermetic sandbox | `nix build` sandbox; `nixosTest` VMs; microVMs for non-Nix checks | Local root can still bypass — but bypass leaves evidence |
 | Re-derivation audit | Pure attestations encode every input hash; verifier re-runs and confirms bit-identical | None for pure checks; effectful checks not re-verifiable |
 | Witness sampling | Random fraction of attestations re-run on another node; trust score per attester | None — this is the backstop |
+| Transparency log (Tessera-backed) | Every attestation appended to an external append-only log with an inclusion proof; anyone can audit existence and content over time | Orthogonal to the others — gives non-repudiation and tamper evidence, not correctness of the computation. Independent and complementary. |
 
-Stack 2–5 and a determined local-root actor *can* still forge an attestation, but only by:
+Stack 2–6 and a determined local-root actor *can* still forge an attestation, but only by:
 
 - Shipping a tool whose hash doesn't match the canonical (visible).
 - Producing a derivation hash that won't match on re-derivation (eventually detected).

@@ -75,7 +75,7 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`contribute.md`](./design/contribute.md) — the tight contributor protocol: signed commit, local hermetic checks, signed attestation, tlog publication, atomic push of branch + attestation + integration request.
 - [`verification.md`](./design/verification.md) — replacing CI-as-gate with local attestations and async re-verification.
 - [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
-- [`integrator-internals.md`](./design/integrator-internals.md) — *placeholder.* How the integration automation does its job: queue mechanics, conflict resolution, optional agentic fallback.
+- [`integrator-internals.md`](./design/integrator-internals.md) — the integrator's loop: attestation-invariance under trivial rebase, staleness as the unified failure mode, policy as a derived query over active principles, strict FIFO per protected ref, crash recovery.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
 - [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.

@@ -61,7 +61,7 @@ Steps in more detail:
    - Optionally wait for or fetch witness re-derivation results.
    - Check the topic branch merges cleanly into the current target.
 5. **Integration.** Whatever strategy this integrator implements — fast-forward only, rebase-then-FF, merge commit, squash. The integrator is the only entity with permission to write the target ref; the bare repo enforces this.
-6. **Outcome emission.** `integration-succeeded { commit, signer, attestations }` or `integration-failed { reason, evidence }`. Downstream subscribers (deploy controller, thread view, notification routing) consume the outcome.
+6. **Outcome emission.** `integration-succeeded { commit, signer, attestations }` on success, or `request-stale { reason }` when the request cannot progress against current policy. Downstream subscribers (deploy controller, thread view, notification routing) consume the outcome. See [integrator-internals.md](./integrator-internals.md) for the staleness model and the integrator's loop.
 
 ## Properties this gives you
 
@@ -74,7 +74,7 @@ Steps in more detail:
 ## Failure modes worth naming
 
 - **Integrator crash or backlog.** Requests pile up. The bus is durable, so nothing is lost, but contributors see delayed integration. Need an "integrator alive" health event and visibility into queue depth.
-- **Conflict with concurrent integration.** Two contributors targeting the same area. The integrator processes serially; second arrival gets a rebase attempt; if conflicts can't be auto-resolved, the request fails with `conflict` and the contributor adjusts.
+- **Conflict with concurrent integration.** Two contributors targeting the same area. The integrator processes serially; the second arrival is a trivial rebase (attestation invariant) if no conflicts, or goes stale if it would change the tree. See [integrator-internals.md](./integrator-internals.md) for the invariance model.
 - **Witness disagreement post-integration.** A witness re-derives a pure attestation and the result differs from what the contributor claimed. The change is *already integrated*. The outcome is a `divergence-detected` event, which downstream feeds trust-score recalculation, potential revert events, and a thread for human attention.
 - **Compromised contributor key.** Same problem as anywhere — but now bounded by trust score and visible in the log. Trust controller revokes; future requests from that signer require additional gating.
 

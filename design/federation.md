@@ -53,6 +53,8 @@ Federation governs how trust and events cross group boundaries — explicitly, n
 - A group may **subscribe** to a subset of another group's events (e.g. "schema-updated on acme/contracts") rather than its whole bus.
 - Crossing the boundary is a policy decision on *both* sides, expressed the same way every other policy is — as nodes the integrator and routers query.
 
+Importing another group's attestations raises a question this design does not yet answer: a trust score is meaningful only against *one* group's signer identities and re-verifier pool, so an imported attestation arrives with a foreign signer fingerprint and a foreign confirm-rate that mean nothing locally. How external identities are verified and mapped into local trust policy — **federated identity mapping and cross-group trust translation** — is left open; see [openquestions.md](./openquestions.md).
+
 This keeps the permissive, low-ceremony intra-group model (anyone with push access can request integration — see [scenarios.md](./scenarios.md), Scenario 5) without leaking that permissiveness across organizational lines.
 
 ## Discovery is scoped by group and federation
@@ -61,4 +63,4 @@ This keeps the permissive, low-ceremony intra-group model (anyone with push acce
 
 ## Open questions
 
-See [openquestions.md](./openquestions.md) — items raised here live under *Cross-repo coordination* (reframed as intra-group vs inter-group) and *Discovery* (scoped by group/federation).
+See [openquestions.md](./openquestions.md) — items raised here live under *Cross-repo coordination* (reframed as intra-group vs inter-group, plus federated identity mapping & cross-group trust translation) and *Discovery* (scoped by group/federation).

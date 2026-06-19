@@ -15,13 +15,13 @@ The descriptive reading — "here is what blocks what" — is already supported.
 
 ```
             oc-feature-loved        (root, priority: high)
-             ▲            ▲
-       blocked_by      blocked_by
              │            │
+       blocked_by      blocked_by
+             ▼            ▼
        oc-code-in-vcs   oc-docs-shipped
-             ▲
-        blocked_by
              │
+        blocked_by
+             ▼
        oc-auth-bug-fixed   ← frontier (no open blockers)
 ```
 
@@ -44,6 +44,8 @@ This is **dependency-aware, critical-path scheduling**, not an attention router.
 ## Dispatch is klaus-shaped
 
 A **scheduler controller** subscribes to the same node-mutation events the rest of the system emits (`node-created`, `node-status-changed`, `node-linked`). On each change it recomputes the frontier and the propagated priorities, then dispatches agent runs against frontier nodes — highest effective priority first. When a dispatched run lands a change that `closes` its outcome, the resulting `node-status-changed` event reopens the loop: the parent may now be on the frontier, and the scheduler dispatches again.
+
+Because recomputation is event-driven, bursts of node mutations can recompute the frontier many times in quick succession — so dispatch must be **idempotent per outcome**, never spawning a second agent for an outcome that already has one in flight. The controller tracks in-flight runs as state on the outcome itself: a dispatch flips the node to `status: in_progress` (carrying the run's id) before the agent starts, and only `open` frontier outcomes are eligible to dispatch. That status transition is the lock — it is itself a `node-status-changed` event, so the in-flight set is a derived query over the graph like every other projection, with no separate scheduler-private store to keep consistent. A run that dies without closing or releasing its outcome is caught by the same run-budget and loop-cap mechanisms below (an outcome stuck `in_progress` past a threshold is a staleness signal that returns it to the frontier).
 
 This is consistent with the existing open-question note that *"events spawn new agent runs scoped to acting on them — klaus-shaped"* ([openquestions.md](./openquestions.md), now under work scheduling). The scheduler is one more controller reading the log; the frontier is a derived query over the graph, rebuildable from source like every other projection.
 

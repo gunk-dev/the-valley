@@ -86,11 +86,14 @@ The vocabulary differs per node type; common edges:
 | `applies_to` | Scope of a principle or decision |
 | `enforced_by` | Link from a principle to a check or attestation type |
 | `closes` | A commit/attestation that resolves a bug or outcome |
+| `motivates` / `motivated_by` | A problem node (e.g. a `bug`) motivates an outcome; the outcome is `motivated_by` it |
 | `references` | Inbound citation from anywhere |
 
 ## Outcomes and the generative reading of the graph
 
 The `outcome` node (`oc-*`, the type formerly sketched as `task`) is the **central generative node type** — the unit of work production. An outcome is a thing someone wants to exist that does not yet; closing it is the system's reason to act. A `bug` is one *kind of problem* that motivates an outcome, not the unit of work itself; the two stay distinct (see the decision flip in [openquestions.md](./openquestions.md)).
+
+The two link explicitly via the `motivates` / `motivated_by` edge: a `bug` `motivates` an `oc-*`, and the outcome is `motivated_by` the bug. They keep **separate lifecycles**, and `closes` always targets the outcome, never the bug directly. When an attestation lands carrying `closes: [oc-…]`, the integrator's success event flips *only* the outcome's status; a controller subscribed to that `node-status-changed` then resolves the motivating bug — auto-closing it when the closed outcome was its sole motivated-by, or leaving it open when other outcomes still reference it (one bug can motivate several fixes). This keeps the work unit (the outcome the DAG schedules on) and the problem record (the bug) from being conflated: a bug is not "done" because one of the outcomes it spawned landed, only when nothing it motivates remains open.
 
 Two edges, read generatively rather than descriptively, turn this graph into a scheduler:
 

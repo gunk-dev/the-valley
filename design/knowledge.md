@@ -1,6 +1,6 @@
 # Project knowledge
 
-A unified, git-native, markdown-based knowledge graph for everything in a project that isn't executable code and isn't user-facing documentation: bugs, ideas, principles, decisions, retrospectives, tasks, threads. Equally consumable by humans and AI agents.
+A unified, git-native, markdown-based knowledge graph for everything in a project that isn't executable code and isn't user-facing documentation: bugs, ideas, principles, decisions, retrospectives, outcomes, threads. Equally consumable by humans and AI agents.
 
 Supersedes the original "issues" scope. Issue tracking is one slice of this; treating it in isolation misses the larger problem — a project's institutional knowledge has no good home today and is invisible to agents.
 
@@ -22,7 +22,7 @@ Single source of truth for the graph (frontmatter); no parser magic; agents and 
   decisions/    dcr-*.md
   retros/       rtr-*.md
   ideas/        ida-*.md
-  tasks/        tsk-*.md
+  outcomes/     oc-*.md
   threads/      thr-*.md
   schemas/      scm-*.cue
 ```
@@ -85,8 +85,19 @@ The vocabulary differs per node type; common edges:
 | `supersedes` / `superseded_by` | Replaces an earlier node; preserves history |
 | `applies_to` | Scope of a principle or decision |
 | `enforced_by` | Link from a principle to a check or attestation type |
-| `closes` | A commit/attestation that resolves a bug or task |
+| `closes` | A commit/attestation that resolves a bug or outcome |
 | `references` | Inbound citation from anywhere |
+
+## Outcomes and the generative reading of the graph
+
+The `outcome` node (`oc-*`, the type formerly sketched as `task`) is the **central generative node type** — the unit of work production. An outcome is a thing someone wants to exist that does not yet; closing it is the system's reason to act. A `bug` is one *kind of problem* that motivates an outcome, not the unit of work itself; the two stay distinct (see the decision flip in [openquestions.md](./openquestions.md)).
+
+Two edges, read generatively rather than descriptively, turn this graph into a scheduler:
+
+- `blocked_by` / `blocks` between outcomes **are** a dependency DAG — an outcome is `blocked_by` whatever must complete first.
+- `closes` + the attestation-success → `node-status-changed` event (below) is how an outcome **finalizes** a node and removes a blocking edge from its parent.
+
+Read descriptively, this is just "what blocks what." Read generatively, the open outcomes are a *production graph the system has pressure to complete*: each unfinished outcome is latent demand for an agent run, and a scheduler controller dispatches against the unblocked frontier. That reading — priority propagation, frontier dispatch, klaus-shaped scheduling — is worked out in [outcomes.md](./outcomes.md).
 
 ## Schemas (CUE, per type)
 

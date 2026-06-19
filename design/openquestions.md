@@ -14,19 +14,23 @@ Consolidated from across the design docs. Grouped by theme. Each item retains an
 - **Policy bootstrap.** Someone has to be able to land the first principle / first policy change before the policy exists to govern principle changes. v1: integrator-key-holders land changes to `.the-valley/principles/` directly with relaxed policy. Worked out in a follow-up. *Origin: [integrator-internals.md](./integrator-internals.md).*
 - **Per-repo integrator configuration.** Where does the integrator's per-repo configuration live — which protected refs, which trust thresholds per ref, which witnesses to wait for? Probably as a `config` node in the knowledge graph, queried alongside principles. *Origin: [integrator-internals.md](./integrator-internals.md).*
 - **Per-repo check-set evolution.** When `flake.nix` adds a new required check, do existing attestations become invalid? Answer per [integrator-internals.md](./integrator-internals.md): yes, stale via policy-required-check. But what about graceful introduction periods? *Origin: [contribute.md](./contribute.md).*
+- **Recursive self-transparency invariant (unresolved, consolidated).** Several items here and elsewhere look like facets of one candidate top-level invariant: *no actor can durably change the system, or an output of the system, without transparency* — recursive all the way down, so the system's own policy, controllers, and config are themselves outcomes governed exactly like code (the-valley builds the-valley). The facets: integrator self-integration (*Identity & trust*), policy bootstrap and per-repo integrator config as a `config` node (both above), and principles being load-bearing on integration ([knowledge.md](./knowledge.md)). [self-transparency.md](./self-transparency.md) names the invariant and collects them, but it is explicitly a **DRAFT** — statement, mechanism, and base case are all undesigned. *Origin: [self-transparency.md](./self-transparency.md); facets from [integration.md](./integration.md), [integrator-internals.md](./integrator-internals.md), [knowledge.md](./knowledge.md).*
 
 ## Cross-repo coordination
 
-- **Cross-repo integration.** Two requests in two repos that must succeed together (schema producer + consumer). The integrator pattern can support this — a wrapper controller conditions B on A — but the design is deferred to v2. *Origin: [integration.md](./integration.md), [integrator-internals.md](./integrator-internals.md).*
-- **Cross-repo feedback.** A change in repo A breaks a consumer in repo B. The consumer's event needs to land somewhere visible to A's thread. Cross-repo routing is non-trivial; deferred. *Origin: [feedback.md](./feedback.md).*
-- **Cross-repo nodes in the knowledge graph.** A bug in repo A blocking work in repo B. v1 is per-repo; cross-repo linking needs stable IDs that include a repo namespace. Deferred. *Origin: [knowledge.md](./knowledge.md).*
+[federation.md](./federation.md) reframes these: the group/instance boundary splits each into an **intra-group** case (within one instance — one bus, one integrator, one knowledge graph; the tractable near-term problem) and an **inter-group** case (federation across instances; the harder, later problem).
+
+- **Cross-repo integration.** Two requests in two repos that must succeed together (schema producer + consumer). *Intra-group:* one integrator, shared bus, a wrapper controller conditions B on A. *Inter-group:* events must cross an instance boundary. *Origin: [integration.md](./integration.md), [integrator-internals.md](./integrator-internals.md); framed in [federation.md](./federation.md).*
+- **Cross-repo feedback.** A change in repo A breaks a consumer in repo B. *Intra-group:* both on the same bus, routing is local. *Inter-group:* the breakage event must federate to A's instance. *Origin: [feedback.md](./feedback.md); framed in [federation.md](./federation.md).*
+- **Cross-repo nodes in the knowledge graph.** A bug in repo A blocking work in repo B. *Intra-group:* same graph, IDs namespaced by repo. *Inter-group:* the blocking node lives in another group's graph. *Origin: [knowledge.md](./knowledge.md); framed in [federation.md](./federation.md).*
 
 ## Attention, routing, and threads
 
-- **Priority layer architecture.** Per-subscriber rule sets, learned priorities, hand-curated digests, escalation chains? The hard new bottleneck created by the feedback reframe. Probably starts hand-configured and grows. Deserves its own design doc once shape clarifies. *Origin: [feedback.md](./feedback.md), README.*
+- ~~**Priority layer architecture (work scheduling).**~~ *Resolved in [outcomes.md](./outcomes.md):* the dependency DAG already latent in the knowledge graph (`blocked_by`/`blocks` + `closes`), read generatively, is the scheduler. Root outcomes carry priority that propagates to their ancestors-of-completion; a klaus-shaped scheduler controller dispatches agents against the unblocked frontier on the critical path to the highest-priority root. This was one half of the original single "priority layer" question; the other half (attention routing, below) remains open.
+- **Priority layer architecture (attention routing).** Which finished or blocked outcomes a human must *see*, and how urgently — per-subscriber rule sets, learned priorities, hand-curated digests, escalation chains? The firehose problem; distinct from work scheduling, which the outcome DAG now answers. Probably starts hand-configured and grows. *Origin: [feedback.md](./feedback.md), [outcomes.md](./outcomes.md), README.*
 - **Thread identity and naming.** UUID? Human-readable slug? Tied to a commit, a chain, a topic? *Origin: [feedback.md](./feedback.md).*
 - **When does a thread close?** Auto-close on deploy-stable? Explicit close events? Both? *Origin: [feedback.md](./feedback.md).*
-- **Feedback back to an agent that finished its run.** Probably: events spawn new agent runs scoped to acting on them. klaus-shaped. *Origin: [feedback.md](./feedback.md).*
+- **Feedback back to an agent that finished its run.** Probably: events spawn new agent runs scoped to acting on them. klaus-shaped — the same shape the [outcomes.md](./outcomes.md) scheduler controller uses to dispatch against the frontier. *Origin: [feedback.md](./feedback.md), [outcomes.md](./outcomes.md).*
 - **Backpressure visibility on the integrator.** Contributors should see queue depth and estimated wait. Easy to expose via the same `request-state` query; not strictly v1. *Origin: [integrator-internals.md](./integrator-internals.md).*
 
 ## Storage, retention, and evolution
@@ -38,7 +42,7 @@ Consolidated from across the design docs. Grouped by theme. Each item retains an
 
 ## Knowledge graph specifics
 
-- **Initial node-type set.** Probably `bug`, `principle`, `decision`, `idea`, `thread` for v1. `task` may collapse into `bug`. `retrospective` may not be needed yet. *Origin: [knowledge.md](./knowledge.md).*
+- **Initial node-type set.** Probably `outcome`, `bug`, `principle`, `decision`, `idea`, `thread` for v1. *Decision flipped:* `outcome` (formerly `task`) does **not** collapse into `bug` — the outcome is the central generative unit of work that the [outcomes.md](./outcomes.md) scheduler runs on, and `bug` is merely one kind of problem that motivates an outcome. Keeping them distinct is load-bearing for the production DAG. `retrospective` may not be needed yet. *Origin: [knowledge.md](./knowledge.md), [outcomes.md](./outcomes.md).*
 - **Hash-based vs incrementing IDs.** Hash-based is coordination-free but uglier; incrementing is human-friendly but needs coordination. Probably hash-based for v1, with an alias system for human-readable names later. *Origin: [knowledge.md](./knowledge.md).*
 - **Bus event granularity for node mutations.** One event per node mutation, or batched per commit? Affects subscriber complexity. *Origin: [knowledge.md](./knowledge.md).*
 - **Indexer cadence.** On every push, on-demand, subscriber-driven? The cost is small; freshness expectations drive the choice. *Origin: [knowledge.md](./knowledge.md).*
@@ -55,7 +59,7 @@ Consolidated from across the design docs. Grouped by theme. Each item retains an
 
 ## Discovery
 
-- **Discovery.** Without GitHub-the-social-graph, how do humans find each other's repos? Probably out of scope, but worth naming. *Origin: README.*
+- **Discovery.** Without GitHub-the-social-graph, how do humans find each other's repos? Scoped by group/federation per [federation.md](./federation.md): *within* a group, discovery is trivial (the instance knows its own repos); *across* groups it is the inter-group problem — how one instance learns another exists and what it federates. Shape open; the framing is that discovery lives at the federation layer, not the repo layer. *Origin: README; framed in [federation.md](./federation.md).*
 
 ## Resolved (kept for the record)
 

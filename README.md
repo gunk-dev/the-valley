@@ -6,6 +6,19 @@ A space to rethink developer workflow and source management from scratch.
 
 This is not a project to "move off GitHub." That framing is too narrow. The question is: **what would source management look like if designed today**, with AI agents as first-class authors, Nix as a substrate, and no assumption that a single platform should own hosting, identity, CI, artifacts, review, and automation?
 
+## Thesis: a recursive, transparent outcome-production engine
+
+The deeper framing, of which source management is one instance: the-valley is an engine for **producing outcomes**, transparently and recursively.
+
+An *outcome* is a thing someone wants to exist that does not yet. Outcomes **chain and recurse on a DAG** — "add this code to the VCS" is an outcome that is part of "deliver a feature users love to prod," which is part of something larger still. The system reads that DAG generatively: open outcomes are a worklist it is under pressure to complete, and completing them is what scheduling *is*. See [`design/outcomes.md`](./design/outcomes.md).
+
+The substrate is **general** — open, in principle, to any automatable outcome; even a non-code outcome like "book concert tickets" is conceivable. But generality is the frame, not the product. **The software development lifecycle (SDLC) is the v1 reference implementation** — the concrete outcomes the system is first built to produce, the lens through which the rest of this document is written. The GitHub-unbundling material below is that SDLC lens: it is how the general engine gets pointed at code first, not a definition of the engine.
+
+Two further commitments shape the whole design:
+
+- **Recursive self-transparency.** No actor should be able to durably change the system, or an output of it, without transparency — all the way down, so the system's own policy, controllers, and config are themselves outcomes governed like code (the-valley builds the-valley). This is a *candidate* top-level invariant, not a settled one — see the DRAFT [`design/self-transparency.md`](./design/self-transparency.md).
+- **Federation by group.** The unit of distribution and identity is the *group* (a team, a company, a namespace), each running one *instance* (bus + integrator + git hosting) that scales from a single machine up to a distributed system. See [`design/federation.md`](./design/federation.md).
+
 ## Constraints
 
 - **Open source.**
@@ -74,7 +87,10 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`integration.md`](./design/integration.md) — pull-based integrator controllers in place of branch-protection gates; merge-queue semantics for free.
 - [`integrator-internals.md`](./design/integrator-internals.md) — the integrator's loop: attestation-invariance under trivial rebase, staleness as the unified failure mode, policy as a derived query over active principles, strict FIFO per protected ref, crash recovery.
 - [`feedback.md`](./design/feedback.md) — reframing review as continuous observability and feedback; threads as derived views; attention routing as a first-class subsystem.
-- [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
+- [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: outcomes, bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
+- [`outcomes.md`](./design/outcomes.md) — the outcome DAG as a generative scheduler: the dependency edges already latent in the knowledge graph, read as a production graph; priority propagation and frontier dispatch as the work-scheduling mechanism.
+- [`federation.md`](./design/federation.md) — the group/instance/federation layer above the repo; intra-group vs inter-group coordination; group-scoped trust; one design that scales down to a single machine and up to a distributed system.
+- [`self-transparency.md`](./design/self-transparency.md) — **DRAFT.** A candidate top-level invariant: no actor can durably change the system or an output without transparency, recursively. Names the scattered facets; explicitly unresolved.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
 - [`openquestions.md`](./design/openquestions.md) — consolidated open questions across all docs, grouped by theme with origin pointers.
 

@@ -32,12 +32,10 @@ The everyday case. A human edits code, runs local checks, and ships a change.
 ↺ trust controller   bump signer's confirm rate
 ```
 
-**Latency observed by the developer:** `git push` returns immediately. Integration outcome lands within seconds. Deploy completes within minutes. Witness confirmation arrives async — the dev never waits on it.
-
 **Stress points:**
 
-- The integrator policy must decide whether to wait for witness confirmation before integrating. For a trusted, well-attested signer: probably not. For a new signer: probably yes. This is policy, not architecture, but the policy needs to exist.
-- The "local checks are sufficient" assumption is load-bearing. If the contributor's environment drifts from canonical (different Nix version, host-specific paths bleeding in), attestations will land but witnesses will reject them. This is a *bug* in the contributor's setup, surfaced as trust-score drift — the system should make this debuggable.
+- Whether the integrator waits for witness confirmation before integrating is policy, not architecture — but the policy needs to exist (trusted signer: probably not; new signer: probably yes).
+- The "local checks are sufficient" assumption is load-bearing. Environment drift from canonical surfaces as witness rejections and trust-score drift; the system should make that debuggable.
 
 ---
 
@@ -59,13 +57,9 @@ An agent dispatched by klaus does the work. Same flow as a human, but identity a
 
 **Stress points:**
 
-- **Agent identity.** What key signs the attestation? Three plausible models:
-  - *Ephemeral per-run key* — klaus mints a key, signs it with klaus's own root, key is bound to one run. Strong audit trail, key compromise is bounded.
-  - *Long-lived per-agent key* — one key per agent type. Simpler. Compromise has wider blast radius but is easy to revoke at the trust controller.
-  - *Delegated from dispatcher* — the dispatching human's key authorizes the agent; the agent signs with a derived key. Aligns trust with the human responsible.
-  This is an unresolved design question. The architecture supports any of them — the trust controller doesn't care about key shape, only about confirm/deny rates per signer.
-- **Klaus's own events** (agent-completed, pr-created in the current klaus design) become first-class on the bus. The "PR" concept dissolves — what klaus today calls "PR created" is just `integration-requested` with the agent as signer.
-- **Agent loops.** An agent reacting to a regression event (Scenario 3) dispatches another agent run. Easy to imagine pathological loops; the architecture needs a cap (klaus's existing run-budget mechanism extends naturally).
+- **Agent identity is unresolved.** Ephemeral per-run key, long-lived per-agent key, or delegated from the dispatching human — the architecture supports any; the trust controller cares only about confirm/deny rates per signer.
+- **The "PR" concept dissolves.** What klaus today calls "PR created" is just `integration-requested` with the agent as signer.
+- **Agent loops.** An agent reacting to a regression event (Scenario 3) dispatches another agent run; the architecture needs a cap (klaus's existing run-budget mechanism extends naturally).
 
 ---
 
@@ -88,14 +82,13 @@ A change makes it to production. Some time later, runtime signals indicate somet
 
 **Stress points:**
 
-- **Attribution.** Monitoring rarely *knows* which commit caused a regression. The honest fields here are *attributed_commits* (a window or best-guess) and a confidence. Probably: most recent N deploys in the window where the metric degraded. The thread router and the dispatched agent both treat this as a lead, not a verdict.
-- **Auto-rollback vs human-in-the-loop.** Different orgs/repos want different thresholds. This is per-environment policy, not architecture — but the policy needs to be expressible and observable. The rollback controller's decision logic should itself emit its reasoning as events.
-- **Trust score implications.** A regression in itself doesn't lower the signer's trust score (regressions ≠ attestation forgery). But a *correlation* — "this signer's changes account for a disproportionate share of regressions" — is interesting. Probably a separate signal from witness divergence, surfaced to humans rather than auto-acted.
-- **Closing the loop on the thread.** When the regression is fixed (a follow-up commit, an explicit revert), the thread can mark itself resolved. The "did this thing actually get fixed" event is necessary for the system to know what to forget.
+- **Attribution.** Monitoring rarely *knows* which commit caused a regression; `attributed_commits` is a lead with a confidence, not a verdict.
+- **Auto-rollback vs human-in-the-loop** is per-environment policy — but the policy must be expressible and observable, with the controller emitting its reasoning as events.
+- **Trust implications.** A regression alone doesn't lower a signer's trust score (regressions ≠ forgery); a *correlation* of regressions per signer is a separate signal, surfaced to humans rather than auto-acted.
 
 ---
 
-## 5. Untrusted contributor
+## 4. Untrusted contributor
 
 A new contributor wants to land a change. They have no attestation history, so the trust controller has no signal on them.
 
@@ -117,14 +110,13 @@ A new contributor wants to land a change. They have no attestation history, so t
 
 **Stress points:**
 
-- **The trust state machine.** "Co-signed by trusted party" → "trusted enough to auto-integrate" is a discrete transition that needs clear policy. How many? Which kinds of changes count? Does trust decay with inactivity? Should the contributor see their own trust state? All policy questions, not architecture.
-- **Threads as the coordination focal point.** This scenario is the most thread-centric — review happens *in* the thread, which subsumes what GitHub calls a PR. The thread holds the request, the diff view, the attestations, the maintainer's comments, the approval event, and the eventual integration outcome. Every event is part of the same chronology.
-- **The "approval has authority" claim.** The integrator trusts the maintainer's approval because the maintainer's key is on a known list. That list is itself a piece of policy that needs versioning, audit, and a way to grant/revoke. Probably stored as a signed config event on the bus, not a YAML file in a repo.
-- **Sybil concerns.** The trust model is permissive by default — anyone can push a topic branch and request integration. That's fine for invite-only / personal use. For public projects, the request-rate and the priority router need to handle spam. Probably out of scope for the first cut, worth naming.
+- **The trust state machine.** "Co-signed by trusted party" → "trusted enough to auto-integrate" is a discrete transition needing concrete policy: how many, which changes count, does trust decay.
+- **Threads subsume the PR.** Request, diff, attestations, comments, approval, and outcome are one chronology in one thread.
+- **Approval authority.** The maintainer's key being on a known list is itself policy needing versioning, audit, and grant/revoke.
 
 ---
 
-## 4. Cross-repo schema change (sketch)
+## 5. Cross-repo schema change (sketch)
 
 armstrong's CUE schema changes. Multiple downstream repos depend on it.
 
@@ -138,9 +130,10 @@ armstrong's CUE schema changes. Multiple downstream repos depend on it.
 ↺ schema-rollout coordinator   if some broken: open threads in those repos with a fix-suggestion
 ```
 
-**What this tests:** that events flow across repo boundaries on the same bus, that controllers can be scoped per-repo but consume cross-repo events.
+**Stress points:**
 
-**Open:** how does a consumer *declare* its interest in another repo's events? Per-repo subscription config? Discovery via schema metadata? Probably explicit config — implicit discovery is too magical.
+- Tests that events flow across repo boundaries on the same bus, with per-repo controllers consuming cross-repo events.
+- How a consumer *declares* interest in another repo's events is open — probably explicit config; implicit discovery is too magical.
 
 ---
 
@@ -156,9 +149,10 @@ A weekly dependency bump.
   → integration-requested   { signer=dep-updater, ... }
 ```
 
-From the integrator's perspective, indistinguishable from a human or agent contribution. The dep-updater has its own signing key and its own trust score, accruing confirmations like any other signer.
+**Stress points:**
 
-**What this tests:** time is just another event source. There's no "scheduled workflows" subsystem — scheduling is one controller emitting `scheduled-tick` events.
+- From the integrator's perspective, indistinguishable from a human or agent contribution; the dep-updater has its own key and trust score.
+- Time is just another event source — no "scheduled workflows" subsystem, only a controller emitting `scheduled-tick` events.
 
 ---
 
@@ -167,16 +161,15 @@ From the integrator's perspective, indistinguishable from a human or agent contr
 | Architectural claim | Tested by | Result |
 | --- | --- | --- |
 | Local attestations replace CI gates | 1, 2 | Works if reproducibility policy holds and witnesses are present |
-| Integrator pattern handles real cases | 1, 2, 5 | Works; policy variation per-signer is essential |
+| Integrator pattern handles real cases | 1, 2, 4 | Works; policy variation per-signer is essential |
 | Feedback closes the loop post-merge | 3 | Works; attribution is the weakest link |
-| Threads subsume PR review | 5 | Works; the "approval has authority" claim needs concrete policy mechanism |
-| Cross-repo flows on one bus | 4 | Plausible; subscription/discovery is unsolved |
+| Threads subsume PR review | 4 | Works; the "approval has authority" claim needs concrete policy mechanism |
+| Cross-repo flows on one bus | 5 | Plausible; subscription/discovery is unsolved |
 | Time integrates as just another event source | 6 | Clean fit |
 | Agents are first-class contributors | 2 | Architecturally yes; agent identity model unresolved |
 
 ## What's still uncovered
 
-- **Forensic walk-back.** Replaying the log to debug "why did this happen?" The architecture promises it works; nothing in these scenarios actually exercises it as a workflow.
-- **Multi-author / stacked changes.** A chain of dependent commits with multiple signers. The integrator doc names this as open; scenarios should eventually test it.
-- **Recovery from bus loss.** What if the NATS log is corrupted or rebuilt? Per-repo request refs in git provide some durability for in-flight integrations, but a deeper story is needed.
-- **Onboarding a new repo.** Not a runtime scenario — addressed in the migration plan.
+- **Forensic walk-back.** Replaying the log to debug "why did this happen?" The architecture promises it works; nothing here exercises it as a workflow.
+- **Multi-author / stacked changes.** A chain of dependent commits with multiple signers.
+- **Recovery from bus loss.** Per-repo request refs in git provide some durability for in-flight integrations, but a deeper story is needed.

@@ -1,6 +1,6 @@
 # Roadmap
 
-The [README](../README.md) says: *"This document is the design space, not a plan."* This is the plan. It exists to **incrementally validate the design** — not to commit to it.
+The other design docs describe the design space. This is the plan. It exists to **incrementally validate the design** — not to commit to it.
 
 ## The shape of the plan
 
@@ -38,7 +38,7 @@ The named systems: **klaus** (agent dispatch, run budget), **armstrong** (the Go
 
 **Goal.** Get the crown-jewel git data off GitHub and onto infrastructure you control, durably enough that you'd trust it with the only copy — before there's ever only one copy.
 
-**What gets built.** Hosting only. Bare git over SSH on classic-laddie. Identity is Tailscale ACLs + SSH keys (the README's *Hosting* and *Identity* rows, nothing more). **No bus, no attestations, no integrator.** The contributor — one solo dev — pushes directly to `main`. `cgit` or similar for browsing if wanted. The integrator and the protected-ref invariant arrive in [Phase 3](#phase-3--the-integrator); pushing straight to `main` now is correct, not a shortcut.
+**What gets built.** Hosting only. Bare git over SSH on classic-laddie. Identity is Tailscale ACLs + SSH keys ([architecture.md](./architecture.md)'s *Hosting* and *Identity* rows, nothing more). **No bus, no attestations, no integrator.** The contributor — one solo dev — pushes directly to `main`. `cgit` or similar for browsing if wanted. The integrator and the protected-ref invariant arrive in [Phase 3](#phase-3--the-integrator); pushing straight to `main` now is correct, not a shortcut.
 
 The Tailscale identity layer is deliberately thin. The user has noted it's thin enough to swap later — so it's an acceptable v1 choice, not a lock-in. When identity needs to grow (untrusted contributors, agent keys), it grows in [Phase 5](#phase-5--trust-backstop).
 
@@ -56,7 +56,7 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 
 **Pilot: the-valley itself.** the-valley's own repo is the first off GitHub — dogfooding, low stakes, and every later phase is developed against it. Later repos roll out after the pilot proves the workflow.
 
-**The design claim it validates.** Self-hosted bare git on the existing tailnet is durable and ergonomic enough to be the canonical home for real work — the README's premise that hosting lock-in is the only thing GitHub does well, and it's swappable.
+**The design claim it validates.** Self-hosted bare git on the existing tailnet is durable and ergonomic enough to be the canonical home for real work — the premise ([requirements.md](./requirements.md)) that hosting lock-in is the only thing GitHub does well, and it's swappable.
 
 **Exit criteria.**
 - the-valley's canonical `origin` is classic-laddie.
@@ -64,7 +64,7 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 - The user works ~a week without touching GitHub for the pilot repo.
 - The migration runbook is written and repeatable for the next repo.
 
-**Links.** [README](../README.md) (*Hosting*, *Identity* rows).
+**Links.** [architecture.md](./architecture.md) (*Hosting*, *Identity* rows).
 
 **New open questions.** The Hetzner backup mechanism (a/b/c above). Phase-0 identity being Tailscale-ACL-based for now (thin, swappable). Both belong in [openquestions.md](./openquestions.md); see [Open questions](#open-questions).
 
@@ -74,9 +74,9 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 
 **Goal.** Make git a source of events. Nothing reacts yet — this phase only proves the events are real and legible.
 
-**What gets built.** NATS JetStream on classic-laddie. A `post-receive` hook projecting ref updates into bus events: `ref-updated` now, `attestation-published` / `integration-requested` later (per [contribute.md §8](./contribute.md)). A dumb `valley tail` inspector to watch events scroll by. That's it. No subscriber acts on anything.
+**What gets built.** NATS JetStream on classic-laddie. A `post-receive` hook projecting ref updates into bus events: `ref-updated` now, `attestation-published` / `integration-requested` later (per [contribute.md](./contribute.md)). A dumb `valley tail` inspector to watch events scroll by. That's it. No subscriber acts on anything.
 
-**The design claim it validates.** git-as-event-source — that ref updates project cleanly onto a log, and that a log is the right substrate ("a log, not a workflow engine" — [README](../README.md), *Why a log*). If the projection is awkward or lossy here, everything downstream inherits the problem, so it's worth isolating.
+**The design claim it validates.** git-as-event-source — that ref updates project cleanly onto a log, and that a log is the right substrate ("a log, not a workflow engine" — [architecture.md](./architecture.md)). If the projection is awkward or lossy here, everything downstream inherits the problem, so it's worth isolating.
 
 **A note on durability.** The bus is the source of truth only for *ephemeral cross-system events*. Per-repo events (refs, attestations, integration requests) are durable in git itself; the bus is a projection that can be rebuilt. This is the resolution of the old "the log is a single point of failure" question ([openquestions.md](./openquestions.md), *Resolved*).
 
@@ -84,7 +84,7 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 - A push to classic-laddie produces a `ref-updated` event visible in `valley tail` within seconds.
 - Rebuilding the stream from scratch (replay the repo's refs) reproduces the same events — the projection is deterministic.
 
-**Links.** [README](../README.md) (*Why a log*), [contribute.md §8](./contribute.md).
+**Links.** [architecture.md](./architecture.md) (*a log, not a workflow engine*), [contribute.md](./contribute.md).
 
 ---
 
@@ -92,7 +92,7 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 
 **Goal.** Replace "wait for CI" with "signed local check" for real day-to-day work.
 
-**What gets built.** A `nix run .#attest` helper that: runs the repo's canonical `nix flake check` derivations; composes the attestation JSON ([contribute.md §3](./contribute.md) / [verification.md](./verification.md) shape); SSH-signs it with the same key as the commit signature; stores it as `refs/the-valley/attestations/<sha>`; pushes atomically ([contribute.md §7](./contribute.md)).
+**What gets built.** A `nix run .#attest` helper that: runs the repo's canonical `nix flake check` derivations; composes the attestation ([contribute.md](./contribute.md) / [verification.md](./verification.md)); SSH-signs it with the same key as the commit signature; stores it as `refs/the-valley/attestations/<sha>`; pushes atomically ([contribute.md](./contribute.md)).
 
 **Deferred to [Phase 5](#phase-5--trust-backstop):** the Tessera tlog and witness re-derivation. Phase 2 is *just local signed attestations* — the ergonomics of the protocol, without the trust backstop. This is the right cut: the protocol has to feel good before the security layer is worth building on top of it.
 
@@ -113,19 +113,19 @@ They're not exclusive — (a) gives a hot second remote, (b) or (c) gives cheap 
 
 **What gets built.** Two things:
 
-- **The structural invariant.** The one-line `pre-receive` hook: only the integrator key writes `refs/heads/<protected>`; attestation refs are create-only; everything else is open ([contribute.md](./contribute.md), *What protects the canonical refs*; [integration.md](./integration.md), *The minimal invariant*).
-- **The integrator controller.** Pull-based, subscribing to `integration-requested`. Verifies signature + attestation + (for now, self-) trust, does FF/rebase into `main`, emits outcome events ([integration.md](./integration.md), *Mechanism*). Merge-queue semantics fall out for free.
+- **The structural invariant.** The one-line `pre-receive` hook: only the integrator key writes `refs/heads/<protected>`; attestation refs are create-only; everything else is open ([contribute.md](./contribute.md), *The one invariant*; [architecture.md](./architecture.md), *The one structural git invariant*).
+- **The integrator controller.** Pull-based, subscribing to `integration-requested`. Verifies signature + attestation + (for now, self-) trust, does FF/rebase into `main`, emits outcome events ([architecture.md](./architecture.md), *a pull-based integrator*). Merge-queue semantics fall out for free.
 
 This is where the user **stops pushing directly to `main`** and goes through the request flow, even as the only contributor. That's the whole point — the flow has to be tolerable at N=1 before it's asked to hold at N>1.
 
-**The design claim it validates.** The controller pattern and the core integration claim — that a pull-based integrator is a better shape than a `pre-receive` gate ([integration.md](./integration.md)), and that staleness is the right unified failure mode ([integrator-internals.md](./integrator-internals.md)).
+**The design claim it validates.** The controller pattern and the core integration claim — that a pull-based integrator is a better shape than a `pre-receive` gate, and that staleness is the right unified failure mode ([architecture.md](./architecture.md)).
 
 **Exit criteria.**
 - Direct pushes to `refs/heads/main` are rejected by the hook; only the integrator key succeeds.
 - A change lands via `integration-requested` → `integration-succeeded` with no manual ref write.
 - A stale case (rebase would change the tree) surfaces as one `request-stale` event, not a rejection or a retry storm.
 
-**Links.** [integration.md](./integration.md), [integrator-internals.md](./integrator-internals.md).
+**Links.** [architecture.md](./architecture.md) (*a pull-based integrator*, *The one structural git invariant*).
 
 **New open questions.** Integrator self-integration — the integrator is code in a repo; how does *its* changes get integrated? Already tracked in [openquestions.md](./openquestions.md) (*Identity & trust bootstrapping*). Phase 3 is where the chicken-and-egg becomes concrete.
 
@@ -137,13 +137,13 @@ This is where the user **stops pushing directly to `main`** and goes through the
 
 **What gets built.** armstrong subscribes to `integration-succeeded` → `nix build` the artifact derivation → deploy / notify ([scenarios.md #1](./scenarios.md)). This is the controller-shaped successor to the current Actions-based armstrong — the same tool, inverted from push-based pipeline to reactive subscriber.
 
-**The design claim it validates.** Reactive controllers replace push-based CI/CD, and the causality chain (commit → build → deploy → notify) is *one queryable history* rather than seven disconnected job UIs ([README](../README.md), *Effectful reactions* and *Why a log*).
+**The design claim it validates.** Reactive controllers replace push-based CI/CD, and the causality chain (commit → build → deploy → notify) is *one queryable history* rather than seven disconnected job UIs ([architecture.md](./architecture.md), *Components* and *a log, not a workflow engine*).
 
 **Exit criteria.**
 - An integration into `main` triggers a build and a deploy with no workflow file — only a subscriber.
 - The full chain for a given commit is reconstructable from the log alone.
 
-**Links.** [README](../README.md) (*Effectful reactions*), [scenarios.md #1 and #6](./scenarios.md).
+**Links.** [architecture.md](./architecture.md) (*Components*), [scenarios.md #1 and #6](./scenarios.md).
 
 ---
 
@@ -153,20 +153,20 @@ This is where the user **stops pushing directly to `main`** and goes through the
 
 **What gets built.**
 
-- **Transparency log.** Tessera-backed tlog publication of attestations via tesseract, with inclusion proofs appended as a sidecar ([contribute.md §4](./contribute.md)).
+- **Transparency log.** Tessera-backed tlog publication of attestations via tesseract, with inclusion proofs appended as a sidecar ([contribute.md](./contribute.md)).
 - **Witness re-derivation.** A pure-check re-verifier that re-derives any pure attestation and emits confirm/deny events.
-- **Trust controller.** Scores per signer from confirm rates, with revocation ([verification.md](./verification.md), *Reactions on the event*).
+- **Trust controller.** Scores per signer from confirm rates, with revocation ([architecture.md](./architecture.md), *attestation with revocation*).
 
 Together these enable the untrusted-contributor and agent-identity scenarios that Phase 2's local-only attestations can't.
 
-**The design claim it validates.** The security model — roughly SLSA Level 3 for pure-derivation checks, plus non-repudiation from the tlog ([verification.md](./verification.md), *What "unforgeable" actually means*).
+**The design claim it validates.** The security model — roughly SLSA Level 3 for pure-derivation checks, plus non-repudiation from the tlog ([verification.md](./verification.md), *The mechanism stack*).
 
 **Exit criteria.**
 - Every attestation lands in the tlog with a verifiable inclusion proof.
 - A deliberately-wrong pure attestation is caught by the witness and lowers the signer's trust score.
-- An untrusted signer's change integrates *only* via the trust flow ([scenarios.md #5](./scenarios.md)), never by default.
+- An untrusted signer's change integrates *only* via the trust flow ([scenarios.md #4](./scenarios.md)), never by default.
 
-**Links.** [verification.md](./verification.md), [contribute.md](./contribute.md), [scenarios.md #2 and #5](./scenarios.md).
+**Links.** [verification.md](./verification.md), [contribute.md](./contribute.md), [scenarios.md #2 and #4](./scenarios.md).
 
 ---
 
@@ -176,18 +176,18 @@ Together these enable the untrusted-contributor and agent-identity scenarios tha
 
 **What gets built.**
 
-- **Knowledge graph.** The typed-node markdown graph (`bug` / `principle` / `decision` / `idea` / `thread`) at each repo root ([knowledge.md](./knowledge.md)).
-- **Threads.** Derived views over events, scoped to a change or chain ([feedback.md](./feedback.md), *Threads*). PR-as-thread — the "PR" becomes a named query, not a stored object.
-- **Priority/attention router.** The routing subsystem that decides who needs to know about which event ([feedback.md](./feedback.md), *The priority/routing layer*).
+- **Knowledge graph.** The typed-node markdown graph (`bug` / `principle` / `decision` / `idea` / `thread`) at each repo root ([architecture.md](./architecture.md), *project knowledge is a typed-node graph*).
+- **Threads.** Derived views over events, scoped to a change or chain ([architecture.md](./architecture.md), *review is observability + feedback*). PR-as-thread — the "PR" becomes a named query, not a stored object.
+- **Priority/attention router.** The routing subsystem that decides who needs to know about which event ([architecture.md](./architecture.md), same section).
 
-**The design claim it validates.** Observability + project-knowledge unbundling — that review is a special case of feedback, and that institutional knowledge belongs in a signed, agent-legible graph rather than scattered across issues, wikis, and heads ([README](../README.md), *Observability & feedback*, *Project knowledge* rows).
+**The design claim it validates.** Observability + project-knowledge unbundling — that review is a special case of feedback, and that institutional knowledge belongs in a signed, agent-legible graph rather than scattered across issues, wikis, and heads ([architecture.md](./architecture.md), *Observability & feedback*, *Project knowledge* rows).
 
 **Exit criteria.**
 - A change accrues discussion, an approval, and an outcome as one chronology with no PR object anywhere.
 - An agent reads and writes knowledge nodes as structured frontmatter.
 - The router surfaces one genuinely high-priority event to a human without a firehose.
 
-**Links.** [knowledge.md](./knowledge.md), [feedback.md](./feedback.md), [scenarios.md #3 and #5](./scenarios.md).
+**Links.** [architecture.md](./architecture.md) (*review is observability + feedback*, *project knowledge is a typed-node graph*), [scenarios.md #3 and #4](./scenarios.md).
 
 **New open questions.** None new here — but note the *priority-layer architecture* question ([openquestions.md](./openquestions.md), *Attention, routing, and threads*) is the hardest new bottleneck the whole design creates, and Phase 6 is where it stops being hypothetical.
 

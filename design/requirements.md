@@ -1,6 +1,6 @@
 # Requirements
 
-What the system must be. No solutions here — those are [architecture.md](./architecture.md).
+What the system must be. No solutions here — those are [architecture.md](./architecture.md). The requirements derive from the escalating ladder of user scenarios in [user-scenarios.md](./user-scenarios.md).
 
 ## Who it's for
 

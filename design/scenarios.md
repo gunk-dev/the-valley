@@ -1,6 +1,6 @@
 # Scenarios
 
-End-to-end walk-throughs of how the architecture handles real situations. Forces the design to be honest, and surfaces gaps that the abstract docs miss.
+End-to-end walk-throughs of how the architecture handles real situations. Forces the design to be honest, and surfaces gaps that the abstract docs miss. These are solution-space — architecture walk-throughs in event notation; the problem-space counterpart, what a user needs with no mechanisms, is [user-scenarios.md](./user-scenarios.md).
 
 Conventions used in the flows below:
 

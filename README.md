@@ -19,6 +19,10 @@ GitHub bundles seven concerns — hosting, identity and access, verification and
 
 Compose small tools over a durable substrate you own. Each concern gets the mechanism it deserves instead of the bundle's compromise, and everything that matters survives the loss of any one host.
 
+## Where this goes
+
+At its most general, the-valley is a **recursive, transparent outcome-production engine**. Outcomes chain and recurse on a dependency graph — "add this code to a VCS" serves "deliver a feature users love," which serves something larger still — and the system's job is to complete that graph, transparently. The software development lifecycle is the v1 reference implementation, not the boundary: everything above is how the engine gets pointed at code first. Recursive includes the engine itself — the-valley builds the-valley.
+
 ## Constraints
 
 - **Open source.**
@@ -38,5 +42,6 @@ Design stage. Nothing built yet. The plan-of-record — incremental, MVP-first, 
 - [`design/contribute.md`](./design/contribute.md) — the contributor protocol: what a human or agent does to push a change and request integration.
 - [`design/verification.md`](./design/verification.md) — pure vs. effectful checks and what makes an attestation hard to forge.
 - [`design/scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs and what each stresses.
+- [`design/self-transparency.md`](./design/self-transparency.md) — **DRAFT.** A candidate invariant, deliberately unresolved: no actor can durably change the system or an output without transparency, recursively. Names the facets; decides nothing.
 - [`design/openquestions.md`](./design/openquestions.md) — consolidated open questions, tagged by layer.
 - [`design/roadmap.md`](./design/roadmap.md) — the incremental validation plan.

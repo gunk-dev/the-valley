@@ -18,7 +18,7 @@ GitHub's bundle, restated as needs rather than features:
 4. **Automation.** Reactions to events are independently addable and removable, without a central workflow file.
 5. **Integration.** Changes reach protected branches through an observable, policy-driven path — never by unchecked direct write.
 6. **Observability & feedback.** Anyone or anything that needs to know about a change's state — before or after it lands — can find out, without drowning in a notification firehose.
-7. **Project knowledge & discussion.** Everything that isn't code or user docs — bugs, decisions, principles, ideas, threads — has a durable home, equally legible to humans and agents.
+7. **Project knowledge & discussion.** Everything that isn't code or user docs — outcomes, bugs, decisions, principles, ideas, threads — has a durable home, equally legible to humans and agents; the work to be done is itself knowledge, not a vendor-tracker artifact.
 
 ## Constraints
 

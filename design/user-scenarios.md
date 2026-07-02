@@ -10,10 +10,10 @@ Each rung adds actors or removes trust. Each names its knowledge-graph increment
 
 | Id | Scenario | Anchored in | Knowledge increment |
 | --- | --- | --- | --- |
-| S1 | My repos live on my infrastructure and I can never lose them. | the-valley itself as the pilot | Issues, ideas, and decisions live with the repo as plain files |
+| S1 | My repos live on my infrastructure and I can never lose them. | the-valley itself as the pilot | Issues, outcomes, ideas, and decisions live with the repo as plain files |
 | S2 | I push, and seconds later it's integrated; I never wait for CI. | Daily solo work | None new |
-| S3 | I dispatch an agent; its change lands with the same guarantees, attributably, unsupervised. | klaus, the owner's daily agent-orchestration tool | Agents read and write knowledge nodes; dispatch targets a node, not a GitHub issue |
-| S4 | Builds, deploys, and notifications just happen; "why did X occur" is answerable from one history. | cosmo (NixOS infra), reel-life (a deployed service) | Knowledge changes become observable events; a landed change can close an issue |
+| S3 | I dispatch an agent; its change lands with the same guarantees, attributably, unsupervised. | klaus, the owner's daily agent-orchestration tool | Agents read and write knowledge nodes; dispatch targets an outcome node, not a GitHub issue |
+| S4 | Builds, deploys, and notifications just happen; "why did X occur" is answerable from one history. | cosmo (NixOS infra), reel-life (a deployed service) | Knowledge changes become observable events; a landed change can close the outcome it serves |
 | S5 | A second, semi-trusted human lands a change without me granting them anything platform-shaped. | The first collaborator | None new |
 | S6 | A bad deploy gets attributed, reverted, and remembered. | A reel-life regression | Incidents file their own knowledge nodes, with attribution |
 | S7 | Strangers contribute safely. | Nothing — explicitly deferred, maybe never | — |
@@ -28,7 +28,7 @@ Each rung adds actors or removes trust. Each names its knowledge-graph increment
 - **Mirror-first migration.** Dual-push with GitHub retained as a transitional mirror; the canonical origin flips per-repo once confidence is earned. Reversible at every step.
 - **Durability means "pushed = replicated".** RPO ≈ 0 for pushed work: every push lands in at least two independent locations within minutes, one of them offsite (Hetzner); a push is never in only one place. RTO is relaxed: full restore from the offsite copy within a day. A restore must be *performed and verified* before S1 counts as done — configured is not done. The mechanism is an open question; candidates and tradeoffs live in the [roadmap Phase 0 table](./roadmap.md#phase-0--mvp-repos-off-github), not here.
 - **Agents keep working — direct-push interim mode.** klaus agents today work GitHub-PR-shaped. During S1 they operate degraded: push a branch to classic-laddie, the owner reviews the diff and merges by hand — the owner *is* the integrator, manually. This is deliberate: that pain is the validation signal that motivates the integrator rung. S1 is not done if agent-driven development on the pilot repo has to pause.
-- **Knowledge v0 — a directory convention, not a system.** Issues, ideas, and decisions are markdown files in the repo with YAML frontmatter (type, id, status, title; edges later). Creating an issue is a commit; closing one is a commit; listing is `ls`; search is `grep`; history is `git log`. No indexer, no events, no validation — the schemas are documentation until there is an integrator to enforce them. The pilot repo's open design questions and review findings become the seed content (a follow-up, not part of establishing this rung).
+- **Knowledge v0 — a directory convention, not a system.** Issues, outcomes (`oc-*`), ideas, and decisions are markdown files in the repo with YAML frontmatter (type, id, status, title; edges later). Creating an issue is a commit; closing one is a commit; listing is `ls`; search is `grep`; history is `git log`. No indexer, no events, no validation — the schemas are documentation until there is an integrator to enforce them. The pilot repo's open design questions and review findings become the seed content (a follow-up, not part of establishing this rung).
 
 **Acceptance criteria.** S1 holds when every box is checked — by looking, not by reviewing configuration:
 

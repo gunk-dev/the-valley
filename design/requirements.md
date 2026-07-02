@@ -18,7 +18,7 @@ What the system must be. No solutions here — those are [architecture.md](./arc
 6. **Attributed incident memory** (S6). A landed change that goes bad gets attributed, reverted, and remembered: the incident becomes durable project knowledge, not a war story.
 7. **Demand-shaped work** ([README: where this goes](../README.md#where-this-goes)). Work to be done is itself knowledge — outcomes on a dependency graph the system is under pressure to complete toward what someone actually asked for, not merely to record.
 
-**The unbundling note.** GitHub's bundle — hosting, identity & access, verification & artifacts, automation, integration, observability & feedback, project knowledge & discussion — cuts across these rungs: hosting is need 1; verification, artifacts, and integration are 2; identity & access is 3 and 5; automation and observability & feedback are 4; project knowledge & discussion runs through 1, 6, and 7. The concerns remain the vocabulary the [architecture](./architecture.md) unbundles by; the rungs are why each is needed.
+**The unbundling note.** GitHub's bundle — hosting, identity & access, verification & artifacts, automation, integration, observability & feedback, project knowledge & discussion — cuts across these needs: hosting is need 1; verification, artifacts, and integration are 2; identity & access is 3 and 5; automation and observability & feedback are 4; project knowledge & discussion runs through 1, 6, and 7. The concerns remain the vocabulary the [architecture](./architecture.md) unbundles by; the rungs are why each is needed.
 
 ## Constraints
 

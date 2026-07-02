@@ -8,6 +8,7 @@ Consolidated from across the design docs. Grouped by theme. Each item retains an
 - **Bootstrapping trust for new contributors.** A new contributor has no trust score. Do they get one by default, or do they require gating until $N attestations land cleanly? Probably the latter; the state machine needs concrete rules. *Origin: [verification.md](./verification.md), [scenarios.md](./scenarios.md).*
 - **Integrator self-integration.** The integrator is itself code in a repo. How does that code get integrated? Likely with a stricter policy on the integrator's own repo (always require human approval), but the chicken-and-egg deserves explicit handling. *Origin: [integration.md](./integration.md).*
 - **Attestation tool distribution.** The attestation tool is a Nix derivation. How is its canonical hash published and pinned? Probably as part of an `armstrong`-shaped flake, but bootstrapping is worth thinking through. *Origin: [verification.md](./verification.md).*
+- **Phase-0 identity is Tailscale-ACL-based.** The MVP uses Tailscale ACLs + SSH keys for identity — thin by design and swappable. The open question is *when* it has to grow (untrusted contributors, agent keys) and into what. Likely driven by the trust backstop. *Origin: [roadmap.md](./roadmap.md).*
 
 ## Policy & configuration
 
@@ -35,6 +36,7 @@ Consolidated from across the design docs. Grouped by theme. Each item retains an
 - **Stale-request expiry.** A request that sits stale forever clutters the namespace. Probably a periodic controller emits `request-abandoned` after $T of staleness with no owner action. *Origin: [integrator-internals.md](./integrator-internals.md).*
 - **Schema evolution (events).** CUE handles validation, but event schemas will change. Migration story? *Origin: README.*
 - **Schema evolution (knowledge graph).** Per-type schemas will change. Old nodes remain valid against their original version; agents produce against the latest. Migration tooling deferred. *Origin: [knowledge.md](./knowledge.md).*
+- **Hetzner backup mechanism.** For the offsite copy of the bare repos: git-native mirror (`git push --mirror`), ZFS `zfs send` (classic-laddie is already ZFS), or restic/borg encrypted backup — or a combination. git-native gives a live fetchable remote; ZFS send is cheap block-level but needs ZFS to restore; restic is encrypted + dedup but not a live remote. *Origin: [roadmap.md](./roadmap.md).*
 
 ## Knowledge graph specifics
 

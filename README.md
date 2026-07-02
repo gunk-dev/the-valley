@@ -65,6 +65,10 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 
 Consolidated across the design docs in [`design/openquestions.md`](./design/openquestions.md). Themes: identity & trust bootstrapping, policy & configuration, cross-repo coordination, attention/routing/threads, storage/retention/evolution, knowledge graph specifics, verification specifics, workflow patterns, discovery.
 
+## Roadmap
+
+[`design/roadmap.md`](./design/roadmap.md) is the plan-of-record: an MVP-first, incremental sequence that validates the design one claim at a time. Each phase is independently valuable, independently stoppable, and validates exactly one thing — sequenced by validation gate, not by date. Phase 0 is durable self-hosting (repos off GitHub); everything else is built against it. Heavy iteration on the later phases is expected and is a feature.
+
 ## Design notes
 
 Longer thinking on specific subproblems lives in [`design/`](./design):
@@ -77,7 +81,8 @@ Longer thinking on specific subproblems lives in [`design/`](./design):
 - [`knowledge.md`](./design/knowledge.md) — typed-node graph in markdown for everything that isn't code or user docs: bugs, principles, decisions, ideas, threads. Frontmatter is the structured layer; body is freeform. Composes with attestations, integration, and threads.
 - [`scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs (solo dev, agent change, post-deploy regression, untrusted contributor, cross-repo, scheduled task) and what each tests or stresses.
 - [`openquestions.md`](./design/openquestions.md) — consolidated open questions across all docs, grouped by theme with origin pointers.
+- [`roadmap.md`](./design/roadmap.md) — the incremental validation plan: MVP-first phases, each gated on checkable exit criteria, each validating one design claim.
 
 ## Status
 
-Sketch. Nothing built yet. This document is the design space, not a plan.
+Sketch. Nothing built yet. This document is the design space; the plan-of-record for building it — incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).

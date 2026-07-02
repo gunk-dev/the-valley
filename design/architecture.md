@@ -107,13 +107,13 @@ Everything in a project that isn't executable code or user-facing docs — outco
 
 The typed-node graph already stores dependency structure: `blocked_by`/`blocks` edges form a dependency DAG. The bet is to make **outcome** — a thing someone wants to exist that does not yet — the central node type and read that DAG *generatively*: open outcomes are not a record of intent but a worklist the system is under pressure to complete. Root outcomes — the things a human actually asked for — carry a priority that propagates down to the sub-outcomes that must complete for them; the system dispatches the **unblocked frontier** on the critical path toward the highest-priority root. Dispatch is klaus-shaped: one more subscriber on the log, spawning agent runs against frontier nodes.
 
-This splits the old "priority layer" question in two: **work-scheduling** — what the system produces next — is what this bet answers; **attention-routing** — what a human must see, and how urgently — stays open ([openquestions.md](./openquestions.md)). Scheduler mechanics and node formats are deliberately absent here; that detail returns when its rung is the top priority.
+This splits the old "priority layer" question in two: **work-scheduling** — what the system produces next — is what this bet answers; **attention-routing** — what a human must see, and how urgently — stays open ([openquestions.md](./openquestions.md)). Scheduler mechanics and node formats are deliberately absent here; that detail returns when its rung is the top priority. The fuller sketch: [.the-valley/ideas/ida-eac723e-outcome-dag.md](../.the-valley/ideas/ida-eac723e-outcome-dag.md).
 
 ## Federation: the group is the unit
 
 *Serves: small trusted teams (rung S5 and the S7 limit of the [ladder](./user-scenarios.md)).*
 
-A **group** — a team, a company, a personal namespace — is the unit of federation. Each group runs exactly one instance of the substrate: its hosting and its coordination (the bare repos, the bus, the integrator). An instance is instantiable on a single machine — the v1 case — and distributable later without changing shape. This frame splits the cross-repo open questions in two: **intra-group** (one bus, one integrator — the tractable near-term case) and **inter-group** (genuine federation — harder, later). See [openquestions.md](./openquestions.md); anything deeper is deferred until its rung is in reach.
+A **group** — a team, a company, a personal namespace — is the unit of federation. Each group runs exactly one instance of the substrate: its hosting and its coordination (the bare repos, the bus, the integrator). An instance is instantiable on a single machine — the v1 case — and distributable later without changing shape. This frame splits the cross-repo open questions in two: **intra-group** (one bus, one integrator — the tractable near-term case) and **inter-group** (genuine federation — harder, later). See [openquestions.md](./openquestions.md); anything deeper is deferred until its rung is in reach. The fuller sketch: [.the-valley/ideas/ida-8482624-federation-groups.md](../.the-valley/ideas/ida-8482624-federation-groups.md).
 
 ## Components
 

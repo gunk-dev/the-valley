@@ -32,6 +32,7 @@ Design stage. Nothing built yet. The plan-of-record — incremental, MVP-first, 
 
 ## The docs
 
+- [`design/user-scenarios.md`](./design/user-scenarios.md) — the escalating ladder of problem-space user scenarios the requirements derive from; only the top-priority rung carries acceptance criteria.
 - [`design/requirements.md`](./design/requirements.md) — what the system must be: who it's for, the unbundled needs, the constraints, non-goals.
 - [`design/architecture.md`](./design/architecture.md) — the bets and their rationale: the event log, attestations instead of CI gates, the pull-based integrator, review as feedback, knowledge as a graph.
 - [`design/contribute.md`](./design/contribute.md) — the contributor protocol: what a human or agent does to push a change and request integration.

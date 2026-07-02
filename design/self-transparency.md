@@ -19,6 +19,7 @@ Each was raised locally, as a wrinkle in one subsystem; together they look like 
 - **Integrator self-integration.** The integrator is code in a repo; how does *its* code get integrated? ([openquestions.md](./openquestions.md), *Identity & trust bootstrapping*.)
 - **Policy bootstrap.** Someone must land the first principle before any policy exists to govern principle changes — the recursion needs a base case that does not itself recurse.
 - **Load-bearing principles.** Active principles can constrain what the integrator accepts ([architecture.md](./architecture.md), *project knowledge is a typed-node graph*) — the rules the system runs by are themselves transparent, versioned nodes.
+- **Per-repo integrator config as a `config` node.** The integrator's own configuration — which protected refs, which trust thresholds, which witnesses — is itself a knowledge-graph node, queried alongside principles: the system's configuration is an output governed like any output, and a change to the config that governs integration is under the same governance as any change.
 
 ## Why it stays unresolved
 
@@ -26,5 +27,9 @@ Each was raised locally, as a wrinkle in one subsystem; together they look like 
 - **Base case.** A recursive invariant needs a grounding step that does not itself recurse; "key-holders land the first policy under relaxed rules" is a gap, not an answer.
 - **Mechanism.** If policy and config are outcomes integrated like code, what enforces that there is *no* other path? Nothing yet names the closure.
 - **Cost.** Full recursion implies every config tweak carries integration ceremony; where the system relaxes that — and stays honest about relaxing it — is undesigned.
+
+## Relationship to the rest of the design
+
+If it holds, this invariant is the property that makes the [outcome engine](./architecture.md#bet-the-knowledge-graph-read-generatively--an-outcome-dag) trustworthy when pointed at itself, and the property [federation](./architecture.md#federation-the-group-is-the-unit) must preserve across group boundaries — a federated change is still a transparent one.
 
 If it holds, this is plausibly the top-level invariant the whole design is an implementation of — which is exactly why it should not be declared settled on a stub. Tracked in [openquestions.md](./openquestions.md).

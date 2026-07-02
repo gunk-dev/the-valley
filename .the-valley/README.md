@@ -17,7 +17,7 @@ source: PR #1         # optional — where the content came from
 ---
 ```
 
-Typed edges (`blocked_by`, `closes`, `supersedes`, …) come later; until then, prose links in the body are enough.
+One typed edge exists now: **outcome nodes carry `blocked_by`** (a list of node ids) in frontmatter, because the live outcome-DAG experiment ([ideas/ida-3145b7a-demand-pressure.md](./ideas/ida-3145b7a-demand-pressure.md)) requires it. The other typed edges (`closes`, `supersedes`, …) come later; until then, prose links in the body are enough.
 
 ## Types, directories, prefixes
 

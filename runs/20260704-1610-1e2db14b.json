@@ -1,0 +1,18 @@
+{
+  "id": "20260704-1610-1e2db14b",
+  "prompt": "Record a decision in the-valley's knowledge graph (the .the-valley/ directory — read .the-valley/README.md first for the node convention).\n\nContext: the outcome node .the-valley/outcomes/oc-fc348f0-hetzner-mechanism.md tracks the open decision on the Phase 0 offsite-replication mechanism (the options table is in design/roadmap.md, Phase 0 section). The owner (patflynn) decided on 2026-07-04: a combination of (a) git-native mirror and (c) restic. Concretely: a post-receive hook on classic-laddie pushes every ref update to a bare-git remote on a small Hetzner VPS — a hot, git-native second remote, push-triggered so S1's \"pushed = replicated within minutes\" durability target holds; plus nightly restic backups of the bare-repo directory to a Hetzner Storage Box for encrypted, deduplicated offsite depth. ZFS send (option b) was rejected for now: it needs a ZFS-capable receive target (a Storage Box cannot receive ZFS streams) and the far copy is not a usable git remote.\n\nWhat to do:\n1. Create a decision node in .the-valley/decisions/ following the convention exactly (frontmatter: type decision, status decided; id dcr-\u003c7 hex chars\u003e derived the same way the existing node dcr-2113c52-pr1-relanding.md derives its id from its slug — inspect and match that derivation; filename is \u003cid\u003e-\u003cslug\u003e.md). Body: the decision, the rationale above, and the immediate follow-up it creates — the owner must provision the Hetzner VPS and Storage Box before the implementation outcome oc-9949561 can complete; the implementation itself lives in the cosmo repo.\n2. Flip the status in .the-valley/outcomes/oc-fc348f0-hetzner-mechanism.md to done and add one line in its body linking to the new decision node.\n3. Nothing else — no restructuring, no edits to other nodes or design docs. Match the existing nodes' style and brevity.\n\nThis is a docs-only repo; there is no test suite, but verify that relative links in the files you touch resolve. Open a PR (do not merge). The PR description should state the decision in one line and list the two files touched.",
+  "issue": null,
+  "branch": "agent/20260704-1610-1e2db14b",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260704-1610-1e2db14b",
+  "tmux_pane": "%6",
+  "budget": "5.00",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260704-1610-1e2db14b.jsonl",
+  "created_at": "2026-07-04T16:10:43-04:00",
+  "cost_usd": 1.2493649999999998,
+  "duration_ms": 179719,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/9",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260704-1610-1e2db14b",
+  "claude_session_id": "d12d1956-c0e6-43f1-ad62-e92526c63065"
+}

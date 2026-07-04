@@ -1,0 +1,18 @@
+{
+  "id": "20260704-1610-6ca1900e",
+  "prompt": "Work the outcome node .the-valley/outcomes/oc-49555c7-requirements-from-ladder.md in the-valley (a design-docs-only repo, no code). This dispatch is deliberately made against a knowledge node rather than a GitHub issue — reference the node id oc-49555c7 in the PR description.\n\nTask: re-derive design/requirements.md from design/user-scenarios.md, so the requirements fall out of the scenario ladder's rungs (S1–S7) rather than standing beside them. requirements.md predates the ladder and was written independently of it.\n\nRead first, in this order: .the-valley/README.md (the knowledge-node convention), design/user-scenarios.md (the ladder — the source of truth you are deriving from), design/requirements.md (the doc being rewritten), then design/architecture.md and design/roadmap.md (both cross-reference requirements.md — your rewrite must not break the meaning of those references).\n\nShape of the rewrite:\n- Every requirement should be traceable to the rung(s) that demand it, and the traceability should be visible in the doc (e.g. rung references inline). But do not turn the doc into a table dump — keep the repo's voice: concise, opinionated prose, no filler.\n- Constraints and non-goals stay unless the ladder genuinely contradicts them. Anything you drop or add relative to the current doc must be called out explicitly in the PR description.\n- Do NOT touch design/roadmap.md — re-deriving the roadmap against the ladder is a separate outcome (oc-2fbcd7b) that this work unblocks.\n- In the same PR, flip the status of .the-valley/outcomes/oc-49555c7-requirements-from-ladder.md to done — a landed change closes the outcome it serves.\n\nThe owner wants to review the shape of this before it lands: lead the PR description with the derivation approach — how the rungs map to the requirement sections — followed by the explicit list of drops/adds versus the old doc. Verify all relative links in touched files resolve. Open a PR; do not merge.",
+  "issue": null,
+  "branch": "agent/20260704-1610-6ca1900e",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260704-1610-6ca1900e",
+  "tmux_pane": "%7",
+  "budget": "5.00",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260704-1610-6ca1900e.jsonl",
+  "created_at": "2026-07-04T16:10:44-04:00",
+  "cost_usd": 3.068238,
+  "duration_ms": 342729,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/10",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260704-1610-6ca1900e",
+  "claude_session_id": "d3967533-13e2-41ee-8579-82895f777e51"
+}

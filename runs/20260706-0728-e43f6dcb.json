@@ -1,0 +1,20 @@
+{
+  "id": "20260706-0728-e43f6dcb",
+  "prompt": "Continue the work on this PR — the previous agent hit its budget cap and committed WIP. The PR turns the-valley from a design-docs-only repo into a software project: a CUE schema (the canonical, Nix-independent config format for declaring valley projects) plus a flake exporting a NixOS host module that validates and consumes the CUE config. The WIP commit already contains: schema/valley.cue, examples/host.cue, flake.nix, nix/valley-host.nix, a decision node (.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md), and edits to README.md and .the-valley/outcomes/oc-9949561-push-replication.md.\n\nYour job: verify the work against the original requirements below, finish whatever is missing, and take the PR from draft WIP to review-ready.\n\nOriginal requirements to verify (fix anything that falls short):\n1. The module was ported from cosmo PR #601 (\"gh pr diff 601 --repo patflynn/cosmo\") and must preserve three review hardenings exactly: (a) the sshd Match block for the git user terminates with \"Match All\"; (b) repo init is create-only, array-based, with a HEAD-file check so a pre-existing empty dir still gets initialized and nothing is ever deleted; (c) the post-receive dispatcher exits early on empty stdin and only replaces store-symlink hooks, never hand-written ones.\n2. CUE owns the domain: the schema defines projects (name-safe pattern), each with git.enable (default true) and mirrors (list of push URLs, default empty). Deployment concerns (dataDir, user, keys) are NOT in CUE. The Nix module's only domain input is config = \u003cpath to .cue file\u003e; there must be NO projects option in Nix. At build time the module cue-vets the config against the shipped schema and exports JSON; an invalid config must fail the system build with cue's error.\n3. Mirror hooks are best-effort (a dead mirror never blocks the primary push); credentials are the consumer's concern (git user's SSH identity + known_hosts), documented, no secret plumbing invented.\n4. No per-project access anywhere (deliberately deferred to S5 — single git user makes it unenforceable).\n5. Flake checks: cue vet of examples/host.cue against the schema, plus an eval-only NixOS instantiation of the module. \"nix flake check\" must pass — actually run it.\n6. Doc edits: README status no longer says \"Nothing built yet\"; oc-9949561 no longer says the implementation lives in cosmo. Verify relative links resolve.\n\nAlso: the WIP commit added .claude/settings.json (6 lines). Inspect it — if it is incidental to the agent run (e.g. permission grants) and not something the repo needs, remove it from the PR.\n\nWhen everything passes: write a proper PR description — lead with the CUE schema and example config, then the Nix option surface (options, types, defaults), then the layering rationale (CUE owns the domain / Nix owns the machine; projects-not-repos; mirrors as both public exposure and migration dual-push; host-level access only) — then mark the PR ready for review (\"gh pr ready\"). Do not merge.",
+  "issue": null,
+  "pr": "12",
+  "branch": "agent/20260706-0712-a380f84f",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260706-0728-e43f6dcb",
+  "tmux_pane": "%16",
+  "budget": "10",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260706-0728-e43f6dcb.jsonl",
+  "created_at": "2026-07-06T07:28:18-04:00",
+  "cost_usd": 3.6121089999999993,
+  "duration_ms": 457073,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/12",
+  "type": "pr-fix",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260706-0728-e43f6dcb",
+  "claude_session_id": "059afd12-685e-48e0-b614-e2e2811e96fc"
+}

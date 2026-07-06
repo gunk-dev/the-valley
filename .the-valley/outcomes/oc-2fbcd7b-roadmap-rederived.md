@@ -1,7 +1,7 @@
 ---
 type: outcome
 id: oc-2fbcd7b
-status: open
+status: in-progress
 title: Roadmap re-derived against the ladder
 created: 2026-07-02
 blocked_by: [oc-49555c7]

@@ -32,7 +32,7 @@ At its most general, the-valley is a **recursive, transparent outcome-production
 
 ## Status
 
-Design stage. Nothing built yet. The plan-of-record — incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).
+Phase 0 in progress. The repo ships its first artifacts: the CUE schema defining what a valley project is ([`schema/valley.cue`](./schema/valley.cue), with an example in [`examples/host.cue`](./examples/host.cue)) and a NixOS module ([`flake.nix`](./flake.nix)) that installs a valley host from that declaration. The plan-of-record — incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).
 
 ## The docs
 

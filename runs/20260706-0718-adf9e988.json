@@ -1,0 +1,18 @@
+{
+  "id": "20260706-0718-adf9e988",
+  "prompt": "Add two knowledge nodes to the-valley's graph capturing project-model decisions the owner (patflynn) ratified on 2026-07-06. Read .the-valley/README.md first for the node convention (one file per node, YAML frontmatter, ids derived from slugs — inspect how existing dcr-*/ida-* files derive their 7-hex ids and match that exactly). Context: the repo is gaining a CUE schema where the unit of declaration is a 'project' (a concurrent PR by another agent adds it; you do not depend on it — do not touch flake/schema files).\n\nNode 1 — decision (status: decided, created 2026-07-06) in .the-valley/decisions/: a valley project is 1:1 with a git repo. The project's single store is one bare repo named \u003cproject\u003e.git; project name and repo name coincide. Rationale: fundamentally and ergonomically simpler — one name, one clone, one knowledge graph, one migration unit — chosen consciously for simplicity's sake, not as a claim that it is the only way people model projects. Consequence: multi-repo or repo-less projects are out of scope until a rung demands them.\n\nNode 2 — idea (status: adopted, created 2026-07-06) in .the-valley/ideas/: a project's identity transcends the host that serves it. Today the host's valley.cue declares which projects it serves, but the direction is self-describing projects — a project's own declaration travels in its store, the way the .the-valley/ knowledge graph already does, and host config shrinks to a serving list. Open design questions to name in the body (not resolve): where the in-store declaration lives and its schema; how a host serving-list references a project; how project names resolve across hosts — link that last one to the existing federation idea node in .the-valley/ideas/ (the ida-* node about federation groups) with a [[id]] wiki-link, and link the two new nodes to each other.\n\nNothing else changes — no design/ docs, no other nodes, no code. Match existing node style and brevity; verify relative links resolve. Open a PR (do not merge); PR description: one line per node stating what it records.",
+  "issue": null,
+  "branch": "agent/20260706-0718-adf9e988",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260706-0718-adf9e988",
+  "tmux_pane": "%13",
+  "budget": "5.00",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260706-0718-adf9e988.jsonl",
+  "created_at": "2026-07-06T07:18:59-04:00",
+  "cost_usd": 1.3210520000000001,
+  "duration_ms": 145973,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/11",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260706-0718-adf9e988",
+  "claude_session_id": "5f61f04b-d574-4e9f-a981-2c86b6f20077"
+}

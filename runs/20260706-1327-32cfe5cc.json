@@ -1,0 +1,18 @@
+{
+  "id": "20260706-1327-32cfe5cc",
+  "prompt": "Port the requirements-shape from stale PR #8 onto current main as a fresh PR. Context: two competing re-derivations of design/requirements.md existed — PR #10 (merged; kept GitHub's seven concern names as the needs, threaded rung references through them) and PR #8 (open, from 2026-07-02, branch ~600 lines behind main; reshaped the needs around the scenario-ladder rungs themselves). The owner has decided: adopt PR #8's shape. Do NOT reuse PR #8's branch — port its content onto main.\n\nGet PR #8's version: git fetch origin pull/8/head and read design/requirements.md at FETCH_HEAD (also read the PR: gh pr view 8 --repo gunk-dev/the-valley).\n\nSynthesis rules — #8's structure is the skeleton, #10's refinements survive where orthogonal:\n1. From #8: the seven rung-named needs (Never losable/S1, Integrated in seconds/S2, Agents as first-class authors/S3, Causality queryable from one history/S4, Trust grantable-bounded-revocable/S5, Attributed incident memory/S6, Demand-shaped work/README outcome-engine), the unbundling crosswalk note mapping the old concern vocabulary onto the needs, the rung tags in Who-it's-for and Non-goals, and 'durability is the whole of S1'.\n2. From merged main (#10's version): wording refinements that don't depend on the concern-shaped structure. Diff main's requirements.md against the pre-#10 version (git log will show the #10 merge) to identify what #10 deliberately changed, and carry those choices over where they fit — notably: trust is 'granted, bounded, and revocable' everywhere (S5's exact promise; note #8's Who-it's-for section says 'measured', which even contradicts #8's own need 5 — fix to bounded), unforgeable-attribution language for non-human authors (S3), and the knowledge-increment growth path (the substrate grows one rung at a time) — fold it into the crosswalk or need 7, wherever it reads naturally.\n3. Read design/user-scenarios.md first as the source of truth; where #8 and #10 disagree on what a rung demands, the ladder wins.\n\nConstraints: edit design/requirements.md ONLY. Do not edit architecture.md or user-scenarios.md — but verify their inbound references to requirements still read correctly against the new shape (the crosswalk note is what keeps the concern vocabulary resolvable) and report the check in the PR description. Verify relative links resolve.\n\nAfter opening the fresh PR: close PR #8 with a brief comment stating it is superseded by your new PR, its shape adopted per the owner's decision, and thanking-nothing — keep it one sentence with a link.\n\nPR description: lead with what was ported (the shape), then the #10 refinements retained, then any judgment calls where the two versions genuinely conflicted. Do not merge.",
+  "issue": null,
+  "branch": "agent/20260706-1327-32cfe5cc",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260706-1327-32cfe5cc",
+  "tmux_pane": "%22",
+  "budget": "5.00",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260706-1327-32cfe5cc.jsonl",
+  "created_at": "2026-07-06T13:27:49-04:00",
+  "cost_usd": 2.544982,
+  "duration_ms": 307789,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/13",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260706-1327-32cfe5cc",
+  "claude_session_id": "4a247926-f2c0-41f1-b336-c40b98e525dc"
+}

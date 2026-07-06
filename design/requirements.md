@@ -1,26 +1,26 @@
 # Requirements
 
-What the system must be. No solutions here — those are [architecture.md](./architecture.md). Every requirement derives from the [scenario ladder](./user-scenarios.md#the-ladder) and names the rung(s) that demand it; a requirement no rung demands has no business on this page. The mapping runs both ways — every rung below S7 leaves a mark here. The one exception is the constraints, which are imposed by the premise ([README](../README.md)) rather than derived: they bind the solutions, not the problem.
+What the system must be. No solutions here — those are [architecture.md](./architecture.md). Each requirement derives from a rung of the [scenario ladder](./user-scenarios.md#the-ladder): the rung says what a user experiences; the requirement is what must hold for the rung to be true. The mapping runs both ways — every rung below S7 leaves a mark here, and a requirement no rung demands has no business on this page. The one exception is the constraints, which are imposed by the premise ([README](../README.md)) rather than derived: they bind the solutions, not the problem.
 
 ## Who it's for
 
 The ladder is ordered by actors and trust, so the audience falls straight out of it:
 
-- **v1: a solo developer plus AI agents as first-class authors** (S1–S4). Agents arrive at S3 not as tooling but as authors: their changes land with the same guarantees as the owner's, attributed to the agent that made them, with no human babysitting the pipeline. The system must be pleasant at N=1 before it's asked to hold at N>1.
-- **Later: small, trusted teams** (S5). Invite-only contributor sets where trust is granted, bounded, and revocable — without the owner ever administering anything platform-shaped.
-- **Explicitly not: public-social scale** (S7 — deferred, maybe never). No open-registration contributors, no spam-resistance, no social graph in v1.
+- **v1: a solo developer plus AI agents as first-class authors** (S1–S4). The system must be pleasant at N=1 before it's asked to hold at N>1.
+- **Later: small, trusted teams** (S5–S6). Invite-only contributor sets where trust is granted, bounded, and revocable.
+- **Explicitly not: public-social scale.** S7 is deferred, maybe never; it stays on the ladder only as the limit the trust model should degrade toward gracefully.
 
 ## The needs
 
-GitHub's bundle, restated as needs rather than features — each traced to the rungs that force it:
+1. **Never losable** (S1). Repos live on infrastructure the owner controls, no vendor lock-in — daily life stays clone-edit-push, and the platform fades to a mirror nobody thinks about — and project knowledge (outcomes, ideas, decisions, threads) travels with the repo, protected by the same motion that protects the code. Precisely what this means: [durability](#durability), below.
+2. **Integrated in seconds** (S2). Push to integrated completes in seconds, resting on checks that are **trustworthy where the work was written** — a verifiable claim, not a hope — with reproducible build outputs so the claim can be checked. This is the largest quality-of-life change in the whole design and the reason unbundling is worth it at N=1.
+3. **Agents as first-class authors** (S3). An agent's change lands with the same guarantees as the owner's own, unsupervised, attributable to exactly the agent that made it — attribution for a non-human author that can be neither waved through nor forged.
+4. **Causality queryable from one history** (S4). Consequences — builds, deploys, notifications — follow without anyone kicking anything, each reaction independently addable and removable; "why did X occur" is answerable from one durable history, not reconstructed across tools.
+5. **Trust grantable, bounded, revocable** (S5). A second, semi-trusted human lands a change without the owner administering accounts, roles, or a platform: exactly enough access — easy to grant, limit, and take back — without a vendor.
+6. **Attributed incident memory** (S6). A landed change that goes bad gets attributed, reverted, and remembered: the incident becomes durable project knowledge, not a war story. When the record assigns blame, it carries its uncertainty honestly — a confidently wrong attribution is worse than none.
+7. **Demand-shaped work** ([README: where this goes](../README.md#where-this-goes)). Work to be done is itself knowledge — outcomes on a dependency graph the system is under pressure to complete toward what someone actually asked for, not merely to record.
 
-1. **Hosting** (S1). Repos live on infrastructure the owner controls, reachable and browsable, with no vendor lock-in. Daily life stays clone-edit-push; the platform fades to a mirror nobody thinks about.
-2. **Identity & access** (S3, S5). Contributors — human and agent — are cryptographically identifiable, and access is grantable, bounded, and revocable without a vendor. S3 sharpens identity into attribution: knowing afterwards exactly who did what, non-human authors included, in a way that can't be waved through or forged.
-3. **Verification & artifacts** (S2, S3). Checks give feedback in seconds, not minutes — S2 is the largest quality-of-life change in the whole design and the reason unbundling is worth it at N=1. Check results are trustworthy enough to integrate against — a verifiable claim, not a hope — which is also what lets S3's agent changes land unsupervised. Build outputs are reproducible, so any claim about them can be re-derived and checked.
-4. **Automation** (S4). A change's consequences — builds, deploys, notifications — follow without anyone kicking anything. Reactions are independently addable and removable, without a central workflow file.
-5. **Integration** (S2, S3, S5). Changes reach protected branches through an observable, policy-driven path — never by unchecked direct write. The path must be fast enough to disappear at N=1 (S2), safe to leave unsupervised when the author is an agent (S3), and open to a second human without granting them anything platform-shaped (S5).
-6. **Observability & feedback** (S4, S6). Anyone or anything that needs to know about a change's state — before or after it lands — can find out, without drowning in a notification firehose. "Why did X occur" is answerable from one history: the chain from change to effect survives as a record, not as tribal memory (S4). And when the record assigns blame, it carries its uncertainty honestly — a confidently wrong attribution is worse than none (S6).
-7. **Project knowledge & discussion** (S1, S3, S4, S6). Everything that isn't code or user docs — outcomes, bugs, decisions, principles, ideas, threads — has a durable home, equally legible to humans and agents; the work to be done is itself knowledge, not a vendor-tracker artifact. The ladder grows this substrate one increment per rung instead of demanding a system up front: knowledge lives with the repo as plain files (S1); agents read and write it, and work is dispatched against it (S3); changes to it are observable, and a landed change can close the outcome it serves (S4); incidents file their own nodes, with attribution (S6).
+**The unbundling note.** GitHub's bundle — hosting, identity & access, verification & artifacts, automation, integration, observability & feedback, project knowledge & discussion — cuts across these needs: hosting is need 1; verification, artifacts, and integration are 2; identity & access is 3 and 5; automation is 4; observability & feedback runs through 4 and 6; project knowledge & discussion runs through 1, 6, and 7. The concerns remain the vocabulary the [architecture](./architecture.md) unbundles by; the rungs are why each is needed. The knowledge substrate itself grows one rung-sized increment at a time instead of arriving as a system: nodes live with the repo as plain files (S1); agents read and write them, and work is dispatched against them (S3); changes to them are observable, and a landed change can close the outcome it serves (S4); incidents file their own nodes, with attribution (S6).
 
 ## Constraints
 
@@ -33,11 +33,11 @@ Not derived from the ladder — imposed on every solution to it, from the premis
 
 ## Durability
 
-The git data is the crown jewel; losing it is the one unrecoverable failure. Everything else — infrastructure, tooling, even the event history's ephemeral parts — is rebuildable. [S1](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them) states the requirement as an experience — *I can never lose them* — and makes it first-class, not an operational afterthought: pushed means replicated, with pushed work in at least two independent places, one of them offsite, within minutes; and no copy counts until a restore from it has been performed and verified. Configured is not durable; tested is.
+The git data is the crown jewel; losing it is the one unrecoverable failure. Everything else — infrastructure, tooling, even the event history's ephemeral parts — is rebuildable. Durability is therefore a first-class requirement, not an operational afterthought — it is the whole of [S1](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them), the rung everything else stands on: pushed means replicated, with pushed work in at least two independent places, one of them offsite, within minutes; and no copy counts until a restore from it has been performed and verified. Configured is not durable; tested is.
 
 ## Non-goals
 
-- Public-social scale, discovery, or spam resistance (S7 — deferred, maybe never). The stranger rung stays on the ladder only as the limit the trust model should degrade toward gracefully, not a target being built for.
+- Public-social scale, discovery, or spam resistance (S7: deferred, maybe never).
 - Building a platform. This is a set of small tools over a substrate; S5 is passed precisely by *not* having a platform to administer.
 - Defense against a compromised developer machine signing genuine attestations of malicious code — hardware attestation is the only fix and is out of scope. No rung demands it.
 - Migration tooling for the world's existing repos and trackers. The pilot is our own — every rung is anchored in the owner's real repos.

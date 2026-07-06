@@ -1,0 +1,20 @@
+{
+  "id": "20260706-1334-041ad7b7",
+  "prompt": "PR #13 in the-valley has review comments from a trusted reviewer that need to be addressed. Fetch the review comments with: gh api repos/{owner}/{repo}/pulls/13/comments\nAddress each comment in the code, then push your fixes.\nAfter pushing, reply to EACH review comment that you haven't already replied to with a concise (1-2 sentence) explanation of what you changed. If a comment was intentionally not addressed, reply explaining why it was discounted.\nUse this exact command to reply, substituting the comment id and your explanation:\n  gh api repos/{owner}/{repo}/pulls/13/comments/{commentId}/replies -f body='\u003cexplanation\u003e'",
+  "issue": null,
+  "pr": "13",
+  "branch": "agent/20260706-1327-32cfe5cc",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260706-1334-041ad7b7",
+  "tmux_pane": "%24",
+  "budget": "5.00",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260704-1520-419865ef/logs/20260706-1334-041ad7b7.jsonl",
+  "created_at": "2026-07-06T13:34:37-04:00",
+  "cost_usd": 0.764562,
+  "duration_ms": 60018,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/13",
+  "type": "pr-fix",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260706-1334-041ad7b7",
+  "claude_session_id": "6957cf5d-c9cc-4fd9-a88d-ae041d8e388b"
+}

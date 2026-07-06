@@ -45,8 +45,34 @@
           failedAssertions = builtins.filter (a: !a.assertion) host.config.assertions;
         in
         {
-          # The example host declaration must vet against the schema.
+          # The example host declaration must vet against the schema, and the
+          # schema must reject what it claims to reject: unsafe project names,
+          # unknown project fields, and stray top-level fields (typos,
+          # deployment concerns). CUE closedness is easy to regress silently —
+          # e.g. embedding #Host instead of referencing it opens the schema —
+          # so the rejections are pinned here.
           cue-vet =
+            let
+              invalidConfigs = {
+                unsafe-project-name = ''
+                  package valley
+                  projects: ".hidden": {}
+                '';
+                unknown-project-field = ''
+                  package valley
+                  projects: ok: dataDir: "/srv/git"
+                '';
+                top-level-typo = ''
+                  package valley
+                  project: oops: {}
+                '';
+                deployment-concern-in-cue = ''
+                  package valley
+                  user: "git"
+                  projects: ok: {}
+                '';
+              };
+            in
             pkgs.runCommand "valley-cue-vet"
               {
                 nativeBuildInputs = [ pkgs.cue ];
@@ -55,6 +81,15 @@
                 cue vet -c ${./schema/valley.cue} ${./examples/host.cue}
                 cue export ${./schema/valley.cue} ${./examples/host.cue} > example.json
                 grep -q 'gunk-dev/the-valley' example.json
+
+                ${lib.concatStrings (
+                  lib.mapAttrsToList (name: cfg: ''
+                    if cue vet -c ${./schema/valley.cue} ${pkgs.writeText "${name}.cue" cfg}; then
+                      echo "cue-vet: expected invalid config '${name}' to be rejected" >&2
+                      exit 1
+                    fi
+                  '') invalidConfigs
+                )}
                 touch $out
               '';
 

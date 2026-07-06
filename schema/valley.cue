@@ -44,3 +44,10 @@ package valley
 //   cue vet -c schema/valley.cue <config>.cue
 //   cue export schema/valley.cue <config>.cue
 projects: #Host.projects
+
+// A file's top level cannot be closed (embedding #Host would open it
+// instead — embedding lifts closedness), so reject stray top-level fields
+// explicitly: anything but `projects` — a `project:` typo, a deployment
+// concern like `user:` — conflicts with this sentinel and fails vet with
+// an error naming the field.
+[!="projects"]: "INVALID: unknown top-level field; only \"projects\" is allowed"

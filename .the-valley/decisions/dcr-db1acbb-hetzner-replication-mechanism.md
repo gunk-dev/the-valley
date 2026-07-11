@@ -1,7 +1,7 @@
 ---
 type: decision
 id: dcr-db1acbb
-status: decided
+status: superseded
 title: Phase 0 offsite replication — git-native mirror (a) + restic (c), ZFS send rejected for now
 created: 2026-07-04
 ---
@@ -15,3 +15,5 @@ created: 2026-07-04
 - **(b) ZFS send — rejected for now.** It needs a ZFS-capable receive target (a Storage Box cannot receive ZFS streams), and the far copy is not a usable git remote.
 
 Closes the mechanism question tracked by [[oc-fc348f0]]. Immediate follow-up: the owner must provision the Hetzner VPS and Storage Box before the implementation outcome [[oc-9949561]] can complete; the implementation itself lives in cosmo.
+
+**2026-07-11:** superseded by [[dcr-d7952bc]] ([dcr-d7952bc-phase0-replication-github-transitional.md](./dcr-d7952bc-phase0-replication-github-transitional.md)) — VPS mirror deferred until GitHub exit; restic layer carried forward.

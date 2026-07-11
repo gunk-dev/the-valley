@@ -30,7 +30,7 @@ Heavy iteration on the later phases is expected, and that's a **feature, not a r
 | 6 | Trust backstop | S3 hardened; S5 enabled | The security model (~SLSA-3 for purity-claiming checks) | An untrusted-signer change lands only via the trust flow |
 | 7 | Feedback & incident memory | S6 established | Review is feedback; incidents are memory | An incident files its own node; review happens with no PR object |
 
-S7 (strangers) has no phase, deliberately: it is [explicitly deferred, maybe never](./user-scenarios.md#the-ladder) — the trust model should degrade toward it gracefully, not build for it.
+S7 (strangers) has no phase, deliberately: it is [explicitly deferred, maybe never](./user-scenarios.md#the-ladder) — the trust model should degrade toward it gracefully, not build for it. Requirements need 7 (*Demand-shaped work*, [requirements.md](./requirements.md)) is likewise phase-less, deliberately: phases serve rungs (rule 4), and need 7 derives from the README's outcome-engine framing rather than a rung — though Phase 4 (dispatch targets an outcome node) and Phase 5 (a landed change closes the outcome it serves) partially serve it.
 
 The named systems, all pilot instances: **klaus** (agent dispatch, run budget), **armstrong** (the Go controller that becomes the effectful-reactions successor), **tesseract** ([transparency-dev/tesseract](https://github.com/transparency-dev/tesseract), the Tessera-backed tlog), **cosmo** (the owner's NixOS infra — the consumer that installs this repo's host module), and **classic-laddie** (the pilot host: a box on the owner's tailnet, already running the klaus webhook relay; it hosts every server-side phase below first). Hostnames are pilot detail, not design: the durable content of this plan is portable, and what any host serves is declared in the host schema this repo ships ([schema/valley.cue](../schema/valley.cue)).
 
@@ -50,14 +50,14 @@ The Tailscale identity layer is deliberately thin. The user has noted it's thin 
 
 **Knowledge v0 ships in this phase.** S1's knowledge increment: issues, outcomes, ideas, and decisions live with the repo as plain markdown files — a directory convention, not a system. No indexer, no events; the schemas are documentation until there's an integrator to enforce them. Instantiated at [.the-valley/](../.the-valley/README.md). The graph grows one increment per rung from here — agents write it ([Phase 4](#phase-4--agents-as-first-class-authors)), it becomes observable ([Phase 5](#phase-5--effectful-reactions-armstrong-as-controller)), incidents file into it ([Phase 7](#phase-7--feedback--incident-memory)) — so no later phase "builds the knowledge graph".
 
-**Durability is part of the MVP, not an afterthought.** The git data is the crown jewel; losing it is the one unrecoverable failure. The target is 3-2-1: primary bare repos on the valley host, replicated offsite, with **GitHub retained as a transitional mirror** during migration — three copies early on. The mechanism is decided (it was this document's open question): two complementary layers.
+**Durability is part of the MVP, not an afterthought.** The git data is the crown jewel; losing it is the one unrecoverable failure. The target is 3-2-1: primary bare repos on the valley host, replicated offsite, with **GitHub retained as a transitional mirror** during migration — three copies early on. The mechanism is decided ([dcr-db1acbb](../.the-valley/decisions/dcr-db1acbb-hetzner-replication-mechanism.md) — it was this document's open question): two complementary layers.
 
 | Layer | Mechanism | What it gets you |
 | --- | --- | --- |
 | Live replication | Push-triggered git-native mirror to an independent live remote | Pushed = replicated: a hot second remote you can `git fetch` from directly; git-native, trivially verifiable |
 | Offsite depth | Periodic encrypted backup of the bare-repo dir (restic-style) to offsite storage | Encrypted, deduplicated point-in-time history, independent of the live remotes |
 
-Block-level replication (ZFS send) was considered and rejected: it ties restore to a matching filesystem on the far end, and it is not a live git remote. For the pilot, the offsite side is Hetzner. Light RPO/RTO framing, per the rung: pushed work is in at least two independent places within minutes, one offsite; restore from the offsite copy within a day — and no copy counts until a restore from it has been *performed and verified*.
+Block-level replication (ZFS send) was considered and rejected for now: it ties restore to a matching filesystem on the far end, and it is not a live git remote. For the pilot, the offsite side is Hetzner. Light RPO/RTO framing, per the rung: pushed work is in at least two independent places within minutes, one offsite; restore from the offsite copy within a day — and no copy counts until a restore from it has been *performed and verified*.
 
 **Migration strategy: mirror-first, then cut over.** Mirrors are declared config, not a manual dual-push: the host declaration's per-project `mirrors` field replicates every push to the primary out to each mirror URL — deletions propagated, best-effort, a dead mirror never rejects the primary push. GitHub stays declared as one such mirror while confidence builds; the canonical `origin` flips per-repo once it's earned. The same field is the public-exposure mechanism later — migration dual-push and publishing are one mechanism. Reversible at every step; supports iteration.
 
@@ -65,7 +65,7 @@ Block-level replication (ZFS send) was considered and rejected: it ties restore 
 
 **The design claim it validates.** Self-hosted bare git on the owner's existing infrastructure is durable and ergonomic enough to be the canonical home for real work — the premise ([requirements.md](./requirements.md)) that hosting lock-in is the only thing GitHub does well, and it's swappable.
 
-**Exit criteria.** The rung owns them: [S1's acceptance checklist](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them), verbatim — canonical origin flipped; every push verifiably in two independent places; one restore performed and verified; a week of real human *and* agent work without GitHub, including an agent change landing end to end in direct-push mode; a real issue worked and closed as an in-repo node; a repeatable migration-plus-restore runbook.
+**Exit criteria.** The rung owns them: [S1's acceptance checklist](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them) — canonical origin flipped; every push verifiably in two independent places; one restore performed and verified; a week of real human *and* agent work without GitHub, including an agent change landing end to end in direct-push mode; a real issue worked and closed as an in-repo node; a repeatable migration-plus-restore runbook.
 
 **Links.** [architecture.md](./architecture.md) (*Hosting*, *Identity / access* rows), [schema/valley.cue](../schema/valley.cue), [examples/host.cue](../examples/host.cue).
 
@@ -250,7 +250,7 @@ Some things aren't a phase; they run through all of them.
 
 This document originally raised two; one is now decided, one remains open:
 
-- **Offsite replication mechanism — decided.** Push-triggered git-native mirroring to an independent live remote (pushed = replicated), plus periodic encrypted restic-style backup for offsite depth; block-level replication (ZFS send) rejected. Details in [Phase 0](#phase-0--mvp-repos-off-github). The corresponding entry in [openquestions.md](./openquestions.md) predates the decision and belongs under *Resolved*.
+- **Offsite replication mechanism — decided** ([dcr-db1acbb](../.the-valley/decisions/dcr-db1acbb-hetzner-replication-mechanism.md)). Push-triggered git-native mirroring to an independent live remote (pushed = replicated), plus periodic encrypted restic-style backup for offsite depth; block-level replication (ZFS send) rejected for now. Details in [Phase 0](#phase-0--mvp-repos-off-github).
 - **Phase-0 identity is Tailscale-ACL-based** (*Identity & trust bootstrapping*). Thin by design and swappable; the open question is *when* it has to grow and into what — likely driven by [Phase 6](#phase-6--trust-backstop). *Origin: roadmap.md.*
 
 Everything else this roadmap touches is already tracked in [openquestions.md](./openquestions.md) — integrator self-integration, the priority-layer architecture, attestation expiry vs. cache retention, agent identity, and schema evolution all surface at specific phases above.

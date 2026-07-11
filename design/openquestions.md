@@ -24,7 +24,6 @@ The [federation frame](./architecture.md#federation-the-group-is-the-unit) split
 
 ## Storage, retention, and evolution
 
-- `[design]` **Hetzner backup mechanism.** For the offsite copy of the bare repos: git-native mirror (`git push --mirror`), ZFS `zfs send` (classic-laddie is already ZFS), or restic/borg encrypted backup — or a combination. git-native gives a live fetchable remote; ZFS send is cheap block-level but needs ZFS to restore; restic is encrypted + dedup but not a live remote. *Origin: [roadmap.md](./roadmap.md).*
 - `[design]` **Attestation expiry.** If inputs referenced by an attestation get garbage-collected from a Nix cache, re-derivation breaks. What's the retention promise on the binary cache? *Origin: [contribute.md](./contribute.md), [verification.md](./verification.md).*
 - `[architecture]` **Schema evolution (events).** CUE handles validation, but event schemas will change. Migration story? *Origin: [architecture.md](./architecture.md).*
 
@@ -39,6 +38,7 @@ The [federation frame](./architecture.md#federation-the-group-is-the-unit) split
 
 ## Resolved (kept for the record)
 
+- ~~**Hetzner backup mechanism.**~~ *Decided 2026-07-04 ([dcr-db1acbb](../.the-valley/decisions/dcr-db1acbb-hetzner-replication-mechanism.md)):* push-triggered git-native mirror plus nightly restic offsite backup; ZFS send rejected for now.
 - ~~**Signaling: bus event vs. request ref vs. branch convention.**~~ *Resolved in [contribute.md](./contribute.md):* the contributor pushes `refs/the-valley/integration-requests/<name>` atomically with the topic branch and attestation; the bare repo's post-receive hook is the canonical projection of those ref updates into bus events.
 - ~~**The log is a single point of failure.**~~ *Reframed:* per-repo events (refs, attestations, integration requests) are durable in git itself and externally tamper-evident via the Tessera-backed tlog. The bus is only the source of truth for ephemeral cross-system events (deploys, metrics) and can be replicated lazily when needed.
 - ~~**Priority layer architecture (work scheduling).**~~ *Split, and addressed as a bet in [architecture.md](./architecture.md):* the knowledge graph read generatively — root-outcome priority propagating down the dependency DAG, frontier dispatch toward the highest-priority root — answers "what should the system work on next." The attention-routing half of the original question stays open above.

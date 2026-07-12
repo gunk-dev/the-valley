@@ -20,37 +20,81 @@
         let
           pkgs = nixpkgs.legacyPackages.${system};
 
-          # Eval-only instantiation of the module with the example config —
-          # catches option-surface and cue-export regressions without
-          # building or booting anything.
-          host = lib.nixosSystem {
-            inherit system;
-            modules = [
-              self.nixosModules.default
-              {
-                fileSystems."/" = {
-                  device = "/dev/disk/by-label/nixos";
-                  fsType = "ext4";
-                };
-                boot.loader.grub.enable = false;
-                system.stateVersion = "25.11";
-                services.valley = {
-                  enable = true;
-                  authorizedKeys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck0 valley-check" ];
-                  config = ./examples/host.cue;
-                };
-              }
-            ];
+          # Eval-only instantiation of the module — catches option-surface
+          # and cue-export regressions without building or booting anything.
+          # Each check host shares the machine baseline and supplies its own
+          # declaration (and, where the declaration asks for backup, the
+          # secret paths).
+          mkHost =
+            module:
+            lib.nixosSystem {
+              inherit system;
+              modules = [
+                self.nixosModules.default
+                {
+                  fileSystems."/" = {
+                    device = "/dev/disk/by-label/nixos";
+                    fsType = "ext4";
+                  };
+                  boot.loader.grub.enable = false;
+                  system.stateVersion = "25.11";
+                  services.valley = {
+                    enable = true;
+                    authorizedKeys = [ "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck0 valley-check" ];
+                  };
+                }
+                module
+              ];
+            };
+
+          # The example declaration enables backup, so this host supplies
+          # the four secret paths (eval-only placeholders).
+          host = mkHost {
+            services.valley = {
+              config = ./examples/host.cue;
+              backup = {
+                repositoryFile = "/run/agenix/valley-restic-repo";
+                passwordFile = "/run/agenix/valley-restic-password";
+                sshKeyFile = "/run/agenix/valley-git-ssh-key";
+                knownHostsFile = "/var/lib/valley-backup/known_hosts";
+              };
+            };
           };
-          failedAssertions = builtins.filter (a: !a.assertion) host.config.assertions;
+
+          # A declaration without a backup block predates the field and must
+          # keep evaluating exactly as before: zero restic machinery.
+          noBackupHost = mkHost {
+            services.valley.config = pkgs.writeText "no-backup-host.cue" ''
+              package valley
+              projects: "the-valley": {}
+            '';
+          };
+
+          # The example declaration with the secret paths left unset: the
+          # module must refuse with assertions naming the missing options.
+          noSecretsHost = mkHost {
+            services.valley.config = ./examples/host.cue;
+          };
+
+          failedAssertions = builtins.filter (a: !a.assertion) (
+            host.config.assertions ++ noBackupHost.config.assertions
+          );
+
+          missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
+
+          resticRenderedWithoutDeclaration =
+            noBackupHost.config.systemd.services ? "restic-backups-valley"
+            || noBackupHost.config.systemd.timers ? "restic-backups-valley";
         in
         {
           # The example host declaration must vet against the schema, and the
           # schema must reject what it claims to reject: unsafe project names,
-          # unknown project fields, and stray top-level fields (typos,
-          # deployment concerns). CUE closedness is easy to regress silently —
-          # e.g. embedding #Host instead of referencing it opens the schema —
-          # so the rejections are pinned here.
+          # unknown project fields, stray top-level fields (typos, deployment
+          # concerns), and malformed backup policy (machine concerns, targets
+          # without an implementation, non-positive retention). CUE closedness
+          # is easy to regress silently — e.g. embedding #Host instead of
+          # referencing it opens the schema — so the rejections are pinned
+          # here.
           cue-vet =
             let
               invalidConfigs = {
@@ -71,6 +115,21 @@
                   user: "git"
                   projects: ok: {}
                 '';
+                machine-concern-in-backup = ''
+                  package valley
+                  projects: ok: {}
+                  backup: repositoryFile: "/run/agenix/valley-restic-repo"
+                '';
+                unimplemented-backup-target = ''
+                  package valley
+                  projects: ok: {}
+                  backup: target: "restic-s3"
+                '';
+                negative-retention = ''
+                  package valley
+                  projects: ok: {}
+                  backup: retention: daily: -1
+                '';
               };
             in
             pkgs.runCommand "valley-cue-vet"
@@ -81,6 +140,14 @@
                 cue vet -c ${./schema/valley.cue} ${./examples/host.cue}
                 cue export ${./schema/valley.cue} ${./examples/host.cue} > example.json
                 grep -q 'gunk-dev/the-valley' example.json
+                grep -q 'restic-sftp' example.json
+
+                # A declaration without a backup block must stay valid —
+                # consumers written before the field existed keep vetting.
+                cue vet -c ${./schema/valley.cue} ${pkgs.writeText "no-backup.cue" ''
+                  package valley
+                  projects: "the-valley": {}
+                ''}
 
                 ${lib.concatStrings (
                   lib.mapAttrsToList (name: cfg: ''
@@ -96,14 +163,24 @@
           module-eval =
             if failedAssertions != [ ] then
               throw "valley module-eval: failed assertions: ${lib.concatMapStringsSep "; " (a: a.message) failedAssertions}"
+            else if resticRenderedWithoutDeclaration then
+              throw "valley module-eval: restic machinery rendered for a declaration without a backup block"
+            else if
+              !(lib.any (a: lib.hasInfix "services.valley.backup." a.message) missingSecretAssertions)
+            then
+              throw "valley module-eval: enabling backup without the secret-path options must fail an assertion naming them"
             else
               pkgs.runCommand "valley-module-eval"
                 {
                   initScript = host.config.systemd.services.valley-init.script;
                   sshdConfig = host.config.services.openssh.extraConfig;
+                  resticService = host.config.systemd.units."restic-backups-valley.service".text;
+                  resticTimer = host.config.systemd.units."restic-backups-valley.timer".text;
                   passAsFile = [
                     "initScript"
                     "sshdConfig"
+                    "resticService"
+                    "resticTimer"
                   ];
                 }
                 ''
@@ -113,6 +190,20 @@
                   grep -q "the-valley" "$initScriptPath"
                   grep -q "valley-mirrors" "$initScriptPath"
                   grep -q "Match All" "$sshdConfigPath"
+
+                  # The rendered restic units must back up the data directory
+                  # to the consumer-supplied repository with the declared
+                  # retention over a pinned host key, on the declared cadence.
+                  grep -q "RESTIC_REPOSITORY_FILE=/run/agenix/valley-restic-repo" "$resticServicePath"
+                  grep -q -- "--keep-daily 7 --keep-weekly 4 --keep-monthly 6" "$resticServicePath"
+                  grep -q "UserKnownHostsFile=/var/lib/valley-backup/known_hosts" "$resticServicePath"
+                  grep -q "OnCalendar=03:30" "$resticTimerPath"
+
+                  # The backup paths render as a --files-from list: follow
+                  # ExecStartPre to that list and pin the data directory.
+                  preStart="$(sed -n 's/^ExecStartPre=//p' "$resticServicePath" | head -n1)"
+                  staticPaths="$(grep -o '/nix/store/[^ ]*-staticPaths' "$preStart" | head -n1)"
+                  grep -qx "/srv/git" "$staticPaths"
                   touch $out
                 '';
         }

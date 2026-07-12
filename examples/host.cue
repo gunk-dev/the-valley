@@ -17,3 +17,13 @@ projects: {
 		mirrors: ["git@github.com:gunk-dev/the-valley.git"]
 	}
 }
+
+// The pilot's durability policy (dcr-d7952bc): nightly encrypted restic
+// snapshots of the host's data to a Hetzner Storage Box over sftp.
+// cadence and retention take the defaults — nightly, 7 daily / 4 weekly /
+// 6 monthly. The repository URL, credentials, and pinned host key are
+// machine integration, supplied by the consumer to the installer
+// (services.valley.backup.*), never declared here.
+backup: {
+	target: "restic-sftp"
+}

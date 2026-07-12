@@ -2,10 +2,12 @@
 # by a CUE host declaration (../schema/valley.cue).
 #
 # Layering: the CUE file owns the domain model — which projects exist, their
-# stores, their push mirrors. This module owns machine integration only:
-# data directory, unix user, SSH keys. At build time the CUE config is
-# vetted against the shipped schema and exported to JSON; an invalid config
-# fails the system build with cue's error. Nix never redefines the schema.
+# stores, their push mirrors, whether the host's data has offsite backup and
+# with what cadence and retention. This module owns machine integration
+# only: data directory, unix user, SSH keys, backup credentials. At build
+# time the CUE config is vetted against the shipped schema and exported to
+# JSON; an invalid config fails the system build with cue's error. Nix
+# never redefines the schema.
 #
 # Repos are only ever created, never deleted or overwritten — removing a
 # project (or disabling its git store) leaves the data on disk untouched.
@@ -17,7 +19,9 @@
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
-# cosmo, via its secrets). Nothing here plumbs secrets.
+# cosmo, via its secrets). Nothing here plumbs secrets: the backup options
+# below take *paths* to consumer-provisioned secret files; the contents
+# never pass through this module or the store.
 {
   config,
   pkgs,
@@ -48,6 +52,33 @@ let
   # Projects whose git store is enabled get a bare repository.
   gitProjects = lib.filterAttrs (_: p: p.git.enable) host.projects;
   repoNames = lib.attrNames gitProjects;
+
+  # The declared durability policy, if any. `backup` is optional in the
+  # schema: a declaration without it (or with enable = false) renders zero
+  # backup machinery, exactly as before the field existed.
+  backupPolicy = host.backup or null;
+  backupEnabled = backupPolicy != null && backupPolicy.enable;
+
+  # The declared cadence names policy; its wall-clock rendering is this
+  # installer's choice. A lookup rather than a literal, so a cadence this
+  # module does not know fails eval loudly instead of mis-scheduling.
+  backupTimer = {
+    # Late night with a spread; Persistent runs a missed window at boot.
+    nightly = {
+      OnCalendar = "03:30";
+      RandomizedDelaySec = "30m";
+      Persistent = true;
+    };
+  };
+
+  # The secret-path options the consumer must supply once the declaration
+  # enables backup, with what each names — for the assertion message.
+  backupSecretOptions = {
+    repositoryFile = "the restic repository URL";
+    passwordFile = "the repository encryption password";
+    sshKeyFile = "the SSH identity for the sftp target";
+    knownHostsFile = "the pinned host key of the sftp target";
+  };
 
   # Managed post-receive dispatcher. Each repo's post-receive is a symlink to
   # this script, which chains every executable dropped into the repo's
@@ -165,9 +196,59 @@ in
         Path to the host's CUE declaration (`package valley`) — the
         canonical statement of what this valley host serves, validated
         against the shipped schema at build time. This is the single domain
-        input: projects and their push mirrors are declared here, never as
-        Nix options.
+        input: projects, their push mirrors, and the backup policy are
+        declared here, never as Nix options.
       '';
+    };
+
+    # Machine integration for the declared backup policy. The declaration
+    # states WHAT must hold (offsite backup, cadence, retention); these
+    # options supply HOW on this machine — where the repository is and how
+    # to authenticate. All are paths to files the consumer provisions
+    # (e.g. agenix), required when the declaration enables backup. Point
+    # them at runtime paths, never at files in the Nix store.
+    backup = {
+      repositoryFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/valley-restic-repo";
+        description = ''
+          File containing the restic repository URL, for the sftp target
+          e.g. `sftp://u123456@u123456.your-storagebox.de:23//./backups/valley`.
+        '';
+      };
+
+      passwordFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/valley-restic-password";
+        description = ''
+          File containing the restic repository encryption password.
+          Losing it loses the backups — keep a copy somewhere that
+          survives this host.
+        '';
+      };
+
+      sshKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/valley-git-ssh-key";
+        description = ''
+          SSH private key that authenticates to the sftp target. The
+          backup service runs as root, so any identity the target
+          authorizes works — reusing the mirror key is fine.
+        '';
+      };
+
+      knownHostsFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/var/lib/valley-backup/known_hosts";
+        description = ''
+          known_hosts file pinning the sftp target's host key. Pin from
+          the provider's published fingerprints, not a blind ssh-keyscan.
+        '';
+      };
     };
   };
 
@@ -177,7 +258,13 @@ in
         assertion = cfg.authorizedKeys != [ ];
         message = "services.valley.authorizedKeys must not be empty — the git user would be unreachable.";
       }
-    ];
+    ]
+    ++ lib.optionals backupEnabled (
+      lib.mapAttrsToList (name: what: {
+        assertion = cfg.backup.${name} != null;
+        message = "services.valley.backup.${name} must be set: the host declaration enables backup, and ${what} is machine integration the consumer supplies (e.g. from its secrets).";
+      }) backupSecretOptions
+    );
 
     users.groups.${cfg.group} = { };
 
@@ -252,6 +339,32 @@ in
         # Per-project push-mirror hooks.
         ${mirrorHookCommands}
       '';
+    };
+
+    # Offsite backup, rendered only when the declaration asks for it. The
+    # declaration states the policy — that backup exists, its cadence and
+    # retention; the services.valley.backup.* options supply the machine
+    # half. Declaration absent or disabled ⇒ no restic config at all.
+    services.restic.backups = lib.mkIf backupEnabled {
+      valley = {
+        initialize = true;
+        repositoryFile = cfg.backup.repositoryFile;
+        passwordFile = cfg.backup.passwordFile;
+        paths = [ cfg.dataDir ];
+        # The schema admits only the restic-sftp target today; a second
+        # target would grow a dispatch here. The service runs as root:
+        # authenticate with the supplied identity and only the pinned
+        # host key.
+        extraOptions = [
+          "sftp.args='-i ${cfg.backup.sshKeyFile} -o UserKnownHostsFile=${cfg.backup.knownHostsFile} -o IdentitiesOnly=yes'"
+        ];
+        timerConfig = backupTimer.${backupPolicy.cadence};
+        pruneOpts = [
+          "--keep-daily ${toString backupPolicy.retention.daily}"
+          "--keep-weekly ${toString backupPolicy.retention.weekly}"
+          "--keep-monthly ${toString backupPolicy.retention.monthly}"
+        ];
+      };
     };
   };
 }

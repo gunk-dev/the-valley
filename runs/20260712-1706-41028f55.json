@@ -1,0 +1,18 @@
+{
+  "id": "20260712-1706-41028f55",
+  "prompt": "Small hardening fix in nix/valley-host.nix's backup rendering, learned from a real failure: the restic sftp args the module renders (currently -i \u003ckey\u003e -o UserKnownHostsFile=\u003cfile\u003e -o IdentitiesOnly=yes) do NOT set BatchMode, so when anything tries to prompt (unknown host key, key passphrase), root's ssh hangs until systemd gives up — a 54-second opaque timeout instead of a 2-second explicit error. Add '-o BatchMode=yes' to the rendered sftp args in the module (find where sftp.args is composed for services.restic.backups). Also add '-o StrictHostKeyChecking=yes' if not already implied, so an unpinned host key is an immediate clear failure. Keep the change minimal and in the module's comment style — one short comment noting why (no prompts exist in a systemd unit; fail fast). Update the module-eval flake check that greps the rendered unit to also pin the BatchMode flag. Verify: nix flake check passes. PR body: the failure story in two sentences (54s hang on init when the known_hosts pin was in doubt; generic SSH_FX_FAILURE masked the real error) and what the flags change.",
+  "issue": null,
+  "branch": "agent/20260712-1706-41028f55",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260712-1706-41028f55",
+  "tmux_pane": "%21",
+  "budget": "4",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260711-1019-4102bc2b/logs/20260712-1706-41028f55.jsonl",
+  "created_at": "2026-07-12T17:06:21-04:00",
+  "cost_usd": 0.8906850000000002,
+  "duration_ms": 240357,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/17",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260712-1706-41028f55",
+  "claude_session_id": "4267b809-417b-4720-a68d-fb8f15d9a3db"
+}

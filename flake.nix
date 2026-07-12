@@ -197,6 +197,7 @@
                   grep -q "RESTIC_REPOSITORY_FILE=/run/agenix/valley-restic-repo" "$resticServicePath"
                   grep -q -- "--keep-daily 7 --keep-weekly 4 --keep-monthly 6" "$resticServicePath"
                   grep -q "UserKnownHostsFile=/var/lib/valley-backup/known_hosts" "$resticServicePath"
+                  grep -q "BatchMode=yes" "$resticServicePath"
                   grep -q "OnCalendar=03:30" "$resticTimerPath"
 
                   # The backup paths render as a --files-from list: follow

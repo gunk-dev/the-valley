@@ -354,9 +354,11 @@ in
         # The schema admits only the restic-sftp target today; a second
         # target would grow a dispatch here. The service runs as root:
         # authenticate with the supplied identity and only the pinned
-        # host key.
+        # host key. No prompt can be answered inside a systemd unit, so
+        # BatchMode + strict host key checking turn a would-be hang into
+        # an immediate error.
         extraOptions = [
-          "sftp.args='-i ${cfg.backup.sshKeyFile} -o UserKnownHostsFile=${cfg.backup.knownHostsFile} -o IdentitiesOnly=yes'"
+          "sftp.args='-i ${cfg.backup.sshKeyFile} -o UserKnownHostsFile=${cfg.backup.knownHostsFile} -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes'"
         ];
         timerConfig = backupTimer.${backupPolicy.cadence};
         pruneOpts = [

@@ -191,6 +191,21 @@
                   grep -q "valley-mirrors" "$initScriptPath"
                   grep -q "Match All" "$sshdConfigPath"
 
+                  # The mirror push must use explicit head/tag refspecs with
+                  # --prune, never --mirror: --mirror also deletes remote-only
+                  # refs, and GitHub's read-only refs/pull/* fails every such
+                  # push. Follow the hook chain from the init script to the
+                  # rendered push script and pin the invocation there.
+                  mirrorHook="$(grep -o '/nix/store/[^ ]*-valley-mirrors-[^ ]*' "$initScriptPath" | head -n1)"
+                  mirrorPush="$(grep -o '/nix/store/[^ ]*-valley-mirror-push-[^ ]*' "$mirrorHook" | head -n1)"
+                  grep -q -- 'push --prune' "$mirrorPush"
+                  grep -qF -- '+refs/heads/*:refs/heads/*' "$mirrorPush"
+                  grep -qF -- '+refs/tags/*:refs/tags/*' "$mirrorPush"
+                  if grep -q -- '--mirror' "$mirrorPush"; then
+                    echo "module-eval: mirror push regressed to --mirror" >&2
+                    exit 1
+                  fi
+
                   # The rendered restic units must back up the data directory
                   # to the consumer-supplied repository with the declared
                   # retention over a pinned host key, on the declared cadence.

@@ -45,3 +45,4 @@ Phase 0 in progress. The repo ships its first artifacts: the CUE schema defining
 - [`design/self-transparency.md`](./design/self-transparency.md) — **DRAFT.** A candidate invariant, deliberately unresolved: no actor can durably change the system or an output without transparency, recursively. Names the facets; decides nothing.
 - [`design/openquestions.md`](./design/openquestions.md) — consolidated open questions, tagged by layer.
 - [`design/roadmap.md`](./design/roadmap.md) — the incremental validation plan.
+- [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a plain shell script, accreting one verb per phase per the roadmap's CLI thread.

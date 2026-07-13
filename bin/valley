@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+# valley — the S1 integrator's verbs, as a plain shell script.
+#
+# EVICTION CLAUSE (owner-ratified; the decision node is
+# .the-valley/decisions/dcr-74c3158-valley-cli-lifecycle.md).
+# This tool is deliberately a shell script: it runs from any checkout with
+# nothing but git and coreutils — no machinery, the portability stance of
+# ida-b9f646c. It GRADUATES to its own repo and a real language the moment
+# ANY tripwire is crossed:
+#   - it grows past ~300 lines;
+#   - it needs persistent state, config, or a daemon;
+#   - it needs dependencies beyond git + coreutils
+#     (Phase 1's `valley tail` will trip this);
+#   - its behavior gets subtle enough to need real tests;
+#   - it needs nontrivial parsing or concurrency.
+# Graduation is a deliberate act, recorded as a decision node.
+# Precedent: klaus — born in cosmo, graduated deliberately.
+
+set -euo pipefail
+
+die() {
+  printf 'valley: %s\n' "$*" >&2
+  exit 1
+}
+
+usage() {
+  cat <<'EOF'
+valley — S1 integrator verbs for a valley project (direct-push mode)
+
+usage: valley <verb> [args]
+
+  pending          list branches on origin not merged into origin/main
+  review <branch>  page through the branch's log and diff vs origin/main,
+                   then choose:
+                     [i]ntegrate  ff-only merge onto main, push origin main
+                     [r]eject     delete the remote branch (confirmed first)
+                     [s]kip       do nothing
+  help             show this help
+
+Runs from any checkout of the project; needs only git and coreutils.
+No config, no state, no batch mode — the judgment stays with the human.
+EOF
+}
+
+fetch_origin() {
+  git fetch --prune --quiet origin
+}
+
+# $PAGER may carry arguments ("less -FRX"), so run it through sh like git does.
+run_pager() {
+  sh -c "${PAGER:-less -R}"
+}
+
+pending_line() {
+  local ref="$1" age author ahead stat
+  age="$(git log -1 --format='%cr' "$ref")"
+  author="$(git log -1 --format='%an' "$ref")"
+  ahead="$(git rev-list --count "origin/main..$ref")"
+  stat="$(git diff --shortstat "origin/main...$ref")"
+  stat="${stat# }"
+  printf '%s | %s | %s | ahead %s | %s\n' \
+    "${ref#origin/}" "$age" "$author" "$ahead" "${stat:-no file changes}"
+}
+
+cmd_pending() {
+  [ $# -eq 0 ] || die "pending takes no arguments"
+  fetch_origin
+  local ref found=0
+  while IFS= read -r ref; do
+    case "$ref" in
+      origin/HEAD | origin/main) continue ;;
+    esac
+    found=1
+    pending_line "$ref"
+  done < <(git for-each-ref --format='%(refname:short)' \
+    --no-merged=origin/main refs/remotes/origin)
+  [ "$found" -eq 1 ] || echo "nothing pending"
+}
+
+integrate() {
+  local branch="$1" local_main origin_main
+  local_main="$(git rev-parse --verify --quiet refs/heads/main)" \
+    || die "no local main branch to fast-forward — nothing merged"
+  origin_main="$(git rev-parse refs/remotes/origin/main)"
+  [ "$local_main" = "$origin_main" ] \
+    || die "local main is not at origin/main — sync it first; nothing merged"
+  git merge-base --is-ancestor refs/heads/main "refs/remotes/origin/$branch" \
+    || die "$branch does not fast-forward from main — resolve by hand; nothing merged"
+  git checkout --quiet main
+  git merge --ff-only --quiet "refs/remotes/origin/$branch"
+  git push --quiet origin main
+  echo "integrated $branch: main is now $(git rev-parse --short main), pushed to origin"
+}
+
+reject() {
+  local branch="$1" answer
+  printf 'really delete origin/%s? [y/N] ' "$branch"
+  read -r answer || answer=""
+  case "$answer" in
+    y | Y | yes)
+      git push --quiet origin --delete "$branch"
+      echo "rejected $branch: deleted from origin"
+      ;;
+    *) echo "kept $branch" ;;
+  esac
+}
+
+cmd_review() {
+  [ $# -eq 1 ] || die "usage: valley review <branch>"
+  local branch="${1#origin/}" choice
+  fetch_origin
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || die "no such branch on origin: $branch"
+  {
+    printf 'branch %s, log against origin/main:\n\n' "$branch"
+    git --no-pager log --oneline "origin/main..origin/$branch"
+    printf '\n'
+    git --no-pager diff "origin/main...origin/$branch"
+  } | run_pager || true # quitting the pager early is not an error
+  while true; do
+    printf '%s: [i]ntegrate, [r]eject, [s]kip? ' "$branch"
+    read -r choice || die "stdin closed before an answer; nothing done"
+    case "$choice" in
+      i) integrate "$branch" && return ;;
+      r) reject "$branch" && return ;;
+      s)
+        echo "skipped $branch; nothing done"
+        return
+        ;;
+      *) echo "answer i, r, or s" ;;
+    esac
+  done
+}
+
+main() {
+  local verb="${1:-help}"
+  if [ $# -gt 0 ]; then shift; fi
+  case "$verb" in
+    pending) cmd_pending "$@" ;;
+    review) cmd_review "$@" ;;
+    help | -h | --help) usage ;;
+    *)
+      printf 'valley: unknown verb: %s\n\n' "$verb" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

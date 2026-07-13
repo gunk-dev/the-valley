@@ -10,10 +10,32 @@
       # Checks use import-from-derivation (the module's cue export), so they
       # are only defined for the system that can actually build them here.
       systems = [ "x86_64-linux" ];
+
+      # The integrator's CLI (bin/valley) wrapped for `nix run`. The script
+      # itself must keep running bare from any checkout — the package is the
+      # second of its two shipping modes, never a dependency of the first.
+      valleyCliFor =
+        pkgs:
+        pkgs.writeShellApplication {
+          name = "valley";
+          runtimeInputs = [ pkgs.git ];
+          text = builtins.readFile ./bin/valley;
+        };
     in
     {
       nixosModules.valley-host = ./nix/valley-host.nix;
       nixosModules.default = self.nixosModules.valley-host;
+
+      packages = lib.genAttrs systems (
+        system:
+        let
+          valley = valleyCliFor nixpkgs.legacyPackages.${system};
+        in
+        {
+          inherit valley;
+          default = valley;
+        }
+      );
 
       checks = lib.genAttrs systems (
         system:
@@ -87,6 +109,24 @@
             || noBackupHost.config.systemd.timers ? "restic-backups-valley";
         in
         {
+          # The CLI must stay a lint-clean script whose help verb answers
+          # without a repo or a remote — the cheap end of its eviction clause
+          # (dcr-74c3158); anything needing more graduates instead.
+          valley-cli =
+            pkgs.runCommand "valley-cli"
+              {
+                nativeBuildInputs = [
+                  pkgs.shellcheck
+                  (valleyCliFor pkgs)
+                ];
+              }
+              ''
+                shellcheck ${./bin/valley}
+                valley help > help.txt
+                grep -q '^usage: valley' help.txt
+                touch $out
+              '';
+
           # The example host declaration must vet against the schema, and the
           # schema must reject what it claims to reject: unsafe project names,
           # unknown project fields, stray top-level fields (typos, deployment

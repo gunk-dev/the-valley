@@ -32,9 +32,9 @@ Each rung adds actors or removes trust. Each names its knowledge-graph increment
 
 **Acceptance criteria.** S1 holds when every box is checked — by looking, not by reviewing configuration:
 
-- [ ] the-valley's canonical origin is classic-laddie; GitHub is a mirror.
-- [ ] Every push is present in at least two independent locations within minutes, verified by checking both, not by trusting the config.
-- [ ] One full restore from the offsite copy has been performed and verified.
+- [x] the-valley's canonical origin is classic-laddie; GitHub is a mirror.
+- [x] Every push is present in at least two independent locations within minutes, verified by checking both, not by trusting the config.
+- [x] One full restore from the offsite copy has been performed and verified.
 - [ ] A week of real work — human *and* agent — on the pilot repo without touching GitHub.
 - [ ] A klaus agent change lands end to end via direct-push mode.
 - [ ] At least one real issue is opened, worked, and closed as an in-repo node — including one agent dispatched against a node instead of a GitHub issue.

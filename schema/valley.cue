@@ -34,11 +34,13 @@ package valley
 		enable: bool | *true
 	}
 
-	// Push-mirror URLs. Every push to the primary is replicated to each
-	// URL via `git push --mirror`, which propagates deletions — the
-	// correct semantic for a mirror. Replication is best-effort: a dead
-	// mirror never rejects the primary push. Credentials are the host's
-	// concern (the installer documents how); they are not declared here.
+	// Push-mirror URLs. Every push to the primary replicates all branches
+	// and tags to each URL, force-updating and propagating deletions —
+	// the correct semantic for a mirror. Remote-only namespaces (e.g.
+	// GitHub's refs/pull/*) are never touched. Replication is best-effort:
+	// a dead mirror never rejects the primary push. Credentials are the
+	// host's concern (the installer documents how); they are not declared
+	// here.
 	mirrors: [...string] | *[]
 }
 

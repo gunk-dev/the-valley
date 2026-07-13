@@ -99,12 +99,16 @@ let
 
   # Best-effort push replication. The pushes run detached (setsid) so a dead
   # mirror can only ever cost a log line — never block or fail the primary
-  # push. `--mirror` propagates deletions, the correct semantic for a mirror.
+  # push. Explicit refspecs with --prune force-update every branch and tag
+  # and propagate their deletions — the same deletion semantics --mirror
+  # gives for heads and tags. --mirror itself is rejected: it also tries to
+  # delete remote-only namespaces, and on GitHub the read-only refs/pull/*
+  # makes that fail every push, masking real replication failures.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
       for url in ${lib.escapeShellArgs mirrors}; do
-        if ${pkgs.git}/bin/git push --mirror "$url" >/dev/null 2>&1; then
+        if ${pkgs.git}/bin/git push --prune "$url" '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1; then
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: pushed to $url" || true
         else
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: push to $url FAILED" || true
@@ -116,7 +120,7 @@ let
     name: mirrors:
     pkgs.writeShellScript "valley-mirrors-${name}" ''
       # Managed by services.valley — best-effort push mirrors for ${name}.
-      cat >/dev/null   # updated refs unused: --mirror replicates everything
+      cat >/dev/null   # updated refs unused: the push replicates all heads and tags
       ${pkgs.util-linux}/bin/setsid -f ${mirrorPusher name mirrors} </dev/null >/dev/null 2>&1
       exit 0
     '';

@@ -1,0 +1,18 @@
+{
+  "id": "20260713-0946-ee79b848",
+  "prompt": "Fix the mirror-push mechanism in nix/valley-host.nix before the-valley migrates onto its own valley host. Today the per-project mirror hook (mirrorPusher) runs 'git push --mirror \"$url\"'. Against GitHub mirrors this is permanently noisy: --mirror also tries to delete the remote's read-only refs/pull/* (GitHub rejects those deletions), so EVERY mirror push exits nonzero and the hook logs 'push to $url FAILED' even though heads and tags replicated fine — replication health becomes illegible exactly when we start relying on it.\n\nCHANGE: replace the --mirror invocation with explicit refspecs plus prune:\n  git push --prune \"$url\" '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'\nSemantics preserved where they matter: force-updates all branches and tags, propagates deletions of branches/tags (--prune), never touches refs/pull or other remote-only namespaces. Update the module's comment where it currently says '--mirror propagates deletions, the correct semantic for a mirror' to explain the refined choice (same deletion semantics for heads/tags; --mirror rejected because read-only refs/pull on GitHub fails every push and masks real failures). Keep the setsid best-effort structure and logging exactly as is.\n\nCheck flake.nix's module-eval check: if it pins the push command text or '--mirror' anywhere, update the pin to the new invocation; if it only greps 'valley-mirrors', extend it to also pin the new refspec string so this doesn't silently regress.\n\nVerify: nix flake check passes. PR body: the refs/pull failure mode in two sentences, the semantics comparison in one, and a note that this is deliberately the last the-valley change made through GitHub PR flow — the repo migrates to its own valley host (S1 direct-push mode) immediately after.",
+  "issue": null,
+  "branch": "agent/20260713-0946-ee79b848",
+  "worktree": "/tmp/klaus-sessions/the-valley/20260713-0946-ee79b848",
+  "tmux_pane": "%26",
+  "budget": "6",
+  "log_file": "/home/patrick/.klaus/sessions/session-20260711-1019-4102bc2b/logs/20260713-0946-ee79b848.jsonl",
+  "created_at": "2026-07-13T09:46:13-04:00",
+  "cost_usd": 2.0724359999999997,
+  "duration_ms": 232991,
+  "pr_url": "https://github.com/gunk-dev/the-valley/pull/18",
+  "target_repo": "the-valley",
+  "clone_dir": "/home/patrick/hack/the-valley",
+  "session_name": "20260713-0946-ee79b848",
+  "claude_session_id": "dc674b47-9d9f-4535-97cb-539d8c358f1b"
+}

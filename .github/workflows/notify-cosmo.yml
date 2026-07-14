@@ -1,0 +1,26 @@
+# Sovereign twist: this repo's canonical origin is a valley host; GitHub is a
+# push mirror. This workflow runs when the MIRROR receives the replicated push
+# (deploy-key pushes do trigger Actions), making GitHub a notification relay
+# for GitHub-side consumers. Interim scaffolding: the valley-native replacement
+# is the Phase 4/5 reactive controller subscribing to integration events
+# (design/roadmap.md).
+
+name: Notify Cosmo
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Dispatch to cosmo
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3.0.0
+        with:
+          token: ${{ secrets.COSMO_DISPATCH_TOKEN }}
+          repository: patflynn/cosmo
+          event-type: the-valley-updated

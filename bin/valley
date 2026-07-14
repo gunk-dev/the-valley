@@ -35,6 +35,11 @@ usage: valley <verb> [args]
                      [i]ntegrate  ff-only merge onto main, push origin main
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
+                   a stale branch (won't fast-forward from main) is first
+                   offered:
+                     [b]ase       rebase it onto origin/main in a throwaway
+                                  worktree, push --force-with-lease, then
+                                  re-review the diff that would actually land
   help             show this help
 
 Runs from any checkout of the project; needs only git and coreutils.
@@ -105,18 +110,79 @@ reject() {
   esac
 }
 
-cmd_review() {
-  [ $# -eq 1 ] || die "usage: valley review <branch>"
-  local branch="${1#origin/}" choice
-  fetch_origin
-  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
-    || die "no such branch on origin: $branch"
+show_review() {
+  local branch="$1"
   {
     printf 'branch %s, log against origin/main:\n\n' "$branch"
     git --no-pager log --oneline "origin/main..origin/$branch"
     printf '\n'
     git --no-pager diff "origin/main...origin/$branch"
   } | run_pager || true # quitting the pager early is not an error
+}
+
+# Throwaway worktree for review's [b]ase choice; a global so the traps can
+# always clean it up — success, conflict, or ctrl-C. Never a mid-rebase state.
+REBASE_WT=""
+cleanup_rebase_wt() {
+  [ -n "$REBASE_WT" ] || return 0
+  git -C "$REBASE_WT" rebase --abort >/dev/null 2>&1 || true
+  git worktree remove --force "$REBASE_WT" >/dev/null 2>&1 || true
+  rm -rf "$REBASE_WT"
+  REBASE_WT=""
+}
+
+# Rebase origin/<branch> onto origin/main in an isolated worktree — the
+# user's checkout is never touched — and push with a lease so a concurrently
+# updated branch is never clobbered. Mechanics only; the judgment on the
+# rebased diff stays with the human, back at the review prompt.
+rebase_onto_main() {
+  local branch="$1"
+  REBASE_WT="$(mktemp -d)"
+  trap cleanup_rebase_wt EXIT
+  trap 'exit 130' INT TERM
+  git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch"
+  if ! git -C "$REBASE_WT" rebase --quiet refs/remotes/origin/main; then
+    cleanup_rebase_wt
+    die "$branch conflicts with main — resolve by hand; nothing changed"
+  fi
+  if ! git -C "$REBASE_WT" push --quiet --force-with-lease \
+    origin "HEAD:refs/heads/$branch"; then
+    cleanup_rebase_wt
+    die "lease on origin/$branch failed (it moved since the fetch); nothing pushed"
+  fi
+  cleanup_rebase_wt
+  trap - EXIT INT TERM
+  echo "rebased $branch onto origin/main, pushed with --force-with-lease"
+}
+
+cmd_review() {
+  [ $# -eq 1 ] || die "usage: valley review <branch>"
+  local branch="${1#origin/}" choice
+  fetch_origin
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || die "no such branch on origin: $branch"
+  show_review "$branch"
+  # A stale branch can't integrate, and its pre-rebase diff is not what would
+  # land; offer to rebase it mechanically, then re-review what actually would.
+  while ! git merge-base --is-ancestor refs/remotes/origin/main \
+    "refs/remotes/origin/$branch"; do
+    printf '%s does not fast-forward from main: [b]ase onto main, [r]eject, [s]kip? ' \
+      "$branch"
+    read -r choice || die "stdin closed before an answer; nothing done"
+    case "$choice" in
+      b)
+        rebase_onto_main "$branch"
+        fetch_origin
+        show_review "$branch"
+        ;;
+      r) reject "$branch" && return ;;
+      s)
+        echo "skipped $branch; nothing done"
+        return
+        ;;
+      *) echo "answer b, r, or s" ;;
+    esac
+  done
   while true; do
     printf '%s: [i]ntegrate, [r]eject, [s]kip? ' "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"

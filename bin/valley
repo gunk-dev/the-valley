@@ -135,6 +135,8 @@ cmd_review() {
 main() {
   local verb="${1:-help}"
   if [ $# -gt 0 ]; then shift; fi
+  # The verb set is mirrored in completions/ (valley.bash, _valley) —
+  # update both when it changes.
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;

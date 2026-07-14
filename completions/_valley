@@ -1,0 +1,31 @@
+#compdef valley
+# zsh completion for valley. The verb list mirrors the case statement in
+# bin/valley — update both together.
+#
+# NEVER fetch from here: completion runs on every <TAB> and must be instant.
+# Candidates come from the remote-tracking refs of the last fetch; valley's
+# own verbs fetch before acting, so stale candidates cost nothing.
+
+_valley() {
+  if (( CURRENT == 2 )); then
+    local -a verbs=(
+      'pending:list branches on origin not merged into origin/main'
+      'review:page through a branch, then integrate, reject, or skip'
+      'help:show help'
+    )
+    _describe -t verbs 'valley verb' verbs
+  elif (( CURRENT == 3 )) && [[ ${words[2]} == review ]]; then
+    # Branches on origin not merged into origin/main, origin/ prefix
+    # stripped, origin/HEAD + origin/main excluded. Silent outside a git
+    # repo — no errors mid-typing.
+    local -a branches
+    branches=(${(f)"$(git for-each-ref refs/remotes/origin \
+      --format='%(refname:short)' --no-merged=origin/main 2>/dev/null)"})
+    branches=(${branches:#origin/HEAD})
+    branches=(${branches:#origin/main})
+    branches=(${branches#origin/})
+    (( ${#branches} )) && compadd -a branches
+  fi
+}
+
+_valley "$@"

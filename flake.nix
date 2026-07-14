@@ -14,12 +14,26 @@
       # The integrator's CLI (bin/valley) wrapped for `nix run`. The script
       # itself must keep running bare from any checkout — the package is the
       # second of its two shipping modes, never a dependency of the first.
-      valleyCliFor =
+      valleyScriptFor =
         pkgs:
         pkgs.writeShellApplication {
           name = "valley";
           runtimeInputs = [ pkgs.git ];
           text = builtins.readFile ./bin/valley;
+        };
+
+      # The installed package: the wrapped script plus the shell completions,
+      # at the standard paths home-manager/NixOS auto-link.
+      valleyCliFor =
+        pkgs:
+        pkgs.symlinkJoin {
+          name = "valley";
+          paths = [ (valleyScriptFor pkgs) ];
+          nativeBuildInputs = [ pkgs.installShellFiles ];
+          postBuild = ''
+            installShellCompletion --bash --name valley ${./completions/valley.bash}
+            installShellCompletion --zsh --name _valley ${./completions/_valley}
+          '';
         };
     in
     {
@@ -111,19 +125,30 @@
         {
           # The CLI must stay a lint-clean script whose help verb answers
           # without a repo or a remote — the cheap end of its eviction clause
-          # (dcr-74c3158); anything needing more graduates instead.
+          # (dcr-74c3158); anything needing more graduates instead. The
+          # completions are held to the same bar, and the installed package
+          # must carry them at the auto-linked paths.
           valley-cli =
+            let
+              valley = valleyCliFor pkgs;
+            in
             pkgs.runCommand "valley-cli"
               {
                 nativeBuildInputs = [
                   pkgs.shellcheck
-                  (valleyCliFor pkgs)
+                  pkgs.zsh
+                  valley
                 ];
               }
               ''
                 shellcheck ${./bin/valley}
+                shellcheck ${./completions/valley.bash}
+                # shellcheck cannot lint zsh; a bare parse is the cheap check.
+                zsh -n ${./completions/_valley}
                 valley help > help.txt
                 grep -q '^usage: valley' help.txt
+                test -f ${valley}/share/bash-completion/completions/valley
+                test -f ${valley}/share/zsh/site-functions/_valley
                 touch $out
               '';
 

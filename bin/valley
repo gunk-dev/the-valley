@@ -51,9 +51,12 @@ fetch_origin() {
   git fetch --prune --quiet origin
 }
 
-# $PAGER may carry arguments ("less -FRX"), so run it through sh like git does.
+# Resolve the pager exactly as git does — git var GIT_PAGER honors core.pager
+# (so a configured delta renders these diffs too), then GIT_PAGER, then PAGER,
+# then less. The value is shell-interpreted, hence sh -c; a non-tty just cats.
 run_pager() {
-  sh -c "${PAGER:-less -R}"
+  [ -t 1 ] || { cat; return; }
+  sh -c "$(git var GIT_PAGER)"
 }
 
 pending_line() {

@@ -64,6 +64,23 @@ problem) and an **inter-group** case (across instances — genuine federation, h
   [contribute.md](./contribute.md), [verification.md](./verification.md)._
 - `[architecture]` **Schema evolution (events).** CUE handles validation, but event schemas will
   change. Migration story? _Origin: [architecture.md](./architecture.md)._
+- `[architecture]` **Durable home for cross-system events.** The resolved single-point-of-failure
+  answer calls deploys and notifications ephemeral. S4 makes those events the substance of "one
+  durable history" ([requirements.md](./requirements.md)), so by Phase 5 that answer expires: either
+  the bus is genuinely replicated — contradicting "the one replaceable component"
+  ([roadmap.md](./roadmap.md)) — or its events get projected into a durable store. Which, and when?
+  _Origin: owner review of Phase 1, 2026-07-16._
+- `[design]` **The lived event log is the only witness to destructive ref updates.** "Per-repo
+  events are durable in git" fails exactly when git state is destroyed: after a force-push or a
+  branch deletion, the event's `old` id may reference objects the repository no longer reaches, and
+  replay — a current-state projection — reproduces strictly less than what happened. S6's incident
+  memory wants the lived record, not the projection. A cheap, git-native mitigation is decidable
+  now: server-side reflogs (`core.logAllRefUpdates`) on the bare repos keep prior ref values inside
+  git through rewrites and deletions. Today the lived stream survives only by accident — the
+  JetStream store sits under the valley dataDir, so the nightly restic pass snapshots it,
+  crash-consistent at best: the volatile-store wrinkle in
+  [stores beyond git](../.the-valley/ideas/ida-48c8868-stores-beyond-git.md). _Origin: owner review
+  of Phase 1, 2026-07-16._
 
 ## Verification specifics
 

@@ -32,7 +32,8 @@ usage: valley <verb> [args]
   pending          list branches on origin not merged into origin/main
   review <branch>  page through the branch's log and diff vs origin/main,
                    then choose:
-                     [i]ntegrate  ff-only merge onto main, push origin main
+                     [i]ntegrate  ff-only merge onto main, push origin main,
+                                  delete the merged branch from origin
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
                    a stale branch (won't fast-forward from main) is first
@@ -98,6 +99,16 @@ integrate() {
   git merge --ff-only --quiet "refs/remotes/origin/$branch"
   git push --quiet origin main
   echo "integrated $branch: main is now $(git rev-parse --short main), pushed to origin"
+  # The branch tip is now an ancestor of the main just pushed, so deleting it
+  # loses nothing; without this every integration leaves a fully-merged ghost
+  # ref that later reads as a confusing "empty" branch. Best-effort: a failed
+  # delete must not report the integration as failed.
+  if git push --quiet origin --delete "$branch"; then
+    echo "deleted merged branch $branch from origin"
+  else
+    printf 'valley: warning: could not delete origin/%s — delete it by hand\n' \
+      "$branch" >&2
+  fi
 }
 
 reject() {

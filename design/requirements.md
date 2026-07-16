@@ -72,13 +72,16 @@ Not derived from the ladder — imposed on every solution to it, from the premis
 
 ## Durability
 
-The git data is the crown jewel; losing it is the one unrecoverable failure. Everything else —
+The project's state is the crown jewel; losing it is the one unrecoverable failure. Today that state
+lives entirely in a git repo — code and knowledge nodes alike — but the requirement attaches to the
+state, not to the store: a project has stores, and git is one of them
+([stores beyond git](../.the-valley/ideas/ida-48c8868-stores-beyond-git.md)). Everything else —
 infrastructure, tooling, even the event history's ephemeral parts — is rebuildable. Durability is
 therefore a first-class requirement, not an operational afterthought — it is the whole of
 [S1](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them), the rung
-everything else stands on. Pushed means replicated: pushed work is in at least two independent
-places, one of them offsite, within minutes. No copy counts until a restore from it has been
-performed and verified. Configured is not durable; tested is.
+everything else stands on. For the git store today that means: pushed means replicated — pushed work
+is in at least two independent places, one of them offsite, within minutes. No copy counts until a
+restore from it has been performed and verified. Configured is not durable; tested is.
 
 ## Non-goals
 

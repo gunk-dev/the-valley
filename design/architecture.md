@@ -48,7 +48,7 @@ Prior art: Atomist (defunct, but had this model). Kubernetes controllers. Datomi
 
 *Serves: verification (feedback in seconds), agents as first-class authors.*
 
-The contributor's own hermetic environment runs the canonical checks and produces a signed attestation of what ran, against what inputs, with what result. Subscribers act on the attestation immediately; re-verifiers cross-check asynchronously; trust is *measured* per attester from re-verification confirm rates, and divergence revokes it.
+The contributor's own hermetic environment runs the canonical checks and produces a signed attestation of what ran, against what inputs, with what result. Subscribers act on the attestation immediately. Re-verifiers cross-check it asynchronously. Trust is *measured* per attester from re-verification confirm rates, and divergence revokes it.
 
 This trades two failure modes:
 
@@ -105,7 +105,7 @@ Everything in a project that isn't executable code or user-facing docs — outco
 
 *Serves: project knowledge & discussion (the work itself is knowledge), agents as first-class authors. Anchored at rungs S3/S4 of the [scenario ladder](./user-scenarios.md).*
 
-The typed-node graph already stores dependency structure: `blocked_by`/`blocks` edges form a dependency DAG. The bet is to make **outcome** — a thing someone wants to exist that does not yet — the central node type and read that DAG *generatively*: open outcomes are not a record of intent but a worklist the system is under pressure to complete. Root outcomes — the things a human actually asked for — carry a priority that propagates down to the sub-outcomes that must complete for them; the system dispatches the **unblocked frontier** on the critical path toward the highest-priority root. Dispatch is klaus-shaped: one more subscriber on the log, spawning agent runs against frontier nodes.
+The typed-node graph already stores dependency structure: `blocked_by`/`blocks` edges form a dependency DAG. The bet is to make **outcome** — a thing someone wants to exist that does not yet — the central node type and read that DAG *generatively*: open outcomes are not a record of intent but a worklist the system is under pressure to complete. Root outcomes — the things a human actually asked for — carry a priority that propagates down to the sub-outcomes that must complete for them. The system dispatches the **unblocked frontier** — the open outcomes whose blockers are all closed — on the critical path toward the highest-priority root. Dispatch is klaus-shaped: one more subscriber on the log, spawning agent runs against frontier nodes.
 
 This splits the old "priority layer" question in two: **work-scheduling** — what the system produces next — is what this bet answers; **attention-routing** — what a human must see, and how urgently — stays open ([openquestions.md](./openquestions.md)). Scheduler mechanics and node formats are deliberately absent here; that detail returns when its rung is the top priority. The fuller sketch: [.the-valley/ideas/ida-eac723e-outcome-dag.md](../.the-valley/ideas/ida-eac723e-outcome-dag.md).
 

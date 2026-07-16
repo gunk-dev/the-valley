@@ -99,7 +99,7 @@ Block-level replication (ZFS send) was considered and rejected for now: it ties 
 
 **Goal.** Replace "wait for CI" with "signed local check" for real day-to-day work.
 
-**What gets built.** A `nix run .#attest` helper that: runs the repo's canonical checks (Nix derivations, in the reference implementation); composes the attestation ([contribute.md](./contribute.md) / [verification.md](./verification.md)), recording *what check ran, on what tree, with what result* — purity is a claim tied to a runner kind, which the `nix` runner claims strongly, not a property the schema assumes; SSH-signs it with the same key as the commit signature; stores it as `refs/the-valley/attestations/<sha>`; pushes atomically ([contribute.md](./contribute.md)).
+**What gets built.** A `nix run .#attest` helper that: runs the repo's canonical checks (Nix derivations, in the reference implementation); composes the attestation ([contribute.md](./contribute.md) / [verification.md](./verification.md)), recording *what check ran, on what tree, with what result*; SSH-signs it with the same key as the commit signature; stores it as `refs/the-valley/attestations/<sha>`; pushes atomically ([contribute.md](./contribute.md)). Purity is a claim tied to a runner kind — the `nix` runner claims it strongly — not a property the schema assumes.
 
 Checks-as-derivations is the reference implementation, not the contract. The attestation schema must stay implementable by other runner kinds, so a non-Nix runner is an added backend later, never a migration.
 

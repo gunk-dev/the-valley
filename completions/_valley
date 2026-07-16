@@ -11,9 +11,13 @@ _valley() {
     local -a verbs=(
       'pending:list branches on origin not merged into origin/main'
       'review:page through a branch, then integrate, reject, or skip'
+      'tail:watch bus events scroll by'
+      'replay:publish ref-updated events for the current refs of a repo'
       'help:show help'
     )
     _describe -t verbs 'valley verb' verbs
+  elif (( CURRENT == 3 )) && [[ ${words[2]} == replay ]]; then
+    _files -/
   elif (( CURRENT == 3 )) && [[ ${words[2]} == review ]]; then
     # Branches on origin not merged into origin/main, origin/ prefix
     # stripped, origin/HEAD + origin/main excluded. Silent outside a git

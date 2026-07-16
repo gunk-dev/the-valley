@@ -125,6 +125,82 @@ let
       exit 0
     '';
 
+  # The event bus (design/roadmap.md, Phase 1): NATS JetStream, onto which
+  # the ref-updated hook below projects this host's git activity. The bus is
+  # never load-bearing for durable state — per-repo events are durable in
+  # git itself, and `valley replay` rebuilds the stream from a repo's refs —
+  # so losing its storage costs one replay, nothing more.
+  busUrl = "nats://${cfg.bus.listen}";
+
+  busServerConfig = pkgs.writeText "valley-bus.conf" ''
+    listen: ${cfg.bus.listen}
+    jetstream {
+      store_dir: "${cfg.bus.storeDir}"
+    }
+  '';
+
+  # One ref-updated event per updated ref, read from the post-receive stdin
+  # this script inherits. Every payload field is derivable from git alone —
+  # no wall-clock time, no hostname — so replaying a repo's refs reproduces
+  # the same events (the roadmap's determinism criterion). `valley replay`
+  # builds the identical payload; change one only with the other.
+  busPublisher = pkgs.writeShellScript "valley-bus-publish" ''
+    repo="$(basename "$PWD" .git)"
+    while read -r old new ref; do
+      [ -n "$ref" ] || continue
+      # " is the only JSON-significant character a refname can contain
+      # (git forbids \ and control characters); names and ids are safe.
+      event="$(printf '{"event":"ref-updated","repo":"%s","ref":"%s","old":"%s","new":"%s"}' \
+        "$repo" "''${ref//\"/\\\"}" "$old" "$new")"
+      if ${pkgs.natscli}/bin/nats --server ${busUrl} pub \
+        "valley.git.$repo.ref-updated" "$event" </dev/null >/dev/null 2>&1; then
+        ${pkgs.util-linux}/bin/logger -t valley-bus "$repo: published ref-updated $ref" || true
+      else
+        ${pkgs.util-linux}/bin/logger -t valley-bus "$repo: publish of ref-updated $ref FAILED" || true
+      fi
+    done
+  '';
+
+  # The post-receive.d hook, with the mirror hook's failure semantics: the
+  # publisher runs detached (setsid, inheriting the updates on stdin), so a
+  # bus problem can only ever cost a log line — never block or fail the
+  # push. git is the source of truth; the bus is the replaceable component.
+  busEventHook = pkgs.writeShellScript "valley-bus-events" ''
+    # Managed by services.valley — project ref updates onto the event bus.
+    ${pkgs.util-linux}/bin/setsid -f ${busPublisher} >/dev/null 2>&1
+    exit 0
+  '';
+
+  # Bus-hook wiring, one symlink per repo. Same rules as the mirror hooks:
+  # only ever installs, updates, or removes a store symlink — a hand-written
+  # hook of the same name is left alone.
+  busHookCommands = lib.concatMapStrings (
+    name:
+    let
+      bhook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/post-receive.d/valley-bus";
+    in
+    if cfg.bus.enable then
+      ''
+        bhook=${bhook}
+        if [ -L "$bhook" ]; then
+          case "$(readlink "$bhook")" in
+            /nix/store/*) ln -sfn ${busEventHook} "$bhook" ;;
+          esac
+        elif [ ! -e "$bhook" ]; then
+          ln -s ${busEventHook} "$bhook"
+        fi
+      ''
+    else
+      ''
+        bhook=${bhook}
+        if [ -L "$bhook" ]; then
+          case "$(readlink "$bhook")" in
+            /nix/store/*) rm -f "$bhook" ;;
+          esac
+        fi
+      ''
+  ) repoNames;
+
   # Per-project mirror-hook wiring. Only ever installs, updates, or removes
   # a store symlink — a hand-written hook of the same name is left alone.
   mirrorHookCommands = lib.concatStrings (
@@ -203,6 +279,40 @@ in
         input: projects, their push mirrors, and the backup policy are
         declared here, never as Nix options.
       '';
+    };
+
+    # The event bus. Machine options, not domain: whether this machine runs
+    # a bus, where it listens, and where its storage lives. What gets
+    # published onto it is defined portably in ../schema/events.cue.
+    bus = {
+      enable = lib.mkEnableOption "the valley event bus: NATS JetStream, onto which every push's ref updates are projected as events";
+
+      listen = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1:4222";
+        example = "100.100.1.7:4222";
+        description = ''
+          Address the bus listens on, `host:port`. Localhost by default:
+          nothing off the host can reach the bus until the consumer widens
+          this deliberately — e.g. to the host's tailnet address once a
+          remote `valley tail` wants in. Local publishers (the ref-updated
+          hook) connect to this same address, so it must be reachable from
+          the host itself.
+        '';
+      };
+
+      storeDir = lib.mkOption {
+        type = lib.types.path;
+        default = "${cfg.dataDir}/.bus";
+        defaultText = lib.literalExpression ''"''${config.services.valley.dataDir}/.bus"'';
+        description = ''
+          Directory holding the JetStream file storage. The default lives
+          under {option}`services.valley.dataDir`; it can never collide
+          with a repository because project names must start with an
+          alphanumeric. The stream is a projection of git, rebuildable
+          with `valley replay` — losing this directory costs one replay.
+        '';
+      };
     };
 
     # Machine integration for the declared backup policy. The declaration
@@ -301,7 +411,83 @@ in
 
     systemd.tmpfiles.rules = [
       "d ${cfg.dataDir} 0750 ${cfg.user} ${cfg.group} - -"
+    ]
+    ++ lib.optionals cfg.bus.enable [
+      "d ${cfg.bus.storeDir} 0700 ${cfg.user} ${cfg.group} - -"
     ];
+
+    # The bus itself. It runs as the git user — the store directory lives in
+    # that user's data — but the sandbox is what confines it: the unit can
+    # write nowhere except its store directory.
+    systemd.services.valley-bus = lib.mkIf cfg.bus.enable {
+      description = "The valley event bus (NATS JetStream)";
+      wantedBy = [ "multi-user.target" ];
+      after = [
+        "network.target"
+        "systemd-tmpfiles-setup.service"
+      ];
+      unitConfig.RequiresMountsFor = cfg.bus.storeDir;
+      serviceConfig = {
+        ExecStart = "${pkgs.nats-server}/bin/nats-server -c ${busServerConfig}";
+        Restart = "on-failure";
+        User = cfg.user;
+        Group = cfg.group;
+        LimitNOFILE = 65536;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [ cfg.bus.storeDir ];
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        UMask = "0077";
+      };
+    };
+
+    # The stream is config, not state: (re)created idempotently on every
+    # boot, capturing everything under valley.>. An existing stream — and
+    # the events in it — is left untouched.
+    systemd.services.valley-bus-init = lib.mkIf cfg.bus.enable {
+      description = "Create the valley event stream";
+      wantedBy = [ "multi-user.target" ];
+      requires = [ "valley-bus.service" ];
+      after = [ "valley-bus.service" ];
+      serviceConfig = {
+        Type = "oneshot";
+        User = cfg.user;
+        Group = cfg.group;
+      };
+      path = [ pkgs.natscli ];
+      script = ''
+        # The server needs a moment to accept connections after startup.
+        for _ in $(seq 1 50); do
+          nats --server ${busUrl} stream ls >/dev/null 2>&1 && break
+          sleep 0.2
+        done
+        if ! nats --server ${busUrl} stream info valley >/dev/null 2>&1; then
+          nats --server ${busUrl} stream add valley \
+            --subjects 'valley.>' --storage file --defaults
+        fi
+      '';
+    };
 
     # Create missing bare repos and (re)wire the managed hooks on every
     # activation where the declaration changed.
@@ -342,6 +528,9 @@ in
 
         # Per-project push-mirror hooks.
         ${mirrorHookCommands}
+
+        # The ref-updated publisher hook, on every repo when the bus is on.
+        ${busHookCommands}
       '';
     };
 

@@ -18,7 +18,10 @@
         pkgs:
         pkgs.writeShellApplication {
           name = "valley";
-          runtimeInputs = [ pkgs.git ];
+          runtimeInputs = [
+            pkgs.git
+            pkgs.natscli # tail and replay only; every other verb needs just git
+          ];
           text = builtins.readFile ./bin/valley;
         };
 
@@ -142,8 +145,20 @@
             services.valley.config = ./examples/host.cue;
           };
 
+          # Bus enabled, minimal declaration. The bus-e2e check drives this
+          # host's rendered hooks and stream-init against a real server.
+          busHost = mkHost {
+            services.valley = {
+              config = pkgs.writeText "bus-host.cue" ''
+                package valley
+                projects: "events-pilot": {}
+              '';
+              bus.enable = true;
+            };
+          };
+
           failedAssertions = builtins.filter (a: !a.assertion) (
-            host.config.assertions ++ noBackupHost.config.assertions
+            host.config.assertions ++ noBackupHost.config.assertions ++ busHost.config.assertions
           );
 
           missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -151,6 +166,12 @@
           resticRenderedWithoutDeclaration =
             noBackupHost.config.systemd.services ? "restic-backups-valley"
             || noBackupHost.config.systemd.timers ? "restic-backups-valley";
+
+          # The bus defaults off; a host that never asked for one must
+          # render zero bus machinery.
+          busRenderedWithoutEnable =
+            noBackupHost.config.systemd.services ? valley-bus
+            || noBackupHost.config.systemd.services ? valley-bus-init;
         in
         {
           # The CLI must stay a lint-clean script whose help verb answers
@@ -259,6 +280,26 @@
                   projects: "the-valley": {}
                 ''}
 
+                # The event schema accepts what the publisher hook emits …
+                cue vet -d '#RefUpdated' ${./schema/events.cue} ${pkgs.writeText "ref-updated.json" ''
+                  {"event":"ref-updated","repo":"the-valley","ref":"refs/heads/main","old":"0000000000000000000000000000000000000000","new":"a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"}
+                ''}
+                # … and stays closed: a field outside the git-derivable
+                # identity — wall-clock time, a hostname — must be rejected,
+                # or replay determinism silently dies.
+                if cue vet -d '#RefUpdated' ${./schema/events.cue} ${pkgs.writeText "ref-updated-timestamped.json" ''
+                  {"event":"ref-updated","repo":"the-valley","ref":"refs/heads/main","old":"0000000000000000000000000000000000000000","new":"a94a8fe5ccb19ba61c4c0873d391e987982fbbd3","time":"2026-07-16T00:00:00Z"}
+                ''}; then
+                  echo "cue-vet: expected the timestamped ref-updated payload to be rejected" >&2
+                  exit 1
+                fi
+                if cue vet -d '#RefUpdated' ${./schema/events.cue} ${pkgs.writeText "ref-updated-short-sha.json" ''
+                  {"event":"ref-updated","repo":"the-valley","ref":"refs/heads/main","old":"0000000000000000000000000000000000000000","new":"a94a8fe"}
+                ''}; then
+                  echo "cue-vet: expected the abbreviated object id to be rejected" >&2
+                  exit 1
+                fi
+
                 ${lib.concatStrings (
                   lib.mapAttrsToList (name: cfg: ''
                     if cue vet -c ${./schema/valley.cue} ${pkgs.writeText "${name}.cue" cfg}; then
@@ -275,6 +316,8 @@
               throw "valley module-eval: failed assertions: ${lib.concatMapStringsSep "; " (a: a.message) failedAssertions}"
             else if resticRenderedWithoutDeclaration then
               throw "valley module-eval: restic machinery rendered for a declaration without a backup block"
+            else if busRenderedWithoutEnable then
+              throw "valley module-eval: bus machinery rendered without services.valley.bus.enable"
             else if
               !(lib.any (a: lib.hasInfix "services.valley.backup." a.message) missingSecretAssertions)
             then
@@ -332,6 +375,146 @@
                   grep -qx "/srv/git" "$staticPaths"
                   touch $out
                 '';
+
+          # Phase 1's exit criteria, end to end and unmocked: a push to a
+          # bare repo wired with the real rendered hooks produces a
+          # ref-updated event on a real JetStream server within seconds,
+          # visible in `valley tail`; replaying the repo's refs is
+          # deterministic; and a dead bus never fails a push. The hook and
+          # stream-init scripts are followed from the rendered unit scripts,
+          # so the check exercises exactly what a host would run — only the
+          # server invocation differs (the sandbox cannot write /srv), same
+          # binary and flags, relocated storage.
+          bus-e2e =
+            pkgs.runCommand "valley-bus-e2e"
+              {
+                nativeBuildInputs = [
+                  pkgs.git
+                  pkgs.natscli
+                  pkgs.nats-server
+                  pkgs.jq
+                  pkgs.cue
+                  (valleyScriptFor pkgs)
+                ];
+                initScript = busHost.config.systemd.services.valley-init.script;
+                busInitScript = busHost.config.systemd.services.valley-bus-init.script;
+                passAsFile = [
+                  "initScript"
+                  "busInitScript"
+                ];
+              }
+              ''
+                export HOME="$TMPDIR"
+                export NATS_URL=nats://127.0.0.1:4222
+                export GIT_CONFIG_NOSYSTEM=1
+                git config --global user.name valley-check
+                git config --global user.email valley-check@localhost
+                git config --global init.defaultBranch main
+
+                wait_for() {
+                  for _ in $(seq 1 150); do
+                    "$@" >/dev/null 2>&1 && return 0
+                    sleep 0.2
+                  done
+                  echo "bus-e2e: timed out waiting for: $*" >&2
+                  return 1
+                }
+
+                nats-server --addr 127.0.0.1 --port 4222 --jetstream \
+                  --store_dir "$TMPDIR/js" &
+                server_pid=$!
+
+                # The real stream-init script the module renders.
+                bash -eu "$busInitScriptPath"
+                nats stream info valley >/dev/null
+
+                # A bare repo wired exactly as valley-init wires it, with the
+                # real store paths followed from the rendered init script.
+                dispatch="$(grep -o '/nix/store/[^ ]*-valley-post-receive' "$initScriptPath" | head -n1)"
+                bushook="$(grep -o '/nix/store/[^ ]*-valley-bus-events' "$initScriptPath" | head -n1)"
+                test -x "$dispatch"
+                test -x "$bushook"
+                repo="$TMPDIR/events-pilot.git"
+                git init --quiet --bare "$repo"
+                mkdir -p "$repo/hooks/post-receive.d"
+                ln -s "$dispatch" "$repo/hooks/post-receive"
+                ln -s "$bushook" "$repo/hooks/post-receive.d/valley-bus"
+
+                git clone --quiet "$repo" "$TMPDIR/work"
+                cd "$TMPDIR/work"
+                echo one > file
+                git add file
+                git commit --quiet -m one
+                git push --quiet origin main
+                first="$(git rev-parse HEAD)"
+                zeros="$(printf '%040d' 0)"
+
+                # Exit criterion 1: the event arrives within seconds, with a
+                # payload that is exactly the git facts of the push …
+                msgs_is() { [ "$(nats stream info valley --json | jq .state.messages)" -eq "$1" ]; }
+                wait_for msgs_is 1
+                got="$(nats stream get valley 1 --json)"
+                [ "$(jq -r .subject <<<"$got")" = valley.git.events-pilot.ref-updated ]
+                payload="$(jq -r .data <<<"$got" | base64 -d)"
+                expected='{"event":"ref-updated","repo":"events-pilot","ref":"refs/heads/main","old":"'"$zeros"'","new":"'"$first"'"}'
+                [ "$payload" = "$expected" ]
+
+                # … valid against the shipped event schema.
+                echo "$payload" > "$TMPDIR/payload.json"
+                cue vet -d '#RefUpdated' ${./schema/events.cue} "$TMPDIR/payload.json"
+
+                # … and visible in `valley tail`. Subscribe first, then push.
+                valley tail > "$TMPDIR/tail.out" 2>&1 &
+                tail_pid=$!
+                subscribed() { grep -q 'valley.>' "$TMPDIR/tail.out"; }
+                wait_for subscribed
+                echo two > file
+                git commit --quiet -am two
+                git push --quiet origin main
+                second="$(git rev-parse HEAD)"
+                wait_for msgs_is 2
+                payload2="$(nats stream get valley 2 --json | jq -r .data | base64 -d)"
+                expected2='{"event":"ref-updated","repo":"events-pilot","ref":"refs/heads/main","old":"'"$first"'","new":"'"$second"'"}'
+                [ "$payload2" = "$expected2" ]
+                tail_saw() { grep -qF "$expected2" "$TMPDIR/tail.out"; }
+                wait_for tail_saw
+                kill "$tail_pid" 2>/dev/null || true
+
+                # Exit criterion 2: rebuilding the stream from the repo's
+                # refs is deterministic — two replays from scratch produce
+                # identical events, landing on the pushed tip with the
+                # all-zero id as old.
+                dump_stream() {
+                  local info first_seq last_seq i
+                  info="$(nats stream info valley --json)"
+                  first_seq="$(jq .state.first_seq <<<"$info")"
+                  last_seq="$(jq .state.last_seq <<<"$info")"
+                  for i in $(seq "$first_seq" "$last_seq"); do
+                    nats stream get valley "$i" --json | jq -c '{subject: .subject, data: .data}'
+                  done
+                }
+                nats stream purge valley --force >/dev/null
+                valley replay "$repo"
+                wait_for msgs_is 1
+                run1="$(dump_stream)"
+                nats stream purge valley --force >/dev/null
+                valley replay "$repo"
+                wait_for msgs_is 1
+                run2="$(dump_stream)"
+                [ "$run1" = "$run2" ]
+                replayed="$(jq -r .data <<<"$run1" | base64 -d)"
+                [ "$replayed" = '{"event":"ref-updated","repo":"events-pilot","ref":"refs/heads/main","old":"'"$zeros"'","new":"'"$second"'"}' ]
+
+                # A dead bus never blocks a push: the event is simply lost
+                # (and rebuildable by replay).
+                kill "$server_pid"
+                wait "$server_pid" || true
+                echo three > file
+                git commit --quiet -am three
+                git push --quiet origin main
+
+                touch $out
+              '';
         }
       );
     };

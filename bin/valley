@@ -10,7 +10,8 @@
 #   - it grows past ~300 lines;
 #   - it needs persistent state, config, or a daemon;
 #   - it needs dependencies beyond git + coreutils
-#     (Phase 1's `valley tail` will trip this);
+#     (CROSSED by Phase 1's tail/replay, which need the nats CLI —
+#     graduation is now owed, pending the owner's decision node);
 #   - its behavior gets subtle enough to need real tests;
 #   - it needs nontrivial parsing or concurrency.
 # Graduation is a deliberate act, recorded as a decision node.
@@ -41,9 +42,16 @@ usage: valley <verb> [args]
                      [b]ase       rebase it onto origin/main in a throwaway
                                   worktree, push --force-with-lease, then
                                   re-review the diff that would actually land
+  tail [subject]   watch bus events scroll by (default subject: valley.>);
+                   the server comes from the nats CLI's own config
+                   (NATS_URL or a nats context; default localhost)
+  replay [dir]     publish one ref-updated event per current ref of the
+                   repo at dir (default: .) — rebuilds the stream's
+                   projection, e.g. after nats stream purge valley
   help             show this help
 
-Runs from any checkout of the project; needs only git and coreutils.
+Runs from any checkout of the project; needs only git and coreutils,
+except tail and replay, which also need the nats CLI (natscli).
 No config, no state, no batch mode — the judgment stays with the human.
 EOF
 }
@@ -218,6 +226,47 @@ cmd_review() {
   done
 }
 
+# tail and replay are thin wrappers over the nats CLI — anything they do,
+# plain nats and git can do. They are the only verbs needing more than git
+# and coreutils.
+need_nats() {
+  command -v nats >/dev/null 2>&1 \
+    || die "this verb needs the nats CLI (natscli); nix run .#valley bundles it"
+}
+
+cmd_tail() {
+  [ $# -le 1 ] || die "usage: valley tail [subject]"
+  need_nats
+  exec nats sub "${1:-valley.>}"
+}
+
+# One ref-updated event per existing ref, from git for-each-ref alone. A
+# ref's prior value is not derivable from the repository, so `old` is the
+# all-zero id — the same payload a push creating the ref would produce.
+# The payload construction mirrors the host module's publisher hook
+# (nix/valley-host.nix); change one only with the other.
+cmd_replay() {
+  [ $# -le 1 ] || die "usage: valley replay [repo-dir]"
+  need_nats
+  local dir="${1:-.}" repo sha ref event count=0
+  git -C "$dir" rev-parse --git-dir >/dev/null 2>&1 \
+    || die "not a git repository: $dir"
+  if [ "$(git -C "$dir" rev-parse --is-bare-repository)" = true ]; then
+    repo="$(basename "$(git -C "$dir" rev-parse --absolute-git-dir)" .git)"
+  else
+    repo="$(basename "$(git -C "$dir" rev-parse --show-toplevel)")"
+  fi
+  while read -r sha ref; do
+    # " is the only JSON-significant character a refname can contain (git
+    # forbids \ and control characters); names and object ids are safe.
+    event="$(printf '{"event":"ref-updated","repo":"%s","ref":"%s","old":"%s","new":"%s"}' \
+      "$repo" "${ref//\"/\\\"}" "${sha//?/0}" "$sha")"
+    nats pub "valley.git.$repo.ref-updated" "$event" >/dev/null
+    count=$((count + 1))
+  done < <(git -C "$dir" for-each-ref --format='%(objectname) %(refname)')
+  echo "replayed $count refs of $repo onto the bus"
+}
+
 main() {
   local verb="${1:-help}"
   if [ $# -gt 0 ]; then shift; fi
@@ -226,6 +275,8 @@ main() {
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;
+    tail) cmd_tail "$@" ;;
+    replay) cmd_replay "$@" ;;
     help | -h | --help) usage ;;
     *)
       printf 'valley: unknown verb: %s\n\n' "$verb" >&2

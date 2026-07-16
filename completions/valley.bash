@@ -24,9 +24,11 @@ _valley() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
   if [ "$COMP_CWORD" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'pending review help' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending review tail replay help' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = review ]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_review_branches)" -- "$cur")
+  elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = replay ]; then
+    mapfile -t COMPREPLY < <(compgen -d -- "$cur")
   fi
 }
 

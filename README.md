@@ -49,11 +49,14 @@ engine itself — the-valley builds the-valley.
 
 ## Status
 
-Phase 0 in progress. The repo ships its first artifacts: a CUE schema declaring what a valley host
-serves ([`schema/valley.cue`](./schema/valley.cue), example in
-[`examples/host.cue`](./examples/host.cue)) and a NixOS module ([`flake.nix`](./flake.nix)) that
-installs a host from that declaration. The plan-of-record — incremental, MVP-first, validation-gated
-— is [`design/roadmap.md`](./design/roadmap.md).
+Phase 0 in progress. The repo ships its first artifacts: the CUE schema defining what a valley host
+declares — its projects, their push mirrors, and the durability policy for its data
+([`schema/valley.cue`](./schema/valley.cue), with an example in
+[`examples/host.cue`](./examples/host.cue)) — and a NixOS module ([`flake.nix`](./flake.nix)) that
+installs a valley host from that declaration. Phase 1's spine is landing: the host module can run an
+event bus onto which every push's ref updates are projected as events
+([`schema/events.cue`](./schema/events.cue)), watchable with `valley tail`. The plan-of-record —
+incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).
 
 ## The docs
 

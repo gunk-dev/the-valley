@@ -4,7 +4,7 @@ id: ida-93e4f91
 status: adopted
 title: "Changes, not branches: the integration primitive is a change, not a ref"
 created: 2026-07-14
-source: owner brainstorm during the S1 week
+source: brainstorm during the S1 week
 ---
 
 # Changes, not branches

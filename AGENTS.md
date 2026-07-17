@@ -18,6 +18,9 @@ Write clearly, simply, and without compression that would tax a knowledgeable so
 - Anything a reader must act on — requirements, acceptance criteria, plans, decision records — gets
   the plainest register of all.
 - When capturing someone else's idea, keep their words wherever they are clear enough to stand.
+- The docs speak from the project, never about its participants. State a position as the project's
+  own, and refer to people only by role (the integrator, the instance's human operator). Prior art
+  and external authors may be cited freely.
 
 The test for every paragraph: could an engineer new to this repo read it once and correctly say it
 back?

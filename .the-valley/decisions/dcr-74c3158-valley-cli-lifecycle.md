@@ -4,12 +4,12 @@ id: dcr-74c3158
 status: decided
 title: "valley CLI: born as a shell script in-engine, graduates deliberately"
 created: 2026-07-13
-source: ratified by patflynn
+source: ratified 2026-07-13
 ---
 
 # valley CLI: born as a shell script in-engine, graduates deliberately
 
-**Decided by patflynn, 2026-07-13.**
+**Decided 2026-07-13.**
 
 The `valley` CLI lives at [`bin/valley`](../../bin/valley) in the engine repo because its verbs are
 engine-generic — `pending` and `review` serve any valley project's integrator, not just this one. It

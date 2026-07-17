@@ -4,7 +4,7 @@ id: ida-3145b7a
 status: exploring
 title: Actors in the graph + demand pressure as anti-stall
 created: 2026-07-02
-source: owner
+source: design conversation, 2026-07-02
 ---
 
 # Actors in the graph + demand pressure as anti-stall
@@ -16,9 +16,9 @@ source: owner
 > already running: the seeded [outcomes/](../outcomes/) DAG rooted at [[oc-f3bcfd0]]
 > ([oc-f3bcfd0-s1-holds.md](../outcomes/oc-f3bcfd0-s1-holds.md)).
 
-**The owner's core idea, faithfully:** agents — human and AI — can play parts in the outcome graph
-and be scheduled to unblock productions, so that there is a form of standing pressure toward
-producing the final node: an anti-stall mechanism.
+**The core idea:** agents — human and AI — can play parts in the outcome graph and be scheduled to
+unblock productions, so that there is a form of standing pressure toward producing the final node:
+an anti-stall mechanism.
 
 Everything below the next heading is development of that idea, not part of it.
 

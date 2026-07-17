@@ -9,7 +9,7 @@ source: conversation, 2026-07-06
 
 # Nix is a backend, not the substrate
 
-Owner guidance: target non-Nix systems at a reasonable moment so no assumption gets baked in that is
+The guidance: target non-Nix systems at a reasonable moment so no assumption gets baked in that is
 hard to port to typical Linux. The discipline that makes the moment cheap: **portable schemas from
 day 0, portable implementations on demand.**
 
@@ -29,8 +29,8 @@ Review heuristic: every schema must be implementable by a shell script on Debian
 can produce is a leak.
 
 The forced moments arrive on their own: a second runner kind when the Phase 2 attest helper is
-designed; a non-NixOS installer the first time a machine the owner doesn't control hosts a valley.
-Building either sooner is the premature-generality trap.
+designed; a non-NixOS installer the first time a machine the operator doesn't control hosts a
+valley. Building either sooner is the premature-generality trap.
 
 Follow-up (PR-class, after the requirements rewrite lands): the README constraint "Nix-native —
 builds, verification, and artifacts _are_ derivations" states an identity; reframe it as

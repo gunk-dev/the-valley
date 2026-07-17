@@ -8,7 +8,7 @@ created: 2026-07-11
 
 # Phase 0 replication — GitHub as the transitional live layer
 
-**Decided by patflynn, 2026-07-11.** Supersedes [[dcr-db1acbb]]
+**Decided 2026-07-11.** Supersedes [[dcr-db1acbb]]
 ([dcr-db1acbb-hetzner-replication-mechanism.md](./dcr-db1acbb-hetzner-replication-mechanism.md)).
 
 - **Live replication (revised).** For Phase 0 the live layer is **GitHub** — the transitional push

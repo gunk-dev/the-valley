@@ -4,7 +4,7 @@ id: ida-3e87f5c
 status: adopted
 title: Self-describing projects — identity transcends the host
 created: 2026-07-06
-source: ratified by patflynn
+source: ratified 2026-07-06
 ---
 
 # Self-describing projects — identity transcends the host

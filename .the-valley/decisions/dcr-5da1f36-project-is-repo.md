@@ -4,7 +4,7 @@ id: dcr-5da1f36
 status: decided
 title: A valley project is 1:1 with a git repo
 created: 2026-07-06
-source: ratified by patflynn
+source: ratified 2026-07-06
 ---
 
 # A valley project is 1:1 with a git repo

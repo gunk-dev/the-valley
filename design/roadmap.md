@@ -61,11 +61,11 @@ partially serve it.
 The named systems, all pilot instances: **klaus** (agent dispatch, run budget), **armstrong** (the
 Go controller that becomes the effectful-reactions successor), **tesseract**
 ([transparency-dev/tesseract](https://github.com/transparency-dev/tesseract), the Tessera-backed
-tlog), **cosmo** (the owner's NixOS infra — the consumer that installs this repo's host module), and
-**classic-laddie** (the pilot host: a box on the owner's tailnet, already running the klaus webhook
-relay; it hosts every server-side phase below first). Hostnames are pilot detail, not design: the
-durable content of this plan is portable, and what any host serves is declared in the host schema
-this repo ships ([schema/valley.cue](../schema/valley.cue)).
+tlog), **cosmo** (the operator's NixOS infra — the consumer that installs this repo's host module),
+and **classic-laddie** (the pilot host: a box on the operator's tailnet, already running the klaus
+webhook relay; it hosts every server-side phase below first). Hostnames are pilot detail, not
+design: the durable content of this plan is portable, and what any host serves is declared in the
+host schema this repo ships ([schema/valley.cue](../schema/valley.cue)).
 
 ---
 
@@ -80,7 +80,7 @@ The rung's acceptance checklist is this phase's gate.
 **Goal.** Get the crown-jewel git data off GitHub and onto infrastructure you control, durably
 enough that you'd trust it with the only copy — before there's ever only one copy.
 
-**What gets built — and what already is.** Hosting only. Bare git over SSH on a host the owner
+**What gets built — and what already is.** Hosting only. Bare git over SSH on a host the operator
 controls (the pilot host: classic-laddie). The first artifacts are shipped: a CUE host schema
 ([schema/valley.cue](../schema/valley.cue)) declaring what a valley host serves — projects, each
 with a git store and push mirrors — and a `valley-host` NixOS module ([flake.nix](../flake.nix))
@@ -93,9 +93,9 @@ directly to `main`. `cgit` or similar for browsing if wanted. The integrator and
 invariant arrive in [Phase 3](#phase-3--the-integrator); pushing straight to `main` now is correct,
 not a shortcut.
 
-The Tailscale identity layer is deliberately thin. The user has noted it's thin enough to swap later
-— so it's an acceptable v1 choice, not a lock-in. When identity needs to grow (untrusted
-contributors, agent keys), it grows in [Phase 6](#phase-6--trust-backstop).
+The Tailscale identity layer is deliberately thin — thin enough to swap later, so it is an
+acceptable v1 choice, not a lock-in. When identity needs to grow (untrusted contributors, agent
+keys), it grows in [Phase 6](#phase-6--trust-backstop).
 
 **Knowledge v0 ships in this phase.** S1's knowledge increment: issues, outcomes, ideas, and
 decisions live with the repo as plain markdown files — a directory convention, not a system. No
@@ -136,7 +136,7 @@ dual-push and publishing are one mechanism. Reversible at every step; supports i
 stakes, and every later phase is developed against it. Later repos roll out after the pilot proves
 the workflow.
 
-**The design claim it validates.** Self-hosted bare git on the owner's existing infrastructure is
+**The design claim it validates.** Self-hosted bare git on the operator's existing infrastructure is
 durable and ergonomic enough to be the canonical home for real work — the premise
 ([requirements.md](./requirements.md)) that hosting lock-in is the only thing GitHub does well, and
 it's swappable.
@@ -235,7 +235,7 @@ is a pleasant, fast substitute for a CI gate, produced by native git plus one he
 ## Phase 3 — The integrator
 
 **Rung: [S2](./user-scenarios.md#the-ladder) — established at this gate.** Push, and seconds later
-it's integrated; the owner never waits for CI, even solo.
+it's integrated; the operator never waits for CI, even solo.
 
 **Goal.** Stop writing `main` by hand. Route every change through a request-and-react flow, even
 solo.
@@ -288,36 +288,44 @@ trust bootstrapping_). Phase 3 is where the chicken-and-egg becomes concrete.
 **Rung: [S3](./user-scenarios.md#the-ladder) — established here; its attribution claim is hardened
 by [Phase 6](#phase-6--trust-backstop).**
 
-**Goal.** An agent's change lands with the same guarantees as the owner's, attributed to the agent
-that made it, with no human babysitting the pipeline.
+**Goal.** An agent's change lands with the same guarantees as the operator's, attributed to the
+agent that made it, with no human babysitting the pipeline.
 
 **What gets built.** Deliberately thin — the integration flow is unchanged from Phase 3, and that's
 the point:
 
 - **Per-agent identity.** Each agent signs commits and attestations with its own key. Attribution
   lives in the git objects and the log, not in a platform sidecar; the landed history distinguishes
-  the agent's work from the owner's.
+  the agent's work from the operator's.
 - **Dispatch against the graph.** klaus dispatch targets an outcome node, not a GitHub issue, and
   agents read and write knowledge nodes as part of the work — S3's knowledge increment. The
   convention is already live in [.the-valley/](../.the-valley/README.md); this phase makes it the
   pipeline's shape instead of a habit.
 
-This phase retires S1's interim mode — agents pushing a branch for the owner to review and merge by
-hand
+This phase retires S1's interim mode — agents pushing a branch for the operator to review and merge
+by hand
 ([user-scenarios.md § S1](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them)).
 Feeling that mode's pain was this phase's motivation, by design.
 
 **The design claim it validates.** The pipeline holds with no human in it: a non-human author lands
 with the same guarantees, and attribution is recorded, not inferred. What this phase deliberately
 does not claim: that attribution can't be forged — signature-based attribution is only as strong as
-key custody until the tlog lands ([Phase 6](#phase-6--trust-backstop)). For one owner and their own
-agents, that is the honest cut.
+key custody until the tlog lands ([Phase 6](#phase-6--trust-backstop)). For one operator and their
+own agents, that is the honest cut.
 
 **Exit criteria.**
 
 - A klaus-dispatched change lands via `integration-requested` → `integration-succeeded` with no
   human action between dispatch and landing.
-- The landed history attributes the change to the agent's own key, distinguishable from the owner's.
+- The landed history attributes the change to the agent's own key, distinguishable from the
+  operator's.
+- The dispatch's target is an outcome node in the repo, and the work reads and writes knowledge
+  nodes end to end.
+
+- A klaus-dispatched change lands via `integration-requested` → `integration-succeeded` with no
+  human action between dispatch and landing.
+- The landed history attributes the change to the agent's own key, distinguishable from the
+  operator's.
 - The dispatch's target is an outcome node in the repo, and the work reads and writes knowledge
   nodes end to end.
 

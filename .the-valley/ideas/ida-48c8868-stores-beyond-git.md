@@ -4,13 +4,13 @@ id: ida-48c8868
 status: raw
 title: "Stores beyond git: liveness is store-native, depth is store-agnostic"
 created: 2026-07-13
-source: owner musing during the S1 migration
+source: musing during the S1 migration, 2026-07-13
 ---
 
 # Stores beyond git
 
-Owner observation (2026-07-13): restic's virtue is that it is not tied to git — it protects a
-directory tree. Given devops volatility and the ambition past SDLC use-cases
+Observation (2026-07-13): restic's virtue is that it is not tied to git — it protects a directory
+tree. Given devops volatility and the ambition past SDLC use-cases
 ([README § where this goes](../../README.md#where-this-goes)), projects will eventually maintain
 state in systems other than git.
 

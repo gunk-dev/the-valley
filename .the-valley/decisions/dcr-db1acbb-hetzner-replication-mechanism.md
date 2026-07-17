@@ -8,7 +8,7 @@ created: 2026-07-04
 
 # Phase 0 offsite replication mechanism
 
-**Decided by patflynn, 2026-07-04.** From the options table in
+**Decided 2026-07-04.** From the options table in
 [roadmap.md Phase 0](../../design/roadmap.md#phase-0--mvp-repos-off-github): a combination of **(a)
 git-native mirror** and **(c) restic**.
 
@@ -20,7 +20,7 @@ git-native mirror** and **(c) restic**.
 - **(b) ZFS send — rejected for now.** It needs a ZFS-capable receive target (a Storage Box cannot
   receive ZFS streams), and the far copy is not a usable git remote.
 
-Closes the mechanism question tracked by [[oc-fc348f0]]. Immediate follow-up: the owner must
+Closes the mechanism question tracked by [[oc-fc348f0]]. Immediate follow-up: the operator must
 provision the Hetzner VPS and Storage Box before the implementation outcome [[oc-9949561]] can
 complete; the implementation itself lives in cosmo.
 

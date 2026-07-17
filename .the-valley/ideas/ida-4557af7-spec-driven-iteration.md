@@ -4,14 +4,13 @@ id: ida-4557af7
 status: exploring
 title: "Spec-driven iteration: capture a tight spec and let it drive implementation over time"
 created: 2026-07-15
-source: owner noodle — captured imperfect on purpose ("even if it's imperfect, it's there to be polished")
+source: design conversation, 2026-07-15 — captured imperfect on purpose ("even if it's imperfect, it's there to be polished")
 ---
 
 # Spec-driven iteration
 
-**Owner framing, close to verbatim.** The current work is prototyping; long-term, the project may
-want to capture and iterate a _tight spec_ for the-valley, and use the spec to drive implementation
-iteration over time.
+**The framing.** The current work is prototyping; long-term, the project may want to capture and
+iterate a _tight spec_ for the-valley, and use the spec to drive implementation iteration over time.
 
 **Proof of pattern, already shipped.** The CUE host schema is spec-driven development in one corner:
 [schema/valley.cue](../../schema/valley.cue) is "the canonical domain model … deliberately not Nix"

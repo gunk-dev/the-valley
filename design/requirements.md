@@ -20,22 +20,23 @@ The ladder is ordered by actors and trust, so the audience falls straight out of
 
 ## The needs
 
-1. **Never losable** (S1). Repos live on infrastructure the owner controls, with no vendor lock-in:
-   daily life stays clone-edit-push, and the platform fades to a mirror nobody thinks about. Project
-   knowledge (outcomes, ideas, decisions, threads) travels with the repo, protected by the same
-   motion that protects the code. Precisely what this means: [durability](#durability), below.
+1. **Never losable** (S1). Repos live on infrastructure the operator controls, with no vendor
+   lock-in: daily life stays clone-edit-push, and the platform fades to a mirror nobody thinks
+   about. Project knowledge (outcomes, ideas, decisions, threads) travels with the repo, protected
+   by the same motion that protects the code. Precisely what this means: [durability](#durability),
+   below.
 2. **Integrated in seconds** (S2). Push to integrated completes in seconds, resting on checks that
    are **trustworthy where the work was written** — a verifiable claim, not a hope — with
    reproducible build outputs so the claim can be checked. This is the largest quality-of-life
    change in the whole design and the reason unbundling is worth it at N=1.
 3. **Agents as first-class authors** (S3). An agent's change lands with the same guarantees as the
-   owner's own, unsupervised, attributable to exactly the agent that made it — attribution for a
+   operator's own, unsupervised, attributable to exactly the agent that made it — attribution for a
    non-human author that can be neither waved through nor forged.
 4. **Causality queryable from one history** (S4). Consequences — builds, deploys, notifications —
    follow without anyone kicking anything, each reaction independently addable and removable; "why
    did X occur" is answerable from one durable history, not reconstructed across tools.
 5. **Trust grantable, bounded, revocable** (S5). A second, semi-trusted human lands a change without
-   the owner administering accounts, roles, or a platform: exactly enough access — easy to grant,
+   the operator administering accounts, roles, or a platform: exactly enough access — easy to grant,
    limit, and take back — without a vendor.
 6. **Attributed incident memory** (S6). A landed change that goes bad gets attributed, reverted, and
    remembered: the incident becomes durable project knowledge, not a war story. When the record
@@ -86,5 +87,5 @@ performed and verified. Configured is not durable; tested is.
   _not_ having a platform to administer.
 - Defense against a compromised developer machine signing genuine attestations of malicious code —
   hardware attestation is the only fix and is out of scope. No rung demands it.
-- Migration tooling for the world's existing repos and trackers. The pilot is our own — every rung
-  is anchored in the owner's real repos.
+- Migration tooling for the world's existing repos and trackers. The pilot is the project's own —
+  every rung is anchored in the operator's real repos.

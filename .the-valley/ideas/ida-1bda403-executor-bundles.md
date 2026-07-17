@@ -4,7 +4,7 @@ id: ida-1bda403
 status: exploring
 title: "Vendor/harness-agnostic agent runs, with a path to subscriptions"
 created: 2026-07-15
-source: owner design conversation
+source: design conversation, 2026-07-15
 ---
 
 # Vendor/harness-agnostic agent runs

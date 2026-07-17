@@ -4,13 +4,13 @@ id: ida-594df79
 status: exploring
 title: klaus is the requirements oracle for S3
 created: 2026-07-13
-source: owner-directed review
+source: directed review, 2026-07-13
 ---
 
 # klaus is the requirements oracle for S3
 
-**Thesis.** [klaus](https://github.com/patflynn/klaus) — the owner's daily agent orchestrator, S3's
-anchor in the [ladder](../../design/user-scenarios.md#the-ladder) — is a _working_ system whose
+**Thesis.** [klaus](https://github.com/patflynn/klaus) — the operator's daily agent orchestrator,
+S3's anchor in the [ladder](../../design/user-scenarios.md#the-ladder) — is a _working_ system whose
 observed behaviors are S3's requirements. It is GitHub-shaped end to end: PR-indexed pipeline FSM,
 `gh`-mediated state, webhook-relay feed. The migration story is therefore not "rebuild klaus" but
 **swap the GitHub feed for valley events** — klaus already anticipates this (its
@@ -31,13 +31,13 @@ merge-readiness sources", `internal/event/event.go`).
 
 ## Evidence: one week of S1 direct-push (the-valley, qinling)
 
-| #   | observed                                                                            | precise cause in klaus                                                                                                                                                                                                                   |
-| --- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | agent pushed a branch, ended as bare `exited`; owner finds work via `git ls-remote` | no event kind carries a pushed branch; `determineStatus` knows only PR/merged states (`internal/cmd/status.go`); default `klaus watch` filter omits `agent:completed` (`internal/cmd/watch.go`)                                          |
-| 2   | budget-capped direct-push agent has **no** persistence/resume story                 | `draft.HandleBudgetPause` pushes WIP fine (pure git) but then needs `gh pr create --draft` + label; on a sovereign origin that fails and `_finalize` falls through to a normal completion — no `agent:paused`, nothing to resume against |
-| 3   | no "branch awaiting integration" state anywhere                                     | pipeline FSM keyed by PR number (`internal/pipeline/pipeline.go`); `track`/`approve`/`merge` all take PR refs                                                                                                                            |
-| 4   | a run got labeled with an upstream repo's PR #130 it merely _mentioned_             | `_finalize` regex-scrapes any `github.com/.../pull/N` URL from the transcript, last match wins, never checked against the run's target repo (`internal/cmd/hidden.go`)                                                                   |
-| 5   | agent killed by a usage limit died silently; only the log tail said why             | crash detection reads only the final `result` JSONL line; a killed stream sets no `FailureReason` → false `agent:completed`; `agent:needs-attention` is also absent from the default watch filter                                        |
+| #   | observed                                                                                   | precise cause in klaus                                                                                                                                                                                                                   |
+| --- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | agent pushed a branch, ended as bare `exited`; the operator finds work via `git ls-remote` | no event kind carries a pushed branch; `determineStatus` knows only PR/merged states (`internal/cmd/status.go`); default `klaus watch` filter omits `agent:completed` (`internal/cmd/watch.go`)                                          |
+| 2   | budget-capped direct-push agent has **no** persistence/resume story                        | `draft.HandleBudgetPause` pushes WIP fine (pure git) but then needs `gh pr create --draft` + label; on a sovereign origin that fails and `_finalize` falls through to a normal completion — no `agent:paused`, nothing to resume against |
+| 3   | no "branch awaiting integration" state anywhere                                            | pipeline FSM keyed by PR number (`internal/pipeline/pipeline.go`); `track`/`approve`/`merge` all take PR refs                                                                                                                            |
+| 4   | a run got labeled with an upstream repo's PR #130 it merely _mentioned_                    | `_finalize` regex-scrapes any `github.com/.../pull/N` URL from the transcript, last match wins, never checked against the run's target repo (`internal/cmd/hidden.go`)                                                                   |
+| 5   | agent killed by a usage limit died silently; only the log tail said why                    | crash detection reads only the final `result` JSONL line; a killed stream sets no `FailureReason` → false `agent:completed`; `agent:needs-attention` is also absent from the default watch filter                                        |
 
 Gap 5 is [[ida-3145b7a]]'s stall row "agent run died silently"
 ([ida-3145b7a-demand-pressure.md](./ida-3145b7a-demand-pressure.md)), observed in production — klaus

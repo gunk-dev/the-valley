@@ -187,6 +187,13 @@ failure" question ([openquestions.md](./openquestions.md), _Resolved_).
 - Rebuilding the stream from scratch (replay the repo's refs) reproduces the same events — the
   projection is deterministic.
 
+**Validated 2026-07-17**, live on the pilot host: a branch push produced its `ref-updated` on the
+bus within a second, the payload's object id matching the pushed commit; two full replays of the
+pilot repo's refs produced identical event sets. Known limits carried as bug nodes:
+[bd-d853d9c](../.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md) (authorization gates any acting
+consumer or wider listener) and [bd-500adf7](../.the-valley/bugs/bd-500adf7-bus-shares-git-user.md)
+(service user isolation before network reachability).
+
 **Links.** [architecture.md](./architecture.md) (_a log, not a workflow engine_),
 [contribute.md](./contribute.md).
 

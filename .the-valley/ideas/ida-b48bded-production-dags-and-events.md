@@ -4,15 +4,15 @@ id: ida-b48bded
 status: exploring
 title: "Outcomes as production: can DAGs and events weave?"
 created: 2026-07-16
-source: owner design conversation
+source: design conversations, 2026-07-16/17
 ---
 
 # Outcomes as production: can DAGs and events weave?
 
-A central pillar of the architecture is an idea the owner likes and wants to test: most valuable
-outcomes can be modeled as *production* — the result of computing and satisfying a DAG. But DAGs
-and event-based systems have very different topologies and control flow. The question: can the two
-be woven naturally, or not?
+A central pillar of the architecture is a bet to be tested: most valuable outcomes can be modeled
+as *production* — the result of computing and satisfying a DAG. But DAGs and event-based systems
+have very different topologies and control flow. The question: can the two be woven naturally, or
+not?
 
 ## What about the SDLC is DAG-shaped
 

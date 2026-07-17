@@ -9,7 +9,10 @@ source: ratified by patflynn
 
 # Self-describing projects — identity transcends the host
 
-A project's identity transcends the host that serves it. Today the host's `valley.cue` declares which projects it serves; the direction is **self-describing projects** — a project's own declaration travels in its store, the way the `.the-valley/` knowledge graph already does, and host config shrinks to a serving list.
+A project's identity transcends the host that serves it. Today the host's `valley.cue` declares
+which projects it serves; the direction is **self-describing projects** — a project's own
+declaration travels in its store, the way the `.the-valley/` knowledge graph already does, and host
+config shrinks to a serving list.
 
 Open design questions, named here but not resolved:
 
@@ -19,5 +22,7 @@ Open design questions, named here but not resolved:
 
 ## Related
 
-- The store this declaration travels in: [[dcr-5da1f36]] ([decisions/dcr-5da1f36-project-is-repo.md](../decisions/dcr-5da1f36-project-is-repo.md))
-- Cross-host resolution belongs to the federation layer: [[ida-8482624]] ([ida-8482624-federation-groups.md](./ida-8482624-federation-groups.md))
+- The store this declaration travels in: [[dcr-5da1f36]]
+  ([decisions/dcr-5da1f36-project-is-repo.md](../decisions/dcr-5da1f36-project-is-repo.md))
+- Cross-host resolution belongs to the federation layer: [[ida-8482624]]
+  ([ida-8482624-federation-groups.md](./ida-8482624-federation-groups.md))

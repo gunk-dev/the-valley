@@ -1,6 +1,8 @@
 # Self-transparency (DRAFT — candidate invariant, unresolved)
 
-> **Status: DRAFT.** This document names a candidate invariant and collects the facets that look like instances of it. It does **not** resolve it. The statement, the mechanism, and the base case are all open. Treat nothing here as decided.
+> **Status: DRAFT.** This document names a candidate invariant and collects the facets that look
+> like instances of it. It does **not** resolve it. The statement, the mechanism, and the base case
+> are all open. Treat nothing here as decided.
 
 ## The candidate invariant
 
@@ -8,28 +10,51 @@ A single property keeps surfacing, unnamed, across the design:
 
 > **No actor can durably change the system, or an output of the system, without transparency.**
 
-Recursive all the way down. The system's own policy, controllers, and configuration are not a privileged layer exempt from the rules — they are themselves outcomes, produced and integrated exactly like code. the-valley builds the-valley. A change to the integrator's policy goes through integration; a change to a controller goes through attestation. No back door, no out-of-band edit the log does not see.
+Recursive all the way down. The system's own policy, controllers, and configuration are not a
+privileged layer exempt from the rules — they are themselves outcomes, produced and integrated
+exactly like code. the-valley builds the-valley. A change to the integrator's policy goes through
+integration; a change to a controller goes through attestation. No back door, no out-of-band edit
+the log does not see.
 
-"Durably" is load-bearing and underspecified: a transient, self-correcting change may not need the same ceremony as one that persists. Where that line sits is part of what is unresolved.
+"Durably" is load-bearing and underspecified: a transient, self-correcting change may not need the
+same ceremony as one that persists. Where that line sits is part of what is unresolved.
 
 ## Facets it unifies
 
-Each was raised locally, as a wrinkle in one subsystem; together they look like one property the design has been circling without stating:
+Each was raised locally, as a wrinkle in one subsystem; together they look like one property the
+design has been circling without stating:
 
-- **Integrator self-integration.** The integrator is code in a repo; how does *its* code get integrated? ([openquestions.md](./openquestions.md), *Identity & trust bootstrapping*.)
-- **Policy bootstrap.** Someone must land the first principle before any policy exists to govern principle changes — the recursion needs a base case that does not itself recurse.
-- **Load-bearing principles.** Active principles can constrain what the integrator accepts ([architecture.md](./architecture.md), *project knowledge is a typed-node graph*) — the rules the system runs by are themselves transparent, versioned nodes.
-- **Per-repo integrator config as a `config` node.** The integrator's own configuration — which protected refs, which trust thresholds, which witnesses — is itself a knowledge-graph node, queried alongside principles: the system's configuration is an output governed like any output, and a change to the config that governs integration is under the same governance as any change.
+- **Integrator self-integration.** The integrator is code in a repo; how does _its_ code get
+  integrated? ([openquestions.md](./openquestions.md), _Identity & trust bootstrapping_.)
+- **Policy bootstrap.** Someone must land the first principle before any policy exists to govern
+  principle changes — the recursion needs a base case that does not itself recurse.
+- **Load-bearing principles.** Active principles can constrain what the integrator accepts
+  ([architecture.md](./architecture.md), _project knowledge is a typed-node graph_) — the rules the
+  system runs by are themselves transparent, versioned nodes.
+- **Per-repo integrator config as a `config` node.** The integrator's own configuration — which
+  protected refs, which trust thresholds, which witnesses — is itself a knowledge-graph node,
+  queried alongside principles: the system's configuration is an output governed like any output,
+  and a change to the config that governs integration is under the same governance as any change.
 
 ## Why it stays unresolved
 
-- **Statement.** "Durably change" and "an output" need precise definitions before the invariant can be enforced rather than admired.
-- **Base case.** A recursive invariant needs a grounding step that does not itself recurse; "key-holders land the first policy under relaxed rules" is a gap, not an answer.
-- **Mechanism.** If policy and config are outcomes integrated like code, what enforces that there is *no* other path? Nothing yet names the closure.
-- **Cost.** Full recursion implies every config tweak carries integration ceremony; where the system relaxes that — and stays honest about relaxing it — is undesigned.
+- **Statement.** "Durably change" and "an output" need precise definitions before the invariant can
+  be enforced rather than admired.
+- **Base case.** A recursive invariant needs a grounding step that does not itself recurse;
+  "key-holders land the first policy under relaxed rules" is a gap, not an answer.
+- **Mechanism.** If policy and config are outcomes integrated like code, what enforces that there is
+  _no_ other path? Nothing yet names the closure.
+- **Cost.** Full recursion implies every config tweak carries integration ceremony; where the system
+  relaxes that — and stays honest about relaxing it — is undesigned.
 
 ## Relationship to the rest of the design
 
-If it holds, this invariant is the property that makes the [outcome engine](./architecture.md#bet-the-knowledge-graph-read-generatively--an-outcome-dag) trustworthy when pointed at itself, and the property [federation](./architecture.md#federation-the-group-is-the-unit) must preserve across group boundaries — a federated change is still a transparent one.
+If it holds, this invariant is the property that makes the
+[outcome engine](./architecture.md#bet-the-knowledge-graph-read-generatively--an-outcome-dag)
+trustworthy when pointed at itself, and the property
+[federation](./architecture.md#federation-the-group-is-the-unit) must preserve across group
+boundaries — a federated change is still a transparent one.
 
-If it holds, this is plausibly the top-level invariant the whole design is an implementation of — which is exactly why it should not be declared settled on a stub. Tracked in [openquestions.md](./openquestions.md).
+If it holds, this is plausibly the top-level invariant the whole design is an implementation of —
+which is exactly why it should not be declared settled on a stub. Tracked in
+[openquestions.md](./openquestions.md).

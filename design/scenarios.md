@@ -1,6 +1,9 @@
 # Scenarios
 
-End-to-end walk-throughs of how the architecture handles real situations. Forces the design to be honest, and surfaces gaps that the abstract docs miss. These are solution-space — architecture walk-throughs in event notation; the problem-space counterpart, what a user needs with no mechanisms, is [user-scenarios.md](./user-scenarios.md).
+End-to-end walk-throughs of how the architecture handles real situations. Forces the design to be
+honest, and surfaces gaps that the abstract docs miss. These are solution-space — architecture
+walk-throughs in event notation; the problem-space counterpart, what a user needs with no
+mechanisms, is [user-scenarios.md](./user-scenarios.md).
 
 Conventions used in the flows below:
 
@@ -34,14 +37,18 @@ The everyday case. A human edits code, runs local checks, and ships a change.
 
 **Stress points:**
 
-- Whether the integrator waits for witness confirmation before integrating is policy, not architecture — but the policy needs to exist (trusted signer: probably not; new signer: probably yes).
-- The "local checks are sufficient" assumption is load-bearing. Environment drift from canonical surfaces as witness rejections and trust-score drift; the system should make that debuggable.
+- Whether the integrator waits for witness confirmation before integrating is policy, not
+  architecture — but the policy needs to exist (trusted signer: probably not; new signer: probably
+  yes).
+- The "local checks are sufficient" assumption is load-bearing. Environment drift from canonical
+  surfaces as witness rejections and trust-score drift; the system should make that debuggable.
 
 ---
 
 ## 2. klaus-style agent change
 
-An agent dispatched by klaus does the work. Same flow as a human, but identity and trust live in different places.
+An agent dispatched by klaus does the work. Same flow as a human, but identity and trust live in
+different places.
 
 ```
 ▶ klaus launch "fix the auth bug ..."
@@ -57,15 +64,20 @@ An agent dispatched by klaus does the work. Same flow as a human, but identity a
 
 **Stress points:**
 
-- **Agent identity is unresolved.** Ephemeral per-run key, long-lived per-agent key, or delegated from the dispatching human — the architecture supports any; the trust controller cares only about confirm/deny rates per signer.
-- **The "PR" concept dissolves.** What klaus today calls "PR created" is just `integration-requested` with the agent as signer.
-- **Agent loops.** An agent reacting to a regression event (Scenario 3) dispatches another agent run; the architecture needs a cap (klaus's existing run-budget mechanism extends naturally).
+- **Agent identity is unresolved.** Ephemeral per-run key, long-lived per-agent key, or delegated
+  from the dispatching human — the architecture supports any; the trust controller cares only about
+  confirm/deny rates per signer.
+- **The "PR" concept dissolves.** What klaus today calls "PR created" is just
+  `integration-requested` with the agent as signer.
+- **Agent loops.** An agent reacting to a regression event (Scenario 3) dispatches another agent
+  run; the architecture needs a cap (klaus's existing run-budget mechanism extends naturally).
 
 ---
 
 ## 3. Post-deploy regression
 
-A change makes it to production. Some time later, runtime signals indicate something is wrong. The system closes the loop back to the change.
+A change makes it to production. Some time later, runtime signals indicate something is wrong. The
+system closes the loop back to the change.
 
 ```
 ↺ monitoring   error rate on /api/foo crosses threshold
@@ -82,15 +94,20 @@ A change makes it to production. Some time later, runtime signals indicate somet
 
 **Stress points:**
 
-- **Attribution.** Monitoring rarely *knows* which commit caused a regression; `attributed_commits` is a lead with a confidence, not a verdict.
-- **Auto-rollback vs human-in-the-loop** is per-environment policy — but the policy must be expressible and observable, with the controller emitting its reasoning as events.
-- **Trust implications.** A regression alone doesn't lower a signer's trust score (regressions ≠ forgery); a *correlation* of regressions per signer is a separate signal, surfaced to humans rather than auto-acted.
+- **Attribution.** Monitoring rarely _knows_ which commit caused a regression; `attributed_commits`
+  is a lead with a confidence, not a verdict.
+- **Auto-rollback vs human-in-the-loop** is per-environment policy — but the policy must be
+  expressible and observable, with the controller emitting its reasoning as events.
+- **Trust implications.** A regression alone doesn't lower a signer's trust score (regressions ≠
+  forgery); a _correlation_ of regressions per signer is a separate signal, surfaced to humans
+  rather than auto-acted.
 
 ---
 
 ## 4. Untrusted contributor
 
-A new contributor wants to land a change. They have no attestation history, so the trust controller has no signal on them.
+A new contributor wants to land a change. They have no attestation history, so the trust controller
+has no signal on them.
 
 ```
 ▶ alice (new) git push --integrate topic/welcome-fix
@@ -110,9 +127,12 @@ A new contributor wants to land a change. They have no attestation history, so t
 
 **Stress points:**
 
-- **The trust state machine.** "Co-signed by trusted party" → "trusted enough to auto-integrate" is a discrete transition needing concrete policy: how many, which changes count, does trust decay.
-- **Threads subsume the PR.** Request, diff, attestations, comments, approval, and outcome are one chronology in one thread.
-- **Approval authority.** The maintainer's key being on a known list is itself policy needing versioning, audit, and grant/revoke.
+- **The trust state machine.** "Co-signed by trusted party" → "trusted enough to auto-integrate" is
+  a discrete transition needing concrete policy: how many, which changes count, does trust decay.
+- **Threads subsume the PR.** Request, diff, attestations, comments, approval, and outcome are one
+  chronology in one thread.
+- **Approval authority.** The maintainer's key being on a known list is itself policy needing
+  versioning, audit, and grant/revoke.
 
 ---
 
@@ -132,8 +152,10 @@ armstrong's CUE schema changes. Multiple downstream repos depend on it.
 
 **Stress points:**
 
-- Tests that events flow across repo boundaries on the same bus, with per-repo controllers consuming cross-repo events.
-- How a consumer *declares* interest in another repo's events is open — probably explicit config; implicit discovery is too magical.
+- Tests that events flow across repo boundaries on the same bus, with per-repo controllers consuming
+  cross-repo events.
+- How a consumer _declares_ interest in another repo's events is open — probably explicit config;
+  implicit discovery is too magical.
 
 ---
 
@@ -151,25 +173,29 @@ A weekly dependency bump.
 
 **Stress points:**
 
-- From the integrator's perspective, indistinguishable from a human or agent contribution; the dep-updater has its own key and trust score.
-- Time is just another event source — no "scheduled workflows" subsystem, only a controller emitting `scheduled-tick` events.
+- From the integrator's perspective, indistinguishable from a human or agent contribution; the
+  dep-updater has its own key and trust score.
+- Time is just another event source — no "scheduled workflows" subsystem, only a controller emitting
+  `scheduled-tick` events.
 
 ---
 
 ## What these scenarios collectively prove (or fail to prove)
 
-| Architectural claim | Tested by | Result |
-| --- | --- | --- |
-| Local attestations replace CI gates | 1, 2 | Works if reproducibility policy holds and witnesses are present |
-| Integrator pattern handles real cases | 1, 2, 4 | Works; policy variation per-signer is essential |
-| Feedback closes the loop post-merge | 3 | Works; attribution is the weakest link |
-| Threads subsume PR review | 4 | Works; the "approval has authority" claim needs concrete policy mechanism |
-| Cross-repo flows on one bus | 5 | Plausible; subscription/discovery is unsolved |
-| Time integrates as just another event source | 6 | Clean fit |
-| Agents are first-class contributors | 2 | Architecturally yes; agent identity model unresolved |
+| Architectural claim                          | Tested by | Result                                                                    |
+| -------------------------------------------- | --------- | ------------------------------------------------------------------------- |
+| Local attestations replace CI gates          | 1, 2      | Works if reproducibility policy holds and witnesses are present           |
+| Integrator pattern handles real cases        | 1, 2, 4   | Works; policy variation per-signer is essential                           |
+| Feedback closes the loop post-merge          | 3         | Works; attribution is the weakest link                                    |
+| Threads subsume PR review                    | 4         | Works; the "approval has authority" claim needs concrete policy mechanism |
+| Cross-repo flows on one bus                  | 5         | Plausible; subscription/discovery is unsolved                             |
+| Time integrates as just another event source | 6         | Clean fit                                                                 |
+| Agents are first-class contributors          | 2         | Architecturally yes; agent identity model unresolved                      |
 
 ## What's still uncovered
 
-- **Forensic walk-back.** Replaying the log to debug "why did this happen?" The architecture promises it works; nothing here exercises it as a workflow.
+- **Forensic walk-back.** Replaying the log to debug "why did this happen?" The architecture
+  promises it works; nothing here exercises it as a workflow.
 - **Multi-author / stacked changes.** A chain of dependent commits with multiple signers.
-- **Recovery from bus loss.** Per-repo request refs in git provide some durability for in-flight integrations, but a deeper story is needed.
+- **Recovery from bus loss.** Per-repo request refs in git provide some durability for in-flight
+  integrations, but a deeper story is needed.

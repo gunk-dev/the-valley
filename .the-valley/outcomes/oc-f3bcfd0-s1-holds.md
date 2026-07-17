@@ -9,6 +9,9 @@ blocked_by: [oc-49555c7, oc-2fbcd7b, oc-9949561, oc-fc348f0]
 
 # S1 holds — repos on my infrastructure, never losable
 
-Root outcome for the current phase. Definition of done: every box in the acceptance checklist at [user-scenarios.md § S1](../../design/user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them) is checked — by looking, not by reviewing configuration.
+Root outcome for the current phase. Definition of done: every box in the acceptance checklist at
+[user-scenarios.md § S1](../../design/user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them)
+is checked — by looking, not by reviewing configuration.
 
-2026-07-13 — all four blockers ([[oc-49555c7]], [[oc-2fbcd7b]], [[oc-fc348f0]], [[oc-9949561]]) are done; the remaining gate is S1's own acceptance checklist, the week of real work chief among them.
+2026-07-13 — all four blockers ([[oc-49555c7]], [[oc-2fbcd7b]], [[oc-fc348f0]], [[oc-9949561]]) are
+done; the remaining gate is S1's own acceptance checklist, the week of real work chief among them.

@@ -33,6 +33,8 @@ the required attestation for `.the-valley/**` diffs at the integrator rung
 ([architecture.md](../../design/architecture.md)), and a pure, witness-re-derivable check under the
 trust backstop. Same derivation throughout.
 
+Addendum (2026-07-17, owner observation): the prose corpus has very long lines — whole paragraphs on one line, node files past 900 characters — the kind of thing lint, formatting, and a resubmit CI check would normally catch, and nothing here checks yet. This slots straight into the structure above: a prose-format rule is a missing member of the knowledge lint's check set, with the same three lifetimes (flake check today, attestation later). Candidate convention, undecided: semantic line breaks — one sentence per line — rather than a hard wrap. It renders identically, and it aligns diffs, conflicts, and blame to sentence boundaries, which is worth real money in `valley review` and `[b]` rebases. When the check lands, the corpus reformat is one mechanical sweep, kept to a single commit so blame churn is contained.
+
 ## Related
 
 - Extends the one-structural-invariant idea (only the integrator writes protected refs) one level

@@ -72,8 +72,8 @@ configuration:
       checking both, not by trusting the config.
 - [x] One full restore from the offsite copy has been performed and verified.
 - [ ] A week of real work — human _and_ agent — on the pilot repo without touching GitHub.
-- [ ] A klaus agent change lands end to end via direct-push mode.
-- [ ] At least one real issue is opened, worked, and closed as an in-repo node — including one agent
+- [x] A klaus agent change lands end to end via direct-push mode.
+- [x] At least one real issue is opened, worked, and closed as an in-repo node — including one agent
       dispatched against a node instead of a GitHub issue.
 - [ ] The migration-plus-restore runbook exists and is repeatable for the next repo.
 

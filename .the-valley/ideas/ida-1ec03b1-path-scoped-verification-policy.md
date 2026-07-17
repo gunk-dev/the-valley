@@ -13,8 +13,8 @@ The integrator derives a change's required attestation set from the **actual tre
 the contributor's claim about the change. Policy maps path classes to required checks:
 
 - `.the-valley/**` only → signature + knowledge lint: frontmatter vetted against a CUE `#Node`
-  schema (types, status enums, id derived from slug, filename coherence) and reference integrity
-  (`[[wiki-links]]`, `blocked_by` ids, and relative links all resolve).
+  schema (types, status enums, id derived from slug, filename coherence), reference integrity
+  (`[[wiki-links]]`, `blocked_by` ids, and relative links all resolve), and prose format (below).
 - Code → the full check suite ([verification.md](../../design/verification.md)).
 - Mixed → the max of everything touched, automatically.
 
@@ -33,9 +33,14 @@ the required attestation for `.the-valley/**` diffs at the integrator rung
 ([architecture.md](../../design/architecture.md)), and a pure, witness-re-derivable check under the
 trust backstop. Same derivation throughout.
 
-Addendum (2026-07-17, owner observation): the prose corpus has very long lines — whole paragraphs on one line, node files past 900 characters — the kind of thing lint, formatting, and a resubmit CI check would normally catch, and nothing here checks yet. This slots straight into the structure above: a prose-format rule is a missing member of the knowledge lint's check set, with the same three lifetimes (flake check today, attestation later).
-
-Convention, leaning but not decided: filled paragraphs hard-wrapped by a deterministic formatter (prettier-style, width ~80–100). Semantic line breaks (one sentence per line) were considered for their diff alignment and rejected on the owner's call: humans read these files raw, and sentence-per-line is really hard to read. Hard wrap reads best in the raw exactly because it is the filled-paragraph shape prose has always taken in terminals. What it costs — a one-word edit can re-flow the rest of a paragraph in the diff — is already mitigated at review time by delta's word-level highlighting in `valley review`. Enforcement is the gofmt move: the check is formatter idempotence (formatting the tree changes nothing), which is deterministic, judgment-free, and available off the shelf; sembr has no equivalent tooling. When the check lands, the corpus reformat is one mechanical sweep, kept to a single commit so blame churn is contained.
+Prose format (decided 2026-07-17): markdown prose is filled paragraphs hard-wrapped at 100
+characters by a deterministic formatter. The check is formatter idempotence — formatting the tree
+changes nothing — which is deterministic, judgment-free, and off the shelf. Rationale: humans read
+these files raw, and filled paragraphs are the readable shape in a terminal; semantic line breaks
+(one sentence per line) diff better but read badly raw, and no deterministic formatter can enforce
+them. Hard wrap's cost — a one-word edit can re-flow a paragraph in the diff — is mitigated at
+review time by delta's word-level highlighting in `valley review`. The corpus reformat is one
+mechanical sweep in a single commit, so blame churn is contained.
 
 ## Related
 

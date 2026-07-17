@@ -136,6 +136,9 @@ let
     listen: ${cfg.bus.listen}
     jetstream {
       store_dir: "${cfg.bus.storeDir}"
+      # The store directory defaults to living on the repo volume; the cap
+      # keeps a runaway or malicious local publisher from filling it.
+      max_file_store: 2GiB
     }
   '';
 

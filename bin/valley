@@ -11,7 +11,7 @@
 #   - it needs persistent state, config, or a daemon;
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI —
-#     graduation is now owed, pending the owner's decision node);
+#     graduation is now owed; recording the decision node is part of taking it.);
 #   - its behavior gets subtle enough to need real tests;
 #   - it needs nontrivial parsing or concurrency.
 # Graduation is a deliberate act, recorded as a decision node.

@@ -28,6 +28,8 @@ Development of that (not part of it):
 - It gives the two node classes a formal signature: deterministic nodes are graph-preserving (they execute known edges); neural nodes are graph-extending (their output includes new graph structure — the missing deterministic instructions).
 - The root's behavior requirement is what makes "not yet satisfied" decidable, so pressure has a gradient — the conformance-suite move ([[ida-4557af7]], [ida-4557af7-spec-driven-iteration.md](./ida-4557af7-spec-driven-iteration.md)) is that requirement seen from the spec side, and self-obsolescence generalizes the graduation policy ([[dcr-74c3158]], [dcr-74c3158-valley-cli-lifecycle.md](../decisions/dcr-74c3158-valley-cli-lifecycle.md)) to all neural work.
 
+Addendum (2026-07-17, owner): incidents likely fold into the weave after all — an incident is an event invalidating the observed satisfaction of an already-satisfied root, and pressure resumes. The remaining residue is the model for infrastructure, long-lived services, and timers; perhaps no innovation is needed there (the stack's existing level-triggered convergence answer may suffice). Undecided.
+
 Phase 5 (effectful reactions, [roadmap.md](../../design/roadmap.md)) is where this resolves in practice: reconciler-against-the-graph, or reaction chains. Deciding early is cheap; refactoring Phase 5 later is not.
 
 Extends the outcome-DAG bet ([[ida-eac723e]], [ida-eac723e-outcome-dag.md](./ida-eac723e-outcome-dag.md)).

@@ -9,27 +9,65 @@ source: owner design conversation
 
 # Outcomes as production: can DAGs and events weave?
 
-A central pillar of the architecture is an idea the owner likes and wants to test: most valuable outcomes can be modeled as *production* — the result of computing and satisfying a DAG. Builds are DAGs; configuring and standing up infra can be a DAG; implementing a feature can be a DAG. But DAGs and event-based systems have very different topologies and control flow. It is not obvious the SDLC can be modeled as a DAG, or that all of those examples are right. The question: are event-based and production-DAG architectures something we can naturally weave together, or not?
+A central pillar of the architecture is an idea the owner likes and wants to test: most valuable
+outcomes can be modeled as *production* — the result of computing and satisfying a DAG. But DAGs
+and event-based systems have very different topologies and control flow. The question: can the two
+be woven naturally, or not?
 
-Current thinking (2026-07-16):
+## What about the SDLC is DAG-shaped
 
-- **The examples split three ways.** Builds are a *static* DAG, known before execution. Feature work is a *dynamic* DAG — doing one node reveals the next, so the engine must suspend and resume rather than plan-then-execute ("Build Systems à la Carte" studies exactly this axis). Infra is the weak example: this stack already voted against infra-as-DAG once, banning Terraform's plan-DAG in favor of k8s-style convergence (armstrong, cosmo). *(Corrected 2026-07-17, owner: the Terraform ban indicts its statefulness and its configuration language, not necessarily its DAGishness — whether those are coupled is unknown. A reconciler might still need to compute all the dependencies of, e.g., a service to cleanly instantiate it. So infra may not be the weak example after all.)*
-- **A residue is not DAG-shaped.** Standing obligations have no terminal "satisfied" state (the roadmap already holds durability out of the phases as a standing priority), and incidents are interrupts — the world pushes, no root outcome demanded them. Production should claim demanded, terminating work and explicitly cede the rest.
-- **The weave with precedent** (k8s, incremental build systems, Excel): events at the boundary, the DAG explicit in the middle, levels underneath. Events never drive work — they *invalidate* observed state. The knowledge graph holds the dependency structure, queryable at rest. A level-triggered reconciler compares demand against observation and pulls the frontier. The anti-pattern is reaction chains that encode the DAG implicitly in event wiring — the failure "a log, not a workflow engine" ([architecture.md](../../design/architecture.md)) guards against.
-- **Cycles.** Review→revise→review is cyclic, but the artifact dependency structure is acyclic at any instant; versioning turns cycles into spirals — each iteration is a new node state, the same move changes-not-branches makes ([[ida-93e4f91]], [ida-93e4f91-changes-not-branches.md](./ida-93e4f91-changes-not-branches.md)).
+An existing build target has an a priori DAG: a transitive closure of inputs that produce the thing
+that meets some behavior requirement. Development is the process of manifesting the DAG of a root
+node in the future whose spec is yet to be satisfied. A build is a completed development — the same
+DAG seen after the fact. The development process does not look like a DAG while it runs because the
+missing structure is not known yet, not because the work has a different shape; the engine must
+suspend and resume as structure appears rather than plan-then-execute ("Build Systems à la Carte"
+studies exactly this axis).
 
-The owner's sharpening (2026-07-17), near-verbatim — this answers what about the SDLC is DAG-shaped:
+Two kinds of compute do the manifesting. Deterministic compute executes code that exists. Neural
+compute — human or LLM agents — manifests the missing deterministic instructions in the stack.
+While the root node does not satisfy its requirements, neural nodes produce the elements needed to
+deterministically produce a satisfying artifact. The formal signature: deterministic nodes are
+graph-preserving (they execute known edges); neural nodes are graph-extending (their output is new
+graph structure). A neural node's end goal is to put itself out of business, automating as much as
+it can with deterministic nodes — the graduation policy ([[dcr-74c3158]],
+[dcr-74c3158-valley-cli-lifecycle.md](../decisions/dcr-74c3158-valley-cli-lifecycle.md))
+generalized to all neural work.
 
-An existing build target has an a priori DAG: a transitive closure of inputs that produce the thing that meets some behavior requirement. Development is the process of manifesting the DAG of a root node in the future whose spec is yet to be satisfied. In the toolbox are two kinds of compute: deterministic compute to execute code, and neural compute — human or LLM agents — to manifest missing deterministic instructions in the stack. While the root node is not satisfying the requirements, neural nodes are manifesting the elements needed to deterministically produce a satisfying artifact. Pressure ([[ida-3145b7a]], [ida-3145b7a-demand-pressure.md](./ida-3145b7a-demand-pressure.md)) — an extension of what klaus was reaching for — is the system always trying to unblock stalls in the realization of the future DAG. Unblocking happens through neural nodes, but a neural node's end goal is to put itself out of business, automating as much as it can with deterministic nodes.
+Pressure ([[ida-3145b7a]], [ida-3145b7a-demand-pressure.md](./ida-3145b7a-demand-pressure.md)) is
+the engine: the system always trying to unblock stalls in the realization of the future DAG. The
+root's behavior requirement is what makes "not yet satisfied" decidable, so pressure has a
+gradient; the conformance-suite move ([[ida-4557af7]],
+[ida-4557af7-spec-driven-iteration.md](./ida-4557af7-spec-driven-iteration.md)) is the same
+requirement seen from the spec side.
 
-Development of that (not part of it):
+## The weave
 
-- It dissolves the static/dynamic split above: a build DAG is a completed development DAG — the difference is when you look, not the topology. The incompleteness during development is epistemic.
-- It gives the two node classes a formal signature: deterministic nodes are graph-preserving (they execute known edges); neural nodes are graph-extending (their output includes new graph structure — the missing deterministic instructions).
-- The root's behavior requirement is what makes "not yet satisfied" decidable, so pressure has a gradient — the conformance-suite move ([[ida-4557af7]], [ida-4557af7-spec-driven-iteration.md](./ida-4557af7-spec-driven-iteration.md)) is that requirement seen from the spec side, and self-obsolescence generalizes the graduation policy ([[dcr-74c3158]], [dcr-74c3158-valley-cli-lifecycle.md](../decisions/dcr-74c3158-valley-cli-lifecycle.md)) to all neural work.
+Events at the boundary, the DAG explicit in the middle, levels underneath — the shape k8s,
+incremental build systems, and Excel share. Events never drive work; they *invalidate* observed
+state. The knowledge graph holds the dependency structure, queryable at rest, and a level-triggered
+reconciler compares demand against observation and pulls the frontier. The anti-pattern is reaction
+chains that encode the DAG implicitly in event wiring — the failure "a log, not a workflow engine"
+([architecture.md](../../design/architecture.md)) guards against.
 
-Addendum (2026-07-17, owner): incidents likely fold into the weave after all — an incident is an event invalidating the observed satisfaction of an already-satisfied root, and pressure resumes. The remaining residue is the model for infrastructure, long-lived services, and timers; perhaps no innovation is needed there (the stack's existing level-triggered convergence answer may suffice). Undecided.
+Incidents fit inside the model: an incident is an event invalidating the observed satisfaction of
+an already-satisfied root, and pressure resumes. Cycles fit too: review→revise→review is cyclic,
+but the artifact dependency structure is acyclic at any instant — versioning turns cycles into
+spirals, the same move changes-not-branches makes ([[ida-93e4f91]],
+[ida-93e4f91-changes-not-branches.md](./ida-93e4f91-changes-not-branches.md)).
 
-Phase 5 (effectful reactions, [roadmap.md](../../design/roadmap.md)) is where this resolves in practice: reconciler-against-the-graph, or reaction chains. Deciding early is cheap; refactoring Phase 5 later is not.
+## The residue, undecided
 
-Extends the outcome-DAG bet ([[ida-eac723e]], [ida-eac723e-outcome-dag.md](./ida-eac723e-outcome-dag.md)).
+Standing obligations — infrastructure, long-lived services, timers — have no terminal "satisfied"
+state; their specs quantify over time. Production claims demanded, terminating work; the standing
+layer is delegated to level-triggered convergence, which this stack already runs (armstrong,
+cosmo). Perhaps no innovation is needed there — undecided. The Terraform ban does not settle it:
+the ban indicts statefulness and the configuration language, not DAGishness, and a reconciler might
+still need to compute all the dependencies of, for example, a service to cleanly instantiate it.
+
+Phase 5 (effectful reactions, [roadmap.md](../../design/roadmap.md)) is where this resolves in
+practice: reconciler-against-the-graph, or reaction chains. Deciding early is cheap; refactoring
+Phase 5 later is not.
+
+Extends the outcome-DAG bet ([[ida-eac723e]],
+[ida-eac723e-outcome-dag.md](./ida-eac723e-outcome-dag.md)).

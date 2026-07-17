@@ -35,10 +35,40 @@
             installShellCompletion --zsh --name _valley ${./completions/_valley}
           '';
         };
+
+      # Markdown prose is filled paragraphs hard-wrapped at 100 columns
+      # (ida-1ec03b1). One prettier invocation backs both the formatter app
+      # and the prose-format check, so the two cannot drift.
+      # Embedded-language formatting is off so fenced code blocks pass
+      # through byte-for-byte.
+      proseFmtArgs = "--prose-wrap always --print-width 100 --embedded-language-formatting off";
+
+      # `nix run .#fmt` — rewrap every tracked *.md in the repo to 100 columns.
+      proseFmtFor =
+        pkgs:
+        pkgs.writeShellApplication {
+          name = "valley-fmt";
+          runtimeInputs = [
+            pkgs.git
+            pkgs.prettier
+          ];
+          text = ''
+            cd "$(git rev-parse --show-toplevel)"
+            git ls-files -z -- '*.md' | xargs -0 --no-run-if-empty \
+              prettier ${proseFmtArgs} --write
+          '';
+        };
     in
     {
       nixosModules.valley-host = ./nix/valley-host.nix;
       nixosModules.default = self.nixosModules.valley-host;
+
+      apps = lib.genAttrs systems (system: {
+        fmt = {
+          type = "app";
+          program = lib.getExe (proseFmtFor nixpkgs.legacyPackages.${system});
+        };
+      });
 
       packages = lib.genAttrs systems (
         system:
@@ -149,6 +179,21 @@
                 grep -q '^usage: valley' help.txt
                 test -f ${valley}/share/bash-completion/completions/valley
                 test -f ${valley}/share/zsh/site-functions/_valley
+                touch $out
+              '';
+
+          # Markdown prose format (ida-1ec03b1): the check is formatter
+          # idempotence — formatting the tree must change nothing. On failure,
+          # fix with `nix run .#fmt`.
+          prose-format =
+            pkgs.runCommand "valley-prose-format"
+              {
+                nativeBuildInputs = [ pkgs.prettier ];
+              }
+              ''
+                cd ${self}
+                find . -name '*.md' -print0 | xargs -0 --no-run-if-empty \
+                  prettier ${proseFmtArgs} --check
                 touch $out
               '';
 

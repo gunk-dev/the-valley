@@ -10,6 +10,7 @@
       # Checks use import-from-derivation (the module's cue export), so they
       # are only defined for the system that can actually build them here.
       systems = [ "x86_64-linux" ];
+      allSystems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
 
       # The integrator's CLI (bin/valley) wrapped for `nix run`. The script
       # itself must keep running bare from any checkout — the package is the
@@ -66,14 +67,14 @@
       nixosModules.valley-host = ./nix/valley-host.nix;
       nixosModules.default = self.nixosModules.valley-host;
 
-      apps = lib.genAttrs systems (system: {
+      apps = lib.genAttrs allSystems (system: {
         fmt = {
           type = "app";
           program = lib.getExe (proseFmtFor nixpkgs.legacyPackages.${system});
         };
       });
 
-      packages = lib.genAttrs systems (
+      packages = lib.genAttrs allSystems (
         system:
         let
           valley = valleyCliFor nixpkgs.legacyPackages.${system};

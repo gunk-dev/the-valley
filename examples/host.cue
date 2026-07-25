@@ -9,8 +9,9 @@ package valley
 
 projects: {
 	// The pilot repo (design/user-scenarios.md § S1). GitHub is retained
-	// as a transitional push mirror during migration: every push to the
-	// primary is replicated there, best-effort.
+	// as a transitional publication mirror during migration: every push
+	// to the primary replicates main and the tags there, best-effort.
+	// Topic branches awaiting review stay on the primary (dcr-24d62f7).
 	//
 	// git.enable defaults to true — git is the only store type today.
 	"the-valley": {

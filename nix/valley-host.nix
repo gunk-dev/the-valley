@@ -97,21 +97,42 @@ let
     done
   '';
 
-  # Best-effort push replication. The pushes run detached (setsid) so a dead
-  # mirror can only ever cost a log line — never block or fail the primary
-  # push. Explicit refspecs with --prune force-update every branch and tag
-  # and propagate their deletions — the same deletion semantics --mirror
-  # gives for heads and tags. --mirror itself is rejected: it also tries to
-  # delete remote-only namespaces, and on GitHub the read-only refs/pull/*
-  # makes that fail every push, masking real replication failures.
+  # Best-effort push replication. Publication mirror: main and tags only.
+  # Topic branches are review-queue state, not published — the mirror exists
+  # so consumers can fetch what has been integrated; durability is restic's
+  # job, not the mirror's. Pushes run detached (setsid) so a dead mirror can
+  # only ever cost a log line — never block or fail the primary push.
+  # --prune propagates tag deletions (glob refspec); it is a no-op for heads
+  # now that the heads refspec names one ref, so a separate best-effort sweep
+  # deletes every mirror head but main — which also strips anything that
+  # appears there by other means. The sweep reads only refs/heads (ls-remote
+  # --heads), never refs/pull/*, and is logged apart from the replication
+  # push so it cannot change that push's reported outcome. --mirror is
+  # rejected outright: it also tries to delete remote-only namespaces, and on
+  # GitHub the read-only refs/pull/* makes that fail every push, masking real
+  # replication failures.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
       for url in ${lib.escapeShellArgs mirrors}; do
-        if ${pkgs.git}/bin/git push --prune "$url" '+refs/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1; then
+        if ${pkgs.git}/bin/git push --prune "$url" '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1; then
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: pushed to $url" || true
         else
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: push to $url FAILED" || true
+        fi
+
+        # Unpublish anything but main. Refnames cannot contain whitespace, so
+        # accumulating them space-separated and splitting on expansion is safe.
+        stale=""
+        while read -r _ ref; do
+          [ "$ref" = refs/heads/main ] || stale="$stale $ref"
+        done < <(${pkgs.git}/bin/git ls-remote --heads "$url" 2>/dev/null)
+        if [ -n "$stale" ]; then
+          if ${pkgs.git}/bin/git push "$url" --delete $stale >/dev/null 2>&1; then
+            ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: unpublished$stale from $url" || true
+          else
+            ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: unpublish from $url failed (ignored)" || true
+          fi
         fi
       done
     '';
@@ -120,7 +141,7 @@ let
     name: mirrors:
     pkgs.writeShellScript "valley-mirrors-${name}" ''
       # Managed by services.valley — best-effort push mirrors for ${name}.
-      cat >/dev/null   # updated refs unused: the push replicates all heads and tags
+      cat >/dev/null   # updated refs unused: the push replicates main and tags
       ${pkgs.util-linux}/bin/setsid -f ${mirrorPusher name mirrors} </dev/null >/dev/null 2>&1
       exit 0
     '';

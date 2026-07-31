@@ -29,8 +29,8 @@ design.
 
 ## Why it is acceptable today
 
-Every key in the list belongs to the operator, the host is reachable only over a private tailnet, and
-the projects are small in number. A stale entry is a key nobody holds on a host nobody else can
+Every key in the list belongs to the operator, the host is reachable only over a private tailnet,
+and the projects are small in number. A stale entry is a key nobody holds on a host nobody else can
 route to. The defect is one of scale and hygiene, not a live exposure.
 
 ## The gate
@@ -46,10 +46,10 @@ Dispatched agent machines make the second true first, and they arrive with S3.
 ## Directions, not decisions
 
 - **Move authorization to the tailnet.** Identity is already declared to be Tailscale-ACL-based, and
-  the tailnet is already the front door, but it currently establishes reachability while a static key
-  list establishes authorization. An ACL tag naming which nodes may act as the git user would make
-  access follow from a machine's tag, needing no host change per machine, and would inherit node
-  expiry as a TTL. Whether Tailscale SSH composes with `git-shell` and non-interactive
+  the tailnet is already the front door, but it currently establishes reachability while a static
+  key list establishes authorization. An ACL tag naming which nodes may act as the git user would
+  make access follow from a machine's tag, needing no host change per machine, and would inherit
+  node expiry as a TTL. Whether Tailscale SSH composes with `git-shell` and non-interactive
   `git-receive-pack` is unverified, and it bypasses the module's sshd hardening.
 - **Short-lived certificates.** An SSH CA trusted by the host, issuing certificates that expire in
   hours, makes revocation the default rather than an act of hygiene. It also introduces a signing
@@ -68,6 +68,6 @@ user list — done for the machine that surfaced this — separates authenticati
 one member, and is a down payment on that partition rather than a substitute for it. Neither change
 gives a grant an expiry.
 
-The open question this sharpens is *when* Phase-0 identity has to grow and into what
+The open question this sharpens is _when_ Phase-0 identity has to grow and into what
 ([openquestions.md](../../design/openquestions.md)). This bug is one concrete forcing function: a
 machine that exists for an afternoon.

@@ -27,7 +27,7 @@ cosmo carries three bots, and they are two different shapes:
   a pull request, and enables auto-merge on it. Its input is a clock. Nothing on the host owns a
   clock that can start work inside a project.
 
-The reactive shape currently runs *through* GitHub even for a repo whose origin is already
+The reactive shape currently runs _through_ GitHub even for a repo whose origin is already
 sovereign. the-valley's mirror push triggers its own `.github/workflows/notify-cosmo.yml`, which
 sends a `repository_dispatch` to cosmo, which opens the bump PR. Migrating cosmo moves the sink of
 that chain onto the valley host while the relay in the middle is still a GitHub Action reacting to a
@@ -58,7 +58,8 @@ Something on the host that holds credentials, acts, and records what it did — 
 The effects these bots need are small and enumerable: edit `flake.lock`, and request integration of
 the result. That is a good first vocabulary precisely because it is short.
 
-This is [roadmap Phase 5](../../design/roadmap.md#phase-5--effectful-reactions-armstrong-as-controller)
+This is
+[roadmap Phase 5](../../design/roadmap.md#phase-5--effectful-reactions-armstrong-as-controller)
 territory — the first phase in which anything subscribes to an event and acts on it.
 
 ## Open

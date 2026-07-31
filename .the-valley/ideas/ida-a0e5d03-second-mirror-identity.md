@@ -39,7 +39,7 @@ machine integration into a domain model that has deliberately kept it out. The c
 explicit: the-valley defines what a host serves, and consumers supply data directory, unix user, and
 SSH keys ([[dcr-0f5d9b1]]
 ([dcr-0f5d9b1-cue-config-host-module.md](../decisions/dcr-0f5d9b1-cue-config-host-module.md))). An
-identity *name* is arguably not a credential and could sit in the model as a key the installer
+identity _name_ is arguably not a credential and could sit in the model as a key the installer
 resolves — but the same argument was available for every deployment concern the split rejected, so
 it deserves the decision it has not had.
 

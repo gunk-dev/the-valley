@@ -30,36 +30,38 @@ requirement — automation — has no equivalent on the host at all.
 
 **No verification gate.** cosmo's gate is a `pull_request` workflow, and S1 direct-push mode has no
 pull request for it to attach to, so the gate does not degrade at migration — it disappears.
-[[ida-7638082]] ([ida-7638082-host-has-no-check-runner.md](../ideas/ida-7638082-host-has-no-check-runner.md)).
+[[ida-7638082]]
+([ida-7638082-host-has-no-check-runner.md](../ideas/ida-7638082-host-has-no-check-runner.md)).
 
 **Automation has nowhere to land, and its current home destroys work.** Three GitHub bots keep
 cosmo's flake inputs current, in two distinct shapes — one scheduled, two reacting to an upstream
 ref update. Nothing on the host consumes an event and acts, and nothing on the host owns a clock.
 Worse, leaving the bots on the mirror is not neutral: the mirror's unpublish sweep deletes their
-branches and the forced `main` refspec overwrites their merges, both silently.
-[[ida-62a7a3b]] ([ida-62a7a3b-reactions-have-no-home.md](../ideas/ida-62a7a3b-reactions-have-no-home.md)).
+branches and the forced `main` refspec overwrites their merges, both silently. [[ida-62a7a3b]]
+([ida-62a7a3b-reactions-have-no-home.md](../ideas/ida-62a7a3b-reactions-have-no-home.md)).
 
 **Consumers read GitHub.** Every cosmo machine auto-upgrades nightly from `github:patflynn/cosmo`,
 the pilot host's converge unit both resolves and fetches from GitHub, and cosmo pins the-valley from
 its GitHub mirror. Sovereignty of the write path does not make the read path sovereign.
-[[ida-b037dc9]] ([ida-b037dc9-consumers-read-the-mirror.md](../ideas/ida-b037dc9-consumers-read-the-mirror.md)).
+[[ida-b037dc9]]
+([ida-b037dc9-consumers-read-the-mirror.md](../ideas/ida-b037dc9-consumers-read-the-mirror.md)).
 
 **The second mirror has no identity.** The host's one deploy key is already spent on the-valley, and
 GitHub allows a given deploy key on one repository. The migration runbook flagged this fork as
-deferred until the second migration; cosmo is the second migration.
-[[ida-a0e5d03]] ([ida-a0e5d03-second-mirror-identity.md](../ideas/ida-a0e5d03-second-mirror-identity.md)).
+deferred until the second migration; cosmo is the second migration. [[ida-a0e5d03]]
+([ida-a0e5d03-second-mirror-identity.md](../ideas/ida-a0e5d03-second-mirror-identity.md)).
 
 ## The phase mapping — what hosting cosmo pulls forward
 
 **cosmo readiness is not an increment on Phase 1.** This is the decision-relevant content of this
 node. Mapped against [roadmap.md](../../design/roadmap.md), the four gaps land like this:
 
-| Gap                     | Where it closes                                                                  |
-| ----------------------- | -------------------------------------------------------------------------------- |
-| No verification gate    | Phase 2 **and** Phase 3 — attestations, then an integrator that requires them    |
-| Automation has no home  | Phase 5 — the first phase in which anything subscribes and acts                  |
-| Consumers read GitHub   | Phase 5 if convergence is the valley's job; today, if it is cosmo's own          |
-| Second mirror identity  | Phase 0 — the only gap that is present-phase work                                |
+| Gap                    | Where it closes                                                               |
+| ---------------------- | ----------------------------------------------------------------------------- |
+| No verification gate   | Phase 2 **and** Phase 3 — attestations, then an integrator that requires them |
+| Automation has no home | Phase 5 — the first phase in which anything subscribes and acts               |
+| Consumers read GitHub  | Phase 5 if convergence is the valley's job; today, if it is cosmo's own       |
+| Second mirror identity | Phase 0 — the only gap that is present-phase work                             |
 
 The verification gap needs both of Phases 2 and 3, not either. A policy without an attestation is a
 document; an attestation without an integrator is a receipt nobody checks; and the integrator's
@@ -92,9 +94,10 @@ from the valley — see the reachability question in [[ida-b037dc9]].
 cosmo configures classic-laddie, and classic-laddie is the host that would serve cosmo. A cosmo
 change that breaks the valley host, sshd, or tailscale removes the push access needed to land the
 fix. This is a recovery-path property rather than a blocker: every clone is complete, restic sits
-behind the primary ([[oc-9949561]] ([oc-9949561-push-replication.md](./oc-9949561-push-replication.md))),
-and the machine can be repaired at the console or from any clone. It is worth naming because it
-raises the cost of an unchecked change, which is the whole argument in [[ida-7638082]].
+behind the primary ([[oc-9949561]]
+([oc-9949561-push-replication.md](./oc-9949561-push-replication.md))), and the machine can be
+repaired at the console or from any clone. It is worth naming because it raises the cost of an
+unchecked change, which is the whole argument in [[ida-7638082]].
 
 ## Why this outcome depends on S1 rather than the reverse
 

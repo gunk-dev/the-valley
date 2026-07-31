@@ -66,6 +66,6 @@ made in [[oc-87deec8]]
 ## Open
 
 - Whether a project can migrate with its gate deliberately absent for a period, and what makes that
-  acceptable for one project and not another. The pilot repo answered yes implicitly; cosmo's
-  stakes — an unchecked change to the configuration of five machines, deployed within the hour by a
-  timer — are the reason the same answer does not obviously carry.
+  acceptable for one project and not another. The pilot repo answered yes implicitly; cosmo's stakes
+  — an unchecked change to the configuration of five machines, deployed within the hour by a timer —
+  are the reason the same answer does not obviously carry.

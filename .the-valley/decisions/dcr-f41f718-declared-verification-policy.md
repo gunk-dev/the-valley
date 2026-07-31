@@ -13,10 +13,8 @@ Verification policy — the mapping from path classes to required checks — is 
 It is composed from two documents, not one. The group's instance repository carries a mandatory
 floor and a set of project-type templates; the project's own repository carries everything above the
 floor. The effective policy is the unification of the two. The schema is
-[schema/verification.cue](../../schema/verification.cue), with a worked two-document example at
-[examples/verification-instance.cue](../../examples/verification-instance.cue) and
-[examples/verification-project.cue](../../examples/verification-project.cue), so the shape can be
-read rather than imagined.
+[schema/verification.cue](../../schema/verification.cue), with a worked example at
+[examples/policy/](../../examples/policy/), so the shape can be read rather than imagined.
 
 The design this gives a home to is already written down. [[ida-1ec03b1]]
 ([ida-1ec03b1-path-scoped-verification-policy.md](../ideas/ida-1ec03b1-path-scoped-verification-policy.md))
@@ -201,29 +199,34 @@ check that silently stops being required.
 
 ## Evidence: the worked example
 
-The claims above are pinned by running `cue vet`, not by inspection. The example in `examples/` is
-two documents. The instance layer makes `prose-format` mandatory over `**/*.md` and for uncovered
-paths, and offers a `docs` project type whose knowledge lint is a default. The project layer selects
-that type, adds a `shellcheck` class of its own, and declines the defaulted knowledge lint.
+The claims above are pinned by running `cue vet`, not by inspection. The example is the policy
+directory at [examples/policy/](../../examples/policy/). The instance layer makes `prose-format`
+mandatory over `**/*.md` and for uncovered paths, requires `link-check` over the same class from a
+second document, and offers a `docs` project type whose knowledge lint is a default. The project
+layer embeds that type, adds a `shellcheck` class of its own, and declines the defaulted knowledge
+lint.
 
 Both directions were run.
 
 ```
 $ cue vet -c schema/verification.cue \
-    examples/verification-instance.cue examples/verification-project.cue
+    examples/policy/instance/*.cue examples/policy/project/*.cue
 $ echo $?
 0
 ```
 
 The composed `policy` exports with `knowledge-lint` at `false` — the project's legitimate override —
-alongside the floor's `prose-format` at `true` and the project's own `shellcheck` class. A project
-that instead tries to unset the mandatory check fails, and the error names the field:
+alongside the floor's `prose-format` and `link-check` at `true` and the project's own `shellcheck`
+class. A project that instead tries to unset a mandatory check fails, and the error names the field
+and the floor document it came from:
 
 ```
-$ cue vet -c schema/verification.cue examples/verification-instance.cue unset.cue
+$ cue vet -c schema/verification.cue examples/policy/instance/*.cue unset.cue
 policy.classes.prose.requires."prose-format": conflicting values false and true:
-    ./examples/verification-instance.cue:29:29
-    ...
+    ./examples/policy/instance/floor-format.cue:26:29
+    ./schema/verification.cue:184:16
+    ./schema/verification.cue:184:42
+    ./schema/verification.cue:185:9
     ./unset.cue:3:52
 ```
 
@@ -277,8 +280,8 @@ Four pieces, none of which is an enforcement point:
 
 1. qinling gains the instance document — a floor requiring the prose format check over `**/*.md` and
    for uncovered paths, and a `docs` project type offering the knowledge lint — and the-valley gains
-   a project document that selects that type. The example in `examples/` is written as very nearly
-   those two files.
+   a project document that selects that type. The example at `examples/policy/` is written as very
+   nearly that arrangement.
 2. `knowledge-lint` is built as a flake check: frontmatter vetted against a CUE `#Node` schema, and
    reference integrity — `[[wiki-links]]`, `blocked_by` ids, and relative links all resolve.
    `prose-format` already exists in this repo and is copied or shared.

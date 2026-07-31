@@ -22,7 +22,7 @@
 //
 //   Compose an instance floor with a project policy and validate both:
 //     cue vet -c schema/verification.cue \
-//       examples/verification-instance.cue examples/verification-project.cue
+//       examples/policy/instance/*.cue examples/policy/project/*.cue
 package verification
 
 // #Policy is one layer's contribution to a verification policy: the checks

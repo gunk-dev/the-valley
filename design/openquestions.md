@@ -31,7 +31,10 @@ has the originals.
   bootstrapping is worth thinking through. _Origin: [verification.md](./verification.md)._
 - `[architecture]` **Phase-0 identity is Tailscale-ACL-based.** Thin by design and swappable. The
   open question is _when_ it has to grow (untrusted contributors, agent keys) and into what. Likely
-  driven by the trust backstop. _Origin: [roadmap.md](./roadmap.md)._
+  driven by the trust backstop. One concrete forcing function is already recorded:
+  [bd-8a591dc](../.the-valley/bugs/bd-8a591dc-machine-credentials-never-expire.md) — machine grants
+  never expire, so disposable machines make provisioning O(machines) and revocation optional.
+  _Origin: [roadmap.md](./roadmap.md)._
 
 ## Cross-repo coordination
 

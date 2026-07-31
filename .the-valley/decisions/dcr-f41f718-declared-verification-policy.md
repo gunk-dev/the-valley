@@ -181,6 +181,57 @@ would take one landing again — the project's.
 Templates may be pinned. They are defaults, a project can already override them, and a stale default
 costs nothing the project could not have written by hand.
 
+## The document count is free; the enumeration is not
+
+Each layer is described above as one document. That is how the example is written, not something CUE
+imposes. A CUE package unifies any number of files, and unification is commutative and associative,
+so file boundaries carry no meaning and factoring a layer across several documents is semantically
+free. Two floor documents may contribute mandatory checks to the same class and compose without
+complaint. Two documents that disagree on the same check fail at vet time, and the error names both
+files and both line numbers, so a silent last-write-wins is not possible. That is what makes
+fragmenting policy safe rather than risky.
+
+The constraint that does exist is not the number of documents but who enumerates the set. A floor a
+project can decline to load is not a floor, so floor documents are enumerated by the instance, while
+template documents are selected by the project. That is the mandatory-versus-overridable distinction
+above, expressed at document granularity instead of at field granularity.
+
+Collecting policy into a standard directory is the natural expression of it, because a CUE package
+already works that way: the directory is the enumeration, so no manifest is needed and nothing has
+to list which files count. One directory holds both layers, because CUE's definition-versus-field
+distinction does the selection. A concrete field is floor and loads unconditionally; a project-type
+template written as a definition is inert until a project embeds it. Whether a policy document is
+mandatory or optional is therefore visible in the syntax of the file itself. This repository already
+uses the same move: [.the-valley/README.md](../README.md) describes the knowledge graph as "a
+directory convention, not a system", where listing is `ls` and search is `grep` and no indexer
+exists. A policy directory is that convention applied again rather than a new mechanism.
+
+The obvious comparison is a workflow directory in a hosted forge, and it breaks in two places.
+Workflow files are independent of one another; policy files unify. A new file in the floor directory
+changes the effective policy of every project in the group. Contradictions fail loudly as above, but
+silent addition is real and has no equivalent in the workflow-directory model. The second difference
+matters more: a workflow directory has no floor. Anyone who can write it controls the checks
+completely, which is precisely what this design denies a project. So the same convention is applied
+twice with different authority — the floor directory in the instance repository, resolved at head,
+and the project's own directory in its own tree. The drop-in property is safe only because of where
+each directory lives. A project adding a document to its own directory can only narrow; a project
+able to write the floor directory would be the entire gate gone.
+
+A worked directory is at [examples/policy/](../../examples/policy/). Two floor documents contribute
+to the same `prose` class — one requiring `prose-format`, one added later requiring `link-check`,
+both pinning the same coverage pattern — and the composed class requires both. A `docs` template is
+written as the definition `#docs`, and composing the instance directory alone exports a policy with
+no `knowledge` class at all: the definition contributes nothing until the project document embeds
+it. That project document embeds it, declines the template's defaulted knowledge lint, and adds a
+`shellcheck` class of its own. A third floor document contradicting the second fails vet naming both
+files:
+
+```
+floor.classes.prose.requires."link-check": conflicting values true and false:
+    ./examples/policy/instance/floor-references.cue:19:27
+    ./floor-disagree.cue:3:48
+```
+
 ## What the host-side half was for, and why it is gone
 
 The first draft sketched a field on the host declaration — `enable`, plus the source policy is read

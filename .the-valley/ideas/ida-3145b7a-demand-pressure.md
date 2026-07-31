@@ -55,13 +55,29 @@ Naming the failure mode makes anti-stall designable. A small taxonomy:
 | Blocked on an unresponsive human | Human-actor frontier node open past a threshold                 |
 | Dependency went stale            | A blocker closed as `abandoned`, or its premise no longer holds |
 | Orphaned outcome                 | No path from any live root — demand for it is gone              |
+| A change that cannot land        | The same change failing verification across repeated cycles     |
 
-Candidate mechanisms, one per stall class: **leases** on `in-progress` with expiry (a run that dies
-loses its lease and the node returns to the frontier — the adopted sketch's staleness threshold,
-made explicit); **escalation** to a different actor class (an unresponsive human's node can be
-re-routed, or an agent's repeated failure escalated to a human); **re-dispatch** for dead runs; and
-the inverse for orphans — outcomes with no path to a live root _lose_ pressure and become
-garbage-collectible, an anti-clutter mechanism for free.
+A change that cannot land is distinctive because the retry loop conceals it: the failure is not
+subtle, its recurrence is. An automated proposal that regenerates on a schedule presents each cycle
+as a fresh attempt, so repeated failures accumulate nothing — a scheduled dependency-update proposal
+can fail verification on four consecutive nights and be indistinguishable, at any single moment,
+from one that failed once. What makes the recurrence countable is change identity: a change whose
+identity is stable across regeneration turns several independent failures into one change that has
+failed several times, a fact that can be thresholded. That is the property argued for in
+[[ida-93e4f91]] ([ida-93e4f91-changes-not-branches.md](./ida-93e4f91-changes-not-branches.md)). The
+response needs no new mechanism — the escalation below already covers it; what this class adds is
+the signature. It is an instance of the attention-routing question
+([openquestions.md](../../design/openquestions.md), _Priority layer architecture_), but a separable
+and much earlier one: a counter and a threshold on a single fact, not a solution to the firehose
+problem that [roadmap.md, Phase 7](../../design/roadmap.md#phase-7--feedback--incident-memory)
+carries.
+
+Candidate mechanisms: **leases** on `in-progress` with expiry (a run that dies loses its lease and
+the node returns to the frontier — the adopted sketch's staleness threshold, made explicit);
+**escalation** to a different actor class (an unresponsive human's node can be re-routed, or an
+agent's repeated failure escalated to a human); **re-dispatch** for dead runs; and the inverse for
+orphans — outcomes with no path to a live root _lose_ pressure and become garbage-collectible, an
+anti-clutter mechanism for free.
 
 ## The Nix resonance
 

@@ -32,7 +32,9 @@ Each group has exactly one **instance**: a 1-to-1 binding. A group's instance ru
 - the **bus** (NATS JetStream) carrying its cross-system events,
 - the **integrator** (one controller, many per-repo policies),
 - **git hosting** for the group's repos (bare git over SSH, as in
-  [contribute.md](../../design/contribute.md)).
+  [contribute.md](../../design/contribute.md)),
+- a **build cache** for the group's artifacts, so a derivation built once is available to every
+  machine and every verifier in the group.
 
 Everything in the design — the event log, the integrator's queues, the knowledge graph, trust scores
 — lives _inside_ one instance. "The bus" and "the integrator" elsewhere in the docs mean _this
@@ -44,8 +46,22 @@ group's_ bus and integrator.
         ├── bus            (NATS JetStream)
         ├── integrator     (per-repo policies)
         ├── git hosting    (bare repos over SSH)
+        ├── build cache    (the group's artifacts)
         └── knowledge graph + trust scores   ← scoped to this group
 ```
+
+A cache scoped to the group is the natural boundary: the group is already the trust domain,
+artifacts are content-addressed, and this is the same scope that owns the bus and the integrator.
+The cache is not merely a convenience — pure attestations promise that any verifier can re-derive a
+result and confirm it ([verification.md](../../design/verification.md)), and re-derivation means
+rebuilding, so a verifier that had to fetch or rebuild every input from scratch would make the
+witness model impractical. What the cache promises about retention is not settled here:
+[openquestions.md](../../design/openquestions.md), under _Attestation expiry_, asks what happens to
+re-derivation when inputs referenced by an attestation are garbage-collected from a Nix cache.
+Scoping the cache to the group is what gives that question an owner, since the retention promise
+becomes a property of the group's instance — and it covers repositories that migrate into a group
+later, where infrastructure repositories that live outside one today would become group projects on
+the same cache.
 
 ## One machine or many — same design
 

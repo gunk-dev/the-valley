@@ -2,17 +2,18 @@
 type: decision
 id: dcr-f41f718
 status: decided
-title: Verification policy is a declared document, composed from an instance floor and a project layer
+title: Verification policy is declared in CUE, composed from an instance floor and a project layer
 created: 2026-07-31
 source: cosmo-readiness design pass, 2026-07-31
 ---
 
 # Declared verification policy
 
-Verification policy — the mapping from path classes to required checks — is a declared CUE document.
-It is composed from two documents, not one. The group's instance repository carries a mandatory
-floor and a set of project-type templates; the project's own repository carries everything above the
-floor. The effective policy is the unification of the two. The schema is
+Verification policy — the mapping from path classes to required checks — is declared in CUE. It has
+two layers, and each layer is a policy directory: a CUE package unifies every file in it, so a layer
+is one or more documents and the file count carries no meaning. The group's instance repository
+carries a mandatory floor and a set of project-type templates; the project's own repository carries
+everything above the floor. The effective policy is the unification of the two layers. The schema is
 [schema/verification.cue](../../schema/verification.cue), with a worked example at
 [examples/policy/](../../examples/policy/), so the shape can be read rather than imagined.
 
@@ -21,8 +22,8 @@ The design this gives a home to is already written down. [[ida-1ec03b1]]
 establishes that required checks are derived from the actual tree diff and never from a
 contributor's claim, that `.the-valley/**` takes signature plus knowledge lint while code takes the
 full suite and a mixed diff takes the max, and — the sentence this node acts on — that the policy
-itself is data, so it is a CUE document versioned in-repo. This node supplies the schema and the
-answer to _in which repo_.
+itself is data, so it is expressed in CUE and versioned in-repo. This node supplies the schema and
+the answer to _in which repo_.
 
 ## Why this is needed now
 
@@ -37,7 +38,7 @@ outcome node, in flight on branch `oc/cosmo-readiness`.
 
 ## The two layers
 
-Both layers are the same schema and the same kind of document: a CUE document versioned in the
+Both layers are the same schema and the same kind of thing: a policy directory versioned in the
 repository it belongs to. The weight sits in the project layer, and the floor is deliberately small.
 
 The **instance layer** is the group's policy. A group has exactly one instance — that binding is
@@ -48,9 +49,9 @@ the instance repository is the group's repository, and for the gunk-dev instance
 states the minimum: the checks no project in the group may decline, plus project-type templates that
 give a project of a known type a sensible starting set.
 
-The **project layer** is the project's own policy, a versioned document in its own tree. It states
-everything else: the classes the project cares about, the checks it adds, and the template defaults
-it declines.
+The **project layer** is the project's own policy, a policy directory versioned in its own tree. It
+states everything else: the classes the project cares about, the checks it adds, and the template
+defaults it declines.
 
 The two compose by unification, which can only narrow, so the floor is a floor by construction: the
 project layer can add to it and cannot subtract from it. Both layers say what; they differ only in
@@ -126,24 +127,17 @@ would take one landing again — the project's.
 Templates may be pinned. They are defaults, a project can already override them, and a stale default
 costs nothing the project could not have written by hand.
 
-## The document count is free; the enumeration is not
+## Who enumerates a layer's documents
 
-Each layer is described above as one document. That is how the example is written, not something CUE
-imposes. A CUE package unifies any number of files, and unification is commutative and associative,
-so file boundaries carry no meaning and factoring a layer across several documents is semantically
-free. Two floor documents may contribute mandatory checks to the same class and compose without
-complaint. Two documents that disagree on the same check fail at vet time, and the error names both
-files and both line numbers, so a silent last-write-wins is not possible. That is what makes
-fragmenting policy safe rather than risky.
+The constraint on a policy directory is not how many documents it holds but who enumerates the set.
+A floor a project can decline to load is not a floor, so floor documents are enumerated by the
+instance, while template documents are selected by the project. That is the
+mandatory-versus-overridable distinction above, expressed at document granularity instead of at
+field granularity.
 
-The constraint that does exist is not the number of documents but who enumerates the set. A floor a
-project can decline to load is not a floor, so floor documents are enumerated by the instance, while
-template documents are selected by the project. That is the mandatory-versus-overridable distinction
-above, expressed at document granularity instead of at field granularity.
-
-Collecting policy into a standard directory is the natural expression of it, because a CUE package
-already works that way: the directory is the enumeration, so no manifest is needed and nothing has
-to list which files count. One directory holds both layers, because CUE's definition-versus-field
+A standard directory is the natural expression of it, because a CUE package already works that way:
+the directory is the enumeration, so no manifest is needed and nothing has to list which files
+count. One directory holds both the floor and the templates, because CUE's definition-versus-field
 distinction does the selection. A concrete field is floor and loads unconditionally; a project-type
 template written as a definition is inert until a project embeds it. Whether a policy document is
 mandatory or optional is therefore visible in the syntax of the file itself. This repository already
@@ -153,23 +147,20 @@ exists. A policy directory is that convention applied again rather than a new me
 
 The obvious comparison is a workflow directory in a hosted forge, and it breaks in two places.
 Workflow files are independent of one another; policy files unify. A new file in the floor directory
-changes the effective policy of every project in the group. Contradictions fail loudly as above, but
-silent addition is real and has no equivalent in the workflow-directory model. The second difference
-matters more: a workflow directory has no floor. Anyone who can write it controls the checks
-completely, which is precisely what this design denies a project. So the same convention is applied
-twice with different authority — the floor directory in the instance repository, resolved at head,
-and the project's own directory in its own tree. The drop-in property is safe only because of where
-each directory lives. A project adding a document to its own directory can only narrow; a project
-able to write the floor directory would be the entire gate gone.
+changes the effective policy of every project in the group, and that silent addition has no
+equivalent in the workflow-directory model. The second difference matters more: a workflow directory
+has no floor. Anyone who can write it controls the checks completely, which is precisely what this
+design denies a project. So the same convention is applied twice with different authority — the
+floor directory in the instance repository, resolved at head, and the project's own directory in its
+own tree. A project adding a document to its own directory can only narrow; a project able to write
+the floor directory would be the entire gate gone.
 
-A worked directory is at [examples/policy/](../../examples/policy/). Two floor documents contribute
-to the same `prose` class — one requiring `prose-format`, one added later requiring `link-check`,
-both pinning the same coverage pattern — and the composed class requires both. A `docs` template is
-written as the definition `#docs`, and composing the instance directory alone exports a policy with
-no `knowledge` class at all: the definition contributes nothing until the project document embeds
-it. That project document embeds it, declines the template's defaulted knowledge lint, and adds a
-`shellcheck` class of its own. A third floor document contradicting the second fails vet naming both
-files:
+Factoring a layer across several documents is safe rather than risky. Two floor documents may
+contribute mandatory checks to the same class and compose without complaint, and two documents that
+disagree on the same check fail at vet time with an error naming both files and both line numbers,
+so a silent last-write-wins is not possible. In the worked directory at
+[examples/policy/](../../examples/policy/), a third floor document contradicting the second fails
+vet:
 
 ```
 floor.classes.prose.requires."link-check": conflicting values true and false:
@@ -184,9 +175,9 @@ Class matching is a set operation, never first-match. A change's required checks
 — a knowledge node is both knowledge and prose — and the union is the entirety of [[ida-1ec03b1]]'s
 "mixed takes the max" rule. There is no separate mixed case, and no ordering to get wrong.
 
-A path matching no class is answered explicitly, by a required `unclassified` field. The failure
-this document must never have is a path that quietly requires nothing, so the policy has to state
-what an uncovered path costs rather than defaulting to silence.
+A path matching no class is answered explicitly, by a required `unclassified` field. The failure a
+policy must never have is a path that quietly requires nothing, so the policy has to state what an
+uncovered path costs rather than defaulting to silence.
 
 The signature is deliberately absent. [[ida-1ec03b1]] lists it alongside the knowledge lint because
 it is enumerating what a knowledge-only diff must satisfy, but the signature is required of every
@@ -259,7 +250,7 @@ that gates it. That is consistent with the one structural invariant in
 [contribute.md](../../design/contribute.md), and it means declared policy is inert data until Phase
 3 ([roadmap.md](../../design/roadmap.md)); Phase 2 is where a contributor can first produce the
 evidence a policy asks for. The checks a policy names are ordinary flake checks in the reference
-implementation, so a project that already has checks has most of a policy — the document says which
+implementation, so a project that already has checks has most of a policy — the policy says which
 ones apply where, not what a check is.
 
 ## The staged path: qinling first, cosmo second
@@ -278,10 +269,10 @@ holds the floor and the templates, and the-valley holds a project policy that co
 
 Four pieces, none of which is an enforcement point:
 
-1. qinling gains the instance document — a floor requiring the prose format check over `**/*.md` and
-   for uncovered paths, and a `docs` project type offering the knowledge lint — and the-valley gains
-   a project document that selects that type. The example at `examples/policy/` is written as very
-   nearly that arrangement.
+1. qinling gains the instance policy directory — a floor requiring the prose format check over
+   `**/*.md` and for uncovered paths, and a `docs` project type offering the knowledge lint — and
+   the-valley gains a project policy that selects that type. The example at `examples/policy/` is
+   written as very nearly that arrangement.
 2. `knowledge-lint` is built as a flake check: frontmatter vetted against a CUE `#Node` schema, and
    reference integrity — `[[wiki-links]]`, `blocked_by` ids, and relative links all resolve.
    `prose-format` already exists in this repo and is copied or shared.

@@ -20,6 +20,13 @@ The inputs to that provenance are the context, the prompt, the environment (the 
 and the chain of events leading back to the human identity that ultimately generated the run —
 including the content that human provided in order to do so.
 
+Recording those inputs makes them checkable. A policy can assert properties of the run itself: that
+a model of a certain grade was used; that a specific model was not used; that the prompt did not
+contain specified content. Provenance is therefore an input to verification policy — the path-scoped
+required-check set of [[ida-1ec03b1]]
+([ida-1ec03b1-path-scoped-verification-policy.md](./ida-1ec03b1-path-scoped-verification-policy.md))
+— as much as it is the record that names a run.
+
 This is acknowledged to be a hard thing to package.
 
 The boundary to a SaaS language-model provider is impure, and that is accepted rather than solved. A
@@ -65,6 +72,12 @@ points toward attributed.
 - [[ida-f1b39e8]]
   ([ida-f1b39e8-outbound-effects-pass-through-an-actuator.md](./ida-f1b39e8-outbound-effects-pass-through-an-actuator.md))
   — the candidate signer.
+- [[ida-1ec03b1]]
+  ([ida-1ec03b1-path-scoped-verification-policy.md](./ida-1ec03b1-path-scoped-verification-policy.md))
+  — the policy these recorded inputs are checked by.
+- [[ida-a763b3f]]
+  ([ida-a763b3f-attestations-are-the-substrate-for-evaluation.md](./ida-a763b3f-attestations-are-the-substrate-for-evaluation.md))
+  — the same record read as the definition of a repeatable experiment.
 - [[ida-b9f646c]]
   ([ida-b9f646c-nix-backend-not-substrate.md](./ida-b9f646c-nix-backend-not-substrate.md)) — the
   precedent for treating today's model boundary as an implementation, not the contract.

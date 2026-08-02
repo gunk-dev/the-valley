@@ -10,10 +10,16 @@
 #   - it grows past ~300 lines;
 #   - it needs persistent state, config, or a daemon;
 #   - it needs dependencies beyond git + coreutils
-#     (CROSSED by Phase 1's tail/replay, which need the nats CLI —
+#     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
+#     by checks, which needs the cue CLI —
 #     graduation is now owed; recording the decision node is part of taking it.);
-#   - its behavior gets subtle enough to need real tests;
-#   - it needs nontrivial parsing or concurrency.
+#   - its behavior gets subtle enough to need real tests
+#     (CROSSED by checks: glob matching is pinned by the policy-deriver
+#     flake check, not by reading the code.);
+#   - it needs nontrivial parsing or concurrency
+#     (CROSSED by checks: glob-to-regex translation and -z diff parsing.).
+# The size tripwire (~300 lines) is crossed too. Which way to take the
+# graduation is dcr-2aa1a12, still `proposed`.
 # Graduation is a deliberate act, recorded as a decision node.
 # Precedent: klaus — born in cosmo, graduated deliberately.
 
@@ -42,6 +48,17 @@ usage: valley <verb> [args]
                      [b]ase       rebase it onto origin/main in a throwaway
                                   worktree, push --force-with-lease, then
                                   re-review the diff that would actually land
+  checks [<base> [<head>]]
+                   print the check names the change between two commits owes
+                   under the composed verification policy (dcr-f41f718), and
+                   which class made each one required. It prints: no check is
+                   run, nothing is gated, nothing is written.
+                   base defaults to the merge base with main, head to HEAD.
+                   the policy layers are not discovered — they are named:
+                     --schema FILE    default schema/verification.cue
+                     --instance DIR   default examples/policy/instance
+                     --project DIR    default examples/policy/project
+                   all three relative to the repository root.
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
@@ -51,7 +68,8 @@ usage: valley <verb> [args]
   help             show this help
 
 Runs from any checkout of the project; needs only git and coreutils,
-except tail and replay, which also need the nats CLI (natscli).
+except tail and replay, which also need the nats CLI (natscli), and
+checks, which also needs the cue CLI.
 No config, no state, no batch mode — the judgment stays with the human.
 EOF
 }
@@ -267,6 +285,277 @@ cmd_replay() {
   echo "replayed $count refs of $repo onto the bus"
 }
 
+# ----------------------------------------------------------------------
+# checks — the verification-policy deriver (dcr-f41f718). It composes the
+# instance layer with the project layer, matches every side of a diff
+# against the composed classes, and prints the check names the change owes
+# with the class or classes that made each one required. It reports: no
+# check is run, nothing is gated, nothing is written.
+#
+# Composition is CUE's, never this script's. The whole of the mandatory-
+# versus-overridable distinction is unification, so reimplementing it here
+# would be reimplementing the decision. What this script does that CUE
+# cannot is glob matching and reading a diff.
+
+need_cue() {
+  command -v cue >/dev/null 2>&1 \
+    || die "this verb needs the cue CLI; nix run .#valley bundles it"
+}
+
+# One glob segment as an ERE fragment: `*` and `?` are wildcards that never
+# cross a `/`, and every ERE metacharacter is escaped.
+segment_ere() {
+  local seg="$1" out="" i c
+  for ((i = 0; i < ${#seg}; i++)); do
+    c="${seg:i:1}"
+    case "$c" in
+      '*') out+='[^/]*' ;;
+      '?') out+='[^/]' ;;
+      '.' | '^' | '$' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | \\) out+="\\$c" ;;
+      *) out+="$c" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+# A path glob as an anchored ERE, segment by segment. A `**` segment matches
+# any number of segments including none, so it swallows the separator that
+# would otherwise follow it and `a/**/b` matches `a/b`; every other segment
+# matches exactly one.
+glob_ere() {
+  local ere='^' i last
+  local -a segs=()
+  IFS=/ read -r -a segs <<<"$1"
+  last=$((${#segs[@]} - 1))
+  for ((i = 0; i <= last; i++)); do
+    if [ "${segs[i]}" = '**' ]; then
+      if [ "$i" -eq "$last" ]; then ere+='.*'; else ere+='(.*/)?'; fi
+    else
+      ere+="$(segment_ere "${segs[i]}")"
+      [ "$i" -eq "$last" ] || ere+='/'
+    fi
+  done
+  printf '%s$' "$ere"
+}
+
+# The composed policy as one tab-separated line per covered pattern and per
+# required check, so the shell never parses CUE. The field is hidden because
+# the schema's sentinel rejects unknown top-level fields, and `unclassified`
+# is rendered as a class of that name — it is one more source a check can
+# come from.
+render_cue() {
+  cat <<'EOF'
+package verification
+
+import (
+	"list"
+	"strings"
+)
+
+_render: strings.Join(list.Concat([[
+	for cn, c in policy.classes
+	for p, on in c.paths if on {"path\t\(cn)\t\(p)"}
+], [
+	for cn, c in policy.classes
+	for k, on in c.requires if on {"requires\t\(cn)\t\(k)"}
+], [
+	for k, on in policy.unclassified if on {"requires\tunclassified\t\(k)"}
+]]), "\n")
+EOF
+}
+
+# The composed layer, and a scratch directory for the documents this verb
+# writes into the composition. Globals so the probe below can see them.
+POLICY_LAYER=()
+POLICY_TMP=""
+
+# Is this check mandatory in this class, or a default the project left
+# alone? The bit is the form of the composed value, so the test is CUE's
+# own: a project supplying `false` either conflicts or unifies cleanly.
+# Answering by unifying rather than by inspecting syntax means the script
+# cannot disagree with `cue vet`.
+check_is_mandatory() {
+  local class="$1" check="$2" field
+  if [ "$class" = unclassified ]; then
+    field="policy: unclassified: \"$check\": false"
+  else
+    field="policy: classes: \"$class\": requires: \"$check\": false"
+  fi
+  printf 'package verification\n%s\n' "$field" > "$POLICY_TMP/probe.cue"
+  ! cue vet "${POLICY_LAYER[@]}" "$POLICY_TMP/probe.cue" > /dev/null 2>&1
+}
+
+# Every side of the diff: an added, modified or deleted path, and both the
+# old and the new path of a rename or copy. -z because a path may contain
+# anything but NUL.
+diff_paths() {
+  local base="$1" head="$2" status path
+  while IFS= read -r -d '' status; do
+    IFS= read -r -d '' path || die "truncated diff output; nothing derived"
+    printf '%s\n' "$path"
+    case "$status" in
+      R* | C*)
+        IFS= read -r -d '' path || die "truncated diff output; nothing derived"
+        printf '%s\n' "$path"
+        ;;
+    esac
+  done < <(git diff --no-relative --name-status -M -z "$base" "$head")
+}
+
+# Lines in, one comma-separated line out.
+join_lines() {
+  local out="" line
+  while IFS= read -r line; do out="${out:+$out, }$line"; done
+  printf '%s' "$out"
+}
+
+# The ref a branch is derived against, preferring what origin last said.
+main_ref() {
+  git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null \
+    && { echo refs/remotes/origin/main; return; }
+  git rev-parse --verify --quiet refs/heads/main > /dev/null \
+    && { echo refs/heads/main; return; }
+  return 1
+}
+
+cmd_checks() {
+  local root schema instance project base head
+  root="$(git rev-parse --show-toplevel 2> /dev/null)" \
+    || die "not a git repository"
+  schema="$root/schema/verification.cue"
+  instance="$root/examples/policy/instance"
+  project="$root/examples/policy/project"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --schema) [ $# -ge 2 ] || die "--schema needs a file"; schema="$2"; shift 2 ;;
+      --instance) [ $# -ge 2 ] || die "--instance needs a directory"; instance="$2"; shift 2 ;;
+      --project) [ $# -ge 2 ] || die "--project needs a directory"; project="$2"; shift 2 ;;
+      --) shift; break ;;
+      -*) die "unknown option: $1" ;;
+      *) break ;;
+    esac
+  done
+  [ $# -le 2 ] || die "usage: valley checks [options] [<base> [<head>]]"
+
+  need_cue
+  [ -f "$schema" ] || die "no policy schema at $schema"
+  compgen -G "$instance/*.cue" > /dev/null \
+    || die "no instance policy layer at $instance"
+  compgen -G "$project/*.cue" > /dev/null \
+    || die "no project policy layer at $project"
+
+  head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
+    || die "no such commit: ${2:-HEAD}"
+  if [ $# -ge 1 ]; then
+    base="$(git rev-parse --verify --quiet "$1^{commit}")" \
+      || die "no such commit: $1"
+  else
+    local against
+    against="$(main_ref)" || die "no main branch to derive a base from — name one"
+    base="$(git merge-base "$against" "$head")" \
+      || die "$head and ${against#refs/} do not share history — name a base"
+  fi
+
+  local -a paths=()
+  mapfile -t paths < <(diff_paths "$base" "$head" | sort -u)
+
+  POLICY_LAYER=("$schema" "$instance"/*.cue "$project"/*.cue)
+  POLICY_TMP="$(mktemp -d)"
+  # shellcheck disable=SC2064 # expand POLICY_TMP now, not at trap time
+  trap "rm -rf '$POLICY_TMP'" EXIT
+  render_cue > "$POLICY_TMP/render.cue"
+  cue vet -c "${POLICY_LAYER[@]}" \
+    || die "the policy layers do not compose; nothing derived"
+
+  # Sorted once here, so every list below comes out in a stable order.
+  local -a rendered=()
+  mapfile -t rendered < <(cue eval --out text -e _render \
+    "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" | sort)
+
+  local -a pat_class=() pat_ere=() req_class=() req_check=()
+  local line kind class value
+  for line in "${rendered[@]}"; do
+    kind="${line%%$'\t'*}"
+    class="${line#*$'\t'}"
+    value="${class#*$'\t'}"
+    class="${class%%$'\t'*}"
+    case "$kind" in
+      path)
+        pat_class+=("$class")
+        pat_ere+=("$(glob_ere "$value")")
+        ;;
+      requires)
+        req_class+=("$class")
+        req_check+=("$value")
+        ;;
+    esac
+  done
+
+  local -A matched=()
+  local -a uncovered=()
+  local path i hit
+  for path in "${paths[@]}"; do
+    hit=0
+    for ((i = 0; i < ${#pat_ere[@]}; i++)); do
+      if [[ "$path" =~ ${pat_ere[i]} ]]; then
+        matched["${pat_class[i]}"]=1
+        hit=1
+      fi
+    done
+    [ "$hit" -eq 1 ] || uncovered+=("$path")
+  done
+  # A path no class covers is answered by the policy's `unclassified` set,
+  # which is why it is treated as one more matched class rather than as an
+  # absence.
+  [ "${#uncovered[@]}" -eq 0 ] || matched[unclassified]=1
+
+  local -A owed=() pinned=()
+  local check width=0 uncovered_owes=0
+  for ((i = 0; i < ${#req_check[@]}; i++)); do
+    class="${req_class[i]}"
+    check="${req_check[i]}"
+    [ -n "${matched[$class]:-}" ] || continue
+    [ "$class" != unclassified ] || uncovered_owes=1
+    owed["$check"]="${owed[$check]:+${owed[$check]}, }$class"
+    if check_is_mandatory "$class" "$check"; then
+      pinned["$check"]=mandatory
+    else
+      pinned["$check"]="${pinned[$check]:-default}"
+    fi
+    [ "${#check}" -le "$width" ] || width="${#check}"
+  done
+
+  printf '%s..%s: %d changed path(s)\n' \
+    "$(git rev-parse --short "$base")" "$(git rev-parse --short "$head")" \
+    "${#paths[@]}"
+  printf 'policy: %s + %s\n' "${instance#"$root"/}" "${project#"$root"/}"
+  if [ "${#matched[@]}" -eq 0 ]; then
+    printf 'classes matched: none\n\n'
+  else
+    printf 'classes matched: %s\n\n' \
+      "$(printf '%s\n' "${!matched[@]}" | sort | join_lines)"
+  fi
+
+  if [ "${#owed[@]}" -eq 0 ]; then
+    echo "required checks: none"
+  else
+    echo "required checks:"
+    while IFS= read -r check; do
+      printf '  %-*s  %-9s  %s\n' \
+        "$width" "$check" "${pinned[$check]}" "${owed[$check]}"
+    done < <(printf '%s\n' "${!owed[@]}" | sort)
+  fi
+
+  if [ "${#uncovered[@]}" -gt 0 ]; then
+    printf '\nunclassified: %d path(s) matched no class\n' "${#uncovered[@]}"
+    printf '  %s\n' "${uncovered[@]}"
+    # The failure the `unclassified` field exists to prevent: paths outside
+    # every class that the policy then asks nothing of.
+    [ "$uncovered_owes" -eq 1 ] \
+      || echo "  the policy requires nothing of them — it is behind the tree"
+  fi
+}
+
 main() {
   local verb="${1:-help}"
   if [ $# -gt 0 ]; then shift; fi
@@ -275,6 +564,7 @@ main() {
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;
+    checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;
     help | -h | --help) usage ;;

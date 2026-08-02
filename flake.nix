@@ -21,6 +21,7 @@
           runtimeInputs = [
             pkgs.git
             pkgs.natscli # tail and replay only; every other verb needs just git
+            pkgs.cue # checks only — it composes the policy layers
           ];
           text = builtins.readFile ./bin/valley;
         };
@@ -323,6 +324,181 @@
                     fi
                   '') invalidConfigs
                 )}
+                touch $out
+              '';
+
+          # The verification-policy deriver (dcr-f41f718). Composing the two
+          # layers is CUE's job and is pinned by cue-vet above; matching
+          # paths is the script's own, and a path matcher is wrong exactly at
+          # the glob boundaries — `*` inside one segment against `**` across
+          # segments, `**` matching no segment at all — and at the sides of a
+          # diff a naive reader drops: a rename's old path and a deletion.
+          # Each is pinned by driving the real script over a scratch
+          # repository and a scratch policy, never by reading the code.
+          policy-deriver =
+            let
+              # A floor whose classes are one glob boundary each, and whose
+              # check names say which class matched.
+              deriverFloor = pkgs.writeText "deriver-floor.cue" ''
+                package verification
+                floor: {
+                  checks: {
+                    "c-docs": {runner:      "nix", attribute: "c-docs"}
+                    "c-notes": {runner:     "nix", attribute: "c-notes"}
+                    "c-flat": {runner:      "nix", attribute: "c-flat"}
+                    "c-deep": {runner:      "nix", attribute: "c-deep"}
+                    "c-nested": {runner:    "nix", attribute: "c-nested"}
+                    "c-uncovered": {runner: "nix", attribute: "c-uncovered"}
+                  }
+                  classes: {
+                    docs: {paths: "docs/**": true, requires: "c-docs": true}
+                    notes: {paths: "notes/**": true, requires: "c-notes": true}
+                    flat: {paths: "src/*.rs": true, requires: "c-flat": true}
+                    deep: {paths: "src/**/*.rs": true, requires: "c-deep": true}
+                    nested: {paths: "a/**/b": true, requires: "c-nested": true}
+                  }
+                  unclassified: "c-uncovered": true
+                }
+              '';
+              # One requirement that is a template default rather than a
+              # rule, so the two forms are told apart on real output.
+              deriverTemplate = pkgs.writeText "deriver-template.cue" ''
+                package verification
+                #tmpl: #Policy & {
+                  checks: "c-tmpl": {runner: "nix", attribute: "c-tmpl"}
+                  classes: docs: requires: "c-tmpl": bool | *true
+                }
+              '';
+              deriverProject = pkgs.writeText "deriver-project.cue" ''
+                package verification
+                project: {
+                  #tmpl
+                }
+              '';
+            in
+            pkgs.runCommand "valley-policy-deriver"
+              {
+                nativeBuildInputs = [
+                  pkgs.git
+                  pkgs.cue
+                  (valleyScriptFor pkgs)
+                ];
+              }
+              ''
+                export HOME="$TMPDIR"
+                export GIT_CONFIG_NOSYSTEM=1
+                git config --global user.name valley-check
+                git config --global user.email valley-check@localhost
+                git config --global init.defaultBranch main
+
+                policy="$TMPDIR/policy"
+                mkdir -p "$policy/instance" "$policy/project"
+                cp ${deriverFloor} "$policy/instance/floor.cue"
+                cp ${deriverTemplate} "$policy/instance/template.cue"
+                cp ${deriverProject} "$policy/project/policy.cue"
+
+                repo="$TMPDIR/tree"
+                git init --quiet "$repo"
+                cd "$repo"
+                mkdir -p docs notes src/deep a/x/y
+                echo moved > docs/moved.md
+                for f in docs/kept.md docs/gone.md src/one.rs src/deep/two.rs \
+                  a/b a/x/y/b Makefile; do
+                  echo seed > "$f"
+                done
+                git add -A
+                git commit --quiet -m base
+                base="$(git rev-parse HEAD)"
+
+                derive() {
+                  valley checks --schema ${./schema/verification.cue} \
+                    --instance "$policy/instance" --project "$policy/project" \
+                    "$base" HEAD
+                }
+
+                # The check names in the deriver's table, sorted, on one line.
+                named() {
+                  awk '/^required checks:$/ {f = 1; next}
+                       /^$/ {f = 0}
+                       f && /^  / {print $1}' <<<"$out" | sort | paste -sd' ' -
+                }
+
+                # Start a case from the base tree; assert its check table.
+                case_start() { git checkout --quiet -B "$1" "$base"; }
+                expect() {
+                  local got
+                  got="$(named)"
+                  if [ "$got" != "$1" ]; then
+                    echo "policy-deriver: $2" >&2
+                    echo "  expected: $1" >&2
+                    echo "  got:      $got" >&2
+                    echo "$out" >&2
+                    exit 1
+                  fi
+                }
+
+                # `**` crosses segments, `*` does not. One file under src/
+                # matches both patterns; one a segment deeper matches only
+                # the `**` one.
+                case_start flat
+                echo edit > src/one.rs
+                git commit --quiet -am flat
+                out="$(derive)"
+                expect "c-deep c-flat" "src/*.rs must match a file directly under src/"
+
+                case_start deep
+                echo edit > src/deep/two.rs
+                git commit --quiet -am deep
+                out="$(derive)"
+                expect "c-deep" "src/*.rs must not match across a path separator"
+
+                # A `**` between two segments matches no segment at all …
+                case_start nested-none
+                echo edit > a/b
+                git commit --quiet -am nested-none
+                out="$(derive)"
+                expect "c-nested" "a/**/b must match a/b"
+
+                # … and any number of them.
+                case_start nested-many
+                echo edit > a/x/y/b
+                git commit --quiet -am nested-many
+                out="$(derive)"
+                expect "c-nested" "a/**/b must match a/x/y/b"
+
+                # A rename counts on both sides: the class covering the old
+                # path is required as much as the one covering the new.
+                case_start renamed
+                git mv docs/moved.md notes/moved.md
+                git commit --quiet -m renamed
+                git diff --name-status -M "$base" HEAD | grep -q '^R' \
+                  || { echo "policy-deriver: the rename case is not a rename" >&2; exit 1; }
+                out="$(derive)"
+                expect "c-docs c-notes c-tmpl" "a rename must count on both sides"
+
+                # A deleted path is still a changed path.
+                case_start deleted
+                git rm --quiet docs/gone.md
+                git commit --quiet -m deleted
+                out="$(derive)"
+                expect "c-docs c-tmpl" "a deletion must count"
+
+                # The form of the value is the mandatory bit: the floor's
+                # concrete `true` against the template's `bool | *true`.
+                grep -qE '^  c-docs +mandatory +docs$' <<<"$out"
+                grep -qE '^  c-tmpl +default +docs$' <<<"$out"
+
+                # A path no class covers takes the unclassified set, and says
+                # so by name.
+                case_start uncovered
+                echo edit > Makefile
+                git commit --quiet -am uncovered
+                out="$(derive)"
+                expect "c-uncovered" "an uncovered path must take the unclassified set"
+                grep -q '^classes matched: unclassified$' <<<"$out"
+                grep -q '^unclassified: 1 path(s) matched no class$' <<<"$out"
+                grep -q '^  Makefile$' <<<"$out"
+
                 touch $out
               '';
 

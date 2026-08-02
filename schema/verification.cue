@@ -11,10 +11,10 @@
 // project cannot take back. That is the whole of the mandatory-versus-
 // overridable distinction; #Requires spells it out.
 //
-// This file is a draft. The decision it gives concrete form to
-// (dcr-f41f718) is `proposed`, not decided: nothing reads this file, no
-// enforcement point exists until Phase 3's integrator (design/roadmap.md),
-// and the flake's cue-vet check deliberately does not cover it yet.
+// One tool reads this file: `valley checks` composes the two layers with
+// it and prints the checks a change owes (dcr-f41f718). That deriver only
+// reports. No enforcement point exists until Phase 3's integrator
+// (design/roadmap.md), so nothing yet acts on what it prints.
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
 // policy names checks; it never names derivations, systems, or store

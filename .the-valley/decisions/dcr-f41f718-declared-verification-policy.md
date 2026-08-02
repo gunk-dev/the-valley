@@ -229,10 +229,10 @@ error naming the field. A project document that declares nothing at all vets, an
 floor exactly.
 
 The example is evidence for the schema and nothing more. It is not the live exercise on qinling,
-which is a separate step described below. The schema is unwired: it is not referenced by
-[schema/valley.cue](../../schema/valley.cue), not covered by the flake's `cue-vet` check, and not
-read by [nix/valley-host.nix](../../nix/valley-host.nix), so these rejections are demonstrated
-rather than run continuously.
+which is a separate step described below. The rejections above are demonstrated rather than run
+continuously: the flake's `cue-vet` check does not cover them. The schema is read by one tool, the
+deriver of step 3 below, and by nothing else — not by [schema/valley.cue](../../schema/valley.cue)
+and not by [nix/valley-host.nix](../../nix/valley-host.nix).
 
 ## What this costs
 
@@ -278,7 +278,10 @@ Four pieces, none of which is an enforcement point:
    `prose-format` already exists in this repo and is copied or shared.
 3. A read-only deriver: given the instance tip, a project tree, and two commits, compose the policy,
    list the changed paths, match them against the composed classes, and print the required check
-   names. It reports; it blocks nothing.
+   names. It reports; it blocks nothing. This is `valley checks` in [bin/valley](../../bin/valley).
+   It is told where the two layers are and defaults to the worked example, because nothing yet
+   resolves a project to its instance — and that resolution is the whole of the floor's forcing, so
+   the deriver has no floor until something supplies it.
 4. The two checks are run against the trees the deriver named.
 
 ### What observing it succeed looks like

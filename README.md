@@ -80,4 +80,5 @@ incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/r
   layer.
 - [`design/roadmap.md`](./design/roadmap.md) — the incremental validation plan.
 - [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
-  plain shell script, accreting one verb per phase per the roadmap's CLI thread.
+  plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
+  derives the checks a change owes from the declared verification policy, and only reports them.

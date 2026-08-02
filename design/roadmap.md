@@ -45,7 +45,7 @@ not "shipped by …".
 | 1     | The event log                           | S2 (1 of 3)             | git-as-event-source; "a log, not a workflow engine"     | `valley tail` shows real ref updates as events                        |
 | 2     | Signed local attestations               | S2 (2 of 3)             | The contributor protocol's ergonomics                   | `nix run .#attest` replaces "wait for CI" for real work               |
 | 3     | The integrator                          | S2 established          | Pull-based integration; staleness-as-failure-mode       | You stop pushing to `main` directly, even solo                        |
-| 4     | Agents as first-class authors           | S3 established          | The pipeline holds with no human in it                  | A dispatched change lands unsupervised, attributed to the agent's key |
+| 4     | Agents as first-class authors           | S3 established          | The pipeline holds with no human in it                  | A dispatched change lands unsupervised, attributed in the attestation |
 | 5     | Effectful reactions                     | S4 established          | Reactive controllers replace push-based CI/CD           | commit→build→deploy→notify is one queryable history                   |
 | 6     | Trust backstop                          | S3 hardened; S5 enabled | The security model (~SLSA-3 for purity-claiming checks) | An untrusted-signer change lands only via the trust flow              |
 | 7     | Feedback & incident memory              | S6 established          | Review is feedback; incidents are memory                | An incident files its own node; review happens with no PR object      |
@@ -298,14 +298,27 @@ trust bootstrapping_). Phase 3 is where the chicken-and-egg becomes concrete.
 by [Phase 6](#phase-6--trust-backstop).**
 
 **Goal.** An agent's change lands with the same guarantees as the operator's, attributed to the
-agent that made it, with no human babysitting the pipeline.
+agent run that made it, with no human babysitting the pipeline.
+
+This phase cannot begin until [Phase 2](#phase-2--attestations-verification-mvp) and
+[Phase 3](#phase-3--the-integrator) are complete and the event bus is authenticated
+([bd-d853d9c](../.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md), which gates any automated
+consumer acting on an event). Dispatch tooling asks a hosted forge four questions: whether checks
+passed, whether there are conflicts, whether anyone has reviewed, and whether a change can land.
+Checks are answered by attestations, conflicts and review by the integrator, and whether a change
+can land by whatever reacts on the bus. Until all three exist, this phase has nothing to move onto.
 
 **What gets built.** Deliberately thin — the integration flow is unchanged from Phase 3, and that's
 the point:
 
-- **Per-agent identity.** Each agent signs commits and attestations with its own key. Attribution
-  lives in the git objects and the log, not in a platform sidecar; the landed history distinguishes
-  the agent's work from the operator's.
+- **Attribution through provenance.** An agent run holds no key of its own
+  ([ida-a8243d2](../.the-valley/ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md)). An
+  agent-authored change is attributed inside the host-signed attestation, as part of the provenance
+  that statement carries: the harness, the model, digests of the prompt and of the context, and the
+  delegation chain as recorded
+  ([ida-45178f6](../.the-valley/ideas/ida-45178f6-agent-identity-is-provenance.md)). Attribution
+  lives in the log, not in a platform sidecar; the landed record distinguishes the agent's work from
+  the operator's.
 - **Dispatch against the graph.** klaus dispatch targets an outcome node, not a GitHub issue, and
   agents read and write knowledge nodes as part of the work — S3's knowledge increment. The
   convention is already live in [.the-valley/](../.the-valley/README.md); this phase makes it the
@@ -318,23 +331,18 @@ Feeling that mode's pain was this phase's motivation, by design.
 
 **The design claim it validates.** The pipeline holds with no human in it: a non-human author lands
 with the same guarantees, and attribution is recorded, not inferred. What this phase deliberately
-does not claim: that attribution can't be forged — signature-based attribution is only as strong as
-key custody until the tlog lands ([Phase 6](#phase-6--trust-backstop)). For one operator and their
-own agents, that is the honest cut.
+does not claim: that attribution can't be forged — attribution rests on the host's signature over
+the statement carrying it, and is only as strong as that key's custody until the tlog lands
+([Phase 6](#phase-6--trust-backstop)). For one operator and their own agents, that is the honest
+cut.
 
 **Exit criteria.**
 
 - A klaus-dispatched change lands via `integration-requested` → `integration-succeeded` with no
   human action between dispatch and landing.
-- The landed history attributes the change to the agent's own key, distinguishable from the
-  operator's.
-- The dispatch's target is an outcome node in the repo, and the work reads and writes knowledge
-  nodes end to end.
-
-- A klaus-dispatched change lands via `integration-requested` → `integration-succeeded` with no
-  human action between dispatch and landing.
-- The landed history attributes the change to the agent's own key, distinguishable from the
-  operator's.
+- The landed record names the agent run as the change's author, from the provenance recorded in the
+  attestation covering it rather than inferred from commit metadata, and that record is
+  distinguishable from one for a change the operator made.
 - The dispatch's target is an outcome node in the repo, and the work reads and writes knowledge
   nodes end to end.
 

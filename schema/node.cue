@@ -45,10 +45,10 @@ package knowledge
 		id:     =~"^oc-"
 		status: "open" | "in-progress" | "done" | "abandoned"
 
-		// The one typed edge that exists today: the node ids this
-		// outcome waits on. Any node type may block an outcome. Only
-		// outcomes carry it, so the field is absent — and rejected — on
-		// every other type.
+		// One of the two typed edges: the node ids this outcome waits
+		// on. Any node type may block an outcome. Only outcomes carry
+		// it, so the field is absent — and rejected — on every other
+		// type.
 		blocked_by: [...#Id]
 	}
 
@@ -66,12 +66,29 @@ package knowledge
 		id:     =~"^dcr-"
 		status: "proposed" | "decided" | "superseded"
 	}
+
+	// The other typed edge: the node ids this node replaces. Ideas and
+	// decisions carry it and no other type does, because those are the two
+	// status enums with a `superseded` value for the replaced node to land
+	// in — a bug is closed and an outcome is abandoned, and neither of
+	// those is supersession. Optional, unlike blocked_by: most nodes
+	// replace nothing, and there is no outcome-DAG reading of an empty
+	// list to preserve.
+	if type == "idea" || type == "decision" {
+		supersedes?: [...#SupersededId]
+	}
 }
 
 // A node id: a type prefix and a short hash of the slug. The hash is not
 // re-derived here — the convention names an example algorithm rather than
 // pinning one, so only the shape is checkable.
 #Id: =~"^(oc|bd|ida|dcr)-[0-9a-f]{7}$"
+
+// The id of a node something supersedes. Narrower than #Id, because only
+// the two types with a `superseded` status can be superseded: an edge
+// naming a bug or an outcome is wrong on shape, and saying so here is a
+// better error than the lint's later complaint about a status.
+#SupersededId: =~"^(ida|dcr)-[0-9a-f]{7}$"
 
 #Date: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 

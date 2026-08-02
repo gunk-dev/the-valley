@@ -285,9 +285,10 @@
             );
 
           # A project that is nearly nothing: a README, a docs directory, and
-          # two nodes. This is the shape the first consuming project has, and
-          # the knowledge-lint-consumer check instantiates lib.knowledgeLint
-          # over it exactly as that project's own flake would.
+          # four nodes carrying one of each typed edge. This is the shape the
+          # first consuming project has, and the knowledge-lint-consumer check
+          # instantiates lib.knowledgeLint over it exactly as that project's
+          # own flake would.
           consumerProject = mkTree "knowledge-lint-consumer-project" {
             "README.md" = ''
               # A project
@@ -325,6 +326,33 @@
               # The design lands
 
               Waits on [[ida-0a1b2c3]].
+            '';
+            ".the-valley/decisions/dcr-1122334-where-the-graph-lives.md" = ''
+              ---
+              type: decision
+              id: dcr-1122334
+              status: superseded
+              title: Where the graph lives
+              created: 2026-08-02
+              ---
+
+              # Where the graph lives
+
+              The graph is a directory of markdown files under the project root.
+            '';
+            ".the-valley/decisions/dcr-5566778-where-the-graph-lives.md" = ''
+              ---
+              type: decision
+              id: dcr-5566778
+              status: decided
+              title: Where the graph lives
+              created: 2026-08-02
+              supersedes: [dcr-1122334]
+              ---
+
+              # Where the graph lives
+
+              The graph is a directory of markdown files at `.the-valley/`, alongside the code.
             '';
           };
 
@@ -450,6 +478,79 @@
                 title: An outcome waiting on nothing that exists
                 created: 2026-08-02
                 blocked_by: [oc-9999999]
+                ---
+              '';
+            };
+
+            dangling-supersedes = {
+              names = "supersedes names dcr-9999999, which is not a node";
+              files.".the-valley/decisions/dcr-000000c-a-decision.md" = ''
+                ---
+                type: decision
+                id: dcr-000000c
+                status: decided
+                title: A decision replacing nothing that exists
+                created: 2026-08-02
+                supersedes: [dcr-9999999]
+                ---
+              '';
+            };
+
+            # The edge alone is half a supersession. A node declared replaced
+            # while its own status still reads otherwise leaves the graph
+            # saying two things, which is the defect the edge exists to end.
+            supersedes-a-node-still-standing = {
+              names = "whose status is adopted, not superseded";
+              files = {
+                ".the-valley/ideas/ida-000000d-the-replacement.md" = ''
+                  ---
+                  type: idea
+                  id: ida-000000d
+                  status: adopted
+                  title: An idea replacing one that has not been told
+                  created: 2026-08-02
+                  supersedes: [ida-000000e]
+                  ---
+                '';
+                ".the-valley/ideas/ida-000000e-the-replaced.md" = ''
+                  ---
+                  type: idea
+                  id: ida-000000e
+                  status: adopted
+                  title: An idea replaced in fact but not in its status
+                  created: 2026-08-02
+                  ---
+                '';
+              };
+            };
+
+            supersedes-on-the-wrong-type = {
+              names = "supersedes: field not allowed";
+              files.".the-valley/outcomes/oc-000000f-an-outcome.md" = ''
+                ---
+                type: outcome
+                id: oc-000000f
+                status: open
+                title: An outcome carrying the edge only ideas and decisions carry
+                created: 2026-08-02
+                blocked_by: []
+                supersedes: []
+                ---
+              '';
+            };
+
+            # Only ideas and decisions have a `superseded` status, so an edge
+            # naming any other type is rejected on shape by the schema.
+            supersedes-a-type-that-cannot-be = {
+              names = ''supersedes.0: invalid value "bd-0000011"'';
+              files.".the-valley/ideas/ida-0000010-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-0000010
+                status: adopted
+                title: An idea claiming to replace a bug
+                created: 2026-08-02
+                supersedes: [bd-0000011]
                 ---
               '';
             };

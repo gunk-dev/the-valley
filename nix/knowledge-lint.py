@@ -7,8 +7,9 @@ Three classes of finding, all reported in one run (ida-1ec03b1):
                        schema/node.cue, in one `cue vet` pass over the whole graph
   filename coherence   a node lives at <type directory>/<id>-<slug>.md, its filename
                        id is the id its frontmatter declares, and no id repeats
-  reference integrity  [[wiki-links]], `blocked_by` ids, and relative markdown links
-                       all resolve
+  reference integrity  [[wiki-links]], `blocked_by` and `supersedes` ids, and relative
+                       markdown links all resolve, and a superseded node says so in
+                       its own status
 
 The lint reads only the tree it is given. It never runs git, so it holds for a
 worktree, a store path, or an unpacked archive alike.
@@ -229,8 +230,9 @@ def check_filenames(nodes, frontmatter, directories, root, findings):
 
 
 def check_references(tree, documents, frontmatter, findings):
-    """Every [[id]], blocked_by id, and relative link must resolve inside the tree."""
-    ids = {node.get("id") for node in frontmatter.values()}
+    """Every [[id]], typed-edge id, and relative link must resolve inside the tree."""
+    status = {node.get("id"): node.get("status") for node in frontmatter.values()}
+    ids = set(status)
     ids.discard(None)
     headings = {}
 
@@ -238,6 +240,19 @@ def check_references(tree, documents, frontmatter, findings):
         for blocked_by in node.get("blocked_by", []):
             if blocked_by not in ids:
                 findings.add(path, f"blocked_by names {blocked_by}, which is not a node")
+        # The edge and the replaced node's status state one fact twice, so
+        # they are checked together: a superseded node still reading `adopted`
+        # is exactly the contradiction the convention's resolution rule
+        # exists to settle, and it is settled here rather than by a reader.
+        for supersedes in node.get("supersedes", []):
+            if supersedes not in ids:
+                findings.add(path, f"supersedes names {supersedes}, which is not a node")
+            elif status[supersedes] != "superseded":
+                findings.add(
+                    path,
+                    f"supersedes names {supersedes}, whose status is "
+                    f"{status[supersedes]}, not superseded",
+                )
 
     for path in documents:
         with open(os.path.join(tree, path), encoding="utf-8") as handle:

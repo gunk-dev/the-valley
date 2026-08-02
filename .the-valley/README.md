@@ -20,11 +20,18 @@ source: PR #1         # optional — where the content came from
 ---
 ```
 
-One typed edge exists now: **outcome nodes carry `blocked_by`** (a list of node ids) in frontmatter,
-because the live outcome-DAG experiment
-([ideas/ida-3145b7a-demand-pressure.md](./ideas/ida-3145b7a-demand-pressure.md)) requires it. The
-other typed edges (`closes`, `supersedes`, …) come later; until then, prose links in the body are
-enough.
+Two typed edges exist, each a list of node ids in frontmatter.
+
+**Outcome nodes carry `blocked_by`**: the nodes an outcome waits on. The live outcome-DAG experiment
+([ideas/ida-3145b7a-demand-pressure.md](./ideas/ida-3145b7a-demand-pressure.md)) requires it.
+
+**Idea and decision nodes carry `supersedes`**: the nodes this one replaces. Ideas and decisions are
+the only types that carry it, because they are the only two whose status enum has a `superseded`
+value for the replaced node to land in. The lint requires that status to be set, so a supersession
+cannot be half-declared. Declaring it is the machine-readable half of the resolution rule below; the
+prose still has to be corrected too.
+
+The remaining typed edges (`closes`, …) come later; until then, prose links in the body are enough.
 
 ## Types, directories, prefixes
 
@@ -62,6 +69,14 @@ thinking got there. That history is in git history, and only there.
 - **Replacing something includes deleting what it replaces, in the same change.** This covers the
   files a node points at as much as its prose — a superseded example left beside its replacement is
   the same defect as a superseded paragraph.
+- **Where two documents make incompatible claims, the more recently written claim is the current
+  one.** `git blame` the lines carrying each claim rather than the files: a formatting sweep or an
+  edit elsewhere touches a file without changing what it asserts. Correcting the stale claim belongs
+  to the change that found the contradiction, not to a later one — that is the rule above, applied
+  across two documents instead of within one. The rule's limit, stated plainly: recency establishes
+  which claim was written later, never which one is right. Where the newer claim is the mistake, the
+  resolution is still a change that leaves the corpus saying one thing, and never an annotation
+  explaining the discrepancy.
 
 Two rules that govern the design documents govern nodes identically, and are stated once, where they
 already live:
@@ -82,9 +97,10 @@ already live:
 - No indexer and no events.
 - **The convention is checked, not enforced.** `nix flake check` runs `knowledge-lint`: every node's
   frontmatter vetted against [`schema/node.cue`](../schema/node.cue), every filename agreeing with
-  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id and relative link
-  resolving. It reports; nothing stops a broken graph from landing until there is an integrator to
-  stop it.
+  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id, `supersedes` id and
+  relative link resolving. A `supersedes` id must further name a node whose own status is
+  `superseded`. It reports; nothing stops a broken graph from landing until there is an integrator
+  to stop it.
 
 The lint is not this repo's alone. The flake exposes it as `lib.knowledgeLint`, so any project that
 keeps a graph gets the same check by taking the-valley as a flake input and instantiating it over

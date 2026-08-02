@@ -62,6 +62,45 @@
               prettier ${proseFmtArgs} --write
           '';
         };
+
+      # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
+      # only — hence vendorHash = null, and hence no module fetch at build
+      # time. Its unit tests run in the checkPhase and need git.
+      attestUnwrappedFor =
+        pkgs:
+        pkgs.buildGoModule {
+          pname = "valley-attest";
+          version = "0";
+          src = ./attest;
+          vendorHash = null;
+          nativeCheckInputs = [ pkgs.git ];
+          meta.mainProgram = "attest";
+        };
+
+      # The shipping form. git, ssh-keygen and cue are pinned to this
+      # flake's nixpkgs, so every host composes and vets a statement with
+      # the same tools. `nix` is deliberately NOT pinned: the check being
+      # attested to must be built by the nix the machine actually runs, and
+      # a nix carried in here would be a second one.
+      attestFor =
+        pkgs:
+        pkgs.runCommand "valley-attest"
+          {
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            meta.mainProgram = "attest";
+          }
+          ''
+            mkdir -p $out/bin
+            makeWrapper ${lib.getExe (attestUnwrappedFor pkgs)} $out/bin/attest \
+              --prefix PATH : ${
+                lib.makeBinPath [
+                  pkgs.git
+                  pkgs.openssh
+                  pkgs.cue
+                ]
+              } \
+              --set-default VALLEY_ATTEST_SCHEMA ${./schema/attestation.cue}
+          '';
     in
     {
       nixosModules.valley-host = ./nix/valley-host.nix;
@@ -106,6 +145,10 @@
           type = "app";
           program = lib.getExe (proseFmtFor nixpkgs.legacyPackages.${system});
         };
+        attest = {
+          type = "app";
+          program = lib.getExe (attestFor nixpkgs.legacyPackages.${system});
+        };
       });
 
       packages = lib.genAttrs systems (
@@ -116,6 +159,7 @@
         {
           inherit valley;
           default = valley;
+          attest = attestFor nixpkgs.legacyPackages.${system};
         }
       );
 
@@ -639,6 +683,318 @@
                     fi
                   '') invalidConfigs
                 )}
+                touch $out
+              '';
+
+          # The attestation statement schema (dcr-0de694f). A statement the
+          # helper composes must vet, and the schema must reject what it
+          # claims to reject. Two rejections carry the decision's whole
+          # weight and are pinned by name below: a subject with no
+          # content-addressed digest has no identity at all, and a
+          # predicate that crosses the pure/effectful line would let a
+          # notarization pass itself off as re-derivable.
+          attest-schema =
+            let
+              treeDigest = "73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69";
+              subject = ''
+                "subject": {
+                  "primary": "valley-tree-v1",
+                  "digest": {
+                    "valley-tree-v1": "${treeDigest}",
+                    "git-sha1": "99b5f2f7971e2c8e37a7a579cb761d80272a9a3d"
+                  }
+                }
+              '';
+              pureStatement = ''
+                {
+                  "statementType": "the-valley/attestation/v1",
+                  ${subject},
+                  "predicateType": "the-valley/check/pure/v1",
+                  "predicate": {
+                    "check": {"name": "prose-format", "runner": "nix", "attribute": "prose-format"},
+                    "result": "passed",
+                    "inputs": {"valley-inputs-v1": "8df8c199decb43eb715790d6fc3a9dd96adaaf3a75073a50acfa51d73aaf3253"},
+                    "derivation": {"sha256": "ef69ed0ccc0546a38a40eebbfcac610cedd7cf4f81036cd21ddff483f08d3ad7"},
+                    "output": {"valley-tree-v1": "cf1f5a9c96bbdf1d69da451c94168fa3a760f91f94827ba88bdb72de8dfa8af9"}
+                  },
+                  "provenance": {
+                    "harness": "a harness",
+                    "model": "a model",
+                    "prompt": {"sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"},
+                    "delegation": [{"principal": "human:integrator", "grant": "land changes"}]
+                  }
+                }
+              '';
+              effectfulStatement = ''
+                {
+                  "statementType": "the-valley/attestation/v1",
+                  ${subject},
+                  "predicateType": "the-valley/check/effectful/v1",
+                  "predicate": {
+                    "check": {"name": "live-api", "runner": "command", "command": "curl -sf https://example.invalid"},
+                    "result": "passed",
+                    "environment": "a sealed environment",
+                    "observedAt": "2026-08-02T13:02:00Z"
+                  }
+                }
+              '';
+              # Each case is the pure statement with one thing wrong.
+              invalidStatements = {
+                # Carriage is not statement: a signature inside the signed
+                # bytes is a category error, and the sentinel names it.
+                signature-in-statement = builtins.replaceStrings [ "\"statementType\"" ] [
+                  "\"signature\": \"-----BEGIN SSH SIGNATURE-----\", \"statementType\""
+                ] pureStatement;
+                # A subject with only advisory members.
+                no-content-addressed-subject =
+                  builtins.replaceStrings [ "\"valley-tree-v1\": \"${treeDigest}\"," ] [ "" ]
+                    pureStatement;
+                # A notarization wearing a re-derivable predicate type.
+                effectful-claiming-pure = builtins.replaceStrings [ "the-valley/check/effectful/v1" ] [
+                  "the-valley/check/pure/v1"
+                ] effectfulStatement;
+                # A re-derivable claim that drops what it is re-derived
+                # against.
+                pure-without-output = builtins.replaceStrings [ "\"output\"" ] [ "\"outputs\"" ] pureStatement;
+                # A predicate type nobody has published a shape for.
+                unversioned-predicate-type =
+                  builtins.replaceStrings [ "the-valley/check/pure/v1" ] [ "the-valley/check/pure" ]
+                    pureStatement;
+                # A digest under a scheme no verifier can check.
+                unknown-digest-scheme = builtins.replaceStrings [ "\"git-sha1\"" ] [ "\"md5\"" ] pureStatement;
+                # An abbreviated digest.
+                short-digest = builtins.replaceStrings [ treeDigest ] [ "73847e0b" ] pureStatement;
+                # A check name outside the shape schema/verification.cue
+                # holds check names to.
+                unsafe-check-name = builtins.replaceStrings [ "\"prose-format\", \"runner\"" ] [
+                  "\"Prose Format\", \"runner\""
+                ] pureStatement;
+                # A nix check carrying a command line.
+                nix-check-with-a-command = builtins.replaceStrings [ "\"runner\": \"nix\"" ] [
+                  "\"runner\": \"nix\", \"command\": \"make\""
+                ] pureStatement;
+              };
+            in
+            pkgs.runCommand "valley-attest-schema"
+              {
+                nativeBuildInputs = [ pkgs.cue ];
+              }
+              ''
+                cue vet -c ${./schema/attestation.cue} ${pkgs.writeText "pure.json" pureStatement}
+                cue vet -c ${./schema/attestation.cue} ${pkgs.writeText "effectful.json" effectfulStatement}
+
+                ${lib.concatStrings (
+                  lib.mapAttrsToList (name: text: ''
+                    if cue vet -c ${./schema/attestation.cue} ${pkgs.writeText "${name}.json" text} \
+                      > ${name}.err 2>&1; then
+                      echo "attest-schema: expected invalid statement '${name}' to be rejected" >&2
+                      exit 1
+                    fi
+                  '') invalidStatements
+                )}
+
+                # A rejection that does not name the field leaves the reader
+                # to find the breakage themselves.
+                grep -q 'signature: conflicting values' signature-in-statement.err
+                grep -q 'subject.digest."valley-tree-v1"' no-content-addressed-subject.err
+                grep -q 'predicate.environment: field not allowed' effectful-claiming-pure.err
+                touch $out
+              '';
+
+          # The helper itself, driven end to end over scratch repositories
+          # and a throwaway key: what it publishes, what it refuses to
+          # publish, and what a verifier makes of both.
+          #
+          # Every check here uses the command runner. The nix runner cannot
+          # be exercised from inside a nix build — there is no daemon in the
+          # sandbox — so what a pure statement looks like is pinned by
+          # attest-schema above and by the unit tests over the digest
+          # scheme, and the runner itself is exercised by running the helper
+          # outside the sandbox.
+          attest-e2e =
+            pkgs.runCommand "valley-attest-e2e"
+              {
+                nativeBuildInputs = [
+                  pkgs.git
+                  pkgs.openssh
+                  (attestFor pkgs)
+                ];
+              }
+              ''
+                export HOME="$TMPDIR"
+                export GIT_CONFIG_NOSYSTEM=1
+                git config --global user.name valley-check
+                git config --global user.email valley-check@localhost
+                git config --global init.defaultBranch main
+
+                # A throwaway key in a scratch directory. The signer is a
+                # parameter: provisioning a host identity is deployment.
+                ssh-keygen -q -t ed25519 -N "" -C valley-check -f "$TMPDIR/host"
+                ssh-keygen -q -t ed25519 -N "" -C stranger -f "$TMPDIR/stranger"
+                printf 'host@valley %s' "$(cat "$TMPDIR/host.pub")" > "$TMPDIR/allowed_signers"
+                printf 'stranger@elsewhere %s' "$(cat "$TMPDIR/stranger.pub")" > "$TMPDIR/other_signers"
+
+                repo="$TMPDIR/tree"
+                git init --quiet "$repo"
+                cd "$repo"
+                echo hello > hello.txt
+                mkdir -p sub
+                echo nested > sub/nested.txt
+                ln -s hello.txt link
+                printf '#!/bin/sh\ntrue\n' > run.sh
+                chmod 755 run.sh
+                git add -A
+                git commit --quiet -m base
+
+                digest="$(attest digest | sed 's/^valley-tree-v1://')"
+                case "$digest" in
+                  [0-9a-f][0-9a-f]*) ;;
+                  *) echo "attest-e2e: no tree digest: $digest" >&2; exit 1 ;;
+                esac
+
+                refs() { git for-each-ref --format='%(refname)' refs/the-valley; }
+                nothing_published() {
+                  if [ -n "$(refs)" ]; then
+                    echo "attest-e2e: $1" >&2
+                    git for-each-ref refs/the-valley >&2
+                    exit 1
+                  fi
+                }
+
+                # Without a key, nothing is emitted — an unsigned statement
+                # is not an attestation.
+                if attest run --command 'ok=true' 2> nokey.err; then
+                  echo "attest-e2e: a run with no signing key must fail" >&2
+                  exit 1
+                fi
+                grep -q 'no signing key' nokey.err
+                nothing_published "a run with no signing key stored a ref"
+
+                # A failing check publishes nothing, and says which check.
+                if attest run --key "$TMPDIR/host" \
+                  --command 'ok=true' --command 'nope=false' > failing.out 2> failing.err; then
+                  echo "attest-e2e: a failing check must fail the run" >&2
+                  exit 1
+                fi
+                grep -qE '^check   nope +command  failed$' failing.out
+                grep -q 'nothing published' failing.err
+                nothing_published "a failing check left a ref behind"
+
+                # A statement the schema rejects is stopped before it is
+                # signed or stored. Provenance is the caller's, so a
+                # malformed one is how a malformed statement gets composed
+                # at all.
+                echo '{"harness":"valley-check","authority":"root"}' > bad-provenance.json
+                if attest run --key "$TMPDIR/host" --command 'ok=true' \
+                  --provenance bad-provenance.json > malformed.out 2> malformed.err; then
+                  echo "attest-e2e: a malformed statement must fail the run" >&2
+                  exit 1
+                fi
+                grep -q 'provenance.authority: field not allowed' malformed.err
+                grep -q 'nothing published' malformed.err
+                nothing_published "a malformed statement left a ref behind"
+
+                # The successful run.
+                echo '{"harness":"valley-check","model":"none","delegation":[{"principal":"human:integrator","grant":"land changes"}]}' > provenance.json
+                attest run --key "$TMPDIR/host" --command 'ok=true' \
+                  --provenance provenance.json > run.out
+                grep -q "^subject valley-tree-v1:$digest\$" run.out
+                grep -q '^check   ok  *command  passed$' run.out
+
+                # Stored at a ref keyed by the subject digest.
+                ref="$(refs)"
+                case "$ref" in
+                  refs/the-valley/attestations/"$digest"/*) ;;
+                  *) echo "attest-e2e: ref $ref is not keyed by the subject digest" >&2; exit 1 ;;
+                esac
+                git cat-file -p "$ref:ok/statement.json" > statement.json
+                git cat-file -p "$ref:ok/statement.sig" > statement.sig
+                grep -q 'BEGIN SSH SIGNATURE' statement.sig
+                grep -q "\"valley-tree-v1\":\"$digest\"" statement.json
+                grep -q '"harness":"valley-check"' statement.json
+
+                # No git object is signed: the signature is over the
+                # statement and nothing else.
+                if git cat-file commit HEAD | grep -q '^gpgsig'; then
+                  echo "attest-e2e: attest signed a git object" >&2
+                  exit 1
+                fi
+
+                verify() {
+                  attest verify --statement "$1" --signature statement.sig \
+                    --allowed-signers "$2" --repo "$repo"
+                }
+
+                verify statement.json "$TMPDIR/allowed_signers" > verify.out
+                grep -q 'Good "the-valley.attestation.v1" signature for host@valley' verify.out
+                grep -q 'matches the recorded subject digest' verify.out
+
+                # One atomic native-git push carries the branch and the
+                # attestation ref together.
+                git init --quiet --bare "$TMPDIR/host.git"
+                git remote add valley "$TMPDIR/host.git"
+                attest run --key "$TMPDIR/host" --command 'ok=true' --push valley > push.out
+                grep -q -- '--atomic' push.out
+                git -C "$TMPDIR/host.git" for-each-ref --format='%(refname)' > published.txt
+                grep -qx 'refs/heads/main' published.txt
+                grep -qx "$ref" published.txt
+
+                # A signature by a key the allowed-signers file does not
+                # list is not a bad signature — it is not a signer.
+                if verify statement.json "$TMPDIR/other_signers" > stranger.out 2>&1; then
+                  echo "attest-e2e: a statement signed by nobody we allow must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'no principal' stranger.out
+
+                # Tampering with the signed bytes.
+                sed "s/$digest/00000000000000000000000000000000000000000000000000000000000000ff/" \
+                  statement.json > tampered.json
+                if verify tampered.json "$TMPDIR/allowed_signers" > tampered.out 2>&1; then
+                  echo "attest-e2e: a tampered statement must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'Signature verification failed' tampered.out
+
+                # A statement rendered some other way than canonically.
+                # It would verify here and fail wherever it was recomposed,
+                # so it is refused.
+                sed 's/^{/{ /' statement.json > loose.json
+                if verify loose.json "$TMPDIR/allowed_signers" > loose.out 2>&1; then
+                  echo "attest-e2e: a non-canonical statement must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'not in canonical form' loose.out
+
+                # The subject is the tree. Change the tree and the same
+                # signed statement stops being about it …
+                echo goodbye > hello.txt
+                git commit --quiet -am "change the tree"
+                if verify statement.json "$TMPDIR/allowed_signers" > moved.out 2>&1; then
+                  echo "attest-e2e: a statement about another tree must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'tree digest mismatch' moved.out
+
+                # … while rewriting the commit over the same tree leaves the
+                # attestation standing, which is what a subject that is a
+                # tree digest buys.
+                git commit --quiet --amend -m "same tree, new commit"
+                rewritten="$(attest digest | sed 's/^valley-tree-v1://')"
+                git revert --quiet --no-edit HEAD
+                restored="$(attest digest | sed 's/^valley-tree-v1://')"
+                if [ "$restored" != "$digest" ]; then
+                  echo "attest-e2e: restoring the tree did not restore its digest" >&2
+                  echo "  original $digest" >&2
+                  echo "  restored $restored" >&2
+                  exit 1
+                fi
+                if [ "$rewritten" = "$digest" ]; then
+                  echo "attest-e2e: a changed tree kept its digest" >&2
+                  exit 1
+                fi
+                verify statement.json "$TMPDIR/allowed_signers" > rebased.out
+                grep -q 'matches the recorded subject digest' rebased.out
                 touch $out
               '';
 

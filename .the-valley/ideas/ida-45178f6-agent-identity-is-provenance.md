@@ -48,9 +48,10 @@ value can be committed to and authenticated by the signature while being withhel
 Provenance is data, and unsigned data is a claim anyone can fabricate, so something holding a key
 must assert it. The actuator of [[ida-f1b39e8]]
 ([ida-f1b39e8-outbound-effects-pass-through-an-actuator.md](./ida-f1b39e8-outbound-effects-pass-through-an-actuator.md))
-is the candidate, because it already holds credentials the run does not. This bears on the open item
-in [[ida-a8243d2]] asking whether an agent's attestation is signed at all or merely attributed, and
-points toward attributed.
+is the candidate, because it already holds credentials the run does not. A run is therefore named by
+a record that something else signs, and signs nothing itself — for a Phase 2 attestation, the signer
+is the host and the run is attributed inside its statement, per [[dcr-0de694f]]
+([dcr-0de694f-phase2-attestation-shape.md](../decisions/dcr-0de694f-phase2-attestation-shape.md)).
 
 ## Open
 

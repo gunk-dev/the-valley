@@ -50,15 +50,10 @@ already provide.
   the originating human answers who authorized the work, but not what the work was permitted to do.
 - How the chain is verified when the harness that ran the agent is also the software recording the
   citation.
-- Whether an agent's attestation is signed at all, or merely attributed.
 - That a capability model needs a mediator which cannot be bypassed. An operating-system kernel
   mediates every operation. The integrator plays that role for the changes it gates, but an agent
   run does a great deal that no mediator observes — so the model maps well onto integration-time
   authority and far less well onto the rest of what a run does.
-
-These questions are load-bearing rather than decorative. The contributor protocol admits both humans
-and agents as contributors, so the attestation helper cannot be built until the agent case has an
-answer.
 
 ## Related
 
@@ -72,5 +67,6 @@ answer.
   ([ida-d2dc957-attestations-ride-on-a-transparent-leaf.md](./ida-d2dc957-attestations-ride-on-a-transparent-leaf.md))
   — the carrier a delegation chain would be cited in.
 - [contribute.md](../../design/contribute.md) — defines a contributor as human or agent.
-- [roadmap.md, Phase 2](../../design/roadmap.md#phase-2--attestations-verification-mvp) — the phase
-  this question gates.
+- [[dcr-0de694f]]
+  ([dcr-0de694f-phase2-attestation-shape.md](../decisions/dcr-0de694f-phase2-attestation-shape.md))
+  — the attestation shape a run is attributed inside, holding no key of its own.

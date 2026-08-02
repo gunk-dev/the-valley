@@ -67,6 +67,40 @@
       nixosModules.valley-host = ./nix/valley-host.nix;
       nixosModules.default = self.nixosModules.valley-host;
 
+      # The knowledge lint, for any project that keeps a `.the-valley/` graph.
+      # This is the check's primary form: a consuming project takes this flake
+      # as an input and instantiates the derivation over its own source, so the
+      # check a policy names is supplied by the instance rather than written
+      # again by every project the policy covers (dcr-f41f718). A whole
+      # consuming flake is:
+      #
+      #   {
+      #     inputs.the-valley.url = "github:gunk-dev/the-valley";
+      #     outputs =
+      #       { self, the-valley }:
+      #       {
+      #         checks.x86_64-linux.knowledge-lint = the-valley.lib.knowledgeLint {
+      #           system = "x86_64-linux";
+      #           src = self;
+      #         };
+      #       };
+      #   }
+      #
+      # There is no nixpkgs input in that flake on purpose: cue and python come
+      # from this flake's pinned nixpkgs, so every project in a group runs the
+      # same lint against the same toolchain. `root` names the graph directory
+      # for a project that keeps its graph somewhere other than `.the-valley/`.
+      lib.knowledgeLint =
+        {
+          system,
+          src,
+          root ? ".the-valley",
+        }:
+        import ./nix/knowledge-lint.nix {
+          inherit src root;
+          pkgs = nixpkgs.legacyPackages.${system};
+        };
+
       apps = lib.genAttrs systems (system: {
         fmt = {
           type = "app";
@@ -188,6 +222,222 @@
           busRenderedWithoutEnable =
             noBackupHost.config.systemd.services ? valley-bus
             || noBackupHost.config.systemd.services ? valley-bus-init;
+
+          # A tree in the store, written from a path -> contents map. The
+          # knowledge lint reads a whole graph rather than a file, so every
+          # fixture below is small but complete.
+          mkTree =
+            name: files:
+            pkgs.runCommand name { } (
+              lib.concatStrings (
+                lib.mapAttrsToList (path: text: ''
+                  install -Dm444 ${pkgs.writeText "knowledge-lint-fixture" text} $out/${path}
+                '') files
+              )
+            );
+
+          # A project that is nearly nothing: a README, a docs directory, and
+          # two nodes. This is the shape the first consuming project has, and
+          # the knowledge-lint-consumer check instantiates lib.knowledgeLint
+          # over it exactly as that project's own flake would.
+          consumerProject = mkTree "knowledge-lint-consumer-project" {
+            "README.md" = ''
+              # A project
+
+              It keeps its knowledge in [.the-valley](./.the-valley/).
+            '';
+            "docs/design.md" = ''
+              # Design
+
+              ## The shape
+            '';
+            ".the-valley/ideas/ida-0a1b2c3-the-shape.md" = ''
+              ---
+              type: idea
+              id: ida-0a1b2c3
+              status: raw
+              title: The shape the design should take
+              created: 2026-08-02
+              ---
+
+              # The shape the design should take
+
+              As sketched in [design.md](../../docs/design.md#the-shape).
+            '';
+            ".the-valley/outcomes/oc-4d5e6f7-the-design-lands.md" = ''
+              ---
+              type: outcome
+              id: oc-4d5e6f7
+              status: open
+              title: The design lands
+              created: 2026-08-02
+              blocked_by: [ida-0a1b2c3]
+              ---
+
+              # The design lands
+
+              Waits on [[ida-0a1b2c3]].
+            '';
+          };
+
+          # A project with no graph at all. Adding the check must not require
+          # having written a node yet, or no project would ever adopt it
+          # before its first one.
+          graphlessProject = mkTree "knowledge-lint-graphless-project" {
+            "README.md" = ''
+              # A project with no knowledge graph yet
+            '';
+          };
+
+          # What the lint must reject, and the words its failure must contain.
+          # A lint that fails without naming the file and the defect costs the
+          # reader the whole diagnosis, so both are pinned.
+          rejectedGraphs = {
+            unknown-status = {
+              names = ''ida-0000001-a-node.md".status'';
+              files.".the-valley/ideas/ida-0000001-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-0000001
+                status: nonsense
+                title: A node in a state ideas do not have
+                created: 2026-08-02
+                ---
+              '';
+            };
+
+            edge-on-the-wrong-type = {
+              names = "blocked_by: field not allowed";
+              files.".the-valley/ideas/ida-0000002-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-0000002
+                status: raw
+                title: An idea carrying the one edge only outcomes carry
+                created: 2026-08-02
+                blocked_by: []
+                ---
+              '';
+            };
+
+            node-in-the-wrong-directory = {
+              names = "a bug node belongs in .the-valley/bugs/";
+              files.".the-valley/ideas/bd-0000003-a-bug.md" = ''
+                ---
+                type: bug
+                id: bd-0000003
+                status: open
+                title: A bug filed among the ideas
+                created: 2026-08-02
+                ---
+              '';
+            };
+
+            filename-id-mismatch = {
+              names = "filename says id ida-0000004, frontmatter says ida-0000005";
+              files.".the-valley/ideas/ida-0000004-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-0000005
+                status: raw
+                title: A node whose filename and frontmatter disagree
+                created: 2026-08-02
+                ---
+              '';
+            };
+
+            duplicate-id = {
+              names = "is already used by";
+              files = {
+                ".the-valley/ideas/ida-0000006-one.md" = ''
+                  ---
+                  type: idea
+                  id: ida-0000006
+                  status: raw
+                  title: One node
+                  created: 2026-08-02
+                  ---
+                '';
+                ".the-valley/ideas/ida-0000006-two.md" = ''
+                  ---
+                  type: idea
+                  id: ida-0000006
+                  status: raw
+                  title: Another node wearing the same id
+                  created: 2026-08-02
+                  ---
+                '';
+              };
+            };
+
+            missing-frontmatter = {
+              names = "no YAML frontmatter";
+              files.".the-valley/ideas/ida-0000007-a-node.md" = ''
+                # A node that is only prose
+              '';
+            };
+
+            dangling-wiki-link = {
+              names = "[[ida-9999999]] is not a node id";
+              files.".the-valley/ideas/ida-0000008-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-0000008
+                status: raw
+                title: A node pointing at nothing
+                created: 2026-08-02
+                ---
+
+                It builds on [[ida-9999999]].
+              '';
+            };
+
+            dangling-blocked-by = {
+              names = "blocked_by names oc-9999999, which is not a node";
+              files.".the-valley/outcomes/oc-0000009-an-outcome.md" = ''
+                ---
+                type: outcome
+                id: oc-0000009
+                status: open
+                title: An outcome waiting on nothing that exists
+                created: 2026-08-02
+                blocked_by: [oc-9999999]
+                ---
+              '';
+            };
+
+            broken-link = {
+              names = "./nowhere.md does not exist";
+              files.".the-valley/ideas/ida-000000a-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-000000a
+                status: raw
+                title: A node linking to a file that is not there
+                created: 2026-08-02
+                ---
+
+                See [nowhere](./nowhere.md).
+              '';
+            };
+
+            broken-anchor = {
+              names = "names no heading";
+              files.".the-valley/ideas/ida-000000b-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-000000b
+                status: raw
+                title: A node linking to a heading that is not there
+                created: 2026-08-02
+                ---
+
+                # A heading
+
+                See [above](./ida-000000b-a-node.md#not-this-heading).
+              '';
+            };
+          };
         in
         {
           # The CLI must stay a lint-clean script whose help verb answers
@@ -231,6 +481,71 @@
                 cd ${self}
                 find . -name '*.md' -print0 | xargs -0 --no-run-if-empty \
                   prettier ${proseFmtArgs} --check
+                touch $out
+              '';
+
+          # This repo's own graph, checked by the derivation the flake
+          # exposes rather than by a second implementation of it. Whatever a
+          # consuming project runs, this repo runs.
+          knowledge-lint = self.lib.knowledgeLint {
+            inherit system;
+            src = self;
+          };
+
+          # The reusable form, exercised over a foreign tree: a project that
+          # is a README, a docs directory and two nodes, and a project with no
+          # graph at all. Both must pass, and both are checked by depending on
+          # the instantiated derivations rather than by re-running the lint.
+          knowledge-lint-consumer =
+            pkgs.runCommand "valley-knowledge-lint-consumer"
+              {
+                consumer = self.lib.knowledgeLint {
+                  inherit system;
+                  src = consumerProject;
+                };
+                graphless = self.lib.knowledgeLint {
+                  inherit system;
+                  src = graphlessProject;
+                };
+              }
+              ''
+                test -e "$consumer" && test -e "$graphless"
+                touch $out
+              '';
+
+          # The lint must fail on a broken graph, and its failure must name
+          # the file and the defect — a check that only says "no" leaves the
+          # reader to find the breakage themselves. The script and the schema
+          # here are the same store paths lib.knowledgeLint uses, so the
+          # rejections cannot drift from what a consumer runs.
+          knowledge-lint-rejects =
+            pkgs.runCommand "valley-knowledge-lint-rejects"
+              {
+                nativeBuildInputs = [
+                  pkgs.cue
+                  pkgs.python3
+                ];
+              }
+              ''
+                ${lib.concatStrings (
+                  lib.mapAttrsToList (case: spec: ''
+                    mkdir -p work/${case}
+                    if python3 ${./nix/knowledge-lint.py} \
+                      --tree ${mkTree "knowledge-lint-${case}" spec.files} \
+                      --schema ${./schema/node.cue} \
+                      --work work/${case} 2> ${case}.err
+                    then
+                      echo "knowledge-lint: expected graph '${case}' to be rejected" >&2
+                      exit 1
+                    fi
+                    if ! grep -qF -- ${lib.escapeShellArg spec.names} ${case}.err; then
+                      echo "knowledge-lint: '${case}' was rejected without naming" \
+                        ${lib.escapeShellArg spec.names} >&2
+                      cat ${case}.err >&2
+                      exit 1
+                    fi
+                  '') rejectedGraphs
+                )}
                 touch $out
               '';
 

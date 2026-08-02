@@ -55,7 +55,10 @@ declares — its projects, their push mirrors, and the durability policy for its
 [`examples/host.cue`](./examples/host.cue)) — and a NixOS module ([`flake.nix`](./flake.nix)) that
 installs a valley host from that declaration. Phase 1's spine is landing: the host module can run an
 event bus onto which every push's ref updates are projected as events
-([`schema/events.cue`](./schema/events.cue)), watchable with `valley tail`. The plan-of-record —
+([`schema/events.cue`](./schema/events.cue)), watchable with `valley tail`. The knowledge-graph
+convention has a checkable form as well: [`schema/node.cue`](./schema/node.cue) describes a node's
+frontmatter, and the flake exposes the lint that enforces it as `lib.knowledgeLint`, so any project
+can instantiate the same check over its own tree from a flake input. The plan-of-record —
 incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).
 
 ## The docs

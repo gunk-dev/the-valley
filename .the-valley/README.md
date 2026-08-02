@@ -38,6 +38,9 @@ enough.
 IDs are short and hash-derived (e.g. first 7 hex chars of a hash of the slug) — coordination-free,
 at the cost of prettiness. Filenames are `<id>-<slug>.md`.
 
+The same table in checkable form is [`schema/node.cue`](../schema/node.cue), which the knowledge
+lint vets every node's frontmatter against.
+
 ## Writing a node
 
 **The graph at any commit presents the design as it stands now.** It carries no history of how the
@@ -76,5 +79,16 @@ already live:
 
 - **Creating a node is a commit.** Closing one is a commit that flips `status`.
 - **Listing is `ls`. Search is `grep`. History is `git log`.**
-- No indexer, no events, no validation. **The schemas above are documentation, not enforcement** —
-  nothing checks them until there is an integrator to enforce them.
+- No indexer and no events.
+- **The convention is checked, not enforced.** `nix flake check` runs `knowledge-lint`: every node's
+  frontmatter vetted against [`schema/node.cue`](../schema/node.cue), every filename agreeing with
+  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id and relative link
+  resolving. It reports; nothing stops a broken graph from landing until there is an integrator to
+  stop it.
+
+The lint is not this repo's alone. The flake exposes it as `lib.knowledgeLint`, so any project that
+keeps a graph gets the same check by taking the-valley as a flake input and instantiating it over
+its own tree — see the comment on that output in [flake.nix](../flake.nix) for the whole of a
+consuming flake, and [[ida-a9e274c]]
+([ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md](./ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md))
+for why the derivation travels rather than the convention.

@@ -69,6 +69,9 @@ Not derived from the ladder — imposed on every solution to it, from the premis
   artifacts reproducible.
 - **Decentralized where possible.** Centralization is accepted only where ordering or coordination
   genuinely require it, and must be explicit.
+- **Auditable supply chain.** What a build depends on must be enumerable, and the provenance of each
+  dependency establishable. Pinning fixes which dependencies are used but not how many; a dependency
+  set too large to read is trusted rather than verified.
 
 ## Durability
 

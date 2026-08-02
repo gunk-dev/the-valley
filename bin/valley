@@ -439,10 +439,11 @@ cmd_checks() {
 
   need_cue
   [ -f "$schema" ] || die "no policy schema at $schema"
-  compgen -G "$instance/*.cue" > /dev/null \
-    || die "no instance policy layer at $instance"
-  compgen -G "$project/*.cue" > /dev/null \
-    || die "no project policy layer at $project"
+  # An unmatched glob stays literal, so the first entry is a real file
+  # exactly when the directory holds a document.
+  local -a instance_docs=("$instance"/*.cue) project_docs=("$project"/*.cue)
+  [ -f "${instance_docs[0]}" ] || die "no instance policy layer at $instance"
+  [ -f "${project_docs[0]}" ] || die "no project policy layer at $project"
 
   head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
     || die "no such commit: ${2:-HEAD}"
@@ -459,7 +460,7 @@ cmd_checks() {
   local -a paths=()
   mapfile -t paths < <(diff_paths "$base" "$head" | sort -u)
 
-  POLICY_LAYER=("$schema" "$instance"/*.cue "$project"/*.cue)
+  POLICY_LAYER=("$schema" "${instance_docs[@]}" "${project_docs[@]}")
   POLICY_TMP="$(mktemp -d)"
   # shellcheck disable=SC2064 # expand POLICY_TMP now, not at trap time
   trap "rm -rf '$POLICY_TMP'" EXIT

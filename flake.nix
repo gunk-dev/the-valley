@@ -420,7 +420,7 @@
                 named() {
                   awk '/^required checks:$/ {f = 1; next}
                        /^$/ {f = 0}
-                       f && /^  / {print $1}' <<<"$out" | sort | paste -sd' ' -
+                       f && /^  / {print $1}' <<<"$report" | sort | paste -sd' ' -
                 }
 
                 # Start a case from the base tree; assert its check table.
@@ -432,7 +432,7 @@
                     echo "policy-deriver: $2" >&2
                     echo "  expected: $1" >&2
                     echo "  got:      $got" >&2
-                    echo "$out" >&2
+                    echo "$report" >&2
                     exit 1
                   fi
                 }
@@ -443,27 +443,27 @@
                 case_start flat
                 echo edit > src/one.rs
                 git commit --quiet -am flat
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-deep c-flat" "src/*.rs must match a file directly under src/"
 
                 case_start deep
                 echo edit > src/deep/two.rs
                 git commit --quiet -am deep
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-deep" "src/*.rs must not match across a path separator"
 
                 # A `**` between two segments matches no segment at all …
                 case_start nested-none
                 echo edit > a/b
                 git commit --quiet -am nested-none
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-nested" "a/**/b must match a/b"
 
                 # … and any number of them.
                 case_start nested-many
                 echo edit > a/x/y/b
                 git commit --quiet -am nested-many
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-nested" "a/**/b must match a/x/y/b"
 
                 # A rename counts on both sides: the class covering the old
@@ -473,31 +473,31 @@
                 git commit --quiet -m renamed
                 git diff --name-status -M "$base" HEAD | grep -q '^R' \
                   || { echo "policy-deriver: the rename case is not a rename" >&2; exit 1; }
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-docs c-notes c-tmpl" "a rename must count on both sides"
 
                 # A deleted path is still a changed path.
                 case_start deleted
                 git rm --quiet docs/gone.md
                 git commit --quiet -m deleted
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-docs c-tmpl" "a deletion must count"
 
                 # The form of the value is the mandatory bit: the floor's
                 # concrete `true` against the template's `bool | *true`.
-                grep -qE '^  c-docs +mandatory +docs$' <<<"$out"
-                grep -qE '^  c-tmpl +default +docs$' <<<"$out"
+                grep -qE '^  c-docs +mandatory +docs$' <<<"$report"
+                grep -qE '^  c-tmpl +default +docs$' <<<"$report"
 
                 # A path no class covers takes the unclassified set, and says
                 # so by name.
                 case_start uncovered
                 echo edit > Makefile
                 git commit --quiet -am uncovered
-                out="$(derive)"
+                report="$(derive)"
                 expect "c-uncovered" "an uncovered path must take the unclassified set"
-                grep -q '^classes matched: unclassified$' <<<"$out"
-                grep -q '^unclassified: 1 path(s) matched no class$' <<<"$out"
-                grep -q '^  Makefile$' <<<"$out"
+                grep -q '^classes matched: unclassified$' <<<"$report"
+                grep -q '^unclassified: 1 path(s) matched no class$' <<<"$report"
+                grep -q '^  Makefile$' <<<"$report"
 
                 touch $out
               '';

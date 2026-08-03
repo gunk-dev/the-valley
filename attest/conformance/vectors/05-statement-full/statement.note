@@ -1,0 +1,22 @@
+valley-statement-v1
+predicate.check.attribute prose-format
+predicate.check.name prose-format
+predicate.check.runner nix
+predicate.derivation.sha256 ef69ed0ccc0546a38a40eebbfcac610cedd7cf4f81036cd21ddff483f08d3ad7
+predicate.inputs.valley-inputs-v1 8df8c199decb43eb715790d6fc3a9dd96adaaf3a75073a50acfa51d73aaf3253
+predicate.output.valley-tree-v1 cf1f5a9c96bbdf1d69da451c94168fa3a760f91f94827ba88bdb72de8dfa8af9
+predicate.result passed
+predicateType the-valley/check/pure/v1
+provenance.context.sha256 6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
+provenance.delegation.0.grant land changes
+provenance.delegation.0.principal human:integrator
+provenance.delegation.1.principal agent:run
+provenance.harness a harness
+provenance.model a model
+provenance.prompt.sha256 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+statementType the-valley/attestation/v1
+subject.digest.git-sha1 99b5f2f7971e2c8e37a7a579cb761d80272a9a3d
+subject.digest.valley-tree-v1 73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69
+subject.primary valley-tree-v1
+
+— conformance.the-valley.invalid/attestations sEDvC3wF9CYWYelzVgUJLySHAlsD2ux5i+l0mrzuZ7r2sJ71YAdql6+RNgUgi57h3c3ig7SS6dvRxXKHsERJ44IJrwE=

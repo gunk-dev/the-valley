@@ -8,7 +8,9 @@ makes one hard to forge.
 The shape of an attestation — its statement, its signer, its envelope, where it is stored, and how
 several of them compose — is fixed by
 [dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md), and the statement's
-fields are [schema/attestation.cue](../schema/attestation.cue).
+fields are [schema/attestation.cue](../schema/attestation.cue). How a statement is written down and
+signed is [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md), and
+the sections below are that decision's detail.
 
 ## Two kinds of checks, two kinds of attestation
 
@@ -57,32 +59,132 @@ to a base, since a tree is the base and the change together
 The same manifest digests a pure check's output, so the digest a statement records for what a check
 produced and the digest it records for what the check ran over are the same kind of thing.
 
+## A statement is written down as lines
+
+A signature covers bytes, so a statement has one written form and every implementation must produce
+it exactly. That form is `valley-statement-v1`, and it is lines.
+
+The first line is `valley-statement-v1`, the name of the form. Every line after it is a key, one
+space, and a value. The lines are sorted by key, ascending, comparing bytes, and the text ends with
+a newline.
+
+    valley-statement-v1
+    predicate.check.name prose-format
+    predicate.check.runner nix
+    predicate.result passed
+    predicateType the-valley/check/pure/v1
+    statementType the-valley/attestation/v1
+    subject.digest.valley-tree-v1 73847e0b…
+    subject.primary valley-tree-v1
+
+A key is the path from the document's root to the value, with a dot between segments. A segment that
+is a decimal number is an index into an array, so `provenance.delegation.0.principal` is the
+principal of the first recorded delegation.
+
+The form has no escapes, and that is why it was chosen. A value is written as its own bytes, so
+there is exactly one way to write it and nothing for two implementations to disagree about. What
+follows from that is a short list of things a statement may not carry, each refused rather than
+escaped or dropped:
+
+- **Only strings at the leaves.** A number, a boolean and a null have no written form, because
+  nobody has decided one and a guess would be a guess about signed bytes.
+- **No empty value.** A line's value is what follows its first space, so an empty one would be an
+  invisible trailing space. A field a statement does not carry is left out.
+- **No control character in a value.** A newline is where a line ends, so there is no way to write
+  one inside a value.
+- **No empty object and no empty array.** They have no lines, so they cannot be written down. They
+  are refused rather than dropped, which is what keeps what was validated and what was signed the
+  same document.
+- **Field names are a letter, then letters, digits and dashes.** That keeps a name clear of the dot
+  that separates segments, the space that separates key from value, and the digits that mark an
+  index.
+
+Arrays are dense: indices run from 0 with no gaps, in decimal without leading zeros. Line order over
+indices is byte order, so `.10` sits between `.1` and `.2`; a reader rebuilds an array from the
+index and never from the order the lines arrive in.
+
+Reading the form back enforces every rule above, so text that parses is text a renderer would have
+produced. That is what makes "these bytes are the written form of what they say" something a
+verifier settles by reading, rather than a claim it has to take on trust.
+
+[schema/attestation.cue](../schema/attestation.cue) is the gate, and it holds every value and every
+field name to what a line can carry. So a statement with no written form fails validation before a
+run has built anything, rather than in a renderer after a check has already passed.
+
+## The envelope is a signed note
+
+A statement is signed as a **note**: the statement text, a blank line, and one or more signature
+lines. Each signature line is an em-dash (U+2014), a space, the signer's name, a space, and base64
+of a four-byte key hash followed by the raw Ed25519 signature over the text.
+
+    valley-statement-v1
+    predicate.result passed
+    …
+
+    — laddie.gunk.dev/attestations sEDvC7HO4DfL5ZxbZPFvoVWq2Wt5eGTqZx2h…
+    — witness.gunk.dev/attestations lDb9C3YrmxnO0/YWsmWjiu2kteNvGqfQstCy…
+
+This is the format `golang.org/x/mod/sumdb/note` defines and transparency log checkpoints are
+published in. It is the envelope for what it does to composition: several parties attesting to one
+subject are sibling signature lines under one text, so a signature cannot be lifted onto a different
+statement — it sits under the text it covers, and moving it means moving that text with it. It is
+also the envelope a [Phase 6](./roadmap.md#phase-6--trust-backstop) checkpoint arrives in, so the
+same envelope carries an attestation now and a checkpoint later rather than changing at the
+boundary.
+
+A signature covers the text and nothing else: not the signer's name, not a namespace, and no git
+object ([ida-51605e8](../.the-valley/ideas/ida-51605e8-authenticity-not-git-coupled.md)). So what
+separates an attestation from any other note a key signs is the text's own first line, which is why
+statement text opens by naming its form.
+
+**The signer's name** is the host's fully qualified name, a slash, and what it is signing:
+`laddie.gunk.dev/attestations`. The host part says which machine to go and ask about a key. The
+suffix keeps a key signing attestations distinct, as a verifier key, from the same key signing
+anything else — the name is inside the key hash, so the same public key published under two names is
+two verifier keys and cannot be confused.
+
+**What a verifier is given** is a set of known keys, one per line: the name, the key hash its name
+and public key produce, and the public key itself.
+
+    laddie.gunk.dev/attestations+1f9c40b2+AbUmzL2tCH0nR9…
+
+That is the whole of it. There is no allowed-signers file, no certificate and no directory lookup. A
+signature by a key not among them is a signature by nobody the verifier accepts, and a signature by
+one of them that does not check out refuses the whole note — one good signature standing beside a
+forgery is not a note to read past.
+
+The host signs with a raw Ed25519 key. `/etc/ssh/ssh_host_ed25519_key` is the natural production
+identity, because the host already has it and it already says which host this is, but the key is a
+parameter and provisioning one is deployment.
+
 ## The helper
 
 `nix run .#attest` is the Phase 2 helper. `attest run` digests the tree, runs the checks over an
 export of that tree rather than over the working directory, composes one statement per check, vets
-each against [schema/attestation.cue](../schema/attestation.cue), signs each with a detached SSHSIG
-signature under the namespace `the-valley.attestation.v1`, and stores them at
-`refs/the-valley/attestations/<tree digest>/<signer fingerprint>`. With `--push` it publishes the
-topic branch and that ref in one atomic native-git push. A failing check publishes nothing, and
-neither does a statement the schema rejects.
+each against [schema/attestation.cue](../schema/attestation.cue), writes each out as statement text,
+signs each as a note, and stores them at
+`refs/the-valley/attestations/<tree digest>/<signer key hash>`. With `--push` it publishes the topic
+branch and that ref in one atomic native-git push. A failing check publishes nothing, and neither
+does a statement the schema rejects or a statement with no written form.
 
-The signing key is a parameter (`--key`). There is no unsigned mode: a run with no key available
-fails rather than emitting a statement nobody signed.
+The signing key is a parameter (`--key`), as is the name it signs under (`--name`, defaulting to
+this host's). There is no unsigned mode: a run with no key available fails rather than emitting a
+statement nobody signed.
 
-`attest verify` takes a statement, its signature and an allowed-signers file, and checks four
-things: that the statement satisfies the schema, that its bytes are the canonical rendering of what
-it says, that a signer the file allows signed exactly those bytes, and — given `--repo` — that the
-tree in front of the verifier is the tree the statement names. Re-running a pure check and
-confirming its output digest is witness re-verification, and belongs to
-[Phase 6](./roadmap.md#phase-6--trust-backstop) rather than here.
+`attest verify` takes a note and a known-keys file, and checks four things: that the note's text is
+the written form of what it says, that the statement satisfies the schema, that every signature by a
+key the verifier holds checks out over exactly those bytes, and — given `--repo` — that the tree in
+front of the verifier is the tree the statement names. `--signer` names a signer whose signature
+must be present. Re-running a pure check and confirming its output digest is witness
+re-verification, and belongs to [Phase 6](./roadmap.md#phase-6--trust-backstop) rather than here.
 
-`attest canonical` renders a JSON document into the bytes a signature covers, and does nothing else
-with it. Those bytes are an interop contract rather than an internal step: a second implementation
-that renders them differently signs different bytes over the same statement, and every signature
-already made stops verifying against it. So [attest/conformance/](../attest/conformance/) holds
-fixed documents paired with their exact canonical bytes, and the flake's `attest-conformance` check
-renders each one and compares.
+`attest render` writes a JSON document as statement text, `attest sign` turns statement text into a
+note or adds a signature line to one, and `attest key` prints the verifier key for a signing key.
+Those bytes are an interop contract rather than an internal step: a second implementation that
+writes them differently signs different bytes over the same statement, and every signature already
+made stops verifying against it. So [attest/conformance/](../attest/conformance/) holds fixed
+documents paired with their exact text and notes, along with the documents and texts that must be
+refused, and the flake's `attest-conformance` check runs the whole set.
 
 The run provenance a statement carries — the harness, the model, digests of the prompt and the
 context, and the delegation chain — is supplied by the caller (`--provenance`) or absent. Nothing

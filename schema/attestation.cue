@@ -1,14 +1,21 @@
 // The statement a Phase 2 attestation signs: a typed, versioned record of
 // what check ran, over what tree, with what result (dcr-0de694f). The
-// statement is the only thing signed. The envelope around it — a detached
-// SSHSIG signature under the namespace "the-valley.attestation.v1" — and
-// the git ref it is stored at are carriage, and neither is described here.
+// statement is the only thing signed. The envelope around it — a signed
+// note, whose text is the statement and whose signature lines sit beneath
+// it — and the git ref that note is stored at are carriage, and neither is
+// described here.
 //
 // The statement is self-contained: a verifier that holds these bytes and
 // the tree they name needs nothing else to understand the claim. That is
 // why the pure-versus-effectful distinction of design/verification.md is
 // `predicateType` — inside the signed bytes — rather than a property of
 // where the statement was found.
+//
+// This file is the gate a statement passes on the way in and on the way
+// out, and it reads JSON. What a signature covers is the statement's
+// written form, which is lines (design/verification.md); the two carry the
+// same fields, and the constraints below on what a value may be are what
+// keep every validated statement writable as lines.
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
 // statement travels between machines and outlives the tool that wrote it.
@@ -64,33 +71,42 @@ package attestation
 
 #Sha256: =~"^[0-9a-f]{64}$"
 
-// #AsciiKey is the key shape a statement's object members are held to:
-// printable ASCII, from space through tilde.
+// #Line is what a statement's every string value is held to: text that one
+// line can carry. Not empty, and holding no ASCII control character.
 //
-// This is a property of the signed bytes rather than a naming preference.
-// Canonical form sorts object members by their UTF-8 bytes; RFC 8785 sorts
-// them by UTF-16 code units. The two orderings agree over ASCII and part
-// company above it, so a non-ASCII key is two implementations rendering the
-// same statement into different bytes — and the way that failure surfaces is
-// a signature that does not verify, with nothing naming the key that caused
-// it.
-//
-// Every key in this file is fixed here and is ASCII, so no statement today
-// can carry one. The constraint is written down anyway, because the first
-// map keyed by a caller rather than by this file is where the property
-// silently stops holding.
-#AsciiKey: =~"^[\\x20-\\x7e]*$"
+// This is a property of the signed bytes rather than a stylistic
+// preference. A statement is written out as lines, and the form has no
+// escapes: a value is written as its own bytes, which is what leaves two
+// implementations nothing to disagree about. So a value carrying a newline
+// has no written form at all, and one that is empty would leave an
+// invisible trailing space behind. Both fail here, before a run has built
+// anything, rather than in a renderer after a check has passed.
+#Line: =~"^[^\\x00-\\x1f\\x7f]+$"
 
-// #AsciiKeyed is how a map with caller-supplied keys is written. Nothing
+// #KeySegment is the shape of every field name a statement carries: a
+// letter, then letters, digits and dashes.
+//
+// This too is about the signed bytes. A field's name is written into the
+// key that names its line, dots separate one segment of that key from the
+// next, a space separates the key from the value, and a segment that is a
+// number is an array index. A name holding any of those would be a line
+// that reads back as something other than what was written.
+//
+// Every name in this file is fixed here and satisfies it, so no statement
+// today can carry one that does not. The constraint is written down anyway,
+// because the first map keyed by a caller rather than by this file is where
+// the property silently stops holding.
+#KeySegment: =~"^[A-Za-z][A-Za-z0-9-]*$"
+
+// #SegmentKeyed is how a map with caller-supplied keys is written. Nothing
 // uses it yet: every map the statement carries today — the digest sets, the
 // provenance — is keyed by names this file fixes. The direction that
 // introduces one is the ecosystem-specific key-value context strings of
 // ida-d2dc957, and whatever field carries them unifies with this, so a key
-// the canonical form cannot order fails `cue vet` rather than reaching a
-// signer:
+// with no written form fails `cue vet` rather than reaching a signer:
 //
-//   context: #AsciiKeyed & {[string]: string}
-#AsciiKeyed: {[#AsciiKey]: _}
+//   context: #SegmentKeyed & {[string]: #Line}
+#SegmentKeyed: {[#KeySegment]: _}
 
 // The two kinds of claim of design/verification.md. A pure check's
 // attestation is re-derivable: it carries input, derivation and output
@@ -129,7 +145,7 @@ package attestation
 	// The environment the check ran in, named by whoever sealed it. A
 	// verifier can do nothing with this but read it; it is what the
 	// notarization is a notarization *of*.
-	environment: string
+	environment: #Line
 
 	// When the result was observed, RFC 3339 in UTC. Present here and
 	// absent from #PureCheck on purpose: a pure claim that carried a time
@@ -152,15 +168,17 @@ package attestation
 	// The flake check attribute, for the nix runner.
 	attribute?: #Name
 
-	// The command line, for the command runner.
-	command?: string
+	// The command line, for the command runner. One line: a check whose
+	// command spans several has no written form, so it is refused here
+	// rather than in a renderer after the check has run.
+	command?: #Line
 
 	if runner == "nix" {
 		attribute: #Name
 		command?:  _|_
 	}
 	if runner == "command" {
-		command:    string
+		command:    #Line
 		attribute?: _|_
 	}
 }
@@ -177,10 +195,10 @@ package attestation
 // (ida-45178f6), and it is true exactly to the extent the host is trusted.
 #Provenance: {
 	// The harness that ran the agent.
-	harness?: string
+	harness?: #Line
 
 	// The model the harness drove.
-	model?: string
+	model?: #Line
 
 	// Digests of the prompt and of the context the run was given. Digests
 	// rather than content: the value is committed to by the signature
@@ -198,8 +216,8 @@ package attestation
 // step conveyed. Both are free strings because no naming scheme for
 // principals has been decided, and pinning one here would decide it.
 #Delegation: {
-	principal: string
-	grant?:    string
+	principal: #Line
+	grant?:    #Line
 }
 
 // Names are lowercase, dash-separated, and short — the same shape as check

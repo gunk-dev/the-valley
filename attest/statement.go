@@ -15,12 +15,32 @@ import (
 // schema before anything is done with it.
 
 const (
-	statementType    = "the-valley/attestation/v1"
-	predicatePure    = "the-valley/check/pure/v1"
-	predicateEffect  = "the-valley/check/effectful/v1"
-	defaultNamespace = "the-valley.attestation.v1"
-	refPrefix        = "refs/the-valley/attestations"
+	statementType   = "the-valley/attestation/v1"
+	predicatePure   = "the-valley/check/pure/v1"
+	predicateEffect = "the-valley/check/effectful/v1"
+	refPrefix       = "refs/the-valley/attestations"
+
+	// signerSuffix completes a host's signer name. A note names its key by
+	// a string and a hash, and the string a valley host uses is its fully
+	// qualified name, a slash, and what it is signing: laddie.gunk.dev
+	// attesting is "laddie.gunk.dev/attestations". The host part says
+	// which machine to go and ask about a key; the suffix keeps a key
+	// signing attestations distinct as a verifier key from the same key
+	// signing anything else, because the name is inside the key hash.
+	signerSuffix = "/attestations"
 )
+
+// defaultSignerName is the name this machine signs under: its own name and
+// the suffix. A machine whose hostname is not its fully qualified name
+// produces a name that is still unique to it and still says which machine
+// it was, and --name is how a host that knows better says so.
+func defaultSignerName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "localhost" + signerSuffix
+	}
+	return host + signerSuffix
+}
 
 type statement struct {
 	StatementType string          `json:"statementType"`
@@ -81,16 +101,21 @@ func loadProvenance(path string) (json.RawMessage, error) {
 	return json.RawMessage(raw), nil
 }
 
-// vetStatement validates canonical statement bytes against
+// vetStatement validates a statement, as JSON, against
 // schema/attestation.cue. Nothing is signed, stored or pushed before this
 // passes: a statement no verifier could read is not a thing to publish.
-func vetStatement(schema string, canonical []byte) error {
+//
+// JSON is what cue reads, and the written form of a statement carries
+// exactly what its JSON does, so vetting one settles the other. Composing
+// runs the gate before writing the statement out; verifying runs it after
+// reading the statement back.
+func vetStatement(schema string, doc []byte) error {
 	dir, err := os.MkdirTemp("", "valley-attest-vet")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(dir)
-	if err := os.WriteFile(filepath.Join(dir, "statement.json"), canonical, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "statement.json"), doc, 0o644); err != nil {
 		return err
 	}
 	// Run in the temporary directory, so cue's errors point at
@@ -118,10 +143,14 @@ func schemaPath(flag, repo string) (string, error) {
 	return "", fmt.Errorf("no attestation schema found; pass --schema or set VALLEY_ATTEST_SCHEMA")
 }
 
-// attestationRef is where a statement is stored: a ref keyed by the
-// subject digest, then by the signer. The signer segment is what lets
-// several parties attest to one subject side by side — each writes a ref
-// only it writes, which an integrator can hold create-only.
-func attestationRef(subjectDigest, signer string) string {
-	return fmt.Sprintf("%s/%s/%s", refPrefix, subjectDigest, signer)
+// attestationRef is where a note is stored: a ref keyed by the subject
+// digest, then by the key hash of the signer that wrote it. The key hash
+// segment is what lets several hosts publish about one subject without
+// racing — each writes a ref only it writes, which an integrator can hold
+// create-only — and it is the same eight hex digits a reader sees in that
+// host's verifier key. It names which key wrote the ref and is not itself
+// evidence of anything; two hosts colliding on four bytes lose a
+// create-only push and forge nothing, because what is checked is the note.
+func attestationRef(subjectDigest, keyHash string) string {
+	return fmt.Sprintf("%s/%s/%s", refPrefix, subjectDigest, keyHash)
 }

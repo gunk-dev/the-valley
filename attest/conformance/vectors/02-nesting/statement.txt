@@ -1,0 +1,22 @@
+valley-statement-v1
+a.b.c.d four deep
+eleven.0 e0
+eleven.1 e1
+eleven.10 e10
+eleven.2 e2
+eleven.3 e3
+eleven.4 e4
+eleven.5 e5
+eleven.6 e6
+eleven.7 e7
+eleven.8 e8
+eleven.9 e9
+outer.a.0 x
+outer.a.1.p 2
+outer.a.1.q 1
+outer.a.2.0 y
+outer.a.2.1 z
+outer.z.a.n deep
+outer.z.b.0 three
+outer.z.b.1 one
+outer.z.b.2 two

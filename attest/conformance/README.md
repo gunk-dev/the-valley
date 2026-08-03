@@ -1,59 +1,74 @@
-# Conformance vectors for the canonical form
+# Conformance vectors for the written form and the note
 
-These files are the interop contract for the bytes an attestation signature covers. A second
-implementation of `attest` — a rewrite of this one, or a reader written in another language — must
-render every `input.json` here into exactly the bytes of the `canonical.json` beside it. Anything
+These files are the interop contract for an attestation. A second implementation of `attest` — a
+rewrite of this one, or a reader written in another language — must write every `input.json` here as
+exactly the bytes of the `statement.txt` beside it, and must verify every `statement.note`. Anything
 else and the two sign different bytes over the same statement, so a signature made by one does not
 verify against the other, and the way that failure arrives is a verification error that names
 nothing.
 
-The serialization itself is RFC 8785 canonical JSON, narrowed by excluding numbers, and the reasons
-for that are in [`../canonical.go`](../canonical.go) and in the decision node it cites.
+The written form is lines, and the envelope is a signed note. Both are specified in
+[design/verification.md](../../design/verification.md); the reasons behind each rule are in
+[`../text.go`](../text.go) and [`../sign.go`](../sign.go), and the decision node those cite.
 
 ## What is here
 
 Each directory under `vectors/` is one vector.
 
-- `input.json` is a statement or fragment written in some arbitrary rendering — members out of
-  order, whitespace anywhere, escapes chosen freely. It is input, not output.
-- `canonical.json` is the exact byte sequence the canonical form produces from it. There is no
-  trailing newline: the file is the bytes, and nothing else is signed.
-- `statement.sig`, where present, is a detached SSHSIG signature over those exact bytes, under the
-  namespace `the-valley.attestation.v1`, made by the key in `../signer.pub` and listed in
-  `../allowed_signers`. That key exists for these vectors and holds no authority anywhere.
+- `input.json` is a statement or a fragment of one, written in some arbitrary rendering — members
+  out of order, whitespace anywhere, escapes chosen freely. It is input, not output.
+- `statement.txt` is the exact byte sequence the written form produces from it. It is what a
+  signature covers, and nothing else is.
+- `statement.note`, where present, is that text with a blank line and one signature line per signer
+  beneath it. The keys are in [`known_keys`](./known_keys); they exist for these vectors and hold no
+  authority anywhere.
 
-The vectors cover the places implementations actually part company: member order over keys that
-differ only in case, keys where one is a prefix of another, and the empty key; nesting of objects
-inside arrays inside objects; empty objects, empty arrays and the empty string; every string escape,
-including the control characters that have short forms and the ones that do not, the characters a
-JavaScript-oriented encoder escapes and RFC 8785 does not, and text above the basic multilingual
-plane; and the difference between an absent `provenance` and one present but empty, which the schema
-permits and which is two different byte sequences.
+The vectors cover the places implementations part company: line order over keys that differ only in
+case, keys where one is a prefix of another, and a dash against the letter that sorts after it;
+dotted paths through nested objects, and arrays long enough that index `10` sits between `1` and `2`
+where a reader who trusts line order rather than the index will get the array wrong; values written
+as their own bytes, including the characters a JSON encoder would have escaped, text above the basic
+multiplane, and leading, trailing and repeated spaces, which are all load-bearing and none of which
+survive an editor that trims whitespace; a statement with and without provenance; and a note with
+two signature lines, which is what "several parties attest to one subject" looks like.
 
-A vector whose `canonical.json` is a whole statement also vets against
+`known_keys` is the whole of what a verifier is given: one line per key, each a name, the key hash
+its name and public key produce, and the public key itself.
+
+Every `statement.txt` that is a whole statement also vets against
 [`../../schema/attestation.cue`](../../schema/attestation.cue), so the set does not drift into
-documents no verifier would accept. Numbers are absent on purpose — a statement carries none, so the
-canonical form of one has never been decided and `attest` refuses rather than guessing.
+documents no verifier would accept.
+
+`refused/` is the other half of the contract: documents and texts that must not be written or read
+at all. A `.json` there is a document with no written form — a number, an empty object, a value
+carrying a newline, a field name a line cannot carry. A `.txt` there is text that is not the written
+form of anything: lines out of order, a repeated key, an array with a gap in it, a key that is both
+a value and a path. An implementation that accepts any of them will sooner or later sign bytes
+another one reads differently.
 
 ## Running them
 
-`nix flake check` runs them as `attest-conformance`. Each vector is rendered with
-`attest canonical`, compared byte for byte, and re-rendered from its own canonical bytes to confirm
-the form is a fixed point. The signed vector is then put through `attest verify`, so the path from a
-statement to a signature something else can check is pinned end to end rather than only the
-serialization. The check also perturbs one recorded byte sequence and requires the comparison to
-reject it, so a vector set that agrees with itself vacuously cannot pass.
+`nix flake check` runs them as `attest-conformance`. Each vector is written out with
+`attest render`, compared byte for byte, and written out again from its own recorded text to confirm
+the form is a fixed point. Each signed vector is put through `attest verify`, so the path from a
+statement to a note something else can check is pinned end to end rather than only the
+serialization. Each file under `refused/` is put through `attest render` and must fail. The check
+also perturbs one recorded byte sequence and one signature and requires both to be rejected, so a
+vector set that agrees with itself vacuously cannot pass.
 
 By hand, against any one vector:
 
 ```
-$ nix run .#attest -- canonical attest/conformance/vectors/01-key-order/input.json \
-    | cmp - attest/conformance/vectors/01-key-order/canonical.json
+$ nix run .#attest -- render attest/conformance/vectors/01-key-order/input.json \
+    | cmp - attest/conformance/vectors/01-key-order/statement.txt
+$ nix run .#attest -- verify \
+    --note attest/conformance/vectors/07-two-signers/statement.note \
+    --known-keys attest/conformance/known_keys
 ```
 
 ## Changing them
 
-A vector's recorded bytes may only change when the canonical form itself changes, and that
-invalidates every signature ever made under it. Regenerating a `canonical.json` to make a failing
-check pass is the one thing this directory exists to prevent. A new vector is a new directory and
-needs no registration; the check finds it.
+A vector's recorded bytes may only change when the written form itself changes, and that invalidates
+every signature ever made under it. Regenerating a `statement.txt` to make a failing check pass is
+the one thing this directory exists to prevent. A new vector is a new directory and needs no
+registration; the check finds it.

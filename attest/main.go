@@ -7,21 +7,25 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io"
 	"os"
 )
 
 const usage = `usage: attest <command> [flags]
 
-  run       run a repository's checks and store a signed attestation
-  verify    check an attestation's signature and re-check its digests
-  digest    print the valley tree digest of a revision
-  canonical render a json document into the bytes a signature covers
-  help      print this message
+  run     run a repository's checks and store a signed attestation
+  verify  check a note's signatures and re-check its digests
+  digest  print the valley tree digest of a revision
+  render  write a json document as the statement text a signature covers
+  sign    sign statement text, or add a signature to a note
+  key     print the verifier key a reader is given for a signing key
+  help    print this message
 
-A statement is signed with a detached SSHSIG signature under the namespace
-"` + defaultNamespace + `" and stored at a ref keyed by the subject
-digest: ` + refPrefix + `/<tree digest>/<signer fingerprint>.
+A statement is signed as a note: the statement text, a blank line, and one
+signature line per signer, each an em-dash, the signer's name, and base64
+of a key hash and a raw Ed25519 signature over the text. Several signers
+over one statement are sibling lines under one text. A note is stored at a
+ref keyed by the subject digest:
+` + refPrefix + `/<tree digest>/<signer key hash>.
 The host signs; there is no unsigned mode.
 
 run flags:
@@ -31,8 +35,8 @@ run flags:
                       check the flake defines for this system
   --command NAME=CMD  effectful check to run, repeatable
   --environment NAME  environment an effectful statement names (default "local")
-  --key PATH          ssh private key the host signs with (required)
-  --namespace NS      SSHSIG namespace (default "` + defaultNamespace + `")
+  --key PATH          ed25519 private key the host signs with (required)
+  --name NAME         the name that key signs under (default: this host's)
   --provenance FILE   json run provenance, carried in every statement
   --schema FILE       attestation schema to vet against
   --system SYSTEM     flake system (default: this machine's)
@@ -40,22 +44,27 @@ run flags:
   --branch REF        branch pushed alongside (default: the current branch)
 
 verify flags:
-  --statement FILE        the statement, as stored
-  --signature FILE        its detached signature
-  --allowed-signers FILE  ssh allowed-signers file
-  --principal ID          expected signer (default: whoever the file says)
-  --namespace NS          SSHSIG namespace (default "` + defaultNamespace + `")
-  --schema FILE           attestation schema to vet against
-  --repo DIR              repository to re-check the recorded digests against
-  --rev REV               revision in it (default: HEAD)
+  --note FILE         the signed note, as stored
+  --known-keys FILE   verifier keys the reader accepts, one per line
+  --signer NAME       signer whose signature must be present, repeatable
+  --schema FILE       attestation schema to vet against
+  --repo DIR          repository to re-check the recorded digests against
+  --rev REV           revision in it (default: HEAD)
 
 digest flags:
   --repo DIR          repository (default: the git toplevel here)
   --rev REV           revision (default: HEAD)
 
-canonical takes one json file, or stdin, and writes the canonical bytes
-with no trailing newline. The conformance vectors in attest/conformance are
-rendered and compared this way.
+sign and key flags:
+  --key PATH          ed25519 private key
+  --name NAME         the name that key signs under (default: this host's)
+
+render takes one json file, or stdin, and writes the statement text. Given
+statement text instead, it writes that text back — the form is a fixed
+point, so anything render changes was not in it. sign takes statement text
+and writes a note, or takes a note and adds a signature line to it. The
+conformance vectors in attest/conformance are rendered and verified this
+way.
 `
 
 func main() {
@@ -71,8 +80,12 @@ func main() {
 		err = cmdVerify(os.Args[2:])
 	case "digest":
 		err = cmdDigest(os.Args[2:])
-	case "canonical":
-		err = cmdCanonical(os.Args[2:])
+	case "render":
+		err = cmdRender(os.Args[2:])
+	case "sign":
+		err = cmdSign(os.Args[2:])
+	case "key":
+		err = cmdKey(os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -118,40 +131,6 @@ func cmdDigest(args []string) error {
 	}
 	fmt.Printf("%s:%s\n", treeScheme, treeDigest(entries))
 	return nil
-}
-
-// cmdCanonical exposes the canonicalizer on its own. The canonical bytes
-// are an interop contract rather than an internal step — a second attest
-// must render them identically or every signature already made stops
-// verifying — so the renderer is reachable without composing, signing or
-// storing anything, and attest/conformance/ is the fixed set of documents
-// it is held to.
-func cmdCanonical(args []string) error {
-	fs := newFlagSet("canonical")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	var (
-		raw []byte
-		err error
-	)
-	switch fs.NArg() {
-	case 0:
-		raw, err = io.ReadAll(os.Stdin)
-	case 1:
-		raw, err = os.ReadFile(fs.Arg(0))
-	default:
-		return fmt.Errorf("canonical takes one json file, or none to read stdin")
-	}
-	if err != nil {
-		return err
-	}
-	out, err := canonicalRender(raw)
-	if err != nil {
-		return err
-	}
-	_, err = os.Stdout.Write(out)
-	return err
 }
 
 func repoRoot(dir string) (string, error) {

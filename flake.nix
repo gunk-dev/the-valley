@@ -64,8 +64,9 @@
         };
 
       # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
-      # only — hence vendorHash = null, and hence no module fetch at build
-      # time. Its unit tests run in the checkPhase and need git.
+      # only, note format included — hence vendorHash = null, and hence no
+      # module fetch at build time. Its unit tests run in the checkPhase and
+      # need git and ssh-keygen.
       attestUnwrappedFor =
         pkgs:
         pkgs.buildGoModule {
@@ -73,13 +74,17 @@
           version = "0";
           src = ./attest;
           vendorHash = null;
-          nativeCheckInputs = [ pkgs.git ];
+          nativeCheckInputs = [
+            pkgs.git
+            pkgs.openssh
+          ];
           meta.mainProgram = "attest";
         };
 
-      # The shipping form. git, ssh-keygen and cue are pinned to this
-      # flake's nixpkgs, so every host composes and vets a statement with
-      # the same tools. `nix` is deliberately NOT pinned: the check being
+      # The shipping form. git and cue are pinned to this flake's nixpkgs,
+      # so every host composes and vets a statement with the same tools.
+      # Signing needs no tool at all: a note is signed on crypto/ed25519
+      # inside the binary. `nix` is deliberately NOT pinned: the check being
       # attested to must be built by the nix the machine actually runs, and
       # a nix carried in here would be a second one.
       attestFor =
@@ -95,7 +100,6 @@
               --prefix PATH : ${
                 lib.makeBinPath [
                   pkgs.git
-                  pkgs.openssh
                   pkgs.cue
                 ]
               } \
@@ -773,6 +777,17 @@
                 nix-check-with-a-command = builtins.replaceStrings [ "\"runner\": \"nix\"" ] [
                   "\"runner\": \"nix\", \"command\": \"make\""
                 ] pureStatement;
+                # A value with no written form. The statement is written
+                # out as lines and the form has no escapes, so a command
+                # spanning two of them is stopped at the gate rather than
+                # in a renderer after the check has already run.
+                command-over-two-lines = builtins.replaceStrings [ "curl -sf https://example.invalid" ] [
+                  "curl -sf https://example.invalid \\\\\\n  --retry 3"
+                ] effectfulStatement;
+                # And the other value a line cannot carry.
+                empty-environment = builtins.replaceStrings [ "\"a sealed environment\"" ] [
+                  "\"\""
+                ] effectfulStatement;
               };
             in
             pkgs.runCommand "valley-attest-schema"
@@ -794,46 +809,55 @@
                 )}
 
                 # A map whose keys come from a caller is written as
-                # #AsciiKeyed. Canonical form sorts members by their UTF-8
-                # bytes and RFC 8785 sorts them by UTF-16 code units; the two
-                # agree over ASCII and part company above it, so a non-ASCII
-                # key is two implementations signing different bytes over one
-                # statement. It fails vet rather than reaching a signer.
-                cue vet -d '#AsciiKeyed' ${./schema/attestation.cue} ${
-                  pkgs.writeText "ascii-keys.json" ''
-                    {"harness": "a harness", "run-id": "1", "": "", "~": "the last printable key"}
+                # #SegmentKeyed. A field's name is written into the key that
+                # names its line, so a name holding the dot that separates
+                # segments, the space that separates key from value, or
+                # anything a line cannot carry is a statement with no written
+                # form. It fails vet rather than reaching a signer.
+                cue vet -d '#SegmentKeyed' ${./schema/attestation.cue} ${
+                  pkgs.writeText "segment-keys.json" ''
+                    {"harness": "a harness", "run-id": "1", "z9": "the last shape a segment takes"}
                   ''
                 }
-                if cue vet -d '#AsciiKeyed' ${./schema/attestation.cue} ${
-                  pkgs.writeText "non-ascii-key.json" ''
-                    {"harness": "a harness", "café": "a key two implementations sort differently"}
-                  ''
-                } > non-ascii-key.err 2>&1; then
-                  echo "attest-schema: expected a non-ASCII key to be rejected" >&2
-                  exit 1
-                fi
-                grep -q 'café: field not allowed' non-ascii-key.err
+                ${lib.concatStrings (
+                  lib.mapAttrsToList (name: key: ''
+                    if cue vet -d '#SegmentKeyed' ${./schema/attestation.cue} ${
+                      pkgs.writeText "${name}.json" ''
+                        {"harness": "a harness", ${builtins.toJSON key}: "a key with no written form"}
+                      ''
+                    } > ${name}.err 2>&1; then
+                      echo "attest-schema: expected the key '${key}' to be rejected" >&2
+                      exit 1
+                    fi
+                    grep -q 'field not allowed' ${name}.err
+                  '') {
+                    non-ascii-key = "café";
+                    dotted-key = "a.b";
+                    spaced-key = "a b";
+                    index-shaped-key = "0";
+                  }
+                )}
 
                 # A rejection that does not name the field leaves the reader
                 # to find the breakage themselves.
                 grep -q 'signature: conflicting values' signature-in-statement.err
                 grep -q 'subject.digest."valley-tree-v1"' no-content-addressed-subject.err
                 grep -q 'predicate.environment: field not allowed' effectful-claiming-pure.err
+                grep -q 'predicate.check.command' command-over-two-lines.err
                 touch $out
               '';
 
-          # The canonical form, held to fixed vectors. These bytes are an
-          # interop contract rather than an implementation detail: a
-          # regenerated or independently written attest must render them
-          # identically or every signature already made stops verifying. So
-          # the vectors are checked-in files with a README saying they are
-          # the contract (attest/conformance/), and this check is what holds
-          # a second implementation to them.
+          # The written form and the note envelope, held to fixed vectors.
+          # These bytes are an interop contract rather than an
+          # implementation detail: a regenerated or independently written
+          # attest must produce them identically or every signature already
+          # made stops verifying. So the vectors are checked-in files with a
+          # README saying they are the contract (attest/conformance/), and
+          # this check is what holds a second implementation to them.
           attest-conformance =
             pkgs.runCommand "valley-attest-conformance"
               {
                 nativeBuildInputs = [
-                  pkgs.openssh
                   pkgs.cue
                   (attestFor pkgs)
                 ];
@@ -841,9 +865,10 @@
               ''
                 vectors=${./attest/conformance}
 
-                # One vector rendered and compared, quietly, so the perturbed
-                # run at the end can expect it to fail without saying so.
-                renders() { attest canonical "$1/input.json" | cmp -s - "$1/canonical.json"; }
+                # One vector written out and compared, quietly, so the
+                # perturbed run at the end can expect it to fail without
+                # saying so.
+                writes() { attest render "$1/input.json" | cmp -s - "$1/statement.txt"; }
 
                 found=0
                 signed=0
@@ -851,62 +876,108 @@
                   name="$(basename "$dir")"
                   found=$((found + 1))
 
-                  if ! renders "$dir"; then
-                    echo "attest-conformance: $name does not render to its recorded bytes" >&2
-                    echo "  recorded: $(cat "$dir/canonical.json")" >&2
-                    echo "  rendered: $(attest canonical "$dir/input.json")" >&2
+                  if ! writes "$dir"; then
+                    echo "attest-conformance: $name is not written as its recorded bytes" >&2
+                    diff -u "$dir/statement.txt" <(attest render "$dir/input.json") >&2 || true
                     exit 1
                   fi
 
-                  # The canonical form is a fixed point, or a statement
-                  # re-rendered anywhere downstream stops matching what was
+                  # The written form is a fixed point, or a statement written
+                  # out again anywhere downstream stops matching what was
                   # signed.
-                  if ! attest canonical "$dir/canonical.json" | cmp -s - "$dir/canonical.json"; then
-                    echo "attest-conformance: $name is not a fixed point of the canonical form" >&2
+                  if ! attest render "$dir/statement.txt" | cmp -s - "$dir/statement.txt"; then
+                    echo "attest-conformance: $name is not a fixed point of the written form" >&2
                     exit 1
                   fi
 
                   # A vector that is a whole statement is held to the schema
                   # too, so the set cannot drift into documents no verifier
                   # would accept.
-                  if grep -q statementType "$dir/canonical.json"; then
-                    cue vet -c ${./schema/attestation.cue} "$dir/canonical.json"
+                  if grep -q '^statementType ' "$dir/statement.txt"; then
+                    cue vet -c ${./schema/attestation.cue} "$dir/input.json"
                   fi
 
-                  # The signed vector pins the whole path from statement to
-                  # verifiable signature, not just the serialization. No
-                  # --repo: the subject tree is not what this check is about.
-                  if [ -e "$dir/statement.sig" ]; then
+                  # The signed vector pins the whole path from a statement to
+                  # a note something else can check, not just the written
+                  # form. No --repo: the subject tree is not what this check
+                  # is about.
+                  if [ -e "$dir/statement.note" ]; then
                     signed=$((signed + 1))
-                    attest verify --statement "$dir/canonical.json" \
-                      --signature "$dir/statement.sig" \
-                      --allowed-signers "$vectors/allowed_signers" > "$name.verify"
-                    grep -q 'Good "the-valley.attestation.v1" signature for conformance@the-valley' \
-                      "$name.verify"
-                    grep -q '^canonical ok' "$name.verify"
+                    attest verify --note "$dir/statement.note" \
+                      --known-keys "$vectors/known_keys" > "$name.verify"
+                    grep -q '^signature ok' "$name.verify"
+                    grep -q '^text      ok' "$name.verify"
+
+                    # The text a verifier reads back is the text on disk: a
+                    # note is its statement, and reading one gives the other.
+                    sed '/^$/q' "$dir/statement.note" | sed '$d' | cmp - "$dir/statement.txt"
                   fi
                 done
 
-                if [ "$found" -lt 8 ] || [ "$signed" -lt 1 ]; then
+                # Two signers over one statement is the property the note
+                # format is here for, so the set must actually hold one.
+                siblings="$(grep -c '^— ' "$vectors"/vectors/07-two-signers/statement.note)"
+                if [ "$siblings" -ne 2 ]; then
+                  echo "attest-conformance: the two-signer vector carries $siblings signatures" >&2
+                  exit 1
+                fi
+                attest verify --note "$vectors"/vectors/07-two-signers/statement.note \
+                  --known-keys "$vectors/known_keys" \
+                  --signer conformance.the-valley.invalid/attestations \
+                  --signer witness.the-valley.invalid/attestations > siblings.verify
+                if [ "$(grep -c '^signature ok' siblings.verify)" -ne 2 ]; then
+                  echo "attest-conformance: both sibling signatures must verify" >&2
+                  cat siblings.verify >&2
+                  exit 1
+                fi
+
+                if [ "$found" -lt 7 ] || [ "$signed" -lt 2 ]; then
                   echo "attest-conformance: $found vectors, $signed signed — the set has been emptied" >&2
                   exit 1
                 fi
 
+                # The other half of the contract: what must not be written or
+                # read at all. A document with no written form, and text that
+                # is not the written form of anything.
+                refused=0
+                for file in "$vectors"/refused/*; do
+                  refused=$((refused + 1))
+                  if attest render "$file" > /dev/null 2> "$(basename "$file").err"; then
+                    echo "attest-conformance: $(basename "$file") was accepted" >&2
+                    exit 1
+                  fi
+                done
+                if [ "$refused" -lt 20 ]; then
+                  echo "attest-conformance: only $refused refusals — the set has been emptied" >&2
+                  exit 1
+                fi
+
                 # The comparison must be able to fail. One recorded byte
-                # sequence with a single member's value changed is what a
-                # divergent implementation looks like, and it must not pass.
+                # sequence with a single value changed is what a divergent
+                # implementation looks like, and it must not pass.
                 mkdir -p perturbed
                 cp "$vectors/vectors/01-key-order/input.json" perturbed/
-                sed 's/"the empty key"/"the empty keys"/' \
-                  "$vectors/vectors/01-key-order/canonical.json" > perturbed/canonical.json
-                cmp -s perturbed/canonical.json "$vectors/vectors/01-key-order/canonical.json" \
+                sed 's/^a-b a-b$/a-b a_b/' \
+                  "$vectors/vectors/01-key-order/statement.txt" > perturbed/statement.txt
+                cmp -s perturbed/statement.txt "$vectors/vectors/01-key-order/statement.txt" \
                   && { echo "attest-conformance: the perturbation changed nothing" >&2; exit 1; }
-                if renders perturbed; then
+                if writes perturbed; then
                   echo "attest-conformance: a perturbed vector passed; the comparison proves nothing" >&2
                   exit 1
                 fi
 
-                echo "attest-conformance: $found vectors render byte for byte, $signed of them signed"
+                # And so must the signature check. One byte of the signed
+                # text changed is a signature that no longer covers it.
+                sed 's/a sealed environment/a sealed environmenT/' \
+                  "$vectors"/vectors/07-two-signers/statement.note > perturbed/statement.note
+                if attest verify --note perturbed/statement.note \
+                  --known-keys "$vectors/known_keys" > perturbed.verify 2>&1; then
+                  echo "attest-conformance: a note whose text was edited still verified" >&2
+                  exit 1
+                fi
+                grep -q 'does not check out over this text' perturbed.verify
+
+                echo "attest-conformance: $found vectors written byte for byte, $signed signed, $refused refused"
                 touch $out
               '';
 
@@ -936,12 +1007,30 @@
                 git config --global user.email valley-check@localhost
                 git config --global init.defaultBranch main
 
-                # A throwaway key in a scratch directory. The signer is a
-                # parameter: provisioning a host identity is deployment.
+                # Throwaway keys in a scratch directory. The signer is a
+                # parameter: provisioning a host identity is deployment, and
+                # nothing here reads or writes anything under a real ~/.ssh.
+                # A verifier is given key names and hashes, so what it holds
+                # is what `attest key` prints and nothing more.
                 ssh-keygen -q -t ed25519 -N "" -C valley-check -f "$TMPDIR/host"
+                ssh-keygen -q -t ed25519 -N "" -C witness -f "$TMPDIR/witness"
                 ssh-keygen -q -t ed25519 -N "" -C stranger -f "$TMPDIR/stranger"
-                printf 'host@valley %s' "$(cat "$TMPDIR/host.pub")" > "$TMPDIR/allowed_signers"
-                printf 'stranger@elsewhere %s' "$(cat "$TMPDIR/stranger.pub")" > "$TMPDIR/other_signers"
+                host=host.valley.invalid/attestations
+                witness=witness.valley.invalid/attestations
+                stranger=stranger.elsewhere.invalid/attestations
+                attest key --key "$TMPDIR/host" --name "$host" > "$TMPDIR/known_keys"
+                attest key --key "$TMPDIR/witness" --name "$witness" >> "$TMPDIR/known_keys"
+                attest key --key "$TMPDIR/stranger" --name "$stranger" > "$TMPDIR/other_keys"
+                grep -q "^$host+[0-9a-f]\{8\}+A" "$TMPDIR/known_keys"
+
+                # A key behind a passphrase is refused rather than prompted
+                # for: attest runs unattended.
+                ssh-keygen -q -t ed25519 -N "a passphrase" -C locked -f "$TMPDIR/locked"
+                if attest key --key "$TMPDIR/locked" --name "$host" 2> locked.err; then
+                  echo "attest-e2e: an encrypted key must be refused" >&2
+                  exit 1
+                fi
+                grep -q 'cannot ask for a passphrase' locked.err
 
                 repo="$TMPDIR/tree"
                 git init --quiet "$repo"
@@ -980,7 +1069,7 @@
                 nothing_published "a run with no signing key stored a ref"
 
                 # A failing check publishes nothing, and says which check.
-                if attest run --key "$TMPDIR/host" \
+                if attest run --key "$TMPDIR/host" --name "$host" \
                   --command 'ok=true' --command 'nope=false' > failing.out 2> failing.err; then
                   echo "attest-e2e: a failing check must fail the run" >&2
                   exit 1
@@ -994,7 +1083,7 @@
                 # malformed one is how a malformed statement gets composed
                 # at all.
                 echo '{"harness":"valley-check","authority":"root"}' > bad-provenance.json
-                if attest run --key "$TMPDIR/host" --command 'ok=true' \
+                if attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
                   --provenance bad-provenance.json > malformed.out 2> malformed.err; then
                   echo "attest-e2e: a malformed statement must fail the run" >&2
                   exit 1
@@ -1003,83 +1092,149 @@
                 grep -q 'nothing published' malformed.err
                 nothing_published "a malformed statement left a ref behind"
 
+                # A statement the schema admits but no line can carry is
+                # stopped too, at the same point and for the same reason.
+                printf '{"harness":"valley\\ncheck"}\n' > unwritable-provenance.json
+                if attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
+                  --provenance unwritable-provenance.json > unwritable.out 2> unwritable.err; then
+                  echo "attest-e2e: a statement with no written form must fail the run" >&2
+                  exit 1
+                fi
+                grep -q 'nothing published' unwritable.err
+                nothing_published "a statement with no written form left a ref behind"
+
                 # The successful run.
                 echo '{"harness":"valley-check","model":"none","delegation":[{"principal":"human:integrator","grant":"land changes"}]}' > provenance.json
-                attest run --key "$TMPDIR/host" --command 'ok=true' \
+                attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
                   --provenance provenance.json > run.out
                 grep -q "^subject valley-tree-v1:$digest\$" run.out
                 grep -q '^check   ok  *command  passed$' run.out
+                grep -q "^signer  $host+" run.out
 
-                # Stored at a ref keyed by the subject digest.
+                # Stored at a ref keyed by the subject digest, as one note
+                # rather than a statement and a signature beside it.
                 ref="$(refs)"
                 case "$ref" in
                   refs/the-valley/attestations/"$digest"/*) ;;
                   *) echo "attest-e2e: ref $ref is not keyed by the subject digest" >&2; exit 1 ;;
                 esac
-                git cat-file -p "$ref:ok/statement.json" > statement.json
-                git cat-file -p "$ref:ok/statement.sig" > statement.sig
-                grep -q 'BEGIN SSH SIGNATURE' statement.sig
-                grep -q "\"valley-tree-v1\":\"$digest\"" statement.json
-                grep -q '"harness":"valley-check"' statement.json
+                git cat-file -p "$ref:ok/statement.note" > statement.note
+                grep -qx 'valley-statement-v1' statement.note
+                grep -qx "subject.digest.valley-tree-v1 $digest" statement.note
+                grep -qx 'provenance.harness valley-check' statement.note
+                grep -q "^— $host " statement.note
 
                 # No git object is signed: the signature is over the
-                # statement and nothing else.
+                # statement's text and nothing else.
                 if git cat-file commit HEAD | grep -q '^gpgsig'; then
                   echo "attest-e2e: attest signed a git object" >&2
                   exit 1
                 fi
 
                 verify() {
-                  attest verify --statement "$1" --signature statement.sig \
-                    --allowed-signers "$2" --repo "$repo"
+                  attest verify --note "$1" --known-keys "$2" --repo "$repo"
                 }
 
-                verify statement.json "$TMPDIR/allowed_signers" > verify.out
-                grep -q 'Good "the-valley.attestation.v1" signature for host@valley' verify.out
+                verify statement.note "$TMPDIR/known_keys" > verify.out
+                grep -q "^signature ok      $host+" verify.out
                 grep -q 'matches the recorded subject digest' verify.out
 
                 # One atomic native-git push carries the branch and the
                 # attestation ref together.
                 git init --quiet --bare "$TMPDIR/host.git"
                 git remote add valley "$TMPDIR/host.git"
-                attest run --key "$TMPDIR/host" --command 'ok=true' --push valley > push.out
+                attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
+                  --push valley > push.out
                 grep -q -- '--atomic' push.out
                 git -C "$TMPDIR/host.git" for-each-ref --format='%(refname)' > published.txt
                 grep -qx 'refs/heads/main' published.txt
                 grep -qx "$ref" published.txt
 
-                # A signature by a key the allowed-signers file does not
-                # list is not a bad signature — it is not a signer.
-                if verify statement.json "$TMPDIR/other_signers" > stranger.out 2>&1; then
-                  echo "attest-e2e: a statement signed by nobody we allow must not verify" >&2
+                # A second party attests to the same statement, and its
+                # signature lands beside the first under the text both cover.
+                # This is what the note format is here for.
+                attest sign --key "$TMPDIR/witness" --name "$witness" statement.note \
+                  > countersigned.note
+                if [ "$(grep -c '^— ' countersigned.note)" -ne 2 ]; then
+                  echo "attest-e2e: countersigning did not add a sibling signature line" >&2
+                  cat countersigned.note >&2
                   exit 1
                 fi
-                grep -q 'no principal' stranger.out
+                sed '/^$/q' countersigned.note | sed '$d' | cmp - <(sed '/^$/q' statement.note | sed '$d')
+                attest verify --note countersigned.note --known-keys "$TMPDIR/known_keys" \
+                  --repo "$repo" --signer "$host" --signer "$witness" > countersigned.out
+                if [ "$(grep -c '^signature ok' countersigned.out)" -ne 2 ]; then
+                  echo "attest-e2e: both signatures over one statement must verify" >&2
+                  cat countersigned.out >&2
+                  exit 1
+                fi
 
-                # Tampering with the signed bytes.
+                # A verifier that does not hold the witness's key still
+                # accepts the note, and says which signature it cannot speak
+                # to. Requiring that signer is how it refuses instead.
+                attest key --key "$TMPDIR/host" --name "$host" > "$TMPDIR/host_only"
+                attest verify --note countersigned.note --known-keys "$TMPDIR/host_only" \
+                  --repo "$repo" > partial.out
+                grep -q "^signature ok      $host+" partial.out
+                grep -q "^signature unknown $witness+" partial.out
+                if attest verify --note countersigned.note --known-keys "$TMPDIR/host_only" \
+                  --repo "$repo" --signer "$witness" > required.out 2>&1; then
+                  echo "attest-e2e: a required signer with no verified signature must fail" >&2
+                  exit 1
+                fi
+                grep -q "no signature on this note is by $witness" required.out
+
+                # A note signed by a key the verifier does not hold is not a
+                # bad signature — it is not a signer.
+                if verify statement.note "$TMPDIR/other_keys" > stranger.out 2>&1; then
+                  echo "attest-e2e: a note signed by nobody we hold a key for must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'no signature on this note is by a key the verifier holds' stranger.out
+
+                # Tampering with the signed bytes: one byte of the text the
+                # signature covers.
                 sed "s/$digest/00000000000000000000000000000000000000000000000000000000000000ff/" \
-                  statement.json > tampered.json
-                if verify tampered.json "$TMPDIR/allowed_signers" > tampered.out 2>&1; then
+                  statement.note > tampered.note
+                if verify tampered.note "$TMPDIR/known_keys" > tampered.out 2>&1; then
                   echo "attest-e2e: a tampered statement must not verify" >&2
                   exit 1
                 fi
-                grep -q 'Signature verification failed' tampered.out
+                grep -q 'does not check out over this text' tampered.out
 
-                # A statement rendered some other way than canonically.
-                # It would verify here and fail wherever it was recomposed,
-                # so it is refused.
-                sed 's/^{/{ /' statement.json > loose.json
-                if verify loose.json "$TMPDIR/allowed_signers" > loose.out 2>&1; then
-                  echo "attest-e2e: a non-canonical statement must not verify" >&2
+                # A signature cannot be lifted onto a statement it was not
+                # made about: it sits under the text it covers, so moving it
+                # means moving that text with it.
+                sed '/^$/q' statement.note | sed '$d' > lifted.txt
+                sed 's/^provenance.harness .*/provenance.harness somebody-else/' lifted.txt > lifted.body
+                sed -n '/^$/,$p' statement.note | tail -n +2 > lifted.sigs
+                { cat lifted.body; echo; cat lifted.sigs; } > lifted.note
+                if verify lifted.note "$TMPDIR/known_keys" > lifted.out 2>&1; then
+                  echo "attest-e2e: a signature was lifted onto another statement" >&2
                   exit 1
                 fi
-                grep -q 'not in canonical form' loose.out
+                grep -q 'does not check out over this text' lifted.out
+
+                # A statement written some other way than the one written
+                # form, signed properly over those bytes. The signature is
+                # good and the statement is still refused: it would verify
+                # here and fail wherever it was written out again, so the
+                # form is a rule rather than a convention.
+                { head -n 1 lifted.txt; tail -n +2 lifted.txt | sort -r; } > loose.txt
+                cmp -s loose.txt lifted.txt \
+                  && { echo "attest-e2e: the reordering changed nothing" >&2; exit 1; }
+                attest sign --key "$TMPDIR/host" --name "$host" loose.txt > loose.note
+                if verify loose.note "$TMPDIR/known_keys" > loose.out 2>&1; then
+                  echo "attest-e2e: a statement not in the written form must not verify" >&2
+                  exit 1
+                fi
+                grep -q 'lines are sorted by key' loose.out
 
                 # The subject is the tree. Change the tree and the same
                 # signed statement stops being about it …
                 echo goodbye > hello.txt
                 git commit --quiet -am "change the tree"
-                if verify statement.json "$TMPDIR/allowed_signers" > moved.out 2>&1; then
+                if verify statement.note "$TMPDIR/known_keys" > moved.out 2>&1; then
                   echo "attest-e2e: a statement about another tree must not verify" >&2
                   exit 1
                 fi
@@ -1102,7 +1257,7 @@
                   echo "attest-e2e: a changed tree kept its digest" >&2
                   exit 1
                 fi
-                verify statement.json "$TMPDIR/allowed_signers" > rebased.out
+                verify statement.note "$TMPDIR/known_keys" > rebased.out
                 grep -q 'matches the recorded subject digest' rebased.out
                 touch $out
               '';

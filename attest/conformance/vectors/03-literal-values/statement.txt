@@ -1,0 +1,11 @@
+valley-statement-v1
+astral 😀
+backslash C:\path\to
+dash a — b
+escape-in-text \u2028
+html a<b>c&d
+latin ü café
+quote a "quoted" word
+separators   and  
+solidus a/b
+spaces   two leading, two trailing, and  two  inside  

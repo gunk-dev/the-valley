@@ -9,17 +9,17 @@ import (
 )
 
 // cmdRun is the whole protocol in order: digest the subject tree, run the
-// checks, compose a statement per check, vet each against the schema, sign
-// each, store them at one ref keyed by the subject digest, and publish
-// with a single atomic push. Any step failing stops the run before the
-// next — a failed check publishes nothing, and neither does a statement
-// the schema rejects.
+// checks, compose a statement per check, vet each against the schema,
+// write each out and sign it as a note, store the notes at one ref keyed
+// by the subject digest, and publish with a single atomic push. Any step
+// failing stops the run before the next — a failed check publishes
+// nothing, and neither does a statement the schema rejects.
 func cmdRun(args []string) error {
 	fs := newFlagSet("run")
 	repo := fs.String("repo", "", "repository")
 	rev := fs.String("rev", "HEAD", "revision")
-	key := fs.String("key", "", "ssh private key")
-	namespace := fs.String("namespace", defaultNamespace, "SSHSIG namespace")
+	key := fs.String("key", "", "ed25519 private key")
+	name := fs.String("name", defaultSignerName(), "the name that key signs under")
 	environment := fs.String("environment", "local", "environment an effectful statement names")
 	provenanceFile := fs.String("provenance", "", "json run provenance")
 	schemaFlag := fs.String("schema", "", "attestation schema")
@@ -48,10 +48,7 @@ func cmdRun(args []string) error {
 
 	// The signer is checked before any work is done: a run that can only
 	// end in "no key" should say so before it builds anything.
-	if *key == "" {
-		return fmt.Errorf("no signing key: pass --key. The host signs; an unsigned statement is not an attestation")
-	}
-	signerHex, signerSSH, err := keyFingerprint(*key)
+	host, err := loadSigner(*key, *name)
 	if err != nil {
 		return err
 	}
@@ -66,7 +63,7 @@ func cmdRun(args []string) error {
 			fmt.Printf("        %s:%s (advisory)\n", alg, subj.Digest[alg])
 		}
 	}
-	fmt.Printf("signer  %s\n", signerSSH)
+	fmt.Printf("signer  %s\n", host.verifierKey())
 
 	tree, err := os.MkdirTemp("", "valley-attest-tree")
 	if err != nil {
@@ -114,36 +111,36 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("%d of %d checks failed; nothing published", failed, len(specs))
 	}
 
-	// Compose, vet, sign. Every statement is vetted before any of them is
-	// signed, so a malformed one cannot leave a half-signed set behind.
-	canonicals := make([][]byte, len(outcomes))
+	// Compose, validate, render. Every statement is vetted before any of
+	// them is written out, so a malformed one cannot leave a half-signed
+	// set behind. The schema is the gate and it reads JSON; the text is
+	// what a signature covers, and it carries exactly what the JSON does.
+	texts := make([][]byte, len(outcomes))
 	for i, out := range outcomes {
 		st := composeStatement(subj, out, *environment, prov)
-		canonical, err := canonicalize(st)
+		doc, err := json.Marshal(st)
 		if err != nil {
 			return err
 		}
-		if err := vetStatement(schema, canonical); err != nil {
+		if err := vetStatement(schema, doc); err != nil {
 			return fmt.Errorf("%s: %w\nnothing published", out.spec.name, err)
 		}
-		canonicals[i] = canonical
+		if texts[i], err = renderJSON(doc); err != nil {
+			return fmt.Errorf("%s: %w\nnothing published", out.spec.name, err)
+		}
 	}
 
 	subtrees := map[string]string{}
 	for i, out := range outcomes {
-		sig, err := signDetached(*key, *namespace, canonicals[i])
+		note, err := signNote(texts[i], host)
 		if err != nil {
 			return err
 		}
-		stBlob, err := writeBlob(root, canonicals[i])
+		noteBlob, err := writeBlob(root, note)
 		if err != nil {
 			return err
 		}
-		sigBlob, err := writeBlob(root, sig)
-		if err != nil {
-			return err
-		}
-		sub, err := mkTree(root, map[string]string{"statement.json": stBlob, "statement.sig": sigBlob}, nil)
+		sub, err := mkTree(root, map[string]string{"statement.note": noteBlob}, nil)
 		if err != nil {
 			return err
 		}
@@ -153,7 +150,7 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	ref := attestationRef(subj.Digest[subj.Primary], signerHex)
+	ref := attestationRef(subj.Digest[subj.Primary], fmt.Sprintf("%08x", host.hash))
 	if _, err := git(root, "update-ref", ref, top); err != nil {
 		return err
 	}

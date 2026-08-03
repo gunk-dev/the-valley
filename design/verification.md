@@ -77,6 +77,13 @@ tree in front of the verifier is the tree the statement names. Re-running a pure
 confirming its output digest is witness re-verification, and belongs to
 [Phase 6](./roadmap.md#phase-6--trust-backstop) rather than here.
 
+`attest canonical` renders a JSON document into the bytes a signature covers, and does nothing else
+with it. Those bytes are an interop contract rather than an internal step: a second implementation
+that renders them differently signs different bytes over the same statement, and every signature
+already made stops verifying against it. So [attest/conformance/](../attest/conformance/) holds
+fixed documents paired with their exact canonical bytes, and the flake's `attest-conformance` check
+renders each one and compares.
+
 The run provenance a statement carries — the harness, the model, digests of the prompt and the
 context, and the delegation chain — is supplied by the caller (`--provenance`) or absent. Nothing
 collects those values today.

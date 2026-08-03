@@ -7,6 +7,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -15,6 +16,7 @@ const usage = `usage: attest <command> [flags]
   run       run a repository's checks and store a signed attestation
   verify    check an attestation's signature and re-check its digests
   digest    print the valley tree digest of a revision
+  canonical render a json document into the bytes a signature covers
   help      print this message
 
 A statement is signed with a detached SSHSIG signature under the namespace
@@ -50,6 +52,10 @@ verify flags:
 digest flags:
   --repo DIR          repository (default: the git toplevel here)
   --rev REV           revision (default: HEAD)
+
+canonical takes one json file, or stdin, and writes the canonical bytes
+with no trailing newline. The conformance vectors in attest/conformance are
+rendered and compared this way.
 `
 
 func main() {
@@ -65,6 +71,8 @@ func main() {
 		err = cmdVerify(os.Args[2:])
 	case "digest":
 		err = cmdDigest(os.Args[2:])
+	case "canonical":
+		err = cmdCanonical(os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return
@@ -110,6 +118,40 @@ func cmdDigest(args []string) error {
 	}
 	fmt.Printf("%s:%s\n", treeScheme, treeDigest(entries))
 	return nil
+}
+
+// cmdCanonical exposes the canonicalizer on its own. The canonical bytes
+// are an interop contract rather than an internal step — a second attest
+// must render them identically or every signature already made stops
+// verifying — so the renderer is reachable without composing, signing or
+// storing anything, and attest/conformance/ is the fixed set of documents
+// it is held to.
+func cmdCanonical(args []string) error {
+	fs := newFlagSet("canonical")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	var (
+		raw []byte
+		err error
+	)
+	switch fs.NArg() {
+	case 0:
+		raw, err = io.ReadAll(os.Stdin)
+	case 1:
+		raw, err = os.ReadFile(fs.Arg(0))
+	default:
+		return fmt.Errorf("canonical takes one json file, or none to read stdin")
+	}
+	if err != nil {
+		return err
+	}
+	out, err := canonicalRender(raw)
+	if err != nil {
+		return err
+	}
+	_, err = os.Stdout.Write(out)
+	return err
 }
 
 func repoRoot(dir string) (string, error) {

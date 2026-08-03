@@ -64,6 +64,34 @@ package attestation
 
 #Sha256: =~"^[0-9a-f]{64}$"
 
+// #AsciiKey is the key shape a statement's object members are held to:
+// printable ASCII, from space through tilde.
+//
+// This is a property of the signed bytes rather than a naming preference.
+// Canonical form sorts object members by their UTF-8 bytes; RFC 8785 sorts
+// them by UTF-16 code units. The two orderings agree over ASCII and part
+// company above it, so a non-ASCII key is two implementations rendering the
+// same statement into different bytes — and the way that failure surfaces is
+// a signature that does not verify, with nothing naming the key that caused
+// it.
+//
+// Every key in this file is fixed here and is ASCII, so no statement today
+// can carry one. The constraint is written down anyway, because the first
+// map keyed by a caller rather than by this file is where the property
+// silently stops holding.
+#AsciiKey: =~"^[\\x20-\\x7e]*$"
+
+// #AsciiKeyed is how a map with caller-supplied keys is written. Nothing
+// uses it yet: every map the statement carries today — the digest sets, the
+// provenance — is keyed by names this file fixes. The direction that
+// introduces one is the ecosystem-specific key-value context strings of
+// ida-d2dc957, and whatever field carries them unifies with this, so a key
+// the canonical form cannot order fails `cue vet` rather than reaching a
+// signer:
+//
+//   context: #AsciiKeyed & {[string]: string}
+#AsciiKeyed: {[#AsciiKey]: _}
+
 // The two kinds of claim of design/verification.md. A pure check's
 // attestation is re-derivable: it carries input, derivation and output
 // digests, and any verifier can re-run and confirm. An effectful check's

@@ -29,15 +29,42 @@ func TestCanonicalJSONSortsAndTightens(t *testing.T) {
 }
 
 func TestCanonicalJSONEscaping(t *testing.T) {
-	// Go's encoding/json escapes <, > and & by default; RFC 8785 does not,
-	// and a signer that escaped them would not match one that did not.
-	got, err := canonicalJSON(map[string]any{"k": "a<b>c&d \"q\" \\ \n ü"})
+	// Go's encoding/json escapes <, > and & by default, and escapes U+2028
+	// and U+2029 for JavaScript's benefit whatever the HTML setting. RFC
+	// 8785 escapes none of them, and a signer that did would not match one
+	// that did not. The whole escape table is pinned by the conformance
+	// vectors; these are the characters an encoder is most likely to
+	// disagree about.
+	got, err := canonicalJSON(map[string]any{"k": "a<b>c&d \"q\" \\ \b\f\n ü\u2028\u2029"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"k":"a<b>c&d \"q\" \\ \n ü"}`
+	want := `{"k":"a<b>c&d \"q\" \\ \b\f\n ü` + "\u2028\u2029" + `"}`
 	if string(got) != want {
 		t.Errorf("canonicalJSON =\n  %s\nwant\n  %s", got, want)
+	}
+}
+
+func TestCanonicalJSONRejectsUnorderableKeys(t *testing.T) {
+	// Member order is by UTF-8 bytes here and by UTF-16 code units in RFC
+	// 8785. They agree over ASCII, so a key above it is where two
+	// implementations would sign different bytes over one statement.
+	// schema/attestation.cue keeps such a key out; this refuses one that
+	// arrives anyway rather than sorting it.
+	if _, err := canonicalJSON(map[string]any{"café": "x"}); err == nil {
+		t.Fatal("canonicalJSON accepted a non-ASCII key")
+	}
+	if _, err := canonicalJSON(map[string]any{"a-b": "x", "": "y", "~": "z"}); err != nil {
+		t.Fatalf("canonicalJSON refused printable ASCII keys: %v", err)
+	}
+}
+
+func TestCanonicalJSONRejectsInvalidUTF8(t *testing.T) {
+	// A string that is not valid UTF-8 has no canonical form, and
+	// encoding/json would substitute U+FFFD for it — a silent change to the
+	// bytes a signature covers.
+	if _, err := canonicalJSON(map[string]any{"k": "\xff"}); err == nil {
+		t.Fatal("canonicalJSON accepted invalid utf-8")
 	}
 }
 

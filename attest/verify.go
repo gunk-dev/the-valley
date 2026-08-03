@@ -60,15 +60,9 @@ func cmdVerify(args []string) error {
 	// bytes a function of the statement. A statement stored in some other
 	// rendering would verify here and fail to verify wherever it was
 	// recomposed, so it is rejected.
-	var generic any
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	if err := dec.Decode(&generic); err != nil {
-		return fmt.Errorf("%s: %w", *statementFile, err)
-	}
-	canonical, err := canonicalJSON(generic)
+	canonical, err := canonicalRender(raw)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s: %w", *statementFile, err)
 	}
 	if !bytes.Equal(canonical, raw) {
 		return fmt.Errorf("%s is not in canonical form; the signature would not travel", *statementFile)

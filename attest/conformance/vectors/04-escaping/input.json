@@ -1,0 +1,13 @@
+{
+  "quote": "a \"quoted\" word",
+  "backslash": "C:\\path\\to",
+  "solidus": "a/b",
+  "short-escapes": "\b\t\n\f\r",
+  "control": "\u0000\u0001\u001f",
+  "delete": "\u007f",
+  "html": "a<b>c&d",
+  "latin": "\u00fc caf\u00e9",
+  "astral": "\ud83d\ude00",
+  "separators": "\u2028\u2029",
+  "escape-in-text": "\\u2028"
+}

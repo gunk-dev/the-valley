@@ -94,9 +94,6 @@ hardware token today can produce the raw signature such a leaf requires, which f
 approval to travel as data submitted under a machine identity — the opposite of what the presence
 requirement is for.
 
-**Whether the statement document is carried as typed structured data or flattened to a line-oriented
-text form.** The transparency direction leans line-oriented; the statement direction is structured.
-
 ## Related
 
 - The requirement this answers — authenticity that survives a rebase: [[ida-51605e8]]

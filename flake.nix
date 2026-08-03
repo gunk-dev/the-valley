@@ -793,11 +793,120 @@
                   '') invalidStatements
                 )}
 
+                # A map whose keys come from a caller is written as
+                # #AsciiKeyed. Canonical form sorts members by their UTF-8
+                # bytes and RFC 8785 sorts them by UTF-16 code units; the two
+                # agree over ASCII and part company above it, so a non-ASCII
+                # key is two implementations signing different bytes over one
+                # statement. It fails vet rather than reaching a signer.
+                cue vet -d '#AsciiKeyed' ${./schema/attestation.cue} ${
+                  pkgs.writeText "ascii-keys.json" ''
+                    {"harness": "a harness", "run-id": "1", "": "", "~": "the last printable key"}
+                  ''
+                }
+                if cue vet -d '#AsciiKeyed' ${./schema/attestation.cue} ${
+                  pkgs.writeText "non-ascii-key.json" ''
+                    {"harness": "a harness", "café": "a key two implementations sort differently"}
+                  ''
+                } > non-ascii-key.err 2>&1; then
+                  echo "attest-schema: expected a non-ASCII key to be rejected" >&2
+                  exit 1
+                fi
+                grep -q 'café: field not allowed' non-ascii-key.err
+
                 # A rejection that does not name the field leaves the reader
                 # to find the breakage themselves.
                 grep -q 'signature: conflicting values' signature-in-statement.err
                 grep -q 'subject.digest."valley-tree-v1"' no-content-addressed-subject.err
                 grep -q 'predicate.environment: field not allowed' effectful-claiming-pure.err
+                touch $out
+              '';
+
+          # The canonical form, held to fixed vectors. These bytes are an
+          # interop contract rather than an implementation detail: a
+          # regenerated or independently written attest must render them
+          # identically or every signature already made stops verifying. So
+          # the vectors are checked-in files with a README saying they are
+          # the contract (attest/conformance/), and this check is what holds
+          # a second implementation to them.
+          attest-conformance =
+            pkgs.runCommand "valley-attest-conformance"
+              {
+                nativeBuildInputs = [
+                  pkgs.openssh
+                  pkgs.cue
+                  (attestFor pkgs)
+                ];
+              }
+              ''
+                vectors=${./attest/conformance}
+
+                # One vector rendered and compared, quietly, so the perturbed
+                # run at the end can expect it to fail without saying so.
+                renders() { attest canonical "$1/input.json" | cmp -s - "$1/canonical.json"; }
+
+                found=0
+                signed=0
+                for dir in "$vectors"/vectors/*/; do
+                  name="$(basename "$dir")"
+                  found=$((found + 1))
+
+                  if ! renders "$dir"; then
+                    echo "attest-conformance: $name does not render to its recorded bytes" >&2
+                    echo "  recorded: $(cat "$dir/canonical.json")" >&2
+                    echo "  rendered: $(attest canonical "$dir/input.json")" >&2
+                    exit 1
+                  fi
+
+                  # The canonical form is a fixed point, or a statement
+                  # re-rendered anywhere downstream stops matching what was
+                  # signed.
+                  if ! attest canonical "$dir/canonical.json" | cmp -s - "$dir/canonical.json"; then
+                    echo "attest-conformance: $name is not a fixed point of the canonical form" >&2
+                    exit 1
+                  fi
+
+                  # A vector that is a whole statement is held to the schema
+                  # too, so the set cannot drift into documents no verifier
+                  # would accept.
+                  if grep -q statementType "$dir/canonical.json"; then
+                    cue vet -c ${./schema/attestation.cue} "$dir/canonical.json"
+                  fi
+
+                  # The signed vector pins the whole path from statement to
+                  # verifiable signature, not just the serialization. No
+                  # --repo: the subject tree is not what this check is about.
+                  if [ -e "$dir/statement.sig" ]; then
+                    signed=$((signed + 1))
+                    attest verify --statement "$dir/canonical.json" \
+                      --signature "$dir/statement.sig" \
+                      --allowed-signers "$vectors/allowed_signers" > "$name.verify"
+                    grep -q 'Good "the-valley.attestation.v1" signature for conformance@the-valley' \
+                      "$name.verify"
+                    grep -q '^canonical ok' "$name.verify"
+                  fi
+                done
+
+                if [ "$found" -lt 8 ] || [ "$signed" -lt 1 ]; then
+                  echo "attest-conformance: $found vectors, $signed signed — the set has been emptied" >&2
+                  exit 1
+                fi
+
+                # The comparison must be able to fail. One recorded byte
+                # sequence with a single member's value changed is what a
+                # divergent implementation looks like, and it must not pass.
+                mkdir -p perturbed
+                cp "$vectors/vectors/01-key-order/input.json" perturbed/
+                sed 's/"the empty key"/"the empty keys"/' \
+                  "$vectors/vectors/01-key-order/canonical.json" > perturbed/canonical.json
+                cmp -s perturbed/canonical.json "$vectors/vectors/01-key-order/canonical.json" \
+                  && { echo "attest-conformance: the perturbation changed nothing" >&2; exit 1; }
+                if renders perturbed; then
+                  echo "attest-conformance: a perturbed vector passed; the comparison proves nothing" >&2
+                  exit 1
+                fi
+
+                echo "attest-conformance: $found vectors render byte for byte, $signed of them signed"
                 touch $out
               '';
 

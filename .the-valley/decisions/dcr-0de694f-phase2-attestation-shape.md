@@ -10,7 +10,7 @@ source: design conversation, 2026-08-02
 # The shape of a Phase 2 attestation
 
 A Phase 2 attestation has five elements: a statement, a signer, an envelope, a place it is stored,
-and a rule for how several of them compose. This node fixes all five, which is the whole of what
+and how several of them compose. This node fixes all five, which is the whole of what
 [roadmap.md, Phase 2](../../design/roadmap.md#phase-2--attestations-verification-mvp) needs in order
 to be built. The layering it uses — statement, envelope, transparency — is the one set out in
 [[ida-d2dc957]]
@@ -60,8 +60,11 @@ and is never the same signature as the host's.
 
 ## 3. The envelope
 
-The **envelope** is how the statement is signed: a detached SSHSIG signature over the statement,
-under a namespace chosen for this purpose. No git object is signed — [[ida-51605e8]]
+The **envelope** is how the statement is signed: the **signed note format**, in which a document is
+the statement text, then a blank line, then one or more signature lines. Each signature line names
+its signer and carries a raw Ed25519 signature over the text above it. The text is the statement in
+its serialized form, and that serialization is fixed on its own. No git object is signed —
+[[ida-51605e8]]
 ([ida-51605e8-authenticity-not-git-coupled.md](../ideas/ida-51605e8-authenticity-not-git-coupled.md)).
 
 ## 4. Storage
@@ -70,8 +73,9 @@ A git ref, keyed by the subject digest.
 
 ## 5. Composition
 
-Where more than one party attests to the same subject, their statements sit side by side, each
-signed by one party.
+Several parties attesting to the same statement sign it as siblings: their signature lines sit side
+by side under one text, in any number and any order, and each verifies on its own. A signature is
+bound to the statement it was made over, because the text it covers is the text it sits under.
 
 ## Properties this shape holds
 
@@ -79,8 +83,8 @@ signed by one party.
 - A verifier can tell a re-derivable claim from a notarized one from the signed bytes alone.
 - The format can evolve without invalidating what already exists, because the predicate type carries
   a version.
-- An approval cannot be lifted onto claims it was not made about, because statements composed side
-  by side each identify their own subject.
+- A signature cannot be lifted onto claims it was not made about, because it covers the statement
+  text it sits under.
 - Where attestations are stored can change without invalidating them, because everything is
   referenced by digest.
 - Provenance is derived from a complete record of the run, per [[ida-b42d112]]
@@ -99,6 +103,16 @@ signed by one party.
 - **Verification of delegation chains**, as opposed to recording them. Phase 2 records a chain as
   content in the statement. Checking a chain belongs to the enforcement point, which is the
   integrator of [roadmap.md, Phase 3](../../design/roadmap.md#phase-3--the-integrator).
+
+## Open
+
+**The envelope a human approval travels in.** This decision fixes the envelope for host-signed
+statements, and for those only. A signature line in the signed note format carries a raw Ed25519
+signature, so the format cannot carry a signature from a hardware key that requires physical
+presence — which is what [[ida-b7025b5]]
+([ida-b7025b5-human-decisions-are-signed-acts.md](../ideas/ida-b7025b5-human-decisions-are-signed-acts.md))
+asks of a human approval. The approval's envelope is therefore not this one, and this decision does
+not fix it.
 
 ## Related
 

@@ -14,7 +14,8 @@
       "runner": "nix",
       "attribute": "prose-format",
       "name": "prose-format"
-    }
+    },
+    "environment": "somewhere"
   },
   "predicateType": "the-valley/check/pure/v1",
   "subject": {
@@ -23,8 +24,5 @@
     },
     "primary": "valley-tree-v1"
   },
-  "statementType": "the-valley/attestation/v1",
-  "provenance": {
-    "model": 3
-  }
+  "statementType": "the-valley/attestation/v1"
 }

@@ -1,1 +1,30 @@
-{"statementType": "the-valley/attestation/v1", "environment": ""}
+{
+  "predicate": {
+    "result": "passed",
+    "output": {
+      "valley-tree-v1": "cf1f5a9c96bbdf1d69da451c94168fa3a760f91f94827ba88bdb72de8dfa8af9"
+    },
+    "derivation": {
+      "sha256": "ef69ed0ccc0546a38a40eebbfcac610cedd7cf4f81036cd21ddff483f08d3ad7"
+    },
+    "inputs": {
+      "valley-inputs-v1": "8df8c199decb43eb715790d6fc3a9dd96adaaf3a75073a50acfa51d73aaf3253"
+    },
+    "check": {
+      "runner": "nix",
+      "attribute": "prose-format",
+      "name": "prose-format"
+    }
+  },
+  "predicateType": "the-valley/check/pure/v1",
+  "subject": {
+    "digest": {
+      "valley-tree-v1": "73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69"
+    },
+    "primary": "valley-tree-v1"
+  },
+  "statementType": "the-valley/attestation/v1",
+  "provenance": {
+    "model": ""
+  }
+}

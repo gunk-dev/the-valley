@@ -1,1 +1,0 @@
-statementType the-valley/attestation/v1

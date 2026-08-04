@@ -62,24 +62,76 @@ produced and the digest it records for what the check ran over are the same kind
 ## A statement is written down as lines
 
 A signature covers bytes, so a statement has one written form and every implementation must produce
-it exactly. That form is `valley-statement-v1`, and it is lines.
+it exactly. That form is lines.
 
-The first line is `valley-statement-v1`, the name of the form. Every line after it is a key, one
-space, and a value. The lines are sorted by key, ascending, comparing bytes, and the text ends with
-a newline.
+The first line is the statement type, which says what the document is and which revision of it this
+is. Every line after it is a key, one space, and a value. The text ends with a newline.
 
-    valley-statement-v1
+    the-valley/attestation/v1
+    subject.primary valley-tree-v1
+    subject.digest.git-sha1 99b5f2f7…
+    subject.digest.valley-tree-v1 73847e0b…
+    predicateType the-valley/check/pure/v1
     predicate.check.name prose-format
     predicate.check.runner nix
+    predicate.check.attribute prose-format
     predicate.result passed
-    predicateType the-valley/check/pure/v1
-    statementType the-valley/attestation/v1
-    subject.digest.valley-tree-v1 73847e0b…
-    subject.primary valley-tree-v1
+    predicate.inputs.valley-inputs-v1 8df8c199…
+    predicate.derivation.sha256 ef69ed0c…
+    predicate.output.valley-tree-v1 cf1f5a9c…
+    provenance.harness a harness
+    provenance.model a model
+    provenance.delegation.0.principal human:integrator
+    provenance.delegation.0.grant land changes
+
+The statement type is on the first line and nowhere else. It is the one thing a reader needs before
+anything else — what this document is, and which revision of it — and a signature covers the text
+and nothing else, so the first line is also what separates an attestation from any other note a key
+signs. One line answers both.
 
 A key is the path from the document's root to the value, with a dot between segments. A segment that
 is a decimal number is an index into an array, so `provenance.delegation.0.principal` is the
 principal of the first recorded delegation.
+
+### Line order
+
+A statement is a document a reader reads in order to decide something, so the reader's first
+question is answered first. Lines are written in the order below, and that order is fixed.
+
+1. The statement type, as the first line.
+2. `subject` — what the statement is about: `primary`, then the digest set.
+3. `predicateType` — what kind of claim this is, which says how to read what follows.
+4. `predicate` — the claim, in the order the claim reads. Per predicate type:
+
+   | `the-valley/check/pure/v1`  | `the-valley/check/effectful/v1` |
+   | --------------------------- | ------------------------------- |
+   | `predicate.check.name`      | `predicate.check.name`          |
+   | `predicate.check.runner`    | `predicate.check.runner`        |
+   | `predicate.check.attribute` | `predicate.check.attribute`     |
+   | `predicate.check.command`   | `predicate.check.command`       |
+   | `predicate.result`          | `predicate.environment`         |
+   | `predicate.inputs`          | `predicate.observedAt`          |
+   | `predicate.derivation`      | `predicate.result`              |
+   | `predicate.output`          |                                 |
+
+   A pure claim reads as the check, its result, and then the three digests a verifier re-derives
+   against. A notarization reads as the check, the environment it ran in, when that was, and what
+   was observed.
+
+5. `provenance` — what produced the change, last, because it is context for the claim rather than
+   part of it: `harness`, `model`, `prompt`, `context`, then `delegation`.
+
+**Within a set keyed by caller-varying names — a digest set, and any map added later — entries sort
+by key.** Fixed order where position carries meaning, sorted order where it does not. An array is
+positional, so its elements are written in index order: `provenance.delegation.10` follows
+`provenance.delegation.9`.
+
+A field with no position in that order has no written form and is refused. So a new field's position
+arrives with the field, and the predicate type is versioned, which is what lets a claim shape grow
+without moving what came before it. It also means only a whole statement has a written form: order
+is defined per predicate type, so a fragment has no order at all.
+
+### What a line can carry
 
 The form has no escapes, and that is why it was chosen. A value is written as its own bytes, so
 there is exactly one way to write it and nothing for two implementations to disagree about. What
@@ -99,13 +151,13 @@ escaped or dropped:
   that separates segments, the space that separates key from value, and the digits that mark an
   index.
 
-Arrays are dense: indices run from 0 with no gaps, in decimal without leading zeros. Line order over
-indices is byte order, so `.10` sits between `.1` and `.2`; a reader rebuilds an array from the
-index and never from the order the lines arrive in.
+Arrays are dense: indices run from 0 with no gaps, in decimal without leading zeros.
 
-Reading the form back enforces every rule above, so text that parses is text a renderer would have
-produced. That is what makes "these bytes are the written form of what they say" something a
-verifier settles by reading, rather than a claim it has to take on trust.
+Text is accepted only if writing the document it says back out reproduces it byte for byte. That is
+the whole acceptance rule, and it makes "these bytes are the written form of what they say"
+something a verifier settles by reading rather than a claim it has to take on trust. Line order, a
+duplicated key, a set out of order and a value no line can carry all fail the same way, because none
+of them is what a renderer would have produced.
 
 [schema/attestation.cue](../schema/attestation.cue) is the gate, and it holds every value and every
 field name to what a line can carry. So a statement with no written form fails validation before a
@@ -117,8 +169,8 @@ A statement is signed as a **note**: the statement text, a blank line, and one o
 lines. Each signature line is an em-dash (U+2014), a space, the signer's name, a space, and base64
 of a four-byte key hash followed by the raw Ed25519 signature over the text.
 
-    valley-statement-v1
-    predicate.result passed
+    the-valley/attestation/v1
+    subject.primary valley-tree-v1
     …
 
     — laddie.gunk.dev/attestations sEDvC7HO4DfL5ZxbZPFvoVWq2Wt5eGTqZx2h…
@@ -134,8 +186,8 @@ boundary.
 
 A signature covers the text and nothing else: not the signer's name, not a namespace, and no git
 object ([ida-51605e8](../.the-valley/ideas/ida-51605e8-authenticity-not-git-coupled.md)). So what
-separates an attestation from any other note a key signs is the text's own first line, which is why
-statement text opens by naming its form.
+separates an attestation from any other note a key signs is the text's own first line, which is the
+statement type.
 
 **The signer's name** is the host's fully qualified name, a slash, and what it is signing:
 `laddie.gunk.dev/attestations`. The host part says which machine to go and ask about a key. The

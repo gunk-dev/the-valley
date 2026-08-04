@@ -10,9 +10,13 @@
     "inputs": {
       "valley-inputs-v1": "8df8c199decb43eb715790d6fc3a9dd96adaaf3a75073a50acfa51d73aaf3253"
     },
-    "check": { "runner": "nix", "attribute": "prose-format", "name": "prose-format" }
+    "check": {
+      "runner": "nix",
+      "attribute": "prose-format",
+      "name": "prose-format"
+    }
   },
-  "predicateType": "the-valley/check/pure/v1",
+  "predicateType": "the-valley/check/pure/v2",
   "subject": {
     "digest": {
       "valley-tree-v1": "73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69"

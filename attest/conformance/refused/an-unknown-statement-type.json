@@ -23,8 +23,5 @@
     },
     "primary": "valley-tree-v1"
   },
-  "statementType": "the-valley/attestation/v1",
-  "provenance": {
-    "model": 3
-  }
+  "statementType": "the-valley/attestation/v2"
 }

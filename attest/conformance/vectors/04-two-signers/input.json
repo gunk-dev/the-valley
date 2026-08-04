@@ -2,15 +2,13 @@
   "statementType": "the-valley/attestation/v1",
   "subject": {
     "primary": "valley-tree-v1",
-    "digest": {
-      "valley-tree-v1": "1e1c4b3a55a0a3e46e0a8f5f5b0e0c47b0b1b2a0c9d8e7f6a5b4c3d2e1f00912"
-    }
+    "digest": { "valley-tree-v1": "1e1c4b3a55a0a3e46e0a8f5f5b0e0c47b0b1b2a0c9d8e7f6a5b4c3d2e1f00912" }
   },
   "predicateType": "the-valley/check/effectful/v1",
   "predicate": {
     "check": { "name": "live-api", "runner": "command", "command": "curl -sf https://example.invalid" },
     "result": "passed",
     "environment": "a sealed environment",
-    "observedAt": "2026-08-03T03:10:00Z"
+    "observedAt": "2026-08-04T04:12:00Z"
   }
 }

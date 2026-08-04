@@ -7,7 +7,7 @@ else and the two sign different bytes over the same statement, so a signature ma
 verify against the other, and the way that failure arrives is a verification error that names
 nothing.
 
-The written form is lines, and the envelope is a signed note. Both are specified in
+The written form is lines in a fixed order, and the envelope is a signed note. Both are specified in
 [design/verification.md](../../design/verification.md); the reasons behind each rule are in
 [`../text.go`](../text.go) and [`../sign.go`](../sign.go), and the decision node those cite.
 
@@ -15,36 +15,37 @@ The written form is lines, and the envelope is a signed note. Both are specified
 
 Each directory under `vectors/` is one vector.
 
-- `input.json` is a statement or a fragment of one, written in some arbitrary rendering — members
-  out of order, whitespace anywhere, escapes chosen freely. It is input, not output.
+- `input.json` is a statement written in some arbitrary rendering — members out of order, whitespace
+  anywhere, escapes chosen freely. It is input, not output.
 - `statement.txt` is the exact byte sequence the written form produces from it. It is what a
   signature covers, and nothing else is.
 - `statement.note`, where present, is that text with a blank line and one signature line per signer
   beneath it. The keys are in [`known_keys`](./known_keys); they exist for these vectors and hold no
   authority anywhere.
 
-The vectors cover the places implementations part company: line order over keys that differ only in
-case, keys where one is a prefix of another, and a dash against the letter that sorts after it;
-dotted paths through nested objects, and arrays long enough that index `10` sits between `1` and `2`
-where a reader who trusts line order rather than the index will get the array wrong; values written
-as their own bytes, including the characters a JSON encoder would have escaped, text above the basic
-multiplane, and leading, trailing and repeated spaces, which are all load-bearing and none of which
-survive an editor that trims whitespace; a statement with and without provenance; and a note with
-two signature lines, which is what "several parties attest to one subject" looks like.
+Every vector is a whole statement, because line order is defined per predicate type and a fragment
+has no order at all. Between them they cover the places implementations part company: both predicate
+types, each in its own order; a digest set with several members, whose entries sort by key while
+everything around them does not; a delegation chain long enough that index `10` follows index `9`,
+where an implementation ordering by the key's bytes rather than by the index will get the array
+wrong; values written as their own bytes, including the characters a JSON encoder would have
+escaped, text above the basic multilingual plane, and leading, trailing and repeated spaces, which
+are all load-bearing and none of which survive an editor that trims whitespace; a statement with and
+without provenance; and a note with two signature lines, which is what "several parties attest to
+one subject" looks like.
 
 `known_keys` is the whole of what a verifier is given: one line per key, each a name, the key hash
 its name and public key produce, and the public key itself.
 
-Every `statement.txt` that is a whole statement also vets against
-[`../../schema/attestation.cue`](../../schema/attestation.cue), so the set does not drift into
-documents no verifier would accept.
+Every vector also vets against [`../../schema/attestation.cue`](../../schema/attestation.cue), so
+the set does not drift into documents no verifier would accept.
 
 `refused/` is the other half of the contract: documents and texts that must not be written or read
 at all. A `.json` there is a document with no written form — a number, an empty object, a value
 carrying a newline, a field name a line cannot carry. A `.txt` there is text that is not the written
-form of anything: lines out of order, a repeated key, an array with a gap in it, a key that is both
-a value and a path. An implementation that accepts any of them will sooner or later sign bytes
-another one reads differently.
+form of anything: sections out of order, a set out of order, an array element out of its position, a
+repeated key, an array with a gap in it, a key that is both a value and a path. An implementation
+that accepts any of them will sooner or later sign bytes another one reads differently.
 
 ## Running them
 
@@ -59,10 +60,10 @@ vector set that agrees with itself vacuously cannot pass.
 By hand, against any one vector:
 
 ```
-$ nix run .#attest -- render attest/conformance/vectors/01-key-order/input.json \
-    | cmp - attest/conformance/vectors/01-key-order/statement.txt
+$ nix run .#attest -- render attest/conformance/vectors/01-statement-minimal/input.json \
+    | cmp - attest/conformance/vectors/01-statement-minimal/statement.txt
 $ nix run .#attest -- verify \
-    --note attest/conformance/vectors/07-two-signers/statement.note \
+    --note attest/conformance/vectors/04-two-signers/statement.note \
     --known-keys attest/conformance/known_keys
 ```
 

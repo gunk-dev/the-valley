@@ -20,22 +20,44 @@ envelope is [the section after it](../../design/verification.md#the-envelope-is-
 statement's shape is [schema/attestation.cue](../../schema/attestation.cue), and the reference
 implementation is `attest/text.go` and `attest/sign.go`.
 
-## The written form is lines, and it has no escapes
+## The written form is lines, in the order a reader reads them
 
-The first line names the form. Every line after it is a key, one space, and a value, sorted by key.
-A key is the path to the value with dots between segments, and a segment that is a number indexes an
-array.
+The first line is the statement type. Every line after it is a key, one space, and a value. A key is
+the path to the value with dots between segments, and a segment that is a number indexes an array.
 
-The property that matters is what the form leaves out: there is no escape mechanism. A value is
-written as its own bytes, so there is exactly one way to write it and nothing for two
+The statement type is on the first line and nowhere else. It is the one thing a reader needs before
+anything else — what this document is, and which revision of it — and it is also what separates an
+attestation from any other note a key signs, because a signature covers the text alone. One line
+answers both.
+
+Lines are written in a fixed order: what the statement is about, then what kind of claim it makes,
+then the claim, then what produced the change. A statement is a document a reader reads in order to
+decide something, so the reader's first question is answered first. The claim's own order is per
+predicate type, because the claim reads differently for each: a pure claim reads as the check, its
+result, and then the three digests a verifier re-derives against; a notarization reads as the check,
+the environment it ran in, when that was, and what was observed. The order table is
+[design/verification.md](../../design/verification.md#line-order).
+
+Within a set keyed by names a caller supplies rather than the order table — a digest set, and any
+map added later — entries sort by key. Fixed order where position carries meaning, sorted order
+where it does not. An array is positional, so its elements are written in index order.
+
+A field with no position in the order has no written form and is refused. A new field's position
+therefore arrives with the field, and the predicate type is versioned, which is what lets a claim
+shape grow without moving what came before it. It also means only a whole statement has a written
+form, since order is defined per predicate type.
+
+## The form has no escapes
+
+A value is written as its own bytes, so there is exactly one way to write it and nothing for two
 implementations to disagree about. Everything a line cannot carry is refused rather than escaped or
 dropped — a value holding a newline, an empty value, a number at a leaf, an empty object, a field
 name holding the dot or the space the form uses as separators.
 
-This is the whole of the specification. A serialization that admits escapes has to pin which escape
-each character gets, and that table is where independent implementations part company; a form with
-no table has no such surface. Refusing rather than dropping is what keeps the document that passed
-validation and the document that got signed the same document.
+A serialization that admits escapes has to pin which escape each character gets, and that table is
+where independent implementations part company; a form with no table has no such surface. Refusing
+rather than dropping is what keeps the document that passed validation and the document that got
+signed the same document.
 
 ## What is stored is what was signed
 
@@ -45,11 +67,11 @@ stored and what is checked, and no encoding to decode before reading. A statemen
 `git cat-file`, searched with `grep`, and vetted against the schema exactly as stored — the same
 plain-files property the knowledge graph has, applied to evidence.
 
-Reading the form back enforces every rule of it, so text that parses is text a renderer would have
-produced. A statement whose bytes are not the written form of what it says is refused even when its
-signature checks out, because that statement would fail to verify wherever it was written out again.
-The form is a rule rather than a convention, and a verifier settles it by reading rather than by
-trusting the sender.
+Text is accepted only if writing the document it says back out reproduces it byte for byte, so text
+that parses is text a renderer would have produced. A statement whose bytes are not the written form
+of what it says is refused even when its signature checks out, because that statement would fail to
+verify wherever it was written out again. The form is a rule rather than a convention, and a
+verifier settles it by reading rather than by trusting the sender.
 
 ## Several signatures are sibling lines under one text
 
@@ -70,7 +92,7 @@ A signature covers the text and nothing else — not the signer's name, not a na
 object, per [[ida-51605e8]]
 ([ida-51605e8-authenticity-not-git-coupled.md](../ideas/ida-51605e8-authenticity-not-git-coupled.md)).
 What separates an attestation from any other note a key signs is the text's own first line, which is
-why the statement's written form opens by naming itself.
+the statement type.
 
 ## The signer is named, and a verifier holds names and hashes
 
@@ -107,11 +129,11 @@ conformance vectors already make.
 
 The written form and the note are an interop contract, so they are pinned by fixed files rather than
 by the code that happens to produce them. [attest/conformance/](../../attest/conformance/) holds
-statements and fragments paired with their exact text, notes that must verify — including one
-carrying two signatures — and the documents and texts that must be refused. The flake's
-`attest-conformance` check runs the whole set, and it holds the implementation to the reference one
-from the other side too: the unit tests re-derive the published key hash of sum.golang.org from its
-name and its public key, an answer the reference implementation already computed.
+statements paired with their exact text, notes that must verify — including one carrying two
+signatures — and the documents and texts that must be refused. The flake's `attest-conformance`
+check runs the whole set, and it holds the implementation to the reference one from the other side
+too: the unit tests re-derive the published key hash of sum.golang.org from its name and its public
+key, an answer the reference implementation already computed.
 
 A vector's recorded bytes may change only when the form itself changes, which invalidates every
 signature ever made under it.

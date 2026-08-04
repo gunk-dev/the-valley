@@ -25,6 +25,6 @@
   },
   "statementType": "the-valley/attestation/v1",
   "provenance": {
-    "model": 3
+    "authority": "root"
   }
 }

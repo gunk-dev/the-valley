@@ -7,8 +7,8 @@ package main
 // signer's name, a space, and base64 of a four-byte key hash followed by
 // the raw Ed25519 signature over the text:
 //
-//	valley-statement-v1
-//	predicate.result passed
+//	the-valley/attestation/v1
+//	subject.primary valley-tree-v1
 //	…
 //
 //	— laddie.gunk.dev/attestations WhFo+DGb1c/Fk6…
@@ -29,7 +29,7 @@ package main
 // A signature covers the text and nothing else — not the signer's name,
 // not a namespace, and no git object (ida-51605e8). What separates an
 // attestation from any other note a key signs is therefore the text's own
-// first line, which is why statement text opens by naming its form.
+// first line, which is the statement type.
 //
 // # On not taking the dependency
 //

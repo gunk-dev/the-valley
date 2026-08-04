@@ -2,7 +2,6 @@ the-valley/attestation/v1
 subject.primary valley-tree-v1
 subject.digest.git-sha1 99b5f2f7971e2c8e37a7a579cb761d80272a9a3d
 subject.digest.valley-tree-v1 73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69
-
 predicateType the-valley/check/pure/v1
 predicate.check.name prose-format
 predicate.check.runner nix
@@ -17,8 +16,8 @@ provenance.prompt.sha256 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e
 provenance.context.sha256 6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b
 provenance.delegation.0.principal human:integrator
 provenance.delegation.0.grant land changes
-provenance.delegation.1.principal agent:step-1
 provenance.delegation.2.principal agent:step-2
+provenance.delegation.1.principal agent:step-1
 provenance.delegation.3.principal agent:step-3
 provenance.delegation.4.principal agent:step-4
 provenance.delegation.5.principal agent:step-5

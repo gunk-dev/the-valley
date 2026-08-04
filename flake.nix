@@ -890,12 +890,11 @@
                     exit 1
                   fi
 
-                  # A vector that is a whole statement is held to the schema
-                  # too, so the set cannot drift into documents no verifier
-                  # would accept.
-                  if grep -q '^statementType ' "$dir/statement.txt"; then
-                    cue vet -c ${./schema/attestation.cue} "$dir/input.json"
-                  fi
+                  # Every vector is a whole statement — order is defined per
+                  # predicate type, so a fragment has no written form — and is
+                  # held to the schema too, so the set cannot drift into
+                  # documents no verifier would accept.
+                  cue vet -c ${./schema/attestation.cue} "$dir/input.json"
 
                   # The signed vector pins the whole path from a statement to
                   # a note something else can check, not just the written
@@ -916,12 +915,12 @@
 
                 # Two signers over one statement is the property the note
                 # format is here for, so the set must actually hold one.
-                siblings="$(grep -c '^— ' "$vectors"/vectors/07-two-signers/statement.note)"
+                siblings="$(grep -c '^— ' "$vectors"/vectors/04-two-signers/statement.note)"
                 if [ "$siblings" -ne 2 ]; then
                   echo "attest-conformance: the two-signer vector carries $siblings signatures" >&2
                   exit 1
                 fi
-                attest verify --note "$vectors"/vectors/07-two-signers/statement.note \
+                attest verify --note "$vectors"/vectors/04-two-signers/statement.note \
                   --known-keys "$vectors/known_keys" \
                   --signer conformance.the-valley.invalid/attestations \
                   --signer witness.the-valley.invalid/attestations > siblings.verify
@@ -931,7 +930,7 @@
                   exit 1
                 fi
 
-                if [ "$found" -lt 7 ] || [ "$signed" -lt 2 ]; then
+                if [ "$found" -lt 4 ] || [ "$signed" -lt 2 ]; then
                   echo "attest-conformance: $found vectors, $signed signed — the set has been emptied" >&2
                   exit 1
                 fi
@@ -947,7 +946,7 @@
                     exit 1
                   fi
                 done
-                if [ "$refused" -lt 20 ]; then
+                if [ "$refused" -lt 30 ]; then
                   echo "attest-conformance: only $refused refusals — the set has been emptied" >&2
                   exit 1
                 fi
@@ -956,10 +955,10 @@
                 # sequence with a single value changed is what a divergent
                 # implementation looks like, and it must not pass.
                 mkdir -p perturbed
-                cp "$vectors/vectors/01-key-order/input.json" perturbed/
-                sed 's/^a-b a-b$/a-b a_b/' \
-                  "$vectors/vectors/01-key-order/statement.txt" > perturbed/statement.txt
-                cmp -s perturbed/statement.txt "$vectors/vectors/01-key-order/statement.txt" \
+                cp "$vectors/vectors/01-statement-minimal/input.json" perturbed/
+                sed 's/^predicate.result passed$/predicate.result failed/' \
+                  "$vectors/vectors/01-statement-minimal/statement.txt" > perturbed/statement.txt
+                cmp -s perturbed/statement.txt "$vectors/vectors/01-statement-minimal/statement.txt" \
                   && { echo "attest-conformance: the perturbation changed nothing" >&2; exit 1; }
                 if writes perturbed; then
                   echo "attest-conformance: a perturbed vector passed; the comparison proves nothing" >&2
@@ -969,7 +968,7 @@
                 # And so must the signature check. One byte of the signed
                 # text changed is a signature that no longer covers it.
                 sed 's/a sealed environment/a sealed environmenT/' \
-                  "$vectors"/vectors/07-two-signers/statement.note > perturbed/statement.note
+                  "$vectors"/vectors/04-two-signers/statement.note > perturbed/statement.note
                 if attest verify --note perturbed/statement.note \
                   --known-keys "$vectors/known_keys" > perturbed.verify 2>&1; then
                   echo "attest-conformance: a note whose text was edited still verified" >&2
@@ -1119,7 +1118,7 @@
                   *) echo "attest-e2e: ref $ref is not keyed by the subject digest" >&2; exit 1 ;;
                 esac
                 git cat-file -p "$ref:ok/statement.note" > statement.note
-                grep -qx 'valley-statement-v1' statement.note
+                head -n 1 statement.note | grep -qx 'the-valley/attestation/v1'
                 grep -qx "subject.digest.valley-tree-v1 $digest" statement.note
                 grep -qx 'provenance.harness valley-check' statement.note
                 grep -q "^— $host " statement.note
@@ -1228,7 +1227,7 @@
                   echo "attest-e2e: a statement not in the written form must not verify" >&2
                   exit 1
                 fi
-                grep -q 'lines are sorted by key' loose.out
+                grep -q 'not the written form of what it says' loose.out
 
                 # The subject is the tree. Change the tree and the same
                 # signed statement stops being about it …

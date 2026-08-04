@@ -1,3 +1,0 @@
-valley-statement-v1
-subject.primary valley-tree-v1
-predicateType pure

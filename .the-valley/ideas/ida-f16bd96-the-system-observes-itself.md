@@ -69,5 +69,5 @@ platforms.
   anything SLO-shaped exists here — without importing a platform's vocabulary wholesale.
 - Whether detected incidents open graph nodes automatically, and what distinguishes an incident
   worth a node from noise.
-- What the system may act on autonomously versus what it may only report — actions with blast
-  radius meet the same gates as any effect.
+- What the system may act on autonomously versus what it may only report — actions with blast radius
+  meet the same gates as any effect.

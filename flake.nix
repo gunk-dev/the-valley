@@ -285,10 +285,13 @@
             );
 
           # A project that is nearly nothing: a README, a docs directory, and
-          # four nodes carrying one of each typed edge. This is the shape the
+          # five nodes carrying one of each typed edge. This is the shape the
           # first consuming project has, and the knowledge-lint-consumer check
           # instantiates lib.knowledgeLint over it exactly as that project's
-          # own flake would.
+          # own flake would. The nodes created on or before the id-rule
+          # cutoff carry ids their slugs do not derive, and must pass anyway;
+          # the graduated idea postdates the cutoff and carries the derived
+          # id its slug demands.
           consumerProject = mkTree "knowledge-lint-consumer-project" {
             "README.md" = ''
               # A project
@@ -353,6 +356,21 @@
               # Where the graph lives
 
               The graph is a directory of markdown files at `.the-valley/`, alongside the code.
+            '';
+            # sha256("the-shape-graduates") begins ba2b574.
+            ".the-valley/ideas/ida-ba2b574-the-shape-graduates.md" = ''
+              ---
+              type: idea
+              id: ida-ba2b574
+              status: graduated
+              title: An idea whose thinking now lives in a decision
+              created: 2026-08-06
+              graduated_into: dcr-5566778
+              ---
+
+              # An idea whose thinking now lives in a decision
+
+              Graduated into [[dcr-5566778]].
             '';
           };
 
@@ -551,6 +569,50 @@
                 title: An idea claiming to replace a bug
                 created: 2026-08-02
                 supersedes: [bd-0000011]
+                ---
+              '';
+            };
+
+            # The id rule: a node created after the cutoff must carry the id
+            # its slug derives, and the failure names the id it should have.
+            non-derived-id = {
+              names = "sha256 of the slug gives ida-d1d9c0c";
+              files.".the-valley/ideas/ida-1111111-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-1111111
+                status: raw
+                title: A node whose id its slug does not derive
+                created: 2026-08-06
+                ---
+              '';
+            };
+
+            # Graduation cannot be half-declared: the status without the
+            # destination is rejected by the schema.
+            graduated-without-destination = {
+              names = "graduated_into: incomplete value";
+              files.".the-valley/ideas/ida-d1d9c0c-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-d1d9c0c
+                status: graduated
+                title: A graduated idea that does not say where it went
+                created: 2026-08-06
+                ---
+              '';
+            };
+
+            dangling-graduated-into = {
+              names = "graduated_into names dcr-9999999, which is not a node";
+              files.".the-valley/ideas/ida-d1d9c0c-a-node.md" = ''
+                ---
+                type: idea
+                id: ida-d1d9c0c
+                status: graduated
+                title: A graduated idea naming a decision that is not there
+                created: 2026-08-06
+                graduated_into: dcr-9999999
                 ---
               '';
             };

@@ -6,19 +6,19 @@ Three classes of finding, all reported in one run (ida-1ec03b1):
   frontmatter          every node's YAML frontmatter vets against #Node in
                        schema/node.cue, in one `cue vet` pass over the whole graph
   filename coherence   a node lives at <type directory>/<id>-<slug>.md, its filename
-                       id is the id its frontmatter declares, and no id repeats
-  reference integrity  [[wiki-links]], `blocked_by` and `supersedes` ids, and relative
-                       markdown links all resolve, and a superseded node says so in
-                       its own status
+                       id is the id its frontmatter declares, no id repeats, and —
+                       for nodes the derivation rule covers — the id's hash is
+                       derived from the slug
+  reference integrity  [[wiki-links]], `blocked_by`, `supersedes` and `graduated_into`
+                       ids, and relative markdown links all resolve, and a superseded
+                       node says so in its own status
 
 The lint reads only the tree it is given. It never runs git, so it holds for a
 worktree, a store path, or an unpacked archive alike.
-
-A node id's hash is deliberately not re-derived: the convention names an example
-algorithm rather than pinning one, so only the id's shape is checkable.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -35,6 +35,32 @@ HEADING = re.compile(r"^#{1,6}\s+(.*?)\s*$")
 NOT_IN_SLUG = re.compile(r"[^\w\s-]")
 # A link target the tree cannot answer for: another host, or a mail client.
 EXTERNAL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
+# A graduated_into target that is a node id rather than a document path.
+DECISION_ID = re.compile(r"^dcr-[0-9a-f]{7}$")
+
+# The id-derivation rule (.the-valley/README.md): a node's id hash is the
+# first 7 hex characters of the SHA-256 of its slug. The rule covers every
+# node created after this date; nodes created on or before it keep their
+# ids, checked for shape and uniqueness only.
+ID_RULE_CUTOFF = "2026-08-05"
+
+# When a blocker stops blocking: the statuses, per type, at which a node no
+# longer holds up an outcome that names it in `blocked_by` (dcr-593d3d1). An
+# idea clears by graduating, being superseded, or being discarded; a decision
+# by being decided or superseded; a bug by being closed; an outcome by being
+# done or abandoned. Nothing here computes an outcome's frontier; whatever
+# does applies this predicate.
+BLOCKER_CLEARS_AT = {
+    "idea": {"graduated", "superseded", "discarded"},
+    "decision": {"decided", "superseded"},
+    "bug": {"closed"},
+    "outcome": {"done", "abandoned"},
+}
+
+
+def blocker_cleared(node):
+    """Whether a node named in an outcome's blocked_by has stopped blocking it."""
+    return node.get("status") in BLOCKER_CLEARS_AT.get(node.get("type"), ())
 
 
 class Findings:
@@ -217,6 +243,16 @@ def check_filenames(nodes, frontmatter, directories, root, findings):
         if node_id and node_id != filename_id:
             findings.add(path, f"filename says id {filename_id}, frontmatter says {node_id}")
 
+        if str(declared.get("created", "")) > ID_RULE_CUTOFF:
+            prefix, _, id_hash = filename_id.partition("-")
+            derived = hashlib.sha256(match.group(2).encode()).hexdigest()[:7]
+            if id_hash != derived:
+                findings.add(
+                    path,
+                    f"id {filename_id} is not derived from the slug: "
+                    f"sha256 of the slug gives {prefix}-{derived}",
+                )
+
         node_type = declared.get("type")
         if node_type in directories:
             expected = os.path.join(root, directories[node_type])
@@ -252,6 +288,19 @@ def check_references(tree, documents, frontmatter, findings):
                     path,
                     f"supersedes names {supersedes}, whose status is "
                     f"{status[supersedes]}, not superseded",
+                )
+        # A graduated idea's destination: a decision node that must exist, or
+        # a repo-root-relative document that must be in the tree.
+        graduated_into = node.get("graduated_into")
+        if graduated_into is not None:
+            if DECISION_ID.match(graduated_into):
+                if graduated_into not in ids:
+                    findings.add(
+                        path, f"graduated_into names {graduated_into}, which is not a node"
+                    )
+            elif not os.path.exists(os.path.join(tree, graduated_into)):
+                findings.add(
+                    path, f"graduated_into names {graduated_into}, which does not exist"
                 )
 
     for path in documents:

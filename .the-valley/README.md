@@ -23,7 +23,11 @@ source: PR #1         # optional — where the content came from
 Two typed edges exist, each a list of node ids in frontmatter.
 
 **Outcome nodes carry `blocked_by`**: the nodes an outcome waits on. The live outcome-DAG experiment
-([ideas/ida-3145b7a-demand-pressure.md](./ideas/ida-3145b7a-demand-pressure.md)) requires it.
+([ideas/ida-3145b7a-demand-pressure.md](./ideas/ida-3145b7a-demand-pressure.md)) requires it. A
+blocker clears when its own status is terminal for its type: an idea at `graduated`, `superseded` or
+`discarded`; a decision at `decided` or `superseded`; a bug at `closed`; an outcome at `done` or
+`abandoned` ([[dcr-593d3d1]]
+([decisions/dcr-593d3d1-ideas-are-transitional.md](./decisions/dcr-593d3d1-ideas-are-transitional.md))).
 
 **Idea and decision nodes carry `supersedes`**: the nodes this one replaces. Ideas and decisions are
 the only types that carry it, because they are the only two whose status enum has a `superseded`
@@ -31,19 +35,33 @@ value for the replaced node to land in. The lint requires that status to be set,
 cannot be half-declared. Declaring it is the machine-readable half of the resolution rule below; the
 prose still has to be corrected too.
 
+**Graduated ideas carry `graduated_into`**: the decision node id, or the repo-root-relative path of
+the design document, the idea's thinking moved to. An idea is transitional ([[dcr-593d3d1]]
+([decisions/dcr-593d3d1-ideas-are-transitional.md](./decisions/dcr-593d3d1-ideas-are-transitional.md))):
+it graduates, is superseded, or is discarded, and `adopted` marks an idea accepted and awaiting
+graduation. The field is required exactly when the status is `graduated`, so a graduation cannot be
+half-declared.
+
 The remaining typed edges (`closes`, …) come later; until then, prose links in the body are enough.
 
 ## Types, directories, prefixes
 
-| Type     | Directory    | Prefix  | Status enum                                       |
-| -------- | ------------ | ------- | ------------------------------------------------- |
-| outcome  | `outcomes/`  | `oc-*`  | `open` \| `in-progress` \| `done` \| `abandoned`  |
-| bug      | `bugs/`      | `bd-*`  | `open` \| `closed`                                |
-| idea     | `ideas/`     | `ida-*` | `raw` \| `exploring` \| `adopted` \| `superseded` |
-| decision | `decisions/` | `dcr-*` | `proposed` \| `decided` \| `superseded`           |
+| Type     | Directory    | Prefix  | Status enum                                                                     |
+| -------- | ------------ | ------- | ------------------------------------------------------------------------------- |
+| outcome  | `outcomes/`  | `oc-*`  | `open` \| `in-progress` \| `done` \| `abandoned`                                |
+| bug      | `bugs/`      | `bd-*`  | `open` \| `closed`                                                              |
+| idea     | `ideas/`     | `ida-*` | `raw` \| `exploring` \| `adopted` \| `graduated` \| `superseded` \| `discarded` |
+| decision | `decisions/` | `dcr-*` | `proposed` \| `decided` \| `superseded`                                         |
 
-IDs are short and hash-derived (e.g. first 7 hex chars of a hash of the slug) — coordination-free,
-at the cost of prettiness. Filenames are `<id>-<slug>.md`.
+An id is its type's prefix plus the first 7 hex characters of the SHA-256 of the slug —
+coordination-free, at the cost of prettiness. Filenames are `<id>-<slug>.md`. The hash for a slug:
+
+```sh
+printf '%s' '<slug>' | sha256sum | cut -c1-7
+```
+
+The lint checks the derivation for every node created after 2026-08-05; earlier nodes keep the ids
+they have, checked for shape and uniqueness only.
 
 The same table in checkable form is [`schema/node.cue`](../schema/node.cue), which the knowledge
 lint vets every node's frontmatter against.
@@ -97,10 +115,10 @@ already live:
 - No indexer and no events.
 - **The convention is checked, not enforced.** `nix flake check` runs `knowledge-lint`: every node's
   frontmatter vetted against [`schema/node.cue`](../schema/node.cue), every filename agreeing with
-  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id, `supersedes` id and
-  relative link resolving. A `supersedes` id must further name a node whose own status is
-  `superseded`. It reports; nothing stops a broken graph from landing until there is an integrator
-  to stop it.
+  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id, `supersedes` id,
+  `graduated_into` target and relative link resolving. A `supersedes` id must further name a node
+  whose own status is `superseded`. It reports; nothing stops a broken graph from landing until
+  there is an integrator to stop it.
 
 The lint is not this repo's alone. The flake exposes it as `lib.knowledgeLint`, so any project that
 keeps a graph gets the same check by taking the-valley as a flake input and instantiating it over

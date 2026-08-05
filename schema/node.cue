@@ -48,7 +48,10 @@ package knowledge
 		// One of the two typed edges: the node ids this outcome waits
 		// on. Any node type may block an outcome. Only outcomes carry
 		// it, so the field is absent — and rejected — on every other
-		// type.
+		// type. A blocker clears when its own status is terminal for
+		// its type: an idea at graduated, superseded or discarded; a
+		// decision at decided or superseded; a bug at closed; an
+		// outcome at done or abandoned (dcr-593d3d1).
 		blocked_by: [...#Id]
 	}
 
@@ -59,7 +62,23 @@ package knowledge
 
 	if type == "idea" {
 		id:     =~"^ida-"
-		status: "raw" | "exploring" | "adopted" | "superseded"
+		status: "raw" | "exploring" | "adopted" | "graduated" | "superseded" | "discarded"
+
+		// An idea is transitional (dcr-593d3d1): its terminal states are
+		// graduated, superseded and discarded, and `adopted` marks an idea
+		// accepted and awaiting graduation. A graduated idea names where
+		// its thinking now lives. That destination is its own field rather
+		// than a reuse of `supersedes`, because the two edges point in
+		// opposite directions — `supersedes` is carried by the surviving
+		// node and names the replaced one, while graduation is declared by
+		// the closing node and names its destination — and because the
+		// destination may be a design document, which has no node id for
+		// an id-typed edge to name. Required exactly when the status is
+		// `graduated`, and rejected otherwise, so a graduation cannot be
+		// half-declared.
+		if status == "graduated" {
+			graduated_into: #GraduationTarget
+		}
 	}
 
 	if type == "decision" {
@@ -79,10 +98,15 @@ package knowledge
 	}
 }
 
-// A node id: a type prefix and a short hash of the slug. The hash is not
-// re-derived here — the convention names an example algorithm rather than
-// pinning one, so only the shape is checkable.
+// A node id: a type prefix and the first 7 hex characters of the SHA-256 of
+// the slug (.the-valley/README.md). CUE cannot compute the hash, so only the
+// shape is checked here; the lint re-derives it for the nodes the rule
+// covers.
 #Id: =~"^(oc|bd|ida|dcr)-[0-9a-f]{7}$"
+
+// Where a graduated idea's thinking now lives: a decision node's id, or the
+// repo-root-relative path of a design document.
+#GraduationTarget: =~"^dcr-[0-9a-f]{7}$" | =~"^[a-zA-Z0-9._/-]+\\.md$"
 
 // The id of a node something supersedes. Narrower than #Id, because only
 // the two types with a `superseded` status can be superseded: an edge

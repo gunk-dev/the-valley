@@ -45,9 +45,10 @@ requirement seen from the spec side.
 Events at the boundary, the DAG explicit in the middle, levels underneath — the shape k8s,
 incremental build systems, and Excel share. Events never drive work; they _invalidate_ observed
 state. The knowledge graph holds the dependency structure, queryable at rest, and a level-triggered
-reconciler compares demand against observation and pulls the frontier. The anti-pattern is reaction
-chains that encode the DAG implicitly in event wiring — the failure "a log, not a workflow engine"
-([architecture.md](../../design/architecture.md)) guards against.
+reconciler compares demand against observation and pulls the frontier. An event only makes the
+reconciler look sooner; the absence of events never means the absence of pressure. The anti-pattern
+is reaction chains that encode the DAG implicitly in event wiring — the failure "a log, not a
+workflow engine" ([architecture.md](../../design/architecture.md)) guards against.
 
 Incidents fit inside the model: an incident is an event invalidating the observed satisfaction of an
 already-satisfied root, and pressure resumes. Cycles fit too: review→revise→review is cyclic, but

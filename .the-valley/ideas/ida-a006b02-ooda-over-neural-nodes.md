@@ -32,9 +32,9 @@ a cost like any other.
 
 - **The record.** A run's provenance is recorded, and the harness's run state carries its cost and
   the model and effort it executed under.
-- **The offline half.** Attestations are the substrate for replaying work with varied inputs, which
-  is evaluation ([[ida-a763b3f]]
-  ([ida-a763b3f-attestations-are-the-substrate-for-evaluation.md](./ida-a763b3f-attestations-are-the-substrate-for-evaluation.md))).
+- **The offline half.** A recorded provenance is the substrate for replaying work with varied
+  inputs, which is evaluation ([[ida-45178f6]]
+  ([ida-45178f6-agent-identity-is-provenance.md](./ida-45178f6-agent-identity-is-provenance.md))).
 - **The lever.** The conditions of a dispatch are production inputs ([[ida-febcd97]]
   ([ida-febcd97-neural-node-conditions.md](./ida-febcd97-neural-node-conditions.md))), and dispatch
   already accepts a per-run model and effort.

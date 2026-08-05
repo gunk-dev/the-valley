@@ -41,9 +41,9 @@ question; only the "human as blocking producer" half folds back in.)
 
 Demand propagates from live root outcomes down the `blocked_by` closure, exactly as priority does in
 the adopted sketch — but the controller does not dispatch once and forget. It continuously
-reconciles _what should be moving but isn't_: level-triggered, not edge-triggered, the same
-reconcile-don't-just-react controller principle the rest of the architecture leans on. An event
-kicks a recompute sooner; the absence of events never means the absence of pressure.
+reconciles _what should be moving but isn't_. The level-triggered case for that controller — events
+invalidate observed state and never drive work — is made in [[ida-b48bded]]
+([ida-b48bded-production-dags-and-events.md](./ida-b48bded-production-dags-and-events.md)).
 
 ## Stall is the named failure mode
 

@@ -14,9 +14,9 @@ the JetStream admin API (purge or delete the stream). The valley host is exactly
 where semi-trusted code runs routinely: dispatched agents work on it all day, and they are the
 processes a forged ref-updated event should be assumed to come from.
 
-Acceptable today by design: events are a rebuildable projection with git as the source of truth, and
-the only consumer is a human watching valley tail. A forged event can mislead an observer, not
-corrupt state.
+Acceptable today by design: the bus is a rebuildable projection over events durable in git
+([architecture.md](../../design/architecture.md)), and the only consumer is a human watching valley
+tail. A forged event can mislead an observer, not corrupt state.
 
 The gate: before any automated consumer acts on an event, or before services.valley.bus.listen
 widens beyond localhost, the bus needs authorization — publisher credentials for the ref-updated

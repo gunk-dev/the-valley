@@ -58,11 +58,12 @@ lease/re-dispatch machinery sketched there.
   becomes a first-class stage. `klaus approve` becomes integrator policy input.
 - **Phase 4 (dispatch + attribution).** Dispatch targets an outcome node — but klaus doctrine says
   the prompt is the agent's _entire briefing_ (`docs/PIPELINE.md`), so the node body must be
-  brief-quality or dispatch stays prompt+node. Per-agent keys sign commits and attestations:
-  attribution then lives in git objects, which retires gap 4's transcript-scraping for good. Paused
-  work (gap 2) persists as a node + WIP branch — klaus already syncs the resume trajectory over
-  plain git (`refs/klaus/data`), so only the pause _marker_ and resume index need valley-native
-  homes.
+  brief-quality or dispatch stays prompt+node. A run holds no key of its own; attribution rides as
+  provenance inside the host-signed attestation ([[dcr-0de694f]]
+  ([dcr-0de694f-phase2-attestation-shape.md](../decisions/dcr-0de694f-phase2-attestation-shape.md))),
+  which retires gap 4's transcript-scraping for good. Paused work (gap 2) persists as a node + WIP
+  branch — klaus already syncs the resume trajectory over plain git (`refs/klaus/data`), so only the
+  pause _marker_ and resume index need valley-native homes.
 
 ## Related
 

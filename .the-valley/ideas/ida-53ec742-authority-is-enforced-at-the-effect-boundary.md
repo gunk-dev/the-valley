@@ -1,7 +1,7 @@
 ---
 type: idea
 id: ida-53ec742
-status: exploring
+status: superseded
 title: Authority is enforced at the effect boundary
 created: 2026-07-25
 source: design conversation, 2026-07-25

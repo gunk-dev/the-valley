@@ -5,6 +5,7 @@ status: exploring
 title: Agent identity is agent provenance
 created: 2026-07-31
 source: design conversation, 2026-07-31
+supersedes: [ida-a763b3f]
 ---
 
 # Agent identity is agent provenance
@@ -26,6 +27,13 @@ contain specified content. Provenance is therefore an input to verification poli
 required-check set of [[ida-1ec03b1]]
 ([ida-1ec03b1-path-scoped-verification-policy.md](./ida-1ec03b1-path-scoped-verification-policy.md))
 — as much as it is the record that names a run.
+
+Recording those inputs also makes the run repeatable. Because the record enumerates what produced
+the run, the run can be replayed afterwards with those inputs deliberately varied — a different
+model, a different prompt, a different tool environment — and the resulting trajectories compared.
+The record is a reproducible definition of an experiment as much as it is evidence about what
+happened, and that is what makes systematic evaluation of agent runs possible against real work
+rather than against synthetic benchmarks.
 
 This is acknowledged to be a hard thing to package.
 
@@ -76,9 +84,6 @@ is the host and the run is attributed inside its statement, per [[dcr-0de694f]]
 - [[ida-1ec03b1]]
   ([ida-1ec03b1-path-scoped-verification-policy.md](./ida-1ec03b1-path-scoped-verification-policy.md))
   — the policy these recorded inputs are checked by.
-- [[ida-a763b3f]]
-  ([ida-a763b3f-attestations-are-the-substrate-for-evaluation.md](./ida-a763b3f-attestations-are-the-substrate-for-evaluation.md))
-  — the same record read as the definition of a repeatable experiment.
 - [[ida-b9f646c]]
   ([ida-b9f646c-nix-backend-not-substrate.md](./ida-b9f646c-nix-backend-not-substrate.md)) — the
   precedent for treating today's model boundary as an implementation, not the contract.

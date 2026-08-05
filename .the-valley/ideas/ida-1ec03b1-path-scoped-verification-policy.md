@@ -12,9 +12,8 @@ source: conversation, 2026-07-06
 The integrator derives a change's required attestation set from the **actual tree diff**, never from
 the contributor's claim about the change. Policy maps path classes to required checks:
 
-- `.the-valley/**` only → signature + knowledge lint: frontmatter vetted against a CUE `#Node`
-  schema (types, status enums, id derived from slug, filename coherence), reference integrity
-  (`[[wiki-links]]`, `blocked_by` ids, and relative links all resolve), and prose format (below).
+- `.the-valley/**` only → signature + knowledge lint — its checks are enumerated once, in
+  [.the-valley/README.md](../README.md) — and prose format (below).
 - Code → the full check suite ([verification.md](../../design/verification.md)).
 - Mixed → the max of everything touched, automatically.
 

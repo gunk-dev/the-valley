@@ -1,7 +1,7 @@
 ---
 type: idea
 id: ida-a763b3f
-status: exploring
+status: superseded
 title: Attestations are the substrate for evaluation
 created: 2026-08-01
 source: design conversation, 2026-08-01

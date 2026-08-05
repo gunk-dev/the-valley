@@ -27,14 +27,14 @@ the answer to _in which repo_.
 
 ## Why this is needed now
 
-cosmo gates every change through GitHub Actions. Its `.github/workflows/ci.yml` runs
-`nixfmt --check` and a `nix build` matrix over classic-laddie, makers-nix and johnny-walker, and
-branch protection makes that gate the condition of merging. S1 direct-push mode has no pull request
-object, so migrating cosmo to a valley instance does not weaken that gate — it deletes it. The
-repository that builds five machines would land changes with nothing checking them, and nothing on
-the instance runs a check today. Declared verification policy is the piece that has to exist before
-cosmo can be hosted here. The wider readiness picture is tracked separately in the cosmo-readiness
-outcome [[oc-87deec8]]
+cosmo gates every change through a pull-request workflow, and branch protection makes that gate the
+condition of merging; what the gate contains is inventoried in [[ida-7638082]]
+([ida-7638082-host-has-no-check-runner.md](../ideas/ida-7638082-host-has-no-check-runner.md)). S1
+direct-push mode has no pull request object, so migrating cosmo to a valley instance does not weaken
+that gate — it deletes it. The repository that builds five machines would land changes with nothing
+checking them, and nothing on the instance runs a check today. Declared verification policy is the
+piece that has to exist before cosmo can be hosted here. The wider readiness picture is tracked
+separately in the cosmo-readiness outcome [[oc-87deec8]]
 ([oc-87deec8-valley-can-host-cosmo.md](../outcomes/oc-87deec8-valley-can-host-cosmo.md)).
 
 ## The two layers
@@ -42,13 +42,11 @@ outcome [[oc-87deec8]]
 Both layers are the same schema and the same kind of thing: a policy directory versioned in the
 repository it belongs to. The weight sits in the project layer, and the floor is deliberately small.
 
-The **instance layer** is the group's policy. A group has exactly one instance — that binding is
-settled in [[ida-8482624]]
-([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md)) and in
-[architecture.md § federation](../../design/architecture.md#federation-the-group-is-the-unit) — so
-the instance repository is the group's repository, and for the gunk-dev instance that is qinling. It
-states the minimum: the checks no project in the group may decline, plus project-type templates that
-give a project of a known type a sensible starting set.
+The **instance layer** is the group's policy. A group has exactly one instance ([[ida-8482624]]
+([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md))), so the instance
+repository is the group's repository, and for the gunk-dev instance that is qinling. It states the
+minimum: the checks no project in the group may decline, plus project-type templates that give a
+project of a known type a sensible starting set.
 
 The **project layer** is the project's own policy, a policy directory versioned in its own tree. It
 states everything else: the classes the project cares about, the checks it adds, and the template
@@ -274,9 +272,9 @@ Four pieces, none of which is an enforcement point:
    `**/*.md` and for uncovered paths, and a `docs` project type offering the knowledge lint — and
    the-valley gains a project policy that selects that type. The example at `examples/policy/` is
    written as very nearly that arrangement.
-2. `knowledge-lint` is built as a flake check: frontmatter vetted against a CUE `#Node` schema, and
-   reference integrity — `[[wiki-links]]`, `blocked_by` ids, and relative links all resolve.
-   `prose-format` already exists in this repo and is copied or shared.
+2. `knowledge-lint` is built as a flake check; what it checks is enumerated once, in
+   [.the-valley/README.md](../README.md). `prose-format` already exists in this repo and is copied
+   or shared.
 3. A read-only deriver: given the instance tip, a project tree, and two commits, compose the policy,
    list the changed paths, match them against the composed classes, and print the required check
    names. It reports; it blocks nothing. This is `valley checks` in [bin/valley](../../bin/valley).

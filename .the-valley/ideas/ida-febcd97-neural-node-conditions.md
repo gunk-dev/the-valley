@@ -39,12 +39,11 @@ set the mood has an unencoded dependency.
 ## Testable, not believed
 
 The engine holds no position on what a neural node experiences. A run's conditions are part of its
-provenance ([[ida-45178f6]]
-([ida-45178f6-agent-identity-is-provenance.md](./ida-45178f6-agent-identity-is-provenance.md))), and
-attestations are the substrate for replaying work with varied inputs ([[ida-a763b3f]]
-([ida-a763b3f-attestations-are-the-substrate-for-evaluation.md](./ida-a763b3f-attestations-are-the-substrate-for-evaluation.md)))
-— so the impact of conditions is measurable: the same task under varied framing, compared on
-verified outcomes. The demand pressure of [[ida-3145b7a]]
+provenance, and a recorded provenance is the substrate for replaying work with varied inputs
+([[ida-45178f6]]
+([ida-45178f6-agent-identity-is-provenance.md](./ida-45178f6-agent-identity-is-provenance.md))) — so
+the impact of conditions is measurable: the same task under varied framing, compared on verified
+outcomes. The demand pressure of [[ida-3145b7a]]
 ([ida-3145b7a-demand-pressure.md](./ida-3145b7a-demand-pressure.md)) gains a dose-response curve:
 deterministic nodes do not have one, neural nodes do.
 

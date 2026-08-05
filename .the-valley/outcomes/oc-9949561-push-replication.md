@@ -18,11 +18,10 @@ in the-valley itself (`flake.nix` + `schema/`, per [[dcr-0f5d9b1]]); consumers �
 install and configure it. The work waited on the mechanism decision [[oc-fc348f0]]
 ([oc-fc348f0-hetzner-mechanism.md](./oc-fc348f0-hetzner-mechanism.md)).
 
-What was done: the-valley's primary populated on classic-laddie and canonical origin flipped —
-GitHub demoted to a push mirror via write deploy key, the hook pushing explicit head/tag refspecs
-per the [[dcr-d7952bc]]-adjacent module fix
-([dcr-d7952bc-phase0-replication-github-transitional.md](../decisions/dcr-d7952bc-phase0-replication-github-transitional.md)).
-Replication was verified by checking both sides: marker tag `s1-migration` on both within seconds.
-Offsite depth is live — nightly restic to the Hetzner Storage Box plus the box's auto-snapshots —
-and a full restore was performed and verified against real data: snapshot `28ce9e00` restored, fsck
-clean, `refs/heads/main` hash-identical to the live primary.
+What was done: the-valley's primary populated on classic-laddie and canonical origin flipped, with
+both replication layers — the transitional GitHub live mirror and the restic offsite depth — as
+[[dcr-d7952bc]]
+([dcr-d7952bc-phase0-replication-github-transitional.md](../decisions/dcr-d7952bc-phase0-replication-github-transitional.md))
+decides them. Replication was verified by checking both sides: marker tag `s1-migration` on both
+within seconds. A full restore was performed and verified against real data: snapshot `28ce9e00`
+restored, fsck clean, `refs/heads/main` hash-identical to the live primary.

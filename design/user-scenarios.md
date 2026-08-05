@@ -4,9 +4,7 @@ The docs are layered: premise ([README](../README.md)) → requirements
 ([requirements.md](./requirements.md)) → architecture ([architecture.md](./architecture.md)) →
 design. This document sits at the requirements layer: an escalating ladder of user scenarios,
 ordered by actors and trust, that the requirements fall out of. It is strictly problem-space — what
-a user experiences and needs, with zero mechanisms. The complementary solution-space artifact is
-[scenarios.md](./scenarios.md), which walks the architecture through concrete situations in event
-notation: this document says what must be true, that one shows how the system makes it true.
+a user experiences and needs, with zero mechanisms.
 
 A scenario gets acceptance-level detail only when it becomes the top priority; each rung is fleshed
 out as the project builds toward it, never sooner. Right now only S1 is detailed.

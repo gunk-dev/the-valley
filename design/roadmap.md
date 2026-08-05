@@ -111,22 +111,11 @@ is the one unrecoverable failure. The target is 3-2-1: primary bare repos on the
 replicated offsite, with **GitHub retained as a transitional mirror** during migration — three
 copies early on. The mechanism is decided
 ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md) — it
-was this document's open question): two complementary layers.
-
-| Layer            | Mechanism                                                                        | What it gets you                                                                                                 |
-| ---------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| Live replication | Push-triggered git-native mirror to an independent live remote                   | Integrated = replicated: a hot second remote you can `git fetch` from directly; git-native, trivially verifiable |
-| Offsite depth    | Periodic encrypted backup of the bare-repo dir (restic-style) to offsite storage | Encrypted, deduplicated point-in-time history, independent of the live remotes                                   |
-
-Block-level replication (ZFS send) was considered and rejected for now: it ties restore to a
-matching filesystem on the far end, and it is not a live git remote. For the pilot, the live second
-remote is GitHub — the transitional mirror — and offsite depth is a Hetzner Storage Box; a dedicated
-sovereign live remote is deferred until GitHub exit. Light RPO/RTO framing, per the rung: integrated
-work is in at least two independent places within minutes, one offsite — the guarantee attaches to
-integrated work, not to in-flight branches
-([dcr-24d62f7](../.the-valley/decisions/dcr-24d62f7-publication-mirror-not-review-queue.md));
-restore from the offsite copy within a day — and no copy counts until a restore from it has been
-_performed and verified_.
+was this document's open question): push-triggered git-native mirroring to an independent live
+remote, which during migration is GitHub itself, plus periodic encrypted backup to offsite storage
+for point-in-time depth. The bar this must clear — how fast, in how many places, and what counts as
+a verified copy — is
+[S1's durability scope decision](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them).
 
 **Migration strategy: mirror-first, then cut over.** Mirrors are declared config, not a manual
 dual-push: the host declaration's per-project `mirrors` field replicates main and the tags out to
@@ -146,12 +135,9 @@ durable and ergonomic enough to be the canonical home for real work — the prem
 ([requirements.md](./requirements.md)) that hosting lock-in is the only thing GitHub does well, and
 it's swappable.
 
-**Exit criteria.** The rung owns them:
+**Exit criteria.** The rung owns them: this phase is done when every box in
 [S1's acceptance checklist](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them)
-— canonical origin flipped; every integrated change verifiably in two independent places; one
-restore performed and verified; a week of real human _and_ agent work without GitHub, including an
-agent change landing end to end in direct-push mode; a real issue worked and closed as an in-repo
-node; a repeatable migration-plus-restore runbook.
+is checked.
 
 **Links.** [architecture.md](./architecture.md) (_Hosting_, _Identity / access_ rows),
 [schema/valley.cue](../schema/valley.cue), [examples/host.cue](../examples/host.cue).
@@ -181,10 +167,9 @@ it. No subscriber acts on anything.
 log, and that a log is the right substrate ("a log, not a workflow engine" —
 [architecture.md](./architecture.md)).
 
-**A note on durability.** The bus is the source of truth only for _ephemeral cross-system events_.
-Per-repo events (refs, attestations, integration requests) are durable in git itself; the bus is a
-projection that can be rebuilt. This is the resolution of the old "the log is a single point of
-failure" question ([openquestions.md](./openquestions.md), _Resolved_).
+**A note on durability.** The bus is a rebuildable projection; only ephemeral cross-system events
+have it as their source of truth
+([architecture.md](./architecture.md#bet-git-as-event-source--a-log-not-a-workflow-engine)).
 
 **Exit criteria.**
 
@@ -263,13 +248,10 @@ solo.
 - **The integrator controller.** Pull-based, subscribing to `integration-requested`. Verifies
   signature + attestation + (for now, self-) trust, does FF/rebase into `main`, emits outcome events
   ([architecture.md](./architecture.md), _a pull-based integrator_). Merge-queue semantics fall out
-  for free. The required attestation set is a function of the diff, not of the contributor's claim
-  about it: policy maps path classes to required checks — code takes the full suite, knowledge-only
-  changes (`.the-valley/**`) take the knowledge lint, mixed commits take the max of everything
-  touched. The signature is not policy: it is required of every change by the structural invariant
-  and the integrator, whatever paths the diff touches
-  ([dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)). That is
-  also what keeps knowledge-node changes cheap through the same protected path: one invariant,
+  for free. The required attestation set is derived from the paths the diff actually touches, per
+  the declared verification policy
+  ([dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)) — which is
+  what keeps knowledge-node changes cheap through the same protected path: one invariant,
   proportionate checks.
 
 The integrator is designed around **change objects** — a diff targeting a stream, with identity
@@ -355,7 +337,6 @@ cut.
   nodes end to end.
 
 **Links.** [architecture.md](./architecture.md) (_Identity / access_ row),
-[scenarios.md #2](./scenarios.md) (klaus-style agent change),
 [user-scenarios.md](./user-scenarios.md).
 
 ---
@@ -370,11 +351,10 @@ serves.
 notification, all as reactions on the log.
 
 **What gets built.** armstrong subscribes to `integration-succeeded` → `nix build` the artifact
-derivation → deploy / notify ([scenarios.md #1](./scenarios.md)). This is the controller-shaped
-successor to the current Actions-based armstrong — the same tool, inverted from push-based pipeline
-to reactive subscriber. Alongside it, the knowledge graph joins the causal record: node changes
-surface on the bus like any ref update, and a landing can flip the outcome node it serves to done —
-the graph stops being write-only.
+derivation → deploy / notify. This is the controller-shaped successor to the current Actions-based
+armstrong — the same tool, inverted from push-based pipeline to reactive subscriber. Alongside it,
+the knowledge graph joins the causal record: node changes surface on the bus like any ref update,
+and a landing can flip the outcome node it serves to done — the graph stops being write-only.
 
 **The design claim it validates.** Reactive controllers replace push-based CI/CD, and the causality
 chain (commit → build → deploy → notify) is _one queryable history_ rather than seven disconnected
@@ -388,8 +368,7 @@ job UIs ([architecture.md](./architecture.md), _Components_ and _a log, not a wo
 - A landed change closes the outcome node it serves, and that closure is visible in the log like any
   other event.
 
-**Links.** [architecture.md](./architecture.md) (_Components_),
-[scenarios.md #1 and #6](./scenarios.md).
+**Links.** [architecture.md](./architecture.md) (_Components_).
 
 ---
 
@@ -427,11 +406,9 @@ claim less.
 - Every attestation lands in the tlog with a verifiable inclusion proof.
 - A deliberately-wrong purity-claiming attestation is caught by the witness and lowers the signer's
   trust score.
-- An untrusted signer's change integrates _only_ via the trust flow
-  ([scenarios.md #4](./scenarios.md)), never by default.
+- An untrusted signer's change integrates _only_ via the trust flow, never by default.
 
-**Links.** [verification.md](./verification.md), [contribute.md](./contribute.md),
-[scenarios.md #2 and #4](./scenarios.md).
+**Links.** [verification.md](./verification.md), [contribute.md](./contribute.md).
 
 ---
 
@@ -475,7 +452,7 @@ _Observability & feedback_, _Project knowledge_ rows).
   and a link to the revert.
 
 **Links.** [architecture.md](./architecture.md) (_review is observability + feedback_, _project
-knowledge is a typed-node graph_), [scenarios.md #3 and #4](./scenarios.md).
+knowledge is a typed-node graph_).
 
 **New open questions.** None new here — but note the _priority-layer architecture_ question
 ([openquestions.md](./openquestions.md), _Attention, routing, and threads_) is the hardest new
@@ -500,9 +477,10 @@ Some things aren't a phase; they run through all of them.
   `valley` does, plain git and `nix` can do.
 - **Durability as a standing priority.** Phase 0 makes it explicit, but it never stops mattering.
   The durable substrate is git objects + attestation refs + the tlog — all replicable, all
-  externally witnessable. The bus is the one replaceable component: lose it and rebuild it from git.
-  Every phase should preserve that property — if a phase makes the bus load-bearing for durable
-  state, that's a design smell to catch.
+  externally witnessable — while the bus stays a rebuildable projection
+  ([architecture.md](./architecture.md#bet-git-as-event-source--a-log-not-a-workflow-engine)). Every
+  phase should preserve that property — if a phase makes the bus load-bearing for durable state,
+  that's a design smell to catch.
 - **Portability as a standing constraint.** Nix is a backend, not the substrate: portable schemas
   from day 0, portable implementations on demand. Every schema this plan ships — host config,
   events, attestations, knowledge nodes — must be implementable without Nix; the NixOS module and
@@ -514,11 +492,8 @@ Some things aren't a phase; they run through all of them.
 This document originally raised two; one is now decided, one remains open:
 
 - **Offsite replication mechanism — decided**
-  ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md)).
-  Push-triggered git-native mirroring to an independent live remote (integrated = replicated) —
-  during migration that remote is GitHub, with the dedicated sovereign live remote deferred until
-  GitHub exit — plus periodic encrypted restic-style backup for offsite depth; block-level
-  replication (ZFS send) rejected for now. Details in [Phase 0](#phase-0--mvp-repos-off-github).
+  ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md));
+  see [Phase 0](#phase-0--mvp-repos-off-github).
 - **Phase-0 identity is Tailscale-ACL-based** (_Identity & trust bootstrapping_). Thin by design and
   swappable; the open question is _when_ it has to grow and into what — likely driven by
   [Phase 6](#phase-6--trust-backstop). _Origin: roadmap.md._

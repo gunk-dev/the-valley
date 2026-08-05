@@ -11,9 +11,9 @@ automation?
 
 ## The pain
 
-GitHub bundles seven concerns — hosting, identity and access, verification and artifacts,
-automation, integration, observability and feedback, and project knowledge — and does several of
-them poorly enough that unbundling looks attractive:
+GitHub bundles every concern of source management — from hosting through verification to project
+knowledge; [design/architecture.md](./design/architecture.md) tables them one by one — and does
+several of them poorly enough that unbundling looks attractive:
 
 - **CI is slow and YAML-shaped.** The feedback loop that matters most runs in minutes on someone
   else's infrastructure, configured in a language nobody chose.
@@ -32,12 +32,13 @@ instead of the bundle's compromise, and everything that matters survives the los
 
 ## Where this goes
 
-At its most general, the-valley is a **recursive, transparent outcome-production engine**. Outcomes
-chain and recurse on a dependency graph — "add this code to a VCS" serves "deliver a feature users
-love," which serves something larger still — and the system's job is to complete that graph,
-transparently. The software development lifecycle is the v1 reference implementation, not the
-boundary: everything above is how the engine gets pointed at code first. Recursive includes the
-engine itself — the-valley builds the-valley.
+At its most general, the-valley is a **recursive, transparent outcome-production engine**: its unit
+of work is the outcome — a thing someone wants to exist that does not yet — and its job is to
+complete the dependency graph outcomes form, transparently
+([ida-eac723e](./.the-valley/ideas/ida-eac723e-outcome-dag.md) carries the full sketch). The
+software development lifecycle is the v1 reference implementation, not the boundary: everything
+above is how the engine gets pointed at code first. Recursive includes the engine itself —
+the-valley builds the-valley.
 
 ## Constraints
 
@@ -77,7 +78,6 @@ incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/r
   does to push a change and request integration.
 - [`design/verification.md`](./design/verification.md) — pure vs. effectful checks and what makes an
   attestation hard to forge.
-- [`design/scenarios.md`](./design/scenarios.md) — end-to-end walk-throughs and what each stresses.
 - [`design/self-transparency.md`](./design/self-transparency.md) — **DRAFT.** A candidate invariant,
   deliberately unresolved: no actor can durably change the system or an output without transparency,
   recursively. Names the facets; decides nothing.

@@ -46,16 +46,14 @@ The ladder is ordered by actors and trust, so the audience falls straight out of
    is itself knowledge — outcomes on a dependency graph the system is under pressure to complete
    toward what someone actually asked for, not merely to record.
 
-**The unbundling note.** GitHub's bundle — hosting, identity & access, verification & artifacts,
-automation, integration, observability & feedback, project knowledge & discussion — cuts across
-these needs: hosting is need 1; verification, artifacts, and integration are need 2; identity &
-access serves needs 3 and 5; automation is need 4; observability & feedback runs through needs 4 and
-6; project knowledge & discussion runs through needs 1, 3, 4, 6, and 7. The concerns remain the
-vocabulary the [architecture](./architecture.md) unbundles by; the rungs are why each is needed. The
-knowledge substrate itself grows one rung-sized increment at a time instead of arriving as a system:
-nodes live with the repo as plain files (S1); agents read and write them, and work is dispatched
-against them (S3); changes to them are observable, and a landed change can close the outcome it
-serves (S4); incidents file their own nodes, with attribution (S6).
+**The unbundling note.** The concerns this design unbundles are enumerated once, in the
+[architecture](./architecture.md)'s table. They cut across these needs rather than mapping
+one-to-one — hosting serves need 1, verification and integration serve need 2, and project knowledge
+runs through most of the rest. The concerns remain the vocabulary the architecture unbundles by; the
+rungs are why each is needed. The knowledge substrate itself grows one rung-sized increment at a
+time instead of arriving as a system: nodes live with the repo as plain files (S1); agents read and
+write them, and work is dispatched against them (S3); changes to them are observable, and a landed
+change can close the outcome it serves (S4); incidents file their own nodes, with attribution (S6).
 
 ## Constraints
 

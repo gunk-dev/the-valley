@@ -18,7 +18,7 @@ with the phase it waits for.
 - `[architecture]` **Bootstrapping trust for new contributors.** A new contributor has no trust
   score. Do they get one by default, or do they require gating until $N attestations land cleanly?
   Probably the latter; the state machine needs concrete rules. _Origin:
-  [verification.md](./verification.md), [scenarios.md](./scenarios.md)._
+  [verification.md](./verification.md)._
 - `[architecture]` **Integrator self-integration.** The integrator is itself code in a repo. How
   does that code get integrated? Likely with a stricter policy on the integrator's own repo (always
   require human approval), but the chicken-and-egg deserves explicit handling. _Origin:
@@ -74,9 +74,10 @@ problem) and an **inter-group** case (across instances — genuine federation, h
 - `[architecture]` **Durable home for cross-system events.** The resolved single-point-of-failure
   answer calls deploys and notifications ephemeral. S4 makes those events the substance of "one
   durable history" ([requirements.md](./requirements.md)), so by Phase 5 that answer expires: either
-  the bus is genuinely replicated — contradicting "the one replaceable component"
-  ([roadmap.md](./roadmap.md)) — or its events get projected into a durable store. Which, and when?
-  _Origin: owner review of Phase 1, 2026-07-16._
+  the bus is genuinely replicated — contradicting the bus-as-rebuildable-projection position
+  ([architecture.md](./architecture.md#bet-git-as-event-source--a-log-not-a-workflow-engine)) — or
+  its events get projected into a durable store. Which, and when? _Origin: owner review of Phase 1,
+  2026-07-16._
 
 ## Discovery
 
@@ -107,18 +108,16 @@ instead of pruned because each carries analysis that re-asking from git history 
 
 - ~~**Phase 0 replication mechanism.**~~ _Decided 2026-07-11
   ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md)):_
-  push-triggered git-native mirror to an independent live remote — during migration that remote is
-  GitHub, with the dedicated sovereign live remote deferred until GitHub exit — plus nightly restic
-  offsite backup; ZFS send rejected for now.
+  a git-native live mirror plus periodic offsite backup, applied in
+  [roadmap Phase 0](./roadmap.md#phase-0--mvp-repos-off-github).
 - ~~**One attestation per commit, or multiple.**~~ _Decided 2026-08-02
   ([dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md)):_ an
   attestation's subject is a tree digest, not a commit, and storage is a ref keyed by subject digest
   and signer, so attestations by several signers coexist; several parties attesting to one statement
   sign it as sibling lines under one text.
-- ~~**The log is a single point of failure.**~~ _Reframed:_ per-repo events (refs, attestations,
-  integration requests) are durable in git itself and externally tamper-evident via the
-  Tessera-backed tlog. The bus is only the source of truth for ephemeral cross-system events
-  (deploys, metrics) and can be replicated lazily when needed.
+- ~~**The log is a single point of failure.**~~ _Reframed:_ the bus is a rebuildable projection of
+  state that is durable in git; the position is stated at
+  [architecture.md](./architecture.md#bet-git-as-event-source--a-log-not-a-workflow-engine).
 - ~~**Priority layer architecture (work scheduling).**~~ _Split, and addressed as a bet in
   [architecture.md](./architecture.md):_ the knowledge graph read generatively — root-outcome
   priority propagating down the dependency DAG, frontier dispatch toward the highest-priority root —

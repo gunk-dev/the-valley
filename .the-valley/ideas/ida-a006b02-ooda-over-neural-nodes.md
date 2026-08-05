@@ -57,5 +57,5 @@ loop should be recognized as one pattern before they are built as two systems.
 - Goodhart: a measured node optimizes the measure, and conditions tuned toward a success signal
   drift toward gaming it. This applies uniformly across human and model nodes.
 - Where the decide step's policy lives, and what may change it — routing policy is itself system
-  configuration, which self-transparency
-  ([self-transparency.md](../../design/self-transparency.md)) wants governed like any output.
+  configuration, which self-transparency ([self-transparency.md](../../design/self-transparency.md))
+  wants governed like any output.

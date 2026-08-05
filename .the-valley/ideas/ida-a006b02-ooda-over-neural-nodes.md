@@ -36,12 +36,32 @@ a cost like any other.
   is evaluation ([[ida-a763b3f]]
   ([ida-a763b3f-attestations-are-the-substrate-for-evaluation.md](./ida-a763b3f-attestations-are-the-substrate-for-evaluation.md))).
 - **The lever.** The conditions of a dispatch are production inputs ([[ida-febcd97]]
-  ([ida-febcd97-neural-node-conditions.md](./ida-febcd97-neural-node-conditions.md))).
+  ([ida-febcd97-neural-node-conditions.md](./ida-febcd97-neural-node-conditions.md))), and dispatch
+  already accepts a per-run model and effort.
 - **The missing instrument: a success signal.** Nothing today records whether a run's change
   integrated, needed rework, or was rejected. That arrives when the integrator emits integration
   outcome events ([roadmap Phase 3](../../design/roadmap.md#phase-3--the-integrator)); the loop as a
   whole sits naturally in
   [Phase 7, feedback and incident memory](../../design/roadmap.md#phase-7--feedback--incident-memory).
+
+## The decide step, made concrete: task sizing
+
+The first function for the loop to learn is task sizing: a mapping from a task's kind to the
+conditions of its dispatch — the model, the effort, the budget. The lever and the record above
+already suffice for it, except for the label that groups observations: nothing today records what
+kind of task a run served. The knowledge graph supplies that label. When a dispatch targets an
+outcome node ([roadmap Phase 4](../../design/roadmap.md#phase-4--agents-as-first-class-authors)),
+the run's record joins to task identity, and sizing becomes learnable over real history.
+
+Task sizing is knowledge that lives in the graph twice, as different artifacts. A size expectation
+on a task node is a prediction, consumed once and corrected by the run that executes it. The
+task-kind vocabulary is the reusable domain the sizing function is learned over. The two must not be
+blurred.
+
+A hand-rolled sizing function already operates: the coordinating agent's dispatch practice assigns
+small budgets to capture tasks and large ones to builds, and that mapping lives in no durable place.
+Recording it as the default strategy — the starting point the loop improves — is the same migration
+the project already practices, moving coordinator knowledge into the graph.
 
 ## One pattern, not two systems
 
@@ -59,3 +79,5 @@ loop should be recognized as one pattern before they are built as two systems.
 - Where the decide step's policy lives, and what may change it — routing policy is itself system
   configuration, which self-transparency ([self-transparency.md](../../design/self-transparency.md))
   wants governed like any output.
+- Where sizing knowledge lives in node mechanics — a frontmatter field on task nodes, a kind
+  vocabulary, or both — is undecided.

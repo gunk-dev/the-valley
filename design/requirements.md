@@ -65,8 +65,10 @@ Not derived from the ladder — imposed on every solution to it, from the premis
 - **Open source.** The substrate must be inspectable and forkable; a closed dependency reintroduces
   the lock-in being escaped.
 - **Minimal.** Small composed tools stay understandable and replaceable; platforms accrete.
-- **Nix-native.** Hermetic, content-addressed builds are what make verification trustworthy and
-  artifacts reproducible.
+- **Nix-native.** Hermetic, content-addressed builds make verification trustworthy and artifacts
+  reproducible in the reference implementation; the contract is the schemas, which stay
+  implementable without Nix
+  ([ida-b9f646c](../.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
 - **Decentralized where possible.** Centralization is accepted only where ordering or coordination
   genuinely require it, and must be explicit.
 - **Auditable supply chain.** What a build depends on must be enumerable, and the provenance of each
@@ -82,9 +84,12 @@ state, not to the store: a project has stores, and git is one of them
 infrastructure, tooling, even the event history's ephemeral parts — is rebuildable. Durability is
 therefore a first-class requirement, not an operational afterthought — it is the whole of
 [S1](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them), the rung
-everything else stands on. For the git store today that means: pushed means replicated — pushed work
-is in at least two independent places, one of them offsite, within minutes. No copy counts until a
-restore from it has been performed and verified. Configured is not durable; tested is.
+everything else stands on. For the git store today that means: integrated means replicated —
+integrated work is in at least two independent places, one of them offsite, within minutes; the
+guarantee attaches to integrated work, not to in-flight branches
+([dcr-24d62f7](../.the-valley/decisions/dcr-24d62f7-publication-mirror-not-review-queue.md)). No
+copy counts until a restore from it has been performed and verified. Configured is not durable;
+tested is.
 
 ## Non-goals
 

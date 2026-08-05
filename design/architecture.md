@@ -101,9 +101,10 @@ refreshing it is the branch owner's problem, not the integrator's.
 
 ### The one structural git invariant
 
-The bare repo enforces exactly one thing: **only the integrator's key may write protected refs**.
-Everything else — topic branches, attestation refs, integration requests — is wide open to anyone
-with push access. That's a one-line `pre-receive` hook; all complex policy lives in the integrator.
+The bare repo enforces exactly one invariant, with two parts: **only the integrator's key may write
+protected refs, and attestation refs are create-only**. Everything else — topic branches, new
+attestation refs, integration requests — is wide open to anyone with push access. That's one short
+`pre-receive` hook; all complex policy lives in the integrator.
 
 ## Bet: review is observability + feedback
 

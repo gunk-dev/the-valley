@@ -43,7 +43,9 @@ engine itself — the-valley builds the-valley.
 
 - **Open source.**
 - **Minimal.** Prefer composing small tools over building a platform.
-- **Nix-native.** Builds, verification, and artifacts are derivations.
+- **Nix-native.** Builds, verification, and artifacts run as derivations in the reference
+  implementation — Nix is a backend, not the substrate, and every schema stays portable beyond it
+  ([ida-b9f646c](./.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
 - **Decentralized where possible.** Accept centralization only where ordering or coordination
   genuinely require it, and be explicit about it.
 

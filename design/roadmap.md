@@ -99,12 +99,12 @@ keys), it grows in [Phase 6](#phase-6--trust-backstop).
 
 **Knowledge v0 ships in this phase.** S1's knowledge increment: issues, outcomes, ideas, and
 decisions live with the repo as plain markdown files — a directory convention, not a system. No
-indexer, no events; the schemas are documentation until there's an integrator to enforce them.
-Instantiated at [.the-valley/](../.the-valley/README.md). The graph grows one increment per rung
-from here — agents write it ([Phase 4](#phase-4--agents-as-first-class-authors)), it becomes
-observable ([Phase 5](#phase-5--effectful-reactions-armstrong-as-controller)), incidents file into
-it ([Phase 7](#phase-7--feedback--incident-memory)) — so no later phase "builds the knowledge
-graph".
+indexer, no events; the convention is checked, not enforced — `nix flake check` runs the knowledge
+lint, and nothing stops a broken graph from landing until there's an integrator. Instantiated at
+[.the-valley/](../.the-valley/README.md). The graph grows one increment per rung from here — agents
+write it ([Phase 4](#phase-4--agents-as-first-class-authors)), it becomes observable
+([Phase 5](#phase-5--effectful-reactions-armstrong-as-controller)), incidents file into it
+([Phase 7](#phase-7--feedback--incident-memory)) — so no later phase "builds the knowledge graph".
 
 **Durability is part of the MVP, not an afterthought.** The git data is the crown jewel; losing it
 is the one unrecoverable failure. The target is 3-2-1: primary bare repos on the valley host,
@@ -113,17 +113,20 @@ copies early on. The mechanism is decided
 ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md) — it
 was this document's open question): two complementary layers.
 
-| Layer            | Mechanism                                                                        | What it gets you                                                                                             |
-| ---------------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Live replication | Push-triggered git-native mirror to an independent live remote                   | Pushed = replicated: a hot second remote you can `git fetch` from directly; git-native, trivially verifiable |
-| Offsite depth    | Periodic encrypted backup of the bare-repo dir (restic-style) to offsite storage | Encrypted, deduplicated point-in-time history, independent of the live remotes                               |
+| Layer            | Mechanism                                                                        | What it gets you                                                                                                 |
+| ---------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Live replication | Push-triggered git-native mirror to an independent live remote                   | Integrated = replicated: a hot second remote you can `git fetch` from directly; git-native, trivially verifiable |
+| Offsite depth    | Periodic encrypted backup of the bare-repo dir (restic-style) to offsite storage | Encrypted, deduplicated point-in-time history, independent of the live remotes                                   |
 
 Block-level replication (ZFS send) was considered and rejected for now: it ties restore to a
 matching filesystem on the far end, and it is not a live git remote. For the pilot, the live second
 remote is GitHub — the transitional mirror — and offsite depth is a Hetzner Storage Box; a dedicated
-sovereign live remote is deferred until GitHub exit. Light RPO/RTO framing, per the rung: pushed
-work is in at least two independent places within minutes, one offsite; restore from the offsite
-copy within a day — and no copy counts until a restore from it has been _performed and verified_.
+sovereign live remote is deferred until GitHub exit. Light RPO/RTO framing, per the rung: integrated
+work is in at least two independent places within minutes, one offsite — the guarantee attaches to
+integrated work, not to in-flight branches
+([dcr-24d62f7](../.the-valley/decisions/dcr-24d62f7-publication-mirror-not-review-queue.md));
+restore from the offsite copy within a day — and no copy counts until a restore from it has been
+_performed and verified_.
 
 **Migration strategy: mirror-first, then cut over.** Mirrors are declared config, not a manual
 dual-push: the host declaration's per-project `mirrors` field replicates main and the tags out to
@@ -145,10 +148,10 @@ it's swappable.
 
 **Exit criteria.** The rung owns them:
 [S1's acceptance checklist](./user-scenarios.md#s1--my-repos-live-on-my-infrastructure-and-i-can-never-lose-them)
-— canonical origin flipped; every push verifiably in two independent places; one restore performed
-and verified; a week of real human _and_ agent work without GitHub, including an agent change
-landing end to end in direct-push mode; a real issue worked and closed as an in-repo node; a
-repeatable migration-plus-restore runbook.
+— canonical origin flipped; every integrated change verifiably in two independent places; one
+restore performed and verified; a week of real human _and_ agent work without GitHub, including an
+agent change landing end to end in direct-push mode; a real issue worked and closed as an in-repo
+node; a repeatable migration-plus-restore runbook.
 
 **Links.** [architecture.md](./architecture.md) (_Hosting_, _Identity / access_ rows),
 [schema/valley.cue](../schema/valley.cue), [examples/host.cue](../examples/host.cue).
@@ -210,12 +213,14 @@ the adversarial half of "trustworthy" is [Phase 6](#phase-6--trust-backstop)'s.
 **Goal.** Replace "wait for CI" with "signed local check" for real day-to-day work.
 
 **What gets built.** A `nix run .#attest` helper that: runs the repo's canonical checks (Nix
-derivations, in the reference implementation); composes the attestation
+derivations, in the reference implementation); composes one statement per check
 ([contribute.md](./contribute.md) / [verification.md](./verification.md)), recording _what check
-ran, on what tree, with what result_; SSH-signs it with the same key as the commit signature; stores
-it as `refs/the-valley/attestations/<sha>`; pushes atomically ([contribute.md](./contribute.md)).
-Purity is a claim tied to a runner kind — the `nix` runner claims it strongly — not a property the
-schema assumes.
+ran, on what tree, with what result_; signs each statement's text as a note with the host's key;
+stores each at a ref keyed by the subject digest and the signer,
+`refs/the-valley/attestations/<tree digest>/<signer key hash>`
+([dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md)); pushes atomically
+([contribute.md](./contribute.md)). Purity is a claim tied to a runner kind — the `nix` runner
+claims it strongly — not a property the schema assumes.
 
 Checks-as-derivations is the reference implementation, not the contract. The attestation schema must
 stay implementable by other runner kinds, so a non-Nix runner is an added backend later, never a
@@ -260,9 +265,12 @@ solo.
   ([architecture.md](./architecture.md), _a pull-based integrator_). Merge-queue semantics fall out
   for free. The required attestation set is a function of the diff, not of the contributor's claim
   about it: policy maps path classes to required checks — code takes the full suite, knowledge-only
-  changes (`.the-valley/**`) take signature plus knowledge lint, mixed commits take the max of
-  everything touched. That is also what keeps knowledge-node changes cheap through the same
-  protected path: one invariant, proportionate checks.
+  changes (`.the-valley/**`) take the knowledge lint, mixed commits take the max of everything
+  touched. The signature is not policy: it is required of every change by the structural invariant
+  and the integrator, whatever paths the diff touches
+  ([dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)). That is
+  also what keeps knowledge-node changes cheap through the same protected path: one invariant,
+  proportionate checks.
 
 The integrator is designed around **change objects** — a diff targeting a stream, with identity
 stable across rebases — rather than branches, per the adopted direction in
@@ -507,10 +515,10 @@ This document originally raised two; one is now decided, one remains open:
 
 - **Offsite replication mechanism — decided**
   ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md)).
-  Push-triggered git-native mirroring to an independent live remote (pushed = replicated) — during
-  migration that remote is GitHub, with the dedicated sovereign live remote deferred until GitHub
-  exit — plus periodic encrypted restic-style backup for offsite depth; block-level replication (ZFS
-  send) rejected for now. Details in [Phase 0](#phase-0--mvp-repos-off-github).
+  Push-triggered git-native mirroring to an independent live remote (integrated = replicated) —
+  during migration that remote is GitHub, with the dedicated sovereign live remote deferred until
+  GitHub exit — plus periodic encrypted restic-style backup for offsite depth; block-level
+  replication (ZFS send) rejected for now. Details in [Phase 0](#phase-0--mvp-repos-off-github).
 - **Phase-0 identity is Tailscale-ACL-based** (_Identity & trust bootstrapping_). Thin by design and
   swappable; the open question is _when_ it has to grow and into what — likely driven by
   [Phase 6](#phase-6--trust-backstop). _Origin: roadmap.md._

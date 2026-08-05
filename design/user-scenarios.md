@@ -31,7 +31,7 @@ substrate grows with the scenarios rather than arriving as a system.
 
 **The narrative.** Daily life looks almost exactly like today. Clone, edit, push — same git, same
 agents, same habits. The difference is where the pushes go: the canonical copy of every repo sits on
-hardware the operator controls, and within minutes of any push the work exists in at least two
+hardware the operator controls, and within minutes of integrating, work exists in at least two
 independent places, one of them offsite. GitHub fades to a mirror nobody thinks about. If the
 primary box dies, everything comes back from the offsite copy within a day — and that claim has been
 tested, not assumed. Meanwhile the project's issues, ideas, and decisions travel with the repo as
@@ -44,11 +44,13 @@ files, cloned and backed up by the same motion that protects the code.
   S3's job to motivate.
 - **Mirror-first migration.** Dual-push with GitHub retained as a transitional mirror; the canonical
   origin flips per-repo once confidence is earned. Reversible at every step.
-- **Durability means "pushed = replicated".** RPO ≈ 0 for pushed work: every push lands in at least
-  two independent locations within minutes, one of them offsite (during migration, the GitHub
-  mirror); a push is never in only one place. RTO is relaxed: full restore within a day from the
-  offsite copy. A restore must be _performed and verified_ before S1 counts as done — configured is
-  not done. The mechanism is decided
+- **Durability means "integrated = replicated".** RPO ≈ 0 for integrated work: every change
+  integrated into the primary is in at least two independent locations within minutes, one of them
+  offsite (during migration, the GitHub mirror). The mirror publishes integrated history only, so an
+  in-flight topic branch has offsite depth from the periodic backup alone until it integrates
+  ([dcr-24d62f7](../.the-valley/decisions/dcr-24d62f7-publication-mirror-not-review-queue.md)). RTO
+  is relaxed: full restore within a day from the offsite copy. A restore must be _performed and
+  verified_ before S1 counts as done — configured is not done. The mechanism is decided
   ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md));
   the chosen layers live in [roadmap Phase 0](./roadmap.md#phase-0--mvp-repos-off-github), not here.
 - **Agents keep working — direct-push interim mode.** klaus agents today work GitHub-PR-shaped.
@@ -58,18 +60,20 @@ files, cloned and backed up by the same motion that protects the code.
   development on the pilot repo has to pause.
 - **Knowledge v0 — a directory convention, not a system.** Issues, outcomes, ideas, and decisions
   are plain markdown files in the repo. Creating an issue is a commit; closing one is a commit;
-  listing is `ls`; search is `grep`; history is `git log`. No indexer, no events, no validation —
-  the schemas are documentation until there is an integrator to enforce them. The pilot repo's open
-  design questions and review findings become the seed content (a follow-up, not part of
-  establishing this rung). The convention is now instantiated at
-  [.the-valley/](../.the-valley/README.md).
+  listing is `ls`; search is `grep`; history is `git log`. No indexer, no events; the convention is
+  checked, not enforced — the flake's knowledge lint vets every node, and nothing stops a broken
+  graph from landing until there is an integrator. The pilot repo's open design questions and review
+  findings become the seed content (a follow-up, not part of establishing this rung). The convention
+  is now instantiated at [.the-valley/](../.the-valley/README.md).
 
 **Acceptance criteria.** S1 holds when every box is checked — by looking, not by reviewing
 configuration:
 
 - [x] the-valley's canonical origin is classic-laddie; GitHub is a mirror.
-- [x] Every push is present in at least two independent locations within minutes, verified by
-      checking both, not by trusting the config.
+- [x] Every integrated change is present in at least two independent locations within minutes,
+      verified by checking both, not by trusting the config; an in-flight branch waits on the
+      periodic offsite backup
+      ([dcr-24d62f7](../.the-valley/decisions/dcr-24d62f7-publication-mirror-not-review-queue.md)).
 - [x] One full restore from the offsite copy has been performed and verified.
 - [ ] A week of real work — human _and_ agent — on the pilot repo without touching GitHub.
 - [x] A klaus agent change lands end to end via direct-push mode.

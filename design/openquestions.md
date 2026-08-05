@@ -3,14 +3,18 @@
 Consolidated across the design docs, tagged by layer: `[requirements]`, `[architecture]`,
 `[design]`. Design-level questions survive here only when a current or near-term roadmap phase (0–2)
 needs them; questions attached to pruned detail get re-asked when their phase starts — git history
-has the originals.
+has the originals. The exceptions sit under [Held for later phases](#held-for-later-phases), each
+with the phase it waits for.
 
 ## Identity & trust bootstrapping
 
-- `[architecture]` **Agent identity.** When an agent is the contributor, what key signs the commit
-  and attestation? Ephemeral per-run, long-lived per-agent, or delegated from a human signer? The
-  architecture supports any; a choice has to be made. _Origin: [scenarios.md](./scenarios.md),
-  [contribute.md](./contribute.md)._
+- `[architecture]` **Delegation-chain verification.** Agent identity itself is decided: an agent run
+  holds no key of its own; the host signs, and the change is attributed inside the host-signed
+  statement, as provenance — harness, model, digests of the prompt and of the context, and the
+  delegation chain as recorded
+  ([dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md)). What remains
+  open is verifying that chain rather than recording it: the check belongs to the enforcement point,
+  the Phase 3 integrator, and its rules are undesigned. _Origin: [contribute.md](./contribute.md)._
 - `[architecture]` **Bootstrapping trust for new contributors.** A new contributor has no trust
   score. Do they get one by default, or do they require gating until $N attestations land cleanly?
   Probably the latter; the state machine needs concrete rules. _Origin:
@@ -73,43 +77,44 @@ problem) and an **inter-group** case (across instances — genuine federation, h
   the bus is genuinely replicated — contradicting "the one replaceable component"
   ([roadmap.md](./roadmap.md)) — or its events get projected into a durable store. Which, and when?
   _Origin: owner review of Phase 1, 2026-07-16._
-- `[design]` **The lived event log is the only witness to destructive ref updates.** "Per-repo
-  events are durable in git" fails exactly when git state is destroyed: after a force-push or a
-  branch deletion, the event's `old` id may reference objects the repository no longer reaches, and
-  replay — a current-state projection — reproduces strictly less than what happened. S6's incident
-  memory wants the lived record, not the projection. A cheap, git-native mitigation is decidable
-  now: server-side reflogs (`core.logAllRefUpdates`) on the bare repos keep prior ref values inside
-  git through rewrites and deletions. Today the lived stream survives only by accident — the
-  JetStream store sits under the valley dataDir, so the nightly restic pass snapshots it,
-  crash-consistent at best: the volatile-store wrinkle in
-  [stores beyond git](../.the-valley/ideas/ida-48c8868-stores-beyond-git.md). _Origin: owner review
-  of Phase 1, 2026-07-16._
-
-## Verification specifics
-
-- `[design]` **Effectful test catalogue.** Which classes of effectful test can be lifted to
-  `nixosTest` or microVM-sealed environments? Maintaining a list — moving a test from effectful to
-  pure is a meaningful security improvement. _Origin: [verification.md](./verification.md)._
-- `[design]` **One attestation per commit, or multiple.** The current shape enforces one (refs are
-  create-only). Multi-signature attestations could change this; a namespace like
-  `refs/the-valley/attestations/<commit-sha>/<signer-id>` would allow multiple, at the cost of more
-  complex lookup. _Origin: [contribute.md](./contribute.md)._
 
 ## Discovery
 
 - `[requirements]` **Discovery.** Without GitHub-the-social-graph, how do humans find each other's
   repos? Probably out of scope, but worth naming. _Origin: [requirements.md](./requirements.md)._
 
+## Held for later phases
+
+Two design-level questions belong to phases beyond the near-term horizon. They are parked whole
+instead of pruned because each carries analysis that re-asking from git history would bury:
+
+- `[design]` **The lived event log is the only witness to destructive ref updates** (S6, Phase 7).
+  "Per-repo events are durable in git" fails exactly when git state is destroyed: after a force-push
+  or a branch deletion, the event's `old` id may reference objects the repository no longer reaches,
+  and replay — a current-state projection — reproduces strictly less than what happened. S6's
+  incident memory wants the lived record, not the projection. A cheap, git-native mitigation is
+  decidable now: server-side reflogs (`core.logAllRefUpdates`) on the bare repos keep prior ref
+  values inside git through rewrites and deletions. Today the lived stream survives only by accident
+  — the JetStream store sits under the valley dataDir, so the nightly restic pass snapshots it,
+  crash-consistent at best: the volatile-store wrinkle in
+  [stores beyond git](../.the-valley/ideas/ida-48c8868-stores-beyond-git.md). _Origin: owner review
+  of Phase 1, 2026-07-16._
+- `[design]` **Effectful test catalogue** (Phase 6). Which classes of effectful test can be lifted
+  to `nixosTest` or microVM-sealed environments? Maintaining a list — moving a test from effectful
+  to pure is a meaningful security improvement. _Origin: [verification.md](./verification.md)._
+
 ## Resolved (kept for the record)
 
-- ~~**Hetzner backup mechanism.**~~ _Decided 2026-07-04
-  ([dcr-db1acbb](../.the-valley/decisions/dcr-db1acbb-hetzner-replication-mechanism.md)):_
-  push-triggered git-native mirror plus nightly restic offsite backup; ZFS send rejected for now.
-- ~~**Signaling: bus event vs. request ref vs. branch convention.**~~ _Resolved in
-  [contribute.md](./contribute.md):_ the contributor pushes
-  `refs/the-valley/integration-requests/<name>` atomically with the topic branch and attestation;
-  the bare repo's post-receive hook is the canonical projection of those ref updates into bus
-  events.
+- ~~**Phase 0 replication mechanism.**~~ _Decided 2026-07-11
+  ([dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md)):_
+  push-triggered git-native mirror to an independent live remote — during migration that remote is
+  GitHub, with the dedicated sovereign live remote deferred until GitHub exit — plus nightly restic
+  offsite backup; ZFS send rejected for now.
+- ~~**One attestation per commit, or multiple.**~~ _Decided 2026-08-02
+  ([dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md)):_ an
+  attestation's subject is a tree digest, not a commit, and storage is a ref keyed by subject digest
+  and signer, so attestations by several signers coexist; several parties attesting to one statement
+  sign it as sibling lines under one text.
 - ~~**The log is a single point of failure.**~~ _Reframed:_ per-repo events (refs, attestations,
   integration requests) are durable in git itself and externally tamper-evident via the
   Tessera-backed tlog. The bus is only the source of truth for ephemeral cross-system events

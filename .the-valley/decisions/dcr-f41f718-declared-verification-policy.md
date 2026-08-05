@@ -33,8 +33,9 @@ branch protection makes that gate the condition of merging. S1 direct-push mode 
 object, so migrating cosmo to a valley instance does not weaken that gate — it deletes it. The
 repository that builds five machines would land changes with nothing checking them, and nothing on
 the instance runs a check today. Declared verification policy is the piece that has to exist before
-cosmo can be hosted here. The wider readiness picture is tracked separately as the cosmo-readiness
-outcome node, in flight on branch `oc/cosmo-readiness`.
+cosmo can be hosted here. The wider readiness picture is tracked separately in the cosmo-readiness
+outcome [[oc-87deec8]]
+([oc-87deec8-valley-can-host-cosmo.md](../outcomes/oc-87deec8-valley-can-host-cosmo.md)).
 
 ## The two layers
 

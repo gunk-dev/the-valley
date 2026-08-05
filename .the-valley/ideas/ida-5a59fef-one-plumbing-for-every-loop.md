@@ -17,8 +17,9 @@ than the shared shape that carries them.
 
 Every loop is built from the same five pieces:
 
-- **Sense.** Signals arrive under the three signal contracts — domain events, metrics, and logs — a
-  decision pending on branch dcr/signal-contracts.
+- **Sense.** Signals arrive under the three signal contracts — domain events, metrics, and logs —
+  decided in [[dcr-62ecc36]]
+  ([dcr-62ecc36-signal-contracts.md](../decisions/dcr-62ecc36-signal-contracts.md)).
 - **Remember.** The promotion ladder distills decaying raw signal into durable insight events and,
   where warranted, knowledge-graph nodes.
 - **Orient.** Derived views over the one history.
@@ -52,12 +53,12 @@ safe, not an aesthetic preference.
 
 Each of these is an instance of the shape:
 
-- The neural-node performance loop and its task-sizing function — "An OODA loop over neural nodes",
-  pending on branch idea/ooda-over-neural-nodes.
-- The observability loop — "The system observes itself", pending on branch
-  idea/the-system-observes-itself.
+- The neural-node performance loop and its task-sizing function — [[ida-a006b02]]
+  ([ida-a006b02-ooda-over-neural-nodes.md](./ida-a006b02-ooda-over-neural-nodes.md)).
+- The observability loop — [[ida-f16bd96]]
+  ([ida-f16bd96-the-system-observes-itself.md](./ida-f16bd96-the-system-observes-itself.md)).
 - Retention policy tuned by the observed value of what is retained — part of the signal-contracts
-  decision, pending on branch dcr/signal-contracts.
+  decision [[dcr-62ecc36]].
 - The trust loop already designed in [verification.md](../../design/verification.md), where confirm
   rates drive revocation.
 

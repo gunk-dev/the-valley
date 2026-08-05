@@ -140,10 +140,11 @@ signature ever made under it.
 
 ## Where this sits
 
-This refines `dcr-0de694f`, which fixes the attestation's five elements and lands on branch
-`dcr/phase2-attestation-shape`, by settling the two it leaves to the implementation: how a statement
-becomes the bytes a signature covers, and how those signatures are carried. Nothing above changes
-what a statement says, who signs it, or where it is stored.
+This refines [[dcr-0de694f]]
+([dcr-0de694f-phase2-attestation-shape.md](./dcr-0de694f-phase2-attestation-shape.md)), which fixes
+the attestation's five elements, by settling the two it leaves to the implementation: how a
+statement becomes the bytes a signature covers, and how those signatures are carried. Nothing above
+changes what a statement says, who signs it, or where it is stored.
 
 ## Related
 

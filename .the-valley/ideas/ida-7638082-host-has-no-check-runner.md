@@ -48,7 +48,9 @@ that requires them before a ref moves.
 The policy design is already held by [[ida-1ec03b1]]
 ([ida-1ec03b1-path-scoped-verification-policy.md](./ida-1ec03b1-path-scoped-verification-policy.md)):
 required attestations are a function of the tree diff, and the policy is data, so it is a CUE
-document. That policy as a schema is in flight on a separate branch and is not restated here.
+document. That policy as a schema is settled in [[dcr-f41f718]]
+([dcr-f41f718-declared-verification-policy.md](../decisions/dcr-f41f718-declared-verification-policy.md))
+and is not restated here.
 
 What the policy needs in order to bind is two mechanisms the host does not have:
 

@@ -68,8 +68,9 @@ document; an attestation without an integrator is a receipt nobody checks; and t
 refusal only exists because of Phase 3's `pre-receive` invariant. The path-scoped policy that would
 govern it is already designed ([[ida-1ec03b1]]
 ([ida-1ec03b1-path-scoped-verification-policy.md](../ideas/ida-1ec03b1-path-scoped-verification-policy.md)))
-and its CUE schema is in flight on a separate branch — so what is missing is not the design but the
-two mechanisms that make it bind.
+and its CUE schema is settled in [[dcr-f41f718]]
+([dcr-f41f718-declared-verification-policy.md](../decisions/dcr-f41f718-declared-verification-policy.md))
+— so what is missing is not the design but the two mechanisms that make it bind.
 
 So hosting cosmo properly would pull Phases 2, 3, and 5 forward, ahead of S1's own last two
 unchecked boxes: a week of real human and agent work without GitHub, and a migration-plus-restore
@@ -101,7 +102,7 @@ unchecked change, which is the whole argument in [[ida-7638082]].
 
 ## Why this outcome depends on S1 rather than the reverse
 
-S1's last unchecked acceptance box is that the migration-plus-restore runbook exists and is
+One of S1's unchecked acceptance boxes is that the migration-plus-restore runbook exists and is
 repeatable for the next repo, and cosmo is that next repo — which invites hanging [[oc-f3bcfd0]]
 ([oc-f3bcfd0-s1-holds.md](./oc-f3bcfd0-s1-holds.md)) off this outcome. That would be false twice
 over. The box asks for a repeatable runbook, not for a second migration to have happened; and making

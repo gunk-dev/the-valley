@@ -52,13 +52,13 @@ The declared-tiers shape already exists in this schema: `#Backup.retention` in
 [schema/valley.cue](../../schema/valley.cue) declares keep-counts as policy with defaults. The same
 move extends to signals.
 
-Species differ and carry distinct defaults: some signals are already kept indefinitely at
-negligible cost, others are bulky with fast-decaying value. Policy is per species, not one number.
+Species differ and carry distinct defaults: some signals are already kept indefinitely at negligible
+cost, others are bulky with fast-decaying value. Policy is per species, not one number.
 
 The warehouse technology, the query interface, and whether logs transit the bus at all or ship by
 other means are deliberately open: the decision is that retention is declared, not which machinery
-enforces it. That openness is the design's storage-agnosticism applied to logs — durability
-attaches to project state, not to any one store ([[ida-48c8868]]
+enforces it. That openness is the design's storage-agnosticism applied to logs — durability attaches
+to project state, not to any one store ([[ida-48c8868]]
 ([ida-48c8868-stores-beyond-git.md](../ideas/ida-48c8868-stores-beyond-git.md))), and an
 implementation is a backend ([[ida-b9f646c]]
 ([ida-b9f646c-nix-backend-not-substrate.md](../ideas/ida-b9f646c-nix-backend-not-substrate.md))).
@@ -74,8 +74,8 @@ Promotion is how value escapes decay: raw signal is retained under the default p
 what a detection distills is promoted into a durable, schema'd insight event; what warrants
 permanent memory becomes a graph node. The decay gradient and the promotion ladder are the same
 structure read in two directions. Raw metrics and logs are sensing, not history. The one-history
-property (S4, [user-scenarios.md](../../design/user-scenarios.md#the-rest-of-the-ladder)) is
-carried by promoted insights and the durable event log, never by the firehose.
+property (S4, [user-scenarios.md](../../design/user-scenarios.md#the-rest-of-the-ladder)) is carried
+by promoted insights and the durable event log, never by the firehose.
 
 ## The split of concerns
 
@@ -103,8 +103,9 @@ subject-level authorization is cheaper now than re-cutting the namespace later.
   retention usable.
 - [requirements.md's Minimal constraint](../../design/requirements.md#constraints) — one server
   carrying three contracts instead of three systems.
-- The pending idea "The system observes itself" on branch `idea/the-system-observes-itself` — the
-  goal these contracts serve.
+- [[ida-f16bd96]]
+  ([ida-f16bd96-the-system-observes-itself.md](../ideas/ida-f16bd96-the-system-observes-itself.md))
+  — the system observes itself, the goal these contracts serve.
 
 ## Open
 

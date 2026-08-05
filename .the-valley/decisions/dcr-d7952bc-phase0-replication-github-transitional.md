@@ -4,6 +4,7 @@ id: dcr-d7952bc
 status: decided
 title: Phase 0 live replication is GitHub (transitional mirror); sovereign live remote deferred to GitHub exit
 created: 2026-07-11
+supersedes: [dcr-db1acbb]
 ---
 
 # Phase 0 replication — GitHub as the transitional live layer

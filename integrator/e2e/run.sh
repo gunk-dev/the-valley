@@ -413,4 +413,88 @@ grep -q 'tree digest mismatch' "$work/last.out" || die "the refusal does not nam
 holds "a signature cannot be lifted onto a tree it was not made about"
 forget c6
 
+# ----------------------------------------------------------------------
+say "7. an attestation lying about its kind is rejected"
+
+# The policy runs prose-format with nix, so its evidence is content-
+# addressed. This attestation claims a notarization instead, and its class
+# was untouched by the intervening landing — so under the rule it nominated
+# for itself it would sail onto a base it was never produced over.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c7
+echo "a readme attested as a notarization" > docs/readme.md
+git add -A
+git commit --quiet -m "a change whose attestation lies about its kind"
+attest_change c7 "" "" --command prose-format=true
+c7="$(git rev-parse c7)"
+
+git checkout --quiet main
+git checkout --quiet -b under-c7
+echo "a fourth source file" > src/fourth.txt
+git add -A
+git commit --quiet -m "add a fourth source file"
+attest_change under-c7 "" "" --check code-build
+request under-c7 main "$(git rev-parse under-c7)"
+integrate
+grep -q "^under-c7 -> refs/heads/main .*: land$" "$work/last.out" || die "the intervening change did not land"
+
+request c7 main "$c7"
+integrate
+grep -q "^c7 -> refs/heads/main .*: reject$" "$work/last.out" || die "a lie about the kind was not rejected"
+grep -q 'requires a pure check and the attestation claims an effectful check' "$work/last.out" \
+  || die "the refusal does not say the policy decides the rule"
+holds "the transfer rule follows the policy's runner, never the attestation's own claim"
+forget c7
+
+# ----------------------------------------------------------------------
+say "8. evidence pushed after a no-evidence verdict re-judges and lands"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c8
+echo "a readme with no evidence yet" > docs/readme.md
+git add -A
+git commit --quiet -m "a change submitted before its checks ran"
+git push --quiet origin c8
+request c8 main "$(git rev-parse c8)"
+integrate
+grep -q "^c8 -> refs/heads/main .*: stale$" "$work/last.out" || die "a change with no evidence was not stale"
+grep -q 'no attestation for this check accompanies the change' "$work/last.out" \
+  || die "the absent attestation was not reported"
+
+# Nothing about the request or the tip moves; only the evidence arrives.
+attest_change c8 "" "" --check prose-format
+integrate
+grep -q "^c8 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "the request was not re-judged after its evidence arrived"
+[ "$(tip)" = "$(git rev-parse c8)" ] || die "main is not at the change's head"
+holds "a pass re-judges when evidence arrives, with the request and the tip unmoved"
+
+# ----------------------------------------------------------------------
+say "9. a ref that is not a request does not hold up one that is"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c9
+echo "a readme beside a garbage ref" > docs/readme.md
+git add -A
+git commit --quiet -m "a change beside a malformed request"
+attest_change c9 "" "" --check prose-format
+# A name with no target segment at all, and one with a segment too many.
+# Anyone with push access can write this namespace.
+git push --quiet origin "$(git rev-parse c9):refs/the-valley/integration-requests/garbage"
+git push --quiet origin "$(git rev-parse c9):refs/the-valley/integration-requests/main/too/deep"
+request c9 main "$(git rev-parse c9)"
+integrate
+grep -q 'refs/the-valley/integration-requests/garbage: not a request ref' "$work/last.out" \
+  || die "the malformed ref was not reported"
+grep -q 'refs/the-valley/integration-requests/main/too/deep: not a request ref' "$work/last.out" \
+  || die "the over-deep ref was not reported"
+grep -q "^c9 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "a malformed ref stopped the pass reaching a valid request"
+holds "malformed refs are reported and skipped; the valid request beside them landed"
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/garbage
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/too/deep
+
 printf '\nintegrator-e2e: every scenario held\n'

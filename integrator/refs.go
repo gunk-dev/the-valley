@@ -27,6 +27,8 @@ package main
 // (ida-93e4f91), and every part of that is already in git.
 
 import (
+	"the-valley/integrator/verdict"
+
 	"fmt"
 	"sort"
 	"strings"
@@ -47,13 +49,20 @@ type request struct {
 }
 
 // requests lists the pending requests, in ref order so a pass is
-// deterministic.
-func (in *integrator) requests() ([]request, error) {
+// deterministic, along with the refs under the namespace that are not
+// requests at all.
+//
+// Anyone with push access can write this namespace, so a name that does not
+// parse is an ordinary thing to find there and not a reason to stop: one
+// unreadable ref must not hold up every readable one. It is reported and
+// skipped.
+func (in *integrator) requests() ([]request, []string, error) {
 	out, err := git(in.repo, "for-each-ref", "--format=%(refname) %(objectname)", requestPrefix)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var found []request
+	var malformed []string
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if line == "" {
 			continue
@@ -64,21 +73,26 @@ func (in *integrator) requests() ([]request, error) {
 		}
 		rest := strings.TrimPrefix(ref, requestPrefix+"/")
 		target, change, ok := strings.Cut(rest, "/")
-		if !ok || strings.Contains(change, "/") {
-			return nil, fmt.Errorf("%s is not a request ref: one is %s/<target>/<change>", ref, requestPrefix)
+		if !ok || strings.Contains(change, "/") || target == "" || change == "" {
+			malformed = append(malformed, ref)
+			continue
 		}
 		found = append(found, request{ref: ref, change: change, target: "refs/heads/" + target, head: head})
 	}
 	sort.Slice(found, func(i, j int) bool { return found[i].ref < found[j].ref })
-	return found, nil
+	sort.Strings(malformed)
+	return found, malformed, nil
 }
 
 // reconcile is one pass: judge every request against the current tip of its
 // target, and act where the answer has changed.
 func (in *integrator) reconcile() error {
-	requests, err := in.requests()
+	requests, malformed, err := in.requests()
 	if err != nil {
 		return err
+	}
+	for _, ref := range malformed {
+		fmt.Fprintf(in.out, "%s: not a request ref; one is %s/<target>/<change>. Skipped.\n", ref, requestPrefix)
 	}
 	for _, r := range requests {
 		if err := in.handle(r); err != nil {
@@ -97,10 +111,17 @@ func (in *integrator) handle(r request) error {
 	if err != nil {
 		return fmt.Errorf("no target %s to integrate onto", r.target)
 	}
-	// Level-triggering: the verdict is a function of the request's head
-	// and the target's tip, so an unchanged pair has an unchanged answer
-	// and re-announcing it would be a retry storm.
-	memo := fmt.Sprintf("%s %s", r.head, tip)
+	// Level-triggering: the verdict is a function of the request's head,
+	// the target's tip, and the evidence stored for the change, so an
+	// unchanged answer is one where none of the three has moved.
+	// Re-announcing an unchanged answer would be a retry storm; missing a
+	// moved one would strand a contributor who pushed the attestation a
+	// previous pass said was absent.
+	evidence, err := in.evidenceState()
+	if err != nil {
+		return err
+	}
+	memo := fmt.Sprintf("%s %s %s", r.head, tip, evidence)
 	if last, _ := in.readMemo(r); last != "" && strings.HasPrefix(last, memo+" ") {
 		return nil
 	}
@@ -109,17 +130,17 @@ func (in *integrator) handle(r request) error {
 	if err != nil {
 		return err
 	}
-	v := Decide(ch, snap)
+	v := verdict.Decide(ch, snap)
 	in.report(r, tip, v)
 
 	switch v.Outcome {
-	case Land:
+	case verdict.Land:
 		if err := in.land(ch, v, r, tip, landed); err != nil {
 			return err
 		}
-	case Stale:
+	case verdict.Stale:
 		in.publishStale(ch, v, tip)
-	case Reject:
+	case verdict.Reject:
 		// There is no rejection event. The failure model is unified on
 		// staleness (architecture.md), and a change whose evidence is
 		// forged is not stale — so rather than stretch either event to
@@ -137,49 +158,53 @@ type landing struct {
 	commit string // the commit that would be the target's new tip
 	digest string // the valley-tree-v1 digest of the resulting tree
 	policy string // a digest of the composed policy the verdict used
+
+	// notes are the contributor's attestations as stored, by check name.
+	// The verdict does not read them; what lands countersigns them.
+	notes map[string][]byte
 }
 
 // materialize gathers everything the verdict is a function of: the applied
 // delta, the required checks, the recomputed closures, and what intervening
 // landings touched.
-func (in *integrator) materialize(r request, tip string) (Change, Snapshot, landing, error) {
+func (in *integrator) materialize(r request, tip string) (verdict.Change, verdict.Snapshot, landing, error) {
 	var land landing
 	wt, err := addWorktree(in.repo, tip)
 	if err != nil {
-		return Change{}, Snapshot{}, land, err
+		return verdict.Change{}, verdict.Snapshot{}, land, err
 	}
 	defer wt.remove()
 
 	base, err := gitLine(in.repo, "merge-base", tip, r.head)
 	if err != nil {
-		return Change{}, Snapshot{}, land, fmt.Errorf("%s and %s share no history", short(r.head), r.target)
+		return verdict.Change{}, verdict.Snapshot{}, land, fmt.Errorf("%s and %s share no history", verdict.Short(r.head), r.target)
 	}
 	attested, err := in.treeDigest(wt, r.head)
 	if err != nil {
-		return Change{}, Snapshot{}, land, err
+		return verdict.Change{}, verdict.Snapshot{}, land, err
 	}
-	ch := Change{ID: r.change, Target: r.target, Base: base, Head: r.head, Attested: attested}
-	if ch.Evidence, err = in.collectEvidence(wt, r.head, attested); err != nil {
-		return ch, Snapshot{}, land, err
+	ch := verdict.Change{ID: r.change, Target: r.target, Base: base, Head: r.head, Attested: attested}
+	if ch.Evidence, land.notes, err = in.collectEvidence(wt, r.head, attested); err != nil {
+		return ch, verdict.Snapshot{}, land, err
 	}
 
 	// The policy is read at the target tip, from the integrator's own
 	// checkout — never from the tree being gated.
 	cat, policyDigest, err := in.policy.catalogue(wt)
 	if err != nil {
-		return ch, Snapshot{}, land, err
+		return ch, verdict.Snapshot{}, land, err
 	}
 	land.policy = policyDigest
 	owed, err := in.policy.derive(wt, base, r.head)
 	if err != nil {
-		return ch, Snapshot{}, land, err
+		return ch, verdict.Snapshot{}, land, err
 	}
 	required, err := in.policy.required(owed, cat)
 	if err != nil {
-		return ch, Snapshot{}, land, err
+		return ch, verdict.Snapshot{}, land, err
 	}
 
-	snap := Snapshot{Required: required, Touched: map[string]bool{}, Now: in.now()}
+	snap := verdict.Snapshot{Required: required, Touched: map[string]bool{}, Now: in.now()}
 
 	// Apply the delta. A base that is already the tip is a fast-forward:
 	// the head lands as it stands and its tree is the tree that was
@@ -187,14 +212,14 @@ func (in *integrator) materialize(r request, tip string) (Change, Snapshot, land
 	if base == tip {
 		land.commit = r.head
 		land.digest = attested
-		snap.Apply = Applied{Clean: true, Tree: attested}
+		snap.Apply = verdict.Applied{Clean: true, Tree: attested}
 	} else {
 		tree, conflict, err := mergeDelta(in.repo, base, tip, r.head)
 		if err != nil {
 			return ch, snap, land, err
 		}
 		if conflict != "" {
-			snap.Apply = Applied{Clean: false, Conflict: conflict}
+			snap.Apply = verdict.Applied{Clean: false, Conflict: conflict}
 			return ch, snap, land, nil
 		}
 		if land.commit, err = in.commitTree(tree, tip, r); err != nil {
@@ -203,7 +228,7 @@ func (in *integrator) materialize(r request, tip string) (Change, Snapshot, land
 		if land.digest, err = in.treeDigest(wt, tree); err != nil {
 			return ch, snap, land, err
 		}
-		snap.Apply = Applied{Clean: true, Tree: land.digest}
+		snap.Apply = verdict.Applied{Clean: true, Tree: land.digest}
 
 		// What intervening landings touched, in the policy's own terms:
 		// the classes the deriver matches over base..tip. Asking the
@@ -238,7 +263,7 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 	}
 	fields := strings.Split(strings.TrimRight(author, "\n"), "\n")
 	if len(fields) != 3 {
-		return "", fmt.Errorf("cannot read the authorship of %s", short(r.head))
+		return "", fmt.Errorf("cannot read the authorship of %s", verdict.Short(r.head))
 	}
 	cmd := []string{"commit-tree", tree, "-p", tip, "-m", strings.TrimRight(message, "\n")}
 	out, err := in.gitEnv(map[string]string{
@@ -253,12 +278,12 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 // bus. The ref write is a compare-and-swap against the tip the verdict was
 // computed over, so a request that lost a race to another lands nothing and
 // is judged again next pass against the tip that won.
-func (in *integrator) land(ch Change, v Verdict, r request, tip string, l landing) error {
+func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing) error {
 	transfer, err := in.composeTransfer(ch, v, l.digest, l.commit, tip, l.policy)
 	if err != nil {
 		return err
 	}
-	evidence, err := in.countersign(ch, v, transfer, l.digest)
+	evidence, err := in.countersign(ch, v, l, transfer)
 	if err != nil {
 		return err
 	}
@@ -272,7 +297,7 @@ func (in *integrator) land(ch Change, v Verdict, r request, tip string, l landin
 	for _, ref := range refs {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
-	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, short(tip), short(l.commit))
+	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
 	if _, err := git(in.repo, "update-ref", "-d", r.ref); err != nil {
 		return err
 	}
@@ -281,8 +306,8 @@ func (in *integrator) land(ch Change, v Verdict, r request, tip string, l landin
 }
 
 // report prints the verdict, per check, in the order it was judged.
-func (in *integrator) report(r request, tip string, v Verdict) {
-	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, short(tip), v.Outcome)
+func (in *integrator) report(r request, tip string, v verdict.Verdict) {
+	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, verdict.Short(tip), v.Outcome)
 	fmt.Fprintf(in.out, "  %s\n", v.Reason)
 	for _, cv := range v.Checks {
 		if cv.Transferred {
@@ -316,6 +341,25 @@ func (in *integrator) writeMemo(r request, value string) error {
 	}
 	_, err = git(in.repo, "update-ref", in.memoRef(r), blob)
 	return err
+}
+
+// evidenceState digests the attestation namespace: every ref under it and
+// the object it points at. Attestation refs are create-only, so this moves
+// exactly when evidence arrives.
+//
+// It is deliberately the whole namespace rather than the refs for one
+// change's subject digest, which would take a checkout to compute and would
+// have to be recomputed before the memo could rule the work out. So an
+// attestation for one change re-judges every pending request. That is the
+// conservative direction — a pass that runs and changes nothing costs a
+// pass; a verdict never revisited strands a change — and it is bounded by
+// the number of requests pending.
+func (in *integrator) evidenceState() (string, error) {
+	out, err := git(in.repo, "for-each-ref", "--format=%(refname) %(objectname)", attestationPrefix)
+	if err != nil {
+		return "", err
+	}
+	return sha256hex([]byte(out))[:16], nil
 }
 
 func (in *integrator) now() time.Time {

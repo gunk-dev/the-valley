@@ -134,6 +134,10 @@ package verification
 	if runner == "nix" {
 		attribute: #Name
 		command?:  _|_
+		// A pure check's evidence does not age, because time is not among
+		// its inputs. A window declared over one would be a window nothing
+		// reads, so it is refused rather than ignored.
+		validity?: _|_
 	}
 	if runner == "command" {
 		command:    =~"^[^\\x00-\\x1f\\x7f]+$"

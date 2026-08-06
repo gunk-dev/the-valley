@@ -11,12 +11,14 @@ package main
 // instead, so it needs no subscription.
 
 import (
+	"the-valley/integrator/verdict"
+
 	"encoding/json"
 	"fmt"
 	"os/exec"
 )
 
-func (in *integrator) publishLanded(ch Change, v Verdict, old, new string) {
+func (in *integrator) publishLanded(ch verdict.Change, v verdict.Verdict, old, new string) {
 	transferred := []string{}
 	for _, cv := range v.Checks {
 		if cv.Transferred {
@@ -34,7 +36,7 @@ func (in *integrator) publishLanded(ch Change, v Verdict, old, new string) {
 	})
 }
 
-func (in *integrator) publishStale(ch Change, v Verdict, tip string) {
+func (in *integrator) publishStale(ch verdict.Change, v verdict.Verdict, tip string) {
 	checks := v.Invalidated
 	if checks == nil {
 		checks = []string{}

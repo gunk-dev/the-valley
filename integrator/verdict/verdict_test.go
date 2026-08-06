@@ -1,4 +1,4 @@
-package main
+package verdict
 
 // The commit rule, case by case. The verdict is a function of data, so
 // every rule of dcr-439b771 is exercised here without a repository, a key,
@@ -29,7 +29,18 @@ func effectfulCheck(name string, window time.Duration) Required {
 }
 
 func pureEvidence(name, inputs string) Evidence {
-	return Evidence{Check: name, Kind: Pure, Admissible: Admissible, Result: "passed", Inputs: inputs, TextDigest: "d" + name}
+	return Evidence{Check: name, Kind: Pure, Admissible: Admissible, Result: "passed",
+		Inputs: inputs, Derivation: "drv-" + inputs, TextDigest: "d" + name}
+}
+
+// closures is what a caller recomputed over the tree that would land: the
+// same derivation the attestation names, unless a case says otherwise.
+func closures(pairs ...string) map[string]Closure {
+	out := map[string]Closure{}
+	for i := 0; i < len(pairs); i += 2 {
+		out[pairs[i]] = Closure{Inputs: pairs[i+1], Derivation: "drv-" + pairs[i+1]}
+	}
+	return out
 }
 
 func effectfulEvidence(name string, at time.Time) Evidence {
@@ -72,7 +83,7 @@ func TestClosureEqualityTransfersAndInequalityInvalidates(t *testing.T) {
 		Snapshot{
 			Apply:    Applied{Clean: true, Tree: movedTree},
 			Required: []Required{pureCheck("build"), pureCheck("lint")},
-			Closures: map[string]string{"build": "3333", "lint": closureB},
+			Closures: closures("build", "3333", "lint", closureB),
 		})
 	if v.Outcome != Stale || v.StaleReason != "evidence" {
 		t.Fatalf("outcome = %s/%s (%s)", v.Outcome, v.StaleReason, v.Reason)
@@ -250,51 +261,61 @@ func TestClosureThatCouldNotBeRecomputedIsNotATransfer(t *testing.T) {
 	}
 }
 
-func TestDeriverOutputIsRead(t *testing.T) {
-	// The one place the integrator is coupled to the deriver's output.
-	out := `abc1234..def5678: 3 changed path(s)
-policy: instance + policy
-classes matched: code, prose
-
-required checks:
-  code-build      mandatory  code
-  prose-format    default    prose, knowledge
-
-unclassified: 1 path(s) matched no class
-  odd.txt
-`
-	d, err := parseDerived(out)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.classes["code"] || !d.classes["prose"] || len(d.classes) != 2 {
-		t.Fatalf("classes = %v", d.classes)
-	}
-	if got := strings.Join(d.requires["prose-format"], "+"); got != "prose+knowledge" {
-		t.Fatalf("prose-format required by %q", got)
-	}
-	if got := strings.Join(d.requires["code-build"], "+"); got != "code" {
-		t.Fatalf("code-build required by %q", got)
-	}
-	if len(d.requires) != 2 {
-		t.Fatalf("required = %v", d.requires)
+func TestTheDerivationIsComparedToo(t *testing.T) {
+	// The closure held and the derivation moved. A pure attestation asserts
+	// both, so evidence whose derivation no longer matches is evidence
+	// about a computation this tree does not present.
+	moved := closures("build", closureA)
+	moved["build"] = Closure{Inputs: closureA, Derivation: "some other derivation"}
+	v := Decide(change(pureEvidence("build", closureA)), Snapshot{
+		Apply:    Applied{Clean: true, Tree: movedTree},
+		Required: []Required{pureCheck("build")},
+		Closures: moved,
+	})
+	if v.Outcome != Stale || !strings.Contains(v.Checks[0].Reason, "its derivation changed") {
+		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Checks[0].Reason)
 	}
 }
 
-func TestValidityWindowsAreReadAsThePolicyWritesThem(t *testing.T) {
-	for _, c := range []struct {
-		in   string
-		want time.Duration
-	}{
-		{"", 0},
-		{"30s", 30 * time.Second},
-		{"15m", 15 * time.Minute},
-		{"6h", 6 * time.Hour},
-		{"2d", 48 * time.Hour},
-	} {
-		got, err := parseWindow(c.in)
-		if err != nil || got != c.want {
-			t.Errorf("parseWindow(%q) = %v, %v; want %v", c.in, got, err, c.want)
-		}
+func TestThePolicyDecidesWhichRuleApplies(t *testing.T) {
+	// An attestation declaring a notarization for a check the policy runs
+	// with nix would otherwise dodge closure comparison entirely: no
+	// intervening landing touched its class, so the effectful rule would
+	// pass it straight through onto a base it was never produced over.
+	lying := effectfulEvidence("build", observed)
+	v := Decide(change(lying), Snapshot{
+		Apply:    Applied{Clean: true, Tree: movedTree},
+		Required: []Required{pureCheck("build")},
+		Closures: closures("build", "a completely different closure"),
+		Now:      observed.Add(time.Minute),
+	})
+	if v.Outcome != Reject {
+		t.Fatalf("outcome = %s, want reject", v.Outcome)
+	}
+	if !strings.Contains(v.Checks[0].Reason, "requires a pure check and the attestation claims an effectful check") {
+		t.Fatalf("reason = %q", v.Checks[0].Reason)
+	}
+}
+
+func TestAPureClaimForAnEffectfulCheckIsAlsoRefused(t *testing.T) {
+	// The mismatch is refused in both directions: the rule follows the
+	// policy, and a statement that contradicts it is not judged at all.
+	v := Decide(change(pureEvidence("reachable", closureA)), Snapshot{
+		Apply:    Applied{Clean: true, Tree: attestedTree},
+		Required: []Required{effectfulCheck("reachable", time.Hour)},
+		Now:      observed,
+	})
+	if v.Outcome != Reject || !strings.Contains(v.Checks[0].Reason, "requires an effectful check and the attestation claims a pure check") {
+		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Checks[0].Reason)
+	}
+}
+
+func TestARunnerWithNoTransferRuleIsRefused(t *testing.T) {
+	v := Decide(change(pureEvidence("build", closureA)), Snapshot{
+		Apply:    Applied{Clean: true, Tree: attestedTree},
+		Required: []Required{{Name: "build", Runner: "something-new"}},
+	})
+	if v.Outcome != Reject || !strings.Contains(v.Checks[0].Reason, "no transfer rule is defined") {
+		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Checks[0].Reason)
 	}
 }

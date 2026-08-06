@@ -17,6 +17,8 @@ package main
 // intervened those are the same tree and the two notes share one ref.
 
 import (
+	"the-valley/integrator/verdict"
+
 	"encoding/json"
 	"fmt"
 	"os"
@@ -38,7 +40,7 @@ type landedEvidence struct {
 // attestation schema, renders it as the bytes a signature covers, and signs
 // it. Nothing is stored before the schema passes: a statement no verifier
 // could read is not a thing to publish.
-func (in *integrator) composeTransfer(ch Change, v Verdict, landedTree, landedCommit, tip, policyDigest string) ([]byte, error) {
+func (in *integrator) composeTransfer(ch verdict.Change, v verdict.Verdict, landedTree, landedCommit, tip, policyDigest string) ([]byte, error) {
 	type digestSet map[string]string
 	type checkTransfer struct {
 		Name     string    `json:"name"`
@@ -125,7 +127,7 @@ func (in *integrator) pipe(stdin []byte, name string, args ...string) ([]byte, e
 // check's note with the integrator's sibling signature added, keyed by the
 // subject it is about, plus the transfer statement keyed by the tree that
 // landed.
-func (in *integrator) countersign(ch Change, v Verdict, transfer []byte, landedTree string) (landedEvidence, error) {
+func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landing, transfer []byte) (landedEvidence, error) {
 	out := landedEvidence{refs: map[string]map[string]string{}}
 	add := func(ref, path string, content []byte) error {
 		blob, err := in.writeBlob(content)
@@ -140,11 +142,11 @@ func (in *integrator) countersign(ch Change, v Verdict, transfer []byte, landedT
 	}
 	original := fmt.Sprintf("%s/%s/%s", attestationPrefix, ch.Attested, in.keyHash)
 	for _, cv := range v.Checks {
-		ev, ok := ch.Evidence[cv.Name]
+		note, ok := l.notes[cv.Name]
 		if !ok || !cv.Transferred {
 			continue
 		}
-		signed, err := in.sign(ev.note)
+		signed, err := in.sign(note)
 		if err != nil {
 			return out, fmt.Errorf("countersigning %s: %w", cv.Name, err)
 		}
@@ -152,7 +154,7 @@ func (in *integrator) countersign(ch Change, v Verdict, transfer []byte, landedT
 			return out, err
 		}
 	}
-	landed := fmt.Sprintf("%s/%s/%s", attestationPrefix, landedTree, in.keyHash)
+	landed := fmt.Sprintf("%s/%s/%s", attestationPrefix, l.digest, in.keyHash)
 	if err := add(landed, transferNote, transfer); err != nil {
 		return out, err
 	}

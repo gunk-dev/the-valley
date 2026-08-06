@@ -13,6 +13,8 @@ package main
 // sound only in that order: verify first, read second.
 
 import (
+	"the-valley/integrator/verdict"
+
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -46,16 +48,17 @@ const unknownSigner = "no signature on this note is by a key the verifier holds"
 // first admissible one is the evidence, and a note that does not verify at
 // all is reported so the verdict can reject rather than quietly look past
 // it.
-func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[string]Evidence, error) {
+func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[string]verdict.Evidence, map[string][]byte, error) {
 	refs, err := git(in.repo, "for-each-ref", "--format=%(refname)", attestationPrefix+"/"+subject)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	found := map[string]Evidence{}
+	found := map[string]verdict.Evidence{}
+	notes := map[string][]byte{}
 	for _, ref := range strings.Fields(refs) {
 		listing, err := git(in.repo, "ls-tree", "-r", "--name-only", ref)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, entry := range strings.Fields(listing) {
 			if path.Base(entry) != statementNote {
@@ -63,42 +66,42 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 			}
 			note, err := git(in.repo, "cat-file", "blob", ref+":"+entry)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			ev, err := in.classify(wt, rev, []byte(note))
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			// A check with an admissible note keeps it; otherwise the
 			// first thing found stands, so a forgery is never hidden by a
 			// good note arriving after it.
-			if old, seen := found[ev.Check]; seen && old.Admissible == Admissible {
+			if old, seen := found[ev.Check]; seen && old.Admissible == verdict.Admissible {
 				continue
 			}
-			found[ev.Check] = ev
+			found[ev.Check], notes[ev.Check] = ev, []byte(note)
 		}
 	}
-	return found, nil
+	return found, notes, nil
 }
 
 // classify runs `attest verify` over one note and reads the statement back.
-func (in *integrator) classify(wt *worktree, rev string, note []byte) (Evidence, error) {
+func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.Evidence, error) {
 	text, err := noteText(note)
 	if err != nil {
-		return Evidence{}, err
+		return verdict.Evidence{}, err
 	}
-	ev := Evidence{
-		note:       note,
+	ev := verdict.Evidence{
 		TextDigest: sha256hex(text),
 		Check:      statementValue(text, "predicate.check.name"),
 		Result:     statementValue(text, "predicate.result"),
 	}
 	switch statementValue(text, "predicateType") {
 	case predicatePure:
-		ev.Kind = Pure
+		ev.Kind = verdict.Pure
 		ev.Inputs = statementValue(text, "predicate.inputs.valley-inputs-v1")
+		ev.Derivation = statementValue(text, "predicate.derivation.sha256")
 	case predicateEffect:
-		ev.Kind = Effectful
+		ev.Kind = verdict.Effectful
 		if at := statementValue(text, "predicate.observedAt"); at != "" {
 			if t, err := time.Parse("2006-01-02T15:04:05Z", at); err == nil {
 				ev.ObservedAt = t
@@ -127,13 +130,13 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (Evidence,
 	out, err := cmd.CombinedOutput()
 	switch {
 	case err == nil:
-		ev.Admissible = Admissible
+		ev.Admissible = verdict.Admissible
 		ev.Signer = verifiedSigner(string(out))
 	case strings.Contains(string(out), unknownSigner):
-		ev.Admissible = UnknownSigner
+		ev.Admissible = verdict.UnknownSigner
 	default:
-		ev.Admissible = Tampered
-		ev.refusal = strings.TrimSpace(string(out))
+		ev.Admissible = verdict.Tampered
+		ev.Refusal = refusalLine(string(out))
 	}
 	return ev, nil
 }
@@ -184,7 +187,7 @@ func sha256hex(b []byte) string {
 func (in *integrator) treeDigest(wt *worktree, rev string) (string, error) {
 	out, err := exec.Command(in.attest, "digest", "--repo", wt.dir, "--rev", rev).Output()
 	if err != nil {
-		return "", fmt.Errorf("digesting %s: %w", short(rev), err)
+		return "", fmt.Errorf("digesting %s: %w", verdict.Short(rev), err)
 	}
 	digest := strings.TrimSpace(string(out))
 	scheme, value, ok := strings.Cut(digest, ":")
@@ -197,8 +200,8 @@ func (in *integrator) treeDigest(wt *worktree, rev string) (string, error) {
 // closures recomputes the input-closure digest of each pure check over the
 // tree that would land. `attest inputs` evaluates and digests; it builds
 // nothing, so this stays off the latency path the commit point serializes.
-func (in *integrator) closures(wt *worktree, rev string, required []Required) (map[string]string, map[string]string) {
-	got, bad := map[string]string{}, map[string]string{}
+func (in *integrator) closures(wt *worktree, rev string, required []verdict.Required) (map[string]verdict.Closure, map[string]string) {
+	got, bad := map[string]verdict.Closure{}, map[string]string{}
 	names := make([]string, 0, len(required))
 	byAttr := map[string]string{}
 	for _, r := range required {
@@ -219,12 +222,18 @@ func (in *integrator) closures(wt *worktree, rev string, required []Required) (m
 			bad[name] = firstLine(string(out))
 			continue
 		}
+		// "<name> valley-inputs-v1:<closure> sha256:<derivation>". Both
+		// digests are read, because the pure rule compares the whole of
+		// what the attestation claims.
 		fields := strings.Fields(string(out))
-		if len(fields) < 2 || !strings.HasPrefix(fields[1], "valley-inputs-v1:") {
+		if len(fields) < 3 || !strings.HasPrefix(fields[1], "valley-inputs-v1:") || !strings.HasPrefix(fields[2], "sha256:") {
 			bad[name] = "attest inputs printed " + firstLine(string(out))
 			continue
 		}
-		got[name] = strings.TrimPrefix(fields[1], "valley-inputs-v1:")
+		got[name] = verdict.Closure{
+			Inputs:     strings.TrimPrefix(fields[1], "valley-inputs-v1:"),
+			Derivation: strings.TrimPrefix(fields[2], "sha256:"),
+		}
 	}
 	return got, bad
 }
@@ -235,4 +244,23 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// refusalLine is the sentence a verifier refused with. `attest` reports what
+// it checked, then the refusal prefixed with its own name, then whatever
+// elaborates it; a reader of a verdict wants the sentence. This convention
+// belongs to the command being driven, so it is read here, at the boundary
+// that drives it, and the verdict is handed a result rather than a
+// transcript to parse.
+func refusalLine(out string) string {
+	var last string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if why, ok := strings.CutPrefix(line, "attest: "); ok {
+			return strings.TrimSpace(why)
+		}
+		if strings.TrimSpace(line) != "" {
+			last = strings.TrimSpace(line)
+		}
+	}
+	return last
 }

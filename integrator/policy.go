@@ -12,6 +12,8 @@ package main
 // find it. A change therefore never supplies the policy that gates it.
 
 import (
+	"the-valley/integrator/verdict"
+
 	"encoding/json"
 	"fmt"
 	"os/exec"
@@ -49,7 +51,7 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 	cmd.Dir = tip.dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w\n%s", short(from), short(to), err, strings.TrimSpace(string(out)))
+		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w\n%s", verdict.Short(from), verdict.Short(to), err, strings.TrimSpace(string(out)))
 	}
 	return parseDerived(string(out))
 }
@@ -144,8 +146,8 @@ func (p policySource) catalogue(tip *worktree) (map[string]catalogueEntry, strin
 
 // required turns a derivation and a catalogue into the check set the
 // verdict is computed over.
-func (p policySource) required(d derived, cat map[string]catalogueEntry) ([]Required, error) {
-	var out []Required
+func (p policySource) required(d derived, cat map[string]catalogueEntry) ([]verdict.Required, error) {
+	var out []verdict.Required
 	for name, classes := range d.requires {
 		entry, ok := cat[name]
 		if !ok {
@@ -155,7 +157,7 @@ func (p policySource) required(d derived, cat map[string]catalogueEntry) ([]Requ
 		if err != nil {
 			return nil, fmt.Errorf("check %s: %w", name, err)
 		}
-		out = append(out, Required{
+		out = append(out, verdict.Required{
 			Name:      name,
 			Classes:   classes,
 			Runner:    entry.Runner,

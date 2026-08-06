@@ -96,12 +96,6 @@ type Change struct {
 
 	// Evidence is the attestations found for this change, by check name.
 	Evidence map[string]Evidence
-
-	// Provenance is the run record the attestations carry, as the first
-	// statement stated it. Phase 2 records a delegation chain and Phase 3
-	// does not yet check one, so this is carried into the outcome for a
-	// reader and is not consulted by any rule below.
-	Provenance string
 }
 
 // Evidence is one attestation as the integrator read it back.
@@ -129,13 +123,10 @@ type Evidence struct {
 	// the reader of an outcome. Empty when none was accepted.
 	Signer string
 
-	// Carriage: the note as stored, the bytes its signature covers, the
-	// ref and path it was found at, and what a verifier refused it with.
-	// No rule below reads any of it; what lands does.
+	// Carriage: the note as stored, and the sentence a verifier refused it
+	// with. The rules below read only the refusal; what lands reads the
+	// note.
 	note    []byte
-	text    []byte
-	ref     string
-	entry   string
 	refusal string
 }
 
@@ -265,6 +256,9 @@ func Decide(ch Change, s Snapshot) Verdict {
 			Outcome:     Stale,
 			StaleReason: "conflict",
 			Reason:      "the delta does not apply cleanly to the tip; resolving it is new authorship, so every check needs new evidence",
+		}
+		if s.Apply.Conflict != "" {
+			v.Reason += " (" + s.Apply.Conflict + ")"
 		}
 		for _, r := range required {
 			v.Checks = append(v.Checks, CheckVerdict{Name: r.Name, Reason: "the delta conflicts, so the tree this would be evidence about does not exist yet"})

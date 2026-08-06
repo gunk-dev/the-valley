@@ -95,21 +95,3 @@ func mergeDelta(repo, base, tip, head string) (tree string, conflict string, err
 	}
 	return tree, "", nil
 }
-
-// diffPaths lists every side of a diff — an added, modified or deleted
-// path, and both the old and the new path of a rename. Only used to answer
-// "did this range change anything at all"; the policy's own matching is the
-// deriver's, never this program's.
-func diffPaths(repo, from, to string) ([]string, error) {
-	out, err := git(repo, "diff", "--no-relative", "--name-only", "-M", "-z", from, to)
-	if err != nil {
-		return nil, err
-	}
-	var paths []string
-	for _, p := range strings.Split(out, "\x00") {
-		if p != "" {
-			paths = append(paths, p)
-		}
-	}
-	return paths, nil
-}

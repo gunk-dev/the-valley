@@ -131,9 +131,9 @@ func (in *integrator) handle(r request) error {
 	return in.writeMemo(r, memo+" "+string(v.Outcome))
 }
 
-// materialized is what one pass computed about a request before deciding.
+// landing is the commit a verdict would move the target to, and what the
+// verdict was computed under.
 type landing struct {
-	tree   string // the resulting tree's object id
 	commit string // the commit that would be the target's new tip
 	digest string // the valley-tree-v1 digest of the resulting tree
 	policy string // a digest of the composed policy the verdict used
@@ -186,9 +186,6 @@ func (in *integrator) materialize(r request, tip string) (Change, Snapshot, land
 	// attested.
 	if base == tip {
 		land.commit = r.head
-		if land.tree, err = gitLine(in.repo, "rev-parse", r.head+"^{tree}"); err != nil {
-			return ch, snap, land, err
-		}
 		land.digest = attested
 		snap.Apply = Applied{Clean: true, Tree: attested}
 	} else {
@@ -200,7 +197,6 @@ func (in *integrator) materialize(r request, tip string) (Change, Snapshot, land
 			snap.Apply = Applied{Clean: false, Conflict: firstLine(conflict)}
 			return ch, snap, land, nil
 		}
-		land.tree = tree
 		if land.commit, err = in.commitTree(tree, tip, r); err != nil {
 			return ch, snap, land, err
 		}

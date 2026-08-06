@@ -69,7 +69,6 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 			if err != nil {
 				return nil, err
 			}
-			ev.ref, ev.entry = ref, entry
 			// A check with an admissible note keeps it; otherwise the
 			// first thing found stands, so a forgery is never hidden by a
 			// good note arriving after it.
@@ -90,7 +89,6 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (Evidence,
 	}
 	ev := Evidence{
 		note:       note,
-		text:       text,
 		TextDigest: sha256hex(text),
 		Check:      statementValue(text, "predicate.check.name"),
 		Result:     statementValue(text, "predicate.result"),

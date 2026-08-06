@@ -35,7 +35,6 @@ type policySource struct {
 type derived struct {
 	classes  map[string]bool
 	requires map[string][]string // check name -> the classes requiring it
-	raw      string
 }
 
 // derive runs the deriver over a diff, in a checkout of the target tip. The
@@ -60,7 +59,7 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 // output; the coupling is pinned by the integrator's own checks rather
 // than assumed.
 func parseDerived(out string) (derived, error) {
-	d := derived{classes: map[string]bool{}, requires: map[string][]string{}, raw: strings.TrimSpace(out)}
+	d := derived{classes: map[string]bool{}, requires: map[string][]string{}}
 	lines := strings.Split(out, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]

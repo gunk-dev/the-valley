@@ -55,7 +55,7 @@ func cmdInputs(args []string) error {
 		if err != nil {
 			return err
 		}
-		fmt.Printf("%s %s:%s %s:%s\n", spec.name, inputsScheme, c.inputs, "sha256", c.derivation)
+		fmt.Printf("%s %s:%s sha256:%s\n", spec.name, inputsScheme, c.inputs, c.derivation)
 	}
 	return nil
 }

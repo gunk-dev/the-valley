@@ -105,8 +105,8 @@ func (in *integrator) vet(doc []byte) error {
 // sign turns statement text into a note, or adds the integrator's
 // signature to a note that already carries one. `attest sign` decides which
 // from the input, so both cases are the same call.
-func (in *integrator) sign(in2 []byte) ([]byte, error) {
-	return in.pipe(in2, in.attest, "sign", "--key", in.key, "--name", in.signerName)
+func (in *integrator) sign(document []byte) ([]byte, error) {
+	return in.pipe(document, in.attest, "sign", "--key", in.key, "--name", in.signerName)
 }
 
 func (in *integrator) pipe(stdin []byte, name string, args ...string) ([]byte, error) {

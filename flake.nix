@@ -301,12 +301,78 @@
             '';
           };
 
+          # Write protection declared: one project taking the default
+          # protected set, one naming a glob beside it, and one left open.
+          # The baseline key above is anonymous and stays in the list, so
+          # this host also renders the two forms of key side by side.
+          protectedHost = mkHost {
+            services.valley = {
+              config = pkgs.writeText "protected-host.cue" ''
+                package valley
+                projects: "guarded": {}
+                projects: "released": {}
+                projects: "open": {}
+              '';
+              authorizedKeys = [
+                {
+                  principal = "integrator";
+                  key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck1 integrator";
+                }
+                {
+                  principal = "contributor";
+                  key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck2 contributor";
+                }
+              ];
+              protect = {
+                guarded.writers = [ "integrator" ];
+                released = {
+                  refs = [
+                    "refs/heads/main"
+                    "refs/heads/release/*"
+                  ];
+                  writers = [ "integrator" ];
+                };
+              };
+            };
+          };
+
           failedAssertions = builtins.filter (a: !a.assertion) (
             host.config.assertions
             ++ noBackupHost.config.assertions
             ++ busHost.config.assertions
             ++ mirrorHost.config.assertions
+            ++ protectedHost.config.assertions
           );
+
+          # Protecting a project the declaration does not serve is a typo
+          # the module must refuse rather than silently ignore.
+          strayProtectionHost = mkHost {
+            services.valley = {
+              config = pkgs.writeText "stray-protection-host.cue" ''
+                package valley
+                projects: "guarded": {}
+              '';
+              protect.gaurded.writers = [ "integrator" ];
+            };
+          };
+
+          strayProtectionAssertions = builtins.filter (
+            a: !a.assertion
+          ) strayProtectionHost.config.assertions;
+
+          protectedKeyLines = protectedHost.config.users.users.git.openssh.authorizedKeys.keys;
+
+          # A declaration written before these options renders the host it
+          # always did: no hook wired, no tag on a key, no sshd change. It
+          # still carries the sweep that removes a hook it once had — the
+          # same discipline the mirror and bus hooks keep, and the only way
+          # protection can be turned off by editing a declaration.
+          protectionRenderedWithoutDeclaration =
+            noBackupHost.config.services.openssh.settings ? PermitUserEnvironment
+            || lib.any (lib.hasInfix "environment=") (
+              noBackupHost.config.users.users.git.openssh.authorizedKeys.keys
+            )
+            || lib.hasInfix "valley-protect-" noBackupHost.config.systemd.services.valley-init.script;
 
           missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
 
@@ -1832,6 +1898,17 @@
               !(lib.any (a: lib.hasInfix "services.valley.backup." a.message) missingSecretAssertions)
             then
               throw "valley module-eval: enabling backup without the secret-path options must fail an assertion naming them"
+            else if protectionRenderedWithoutDeclaration then
+              throw "valley module-eval: write-protection machinery rendered for a declaration without services.valley.protect"
+            else if
+              protectedHost.config.services.openssh.settings.PermitUserEnvironment or null
+              != "VALLEY_PRINCIPAL"
+            then
+              throw "valley module-eval: a key naming a principal needs sshd to honour that one variable and no other"
+            else if
+              !(lib.any (a: lib.hasInfix "services.valley.protect.gaurded" a.message) strayProtectionAssertions)
+            then
+              throw "valley module-eval: protecting a project the declaration does not serve must fail an assertion naming it"
             else
               pkgs.runCommand "valley-module-eval"
                 {
@@ -1839,11 +1916,15 @@
                   sshdConfig = host.config.services.openssh.extraConfig;
                   resticService = host.config.systemd.units."restic-backups-valley.service".text;
                   resticTimer = host.config.systemd.units."restic-backups-valley.timer".text;
+                  protectedInit = protectedHost.config.systemd.services.valley-init.script;
+                  protectedKeys = lib.concatStringsSep "\n" protectedKeyLines;
                   passAsFile = [
                     "initScript"
                     "sshdConfig"
                     "resticService"
                     "resticTimer"
+                    "protectedInit"
+                    "protectedKeys"
                   ];
                 }
                 ''
@@ -1897,6 +1978,22 @@
                   preStart="$(sed -n 's/^ExecStartPre=//p' "$resticServicePath" | head -n1)"
                   staticPaths="$(grep -o '/nix/store/[^ ]*-staticPaths' "$preStart" | head -n1)"
                   grep -qx "/srv/git" "$staticPaths"
+
+                  # A key's principal rides on its own authorized_keys entry
+                  # — that is the only thing that tells one pusher from
+                  # another — and a key written as a plain string is passed
+                  # through untouched.
+                  grep -q '^environment="VALLEY_PRINCIPAL=integrator" ssh-ed25519 ' "$protectedKeysPath"
+                  grep -q '^ssh-ed25519 .* valley-check$' "$protectedKeysPath"
+
+                  # The hook goes on the projects declared protected, and
+                  # nowhere else.
+                  grep -q "valley-protect-guarded" "$protectedInitPath"
+                  grep -q "valley-protect-released" "$protectedInitPath"
+                  if grep -q "valley-protect-open" "$protectedInitPath"; then
+                    echo "module-eval: a project nobody protected was wired with the hook" >&2
+                    exit 1
+                  fi
                   touch $out
                 '';
 
@@ -1999,6 +2096,175 @@
                 git -C deadwork commit --quiet --allow-empty -m one
                 timeout 60 git -C deadwork push --quiet origin main
                 [ "$(git -C dead-mirror.git rev-parse main)" = "$(git -C deadwork rev-parse HEAD)" ]
+
+                touch $out
+              '';
+
+          # The one structural invariant, driven for real: bare repos wired
+          # with the rendered pre-receive hook, pushed to as each
+          # principal. What sshd would set from a key's authorized_keys
+          # entry, these pushes set in the environment directly — that
+          # rendering is pinned by module-eval above, and everything the
+          # hook decides after it is what this check exercises.
+          protect-e2e =
+            pkgs.runCommand "valley-protect-e2e"
+              {
+                nativeBuildInputs = [ pkgs.git ];
+                initScript = protectedHost.config.systemd.services.valley-init.script;
+                passAsFile = [ "initScript" ];
+              }
+              ''
+                export HOME="$TMPDIR"
+                export GIT_CONFIG_NOSYSTEM=1
+                git config --global user.name valley-check
+                git config --global user.email valley-check@localhost
+                git config --global init.defaultBranch main
+                cd "$TMPDIR"
+
+                # A bare repo wired exactly as valley-init wires it, with
+                # the real store path followed from the rendered init script.
+                serve() {
+                  local hook
+                  hook="$(grep -o "/nix/store/[^ ]*-valley-protect-$1" "$initScriptPath" | head -n1)"
+                  test -x "$hook"
+                  git init --quiet --bare "$1.git"
+                  ln -s "$hook" "$1.git/hooks/pre-receive"
+                }
+                serve guarded
+                serve released
+
+                # Pushing as a principal is pushing with the tag on; pushing
+                # with an untagged key is pushing with it off.
+                as() {
+                  local who="$1"
+                  shift
+                  if [ "$who" = anonymous ]; then
+                    env -u VALLEY_PRINCIPAL "$@"
+                  else
+                    VALLEY_PRINCIPAL="$who" "$@"
+                  fi
+                }
+                refs() { git -C "$TMPDIR/$1.git" for-each-ref --format='%(refname)'; }
+                has_ref() {
+                  if ! refs "$1" | grep -qx "$2"; then
+                    echo "protect-e2e: $1 has no $2" >&2
+                    refs "$1" >&2
+                    exit 1
+                  fi
+                }
+                lacks_ref() {
+                  if refs "$1" | grep -qx "$2"; then
+                    echo "protect-e2e: $1 kept $2 through a rejected push" >&2
+                    exit 1
+                  fi
+                }
+
+                git init --quiet work
+                cd work
+                git commit --quiet --allow-empty -m one
+                git remote add guarded "$TMPDIR/guarded.git"
+                git remote add released "$TMPDIR/released.git"
+
+                # A non-writer cannot create a protected ref, and the
+                # rejection says who was pushing, what they were writing,
+                # and who may.
+                if as contributor git push --quiet guarded main 2> denied.err; then
+                  echo "protect-e2e: a non-writer wrote a protected ref" >&2
+                  exit 1
+                fi
+                grep -q 'contributor' denied.err
+                grep -q 'refs/heads/main' denied.err
+                grep -q 'writers: integrator' denied.err
+                lacks_ref guarded refs/heads/main
+
+                # An untagged key is nobody, and nobody is not a writer.
+                if as anonymous git push --quiet guarded main 2> untagged.err; then
+                  echo "protect-e2e: an untagged key wrote a protected ref" >&2
+                  exit 1
+                fi
+                grep -q '<untagged key>' untagged.err
+                lacks_ref guarded refs/heads/main
+
+                # Everything else is wide open to the same non-writer: topic
+                # branches, tags, and refs no declaration protects.
+                git branch idea/one
+                git tag v1
+                git branch release/1.0
+                as contributor git push --quiet guarded idea/one v1 release/1.0
+                has_ref guarded refs/heads/idea/one
+                has_ref guarded refs/tags/v1
+                has_ref guarded refs/heads/release/1.0
+
+                # The same ref is protected where a declaration says so: the
+                # glob in released's set matches it.
+                if as contributor git push --quiet released release/1.0 2> glob.err; then
+                  echo "protect-e2e: a glob in the protected set did not match" >&2
+                  exit 1
+                fi
+                grep -q 'refs/heads/release/1.0' glob.err
+                lacks_ref released refs/heads/release/1.0
+
+                # The writer creates it, and updates it.
+                as integrator git push --quiet guarded main
+                has_ref guarded refs/heads/main
+                git commit --quiet --allow-empty -m two
+                as integrator git push --quiet guarded main
+                second="$(git rev-parse HEAD)"
+                [ "$(git -C "$TMPDIR/guarded.git" rev-parse main)" = "$second" ]
+
+                # A delete is a write.
+                if as contributor git push --quiet --delete guarded main 2> deleted.err; then
+                  echo "protect-e2e: a non-writer deleted a protected ref" >&2
+                  exit 1
+                fi
+                grep -q 'refs/heads/main' deleted.err
+                has_ref guarded refs/heads/main
+
+                # pre-receive answers for the whole push: an open ref
+                # travelling with a protected one lands only if the
+                # protected one does.
+                git commit --quiet --allow-empty -m three
+                git branch idea/two
+                if as contributor git push --quiet --atomic guarded idea/two main 2> atomic.err; then
+                  echo "protect-e2e: a protected ref rode in on an atomic push" >&2
+                  exit 1
+                fi
+                grep -q 'refs/heads/main' atomic.err
+                lacks_ref guarded refs/heads/idea/two
+                [ "$(git -C "$TMPDIR/guarded.git" rev-parse main)" = "$second" ]
+
+                # Attestation refs: anyone may create one …
+                att="refs/the-valley/attestations/$(printf '%064d' 0)/key0"
+                git update-ref "$att" HEAD~1
+                as contributor git push --quiet guarded "$att:$att"
+                has_ref guarded "$att"
+                landed="$(git -C "$TMPDIR/guarded.git" rev-parse "$att")"
+
+                # … and nobody may rewrite or drop one, writer or not.
+                git update-ref "$att" HEAD
+                if as contributor git push --quiet --force guarded "$att:$att" 2> rewritten.err; then
+                  echo "protect-e2e: an attestation ref was rewritten" >&2
+                  exit 1
+                fi
+                grep -q 'create-only' rewritten.err
+                grep -q "$att" rewritten.err
+                if as integrator git push --quiet --force guarded "$att:$att" 2> rewritten-by-writer.err; then
+                  echo "protect-e2e: a writer rewrote an attestation ref" >&2
+                  exit 1
+                fi
+                grep -q 'create-only' rewritten-by-writer.err
+                if as integrator git push --quiet --delete guarded "$att" 2> dropped.err; then
+                  echo "protect-e2e: an attestation ref was deleted" >&2
+                  exit 1
+                fi
+                grep -q 'create-only' dropped.err
+                [ "$(git -C "$TMPDIR/guarded.git" rev-parse "$att")" = "$landed" ]
+
+                # A second attestation beside it is still just a creation.
+                att2="refs/the-valley/attestations/$(printf '%064d' 0)/key1"
+                git update-ref "$att2" HEAD
+                as contributor git push --quiet guarded "$att2:$att2"
+                has_ref guarded "$att2"
 
                 touch $out
               '';

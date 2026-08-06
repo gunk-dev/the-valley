@@ -13,9 +13,12 @@
 # project (or disabling its git store) leaves the data on disk untouched.
 #
 # Identity is deliberately thin and host-level: one git user, git-shell,
-# key-only, Tailscale ACLs in front. Per-project access is not honestly
+# key-only, Tailscale ACLs in front. Per-project *access* is not honestly
 # enforceable with this mechanism, so it is deliberately not an option
-# (.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md).
+# (.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md). Per-project
+# *write protection* is, because the pre-receive hook below is a real
+# enforcement boundary and each key carries a principal name it can read
+# (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md).
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
@@ -255,6 +258,132 @@ let
         ''
     ) gitProjects
   );
+
+  # The environment variable carrying the pushing key's principal name.
+  # sshd sets it from the key's own authorized_keys entry; the pre-receive
+  # hook reads it. One name, honoured only because PermitUserEnvironment
+  # below names it.
+  principalEnv = "VALLEY_PRINCIPAL";
+
+  # Keys that name a principal. An entry written as a bare string names
+  # none, and renders exactly as it always did.
+  taggedKeys = lib.filter (k: !lib.isString k) cfg.authorizedKeys;
+
+  authorizedKeyLine =
+    k: if lib.isString k then k else ''environment="${principalEnv}=${k.principal}" ${k.key}'';
+
+  # Where a contributor's attestations live (design/contribute.md, step 5).
+  attestationNamespace = "refs/the-valley/attestations/";
+
+  # The pre-receive hook: the one structural git invariant
+  # (design/architecture.md, design/contribute.md). Two clauses and nothing
+  # else — only a declared writer may update a protected ref, and an
+  # attestation ref may only be created. Every other ref is open to anyone
+  # with push access, and all policy beyond this lives in the integrator.
+  #
+  # Pushes arrive over SSH as one shared git user, so the unix account
+  # behind a push says nothing about who pushed. The principal comes from
+  # the key instead: services.valley.authorizedKeys tags each key's
+  # authorized_keys entry, sshd puts that tag in the environment of the
+  # receive-pack this hook runs under, and an untagged key has no principal
+  # at all. The client cannot supply the tag itself — sshd passes on no
+  # client environment (no AcceptEnv).
+  #
+  # This governs pushes, which is every write that crosses the host
+  # boundary. It does not govern writes made on the host: the integrator
+  # updates refs locally, as could anyone holding the git user's shell.
+  # Local access is the host's own boundary, not this hook's.
+  protectHook =
+    name: p:
+    pkgs.writeShellScript "valley-protect-${name}" ''
+      # Managed by services.valley — do not edit.
+      set -eu
+
+      principal="''${${principalEnv}:-}"
+      [ -n "$principal" ] || principal="<untagged key>"
+      writers=( ${lib.escapeShellArgs p.writers} )
+      protected=( ${lib.escapeShellArgs p.refs} )
+
+      is_writer() {
+        local w
+        for w in ''${writers[@]+"''${writers[@]}"}; do
+          if [ "$w" = "$principal" ]; then return 0; fi
+        done
+        return 1
+      }
+
+      rejected=0
+      while read -r old new ref; do
+        [ -n "$ref" ] || continue
+
+        # An attestation is a record of what was checked; a record that can
+        # be rewritten or dropped is not one. So the namespace is
+        # create-only, for everyone — an all-zero old id is a creation, at
+        # any hash length.
+        case "$ref" in
+          ${attestationNamespace}*)
+            case "$old" in
+              *[!0]*)
+                echo "valley: $principal may not update $ref — attestation refs are create-only" >&2
+                rejected=1
+                ;;
+            esac
+            continue
+            ;;
+        esac
+
+        # Protected refs, matched as shell globs (so `*` crosses path
+        # separators). Unprotected refs are not the hook's business.
+        for pattern in ''${protected[@]+"''${protected[@]}"}; do
+          case "$ref" in
+            $pattern)
+              if ! is_writer; then
+                echo "valley: $principal may not write $ref — a protected ref of ${name} (writers: ${
+                  if p.writers == [ ] then "none" else lib.concatStringsSep ", " p.writers
+                })" >&2
+                rejected=1
+              fi
+              break
+              ;;
+          esac
+        done
+      done
+      exit "$rejected"
+    '';
+
+  # Per-project pre-receive wiring. Same rules as the other managed hooks:
+  # only ever installs, updates, or removes a store symlink — a
+  # hand-written hook of the same name is left alone. A project nobody
+  # declared protection for gets no hook, so a declaration written before
+  # these options installs nothing new.
+  protectHookCommands = lib.concatStrings (
+    lib.mapAttrsToList (
+      name: _:
+      let
+        phook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/pre-receive";
+      in
+      if cfg.protect ? ${name} then
+        ''
+          phook=${phook}
+          if [ -L "$phook" ]; then
+            case "$(readlink "$phook")" in
+              /nix/store/*) ln -sfn ${protectHook name cfg.protect.${name}} "$phook" ;;
+            esac
+          elif [ ! -e "$phook" ]; then
+            ln -s ${protectHook name cfg.protect.${name}} "$phook"
+          fi
+        ''
+      else
+        ''
+          phook=${phook}
+          if [ -L "$phook" ]; then
+            case "$(readlink "$phook")" in
+              /nix/store/*) rm -f "$phook" ;;
+            esac
+          fi
+        ''
+    ) gitProjects
+  );
 in
 {
   options.services.valley = {
@@ -285,11 +414,95 @@ in
     };
 
     authorizedKeys = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
+      type = lib.types.listOf (
+        lib.types.either lib.types.str (
+          lib.types.submodule {
+            options = {
+              key = lib.mkOption {
+                type = lib.types.str;
+                description = "The SSH public key, as it would appear in `authorized_keys`.";
+              };
+
+              principal = lib.mkOption {
+                type = lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*";
+                example = "integrator";
+                description = ''
+                  Name of the principal this key acts as. Every push made
+                  with the key carries the name, and
+                  {option}`services.valley.protect` decides what a name may
+                  write. Nothing else uses it.
+                '';
+              };
+            };
+          }
+        )
+      );
       default = [ ];
+      example = lib.literalExpression ''
+        [
+          "ssh-ed25519 AAAA… someone@somewhere"
+          {
+            principal = "integrator";
+            key = "ssh-ed25519 AAAA… integrator";
+          }
+        ]
+      '';
       description = ''
         SSH public keys allowed to push/fetch as the git user. Access is
         host-level by design: every key can reach every project.
+
+        A key written as a plain string is anonymous — it can push, and it
+        can write nothing protected. A key written as an attribute set
+        names the principal it acts as, which is the only thing that can
+        tell one pusher from another: pushes arrive as the shared git user,
+        so identity has to ride on the key.
+      '';
+    };
+
+    protect = lib.mkOption {
+      type = lib.types.attrsOf (
+        lib.types.submodule {
+          options = {
+            refs = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ "refs/heads/main" ];
+              example = [
+                "refs/heads/main"
+                "refs/heads/release/*"
+              ];
+              description = ''
+                Refs only a writer may create, update, or delete, as shell
+                globs against the full refname (so `*` crosses `/`).
+              '';
+            };
+
+            writers = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [ "integrator" ];
+              description = ''
+                Principals allowed to write this project's protected refs,
+                named as in {option}`services.valley.authorizedKeys`. The
+                empty default protects the refs from every push: the
+                integrator writes them on the host, not over SSH.
+              '';
+            };
+          };
+        }
+      );
+      default = { };
+      example = lib.literalExpression ''{ the-valley.writers = [ "integrator" ]; }'';
+      description = ''
+        Per-project write protection, keyed by project name — the one
+        structural git invariant: only a declared writer may write a
+        protected ref, and attestation refs
+        (`refs/the-valley/attestations/*`) are create-only for everyone.
+        Topic branches, tags, and new attestation refs stay open to anyone
+        with push access; all policy beyond this lives in the integrator.
+
+        Naming a project turns its `pre-receive` hook on. A project left
+        out of this attribute set has no hook at all, so a host declared
+        before this option serves exactly what it served before.
       '';
     };
 
@@ -397,6 +610,10 @@ in
         message = "services.valley.authorizedKeys must not be empty — the git user would be unreachable.";
       }
     ]
+    ++ lib.mapAttrsToList (name: _: {
+      assertion = gitProjects ? ${name};
+      message = "services.valley.protect.${name} protects refs of a project this host does not serve — the declaration has no git store named ${name}.";
+    }) cfg.protect
     ++ lib.optionals backupEnabled (
       lib.mapAttrsToList (name: what: {
         assertion = cfg.backup.${name} != null;
@@ -413,10 +630,18 @@ in
       # git-shell only allows git-upload-pack/git-receive-pack/git-upload-archive;
       # interactive logins are rejected (no ~/git-shell-commands).
       shell = "${pkgs.git}/bin/git-shell";
-      openssh.authorizedKeys.keys = cfg.authorizedKeys;
+      openssh.authorizedKeys.keys = map authorizedKeyLine cfg.authorizedKeys;
     };
 
     services.openssh.enable = lib.mkDefault true;
+
+    # Honour the principal tag on a key's entry, and nothing else: the
+    # pattern-list form admits that one variable name. Rendered only once a
+    # key names a principal, so a host with none keeps the sshd config it
+    # had.
+    services.openssh.settings = lib.optionalAttrs (taggedKeys != [ ]) {
+      PermitUserEnvironment = principalEnv;
+    };
 
     # Belt-and-braces hardening for the git user. The trailing `Match All`
     # closes the block so it can't scope directives appended to sshd_config
@@ -552,6 +777,9 @@ in
 
         # Per-project push-mirror hooks.
         ${mirrorHookCommands}
+
+        # The one structural invariant, on every project declared protected.
+        ${protectHookCommands}
 
         # The ref-updated publisher hook, on every repo when the bus is on.
         ${busHookCommands}

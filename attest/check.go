@@ -87,33 +87,55 @@ func flakeChecks(tree, system string) ([]string, error) {
 	return names, nil
 }
 
+// closure is what evaluating a pure check names before anything is built:
+// the derivation, and the digest of its input closure. Both are functions
+// of the tree alone, so an integrator can recompute the closure digest on a
+// rebased tree without running the check — which is the whole of the pure
+// transfer rule (dcr-439b771).
+type closure struct {
+	drv        string
+	derivation string
+	inputs     string
+}
+
+// evalClosure evaluates one flake check over an exported tree and digests
+// what the evaluation named. Nothing is built.
+func evalClosure(tree, system string, spec checkSpec) (closure, error) {
+	attr := tree + "#checks." + system + "." + spec.attribute
+	drv, errb, err := nix(tree, "eval", "--raw", attr+".drvPath")
+	if err != nil {
+		return closure{}, fmt.Errorf("evaluating %s: %w: %s", attr, err, strings.TrimSpace(errb))
+	}
+	drv = strings.TrimSpace(drv)
+
+	drvBytes, err := os.ReadFile(drv)
+	if err != nil {
+		return closure{}, err
+	}
+	inputs, err := drvInputs(drv)
+	if err != nil {
+		return closure{}, err
+	}
+	return closure{
+		drv:        drv,
+		derivation: fmt.Sprintf("%x", sha256sum(drvBytes)),
+		inputs:     inputsDigest(inputs),
+	}, nil
+}
+
 // runPure builds one flake check over the exported tree and digests what
 // the build named: the derivation's inputs, the derivation, and its
 // output. Building from the derivation path rather than the attribute a
 // second time guarantees the thing built is the thing recorded.
 func runPure(tree, system string, spec checkSpec) (checkOutcome, error) {
 	out := checkOutcome{spec: spec}
-	attr := tree + "#checks." + system + "." + spec.attribute
-
-	drv, errb, err := nix(tree, "eval", "--raw", attr+".drvPath")
-	if err != nil {
-		return out, fmt.Errorf("evaluating %s: %w: %s", attr, err, strings.TrimSpace(errb))
-	}
-	drv = strings.TrimSpace(drv)
-
-	drvBytes, err := os.ReadFile(drv)
+	c, err := evalClosure(tree, system, spec)
 	if err != nil {
 		return out, err
 	}
-	out.derivation = fmt.Sprintf("%x", sha256sum(drvBytes))
+	out.derivation, out.inputs = c.derivation, c.inputs
 
-	inputs, err := drvInputs(drv)
-	if err != nil {
-		return out, err
-	}
-	out.inputs = inputsDigest(inputs)
-
-	built, buildLog, err := nix(tree, "build", "--no-link", "--print-out-paths", drv+"^*")
+	built, buildLog, err := nix(tree, "build", "--no-link", "--print-out-paths", c.drv+"^*")
 	out.log = strings.TrimSpace(buildLog)
 	if err != nil {
 		return out, nil // a failed check is an outcome, not an error

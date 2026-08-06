@@ -20,6 +20,13 @@ const (
 	predicateEffect = "the-valley/check/effectful/v1"
 	refPrefix       = "refs/the-valley/attestations"
 
+	// predicateTransfer is the integrator's commit-point claim
+	// (dcr-439b771): evidence produced over one tree stands for another.
+	// attest never composes one — the integrator does — but the written
+	// form of a statement is defined once, here, so that both programs
+	// sign the same bytes.
+	predicateTransfer = "the-valley/integration/transfer/v1"
+
 	// signerSuffix completes a host's signer name. A note names its key by
 	// a string and a hash, and the string a valley host uses is its fully
 	// qualified name, a slash, and what it is signing: laddie.gunk.dev

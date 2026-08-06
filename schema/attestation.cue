@@ -114,7 +114,13 @@ package attestation
 // attestation is a notarization: a named environment ran the check at a
 // stated time and observed a result, and trust in it is trust in the
 // signer.
-#PredicateType: "the-valley/check/pure/v1" | "the-valley/check/effectful/v1"
+//
+// The third kind is not a claim about a check at all. An integrator's
+// transfer statement says that evidence produced over one tree stands for
+// another — the commit-point record of dcr-439b771.
+#PredicateType: "the-valley/check/pure/v1" |
+	"the-valley/check/effectful/v1" |
+	"the-valley/integration/transfer/v1"
 
 // #PureCheck is the re-derivable claim. The three digests are what a
 // verifier re-derives against: it evaluates the same check over the same
@@ -151,6 +157,62 @@ package attestation
 	// absent from #PureCheck on purpose: a pure claim that carried a time
 	// would stop being a function of its inputs.
 	observedAt: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+}
+
+// #Transfer is the integrator's claim at the commit point (dcr-439b771):
+// the evidence a contributor produced over one tree stands for the tree
+// this statement's subject names, and here is the verdict on every check
+// the policy required.
+//
+// It is not a claim that any check ran. The integrator runs nothing; it
+// compares digests. What it asserts is that the comparison came out equal,
+// under a policy it names, over an evidence set it cites.
+#Transfer: {
+	// The change that landed, named by the request it arrived as.
+	change: #Line
+
+	// The stream it landed on, as a full ref name.
+	target: #Line
+
+	// The tree the evidence was produced over — the base the
+	// contributor's attestations bind to (ida-cbcbb3c). The subject is
+	// the tree that landed; when the two are equal, nothing intervened.
+	base: #DigestSet
+
+	// The policy the verdict was derived under, resolved from the
+	// integrator's own checkout at the target tip and never from the
+	// submitted tree (bd-eaefe82). The advisory git member says which tip
+	// that was; the content digest is what pins the composed document.
+	policy: #DigestSet
+
+	// One entry per check the policy required, in the order the
+	// integrator judged them.
+	checks: [...#CheckTransfer]
+}
+
+// #CheckTransfer is one check's verdict at the commit point. Only
+// transferred checks are recorded: a statement carrying an invalidated one
+// would be a statement about a change that did not land.
+#CheckTransfer: {
+	// The check's name in the project's policy.
+	name: #Name
+
+	// How it transferred. "closure" is the pure rule — the input-closure
+	// digest recomputed on the landed tree equalled the attested one.
+	// "untouched" is the effectful rule — no intervening landing touched
+	// the requiring class's paths, and the observation was inside the
+	// declared window. "unmoved" is neither rule needing to run, because
+	// the landed tree is the attested tree.
+	rule: "closure" | "untouched" | "unmoved"
+
+	// The statement this verdict is about, cited by a digest of the
+	// bytes a signature covers.
+	evidence: #DigestSet
+
+	// The input closure recomputed on the landed tree, for the closure
+	// rule. Equal to the attested statement's `inputs` by construction:
+	// an unequal one is not a transfer and is not written down.
+	inputs?: #DigestSet
 }
 
 // #CheckRun is the check that ran, named the way the verification policy
@@ -259,6 +321,9 @@ if predicateType == "the-valley/check/pure/v1" {
 }
 if predicateType == "the-valley/check/effectful/v1" {
 	predicate: #EffectfulCheck
+}
+if predicateType == "the-valley/integration/transfer/v1" {
+	predicate: #Transfer
 }
 
 // A file's top level cannot be closed (embedding #Statement would open it

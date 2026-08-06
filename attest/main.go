@@ -15,6 +15,7 @@ const usage = `usage: attest <command> [flags]
   run     run a repository's checks and store a signed attestation
   verify  check a note's signatures and re-check its digests
   digest  print the valley tree digest of a revision
+  inputs  print a pure check's input-closure digest, building nothing
   render  write a json document as the statement text a signature covers
   sign    sign statement text, or add a signature to a note
   key     print the verifier key a reader is given for a signing key
@@ -55,6 +56,19 @@ digest flags:
   --repo DIR          repository (default: the git toplevel here)
   --rev REV           revision (default: HEAD)
 
+inputs flags:
+  --repo DIR          repository (default: the git toplevel here)
+  --rev REV           revision (default: HEAD)
+  --check NAME[=ATTR] flake check to digest, repeatable; defaults to every
+                      check the flake defines for this system
+  --system SYSTEM     flake system (default: this machine's)
+
+inputs evaluates each check over the revision's tree and prints its name,
+the digest of its input closure, and the digest of its derivation. It
+builds nothing: the integrator compares closure digests to decide whether
+a contributor's evidence transfers to a moved base, and check latency has
+no business on that path.
+
 sign and key flags:
   --key PATH          ed25519 private key
   --name NAME         the name that key signs under (default: this host's)
@@ -80,6 +94,8 @@ func main() {
 		err = cmdVerify(os.Args[2:])
 	case "digest":
 		err = cmdDigest(os.Args[2:])
+	case "inputs":
+		err = cmdInputs(os.Args[2:])
 	case "render":
 		err = cmdRender(os.Args[2:])
 	case "sign":

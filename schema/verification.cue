@@ -116,14 +116,52 @@ package verification
 // the system is the runner's own and never the policy's — a policy that
 // named a system would stop travelling.
 #Check: {
-	// The runner kind. "nix" is the only runner today; another kind
-	// would widen this to a disjunction, deliberately not before an
-	// implementation exists.
-	runner: "nix"
+	// The runner kind, named the way schema/attestation.cue's #CheckRun
+	// names it, so a policy and the statement satisfying it agree on what
+	// a check is. "nix" builds a flake check attribute and claims purity
+	// strongly; "command" runs a command line and claims nothing beyond
+	// having run it, which is the effectful class of
+	// design/verification.md.
+	runner: "nix" | "command"
 
-	// The flake check attribute this check names.
-	attribute: #Name
+	// The flake check attribute, for the nix runner.
+	attribute?: #Name
+
+	// The command line, for the command runner. One line, because a
+	// statement about it is written as lines and the form has no escapes.
+	command?: =~"^[^\\x00-\\x1f\\x7f]+$"
+
+	if runner == "nix" {
+		attribute: #Name
+		command?:  _|_
+	}
+	if runner == "command" {
+		command:    =~"^[^\\x00-\\x1f\\x7f]+$"
+		attribute?: _|_
+	}
+
+	// Δ: how long an observation of this check stays good once made
+	// (dcr-439b771). It exists for effectful checks alone. A pure check's
+	// evidence is content-addressed and does not age, because time is not
+	// among its inputs; an effectful check reads mutable world state,
+	// which has no digest, so the honest semantics are bounded staleness
+	// — an observation transfers while nothing relevant has changed under
+	// it and it is recent enough.
+	//
+	// Optional, and its absence is not a default. Absent a declared
+	// window the integrator re-demands the check: a window nobody wrote
+	// down is not a window a tool may invent. Like every other field
+	// here it composes across the two layers, so a group can floor a
+	// window and a project can only narrow it.
+	validity?: #Duration
 }
+
+// A validity window: a whole number of seconds, minutes, hours or days.
+// Written as text rather than as a number so that the unit is in the
+// document a person reads, and bounded to units a policy has a use for —
+// a window in milliseconds is not a policy, and one in months is not a
+// window.
+#Duration: =~"^[1-9][0-9]*(s|m|h|d)$"
 
 // #Templates is the instance layer's set of project types. A project
 // selects one by name and then narrows it, so a project that is an

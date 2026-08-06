@@ -129,6 +129,21 @@ func statementOrder(predicateType string) ([]field, error) {
 			leaf("observedAt"),
 			leaf("result"),
 		)
+	case predicateTransfer:
+		// A transfer reads as: which change, onto what, from which base,
+		// under which policy, and then the per-check verdicts.
+		predicate = obj("predicate",
+			leaf("change"),
+			leaf("target"),
+			set("base"),
+			set("policy"),
+			field{name: "checks", list: true, under: []field{
+				leaf("name"),
+				leaf("rule"),
+				set("evidence"),
+				set("inputs"),
+			}},
+		)
 	case "":
 		return nil, fmt.Errorf("the statement names no predicate type, so how its claim is written down is not decided")
 	default:

@@ -323,6 +323,8 @@ request c3 main "$c3"
 integrate
 grep -q "^c3 -> refs/heads/main .*: stale$" "$work/last.out" || die "c3 was not stale"
 grep -q 'resolving it is new authorship' "$work/last.out" || die "the conflict was not reported as new authorship"
+grep -q 'CONFLICT (content): Merge conflict in docs/readme.md' "$work/last.out" \
+  || die "the conflict does not name what could not be merged"
 grep -q '"reason":"conflict"' "$work/last.out" || die "the event does not say conflict"
 grep -q '"checks":\["prose-format"\]' "$work/last.out" || die "a conflict must re-demand every required check"
 holds "a conflict is stale, and every required check is re-demanded"

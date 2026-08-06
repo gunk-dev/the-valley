@@ -194,7 +194,7 @@ func (in *integrator) materialize(r request, tip string) (Change, Snapshot, land
 			return ch, snap, land, err
 		}
 		if conflict != "" {
-			snap.Apply = Applied{Clean: false, Conflict: firstLine(conflict)}
+			snap.Apply = Applied{Clean: false, Conflict: conflict}
 			return ch, snap, land, nil
 		}
 		if land.commit, err = in.commitTree(tree, tip, r); err != nil {

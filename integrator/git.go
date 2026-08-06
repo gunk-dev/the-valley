@@ -86,7 +86,7 @@ func (w *worktree) remove() {
 func mergeDelta(repo, base, tip, head string) (tree string, conflict string, err error) {
 	out, ok := gitTry(repo, "merge-tree", "--write-tree", "--merge-base="+base, tip, head)
 	if !ok {
-		return "", out, nil
+		return "", conflictMessage(out), nil
 	}
 	lines := strings.SplitN(out, "\n", 2)
 	tree = strings.TrimSpace(lines[0])
@@ -94,4 +94,22 @@ func mergeDelta(repo, base, tip, head string) (tree string, conflict string, err
 		return "", "", fmt.Errorf("merge-tree wrote no tree: %s", out)
 	}
 	return tree, "", nil
+}
+
+// conflictMessage picks the sentence out of a conflicted merge-tree's
+// report. That report opens with the tree oid and the conflicted entries
+// and ends with the informational messages, which are the part naming what
+// could not be merged.
+func conflictMessage(out string) string {
+	var last string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "CONFLICT") {
+			return line
+		}
+		if line != "" {
+			last = line
+		}
+	}
+	return last
 }

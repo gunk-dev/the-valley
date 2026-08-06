@@ -27,7 +27,7 @@ One resource question stays honestly open: verifying an unsolicited change spend
 stranger, and the policy limiting that spend is undesigned.
 
 This relates to [[dcr-439b771]]
-([dcr-439b771-integration-is-occ-over-content-addressed-evidence.md](../decisions/dcr-439b771-integration-is-occ-over-content-addressed-evidence.md)),
+([dcr-439b771-integration-occ-over-content-addressed-evidence.md](../decisions/dcr-439b771-integration-occ-over-content-addressed-evidence.md)),
 the verdict function this idea makes transport-agnostic; to [[dcr-b87f6e8]]
 ([dcr-b87f6e8-identity-is-a-governed-registry.md](../decisions/dcr-b87f6e8-identity-is-a-governed-registry.md)),
 the registry that standing attaches to; to [[ida-8482624]]

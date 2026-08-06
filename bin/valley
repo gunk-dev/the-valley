@@ -8,7 +8,9 @@
 # ida-b9f646c. It GRADUATES to its own repo and a real language the moment
 # ANY tripwire is crossed:
 #   - it grows past ~300 lines;
-#   - it needs persistent state, config, or a daemon;
+#   - it needs persistent state, config, or a daemon
+#     (CROSSED by review's notes, which outlive the session in
+#     $XDG_STATE_HOME/valley/notes.);
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
 #     by checks, which needs the cue CLI —
@@ -48,6 +50,14 @@ usage: valley <verb> [args]
                      [b]ase       rebase it onto origin/main in a throwaway
                                   worktree, push --force-with-lease, then
                                   re-review the diff that would actually land
+                   while paging, press v: less opens the diff in $EDITOR.
+                   every line you insert there is a note. it is anchored to
+                   the file and new-side line it sits on — to the file alone
+                   when it sits above the first hunk — then appended to
+                   $XDG_STATE_HOME/valley/notes/<branch>.md (default
+                   ~/.local/state) and printed after the verdict. notes
+                   survive [b]ase. lines you change or delete instead of
+                   inserting are ignored, with a warning.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and
@@ -68,9 +78,10 @@ usage: valley <verb> [args]
   help             show this help
 
 Runs from any checkout of the project; needs only git and coreutils,
-except tail and replay, which also need the nats CLI (natscli), and
-checks, which also needs the cue CLI.
-No config, no state, no batch mode — the judgment stays with the human.
+except tail and replay, which also need the nats CLI (natscli), checks,
+which also needs the cue CLI, and review's notes, which need less.
+No config, no batch mode, and no state but the notes file — the judgment
+stays with the human.
 EOF
 }
 
@@ -83,13 +94,52 @@ fetch_origin() {
 # core.pager alone), then git var GIT_PAGER (core.pager, GIT_PAGER, PAGER,
 # less). pager.<cmd> may legally be a boolean; treat true/false — and an
 # empty or missing value — as unset and fall back. The value is
-# shell-interpreted, hence sh -c; a non-tty just cats.
-run_pager() {
-  [ -t 1 ] || { cat; return; }
+# shell-interpreted, hence sh -c.
+diff_pager() {
   local pager
   pager="$(git config --get pager.diff || true)"
-  case "$pager" in ''|true|false) pager="$(git var GIT_PAGER)" ;; esac
-  sh -c "$pager"
+  case "$pager" in '' | true | false) pager="$(git var GIT_PAGER)" ;; esac
+  printf '%s' "$pager"
+}
+
+# Page a file rather than a pipe, so less's v key has something to hand
+# $EDITOR: with a real file open, v runs LESSEDIT, whose default
+# `%E ?lm+%lm. %g` is the editor, +<line>, and the file name. That file is
+# the review buffer, and editing it is how notes get written (see
+# collect_notes). A pipe has no name, so less refuses to edit one — which is
+# why review no longer pipes.
+#
+# Two ways to keep both the rendering and the editable file were open; this
+# takes the second. Paging the buffer directly is exact but throws away
+# delta's rendering, which is most of what makes a diff readable. So instead
+# the configured diff pager runs as less's input preprocessor: it still reads
+# the buffer on stdin exactly as it did when it was the pager, less displays
+# what it emits, and less still calls the raw buffer "the current file" — so
+# v edits the diff, not the rendering. The cost is the line number: a filter
+# that restructures the diff (delta's default does) makes %lm a line of the
+# rendered view, so the editor opens near the cursor rather than on it. A
+# structure-preserving filter (pager.diff = `delta --color-only`) makes it
+# exact. Anchoring never depends on it: a note is anchored by where it was
+# inserted, not by where the editor opened.
+page_file() {
+  local file="$1" pager
+  [ -t 1 ] || { cat -- "$file"; return; } # a non-tty just cats
+  pager="$(diff_pager)"
+  case "${pager%%[[:space:]]*}" in
+    less | */less)
+      # Already less: give it the file and there is no filter to run.
+      sh -c "$pager \"\$1\"" sh "$file"
+      return
+      ;;
+  esac
+  # Without less there is no editor key; fall back to filtering into a pipe.
+  command -v less > /dev/null 2>&1 || {
+    sh -c "$pager" < "$file"
+    return
+  }
+  # -R because the filter's color is the whole point of running it, and no
+  # LESSCLOSE because a stray one would run against a buffer we still read.
+  LESSOPEN="|$pager < %s" env -u LESSCLOSE less -R -- "$file"
 }
 
 pending_line() {
@@ -156,14 +206,185 @@ reject() {
   esac
 }
 
-show_review() {
+# ----------------------------------------------------------------------
+# review notes — the lines the reviewer inserts into the paged diff.
+#
+# The buffer the reviewer pages is a file, so the pager's editor key can open
+# it (page_file). Whatever comes back with lines inserted is read as notes:
+# no marker, no syntax, no mode — an inserted line is a note because it was
+# not there before. What a note is *about* is where it sits, so each one is
+# anchored to the file and the new-side line number of the diff line above
+# it, which is the pair a reviewer would otherwise have to copy out by hand.
+
+# The scratch directory holding the buffer and its pristine copy, and the
+# notes taken so far in this review — a global because [b]ase pages a second
+# time and the notes from the first pass are not thereby withdrawn.
+REVIEW_TMP=""
+NOTES=()
+
+cleanup_review_tmp() {
+  [ -n "$REVIEW_TMP" ] || return 0
+  rm -rf "$REVIEW_TMP"
+  REVIEW_TMP=""
+}
+
+# Where a branch's notes live. XDG_STATE_HOME is the right home for them:
+# they are neither config nor cache, and losing them loses judgment.
+notes_file() {
+  printf '%s/valley/notes/%s.md\n' "${XDG_STATE_HOME:-$HOME/.local/state}" "$1"
+}
+
+# The anchor of every line of the buffer, by line: the file that line belongs
+# to, and the new-side line number it sits on. Built in one pass so that
+# anchoring a note is a lookup. An empty path means the line is above every
+# file (the log); line 0 means the line is a file header, above every hunk.
+ANCHOR_PATH=()
+ANCHOR_LINE=()
+
+anchor_buffer() {
+  local file="$1" line path="" at=0 next=0 inhunk=0 rest
+  ANCHOR_PATH=()
+  ANCHOR_LINE=()
+  while IFS= read -r line; do
+    # Header lines are only headers outside a hunk: inside one, every line
+    # carries a +/-/space prefix, so a diff of a diff cannot be misread.
+    if [ "$inhunk" -eq 1 ]; then
+      case "$line" in
+        ' '* | '+'* | '')
+          at="$next" # this line's own new-side number
+          next=$((next + 1))
+          ;;
+        '-'* | \\*) ;; # a removal or the no-newline marker: no new-side line
+        *) inhunk=0 ;;
+      esac
+    fi
+    if [ "$inhunk" -eq 0 ]; then
+      case "$line" in
+        'diff --git '*)
+          path=""
+          # The b/ side, so a rename anchors to the name it will have.
+          if [[ "$line" =~ ^diff\ --git\ a/(.*)\ b/(.*)$ ]]; then
+            path="${BASH_REMATCH[2]}"
+          fi
+          at=0
+          ;;
+        '@@ '*)
+          rest="${line#*+}" # -12,7 +34,9 @@ -> 34,9 @@
+          at="${rest%%[!0-9]*}"
+          [ -n "$at" ] || at=0
+          next="$at"
+          inhunk=1
+          ;;
+      esac
+    fi
+    ANCHOR_PATH+=("$path")
+    ANCHOR_LINE+=("$at")
+  done < "$file"
+}
+
+# The anchor for a note inserted after buffer line n, as it is written down.
+anchor_of() {
+  local n="$1" path line
+  [ "$n" -ge 1 ] || { printf '(unanchored)'; return; }
+  path="${ANCHOR_PATH[n - 1]:-}"
+  line="${ANCHOR_LINE[n - 1]:-0}"
+  if [ -z "$path" ]; then
+    printf '(unanchored)'
+  elif [ "$line" -eq 0 ]; then
+    printf '%s' "$path"
+  else
+    printf '%s:%s' "$path" "$line"
+  fi
+}
+
+# The notes in an edited buffer, one `anchor: text` line each. git says where
+# the reviewer's lines landed; a hunk that removes nothing is an insertion,
+# and the line it was inserted after is the anchor. A hunk that removes
+# something is an edit of the diff itself — it anchors to nothing, since the
+# line it would name is the line it changed — so it is dropped with a count.
+notes_in() {
+  local orig="$1" edited="$2" line rest at old insert=0 touched=0 text
+  anchor_buffer "$orig"
+  while IFS= read -r line; do
+    case "$line" in
+      '@@ '*)
+        rest="${line#@@ -}" # 12,0 +13,2 @@ -> 12,0 +13,2 @@
+        at="${rest%%[!0-9]*}"
+        rest="${rest#"$at"}"
+        old=1
+        case "$rest" in
+          ,*)
+            rest="${rest#,}"
+            old="${rest%%[!0-9]*}"
+            ;;
+        esac
+        if [ "$old" -eq 0 ]; then
+          insert=1
+        else
+          insert=0
+          touched=$((touched + old))
+        fi
+        ;;
+      '+'*)
+        # Only inside an insertion hunk: the +++ of git's own header is not
+        # a note, and neither is the new side of an edit.
+        [ "$insert" -eq 1 ] || continue
+        text="${line#+}"
+        text="${text#"${text%%[![:space:]]*}"}"
+        [ -n "$text" ] || continue # a blank line says nothing
+        printf '%s: %s\n' "$(anchor_of "$at")" "$text"
+        ;;
+    esac
+  done < <(git --no-pager diff --no-ext-diff --no-index -U0 -- "$orig" "$edited")
+  [ "$touched" -eq 0 ] || printf \
+    'valley: warning: %d changed or deleted diff line(s) ignored — a note is a line you insert\n' \
+    "$touched" >&2
+}
+
+# Read the notes out of the paged buffer and keep them: appended to the
+# branch's notes file under the commit they were taken against, and held for
+# the print that follows the verdict. A notes file that cannot be written is
+# a warning, never a failure — the notes are still printed, and a review is
+# not undone by a missing directory.
+collect_notes() {
+  local branch="$1" sha="$2" file dir
+  local -a found=()
+  mapfile -t found < <(notes_in "$REVIEW_TMP/review.orig" "$REVIEW_TMP/review.diff")
+  [ "${#found[@]}" -gt 0 ] || return 0
+  NOTES+=("${found[@]}")
+  file="$(notes_file "$branch")"
+  dir="${file%/*}"
+  mkdir -p "$dir" 2> /dev/null && {
+    printf '## %s at %s\n\n' "$branch" "$sha"
+    printf '%s\n' "${found[@]}"
+    printf '\n'
+  } >> "$file" 2> /dev/null && return 0
+  printf 'valley: warning: could not write %s — the notes are printed only\n' \
+    "$file" >&2
+}
+
+print_notes() {
   local branch="$1"
+  [ "${#NOTES[@]}" -gt 0 ] || return 0
+  printf '\n%d note(s) on %s, appended to %s:\n' \
+    "${#NOTES[@]}" "$branch" "$(notes_file "$branch")"
+  printf '  %s\n' "${NOTES[@]}"
+}
+
+show_review() {
+  local branch="$1" sha
+  sha="$(git rev-parse --short "refs/remotes/origin/$branch")"
+  REVIEW_TMP="$(mktemp -d)"
   {
     printf 'branch %s, log against origin/main:\n\n' "$branch"
     git --no-pager log --oneline "origin/main..origin/$branch"
     printf '\n'
     git --no-pager diff "origin/main...origin/$branch"
-  } | run_pager || true # quitting the pager early is not an error
+  } > "$REVIEW_TMP/review.diff"
+  cp "$REVIEW_TMP/review.diff" "$REVIEW_TMP/review.orig"
+  page_file "$REVIEW_TMP/review.diff" || true # quitting the pager early is not an error
+  collect_notes "$branch" "$sha"
+  cleanup_review_tmp
 }
 
 # Throwaway worktree for review's [b]ase choice; a global so the traps can
@@ -177,6 +398,14 @@ cleanup_rebase_wt() {
   REBASE_WT=""
 }
 
+# Everything review leaves outside the repository: the throwaway worktree and
+# the paged buffer. One handler, installed once by cmd_review, so that no
+# path through the verb — and no ctrl-C in the pager — leaves either behind.
+cleanup_review() {
+  cleanup_rebase_wt
+  cleanup_review_tmp
+}
+
 # Rebase origin/<branch> onto origin/main in an isolated worktree — the
 # user's checkout is never touched — and push with a lease so a concurrently
 # updated branch is never clobbered. Mechanics only; the judgment on the
@@ -184,8 +413,6 @@ cleanup_rebase_wt() {
 rebase_onto_main() {
   local branch="$1"
   REBASE_WT="$(mktemp -d)"
-  trap cleanup_rebase_wt EXIT
-  trap 'exit 130' INT TERM
   git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch"
   if ! git -C "$REBASE_WT" rebase --quiet refs/remotes/origin/main; then
     cleanup_rebase_wt
@@ -197,16 +424,13 @@ rebase_onto_main() {
     die "lease on origin/$branch failed (it moved since the fetch); nothing pushed"
   fi
   cleanup_rebase_wt
-  trap - EXIT INT TERM
   echo "rebased $branch onto origin/main, pushed with --force-with-lease"
 }
 
-cmd_review() {
-  [ $# -eq 1 ] || die "usage: valley review <branch>"
-  local branch="${1#origin/}" choice
-  fetch_origin
-  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
-    || die "no such branch on origin: $branch"
+# Page the branch and take the verdict. Split out of cmd_review so that
+# every way out of it — integrate, reject, skip — is followed by the notes.
+read_and_decide() {
+  local branch="$1" choice
   show_review "$branch"
   # A stale branch can't integrate, and its pre-rebase diff is not what would
   # land; offer to rebase it mechanically, then re-review what actually would.
@@ -242,6 +466,20 @@ cmd_review() {
       *) echo "answer i, r, or s" ;;
     esac
   done
+}
+
+cmd_review() {
+  [ $# -eq 1 ] || die "usage: valley review <branch>"
+  local branch="${1#origin/}"
+  fetch_origin
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || die "no such branch on origin: $branch"
+  trap cleanup_review EXIT
+  trap 'exit 130' INT TERM
+  read_and_decide "$branch"
+  # The verdict disposes of the branch; the notes are what the human made of
+  # it, so they are printed whatever the verdict was.
+  print_notes "$branch"
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,

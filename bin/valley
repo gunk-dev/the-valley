@@ -109,18 +109,20 @@ diff_pager() {
 # collect_notes). A pipe has no name, so less refuses to edit one — which is
 # why review no longer pipes.
 #
-# Two ways to keep both the rendering and the editable file were open; this
-# takes the second. Paging the buffer directly is exact but throws away
-# delta's rendering, which is most of what makes a diff readable. So instead
-# the configured diff pager runs as less's input preprocessor: it still reads
-# the buffer on stdin exactly as it did when it was the pager, less displays
-# what it emits, and less still calls the raw buffer "the current file" — so
-# v edits the diff, not the rendering. The cost is the line number: a filter
-# that restructures the diff (delta's default does) makes %lm a line of the
-# rendered view, so the editor opens near the cursor rather than on it. A
-# structure-preserving filter (pager.diff = `delta --color-only`) makes it
-# exact. Anchoring never depends on it: a note is anchored by where it was
-# inserted, not by where the editor opened.
+# The configured diff pager stays the renderer, but as less's input
+# preprocessor rather than as the pager. It still reads the buffer on stdin
+# exactly as it did when it was the pager, less displays what it emits, and
+# less still calls the raw buffer "the current file" — so v edits the diff
+# and not the rendering. The alternative was to page the buffer with no
+# filter at all: exact, and it throws delta's rendering away, which is the
+# worse trade for a verb whose whole job is reading a diff.
+#
+# What this costs is the line number. A filter that restructures the diff —
+# delta's default rendering does — makes %lm a line of the rendered view, so
+# the editor opens near the cursor rather than on it. A structure-preserving
+# filter (pager.diff = `delta --color-only`) makes it exact. No anchor
+# depends on it: a note is anchored by where it was inserted, not by where
+# the editor opened.
 page_file() {
   local file="$1" pager
   [ -t 1 ] || { cat -- "$file"; return; } # a non-tty just cats

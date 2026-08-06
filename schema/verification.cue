@@ -136,8 +136,9 @@ package verification
 		command?:  _|_
 		// A pure check's evidence does not age, because time is not among
 		// its inputs. A window declared over one would be a window nothing
-		// reads, so it is refused rather than ignored.
-		validity?: _|_
+		// reads, so it is refused rather than ignored — and the refusal is
+		// a sentinel rather than bottom, so `cue vet` names the field.
+		validity?: "INVALID: a pure check's evidence does not age; a validity window is for an effectful check"
 	}
 	if runner == "command" {
 		command:    =~"^[^\\x00-\\x1f\\x7f]+$"

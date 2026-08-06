@@ -27,7 +27,9 @@ The ladder is ordered by actors and trust, so the audience falls straight out of
    below.
 2. **Integrated in seconds** (S2). Push to integrated completes in seconds, resting on checks that
    are **trustworthy where the work was written** — a verifiable claim, not a hope — with
-   reproducible build outputs so the claim can be checked. This is the largest quality-of-life
+   reproducible build outputs so the claim can be checked. That trust must carry: verification
+   performed where a change is authored counts across the integration boundary, and landing a change
+   must not require repeating work already done and proven. This is the largest quality-of-life
    change in the whole design and the reason unbundling is worth it at N=1.
 3. **Agents as first-class authors** (S3). An agent's change lands with the same guarantees as the
    operator's own, unsupervised, attributable to exactly the agent that made it — attribution for a
@@ -67,6 +69,15 @@ Not derived from the ladder — imposed on every solution to it, from the premis
   reproducible in the reference implementation; the contract is the schemas, which stay
   implementable without Nix
   ([ida-b9f646c](../.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
+- **Verification has no platform of its own.** Checks are defined once and run identically wherever
+  work happens: the operator's machine, an agent's worktree, integration. A verification platform
+  separate from the development runtime — its own configuration dialect, its own execution
+  environment, its own debugging surface — is rejected. Nix-native supplies hermetic, reproducible
+  execution; this constraint adds the demand that there is only one such runtime, everywhere.
+- **Verification latency stays off the serialized path.** Integration throughput must not degrade as
+  the product of change frequency and check latency grows. The time a check takes may bound how soon
+  its own change lands, never how fast the stream of changes lands. This must hold from the start,
+  ahead of the scale at which it hurts.
 - **Decentralized where possible.** Centralization is accepted only where ordering or coordination
   genuinely require it, and must be explicit.
 - **Auditable supply chain.** What a build depends on must be enumerable, and the provenance of each

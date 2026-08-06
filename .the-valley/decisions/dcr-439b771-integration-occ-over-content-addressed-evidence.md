@@ -33,8 +33,22 @@ changes form one serial order per stream.
 
 The commit rule has two parts. First, the delta must apply cleanly to the current tip. A conflict
 means resolving it would produce a tree nobody has authored; the resolution is new authorship, and
-new authorship requires a new attestation. Second, per required check, the evidence must transfer —
-by the rules below.
+new authorship requires a new attestation. A conflict therefore invalidates every required check,
+not a subset: staleness is per-check only where the transaction's read set is what moved, and a tree
+nobody has written has no read set to compare against. Second, per required check, the evidence must
+transfer — by the rules below.
+
+Which rule governs a check is the policy's to say. The policy names the check's runner, and the
+runner is what makes the check pure or effectful; the attestation's own predicate type is a claim
+about itself, not a licence to choose the rule it is judged under. An attestation whose predicate
+type contradicts the runner the policy names is refused rather than judged, because judging it by
+the rule it nominated is how an attester opts out of closure comparison.
+
+Where several attestations are stored for one check — one per signer, as the storage rule provides —
+the first admissible one is the evidence, and a note that does not verify at all stands rather than
+being displaced by a good one found after it. Admissibility is settled before any transfer rule
+runs, and a check whose evidence is inadmissible in the way a forgery is inadmissible ends the
+judgement there: the change is not behind, and nothing about redoing work would change the answer.
 
 ## Pure checks transfer by closure-digest equality
 
@@ -79,14 +93,24 @@ at the commit point is digest comparison and a ref write; verification latency n
 
 ## The evidence composes as siblings
 
-The landed change carries the contributor's original attestation and the integrator's transfer
-statement side by side in one note, composing as [[dcr-0de694f]]
-([dcr-0de694f-phase2-attestation-shape.md](./dcr-0de694f-phase2-attestation-shape.md)) already
-provides. The transfer statement cites the original by digest and records the per-check verdicts and
-the check definitions used. Those definitions are resolved from the instance's own pin, never from
-the tree being gated — the direction [[bd-eaefe82]]
+The landed change carries two statements side by side. The contributor's original attestation gains
+the integrator's signature as a sibling line under the text it already carries, which is the
+composition [[dcr-0de694f]]
+([dcr-0de694f-phase2-attestation-shape.md](./dcr-0de694f-phase2-attestation-shape.md)) provides. The
+integrator's transfer statement is the second: it cites the original by a digest of the bytes that
+original's signature covers, and records the per-check verdicts and the check definitions used.
+Those definitions are resolved from the instance's own pin, never from the tree being gated — the
+direction [[bd-eaefe82]]
 ([bd-eaefe82-check-definitions-come-from-the-branch.md](../bugs/bd-eaefe82-check-definitions-come-from-the-branch.md))
 names, adopted here for the floor's checks.
+
+The two are separate statements because they are about two different trees. A contributor's
+statement is about the tree it was produced over; a transfer statement is about the tree that
+landed, which is a different tree exactly when something intervened. An attestation is stored at a
+ref keyed by its subject digest, so the two statements are keyed by the two trees, and a landing
+where the base moved writes two refs. Where nothing intervened the trees are one tree and the two
+statements sit under one ref — which is the case the phrase "side by side" describes, and it is the
+common one rather than the general one.
 
 ## The reframe this rests on
 

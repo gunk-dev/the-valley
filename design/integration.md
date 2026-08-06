@@ -48,9 +48,16 @@ arrives in a later phase, and the integrator does not become a different program
 
 Its memory of what it last decided is durable in git too, at
 `refs/the-valley/integration-outcomes/<target>/<change>`: the request's head, the tip it was judged
-against, and the outcome. A restarted controller does not re-announce a judgement it has already
-made, and an unchanged pair is not re-judged — which is what keeps a level-triggered loop from being
-a retry storm.
+against, a digest of the attestation namespace, and the outcome. Those are the three things a
+verdict is a function of, so a judgement is re-announced when one of them moves and not otherwise.
+That is what keeps a level-triggered loop from being a retry storm, and it is why evidence pushed
+after a no-evidence verdict is judged again rather than stranded. The digest covers the whole
+namespace rather than one change's subject, so an attestation for any change re-judges every pending
+request — the conservative direction, and bounded by how many are pending.
+
+Anyone with push access can write the request namespace, so a ref in it that is not a request is an
+ordinary thing to find. It is reported and skipped. One unreadable ref does not hold up the readable
+ones beside it.
 
 ## The commit rule
 
@@ -68,6 +75,13 @@ tree nobody wrote.
 `valley checks` — matches the diff against the composed classes. Both layers are read from the
 integrator's own side: the project layer from a checkout of the target tip, the instance layer from
 where the integrator is configured to find it. A change never supplies the policy that gates it.
+
+Which rule governs a check is the policy's, never the attestation's. The policy names the runner,
+and the runner is what makes a check pure or effectful; a statement whose predicate type contradicts
+it is refused rather than judged by the rule it nominated for itself. Where a subject carries
+several attestations for one check — one per signer — the first admissible one is the evidence, and
+a note that does not verify is not displaced by a good one found after it. A check refused that way
+ends the judgement: the change is not behind, and redoing work would not change the answer.
 
 **3. A pure check transfers by closure-digest equality.** The integrator recomputes the check's
 input-closure digest over the tree that would land — `attest inputs`, which evaluates and digests

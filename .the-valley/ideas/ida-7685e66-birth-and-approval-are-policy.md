@@ -18,15 +18,15 @@ already requires human approval as evidence for registry changes. Project birth 
 extended to the moment a project first appears.
 
 The pattern is recursive. The instance itself has one genesis entry, created at instance birth. Each
-project's chain of authority roots in a human signed act that landed through the instance's gate, the
-same way the instance's own chain roots in its genesis entry. Every delegation chain in every run's
-provenance ([[ida-a8243d2]]
+project's chain of authority roots in a human signed act that landed through the instance's gate,
+the same way the instance's own chain roots in its genesis entry. Every delegation chain in every
+run's provenance ([[ida-a8243d2]]
 ([ida-a8243d2-agent-runs-act-under-delegated-authority.md](../ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md)))
 terminates there.
 
 After birth, the human controls which further content requires human approval through the project's
-own policy framework. Approval is a requirable evidence type in a path class's `requires`, exactly as
-any other check is ([[dcr-f41f718]]
+own policy framework. Approval is a requirable evidence type in a path class's `requires`, exactly
+as any other check is ([[dcr-f41f718]]
 ([dcr-f41f718-declared-verification-policy.md](../decisions/dcr-f41f718-declared-verification-policy.md))).
 This answers [[ida-b7025b5]]'s
 ([ida-b7025b5-human-decisions-are-signed-acts.md](../ideas/ida-b7025b5-human-decisions-are-signed-acts.md))

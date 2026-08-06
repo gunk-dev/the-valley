@@ -11,8 +11,8 @@ source: design conversation, 2026-08-06
 
 The integrator accepts a change from any source — a push, a fetched branch, a public submission, a
 federated peer — because what gates landing is never where the change came from. What gates landing
-is whether its provenance and evidence satisfy policy. Access control over submission stops being the
-security boundary. Verification of evidence is the security boundary instead.
+is whether its provenance and evidence satisfy policy. Access control over submission stops being
+the security boundary. Verification of evidence is the security boundary instead.
 
 Two boundaries survive this move and must still hold. First, trust gates transfer, not submission:
 evidence from an attester without standing does not transfer, no matter how it arrived. A change
@@ -31,7 +31,7 @@ This relates to [[dcr-439b771]]
 the verdict function this idea makes transport-agnostic; to [[dcr-b87f6e8]]
 ([dcr-b87f6e8-identity-is-a-governed-registry.md](../decisions/dcr-b87f6e8-identity-is-a-governed-registry.md)),
 the registry that standing attaches to; to [[ida-8482624]]
-([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md)),
-whose federated-peer case this idea covers the local half of; and to [[bd-8a591dc]]
+([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md)), whose
+federated-peer case this idea covers the local half of; and to [[bd-8a591dc]]
 ([bd-8a591dc-machine-credentials-never-expire.md](../bugs/bd-8a591dc-machine-credentials-never-expire.md)),
 whose pull-based direction says a contributor needs reachability, not authorization.

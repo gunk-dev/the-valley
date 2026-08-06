@@ -118,8 +118,8 @@ from the original sketch: a translation function, a per-source discount factor, 
 identity-linking node, or no automatic credit at all. _Inter-group only._
 
 This keeps the permissive, low-ceremony intra-group model (anyone with push access can request
-integration — see [scenarios.md](../../design/scenarios.md)) without leaking that permissiveness
-across organizational lines.
+integration — see [user-scenarios.md](../../design/user-scenarios.md)) without leaking that
+permissiveness across organizational lines.
 
 ## Discovery is scoped by group and federation
 

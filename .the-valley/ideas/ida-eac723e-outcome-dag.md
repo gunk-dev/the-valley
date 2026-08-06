@@ -107,9 +107,9 @@ klaus-shaped"_ (PR #1's `openquestions.md`, under work scheduling). The schedule
 controller reading the log; the frontier is a derived query over the graph, rebuildable from source
 like every other projection.
 
-The same run-budget and loop-cap mechanisms named in [scenarios.md](../../design/scenarios.md)
-(_Agent loops_) bound runaway dispatch: an outcome that keeps respawning agents without closing is
-itself a signal.
+The same run-budget and loop-cap mechanisms named in
+[user-scenarios.md](../../design/user-scenarios.md) (_Agent loops_) bound runaway dispatch: an
+outcome that keeps respawning agents without closing is itself a signal.
 
 ## What this splits
 

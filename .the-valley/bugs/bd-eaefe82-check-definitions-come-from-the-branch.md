@@ -44,9 +44,17 @@ the pin the branch carries.
 
 ## Why it is acceptable today
 
-No enforcement point exists yet: declared policy is inert data until Phase 3's integrator. Every
-contributor is the operator, and the projects are few and read in full. The defect is structural
-rather than a live exposure.
+The enforcement point now exists — Phase 3's integrator
+([integration.md](../../design/integration.md)) — so the half of this the integrator can close is
+closed and the half it cannot is live. The policy it gates a change under is composed from its own
+checkout at the target tip and from the instance layer it is configured to find, never from the
+submitted tree. But a pure check's input closure is recomputed over the tree that would land, and
+the derivation naming that closure is in that tree. So the gate is sound about which checks are
+required and still unsound about what they compute.
+
+What holds in place of a fix: every contributor is the operator, and the projects are few and read
+in full. The defect is a live exposure now rather than a structural one, and the gate below is where
+it stops being tolerable.
 
 ## The gate
 

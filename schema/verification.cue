@@ -11,10 +11,10 @@
 // project cannot take back. That is the whole of the mandatory-versus-
 // overridable distinction; #Requires spells it out.
 //
-// One tool reads this file: `valley checks` composes the two layers with
-// it and prints the checks a change owes (dcr-f41f718). That deriver only
-// reports. No enforcement point exists until Phase 3's integrator
-// (design/roadmap.md), so nothing yet acts on what it prints.
+// Two tools read this file. `valley checks` composes the two layers with it
+// and prints the checks a change owes (dcr-f41f718); that deriver only
+// reports. The Phase 3 integrator asks the deriver the same question and
+// acts on the answer, which is the enforcement point (design/integration.md).
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
 // policy names checks; it never names derivations, systems, or store

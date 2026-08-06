@@ -118,6 +118,19 @@ question is answered first. Lines are written in the order below, and that order
    against. A notarization reads as the check, the environment it ran in, when that was, and what
    was observed.
 
+   The integrator's commit-point claim is the third predicate type, and it is not about a check at
+   all: it says that evidence produced over one tree stands for another
+   ([integration.md](./integration.md)). It reads as which change, onto what, from which base, under
+   which policy, and then the per-check verdicts.
+
+   | `the-valley/integration/transfer/v1`                         |
+   | ------------------------------------------------------------ |
+   | `predicate.change`                                           |
+   | `predicate.target`                                           |
+   | `predicate.base`                                             |
+   | `predicate.policy`                                           |
+   | `predicate.checks.<i>.name`, `.rule`, `.evidence`, `.inputs` |
+
 5. `provenance` — what produced the change, last, because it is context for the claim rather than
    part of it: `harness`, `model`, `prompt`, `context`, then `delegation`.
 
@@ -229,6 +242,11 @@ key the verifier holds checks out over exactly those bytes, and — given `--rep
 front of the verifier is the tree the statement names. `--signer` names a signer whose signature
 must be present. Re-running a pure check and confirming its output digest is witness
 re-verification, and belongs to [Phase 6](./roadmap.md#phase-6--trust-backstop) rather than here.
+
+`attest inputs` prints a pure check's input-closure digest and its derivation digest, evaluating the
+check over an export of the revision's tree and building nothing. It exists for the integrator: the
+pure transfer rule is closure-digest equality ([integration.md](./integration.md)), and check
+latency has no business on the commit point's path.
 
 `attest render` writes a JSON document as statement text, `attest sign` turns statement text into a
 note or adds a signature line to one, and `attest key` prints the verifier key for a signing key.

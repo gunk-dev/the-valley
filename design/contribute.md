@@ -33,10 +33,13 @@ composition, no `git` wrapper command.
    `refs/the-valley/attestations/<tree digest>/<signer key hash>`.
 6. **Publish to the transparency log** — the inclusion proof is appended as a sidecar; lands with
    [roadmap Phase 6](./roadmap.md#phase-6--trust-backstop).
-7. **Signal integration intent** — how integration is requested is open. The integrator is designed
-   around change objects — a diff targeting a stream, with identity stable across rebases — rather
-   than branches, and how a change is submitted is part of that pending design
-   ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md)).
+7. **Signal integration intent** — push one ref,
+   `refs/the-valley/integration-requests/<target>/<change>`, pointing at the change's head. The
+   target segment names the protected branch and the last segment names the change; the delta is the
+   merge base with that branch's tip up to the head. Nothing else is encoded, because a change is a
+   diff targeting a stream and every part of that is already in git
+   ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md),
+   [integration.md](./integration.md)).
 8. **Push atomically** — `git push --atomic` of the topic branch plus its attestation refs; all land
    or none do.
 9. **Server-side projection** — the bare repo's `post-receive` hook emits one bus event per updated

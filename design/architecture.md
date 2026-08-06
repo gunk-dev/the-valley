@@ -97,7 +97,9 @@ integration as a reaction, emitting outcome events back into the log.
 Merge-queue semantics fall out for free: requests targeting the same ref serialize in the
 integrator. And the failure model is deliberately unified — there is no rejection, only
 **staleness**: a request that can't progress against current policy is marked stale, once, and
-refreshing it is the branch owner's problem, not the integrator's.
+refreshing it is the branch owner's problem, not the integrator's. What makes staleness computable
+per check, so that refreshing one is not refreshing all of them, is
+[integration.md](./integration.md).
 
 ### The one structural git invariant
 

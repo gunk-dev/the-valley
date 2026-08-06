@@ -29,12 +29,11 @@ evidence about it at one base.
 The change definition already contains this. A change is (target stream, delta, provenance,
 attestation over the resulting tree), and the resulting tree is a function of the base.
 
-## Open
-
-What happens to a change's attestations when its base moves is undesigned.
-
 ## Related
 
+- [[dcr-439b771]]
+  ([dcr-439b771-integration-occ-over-content-addressed-evidence.md](../decisions/dcr-439b771-integration-occ-over-content-addressed-evidence.md))
+  — what happens to a change's attestations when its base moves.
 - [[ida-93e4f91]] ([ida-93e4f91-changes-not-branches.md](./ida-93e4f91-changes-not-branches.md)) —
   the primitive whose identity is stable across rebases.
 - [[ida-51605e8]]

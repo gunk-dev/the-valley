@@ -218,7 +218,9 @@ func (in *integrator) readKeyHash() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("reading the signing key: %w", err)
 	}
-	fields := strings.Split(strings.TrimSpace(string(out)), "+")
+	// name+hash+base64, split three ways: the name holds no plus and the
+	// base64 may.
+	fields := strings.SplitN(strings.TrimSpace(string(out)), "+", 3)
 	if len(fields) != 3 {
 		return "", fmt.Errorf("attest key printed %q", strings.TrimSpace(string(out)))
 	}

@@ -105,6 +105,49 @@
               } \
               --set-default VALLEY_ATTEST_SCHEMA ${./schema/attestation.cue}
           '';
+
+      # The Phase 3 integrator (dcr-439b771). Go, standard library only,
+      # same trade as attest — hence vendorHash = null and no module fetch.
+      integratorUnwrappedFor =
+        pkgs:
+        pkgs.buildGoModule {
+          pname = "valley-integrator";
+          version = "0";
+          src = ./integrator;
+          vendorHash = null;
+          meta.mainProgram = "integrator";
+        };
+
+      # The shipping form. The integrator drives four programs rather than
+      # reimplementing what they do: attest judges every statement and
+      # every note, the valley deriver and cue compose the policy, and git
+      # holds the requests and the refs. All four are pinned to this
+      # flake's nixpkgs so an instance's integrators agree; `nix` is
+      # deliberately absent for the same reason it is absent from attest —
+      # a closure must be recomputed by the nix the machine actually runs.
+      integratorFor =
+        pkgs:
+        pkgs.runCommand "valley-integrator"
+          {
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            meta.mainProgram = "integrator";
+          }
+          ''
+            mkdir -p $out/bin
+            makeWrapper ${lib.getExe (integratorUnwrappedFor pkgs)} $out/bin/integrator \
+              --prefix PATH : ${
+                lib.makeBinPath [
+                  pkgs.git
+                  pkgs.cue
+                  pkgs.natscli
+                  (attestFor pkgs)
+                  (valleyScriptFor pkgs)
+                ]
+              } \
+              --set-default VALLEY_ATTEST_SCHEMA ${./schema/attestation.cue} \
+              --set-default VALLEY_VERIFICATION_SCHEMA ${./schema/verification.cue} \
+              --set-default VALLEY_EVENT_SCHEMA ${./schema/events.cue}
+          '';
     in
     {
       nixosModules.valley-host = ./nix/valley-host.nix;
@@ -153,6 +196,10 @@
           type = "app";
           program = lib.getExe (attestFor nixpkgs.legacyPackages.${system});
         };
+        integrator = {
+          type = "app";
+          program = lib.getExe (integratorFor nixpkgs.legacyPackages.${system});
+        };
       });
 
       packages = lib.genAttrs systems (
@@ -164,6 +211,7 @@
           inherit valley;
           default = valley;
           attest = attestFor nixpkgs.legacyPackages.${system};
+          integrator = integratorFor nixpkgs.legacyPackages.${system};
         }
       );
 
@@ -1422,6 +1470,56 @@
                 verify statement.note "$TMPDIR/known_keys" > rebased.out
                 grep -q 'matches the recorded subject digest' rebased.out
                 touch $out
+              '';
+
+          # The integrator's verdict, case by case, with no repository in
+          # sight. Every rule of dcr-439b771 is a function of data, so the
+          # unit tests state each one directly; what a repository does to
+          # produce those inputs is integrator-e2e's.
+          integrator-unit = integratorUnwrappedFor pkgs;
+
+          # The integrator itself, driven end to end over scratch bare
+          # repositories and throwaway keys, running the real binaries: the
+          # helper produces the evidence, the deriver composes the policy,
+          # the controller judges and lands. The scenarios are Phase 3's
+          # exit criteria, observed rather than asserted about.
+          #
+          # Only the nix evaluator is stood in for — a nix build has no
+          # daemon in the sandbox, the same wall attest-e2e meets — and the
+          # stand-in models the one property the pure rule rests on: a
+          # check's input closure is the content of the files it reads.
+          # Everything downstream of it is real: attest builds the manifest
+          # and the digest, and the integrator compares them.
+          integrator-e2e =
+            pkgs.runCommand "valley-integrator-e2e"
+              {
+                nativeBuildInputs = [
+                  pkgs.bash
+                  pkgs.git
+                  pkgs.openssh
+                  pkgs.coreutils
+                  pkgs.findutils
+                  pkgs.gnused
+                  pkgs.gnugrep
+                  pkgs.cue
+                  (attestFor pkgs)
+                  (valleyScriptFor pkgs)
+                  (integratorFor pkgs)
+                ];
+                SCHEMA_ATTESTATION = ./schema/attestation.cue;
+                SCHEMA_VERIFICATION = ./schema/verification.cue;
+                SCHEMA_EVENTS = ./schema/events.cue;
+                # No bus in a sandbox: the payloads are still composed and
+                # vetted against the vocabulary, and printed rather than
+                # published. What publishing does is the post-receive hook's
+                # one `nats pub`, which this shares.
+              }
+              ''
+                cp -r ${./integrator/e2e} e2e
+                chmod -R +w e2e
+                bash e2e/run.sh 2>&1 | tee log
+                grep -q 'every scenario held' log
+                cp log $out
               '';
 
           # The verification-policy deriver (dcr-f41f718). Composing the two

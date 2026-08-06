@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# The sibling of the nix stub: `nix-store --query --references <drv>` over
+# the derivations it writes. One opaque store path per input file, named by
+# the file's content, which is what makes the closure content-addressed.
+set -euo pipefail
+
+drv="${*: -1}"
+[ -f "$drv" ] || { echo "nix-store (stub): no such derivation: $drv" >&2; exit 1; }
+while read -r sum path; do
+  printf '/nix/store/%s-%s\n' "$sum" "${path//\//_}"
+done < "$drv"

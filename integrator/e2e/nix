@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# A stand-in for nix, so the end-to-end check can exercise pure checks.
+#
+# The pure transfer rule is closure-digest equality, and a real nix cannot
+# run inside a nix build — there is no daemon in the sandbox. So this stub
+# stands in for the evaluator, and it models exactly the property the rule
+# depends on: a check's input closure is the content of the files it reads.
+#
+# A check named <name> declares what it reads in checks/<name>.inputs, one
+# path per line. Evaluating it writes a derivation listing the SHA-256 of
+# every file beneath those paths; nix-store (the sibling stub) turns that
+# list into the closure attest digests. Change a file the check reads and
+# the closure moves; change anything else and it does not.
+#
+# Everything downstream of the evaluation is the real thing: attest builds
+# the manifest and the digest, and the integrator compares them.
+set -euo pipefail
+
+store="${VALLEY_FAKE_STORE:?VALLEY_FAKE_STORE is not set}"
+mkdir -p "$store"
+
+case "${1:-}" in
+  eval)
+    # The flake reference is the one argument naming a check attribute.
+    spec=""
+    for a in "$@"; do case "$a" in *'#checks.'*) spec="$a" ;; esac; done
+    [ -n "$spec" ] || { echo "nix (stub): no #checks. reference in: $*" >&2; exit 2; }
+    tree="${spec%%#*}"
+    rest="${spec#*#checks.}"
+    if [ "$rest" = "${rest%.drvPath}" ]; then
+      # `nix eval --json --apply builtins.attrNames …#checks.<system>`:
+      # every check the tree declares.
+      names=""
+      for f in "$tree"/checks/*.inputs; do
+        [ -e "$f" ] || continue
+        n="$(basename "$f" .inputs)"
+        names="${names:+$names,}\"$n\""
+      done
+      printf '[%s]\n' "$names"
+      exit 0
+    fi
+    attr="${rest#*.}"
+    attr="${attr%.drvPath}"
+    list="$tree/checks/$attr.inputs"
+    [ -f "$list" ] || { echo "nix (stub): $tree declares no check $attr" >&2; exit 1; }
+    drv="$(mktemp "$store/$attr-XXXXXX.drv")"
+    while read -r path; do
+      [ -n "$path" ] || continue
+      while IFS= read -r f; do
+        printf '%s %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "${f#"$tree"/}" >> "$drv"
+      done < <(find "$tree/$path" -type f | LC_ALL=C sort)
+    done < "$list"
+    [ -s "$drv" ] || { echo "nix (stub): check $attr reads nothing" >&2; exit 1; }
+    printf '%s' "$drv"
+    ;;
+  build)
+    # `nix build --no-link --print-out-paths <drv>^*`. The output is a
+    # function of the derivation, as a build's output ought to be.
+    drv=""
+    for a in "$@"; do case "$a" in *.drv^*) drv="${a%^*}" ;; esac; done
+    [ -f "$drv" ] || { echo "nix (stub): no such derivation: $drv" >&2; exit 1; }
+    out="$(mktemp -d "$store/out-XXXXXX")"
+    cp "$drv" "$out/result"
+    printf '%s\n' "$out"
+    ;;
+  *)
+    echo "nix (stub): unsupported command: ${1:-}" >&2
+    exit 2
+    ;;
+esac

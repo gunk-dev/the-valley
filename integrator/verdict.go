@@ -19,6 +19,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -297,8 +298,29 @@ func Decide(ch Change, s Snapshot) Verdict {
 		v.Reason = fmt.Sprintf("%d of %d required checks no longer carry evidence that transfers", len(v.Invalidated), len(required))
 		return v
 	}
-	v.Reason = fmt.Sprintf("all %d required checks carry evidence that transfers", len(required))
+	if len(required) == 1 {
+		v.Reason = "the one required check carries evidence that transfers"
+	} else {
+		v.Reason = fmt.Sprintf("all %d required checks carry evidence that transfers", len(required))
+	}
 	return v
+}
+
+// refusalLine is the sentence a verifier refused with. attest reports what
+// it checked and then the refusal, prefixed with its own name; the lines
+// after the refusal elaborate it and the reader of a verdict wants the
+// sentence, not the elaboration.
+func refusalLine(s string) string {
+	var last string
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		if why, ok := strings.CutPrefix(line, "attest: "); ok {
+			return strings.TrimSpace(why)
+		}
+		if strings.TrimSpace(line) != "" {
+			last = strings.TrimSpace(line)
+		}
+	}
+	return last
 }
 
 // judge is the second part of the commit rule, for one check.
@@ -315,6 +337,9 @@ func judge(ch Change, s Snapshot, r Required, unmoved bool) CheckVerdict {
 	case Tampered:
 		cv.Rule = "rejected"
 		cv.Reason = "the attestation does not verify as the statement it claims to be"
+		if why := refusalLine(ev.refusal); why != "" {
+			cv.Reason += ": " + why
+		}
 		return cv
 	case UnknownSigner:
 		cv.Reason = "signed by no signer the integrator holds, so its evidence does not transfer"

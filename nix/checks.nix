@@ -15,8 +15,9 @@
 #                    fixed contract, and the helper driven end to end
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
-#   hooks.nix        mirror-e2e, bus-e2e, protect-e2e — the hooks the module
-#                    renders, run against real git
+#   hooks.nix        mirror-e2e, bus-e2e, protect-e2e, init-e2e — the hooks
+#                    the module renders, run against real git, and the init
+#                    script that wires them
 #   cli.nix          valley-cli, review-notes, policy-deriver — bin/valley
 #
 # Fixtures live with the thing they are fixtures of: host declarations,

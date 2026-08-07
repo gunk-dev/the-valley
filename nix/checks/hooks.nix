@@ -34,6 +34,22 @@
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./protect-e2e.sh);
 
+  # valley-init itself, over repositories that already exist. The other
+  # hook checks wire a bare repo by hand; this one runs the rendered init
+  # script and holds it to converging on what the declaration says — the
+  # managed hook installed where a project had none, re-pointed where it
+  # had drifted to another store path, removed where the declaration no
+  # longer protects the project, and a hand-written hook of the same name
+  # left alone. The hook it converges on is then pushed to for real, so
+  # the check ends where protect-e2e begins. Relocating the data
+  # directory is the only edit to the script — the sandbox cannot write
+  # /srv.
+  init-e2e = pkgs.runCommand "valley-init-e2e" {
+    nativeBuildInputs = [ pkgs.git ];
+    initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "initScript" ];
+  } (builtins.readFile ./init-e2e.sh);
+
   # Phase 1's exit criteria, end to end and unmocked: a push to a
   # bare repo wired with the real rendered hooks produces a
   # ref-updated event on a real JetStream server within seconds,

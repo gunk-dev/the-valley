@@ -73,6 +73,20 @@ let
   controllers = integratorHost.config.systemd.targets.valley-integrators.wants;
 
   integratorUser = integratorHost.config.systemd.services."valley-integrator@".serviceConfig.User;
+
+  # The controller is not the repositories' owner, which is the whole point
+  # of running it as itself — so git needs an ownership exception, and
+  # where that exception lives is load-bearing. GIT_CONFIG_* is command
+  # scope, the only scope besides system and global that safe.directory is
+  # read from, and the unit's environment is inherited by every git the
+  # controller drives. It names one repository: a wildcard here would hand
+  # a compromised controller every repository on the host.
+  integratorGitEnv = integratorHost.config.systemd.services."valley-integrator@".environment;
+
+  integratorSafeDirectory =
+    integratorGitEnv.GIT_CONFIG_COUNT or null != "1"
+    || integratorGitEnv.GIT_CONFIG_KEY_0 or null != "safe.directory"
+    || integratorGitEnv.GIT_CONFIG_VALUE_0 or null != "/srv/git/%i.git";
 in
 {
   module-eval =
@@ -111,6 +125,8 @@ in
       throw "valley module-eval: the integrator runs as ${integratorUser}, which the module never declares"
     else if integratorHost.config.users.users.${integratorUser}.group != "git" then
       throw "valley module-eval: the integrator reaches the repositories through the git group, and holds no other grant"
+    else if integratorSafeDirectory then
+      throw "valley module-eval: a controller must carry safe.directory for the one repository it serves in its own environment — it does not own the repositories, and git refuses what it does not own"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

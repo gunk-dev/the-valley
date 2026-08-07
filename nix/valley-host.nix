@@ -929,6 +929,25 @@ in
       # machine actually runs. Everything else a controller drives is
       # pinned inside the wrapper.
       path = [ config.nix.package ];
+      # The repositories belong to the git user and the controller does
+      # not, so git refuses to touch them as dubiously owned. The exception
+      # rides in the unit's environment, for two reasons. GIT_CONFIG_* is
+      # command-scope config, which is protected config, so safe.directory
+      # is honoured from it — a repository-scoped setting would be ignored,
+      # deliberately. And every git the controller drives is a child of
+      # this unit, whether run by the integrator itself or by attest or the
+      # deriver, so one environment covers all of them.
+      #
+      # One repository per instance: never a global gitconfig, never a
+      # wildcard. Every other repository on the host stays refused. Linked
+      # worktrees need no entry of their own — the controller creates them,
+      # so it owns them, and git checks the worktree and its gitdir rather
+      # than the repository they point at.
+      environment = {
+        GIT_CONFIG_COUNT = "1";
+        GIT_CONFIG_KEY_0 = "safe.directory";
+        GIT_CONFIG_VALUE_0 = "${cfg.dataDir}/%i.git";
+      };
       serviceConfig = {
         ExecStart = integratorCommand;
         Restart = "on-failure";

@@ -92,6 +92,16 @@ if grep -q -- '--project-policy' "$integratorUnitPath"; then
   exit 1
 fi
 
+# It does not own the repositories, so git needs an ownership
+# exception, and the rendered unit is where it has to appear:
+# GIT_CONFIG_* is command scope, which is the only scope besides
+# system and global that safe.directory is read from, and the
+# environment reaches every git the controller drives. One
+# repository, this instance's.
+grep -qF -- 'Environment="GIT_CONFIG_COUNT=1"' "$integratorUnitPath"
+grep -qF -- 'Environment="GIT_CONFIG_KEY_0=safe.directory"' "$integratorUnitPath"
+grep -qF -- 'Environment="GIT_CONFIG_VALUE_0=/srv/git/%i.git"' "$integratorUnitPath"
+
 # It writes refs as itself, so the repositories it serves are
 # group-shared — and only those. The sharing block names each
 # repo it touches; the repo-creation loop above it names none.

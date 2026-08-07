@@ -112,12 +112,39 @@ let
   # repository, so read access is not enough: the repos it serves become
   # group-shared, and its primary group is the git group. Re-applied on
   # every activation, because a repo can predate the service.
-  integratorShareCommands = lib.concatMapStrings (name: ''
-    repo=${lib.escapeShellArg "${cfg.dataDir}/${name}.git"}
-    git -C "$repo" config core.sharedRepository group
-    chmod -R g+rwX "$repo"
-    find "$repo" -type d -exec chmod g+s {} +
-  '') (lib.attrNames integratedProjects);
+  # git creates $GIT_DIR/worktrees on the first `worktree add`, owned by
+  # whichever user got there first. Left alone that user is the integrator,
+  # and this sweep runs as the git user, which cannot chmod a directory it
+  # does not own. So init makes that directory itself, ahead of any
+  # controller: owned by the git user, group-writable, and setgid, so what a
+  # controller creates inside it lands in the git group and stays reachable.
+  integratorShareCommands =
+    ''
+      # A chmod the git user is not allowed to make is a path some other
+      # user owns; chmod -R applies what it can and then says so. Warn and
+      # carry on, and the trade is worth stating. Failing here fails
+      # valley-init, which every valley unit requires, so the alternative to
+      # a partly shared repository is no git service on the host at all: no
+      # controllers, and no ssh access to any project. A degraded share
+      # costs the integrator the paths it cannot write, is visible in the
+      # journal, and is fixed by one chown. That is the recoverable half of
+      # the trade, and it is the half to take. The warning is what keeps the
+      # degraded state from being a silent one.
+      share() {
+        "$@" || echo "valley-init: $* failed — a path the git user does not own is left as it was, and the integrator may be unable to write it" >&2
+      }
+    ''
+    + lib.concatMapStrings (name: ''
+      repo=${lib.escapeShellArg "${cfg.dataDir}/${name}.git"}
+      git -C "$repo" config core.sharedRepository group
+      # Before the sweep below, so the sweep never meets a root it cannot
+      # touch. On a host where a controller already made it, this is the
+      # chmod that warns, and the repository is served either way.
+      mkdir -p "$repo/worktrees"
+      share chmod g+rwxs "$repo/worktrees"
+      share chmod -R g+rwX "$repo"
+      share find "$repo" -type d -exec chmod g+s {} +
+    '') (lib.attrNames integratedProjects);
 
   # The paths the consumer must supply once the integrator is enabled,
   # with what each names — for the assertion message.

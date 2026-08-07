@@ -63,18 +63,29 @@ let
   # supplied.
   #
   # There is a seam between those two halves that neither reaches, and it
-  # has now produced three bugs. Every assertion below is an eval of the
-  # unit's text; integrator-e2e runs the binaries with no unit around them
-  # at all. What sits between is the unit's sandbox meeting the filesystem
-  # the binaries actually use at runtime: git refusing a repository the
-  # service does not own (bd-500adf7), and a temporary directory the
-  # sandbox does not leave writable. Each was found by a host, minutes of
-  # a live controller after a deploy that every check here passed.
+  # produced four bugs in a single day. Every assertion below is an eval of
+  # the unit's text; integrator-e2e runs the binaries with no unit around
+  # them at all. What sits between is the unit's sandbox and identity
+  # meeting the filesystem the binaries actually use at runtime:
+  #
+  #   - git refusing a repository the service does not own (bd-500adf7)
+  #   - a temporary directory the sandbox does not leave writable
+  #   - the worktree metadata root, created by whichever service reached it
+  #     first and then unchmodable by the other
+  #   - the last of those failing valley-init, which every valley unit
+  #     requires, so one repository's permissions took the host's git
+  #     service down with them
+  #
+  # Each was found by a host, minutes of a live service after a deploy that
+  # every check here passed. The last two are the same seam feeding itself:
+  # the debris of the second bug's failed runs is what the third tripped
+  # over. That is the case for covering it rather than pinning it one
+  # assertion at a time — the failures compose, and the checks do not.
   #
   # A nixosTest that boots one host and reconciles one change end to end is
   # what covers that seam, and each assertion pinning a piece of it — the
-  # git ownership exception, TMPDIR — is a place a smoke boot would have
-  # spoken first. Not built here.
+  # git ownership exception, TMPDIR, the worktrees root — is a place a
+  # smoke boot would have spoken first. Not built here.
   #
   # Protection and integration are separable declarations: protectedHost
   # declares the same protected projects with the service off, and must

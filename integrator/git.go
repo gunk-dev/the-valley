@@ -96,6 +96,14 @@ func (w *worktree) remove() {
 // before the loop starts, when this process holds no worktree of its own, so
 // everything carrying the prefix is a leak.
 func sweepScratch(repo string) {
+	// First, and unconditionally. `git worktree add` keeps metadata under
+	// $GIT_DIR/worktrees, so a worktree whose directory is gone leaves an
+	// entry behind in the repository, and prune is the only thing that
+	// clears one. It runs before the listing rather than after it, so that
+	// a repository whose worktrees cannot be listed still gets its stale
+	// metadata cleared — that is the repository most likely to have some.
+	_, _ = gitTry(repo, "worktree", "prune")
+
 	out, ok := gitTry(repo, "worktree", "list", "--porcelain")
 	if !ok {
 		return
@@ -108,8 +116,9 @@ func sweepScratch(repo string) {
 		_, _ = gitTry(repo, "worktree", "remove", "--force", dir)
 		_ = os.RemoveAll(dir)
 	}
-	// An entry whose checkout went away by some other route is still an
-	// entry, and only prune clears those.
+	// Again, because the loop above removes directories git did not always
+	// get to remove for itself: a `worktree remove` that failed leaves the
+	// entry standing after RemoveAll has taken the checkout.
 	_, _ = gitTry(repo, "worktree", "prune")
 }
 

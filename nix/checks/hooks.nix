@@ -47,7 +47,11 @@
   init-e2e = pkgs.runCommand "valley-init-e2e" {
     nativeBuildInputs = [ pkgs.git ];
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
-    passAsFile = [ "initScript" ];
+    integratorInitScript = hosts.integratorHost.config.systemd.services.valley-init.script;
+    passAsFile = [
+      "initScript"
+      "integratorInitScript"
+    ];
   } (builtins.readFile ./init-e2e.sh);
 
   # Phase 1's exit criteria, end to end and unmocked: a push to a

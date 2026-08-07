@@ -98,4 +98,38 @@ VALLEY_PRINCIPAL=integrator git -C work push --quiet origin main
 [ "$(git -C "$data/guarded.git" rev-parse main)" = "$(git -C work rev-parse HEAD)" ] ||
   fail "a declared writer could not write a protected ref"
 
+# The same declaration with the controllers switched on. A controller
+# writes the worktree metadata git keeps under $GIT_DIR/worktrees, and git
+# creates that directory on the first `worktree add` as whichever user got
+# there first. init has to get there first: the share sweep runs as the git
+# user, and a root a controller owns is one the git user cannot chmod.
+sed "s|/srv/git|$data|g" "$integratorInitScriptPath" > init-integrator.sh
+bash init-integrator.sh 2> share.err ||
+  fail "the rendered init script failed with controllers enabled"
+for name in guarded released; do
+  root="$data/$name.git/worktrees"
+  [ -d "$root" ] || fail "$name has no worktrees root for a controller to write into"
+  perms="$(stat -c %A "$root")"
+  # Group-writable is asserted; setgid is not. This sandbox refuses to set
+  # it — see below — and what the module asks for is pinned by module-eval
+  # over the rendered script instead.
+  [ "${perms:4:2}" = rw ] ||
+    fail "$name's worktrees root is $perms — a controller cannot write into it"
+done
+[ ! -e "$data/open.git/worktrees" ] ||
+  fail "a project no controller serves was given a worktrees root"
+
+# A share the git user is not allowed to apply must warn and leave init
+# standing. Every valley unit requires valley-init, so a failure here costs
+# the host its git service over one repository's permissions, and a
+# degraded share costs the integrator the paths it cannot write. The exit
+# status above is the assertion; this pairs a refusal with its warning
+# wherever one happened, rather than requiring one. As it stands the
+# sandbox refuses the setgid bit, so the path is exercised on every run —
+# but the check does not depend on that staying true.
+if grep -q 'Operation not permitted' share.err; then
+  grep -q 'valley-init:.*does not own' share.err ||
+    fail "a refused chmod went through without a warning"
+fi
+
 touch "$out"

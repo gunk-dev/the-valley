@@ -112,4 +112,31 @@ if grep -qxF -- "repo=/srv/git/open.git" "$integratorInitPath"; then
   echo "module-eval: a project nobody protected was made group-shared" >&2
   exit 1
 fi
+
+# git creates $GIT_DIR/worktrees on the first `worktree add`, owned by
+# whoever got there first. init has to get there first, because the
+# sweep below it runs as the git user and cannot chmod what a
+# controller owns. Both the creation and its order are pinned: made
+# after the repo-creation loop, before the recursive chmod that would
+# otherwise be the first thing to meet it.
+mkdir_line="$(grep -nF -- 'mkdir -p "$repo/worktrees"' "$integratorInitPath" | head -n1 | cut -d: -f1)"
+chmod_line="$(grep -nF -- 'chmod -R g+rwX "$repo"' "$integratorInitPath" | head -n1 | cut -d: -f1)"
+if [ -z "$mkdir_line" ]; then
+  echo "module-eval: valley-init must create each served repository's worktrees root — a controller that creates it first owns a directory the git user cannot chmod" >&2
+  exit 1
+fi
+if [ -z "$chmod_line" ] || [ "$mkdir_line" -ge "$chmod_line" ]; then
+  echo "module-eval: the worktrees root must be created before the share sweep reaches it" >&2
+  exit 1
+fi
+grep -qF -- 'chmod g+rwxs "$repo/worktrees"' "$integratorInitPath"
+
+# A chmod the git user is not allowed to make must not fail valley-init:
+# every valley unit requires it, so a failure there costs the host its
+# git service rather than one repository's group share.
+grep -qF -- 'share chmod -R g+rwX "$repo"' "$integratorInitPath"
+if ! grep -qF -- 'echo "valley-init:' "$integratorInitPath"; then
+  echo "module-eval: a share the git user cannot apply must warn, not fail — valley-init failing takes every valley unit with it" >&2
+  exit 1
+fi
 touch "$out"

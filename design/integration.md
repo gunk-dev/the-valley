@@ -140,9 +140,9 @@ is about a different tree: the one that landed. Its predicate type is
 evidence was produced over, the policy the verdict was derived under, and the per-check verdicts —
 each citing the statement it is about by a digest of the bytes that statement's signature covers. A
 policy that required nothing of the change writes `predicate.required none` in place of the
-verdicts, which is the same claim with an empty answer rather than a different kind of claim.
-The policy it names is the one the integrator composed from its own checkout at the target tip,
-never the submitted tree, which is the direction
+verdicts, which is the same claim with an empty answer rather than a different kind of claim. The
+policy it names is the one the integrator composed from its own checkout at the target tip, never
+the submitted tree, which is the direction
 [bd-eaefe82](../.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md) points at.
 
 When nothing intervened the two trees are the same tree and both notes sit under one ref. When the

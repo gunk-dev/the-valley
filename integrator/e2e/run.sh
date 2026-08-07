@@ -627,10 +627,18 @@ grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/head
 # And the flat layout, which is a directory that exists and holds no
 # documents of its own: policy/ has the two layers under it and no *.cue in
 # it. Said as that, rather than as an empty composition further on.
+#
+# Under a second request name, because the refusal above is now this
+# controller's recorded answer to c11 and it stands until the request, the
+# tip or the evidence moves — which is scenario 14's whole subject. A
+# request is what an answer is remembered against, so a second one asks the
+# question again.
+request c11-flat main "$(git rev-parse c11)"
 floorless --instance-policy policy || true
 grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/heads/main" "$work/last.out" \
   || die "a floor directory holding no documents did not say so: $(cat "$work/last.out")"
 forget c11
+forget c11-flat
 holds "a floor that is not where the controller looked names the repository, the directory and the ref"
 
 # ----------------------------------------------------------------------

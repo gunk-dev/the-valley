@@ -28,14 +28,13 @@ has no order at all. Between them they cover the places implementations part com
 predicate types, each in its own order; the transfer claim written both ways — a check list, and
 `predicate.required none` for a policy that required nothing of the change, which is the case where
 absence carries the claim and an empty list would have no written form at all; a digest set with
-several members, whose entries sort by key while
-everything around them does not; a delegation chain long enough that index `10` follows index `9`,
-where an implementation ordering by the key's bytes rather than by the index will get the array
-wrong; values written as their own bytes, including the characters a JSON encoder would have
-escaped, text above the basic multilingual plane, and leading, trailing and repeated spaces, which
-are all load-bearing and none of which survive an editor that trims whitespace; a statement with and
-without provenance; and a note with two signature lines, which is what "several parties attest to
-one subject" looks like.
+several members, whose entries sort by key while everything around them does not; a delegation chain
+long enough that index `10` follows index `9`, where an implementation ordering by the key's bytes
+rather than by the index will get the array wrong; values written as their own bytes, including the
+characters a JSON encoder would have escaped, text above the basic multilingual plane, and leading,
+trailing and repeated spaces, which are all load-bearing and none of which survive an editor that
+trims whitespace; a statement with and without provenance; and a note with two signature lines,
+which is what "several parties attest to one subject" looks like.
 
 `known_keys` is the whole of what a verifier is given: one line per key, each a name, the key hash
 its name and public key produce, and the public key itself.

@@ -16,6 +16,7 @@ let
     protectedHost
     busHost
     mirrorHost
+    integratorHost
     ;
 
   failedAssertions = builtins.filter (a: !a.assertion) (
@@ -24,6 +25,7 @@ let
     ++ busHost.config.assertions
     ++ mirrorHost.config.assertions
     ++ protectedHost.config.assertions
+    ++ integratorHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -51,6 +53,26 @@ let
       noBackupHost.config.users.users.git.openssh.authorizedKeys.keys
     )
     || lib.hasInfix "valley-protect-" noBackupHost.config.systemd.services.valley-init.script;
+
+  # The integrator's units. What a controller *does* is not checked here
+  # and no VM is booted: that is integrator-e2e's job (the real binaries
+  # over real repositories) and, past it, live exercise on a host. These
+  # assertions cover the wiring — that a controller is rendered for what
+  # the declaration protects and for nothing else, under an identity that
+  # is not the git user's, pointed at the key and the signers the consumer
+  # supplied.
+  #
+  # Protection and integration are separable declarations: protectedHost
+  # declares the same protected projects with the service off, and must
+  # evaluate to no controller at all.
+  integratorRenderedWithoutEnable =
+    protectedHost.config.systemd.services ? "valley-integrator@"
+    || protectedHost.config.systemd.targets ? valley-integrators
+    || lib.hasInfix "sharedRepository" protectedHost.config.systemd.services.valley-init.script;
+
+  controllers = integratorHost.config.systemd.targets.valley-integrators.wants;
+
+  integratorUser = integratorHost.config.systemd.services."valley-integrator@".serviceConfig.User;
 in
 {
   module-eval =
@@ -72,6 +94,23 @@ in
       protectedHost.config.services.openssh.settings.PermitUserEnvironment or null != "VALLEY_PRINCIPAL"
     then
       throw "valley module-eval: a key naming a principal needs sshd to honour that one variable and no other"
+    else if integratorRenderedWithoutEnable then
+      throw "valley module-eval: integrator machinery rendered for a protected declaration that never enabled the service"
+    else if !(integratorHost.config.systemd.services ? "valley-integrator@") then
+      throw "valley module-eval: the integrator is enabled and no controller unit was rendered"
+    else if
+      controllers != [
+        "valley-integrator@guarded.service"
+        "valley-integrator@released.service"
+      ]
+    then
+      throw "valley module-eval: a controller runs for each protected project and no other, not ${lib.concatStringsSep ", " controllers}"
+    else if integratorUser == integratorHost.config.services.valley.user then
+      throw "valley module-eval: the integrator must not run as the git user — it has its own (bd-500adf7)"
+    else if !(integratorHost.config.users.users ? ${integratorUser}) then
+      throw "valley module-eval: the integrator runs as ${integratorUser}, which the module never declares"
+    else if integratorHost.config.users.users.${integratorUser}.group != "git" then
+      throw "valley module-eval: the integrator reaches the repositories through the git group, and holds no other grant"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;
@@ -80,6 +119,8 @@ in
         resticTimer = host.config.systemd.units."restic-backups-valley.timer".text;
         protectedInit = protectedHost.config.systemd.services.valley-init.script;
         protectedKeys = lib.concatStringsSep "\n" protectedKeyLines;
+        integratorUnit = integratorHost.config.systemd.units."valley-integrator@.service".text;
+        integratorInit = integratorHost.config.systemd.services.valley-init.script;
         passAsFile = [
           "initScript"
           "sshdConfig"
@@ -87,6 +128,8 @@ in
           "resticTimer"
           "protectedInit"
           "protectedKeys"
+          "integratorUnit"
+          "integratorInit"
         ];
       } (builtins.readFile ./module-eval.sh);
 }

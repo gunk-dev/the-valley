@@ -100,4 +100,20 @@ in
       ];
     };
   };
+
+  # The same protection declaration with the controllers switched on. The
+  # integrator serves exactly what that declaration protects, so this host
+  # renders two controllers and no third; the paths are eval-only
+  # placeholders, like the backup host's.
+  integratorHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instancePolicy = "/var/lib/valley-instance/policy";
+      };
+    };
+  };
 }

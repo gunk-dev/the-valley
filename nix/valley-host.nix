@@ -27,6 +27,9 @@
 # cosmo, via its secrets). Nothing here plumbs secrets: the backup options
 # below take *paths* to consumer-provisioned secret files; the contents
 # never pass through this module or the store.
+#
+# One service runs under its own unix user rather than the git one: the
+# integrator. That is the first half of the split bd-500adf7 asks for.
 {
   config,
   pkgs,
@@ -74,6 +77,54 @@ let
       RandomizedDelaySec = "30m";
       Persistent = true;
     };
+  };
+
+  # The projects the integrator serves: exactly the ones the declaration
+  # protects. A protected ref is one only a declared writer may push, and
+  # the integrator is what lands everyone else's changes onto it.
+  integratedProjects = lib.filterAttrs (_: p: p ? protection) gitProjects;
+
+  # The integrator this flake builds, in its shipping form: attest, the
+  # deriver, cue, git and natscli pinned inside the wrapper, so every host
+  # judges with the same tools (nix/packages.nix).
+  integratorPackage = (import ./packages.nix { inherit pkgs lib; }).integrator;
+
+  # The whole of a controller's configuration: which repository it serves,
+  # who it signs as, and whose evidence it accepts. No policy — the
+  # integrator reads the project layer from the target tip and the instance
+  # layer from its own side (bd-eaefe82) — and no project name, which the
+  # binary derives from the bare repo's own directory, the same way the
+  # post-receive hook does.
+  integratorCommand = lib.concatStringsSep " " (
+    [
+      "${integratorPackage}/bin/integrator watch"
+      "--repo ${cfg.dataDir}/%i.git"
+      "--key ${toString cfg.integrator.signingKeyFile}"
+      "--known-signers ${toString cfg.integrator.knownSignersFile}"
+      "--instance ${toString cfg.integrator.instancePolicy}"
+      "--interval ${cfg.integrator.interval}"
+    ]
+    ++ lib.optional cfg.bus.enable "--bus ${busUrl}"
+  );
+
+  # The one filesystem grant the integrator's user gets. It writes refs,
+  # objects, and the worktree metadata `git worktree add` keeps inside the
+  # repository, so read access is not enough: the repos it serves become
+  # group-shared, and its primary group is the git group. Re-applied on
+  # every activation, because a repo can predate the service.
+  integratorShareCommands = lib.concatMapStrings (name: ''
+    repo=${lib.escapeShellArg "${cfg.dataDir}/${name}.git"}
+    git -C "$repo" config core.sharedRepository group
+    chmod -R g+rwX "$repo"
+    find "$repo" -type d -exec chmod g+s {} +
+  '') (lib.attrNames integratedProjects);
+
+  # The paths the consumer must supply once the integrator is enabled,
+  # with what each names — for the assertion message.
+  integratorPathOptions = {
+    signingKeyFile = "the key its transfer statements are signed with";
+    knownSignersFile = "the signers whose evidence it accepts";
+    instancePolicy = "the instance policy layer it composes against";
   };
 
   # The secret-path options the consumer must supply once the declaration
@@ -517,6 +568,89 @@ in
       };
     };
 
+    # The integrator (design/roadmap.md, Phase 3): the controller that
+    # lands a change once its evidence still transfers to the current tip.
+    # Machine options only — whether this host runs controllers, who they
+    # are, and how often they look. Which projects get one is not an option
+    # either: it follows from which projects the declaration protects,
+    # because a protected ref is exactly what a controller exists to write.
+    integrator = {
+      enable = lib.mkEnableOption "the valley integrator: one controller per protected project, landing changes whose evidence transfers";
+
+      user = lib.mkOption {
+        type = lib.types.str;
+        default = "valley-integrator";
+        description = ''
+          System user the controllers run as. Deliberately not
+          {option}`services.valley.user`: one unix identity per service is
+          the split bd-500adf7 asks for, and this service begins it.
+
+          The account exists only to write the repositories it serves. It
+          gets no shell and no SSH key, and its primary group is
+          {option}`services.valley.group`, which is the whole of its
+          permission model: {option}`services.valley.dataDir` is already
+          group-readable, and each served repository is made group-shared
+          (group write, setgid directories) so a controller can write
+          refs, objects, and git's worktree metadata. Nothing else on the
+          host belongs to that group, and the bus's store directory (mode
+          0700) stays out of reach.
+
+          The key and signers files are the consumer's to provision; both
+          must be readable by this user.
+        '';
+      };
+
+      signingKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/run/agenix/valley-integrator-key";
+        description = ''
+          ed25519 private key the controllers sign their transfer
+          statements with. A runtime path the consumer provisions (e.g.
+          agenix), never a store path — the store is world-readable.
+        '';
+      };
+
+      knownSignersFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/var/lib/valley-instance/known_signers";
+        description = ''
+          File of verifier keys whose attestations count, one per line, in
+          `attest key` format. This is the identity registry's interim
+          compilation (dcr-b87f6e8): no compiler exists yet, so the file
+          is supplied directly. Evidence signed by nobody in it does not
+          transfer, which a controller reports per check rather than
+          treating as a forgery.
+        '';
+      };
+
+      instancePolicy = lib.mkOption {
+        type = lib.types.nullOr lib.types.path;
+        default = null;
+        example = "/var/lib/valley-instance/policy";
+        description = ''
+          Directory of `*.cue` files holding the instance policy layer,
+          from a checkout of the instance repository on this host. Both
+          layers are resolved from the controller's own side — this one,
+          and the project's `policy/` at the target tip — so a change can
+          never supply the policy that gates it (bd-eaefe82).
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "15s";
+        example = "1m";
+        description = ''
+          How long a controller waits between passes. The integrator polls
+          deliberately: integration requests are durable in git, and the
+          controller level-triggers over those refs, so a lost event costs
+          one interval and nothing more.
+        '';
+      };
+    };
+
     # Machine integration for the declared backup policy. The declaration
     # states WHAT must hold (offsite backup, cadence, retention); these
     # options supply HOW on this machine — where the repository is and how
@@ -580,6 +714,22 @@ in
         assertion = cfg.backup.${name} != null;
         message = "services.valley.backup.${name} must be set: the host declaration enables backup, and ${what} is machine integration the consumer supplies (e.g. from its secrets).";
       }) backupSecretOptions
+    )
+    ++ lib.optionals cfg.integrator.enable (
+      lib.mapAttrsToList (name: what: {
+        assertion = cfg.integrator.${name} != null;
+        message = "services.valley.integrator.${name} must be set: the integrator is enabled, and ${what} is machine integration the consumer supplies.";
+      }) integratorPathOptions
+      ++ [
+        {
+          assertion = cfg.integrator.user != cfg.user;
+          message = "services.valley.integrator.user must differ from services.valley.user: the integrator runs under its own unix identity (bd-500adf7).";
+        }
+        {
+          assertion = integratedProjects != { };
+          message = "services.valley.integrator.enable is on and the host declaration protects no project — a controller only ever serves a protected target, so this would render no service at all.";
+        }
+      ]
     );
 
     users.groups.${cfg.group} = { };
@@ -592,6 +742,16 @@ in
       # interactive logins are rejected (no ~/git-shell-commands).
       shell = "${pkgs.git}/bin/git-shell";
       openssh.authorizedKeys.keys = map authorizedKeyLine cfg.authorizedKeys;
+    };
+
+    # The integrator's own account. No shell, no keys, no home of its own
+    # beyond the state directory its units get; the git group is the only
+    # thing it holds.
+    users.users.${cfg.integrator.user} = lib.mkIf cfg.integrator.enable {
+      isSystemUser = true;
+      group = cfg.group;
+      home = "/var/lib/valley-integrator";
+      description = "The valley integrator";
     };
 
     services.openssh.enable = lib.mkDefault true;
@@ -744,7 +904,84 @@ in
 
         # The ref-updated publisher hook, on every repo when the bus is on.
         ${busHookCommands}
+
+        # Group-shared repositories, on what the integrator serves.
+        ${lib.optionalString cfg.integrator.enable integratorShareCommands}
       '';
+    };
+
+    # One controller per served project, as instances of a single template:
+    # the units differ only in the repository they serve, which is the
+    # instance name. `watch` rather than a timer firing `reconcile`: the
+    # binary owns its poll loop and its interval, and a timer would be a
+    # second cadence over the same level-triggered refs.
+    systemd.services."valley-integrator@" = lib.mkIf cfg.integrator.enable {
+      description = "The valley integrator for %i";
+      after = [
+        "network.target"
+        "valley-init.service"
+      ]
+      ++ lib.optional cfg.bus.enable "valley-bus-init.service";
+      requires = [ "valley-init.service" ];
+      unitConfig.RequiresMountsFor = cfg.dataDir;
+      # nix is not pinned, for the reason the integrator package does not
+      # pin it: a check's input closure must be recomputed by the nix this
+      # machine actually runs. Everything else a controller drives is
+      # pinned inside the wrapper.
+      path = [ config.nix.package ];
+      serviceConfig = {
+        ExecStart = integratorCommand;
+        Restart = "on-failure";
+        RestartSec = "10s";
+        User = cfg.integrator.user;
+        Group = cfg.group;
+        StateDirectory = "valley-integrator";
+        StateDirectoryMode = "0700";
+        WorkingDirectory = "/var/lib/valley-integrator";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        # The one repository it serves, and the nix daemon's socket —
+        # recomputing a closure means asking the daemon, and connecting to
+        # a unix socket needs write access to it.
+        ReadWritePaths = [
+          "${cfg.dataDir}/%i.git"
+          "/nix/var/nix/daemon-socket"
+        ];
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        # Group write, not the bus unit's 0077: the git user owns these
+        # repositories and has to stay able to write what a controller
+        # leaves in them.
+        UMask = "0002";
+      };
+    };
+
+    # wantedBy on a template unit enables nothing, so the instances the
+    # declaration asks for are pulled in by name.
+    systemd.targets.valley-integrators = lib.mkIf cfg.integrator.enable {
+      description = "The valley integrator's controllers";
+      wantedBy = [ "multi-user.target" ];
+      wants = map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects);
     };
 
     # Offsite backup, rendered only when the declaration asks for it. The

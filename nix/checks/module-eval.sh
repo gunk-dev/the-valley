@@ -78,4 +78,28 @@ releasedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-released' "$protectedIn
 grep -qF -- 'protected=( refs/heads/main )' "$guardedHook"
 grep -qF -- "protected=( refs/heads/main 'refs/heads/release/*' )" "$releasedHook"
 grep -qF -- 'writers=( integrator )' "$guardedHook"
+
+# A controller is given the repository it serves and the
+# identity it acts under, and nothing about policy: it reads
+# the project layer from the target tip and the instance
+# layer from its own side.
+grep -q -- '--repo /srv/git/%i.git' "$integratorUnitPath"
+grep -q -- '--key /run/agenix/valley-integrator-key' "$integratorUnitPath"
+grep -q -- '--known-signers /var/lib/valley-instance/known_signers' "$integratorUnitPath"
+grep -q -- '--instance /var/lib/valley-instance/policy' "$integratorUnitPath"
+if grep -q -- '--project-policy' "$integratorUnitPath"; then
+  echo "module-eval: the module must not tell a controller where the project's policy is" >&2
+  exit 1
+fi
+
+# It writes refs as itself, so the repositories it serves are
+# group-shared — and only those. The sharing block names each
+# repo it touches; the repo-creation loop above it names none.
+grep -qxF -- "repo=/srv/git/guarded.git" "$integratorInitPath"
+grep -qxF -- "repo=/srv/git/released.git" "$integratorInitPath"
+grep -qF -- 'config core.sharedRepository group' "$integratorInitPath"
+if grep -qxF -- "repo=/srv/git/open.git" "$integratorInitPath"; then
+  echo "module-eval: a project nobody protected was made group-shared" >&2
+  exit 1
+fi
 touch "$out"

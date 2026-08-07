@@ -17,6 +17,7 @@ let
     busHost
     mirrorHost
     integratorHost
+    integratorSelfHost
     ;
 
   failedAssertions = builtins.filter (a: !a.assertion) (
@@ -26,6 +27,7 @@ let
     ++ mirrorHost.config.assertions
     ++ protectedHost.config.assertions
     ++ integratorHost.config.assertions
+    ++ integratorSelfHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -112,10 +114,17 @@ let
   # a compromised controller every repository on the host.
   integratorGitEnv = integratorHost.config.systemd.services."valley-integrator@".environment;
 
+  # The count is what git reads; an entry past it is an entry git ignores,
+  # silently. So it is checked against the entries actually rendered rather
+  # than against a number written here, which would have to be edited every
+  # time a grant is added and would go on passing if it were not.
   integratorSafeDirectory =
-    integratorGitEnv.GIT_CONFIG_COUNT or null != "1"
-    || integratorGitEnv.GIT_CONFIG_KEY_0 or null != "safe.directory"
-    || integratorGitEnv.GIT_CONFIG_VALUE_0 or null != "/srv/git/%i.git";
+    integratorGitEnv.GIT_CONFIG_KEY_0 or null != "safe.directory"
+    || integratorGitEnv.GIT_CONFIG_VALUE_0 or null != "/srv/git/%i.git"
+    || integratorGitEnv.GIT_CONFIG_COUNT or null
+      != toString (
+        lib.length (lib.filter (lib.hasPrefix "GIT_CONFIG_KEY_") (lib.attrNames integratorGitEnv))
+      );
 
   integratorService = integratorHost.config.systemd.services."valley-integrator@".serviceConfig;
 
@@ -127,6 +136,37 @@ let
   # ProtectSystem=strict is documented to leave a declared state directory
   # writable. Everything the unit may write is enumerated, so what a reader
   # of the unit sees is the whole of it.
+  # The floor is read from the instance repository's integrated tip
+  # (dcr-f41f718, dcr-b87f6e8), so a controller is told which repository
+  # carries it and reads it there. Three things have to be true of that, and
+  # each was a way for it to be silently wrong.
+  #
+  # The controller has to be told at all — the failure this replaced was a
+  # binary looking for a materialized directory nothing populated.
+  #
+  # It has to work when the repository carrying the floor is not the one the
+  # controller serves, which is the ordinary case: on integratorHost every
+  # controller serves a protected project and reads the floor out of
+  # "open", which no controller serves. git refuses a repository the caller
+  # does not own, so that read needs its own safe.directory entry, named and
+  # not wildcarded — the same failure as the served repository's, one
+  # repository over.
+  #
+  # And it has to keep working when the two coincide, which is what an
+  # instance's own host looks like: integratorSelfHost's controller for
+  # "guarded" reads the floor from "guarded".
+  integratorFloor =
+    let
+      command = integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+      selfCommand = integratorSelfHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+      env = integratorHost.config.systemd.services."valley-integrator@".environment;
+    in
+    !(lib.hasInfix "--instance-repo /srv/git/open.git" command)
+    || !(lib.hasInfix "--instance-repo /srv/git/guarded.git" selfCommand)
+    || env.GIT_CONFIG_COUNT or null != "2"
+    || env.GIT_CONFIG_KEY_1 or null != "safe.directory"
+    || env.GIT_CONFIG_VALUE_1 or null != "/srv/git/open.git";
+
   integratorScratch =
     integratorGitEnv.TMPDIR or null != "/var/lib/${integratorService.StateDirectory}"
     || !(builtins.elem "/var/lib/${integratorService.StateDirectory}" integratorService.ReadWritePaths);
@@ -170,6 +210,8 @@ in
       throw "valley module-eval: the integrator reaches the repositories through the git group, and holds no other grant"
     else if integratorSafeDirectory then
       throw "valley module-eval: a controller must carry safe.directory for the one repository it serves in its own environment — it does not own the repositories, and git refuses what it does not own"
+    else if integratorFloor then
+      throw "valley module-eval: a controller must be told which repository carries the floor, and must carry a safe.directory exception for it — the floor is read from that repository's integrated tip, and git refuses a repository its caller does not own"
     else if integratorScratch then
       throw "valley module-eval: a controller's TMPDIR must be its state directory and that directory must be named in ReadWritePaths — under ProtectSystem=strict a path the unit does not enumerate is one it cannot write, and a verdict needs a worktree on disk"
     else

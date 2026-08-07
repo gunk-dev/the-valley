@@ -188,18 +188,25 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 		return ch, verdict.Snapshot{}, land, err
 	}
 
-	// The policy is read at the target tip, from the integrator's own
-	// checkout — never from the tree being gated.
-	cat, policyDigest, err := in.policy.catalogue(wt)
+	// The policy is read from the integrator's own side and never from the
+	// tree being gated: the project layer from this checkout of the target
+	// tip, the floor from the instance repository's integrated tip. Both
+	// are resolved once and held for the whole pass.
+	pol, closeInstance, err := in.policy.open()
+	if err != nil {
+		return ch, verdict.Snapshot{}, land, err
+	}
+	defer closeInstance()
+	cat, policyDigest, err := pol.catalogue(wt)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
 	land.policy = policyDigest
-	owed, err := in.policy.derive(wt, base, r.head)
+	owed, err := pol.derive(wt, base, r.head)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
-	required, err := in.policy.required(owed, cat)
+	required, err := pol.required(owed, cat)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
@@ -234,7 +241,7 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 		// the classes the deriver matches over base..tip. Asking the
 		// deriver rather than matching globs here keeps one implementation
 		// of what a class covers.
-		intervening, err := in.policy.derive(wt, base, tip)
+		intervening, err := pol.derive(wt, base, tip)
 		if err != nil {
 			return ch, snap, land, err
 		}

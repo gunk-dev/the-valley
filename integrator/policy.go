@@ -16,20 +16,106 @@ import (
 
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
+// instanceLayer is where the group's floor comes from. The floor is the
+// instance repository's, read at the tip that has been integrated
+// (dcr-f41f718), and the instance repository is the group's own
+// (dcr-b87f6e8). A host that serves that repository is therefore already
+// holding the authoritative copy, and reading it there is reading it where
+// it is authoritative: no checkout to keep in step, no refresh to schedule,
+// and no way for the floor a controller composes against to differ from the
+// floor the group last landed.
+//
+// The consequence is worth stating, because it is a property and not a
+// limitation. A change to the floor takes effect at the first pass after it
+// lands on that ref, and never before — an edit sitting in a branch, a
+// worktree, or a request that has not been integrated governs nothing.
+//
+// path is the fallback: a directory of `*.cue` on disk, for a host that
+// serves no instance repository and must be given the layer some other way.
+type instanceLayer struct {
+	repo string // the bare repository carrying the floor, read and never written
+	ref  string // the ref whose tip is authoritative
+	dir  string // the floor's directory in that tip's tree
+	path string // a materialized layer, when no repository carries one
+}
+
+// open resolves the layer to a directory on disk for the length of one pass,
+// and returns what ends it.
+//
+// The tip is taken apart with ls-tree and show rather than checked out. A
+// worktree would write into the instance repository — git keeps worktree
+// metadata under $GIT_DIR — and a controller has no business writing a
+// repository it does not serve. Reading is all this needs, and reading is
+// all it is granted.
+func (l instanceLayer) open() (string, func(), error) {
+	noop := func() {}
+	if l.repo == "" {
+		return l.path, noop, nil
+	}
+	tree := l.ref + ":" + l.dir
+	listing, err := git(l.repo, "ls-tree", "--name-only", tree)
+	if err != nil {
+		return "", noop, fmt.Errorf("no instance policy layer: %s has no %s/ at %s: %w", l.repo, l.dir, l.ref, err)
+	}
+	dir, err := scratch("valley-integrator-floor")
+	if err != nil {
+		return "", noop, err
+	}
+	done := func() { _ = os.RemoveAll(dir) }
+	found := 0
+	for _, name := range strings.Split(strings.TrimSpace(listing), "\n") {
+		// The deriver and the composer both read the layer as the `*.cue`
+		// documents directly in it, so those are what is taken.
+		if !strings.HasSuffix(name, ".cue") {
+			continue
+		}
+		body, err := git(l.repo, "show", tree+"/"+name)
+		if err != nil {
+			done()
+			return "", noop, fmt.Errorf("reading %s/%s from %s at %s: %w", l.dir, name, l.repo, l.ref, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			done()
+			return "", noop, err
+		}
+		found++
+	}
+	if found == 0 {
+		done()
+		return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue in %s/ at %s", l.repo, l.dir, l.ref)
+	}
+	return dir, done, nil
+}
+
 // policySource is where the two layers are read from, and the schema they
 // are composed under.
 type policySource struct {
 	schema   string // the verification schema
-	instance string // the instance layer, resolved from the instance repository
+	layer    instanceLayer
+	instance string // the instance layer as resolved on disk, for one pass
 	project  string // the project layer, relative to the target tip's tree
 	valley   string // the deriver
 	cue      string // the composer, for the catalogue the deriver does not print
+}
+
+// open resolves the instance layer and returns a source that reads it from
+// disk, together with what ends the pass. Held for the whole pass rather
+// than resolved per call, so the deriver and the composer are given the same
+// bytes: they are two readings of one policy, not two policies.
+func (p policySource) open() (policySource, func(), error) {
+	dir, done, err := p.layer.open()
+	if err != nil {
+		return p, done, err
+	}
+	p.instance = dir
+	return p, done, nil
 }
 
 // derived is one run of the deriver over a diff: which classes the diff

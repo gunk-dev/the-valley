@@ -112,7 +112,28 @@ in
         enable = true;
         signingKeyFile = "/run/agenix/valley-integrator-key";
         knownSignersFile = "/var/lib/valley-instance/known_signers";
-        instancePolicy = "/var/lib/valley-instance/policy";
+        # The floor comes from a repository this host serves and no
+        # controller serves: "open" is declared, unprotected, so it gets no
+        # controller of its own. Every controller here therefore reads the
+        # floor out of a repository that is not the one it serves, which is
+        # the cross-repository read the unit has to grant.
+        instanceProject = "open";
+      };
+    };
+  };
+
+  # The same host with the instance repository among the served projects —
+  # the shape a group's own instance takes, where the repository carrying
+  # the floor is itself integrated. The controller serving it reads the
+  # floor from the repository it is already serving.
+  integratorSelfHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "guarded";
       };
     };
   };

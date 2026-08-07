@@ -86,7 +86,11 @@ grep -qF -- 'writers=( integrator )' "$guardedHook"
 grep -q -- '--repo /srv/git/%i.git' "$integratorUnitPath"
 grep -q -- '--key /run/agenix/valley-integrator-key' "$integratorUnitPath"
 grep -q -- '--known-signers /var/lib/valley-instance/known_signers' "$integratorUnitPath"
-grep -q -- '--instance /var/lib/valley-instance/policy' "$integratorUnitPath"
+# The floor's source, not a copy of it: the repository whose
+# integrated tip carries it. It is named, and it is not the
+# repository the controller serves — every controller here
+# reads the floor out of "open", which no controller serves.
+grep -q -- '--instance-repo /srv/git/open.git' "$integratorUnitPath"
 if grep -q -- '--project-policy' "$integratorUnitPath"; then
   echo "module-eval: the module must not tell a controller where the project's policy is" >&2
   exit 1
@@ -98,9 +102,14 @@ fi
 # system and global that safe.directory is read from, and the
 # environment reaches every git the controller drives. One
 # repository, this instance's.
-grep -qF -- 'Environment="GIT_CONFIG_COUNT=1"' "$integratorUnitPath"
+# A second exception for the instance repository, which carries the
+# group's floor and is read by every controller — including the ones
+# that serve some other project.
+grep -qF -- 'Environment="GIT_CONFIG_COUNT=2"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_KEY_0=safe.directory"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_VALUE_0=/srv/git/%i.git"' "$integratorUnitPath"
+grep -qF -- 'Environment="GIT_CONFIG_KEY_1=safe.directory"' "$integratorUnitPath"
+grep -qF -- 'Environment="GIT_CONFIG_VALUE_1=/srv/git/open.git"' "$integratorUnitPath"
 
 # It writes refs as itself, so the repositories it serves are
 # group-shared — and only those. The sharing block names each
@@ -108,8 +117,21 @@ grep -qF -- 'Environment="GIT_CONFIG_VALUE_0=/srv/git/%i.git"' "$integratorUnitP
 grep -qxF -- "repo=/srv/git/guarded.git" "$integratorInitPath"
 grep -qxF -- "repo=/srv/git/released.git" "$integratorInitPath"
 grep -qF -- 'config core.sharedRepository group' "$integratorInitPath"
-if grep -qxF -- "repo=/srv/git/open.git" "$integratorInitPath"; then
-  echo "module-eval: a project nobody protected was made group-shared" >&2
+# "open" is protected by nobody, so no controller serves it — and on
+# this host it is the instance repository, which every controller reads
+# the floor from. Read is the whole of that grant: no group write, and
+# no core.sharedRepository, which is a statement about who writes.
+open_block="$(awk '/^repo=/ { inside = ($0 == "repo=/srv/git/open.git") } inside' "$integratorInitPath")"
+if [ -z "$open_block" ]; then
+  echo "module-eval: the instance repository must be readable by the git group even where no controller serves it" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$open_block" | grep -qF -- 'chmod -R g+rX "$repo"'; then
+  echo "module-eval: the instance repository must be made group-readable" >&2
+  exit 1
+fi
+if printf '%s\n' "$open_block" | grep -qE 'g\+rwX|sharedRepository'; then
+  echo "module-eval: a project nobody protected was made group-writable — the floor is read, never written" >&2
   exit 1
 fi
 

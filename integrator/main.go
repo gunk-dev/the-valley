@@ -48,7 +48,12 @@ flags:
   --key PATH          ed25519 private key the integrator signs with
   --name NAME         the name that key signs under (default: this host's)
   --known-signers F   verifier keys whose attestations count, one per line
-  --instance DIR      the instance policy layer, from the instance repo
+  --instance-repo DIR the bare repository carrying the group's floor; the
+                      instance layer is read from its integrated tip
+  --instance-ref REF  the ref whose tip carries it (default refs/heads/main)
+  --instance-policy P the floor's directory in that tip (default policy)
+  --instance DIR      a materialized instance layer, for a host that serves
+                      no instance repository; one of this or --instance-repo
   --project-policy P  the project policy layer, relative to the target tip
   --schema FILE       the verification schema
   --attest-schema F   the attestation schema
@@ -132,7 +137,10 @@ func run(args []string, loop bool) error {
 	key := fs.String("key", "", "ed25519 private key")
 	name := fs.String("name", defaultSignerName(), "the name that key signs under")
 	known := fs.String("known-signers", "", "verifier keys whose attestations count")
-	instance := fs.String("instance", "", "the instance policy layer")
+	instanceRepo := fs.String("instance-repo", "", "the bare repository carrying the group's floor")
+	instanceRef := fs.String("instance-ref", "refs/heads/main", "the ref whose tip carries the floor")
+	instancePolicy := fs.String("instance-policy", "policy", "the floor's directory in that tip")
+	instance := fs.String("instance", "", "a materialized instance policy layer")
 	projectPolicy := fs.String("project-policy", "policy", "the project policy layer, relative to the target tip")
 	schema := fs.String("schema", env("VALLEY_VERIFICATION_SCHEMA"), "the verification schema")
 	attestSchema := fs.String("attest-schema", env("VALLEY_ATTEST_SCHEMA"), "the attestation schema")
@@ -160,7 +168,6 @@ func run(args []string, loop bool) error {
 	for _, missing := range []struct{ flag, value string }{
 		{"--key", in.key},
 		{"--known-signers", in.knownSigners},
-		{"--instance", *instance},
 		{"--schema", *schema},
 		{"--attest-schema", in.attestSchema},
 	} {
@@ -177,12 +184,26 @@ func run(args []string, loop bool) error {
 			return fmt.Errorf("%s is not on the path; the integrator drives it rather than reimplementing it", tool.name)
 		}
 	}
+	// The floor comes from the instance repository's integrated tip, or from
+	// a directory on disk, and never from both — two sources for one layer is
+	// a question about which one won every time the policy is read.
+	if (*instanceRepo == "") == (*instance == "") {
+		return fmt.Errorf("exactly one of --instance-repo and --instance is required: the floor is read from the instance repository's tip, or from a materialized directory for a host that serves none")
+	}
+	// abs of an empty path is the working directory, and an empty field is
+	// how the layer says which of its two sources it is.
+	layer := instanceLayer{ref: *instanceRef, dir: *instancePolicy}
+	if *instanceRepo != "" {
+		layer.repo = abs(*instanceRepo)
+	} else {
+		layer.path = abs(*instance)
+	}
 	in.policy = policySource{
-		schema:   abs(*schema),
-		instance: abs(*instance),
-		project:  *projectPolicy,
-		valley:   in.valley,
-		cue:      in.cue,
+		schema:  abs(*schema),
+		layer:   layer,
+		project: *projectPolicy,
+		valley:  in.valley,
+		cue:     in.cue,
 	}
 	if *now != "" {
 		if in.clock, err = time.Parse(time.RFC3339, *now); err != nil {

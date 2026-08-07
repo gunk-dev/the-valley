@@ -101,9 +101,14 @@ let
       "--repo ${cfg.dataDir}/%i.git"
       "--key ${toString cfg.integrator.signingKeyFile}"
       "--known-signers ${toString cfg.integrator.knownSignersFile}"
-      "--instance ${toString cfg.integrator.instancePolicy}"
       "--interval ${cfg.integrator.interval}"
     ]
+    ++ (
+      if cfg.integrator.instanceProject != null then
+        [ "--instance-repo ${instanceRepo}" ]
+      else
+        [ "--instance ${toString cfg.integrator.instancePolicy}" ]
+    )
     ++ lib.optional cfg.bus.enable "--bus ${busUrl}"
   );
 
@@ -144,12 +149,35 @@ let
       share chmod g+rwxs "$repo/worktrees"
       share chmod -R g+rwX "$repo"
       share find "$repo" -type d -exec chmod g+s {} +
-    '') (lib.attrNames integratedProjects);
+    '') (lib.attrNames integratedProjects)
+    # The instance repository, when it is not one of the served projects.
+    # Every controller reads the floor from it and none of them writes it,
+    # so read is the whole of the grant — no group write, and no
+    # core.sharedRepository, which is a statement about who writes.
+    + lib.optionalString
+      (
+        cfg.integrator.instanceProject != null
+        && !(integratedProjects ? ${cfg.integrator.instanceProject})
+      )
+      ''
+        repo=${lib.escapeShellArg (toString instanceRepo)}
+        share chmod -R g+rX "$repo"
+        share find "$repo" -type d -exec chmod g+s {} +
+      '';
 
   # The integrator's own directory. Four unit settings have to agree about
   # it — its state directory, its working directory, the scratch root TMPDIR
   # names, and the read-write path that makes all three usable — so they name
   # it once here.
+  # The bare repository the group's floor is read from: the instance
+  # project's, served by this host. Null when the host serves no instance
+  # repository and the layer is supplied as a directory instead.
+  instanceRepo =
+    if cfg.integrator.instanceProject != null then
+      "${cfg.dataDir}/${cfg.integrator.instanceProject}.git"
+    else
+      null;
+
   integratorStateName = "valley-integrator";
   integratorStateDir = "/var/lib/${integratorStateName}";
 
@@ -158,7 +186,6 @@ let
   integratorPathOptions = {
     signingKeyFile = "the key its transfer statements are signed with";
     knownSignersFile = "the signers whose evidence it accepts";
-    instancePolicy = "the instance policy layer it composes against";
   };
 
   # The secret-path options the consumer must supply once the declaration
@@ -659,16 +686,49 @@ in
         '';
       };
 
+      instanceProject = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "qinling";
+        description = ''
+          The project whose served repository carries the group's floor —
+          the instance policy layer every controller on this host composes
+          against. A controller reads it from that bare repository's
+          integrated tip, and nothing is materialized on disk in between.
+
+          The floor is the instance repository's, read at the tip that has
+          been integrated (dcr-f41f718); the instance repository is the
+          group's own (dcr-b87f6e8). A host serving it is therefore already
+          holding the authoritative copy.
+
+          What follows is a property of that design, and worth knowing
+          before editing a floor. A change to it takes effect at the first
+          pass after it lands on that ref, and never before. An edit in a
+          branch, in a worktree, or in an integration request that has not
+          been integrated governs nothing. There is no refresh to trigger
+          and no staleness to wait out: landing is the whole of publishing
+          a floor.
+
+          Every controller on the host reads the same repository, the
+          controller serving that repository included. Both layers are
+          resolved from the controller's own side — this one, and the
+          project's `policy/` at the target tip — so a change can never
+          supply the policy that gates it (bd-eaefe82).
+        '';
+      };
+
       instancePolicy = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
         example = "/var/lib/valley-instance/policy";
         description = ''
-          Directory of `*.cue` files holding the instance policy layer,
-          from a checkout of the instance repository on this host. Both
-          layers are resolved from the controller's own side — this one,
-          and the project's `policy/` at the target tip — so a change can
-          never supply the policy that gates it (bd-eaefe82).
+          Directory of `*.cue` files holding the instance policy layer, for
+          a host that serves no instance repository. Set this or
+          {option}`services.valley.integrator.instanceProject`, never both.
+
+          Keeping such a directory in step with the instance repository is
+          the consumer's to arrange, which is the reason to prefer the
+          project option wherever the host serves the repository.
         '';
       };
 
@@ -755,6 +815,15 @@ in
         message = "services.valley.integrator.${name} must be set: the integrator is enabled, and ${what} is machine integration the consumer supplies.";
       }) integratorPathOptions
       ++ [
+        {
+          assertion = (cfg.integrator.instanceProject == null) != (cfg.integrator.instancePolicy == null);
+          message = "exactly one of services.valley.integrator.instanceProject and services.valley.integrator.instancePolicy must be set: the floor is read from the instance repository this host serves, or supplied as a directory for a host that serves none, and two sources for one layer is a question about which one won.";
+        }
+        {
+          assertion =
+            cfg.integrator.instanceProject == null || gitProjects ? ${cfg.integrator.instanceProject};
+          message = "services.valley.integrator.instanceProject names ${toString cfg.integrator.instanceProject}, which this host declaration does not serve: the floor is read from that repository's tip, so the host has to hold it.";
+        }
         {
           assertion = cfg.integrator.user != cfg.user;
           message = "services.valley.integrator.user must differ from services.valley.user: the integrator runs under its own unix identity (bd-500adf7).";
@@ -989,11 +1058,30 @@ in
       # teaching the binary a flag covers every process in the unit at once
       # — the integrator, attest, the deriver, and the git each of them runs
       # all read TMPDIR, and all of them want scratch in the same place.
+      #
+      # A second exception, for the instance repository. Every controller
+      # reads the group's floor from that repository's tip, and it need not
+      # be the project the controller serves — the controller for one
+      # project reads the floor out of another project's repository, which
+      # it likewise does not own. Without the exception git refuses it as
+      # dubiously owned and every pass fails, exactly as it did for the
+      # served repository. Two entries, both named; still never a wildcard.
+      #
+      # Reading needs no sandbox entry beside it. ProtectSystem=strict
+      # leaves the filesystem readable and only takes write away, so the
+      # ReadWritePaths list above stays the list of what may be written,
+      # which is what makes it worth reading. What read does need is a
+      # filesystem grant, and valley-init makes it: the instance repository
+      # is group-readable whether or not it is one of the served projects.
       environment = {
-        GIT_CONFIG_COUNT = "1";
+        GIT_CONFIG_COUNT = if instanceRepo != null then "2" else "1";
         GIT_CONFIG_KEY_0 = "safe.directory";
         GIT_CONFIG_VALUE_0 = "${cfg.dataDir}/%i.git";
         TMPDIR = integratorStateDir;
+      }
+      // lib.optionalAttrs (instanceRepo != null) {
+        GIT_CONFIG_KEY_1 = "safe.directory";
+        GIT_CONFIG_VALUE_1 = instanceRepo;
       };
       serviceConfig = {
         ExecStart = integratorCommand;

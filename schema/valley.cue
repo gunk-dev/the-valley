@@ -43,7 +43,53 @@ package valley
 	// mirror never rejects the primary push. Credentials are the host's
 	// concern (the installer documents how); they are not declared here.
 	mirrors: [...string] | *[]
+
+	// The project's write protection. Optional: a project without it is a
+	// project whose refs are all open to anyone with push access, and
+	// evaluates exactly as it did before this field existed.
+	protection?: #Protection
 }
+
+// #Protection states which of a project's refs only a named writer may
+// write. It is the declared half of the one structural git invariant: only
+// a writer may write a protected ref, and attestation refs
+// (refs/the-valley/attestations/*) are create-only for everyone. The
+// invariant's other half is not declared because it is not a choice — the
+// attestation clause holds for every protected project, and the namespace
+// is fixed by the contributor protocol (design/contribute.md).
+//
+// Everything this does not name stays open: topic branches, tags, new
+// attestation refs. All policy beyond the invariant lives in the
+// integrator, never here (design/architecture.md, _a pull-based
+// integrator_).
+#Protection: {
+	// The refs only a writer may create, update, or delete. Patterns are
+	// matched against the full refname, so they begin with "refs/" — a
+	// bare branch name would protect nothing — and `*` matches any
+	// characters, path separators included.
+	refs: [#RefPattern, ...#RefPattern] | *["refs/heads/main"]
+
+	// The principals allowed to write them. At least one: protection
+	// that names no writer is a declaration left unfinished, and is
+	// rejected rather than rendered as a ref nobody can ever write.
+	writers: [#PrincipalName, ...#PrincipalName]
+}
+
+// #RefPattern is a full refname, optionally with `*` wildcards. The
+// characters git forbids in a refname — space, ~, ^, :, ?, [, \ — are
+// rejected here too, so a pattern that could never match a real ref fails
+// the declaration rather than sitting dead in a hook.
+#RefPattern: =~"^refs/[^ ~^:?\\\\[]+$"
+
+// #PrincipalName names a principal — a human, machine, or service the
+// instance grants something to — in the instance's identity registry
+// (dcr-b87f6e8). That registry is not an artifact yet, and these names are
+// deliberately ahead of it: genesis before enforcement. The names declared
+// here are what the registry's compilation will bind to keys, and until it
+// exists the binding is the installer's — the NixOS module in this repo
+// maps each name to the keys that act as it. The shape is the project-name
+// shape, for the same reason: a name travels into files and command lines.
+#PrincipalName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 
 // #Backup is the durability policy for the host's data: that an offsite
 // backup exists, how often it runs, and how long snapshots are kept. It is

@@ -262,13 +262,11 @@
             };
           };
 
-          # A declaration without a backup block predates the field and must
-          # keep evaluating exactly as before: zero restic machinery.
+          # A declaration with no optional field set at all — no backup, no
+          # protection — must keep evaluating exactly as it did before those
+          # fields existed: zero restic machinery, no hook.
           noBackupHost = mkHost {
-            services.valley.config = pkgs.writeText "no-backup-host.cue" ''
-              package valley
-              projects: "the-valley": {}
-            '';
+            services.valley.config = ./examples/hosts/no-backup.cue;
           };
 
           # The example declaration with the secret paths left unset: the
@@ -281,10 +279,7 @@
           # host's rendered hooks and stream-init against a real server.
           busHost = mkHost {
             services.valley = {
-              config = pkgs.writeText "bus-host.cue" ''
-                package valley
-                projects: "events-pilot": {}
-              '';
+              config = ./examples/hosts/bus.cue;
               bus.enable = true;
             };
           };
@@ -294,25 +289,16 @@
           # check drives the rendered script with no substitution at all —
           # one reachable sibling repo, one that does not exist.
           mirrorHost = mkHost {
-            services.valley.config = pkgs.writeText "mirror-host.cue" ''
-              package valley
-              projects: "mirror-pilot": mirrors: ["../mirror.git"]
-              projects: "dead-mirror": mirrors: ["../nope.git"]
-            '';
+            services.valley.config = ./examples/hosts/mirrors.cue;
           };
 
-          # Write protection declared: one project taking the default
-          # protected set, one naming a glob beside it, and one left open.
-          # The baseline key above is anonymous and stays in the list, so
-          # this host also renders the two forms of key side by side.
+          # The protection declaration, plus the machine half it needs: keys
+          # bound to the principal names it uses. The baseline key above is
+          # anonymous and stays in the list, so this host also renders the
+          # two forms of key side by side.
           protectedHost = mkHost {
             services.valley = {
-              config = pkgs.writeText "protected-host.cue" ''
-                package valley
-                projects: "guarded": {}
-                projects: "released": {}
-                projects: "open": {}
-              '';
+              config = ./examples/hosts/protected.cue;
               authorizedKeys = [
                 {
                   principal = "integrator";
@@ -323,16 +309,6 @@
                   key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck2 contributor";
                 }
               ];
-              protect = {
-                guarded.writers = [ "integrator" ];
-                released = {
-                  refs = [
-                    "refs/heads/main"
-                    "refs/heads/release/*"
-                  ];
-                  writers = [ "integrator" ];
-                };
-              };
             };
           };
 
@@ -344,28 +320,12 @@
             ++ protectedHost.config.assertions
           );
 
-          # Protecting a project the declaration does not serve is a typo
-          # the module must refuse rather than silently ignore.
-          strayProtectionHost = mkHost {
-            services.valley = {
-              config = pkgs.writeText "stray-protection-host.cue" ''
-                package valley
-                projects: "guarded": {}
-              '';
-              protect.gaurded.writers = [ "integrator" ];
-            };
-          };
-
-          strayProtectionAssertions = builtins.filter (
-            a: !a.assertion
-          ) strayProtectionHost.config.assertions;
-
           protectedKeyLines = protectedHost.config.users.users.git.openssh.authorizedKeys.keys;
 
-          # A declaration written before these options renders the host it
-          # always did: no hook wired, no tag on a key, no sshd change. It
-          # still carries the sweep that removes a hook it once had — the
-          # same discipline the mirror and bus hooks keep, and the only way
+          # A declaration written before the field renders the host it always
+          # did: no hook wired, no tag on a key, no sshd change. It still
+          # carries the sweep that removes a hook it once had — the same
+          # discipline the mirror and bus hooks keep, and the only way
           # protection can be turned off by editing a declaration.
           protectionRenderedWithoutDeclaration =
             noBackupHost.config.services.openssh.settings ? PermitUserEnvironment
@@ -997,46 +957,31 @@
           # The example host declaration must vet against the schema, and the
           # schema must reject what it claims to reject: unsafe project names,
           # unknown project fields, stray top-level fields (typos, deployment
-          # concerns), and malformed backup policy (machine concerns, targets
-          # without an implementation, non-positive retention). CUE closedness
-          # is easy to regress silently — e.g. embedding #Host instead of
-          # referencing it opens the schema — so the rejections are pinned
-          # here.
+          # concerns), malformed backup policy (machine concerns, targets
+          # without an implementation, non-positive retention), and malformed
+          # protection (no writer, a pattern that is not a refname, policy
+          # beyond the invariant). CUE closedness is easy to regress silently
+          # — e.g. embedding #Host instead of referencing it opens the schema
+          # — so the rejections are pinned here. Every declaration below is a
+          # file under examples/, valid and invalid alike, so cue reaches them
+          # and so does a reader.
           cue-vet =
             let
-              invalidConfigs = {
-                unsafe-project-name = ''
-                  package valley
-                  projects: ".hidden": {}
-                '';
-                unknown-project-field = ''
-                  package valley
-                  projects: ok: dataDir: "/srv/git"
-                '';
-                top-level-typo = ''
-                  package valley
-                  project: oops: {}
-                '';
-                deployment-concern-in-cue = ''
-                  package valley
-                  user: "git"
-                  projects: ok: {}
-                '';
-                machine-concern-in-backup = ''
-                  package valley
-                  projects: ok: {}
-                  backup: repositoryFile: "/run/agenix/valley-restic-repo"
-                '';
-                unimplemented-backup-target = ''
-                  package valley
-                  projects: ok: {}
-                  backup: target: "restic-s3"
-                '';
-                negative-retention = ''
-                  package valley
-                  projects: ok: {}
-                  backup: retention: daily: -1
-                '';
+              # The rejected declarations, and — where a field carries the
+              # weight — the words the rejection must name. A rejection that
+              # does not name the field leaves the reader to find the breakage
+              # themselves.
+              rejectedHosts = {
+                unsafe-project-name = null;
+                unknown-project-field = null;
+                top-level-typo = null;
+                deployment-concern-in-cue = null;
+                machine-concern-in-backup = null;
+                unimplemented-backup-target = null;
+                negative-retention = null;
+                protection-with-no-writers = "protection.writers";
+                bare-branch-protected-ref = "protection.refs";
+                unknown-protection-field = "protection.requires";
               };
             in
             pkgs.runCommand "valley-cue-vet"
@@ -1049,12 +994,25 @@
                 grep -q 'gunk-dev/the-valley' example.json
                 grep -q 'restic-sftp' example.json
 
-                # A declaration without a backup block must stay valid —
-                # consumers written before the field existed keep vetting.
-                cue vet -c ${./schema/valley.cue} ${pkgs.writeText "no-backup.cue" ''
-                  package valley
-                  projects: "the-valley": {}
-                ''}
+                # A declaration with no optional field set must stay valid —
+                # consumers written before backup or protection existed keep
+                # vetting.
+                cue vet -c ${./schema/valley.cue} ${./examples/hosts/no-backup.cue}
+
+                # What the installer renders a hook from. A project that
+                # leaves the set out gets the default, a project that names
+                # patterns gets them in order, and a project that declares no
+                # protection exports none at all — which is how the installer
+                # tells a protected project from an open one.
+                protected=(${./schema/valley.cue} ${./examples/hosts/protected.cue})
+                [ "$(cue export -e 'projects.guarded.protection.refs[0]' "''${protected[@]}")" \
+                  = '"refs/heads/main"' ]
+                cue export -e 'projects.released.protection.refs' "''${protected[@]}" > released.json
+                grep -q '"refs/heads/release/\*"' released.json
+                if cue export -e 'projects.open.protection' "''${protected[@]}" > open.err 2>&1; then
+                  echo "cue-vet: a project declaring no protection exported one" >&2
+                  exit 1
+                fi
 
                 # The event schema accepts what the publisher hook emits …
                 cue vet -d '#RefUpdated' ${./schema/events.cue} ${pkgs.writeText "ref-updated.json" ''
@@ -1077,12 +1035,21 @@
                 fi
 
                 ${lib.concatStrings (
-                  lib.mapAttrsToList (name: cfg: ''
-                    if cue vet -c ${./schema/valley.cue} ${pkgs.writeText "${name}.cue" cfg}; then
-                      echo "cue-vet: expected invalid config '${name}' to be rejected" >&2
+                  lib.mapAttrsToList (name: names: ''
+                    if cue vet -c ${./schema/valley.cue} \
+                      ${./examples/hosts/rejected}/${name}.cue > ${name}.err 2>&1; then
+                      echo "cue-vet: expected invalid declaration '${name}' to be rejected" >&2
                       exit 1
                     fi
-                  '') invalidConfigs
+                    ${lib.optionalString (names != null) ''
+                      if ! grep -qF -- ${lib.escapeShellArg names} ${name}.err; then
+                        echo "cue-vet: '${name}' was rejected without naming" \
+                          ${lib.escapeShellArg names} >&2
+                        cat ${name}.err >&2
+                        exit 1
+                      fi
+                    ''}
+                  '') rejectedHosts
                 )}
                 touch $out
               '';
@@ -1899,16 +1866,12 @@
             then
               throw "valley module-eval: enabling backup without the secret-path options must fail an assertion naming them"
             else if protectionRenderedWithoutDeclaration then
-              throw "valley module-eval: write-protection machinery rendered for a declaration without services.valley.protect"
+              throw "valley module-eval: write-protection machinery rendered for a declaration with no protection block"
             else if
               protectedHost.config.services.openssh.settings.PermitUserEnvironment or null
               != "VALLEY_PRINCIPAL"
             then
               throw "valley module-eval: a key naming a principal needs sshd to honour that one variable and no other"
-            else if
-              !(lib.any (a: lib.hasInfix "services.valley.protect.gaurded" a.message) strayProtectionAssertions)
-            then
-              throw "valley module-eval: protecting a project the declaration does not serve must fail an assertion naming it"
             else
               pkgs.runCommand "valley-module-eval"
                 {
@@ -1986,14 +1949,24 @@
                   grep -q '^environment="VALLEY_PRINCIPAL=integrator" ssh-ed25519 ' "$protectedKeysPath"
                   grep -q '^ssh-ed25519 .* valley-check$' "$protectedKeysPath"
 
-                  # The hook goes on the projects declared protected, and
-                  # nowhere else.
+                  # The hook goes on the projects whose declaration has a
+                  # protection block, and nowhere else.
                   grep -q "valley-protect-guarded" "$protectedInitPath"
                   grep -q "valley-protect-released" "$protectedInitPath"
                   if grep -q "valley-protect-open" "$protectedInitPath"; then
                     echo "module-eval: a project nobody protected was wired with the hook" >&2
                     exit 1
                   fi
+
+                  # And what it enforces is what the declaration says, down
+                  # to the rendered script: released names a pattern beside
+                  # main, guarded takes the schema's default set. Follow the
+                  # hook chain from the init script to each script.
+                  guardedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$protectedInitPath" | head -n1)"
+                  releasedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-released' "$protectedInitPath" | head -n1)"
+                  grep -qF -- 'protected=( refs/heads/main )' "$guardedHook"
+                  grep -qF -- "protected=( refs/heads/main 'refs/heads/release/*' )" "$releasedHook"
+                  grep -qF -- 'writers=( integrator )' "$guardedHook"
                   touch $out
                 '';
 

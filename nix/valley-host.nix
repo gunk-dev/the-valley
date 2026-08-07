@@ -18,7 +18,9 @@
 # (.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md). Per-project
 # *write protection* is, because the pre-receive hook below is a real
 # enforcement boundary and each key carries a principal name it can read
-# (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md).
+# (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) —
+# so it is declared, in the project's `protection` block, and this module
+# only binds principal names to keys and renders the hook.
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
@@ -281,6 +283,9 @@ let
   # attestation ref may only be created. Every other ref is open to anyone
   # with push access, and all policy beyond this lives in the integrator.
   #
+  # What is protected and who may write it comes from the declaration's
+  # `protection` block, like every other domain fact here. This renders it.
+  #
   # Pushes arrive over SSH as one shared git user, so the unix account
   # behind a push says nothing about who pushed. The principal comes from
   # the key instead: services.valley.authorizedKeys tags each key's
@@ -339,7 +344,7 @@ let
             $pattern)
               if ! is_writer; then
                 echo "valley: $principal may not write $ref — a protected ref of ${name} (writers: ${
-                  if p.writers == [ ] then "none" else lib.concatStringsSep ", " p.writers
+                  lib.concatStringsSep ", " p.writers
                 })" >&2
                 rejected=1
               fi
@@ -351,26 +356,26 @@ let
       exit "$rejected"
     '';
 
-  # Per-project pre-receive wiring. Same rules as the other managed hooks:
-  # only ever installs, updates, or removes a store symlink — a
-  # hand-written hook of the same name is left alone. A project nobody
-  # declared protection for gets no hook, so a declaration written before
-  # these options installs nothing new.
+  # Per-project pre-receive wiring, from the declaration's protection
+  # blocks. Same rules as the other managed hooks: only ever installs,
+  # updates, or removes a store symlink — a hand-written hook of the same
+  # name is left alone. A project that declares no protection gets no hook,
+  # so a declaration written before the field installs nothing new.
   protectHookCommands = lib.concatStrings (
     lib.mapAttrsToList (
-      name: _:
+      name: p:
       let
         phook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/pre-receive";
       in
-      if cfg.protect ? ${name} then
+      if p ? protection then
         ''
           phook=${phook}
           if [ -L "$phook" ]; then
             case "$(readlink "$phook")" in
-              /nix/store/*) ln -sfn ${protectHook name cfg.protect.${name}} "$phook" ;;
+              /nix/store/*) ln -sfn ${protectHook name p.protection} "$phook" ;;
             esac
           elif [ ! -e "$phook" ]; then
-            ln -s ${protectHook name cfg.protect.${name}} "$phook"
+            ln -s ${protectHook name p.protection} "$phook"
           fi
         ''
       else
@@ -456,53 +461,13 @@ in
         names the principal it acts as, which is the only thing that can
         tell one pusher from another: pushes arrive as the shared git user,
         so identity has to ride on the key.
-      '';
-    };
 
-    protect = lib.mkOption {
-      type = lib.types.attrsOf (
-        lib.types.submodule {
-          options = {
-            refs = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ "refs/heads/main" ];
-              example = [
-                "refs/heads/main"
-                "refs/heads/release/*"
-              ];
-              description = ''
-                Refs only a writer may create, update, or delete, as shell
-                globs against the full refname (so `*` crosses `/`).
-              '';
-            };
-
-            writers = lib.mkOption {
-              type = lib.types.listOf lib.types.str;
-              default = [ ];
-              example = [ "integrator" ];
-              description = ''
-                Principals allowed to write this project's protected refs,
-                named as in {option}`services.valley.authorizedKeys`. The
-                empty default protects the refs from every push: the
-                integrator writes them on the host, not over SSH.
-              '';
-            };
-          };
-        }
-      );
-      default = { };
-      example = lib.literalExpression ''{ the-valley.writers = [ "integrator" ]; }'';
-      description = ''
-        Per-project write protection, keyed by project name — the one
-        structural git invariant: only a declared writer may write a
-        protected ref, and attestation refs
-        (`refs/the-valley/attestations/*`) are create-only for everyone.
-        Topic branches, tags, and new attestation refs stay open to anyone
-        with push access; all policy beyond this lives in the integrator.
-
-        Naming a project turns its `pre-receive` hook on. A project left
-        out of this attribute set has no hook at all, so a host declared
-        before this option serves exactly what it served before.
+        Which refs a principal may write is declared, not an option here:
+        it is a statement about what the host serves, and lives in the
+        project's `protection` block in
+        {option}`services.valley.config`. Binding a name to keys is the
+        machine half — the interim form of the identity registry's
+        compilation (dcr-b87f6e8).
       '';
     };
 
@@ -610,10 +575,6 @@ in
         message = "services.valley.authorizedKeys must not be empty — the git user would be unreachable.";
       }
     ]
-    ++ lib.mapAttrsToList (name: _: {
-      assertion = gitProjects ? ${name};
-      message = "services.valley.protect.${name} protects refs of a project this host does not serve — the declaration has no git store named ${name}.";
-    }) cfg.protect
     ++ lib.optionals backupEnabled (
       lib.mapAttrsToList (name: what: {
         assertion = cfg.backup.${name} != null;

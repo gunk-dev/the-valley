@@ -1,0 +1,14 @@
+# The declarations schema/valley.cue must reject, and — where a field carries
+# the weight — the words the rejection must name. One case per line: the
+# fixture under examples/hosts/rejected/, optionally a tab and the text the
+# rejection must contain.
+unsafe-project-name
+unknown-project-field
+top-level-typo
+deployment-concern-in-cue
+machine-concern-in-backup
+unimplemented-backup-target
+negative-retention
+protection-with-no-writers	protection.writers
+bare-branch-protected-ref	protection.refs
+unknown-protection-field	protection.requires

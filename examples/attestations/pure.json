@@ -1,0 +1,24 @@
+{
+  "statementType": "the-valley/attestation/v1",
+  "subject": {
+  "primary": "valley-tree-v1",
+  "digest": {
+    "valley-tree-v1": "73847e0b723a444df8c677e5e67d2e7858327259323c76b24f8f11b650b66d69",
+    "git-sha1": "99b5f2f7971e2c8e37a7a579cb761d80272a9a3d"
+  }
+},
+  "predicateType": "the-valley/check/pure/v1",
+  "predicate": {
+    "check": {"name": "prose-format", "runner": "nix", "attribute": "prose-format"},
+    "result": "passed",
+    "inputs": {"valley-inputs-v1": "8df8c199decb43eb715790d6fc3a9dd96adaaf3a75073a50acfa51d73aaf3253"},
+    "derivation": {"sha256": "ef69ed0ccc0546a38a40eebbfcac610cedd7cf4f81036cd21ddff483f08d3ad7"},
+    "output": {"valley-tree-v1": "cf1f5a9c96bbdf1d69da451c94168fa3a760f91f94827ba88bdb72de8dfa8af9"}
+  },
+  "provenance": {
+    "harness": "a harness",
+    "model": "a model",
+    "prompt": {"sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"},
+    "delegation": [{"principal": "human:integrator", "grant": "land changes"}]
+  }
+}

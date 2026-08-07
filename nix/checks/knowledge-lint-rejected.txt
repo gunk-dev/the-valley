@@ -1,0 +1,30 @@
+# What the lint must reject, and the words its failure must name — a check
+# that only says "no" leaves the reader to find the breakage themselves.
+# One case per line: the fixture directory under examples/graphs/rejected/,
+# a tab, then the text the rejection must contain.
+unknown-status	ida-0000001-a-node.md".status
+edge-on-the-wrong-type	blocked_by: field not allowed
+node-in-the-wrong-directory	a bug node belongs in .the-valley/bugs/
+filename-id-mismatch	filename says id ida-0000004, frontmatter says ida-0000005
+duplicate-id	is already used by
+missing-frontmatter	no YAML frontmatter
+dangling-wiki-link	[[ida-9999999]] is not a node id
+dangling-blocked-by	blocked_by names oc-9999999, which is not a node
+dangling-supersedes	supersedes names dcr-9999999, which is not a node
+# The edge alone is half a supersession. A node declared replaced while its
+# own status still reads otherwise leaves the graph saying two things, which
+# is the defect the edge exists to end.
+supersedes-a-node-still-standing	whose status is adopted, not superseded
+supersedes-on-the-wrong-type	supersedes: field not allowed
+# Only ideas and decisions have a `superseded` status, so an edge naming any
+# other type is rejected on shape by the schema.
+supersedes-a-type-that-cannot-be	supersedes.0: invalid value "bd-0000011"
+# The id rule: a node created after the cutoff must carry the id its slug
+# derives, and the failure names the id it should have.
+non-derived-id	sha256 of the slug gives ida-d1d9c0c
+# Graduation cannot be half-declared: the status without the destination is
+# rejected by the schema.
+graduated-without-destination	graduated_into: incomplete value
+dangling-graduated-into	graduated_into names dcr-9999999, which is not a node
+broken-link	./nowhere.md does not exist
+broken-anchor	names no heading

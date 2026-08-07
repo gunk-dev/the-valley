@@ -62,30 +62,34 @@ let
   # is not the git user's, pointed at the key and the signers the consumer
   # supplied.
   #
-  # There is a seam between those two halves that neither reaches, and it
-  # produced four bugs in a single day. Every assertion below is an eval of
-  # the unit's text; integrator-e2e runs the binaries with no unit around
-  # them at all. What sits between is the unit's sandbox and identity
+  # There is a seam between those two halves that neither reaches, and in a
+  # single day it produced five deployment failures. Every assertion below is
+  # an eval of the unit's text; integrator-e2e runs the binaries with no unit
+  # around them at all. What sits between is the unit's sandbox and identity
   # meeting the filesystem the binaries actually use at runtime:
   #
   #   - git refusing a repository the service does not own (bd-500adf7)
-  #   - a temporary directory the sandbox does not leave writable
+  #   - a push authenticating as the operator rather than as the run
+  #     (bd-353c59d)
+  #   - no writable temporary directory, so no worktree could be made
   #   - the worktree metadata root, created by whichever service reached it
-  #     first and then unchmodable by the other
-  #   - the last of those failing valley-init, which every valley unit
-  #     requires, so one repository's permissions took the host's git
-  #     service down with them
+  #     first and then unchmodable by the other, which failed valley-init and
+  #     took every valley unit down with it
+  #   - the state directory not writable under ProtectSystem=strict unless
+  #     the unit names it, which the previous fix had made the scratch root
   #
   # Each was found by a host, minutes of a live service after a deploy that
-  # every check here passed. The last two are the same seam feeding itself:
-  # the debris of the second bug's failed runs is what the third tripped
-  # over. That is the case for covering it rather than pinning it one
-  # assertion at a time — the failures compose, and the checks do not.
+  # every check here passed. They compose: the third's fix set up the fourth,
+  # and the fourth's fix set up the fifth. That is the argument. A seam whose
+  # failures feed each other is not one to pin an assertion at a time, and
+  # each assertion here that marks a piece of it — the git ownership
+  # exception, TMPDIR, the worktrees root, ReadWritePaths — marks a place a
+  # smoke boot would have spoken first.
   #
-  # A nixosTest that boots one host and reconciles one change end to end is
-  # what covers that seam, and each assertion pinning a piece of it — the
-  # git ownership exception, TMPDIR, the worktrees root — is a place a
-  # smoke boot would have spoken first. Not built here.
+  # A nixosTest that boots one host, starts the units and reconciles one
+  # change end to end is the next check this module needs. Nothing else
+  # closes the seam, and five incidents is enough evidence of what it costs
+  # to leave open. Not built here.
   #
   # Protection and integration are separable declarations: protectedHost
   # declares the same protected projects with the service off, and must
@@ -113,13 +117,19 @@ let
     || integratorGitEnv.GIT_CONFIG_KEY_0 or null != "safe.directory"
     || integratorGitEnv.GIT_CONFIG_VALUE_0 or null != "/srv/git/%i.git";
 
+  integratorService = integratorHost.config.systemd.services."valley-integrator@".serviceConfig;
+
   # Scratch goes under the state directory, because the sandbox leaves no
-  # writable temporary directory and a verdict needs a checkout on disk.
-  # Pinned to the state directory the unit actually declares: TMPDIR naming
-  # a path outside it is the failure this replaced, arriving silently.
+  # writable temporary directory and a verdict needs a checkout on disk. Two
+  # halves, and each was a live failure on its own. TMPDIR naming a path
+  # outside the state directory is the first; the state directory not being
+  # named in ReadWritePaths is the second, which failed even though
+  # ProtectSystem=strict is documented to leave a declared state directory
+  # writable. Everything the unit may write is enumerated, so what a reader
+  # of the unit sees is the whole of it.
   integratorScratch =
-    integratorGitEnv.TMPDIR or null
-    != "%S/${integratorHost.config.systemd.services."valley-integrator@".serviceConfig.StateDirectory}";
+    integratorGitEnv.TMPDIR or null != "/var/lib/${integratorService.StateDirectory}"
+    || !(builtins.elem "/var/lib/${integratorService.StateDirectory}" integratorService.ReadWritePaths);
 in
 {
   module-eval =
@@ -161,7 +171,7 @@ in
     else if integratorSafeDirectory then
       throw "valley module-eval: a controller must carry safe.directory for the one repository it serves in its own environment — it does not own the repositories, and git refuses what it does not own"
     else if integratorScratch then
-      throw "valley module-eval: a controller's TMPDIR must be its state directory — the sandbox leaves no writable temporary directory, and a verdict needs a worktree on disk"
+      throw "valley module-eval: a controller's TMPDIR must be its state directory and that directory must be named in ReadWritePaths — under ProtectSystem=strict a path the unit does not enumerate is one it cannot write, and a verdict needs a worktree on disk"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

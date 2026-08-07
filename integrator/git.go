@@ -57,17 +57,35 @@ type worktree struct {
 // clean up and a checkout to leave alone.
 const scratchPrefix = "valley-integrator-wt"
 
+// scratch makes one throwaway directory under the scratch root, which is
+// whatever TMPDIR names. Under a unit that root is a sandboxed path, so a
+// refusal here is a statement about the unit rather than about the work: the
+// error names the operation, the path, and where the path came from, because
+// that is the sentence that would have placed each of this module's
+// deployment failures on sight instead of after an investigation.
+func scratch(prefix string) (string, error) {
+	dir, err := os.MkdirTemp("", prefix)
+	if err != nil {
+		return "", fmt.Errorf("creating a scratch directory under %s, which TMPDIR names: %w", os.TempDir(), err)
+	}
+	return dir, nil
+}
+
 func addWorktree(repo, rev string) (*worktree, error) {
-	dir, err := os.MkdirTemp("", scratchPrefix)
+	// The directory is made here and handed to git as it stands. git
+	// worktree add takes an existing empty directory, so there is no reason
+	// to delete the one just made and let git create it again — and a
+	// reason not to. Whoever creates the directory is who a refusal is
+	// reported by, and a refusal by git arrives as a complaint about
+	// leading directories of a .git file, which says nothing about the
+	// scratch root being unwritable. Creating it here keeps the first
+	// refusal in the sentence above, where it can say so.
+	dir, err := scratch(scratchPrefix)
 	if err != nil {
 		return nil, err
 	}
-	// git worktree add refuses an existing directory; the mkdtemp is only
-	// to reserve a name nothing else will take.
-	if err := os.RemoveAll(dir); err != nil {
-		return nil, err
-	}
 	if _, err := git(repo, "worktree", "add", "--quiet", "--detach", dir, rev); err != nil {
+		_ = os.RemoveAll(dir)
 		return nil, err
 	}
 	return &worktree{repo: repo, dir: dir}, nil

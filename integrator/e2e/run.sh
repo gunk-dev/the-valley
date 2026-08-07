@@ -539,4 +539,32 @@ fi
 git -C "$origin" worktree remove --force "$mine"
 holds "a crash-leaked scratch worktree is swept at watch start; another hand's is not"
 
+# ----------------------------------------------------------------------
+say "11. a scratch root it may not write is reported as that, and nothing else"
+
+# The deployment failure this guards is a sandbox failure: the root TMPDIR
+# names is not writable. That is a statement about the unit, not about the
+# change being judged, and it has to arrive as one — with the path and where
+# the path came from — rather than as git complaining about the leading
+# directories of a .git file.
+refused="$work/refused"
+mkdir -p "$refused"
+chmod a-w "$refused"
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c10
+echo "a change that never gets a worktree" > docs/readme.md
+git add -A
+git commit --quiet -m "a change the integrator cannot make scratch for"
+attest_change c10 "" "" --check prose-format
+request c10 main "$(git rev-parse c10)"
+export TMPDIR="$refused"
+integrate || true
+export TMPDIR="$work/tmp"
+chmod u+w "$refused"
+grep -q "scratch directory under $refused, which TMPDIR names" "$work/last.out" \
+  || die "an unwritable scratch root was not reported as one: $(cat "$work/last.out")"
+forget c10
+holds "an unwritable scratch root names the path and where it came from"
+
 printf '\nintegrator-e2e: every scenario held\n'

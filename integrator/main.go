@@ -291,7 +291,7 @@ func (in *integrator) gitEnv(extra map[string]string, args ...string) (string, e
 // writeTemp writes bytes to a file cue will read as JSON — the extension is
 // how cue tells a data file from a schema.
 func writeTemp(prefix string, body []byte) (string, error) {
-	dir, err := os.MkdirTemp("", prefix)
+	dir, err := scratch(prefix)
 	if err != nil {
 		return "", err
 	}

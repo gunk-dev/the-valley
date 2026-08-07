@@ -146,6 +146,13 @@ let
       share find "$repo" -type d -exec chmod g+s {} +
     '') (lib.attrNames integratedProjects);
 
+  # The integrator's own directory. Four unit settings have to agree about
+  # it — its state directory, its working directory, the scratch root TMPDIR
+  # names, and the read-write path that makes all three usable — so they name
+  # it once here.
+  integratorStateName = "valley-integrator";
+  integratorStateDir = "/var/lib/${integratorStateName}";
+
   # The paths the consumer must supply once the integrator is enabled,
   # with what each names — for the assertion message.
   integratorPathOptions = {
@@ -986,7 +993,7 @@ in
         GIT_CONFIG_COUNT = "1";
         GIT_CONFIG_KEY_0 = "safe.directory";
         GIT_CONFIG_VALUE_0 = "${cfg.dataDir}/%i.git";
-        TMPDIR = "%S/valley-integrator";
+        TMPDIR = integratorStateDir;
       };
       serviceConfig = {
         ExecStart = integratorCommand;
@@ -994,15 +1001,27 @@ in
         RestartSec = "10s";
         User = cfg.integrator.user;
         Group = cfg.group;
-        StateDirectory = "valley-integrator";
+        StateDirectory = integratorStateName;
         StateDirectoryMode = "0700";
-        WorkingDirectory = "/var/lib/valley-integrator";
+        WorkingDirectory = integratorStateDir;
         NoNewPrivileges = true;
         ProtectSystem = "strict";
+        # Everything the controller may write, named where a reader of the
+        # unit meets it. Under ProtectSystem=strict the rest of the
+        # filesystem is read-only, so this list is the whole of what the
+        # service can touch, and it is worth being able to read it as such
+        # rather than as the exceptions plus whatever else is implied.
+        #
+        # Its own directory: its state, and the scratch root TMPDIR names.
+        # A declaration says it here rather than relying on the state
+        # directory being read-write by virtue of being declared, which is
+        # not something this unit found to be true.
+        #
         # The one repository it serves, and the nix daemon's socket —
         # recomputing a closure means asking the daemon, and connecting to
         # a unix socket needs write access to it.
         ReadWritePaths = [
+          integratorStateDir
           "${cfg.dataDir}/%i.git"
           "/nix/var/nix/daemon-socket"
         ];

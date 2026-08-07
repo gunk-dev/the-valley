@@ -88,7 +88,7 @@ func (in *integrator) composeTransfer(ch verdict.Change, v verdict.Verdict, land
 // vet holds a composed statement to schema/attestation.cue before it is
 // rendered or signed, exactly as attest holds its own.
 func (in *integrator) vet(doc []byte) error {
-	dir, err := os.MkdirTemp("", "valley-integrator-vet")
+	dir, err := scratch("valley-integrator-vet")
 	if err != nil {
 		return err
 	}

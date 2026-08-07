@@ -320,9 +320,22 @@ func Decide(ch Change, s Snapshot) Verdict {
 		v.Reason = fmt.Sprintf("%d of %d required checks no longer carry evidence that transfers", len(v.Invalidated), len(required))
 		return v
 	}
-	if len(required) == 1 {
+	switch {
+	// Nothing owed is an outcome, not a count of zero. Two ways to owe
+	// nothing, and a reader needs to know which: the diff was covered and
+	// asked nothing of, or there was no diff to ask anything of. The
+	// second is a change already in the target's history — its base is
+	// its head, because the base is the merge base with the tip — and
+	// saying so is what keeps a resubmitted request from reading as a
+	// change that passed every check it had. A base nobody recorded is
+	// not that case; it is a caller that filled in neither.
+	case len(required) == 0 && ch.Base != "" && ch.Base == ch.Head:
+		v.Reason = "this change is already in the target's history, so its delta is empty and the policy requires nothing of it"
+	case len(required) == 0:
+		v.Reason = "the policy requires no check of the paths this change touches"
+	case len(required) == 1:
 		v.Reason = "the one required check carries evidence that transfers"
-	} else {
+	default:
 		v.Reason = fmt.Sprintf("all %d required checks carry evidence that transfers", len(required))
 	}
 	return v

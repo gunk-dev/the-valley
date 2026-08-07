@@ -59,6 +59,14 @@ where independent implementations part company; a form with no table has no such
 rather than dropping is what keeps the document that passed validation and the document that got
 signed the same document.
 
+An empty container is refused for the same reason and has one consequence worth naming, because it
+reaches the shape of every statement. A field whose value is a list or an object with nothing in it
+has no lines, so it cannot be written down; a statement that wants to say "nothing" says it with a
+field carrying a value, and leaves the container out. Absence and emptiness are therefore not two
+ways of saying the same thing here: absence is how a statement declines to carry a field, and what
+the absence means is stated by the field beside it rather than inferred. A claim shape whose zero
+case has no line to say it in is a claim shape with documents it can validate and never sign.
+
 ## What is stored is what was signed
 
 An attestation is stored as one note, so what a reader gets back from the ref is the byte sequence

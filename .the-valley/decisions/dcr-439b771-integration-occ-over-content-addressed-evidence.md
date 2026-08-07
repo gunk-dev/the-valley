@@ -104,6 +104,23 @@ direction [[bd-eaefe82]]
 ([bd-eaefe82-check-definitions-come-from-the-branch.md](../bugs/bd-eaefe82-check-definitions-come-from-the-branch.md))
 names, adopted here for the floor's checks.
 
+A transfer statement is written for every landing, including one the policy required no check of.
+Requiring nothing is an ordinary result of the commit rule — every path the delta touches is covered
+by a class that asks for nothing, or the delta touches no path at all — so the statement says so in
+a line rather than carrying an empty list of verdicts, which is a container the written form cannot
+write down at all ([[dcr-de9d996]]
+([dcr-de9d996-statement-text-and-signed-note.md](./dcr-de9d996-statement-text-and-signed-note.md))).
+The commit point records what it decided in every case it can decide, or there are landings nothing
+attests to.
+
+The order around the commit point follows from what a commit point is. The ref write is the commit;
+everything that can fail while the transaction is still deciding happens before it, and composing
+the transfer statement is part of deciding rather than of recording — a claim the integrator cannot
+write down is a claim it has not made. A failure before the commit is a transaction abandoned, which
+costs a pass and strands nothing. After the commit the landing is in the serial order whatever else
+happens, so the steps that record it run to the end and report what they could not do, and the
+request is consumed there rather than left to be judged again against a delta that is now empty.
+
 The two are separate statements because they are about two different trees. A contributor's
 statement is about the tree it was produced over; a transfer statement is about the tree that
 landed, which is a different tree exactly when something intervened. An attestation is stored at a

@@ -633,4 +633,77 @@ grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/he
 forget c11
 holds "a floor that is not where the controller looked names the repository, the directory and the ref"
 
+# ----------------------------------------------------------------------
+say "13. a change the policy requires no check of lands, and says so"
+
+# Requiring nothing is an ordinary outcome, not an edge: this project's
+# classes cover docs/, src/ and deploy/, and its `unclassified` set is
+# empty, so a path outside all three is answered with nothing owed. The
+# landing still writes a transfer statement — a commit point that records
+# nothing is a landing nothing attests to — and that statement says the
+# required set was empty rather than carrying a list with nothing in it,
+# which has no written form at all.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c12
+echo "outside every class this policy covers" > notes.txt
+git add -A
+git commit --quiet -m "a change no class covers"
+request c12 main "$(git rev-parse c12)"
+integrate
+grep -q '^c12 -> refs/heads/main .*: land$' "$work/last.out" \
+  || die "a change with nothing required did not land: $(cat "$work/last.out")"
+grep -q 'the policy requires no check of the paths this change touches' "$work/last.out" \
+  || die "the verdict did not say the policy required nothing"
+[ "$(tip)" = "$(git rev-parse c12)" ] || die "c12 did not land"
+git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c12" > /dev/null \
+  && die "the request ref survived the landing"
+
+nothing="refs/the-valley/attestations/$(attest digest --repo "$repo" --rev c12 | cut -d: -f2)/$ihash"
+git -C "$origin" cat-file blob "$nothing:transfer.note" > "$work/nothing.note"
+grep -qx 'predicate.required none' "$work/nothing.note" \
+  || die "the transfer statement does not say the required set was empty: $(cat "$work/nothing.note")"
+grep -q '^predicate.checks' "$work/nothing.note" \
+  && die "the transfer statement carries a check list beside the empty-set line"
+attest verify --note "$work/nothing.note" --known-keys "$work/reader_keys" \
+  --repo "$repo" --rev c12 --signer "$integrator_name" > /dev/null \
+  || die "the transfer statement for a landing with nothing required does not verify"
+holds "a landing with no required checks is signed, stored, and consumed its request"
+
+# ----------------------------------------------------------------------
+say "14. a request the controller cannot judge is reported once, not every tick"
+
+# The failure this guards is the one that turns a broken deployment into a
+# broken deployment nobody can read: a pass that cannot act on its verdict,
+# retried at tick rate, filling the journal with one refusal per interval
+# forever. The same request, tip and evidence produce the same failure, so
+# repeating it says nothing new. It is reported once and then the answer
+# stands, exactly as an outcome stands.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c13
+echo "a change judged under no floor, repeatedly" > docs/readme.md
+git add -A
+git commit --quiet -m "a change whose floor the controller cannot find, under watch"
+attest_change c13 "" "" --check prose-format
+request c13 main "$(git rev-parse c13)"
+
+# Five seconds at a one-second tick: five passes over one request the
+# controller cannot judge.
+timeout 5 integrator watch --interval 1s \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$origin" --instance-policy policy \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
+  > "$work/repeat.out" 2>&1 || true
+reports="$(grep -c 'no instance policy layer' "$work/repeat.out" || true)"
+[ "$reports" -eq 1 ] \
+  || die "the same refusal was reported $reports times over five ticks: $(cat "$work/repeat.out")"
+forget c13
+holds "a failure a pass cannot get past is reported once and then backs off"
+
 printf '\nintegrator-e2e: every scenario held\n'

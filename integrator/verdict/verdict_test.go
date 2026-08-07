@@ -319,3 +319,33 @@ func TestARunnerWithNoTransferRuleIsRefused(t *testing.T) {
 		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Checks[0].Reason)
 	}
 }
+
+func TestNothingRequiredIsALandingWithNoCheckVerdicts(t *testing.T) {
+	// A policy that asks nothing of a diff is an ordinary result of the
+	// commit rule, and it lands. What the caller must not be handed is a
+	// verdict that looks like a count of zero: the check list is empty, so
+	// whatever is written down about this landing cannot be a list.
+	v := Decide(change(), Snapshot{
+		Apply: Applied{Clean: true, Tree: attestedTree},
+	})
+	if v.Outcome != Land || len(v.Checks) != 0 {
+		t.Fatalf("outcome = %s with %d check verdicts (%s)", v.Outcome, len(v.Checks), v.Reason)
+	}
+	if !strings.Contains(v.Reason, "requires no check of the paths") {
+		t.Fatalf("reason = %q", v.Reason)
+	}
+}
+
+func TestAChangeAlreadyInTheTargetSaysThatRatherThanNothing(t *testing.T) {
+	// A resubmitted request whose head is already in the stream derives an
+	// empty delta, so the policy requires nothing of it — for a reason that
+	// has nothing to do with the policy. The base is the merge base with
+	// the tip, so base equal to head is exactly that case, and a reader of
+	// the outcome has to be told which of the two zeroes this is.
+	ch := change()
+	ch.Base, ch.Head = "cafe", "cafe"
+	v := Decide(ch, Snapshot{Apply: Applied{Clean: true, Tree: attestedTree}})
+	if v.Outcome != Land || !strings.Contains(v.Reason, "already in the target's history") {
+		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Reason)
+	}
+}

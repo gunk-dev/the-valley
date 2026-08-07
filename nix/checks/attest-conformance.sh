@@ -68,7 +68,7 @@ if [ "$(grep -c '^signature ok' siblings.verify)" -ne 2 ]; then
   exit 1
 fi
 
-if [ "$found" -lt 4 ] || [ "$signed" -lt 2 ]; then
+if [ "$found" -lt 6 ] || [ "$signed" -lt 2 ]; then
   echo "attest-conformance: $found vectors, $signed signed — the set has been emptied" >&2
   exit 1
 fi
@@ -84,7 +84,7 @@ for file in "$vectors"/refused/*; do
     exit 1
   fi
 done
-if [ "$refused" -lt 30 ]; then
+if [ "$refused" -lt 31 ]; then
   echo "attest-conformance: only $refused refusals — the set has been emptied" >&2
   exit 1
 fi

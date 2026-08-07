@@ -24,8 +24,11 @@ Each directory under `vectors/` is one vector.
   authority anywhere.
 
 Every vector is a whole statement, because line order is defined per predicate type and a fragment
-has no order at all. Between them they cover the places implementations part company: both predicate
-types, each in its own order; a digest set with several members, whose entries sort by key while
+has no order at all. Between them they cover the places implementations part company: all three
+predicate types, each in its own order; the transfer claim written both ways — a check list, and
+`predicate.required none` for a policy that required nothing of the change, which is the case where
+absence carries the claim and an empty list would have no written form at all; a digest set with
+several members, whose entries sort by key while
 everything around them does not; a delegation chain long enough that index `10` follows index `9`,
 where an implementation ordering by the key's bytes rather than by the index will get the array
 wrong; values written as their own bytes, including the characters a JSON encoder would have

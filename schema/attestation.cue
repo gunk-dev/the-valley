@@ -185,9 +185,30 @@ package attestation
 	// that was; the content digest is what pins the composed document.
 	policy: #DigestSet
 
-	// One entry per check the policy required, in the order the
-	// integrator judged them.
-	checks: [...#CheckTransfer]
+	// What the policy required of this change, written one of two ways,
+	// and never both.
+	//
+	// `checks` carries one entry per required check, in the order the
+	// integrator judged them. It is never empty: a value has a written
+	// form only if it has lines, and an array with no elements has none,
+	// so an empty list is a statement that cannot be signed.
+	//
+	// `required: "none"` is the zero case said out loud. A policy that
+	// requires nothing of a diff is an ordinary outcome — every path the
+	// diff touches is covered by a class that asks for nothing, or the
+	// diff touches no path at all — and the change lands on that basis.
+	// Absence carries the claim here rather than an empty container,
+	// which is the same absent-versus-empty rule the rest of the form
+	// keeps: a field a statement does not carry is left out, and what is
+	// left out is stated by the field beside it rather than inferred from
+	// a missing line.
+	{
+		checks: [#CheckTransfer, ...#CheckTransfer]
+		required?: _|_
+	} | {
+		required: "none"
+		checks?: _|_
+	}
 }
 
 // #CheckTransfer is one check's verdict at the commit point. Only

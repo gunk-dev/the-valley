@@ -132,11 +132,19 @@ func statementOrder(predicateType string) ([]field, error) {
 	case predicateTransfer:
 		// A transfer reads as: which change, onto what, from which base,
 		// under which policy, and then the per-check verdicts.
+		//
+		// `required` sits where the verdicts do, because it answers the
+		// same question in the case where the answer is nothing. A policy
+		// that required no check of the diff writes that line and no
+		// `checks` at all: an array with no elements has no lines and so
+		// no written form, and a claim about a landing may not depend on
+		// a container the form cannot write down.
 		predicate = obj("predicate",
 			leaf("change"),
 			leaf("target"),
 			set("base"),
 			set("policy"),
+			leaf("required"),
 			field{name: "checks", list: true, under: []field{
 				leaf("name"),
 				leaf("rule"),

@@ -4,8 +4,8 @@
 cue vet -c "$schema" "$statements/pure.json"
 cue vet -c "$schema" "$statements/effectful.json"
 
-# Each rejected statement is the pure or effectful one with a single thing
-# wrong; the file name says which.
+# Each rejected statement is a pure, effectful or transfer statement with a
+# single thing wrong; the file name says which.
 for bad in "$statements"/rejected/*.json; do
   name="$(basename "$bad" .json)"
   if cue vet -c "$schema" "$bad" > "$name.err" 2>&1; then
@@ -36,4 +36,12 @@ grep -q 'signature: conflicting values' signature-in-statement.err
 grep -q 'subject.digest."valley-tree-v1"' no-content-addressed-subject.err
 grep -q 'predicate.environment: field not allowed' effectful-claiming-pure.err
 grep -q 'predicate.check.command' command-over-two-lines.err
+# A transfer statement says what the policy required exactly one
+# way: a check list with something in it, or `required: "none"`.
+# An empty list is the shape that vets and cannot be signed —
+# it has no lines, so it has no written form — so it has to fail
+# here, where a composer meets it, rather than in the renderer
+# after a ref has moved.
+grep -q 'predicate.checks' transfer-with-an-empty-check-list.err
+grep -q 'predicate.checks' transfer-both-required-and-checks.err
 touch "$out"

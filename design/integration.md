@@ -102,6 +102,25 @@ the tip the verdict was computed over, so a request that lost a race lands nothi
 again next pass against the tip that won. That local ref write is the integrator's own privilege,
 and the structural invariant on the bare repo is what makes it the only one.
 
+That ref write is the commit point, and the order around it follows from that. Everything that can
+fail while the integrator is still deciding happens before it — including composing the transfer
+statement, because a claim it cannot write down is a claim it has not made, and a stream moved on a
+decision that cannot be stated is a landing nothing records. A failure there leaves the stream and
+the request exactly where they were, which is a transaction abandoned before it committed. Past the
+commit point the landing is a fact, and what is left is recording it: storing the evidence,
+consuming the request ref, and publishing. Each of those runs whatever the ones before it did, and a
+failure in any of them is reported against a landing that has already happened. In particular the
+request ref is consumed even then, because a request left pending for a change already in the stream
+is re-judged against an empty delta on every pass.
+
+**A pass that cannot act on its own verdict records that it could not.** The level-trigger's memo is
+what keeps the controller from re-announcing an unchanged answer, and a failure is an answer of that
+kind: the same request, tip and evidence produce the same failure, so retrying at tick rate is a
+report repeated until it is worthless. The memo therefore records the failure and the instant, and
+the request is taken up again when any of the three moves or when a few minutes have passed —
+whichever comes first. The second half is for the failures that come from outside those three, a bus
+or a disk or a lock, which will be different later.
+
 **6. Anything invalidated is one `request-stale` naming exactly those checks.** The request ref
 stays where it is, so resubmitting is re-attesting the named checks and pushing again.
 
@@ -119,7 +138,9 @@ The **transfer statement** is the integrator's own claim, and it is a separate s
 is about a different tree: the one that landed. Its predicate type is
 `the-valley/integration/transfer/v1`, and it records the change, the target stream, the base the
 evidence was produced over, the policy the verdict was derived under, and the per-check verdicts —
-each citing the statement it is about by a digest of the bytes that statement's signature covers.
+each citing the statement it is about by a digest of the bytes that statement's signature covers. A
+policy that required nothing of the change writes `predicate.required none` in place of the
+verdicts, which is the same claim with an empty answer rather than a different kind of claim.
 The policy it names is the one the integrator composed from its own checkout at the target tip,
 never the submitted tree, which is the direction
 [bd-eaefe82](../.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md) points at.

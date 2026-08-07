@@ -56,6 +56,23 @@ func (in *integrator) composeTransfer(ch verdict.Change, v verdict.Verdict, land
 		}
 		checks = append(checks, entry)
 	}
+	predicate := map[string]any{
+		"change": ch.ID,
+		"target": ch.Target,
+		"base":   digestSet{"valley-tree-v1": ch.Attested},
+		"policy": digestSet{"sha256": policyDigest, "git-sha1": tip},
+	}
+	// A policy that required nothing of this diff says so, rather than
+	// carrying a list with nothing in it. An empty array has no lines and
+	// so no written form (dcr-de9d996), so a statement composed that way
+	// could be vetted and never signed — which is how a landing with no
+	// required checks used to strand. The zero case is an ordinary
+	// outcome, so it gets an ordinary line.
+	if len(checks) == 0 {
+		predicate["required"] = "none"
+	} else {
+		predicate["checks"] = checks
+	}
 	doc := map[string]any{
 		"statementType": "the-valley/attestation/v1",
 		"subject": map[string]any{
@@ -63,13 +80,7 @@ func (in *integrator) composeTransfer(ch verdict.Change, v verdict.Verdict, land
 			"digest":  digestSet{"valley-tree-v1": landedTree, "git-sha1": landedCommit},
 		},
 		"predicateType": predicateTransfer,
-		"predicate": map[string]any{
-			"change": ch.ID,
-			"target": ch.Target,
-			"base":   digestSet{"valley-tree-v1": ch.Attested},
-			"policy": digestSet{"sha256": policyDigest, "git-sha1": tip},
-			"checks": checks,
-		},
+		"predicate":     predicate,
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {

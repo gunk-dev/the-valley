@@ -122,13 +122,69 @@ func (in *integrator) handle(r request) error {
 		return err
 	}
 	memo := fmt.Sprintf("%s %s %s", r.head, tip, evidence)
-	if last, _ := in.readMemo(r); last != "" && strings.HasPrefix(last, memo+" ") {
+	if done, err := in.answered(r, memo); err != nil {
+		return err
+	} else if done {
 		return nil
 	}
+	// From here on the request has been taken up, so whatever happens is
+	// this pass's answer to it — including a failure. Recording that is
+	// what keeps the next tick from asking the identical question.
+	outcome, err := in.act(r, tip)
+	if err != nil {
+		if memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339)); memoErr != nil {
+			return fmt.Errorf("%v (and the failure could not be recorded: %v)", err, memoErr)
+		}
+		return err
+	}
+	return in.writeMemo(r, memo+" "+string(outcome))
+}
 
+// failedMemo marks a memo written for a pass that could not act on its own
+// verdict, and retryAfter is how long that answer stands.
+//
+// A failure here is a function of the same three things the verdict is, so
+// the identical attempt fails identically until one of them moves — and
+// moving any of them already re-judges the request, whatever the memo says.
+// The window exists for the other kind of failure: a bus, a disk, a lock,
+// something outside the three that will be different later. Minutes rather
+// than ticks, because a controller that reports the same refusal every
+// fifteen seconds has buried the report it was making.
+const (
+	failedMemo = "failed"
+	retryAfter = 10 * time.Minute
+)
+
+// answered says whether this pass already has this request's answer. An
+// outcome stands until the request, the tip, or the evidence moves; a
+// recorded failure stands the same way, and additionally expires, so a
+// transient one is retried without being retried at tick rate.
+func (in *integrator) answered(r request, memo string) (bool, error) {
+	last, err := in.readMemo(r)
+	if err != nil || last == "" {
+		return false, err
+	}
+	rest, ok := strings.CutPrefix(last, memo+" ")
+	if !ok {
+		return false, nil
+	}
+	when, failed := strings.CutPrefix(rest, failedMemo+" ")
+	if !failed {
+		return true, nil
+	}
+	at, err := time.Parse(time.RFC3339, when)
+	if err != nil {
+		return false, nil
+	}
+	return in.now().Sub(at) < retryAfter, nil
+}
+
+// act judges one request and does what the verdict says, returning the
+// outcome so the memo can record it.
+func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 	ch, snap, landed, err := in.materialize(r, tip)
 	if err != nil {
-		return err
+		return "", err
 	}
 	v := verdict.Decide(ch, snap)
 	in.report(r, tip, v)
@@ -136,7 +192,7 @@ func (in *integrator) handle(r request) error {
 	switch v.Outcome {
 	case verdict.Land:
 		if err := in.land(ch, v, r, tip, landed); err != nil {
-			return err
+			return v.Outcome, err
 		}
 	case verdict.Stale:
 		in.publishStale(ch, v, tip)
@@ -149,7 +205,7 @@ func (in *integrator) handle(r request) error {
 		// it will change on its own.
 		fmt.Fprintf(in.out, "  no event: a forged attestation is not staleness, and the vocabulary has no other word\n")
 	}
-	return in.writeMemo(r, memo+" "+string(v.Outcome))
+	return v.Outcome, nil
 }
 
 // landing is the commit a verdict would move the target to, and what the
@@ -285,6 +341,25 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 // bus. The ref write is a compare-and-swap against the tip the verdict was
 // computed over, so a request that lost a race to another lands nothing and
 // is judged again next pass against the tip that won.
+//
+// The order is the commit point's. Everything that can fail while the
+// integrator is still deciding happens first, and the ref write is the
+// commit. Composing the transfer statement — vetting it, writing it down,
+// signing it — is part of deciding: a claim the integrator cannot write
+// down is a claim it has not made, and a stream moved on a decision that
+// cannot be stated is a landing nothing records. A failure before the
+// commit point leaves the stream where it was and the request where it was,
+// which is a transaction abandoned before it committed and costs one pass
+// to redo.
+//
+// Past the commit point the landing is a fact in the stream, and what is
+// left is recording it: storing the evidence, consuming the request, and
+// saying so on the bus. None of those may be skipped because an earlier one
+// failed, and consuming the request in particular may not be reachable only
+// through something that can fail — a request left pending for a change
+// already in the stream is re-judged against an empty delta on every pass,
+// forever. So each step runs, each failure is reported, and the landing is
+// reported as having happened, because it did.
 func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing) error {
 	transfer, err := in.composeTransfer(ch, v, l.digest, l.commit, tip, l.policy)
 	if err != nil {
@@ -294,21 +369,29 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	if err != nil {
 		return err
 	}
+
+	// The commit point.
 	if _, err := git(in.repo, "update-ref", ch.Target, l.commit, tip); err != nil {
 		return fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
 	}
+	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
+
+	var unrecorded []string
 	refs, err := in.store(evidence)
 	if err != nil {
-		return err
+		unrecorded = append(unrecorded, fmt.Sprintf("the evidence was not stored (%v)", err))
 	}
 	for _, ref := range refs {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
-	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
 	if _, err := git(in.repo, "update-ref", "-d", r.ref); err != nil {
-		return err
+		unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
 	}
 	in.publishLanded(ch, v, tip, l.commit)
+	if len(unrecorded) > 0 {
+		return fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",
+			ch.ID, verdict.Short(l.commit), strings.Join(unrecorded, "; "))
+	}
 	return nil
 }
 

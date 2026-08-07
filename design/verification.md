@@ -129,7 +129,16 @@ question is answered first. Lines are written in the order below, and that order
    | `predicate.target`                                           |
    | `predicate.base`                                             |
    | `predicate.policy`                                           |
+   | `predicate.required`                                         |
    | `predicate.checks.<i>.name`, `.rule`, `.evidence`, `.inputs` |
+
+   A transfer statement writes the last of those two lines exactly one way. When the policy required
+   checks, `predicate.checks` carries one entry per check and `predicate.required` is absent. When it
+   required none, `predicate.required none` is the line and `predicate.checks` is absent. There is no
+   third way, and in particular no empty list: an array with no elements has no lines, so it has no
+   written form, and a landing may not depend on a container the form cannot write down. A policy
+   that asks nothing of a diff is an ordinary outcome, so the zero case is said in a line rather than
+   left to be inferred from a missing one.
 
 5. `provenance` — what produced the change, last, because it is context for the claim rather than
    part of it: `harness`, `model`, `prompt`, `context`, then `delegation`.

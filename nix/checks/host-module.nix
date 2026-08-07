@@ -62,6 +62,20 @@ let
   # is not the git user's, pointed at the key and the signers the consumer
   # supplied.
   #
+  # There is a seam between those two halves that neither reaches, and it
+  # has now produced three bugs. Every assertion below is an eval of the
+  # unit's text; integrator-e2e runs the binaries with no unit around them
+  # at all. What sits between is the unit's sandbox meeting the filesystem
+  # the binaries actually use at runtime: git refusing a repository the
+  # service does not own (bd-500adf7), and a temporary directory the
+  # sandbox does not leave writable. Each was found by a host, minutes of
+  # a live controller after a deploy that every check here passed.
+  #
+  # A nixosTest that boots one host and reconciles one change end to end is
+  # what covers that seam, and each assertion pinning a piece of it — the
+  # git ownership exception, TMPDIR — is a place a smoke boot would have
+  # spoken first. Not built here.
+  #
   # Protection and integration are separable declarations: protectedHost
   # declares the same protected projects with the service off, and must
   # evaluate to no controller at all.
@@ -87,6 +101,14 @@ let
     integratorGitEnv.GIT_CONFIG_COUNT or null != "1"
     || integratorGitEnv.GIT_CONFIG_KEY_0 or null != "safe.directory"
     || integratorGitEnv.GIT_CONFIG_VALUE_0 or null != "/srv/git/%i.git";
+
+  # Scratch goes under the state directory, because the sandbox leaves no
+  # writable temporary directory and a verdict needs a checkout on disk.
+  # Pinned to the state directory the unit actually declares: TMPDIR naming
+  # a path outside it is the failure this replaced, arriving silently.
+  integratorScratch =
+    integratorGitEnv.TMPDIR or null
+    != "%S/${integratorHost.config.systemd.services."valley-integrator@".serviceConfig.StateDirectory}";
 in
 {
   module-eval =
@@ -127,6 +149,8 @@ in
       throw "valley module-eval: the integrator reaches the repositories through the git group, and holds no other grant"
     else if integratorSafeDirectory then
       throw "valley module-eval: a controller must carry safe.directory for the one repository it serves in its own environment — it does not own the repositories, and git refuses what it does not own"
+    else if integratorScratch then
+      throw "valley module-eval: a controller's TMPDIR must be its state directory — the sandbox leaves no writable temporary directory, and a verdict needs a worktree on disk"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

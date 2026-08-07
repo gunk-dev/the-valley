@@ -202,6 +202,11 @@ func run(args []string, loop bool) error {
 	if !loop {
 		return in.reconcile()
 	}
+	// Only the looping controller sweeps. A one-shot run may be somebody
+	// running the integrator by hand beside a controller that is already
+	// watching this repository, and sweeping from there would pull the
+	// worktree out from under a tick in progress.
+	sweepScratch(in.repo)
 	for {
 		if err := in.reconcile(); err != nil {
 			fmt.Fprintf(os.Stderr, "integrator: %v\n", err)

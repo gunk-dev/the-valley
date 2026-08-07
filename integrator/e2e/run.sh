@@ -16,6 +16,10 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export HOME="$work"
 export GIT_CONFIG_NOSYSTEM=1
+# Scratch goes where the run puts it, as it does under the unit, so what
+# a pass leaves behind is observable rather than scattered through /tmp.
+export TMPDIR="$work/tmp"
+mkdir -p "$TMPDIR"
 export VALLEY_FAKE_STORE="$work/store"
 export PATH="$here:$PATH" # the nix stand-ins, ahead of anything real
 
@@ -496,5 +500,43 @@ grep -q "^c9 -> refs/heads/main .*: land$" "$work/last.out" \
 holds "malformed refs are reported and skipped; the valid request beside them landed"
 git -C "$origin" update-ref -d refs/the-valley/integration-requests/garbage
 git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/too/deep
+
+# ----------------------------------------------------------------------
+say "10. a pass leaves no scratch behind, and a leaked worktree is swept"
+
+# Nine scenarios of real passes, landings and rejections alike, and the
+# scratch root is empty: every worktree a pass takes is given back on the
+# way out, on the failure path as much as the success one.
+leftover="$(find "$TMPDIR" -maxdepth 1 -name 'valley-integrator-wt*')"
+[ -z "$leftover" ] || die "nine passes left scratch behind: $leftover"
+[ "$(git -C "$origin" worktree list --porcelain | grep -c '^worktree ')" -eq 1 ] \
+  || die "nine passes left a worktree attached to the repository"
+holds "no pass left a worktree or a scratch directory behind"
+
+# What a crash leaves: the checkout and its administrative entry, both
+# still valid, so nothing prunes them. Beside it, a worktree of the kind
+# an operator might attach by hand, which is not the integrator's to
+# remove.
+leak="$TMPDIR/valley-integrator-wt-crashed"
+mine="$work/an-operators-own-worktree"
+git -C "$origin" worktree add --quiet --detach "$leak" refs/heads/main
+git -C "$origin" worktree add --quiet --detach "$mine" refs/heads/main
+timeout 5 integrator watch --interval 1s \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance "$instance" --project-policy policy \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
+  > "$work/watch.out" 2>&1 || true
+[ ! -e "$leak" ] || die "a leaked scratch worktree survived the sweep"
+if git -C "$origin" worktree list --porcelain | grep -q "^worktree $leak$"; then
+  die "the leaked worktree is gone from disk and still registered"
+fi
+[ -e "$mine" ] || die "the sweep removed a worktree the integrator did not make"
+git -C "$origin" worktree remove --force "$mine"
+holds "a crash-leaked scratch worktree is swept at watch start; another hand's is not"
 
 printf '\nintegrator-e2e: every scenario held\n'

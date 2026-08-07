@@ -943,10 +943,23 @@ in
       # worktrees need no entry of their own — the controller creates them,
       # so it owns them, and git checks the worktree and its gitdir rather
       # than the repository they point at.
+      #
+      # TMPDIR is the same kind of wiring, for the same reason. A verdict
+      # wants a checkout of the tip on disk, and the integrator asks for one
+      # the ordinary way — a temporary directory, then a linked worktree in
+      # it. The sandbox below leaves no writable temporary directory, so
+      # every tick died on `could not create leading directories`. The
+      # scratch belongs under the state directory the unit already has:
+      # writable by construction, owned by this service, and gone when the
+      # service's state is. Setting it in the environment rather than
+      # teaching the binary a flag covers every process in the unit at once
+      # — the integrator, attest, the deriver, and the git each of them runs
+      # all read TMPDIR, and all of them want scratch in the same place.
       environment = {
         GIT_CONFIG_COUNT = "1";
         GIT_CONFIG_KEY_0 = "safe.directory";
         GIT_CONFIG_VALUE_0 = "${cfg.dataDir}/%i.git";
+        TMPDIR = "%S/valley-integrator";
       };
       serviceConfig = {
         ExecStart = integratorCommand;

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -50,8 +51,14 @@ type worktree struct {
 	dir  string
 }
 
+// scratchPrefix names every directory addWorktree creates. It is what tells
+// a worktree of the integrator's own making from one somebody else attached
+// to the same repository by hand, which is the difference between a leak to
+// clean up and a checkout to leave alone.
+const scratchPrefix = "valley-integrator-wt"
+
 func addWorktree(repo, rev string) (*worktree, error) {
-	dir, err := os.MkdirTemp("", "valley-integrator-wt")
+	dir, err := os.MkdirTemp("", scratchPrefix)
 	if err != nil {
 		return nil, err
 	}
@@ -72,6 +79,38 @@ func (w *worktree) remove() {
 	}
 	_, _ = gitTry(w.repo, "worktree", "remove", "--force", w.dir)
 	_ = os.RemoveAll(w.dir)
+}
+
+// sweepScratch removes the scratch worktrees a previous run left attached to
+// the repository. Every tick removes its own worktree on the way out, on the
+// failure path as much as the success one, so a leak needs a run that died
+// between the add and the remove — a crash, a kill, a restart. The checkout
+// and its administrative entry both survive that, and the scratch root is
+// now a state directory that persists across restarts, so leaks would
+// accumulate there without something to sweep them.
+//
+// A leak is found through the repository rather than the filesystem: a
+// worktree is registered in the repository it is attached to, and a
+// controller serves exactly one repository, so this cannot reach another
+// controller's scratch even though they share a scratch root. Called once
+// before the loop starts, when this process holds no worktree of its own, so
+// everything carrying the prefix is a leak.
+func sweepScratch(repo string) {
+	out, ok := gitTry(repo, "worktree", "list", "--porcelain")
+	if !ok {
+		return
+	}
+	for _, line := range strings.Split(out, "\n") {
+		dir, found := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
+		if !found || !strings.HasPrefix(filepath.Base(dir), scratchPrefix) {
+			continue
+		}
+		_, _ = gitTry(repo, "worktree", "remove", "--force", dir)
+		_ = os.RemoveAll(dir)
+	}
+	// An entry whose checkout went away by some other route is still an
+	// entry, and only prune clears those.
+	_, _ = gitTry(repo, "worktree", "prune")
 }
 
 // mergeDelta applies a change's delta onto a tip without a working tree:

@@ -693,8 +693,9 @@ in
         description = ''
           The project whose served repository carries the group's floor —
           the instance policy layer every controller on this host composes
-          against. A controller reads it from that bare repository's
-          integrated tip, and nothing is materialized on disk in between.
+          against. A controller reads it from `policy/instance/` in that
+          bare repository's integrated tip, and nothing is materialized on
+          disk in between.
 
           The floor is the instance repository's, read at the tip that has
           been integrated (dcr-f41f718); the instance repository is the
@@ -712,18 +713,25 @@ in
           Every controller on the host reads the same repository, the
           controller serving that repository included. Both layers are
           resolved from the controller's own side — this one, and the
-          project's `policy/` at the target tip — so a change can never
-          supply the policy that gates it (bd-eaefe82).
+          project's `policy/project/` at the target tip — so a change can
+          never supply the policy that gates it (bd-eaefe82).
+
+          Those two directories are the convention, and the module states
+          neither: a controller takes each layer from the place the
+          integrator defaults to, so a host declaration that says nothing
+          about policy gets the layout the worked example lays out
+          (dcr-f41f718).
         '';
       };
 
       instancePolicy = lib.mkOption {
         type = lib.types.nullOr lib.types.path;
         default = null;
-        example = "/var/lib/valley-instance/policy";
+        example = "/var/lib/valley-instance/policy/instance";
         description = ''
           Directory of `*.cue` files holding the instance policy layer, for
-          a host that serves no instance repository. Set this or
+          a host that serves no instance repository. It holds what
+          `policy/instance/` in the instance repository holds. Set this or
           {option}`services.valley.integrator.instanceProject`, never both.
 
           Keeping such a directory in step with the instance repository is

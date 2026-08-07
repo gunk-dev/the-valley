@@ -51,10 +51,12 @@ flags:
   --instance-repo DIR the bare repository carrying the group's floor; the
                       instance layer is read from its integrated tip
   --instance-ref REF  the ref whose tip carries it (default refs/heads/main)
-  --instance-policy P the floor's directory in that tip (default policy)
+  --instance-policy P the floor's directory in that tip (default
+                      policy/instance)
   --instance DIR      a materialized instance layer, for a host that serves
                       no instance repository; one of this or --instance-repo
   --project-policy P  the project policy layer, relative to the target tip
+                      (default policy/project)
   --schema FILE       the verification schema
   --attest-schema F   the attestation schema
   --event-schema F    the event vocabulary payloads are vetted against
@@ -139,9 +141,9 @@ func run(args []string, loop bool) error {
 	known := fs.String("known-signers", "", "verifier keys whose attestations count")
 	instanceRepo := fs.String("instance-repo", "", "the bare repository carrying the group's floor")
 	instanceRef := fs.String("instance-ref", "refs/heads/main", "the ref whose tip carries the floor")
-	instancePolicy := fs.String("instance-policy", "policy", "the floor's directory in that tip")
+	instancePolicy := fs.String("instance-policy", "policy/instance", "the floor's directory in that tip")
 	instance := fs.String("instance", "", "a materialized instance policy layer")
-	projectPolicy := fs.String("project-policy", "policy", "the project policy layer, relative to the target tip")
+	projectPolicy := fs.String("project-policy", "policy/project", "the project policy layer, relative to the target tip")
 	schema := fs.String("schema", env("VALLEY_VERIFICATION_SCHEMA"), "the verification schema")
 	attestSchema := fs.String("attest-schema", env("VALLEY_ATTEST_SCHEMA"), "the attestation schema")
 	eventSchema := fs.String("event-schema", env("VALLEY_EVENT_SCHEMA"), "the event vocabulary")

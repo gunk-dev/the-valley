@@ -95,6 +95,13 @@ if grep -q -- '--project-policy' "$integratorUnitPath"; then
   echo "module-eval: the module must not tell a controller where the project's policy is" >&2
   exit 1
 fi
+# Nor where the floor is inside that repository. Both directories are the
+# integrator's defaults — policy/instance and policy/project — so a host
+# declaration that says nothing about policy gets the convention.
+if grep -q -- '--instance-policy' "$integratorUnitPath"; then
+  echo "module-eval: the module must not tell a controller where the floor is in the instance repository" >&2
+  exit 1
+fi
 
 # It does not own the repositories, so git needs an ownership
 # exception, and the rendered unit is where it has to appear:

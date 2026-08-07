@@ -10,6 +10,13 @@ package main
 // the submitted tree (bd-eaefe82): the project layer from a checkout of the
 // target tip, the instance layer from where the integrator is configured to
 // find it. A change therefore never supplies the policy that gates it.
+//
+// Each layer is a directory of its own under `policy/`, which is the layout
+// dcr-f41f718's worked example lays out and the layout the defaults name:
+// the floor at `policy/instance` in the instance repository's tip, the
+// project's own layer at `policy/project` in the target tip. A repository
+// that keeps either somewhere else says so with --instance-policy or
+// --project-policy.
 
 import (
 	"the-valley/integrator/verdict"

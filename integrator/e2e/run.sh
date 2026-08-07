@@ -66,7 +66,7 @@ git init --quiet "$repo"
 cd "$repo"
 git remote add origin "$origin"
 
-mkdir -p docs src deploy checks policy
+mkdir -p docs src deploy checks policy/project
 echo "the readme" > docs/readme.md
 echo "the source" > src/main.txt
 echo "the deployment" > deploy/target.txt
@@ -75,8 +75,9 @@ echo docs > checks/prose-format.inputs
 echo src > checks/code-build.inputs
 
 # The project layer: it declares its own classes and checks above the
-# floor, and declines nothing.
-cat > policy/project.cue <<'EOF'
+# floor, and declines nothing. It sits at policy/project, which is where the
+# integrator looks without being told (dcr-f41f718).
+cat > policy/project/policy.cue <<'EOF'
 package verification
 
 project: {
@@ -102,10 +103,15 @@ git commit --quiet -m "seed the project"
 git push --quiet origin main
 
 # The instance layer lives outside the project's tree, and the integrator
-# reads it from there: a change never supplies the policy that gates it.
-instance="$work/instance"
-mkdir -p "$instance"
-cat > "$instance/floor.cue" <<'EOF'
+# reads it from there: a change never supplies the policy that gates it. The
+# floor is the group's own repository's, read at the tip that has been
+# integrated (dcr-f41f718), and it sits at policy/instance in that tip.
+instance_repo="$work/instance.git"
+git init --quiet --bare "$instance_repo"
+floor="$work/instance-project"
+git init --quiet "$floor"
+mkdir -p "$floor/policy/instance"
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
 package verification
 
 floor: {
@@ -114,7 +120,18 @@ floor: {
 	unclassified: {}
 }
 EOF
-holds "policy composes from $instance and the project's own policy/"
+git -C "$floor" add -A
+git -C "$floor" commit --quiet -m "seed the floor"
+git -C "$floor" push --quiet "$instance_repo" main
+
+# The fallback source, for a host that serves no instance repository: the
+# same documents, materialized as a directory. One scenario below reads the
+# floor that way, and every other reads it from the repository.
+instance="$work/instance"
+mkdir -p "$instance"
+cp "$floor/policy/instance/floor.cue" "$instance/floor.cue"
+
+holds "the floor is policy/instance at $instance_repo's tip, and the project's layer is policy/project at its own"
 
 # ----------------------------------------------------------------------
 # Helpers.
@@ -135,11 +152,14 @@ request() {
 }
 
 integrate() {
+  # Neither policy path is stated: both layers come from where the
+  # integrator defaults to looking, which is the whole of what a deployment
+  # following the convention says about policy.
   integrator reconcile \
     --repo "$origin" \
     --key "$work/integrator" --name "$integrator_name" \
     --known-signers "$work/known_signers" \
-    --instance "$instance" --project-policy policy \
+    --instance-repo "$instance_repo" \
     --schema "$SCHEMA_VERIFICATION" \
     --attest-schema "$SCHEMA_ATTESTATION" \
     --event-schema "$SCHEMA_EVENTS" \
@@ -525,7 +545,7 @@ timeout 5 integrator watch --interval 1s \
   --repo "$origin" \
   --key "$work/integrator" --name "$integrator_name" \
   --known-signers "$work/known_signers" \
-  --instance "$instance" --project-policy policy \
+  --instance "$instance" \
   --schema "$SCHEMA_VERIFICATION" \
   --attest-schema "$SCHEMA_ATTESTATION" \
   --event-schema "$SCHEMA_EVENTS" \
@@ -566,5 +586,51 @@ grep -q "scratch directory under $refused, which TMPDIR names" "$work/last.out" 
   || die "an unwritable scratch root was not reported as one: $(cat "$work/last.out")"
 forget c10
 holds "an unwritable scratch root names the path and where it came from"
+
+# ----------------------------------------------------------------------
+say "12. a floor the instance repository does not carry names the directory looked in"
+
+# The deployment failure this guards is a controller pointed at the wrong
+# directory: the floor is somewhere, and not where this controller looked.
+# The report has to name the repository, the directory and the ref, because
+# those three are what the operator compares against the repository in front
+# of them. A floor is either not there at all, or there under a name that
+# holds no documents, and both arrive that way.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c11
+echo "a change judged under no floor" > docs/readme.md
+git add -A
+git commit --quiet -m "a change whose floor the controller cannot find"
+attest_change c11 "" "" --check prose-format
+request c11 main "$(git rev-parse c11)"
+
+floorless() {
+  integrator reconcile \
+    --repo "$origin" \
+    --key "$work/integrator" --name "$integrator_name" \
+    --known-signers "$work/known_signers" \
+    --instance-repo "$origin" "$@" \
+    --schema "$SCHEMA_VERIFICATION" \
+    --attest-schema "$SCHEMA_ATTESTATION" \
+    --event-schema "$SCHEMA_EVENTS" \
+    ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
+    2>&1 | tee "$work/last.out"
+}
+
+# The project's own repository carries policy/project and no policy/instance,
+# so the default directory is not there.
+floorless || true
+grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/heads/main" "$work/last.out" \
+  || die "a missing floor did not name the directory looked in: $(cat "$work/last.out")"
+
+# And the flat layout, which is a directory that exists and holds no
+# documents of its own: policy/ has the two layers under it and no *.cue in
+# it. Said as that, rather than as an empty composition further on.
+floorless --instance-policy policy || true
+grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/heads/main" "$work/last.out" \
+  || die "a floor directory holding no documents did not say so: $(cat "$work/last.out")"
+forget c11
+holds "a floor that is not where the controller looked names the repository, the directory and the ref"
 
 printf '\nintegrator-e2e: every scenario held\n'

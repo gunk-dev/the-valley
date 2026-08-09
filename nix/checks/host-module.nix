@@ -18,6 +18,7 @@ let
     mirrorHost
     integratorHost
     integratorSelfHost
+    identityHost
     ;
 
   failedAssertions = builtins.filter (a: !a.assertion) (
@@ -28,6 +29,7 @@ let
     ++ protectedHost.config.assertions
     ++ integratorHost.config.assertions
     ++ integratorSelfHost.config.assertions
+    ++ identityHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -170,6 +172,76 @@ let
   integratorScratch =
     integratorGitEnv.TMPDIR or null != "/var/lib/${integratorService.StateDirectory}"
     || !(builtins.elem "/var/lib/${integratorService.StateDirectory}" integratorService.ReadWritePaths);
+
+  # The registry compiler. It is off by default and must stay inert: a
+  # consumer that has not asked for it renders the system it always did.
+  # integratorHost is the strongest witness available — the integrator on,
+  # the signers file supplied by hand, and every option of the identity
+  # block left alone.
+  identityRenderedWithoutEnable =
+    integratorHost.config.systemd.services ? valley-identity
+    || integratorHost.config.systemd.timers ? valley-identity
+    || integratorHost.config.services.openssh.settings ? PermitUserEnvironment
+    || lib.any (lib.hasInfix "valley-identity") integratorHost.config.services.openssh.authorizedKeysFiles
+    || lib.hasInfix "valley-identity" (
+      integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
+    )
+    || lib.hasInfix "--name " (
+      integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
+    );
+
+  identityService = identityHost.config.systemd.services.valley-identity.serviceConfig;
+
+  identityStateDir = "/var/lib/${identityService.StateDirectory or ""}";
+
+  # What the compiled artifacts have to be true of, and each was a way for
+  # the machinery to be quietly wrong.
+  #
+  # The compiler writes into its state directory and nowhere else, so that
+  # directory has to be the one path the unit may write.
+  #
+  # sshd walks every directory above an authorized-keys file and refuses a
+  # group- or world-writable one, so the state directory is 0755 rather than
+  # the 0700 a service's state usually takes — and the unit runs as the git
+  # user, because sshd equally refuses a file owned by anyone but root or
+  # the account it authorizes.
+  #
+  # The compiled file is added to what sshd reads rather than replacing it,
+  # and it carries the %u token: a fixed path in that global list would
+  # authorize every registry key for every account on the host.
+  identityCompiler =
+    identityService.User or null != identityHost.config.services.valley.user
+    || identityService.StateDirectoryMode or null != "0755"
+    || identityService.ReadWritePaths or [ ] != [ identityStateDir ]
+    || !(lib.hasInfix "--repo /srv/git/open.git" identityService.ExecStart)
+    || !(lib.hasInfix "--known-signers ${identityStateDir}/known-signers" identityService.ExecStart)
+    || !(lib.hasInfix "--authorized-keys ${identityStateDir}/authorized_keys.git" identityService.ExecStart)
+    || !(builtins.elem "${identityStateDir}/authorized_keys.%u"
+      identityHost.config.services.openssh.authorizedKeysFiles
+    )
+    || !(builtins.elem "%h/.ssh/authorized_keys" identityHost.config.services.openssh.authorizedKeysFiles);
+
+  # A controller under a compiled registry reads the compiled signers file
+  # and signs under the name the registry publishes its key under. The key
+  # hash binds name to key, so a controller signing under the host's default
+  # name while the registry publishes it as "integrator" would produce notes
+  # no verifier can find a key for.
+  identityIntegrator =
+    let
+      command = identityHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+    in
+    !(lib.hasInfix "--known-signers ${identityStateDir}/known-signers" command)
+    || !(lib.hasInfix "--name integrator" command)
+    || !(builtins.elem "valley-identity.service"
+      identityHost.config.systemd.services."valley-integrator@".after
+    );
+
+  # The declared keys stay authorized beside the compiled ones. A compiled
+  # file that replaced them would make a bad compilation — or a first boot
+  # before the first one — a locked-out git user, which is the one failure
+  # this machinery must never have.
+  identityKeepsDeclaredKeys =
+    identityHost.config.users.users.git.openssh.authorizedKeys.keys == [ ];
 in
 {
   module-eval =
@@ -214,6 +286,14 @@ in
       throw "valley module-eval: a controller must be told which repository carries the floor, and must carry a safe.directory exception for it — the floor is read from that repository's integrated tip, and git refuses a repository its caller does not own"
     else if integratorScratch then
       throw "valley module-eval: a controller's TMPDIR must be its state directory and that directory must be named in ReadWritePaths — under ProtectSystem=strict a path the unit does not enumerate is one it cannot write, and a verdict needs a worktree on disk"
+    else if identityRenderedWithoutEnable then
+      throw "valley module-eval: registry-compilation machinery rendered for a host that never enabled it — nothing may change until a consumer opts in"
+    else if identityCompiler then
+      throw "valley module-eval: the compiler must run as the git user, write only its own 0755 state directory, read the registry from the instance repository, and have its authorized_keys added to what sshd reads under the %u token — sshd refuses a keys file owned by anyone but root or the account it authorizes, and a fixed path in that global list would authorize every registry key for every account on the host"
+    else if identityIntegrator then
+      throw "valley module-eval: a controller under a compiled registry must read the compiled signers file, start after the compilation, and sign under the name the registry publishes its key under"
+    else if identityKeepsDeclaredKeys then
+      throw "valley module-eval: the declared authorized keys must stay authorized beside the compiled ones — a compiled file that replaced them would make a bad compilation a locked-out git user"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

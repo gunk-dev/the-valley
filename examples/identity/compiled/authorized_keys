@@ -1,0 +1,10 @@
+# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Keys that may push, each tagged with the principal it acts as. sshd puts
+# the tag in the environment of the receive-pack the pre-receive hook runs
+# under, which is what tells one pusher from another over a shared user.
+environment="VALLEY_PRINCIPAL=patrick" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICkzfSlbK9YX3KztdvtgfyJelixdI6QN3c41eme9HOWv
+environment="VALLEY_PRINCIPAL=patrick" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG8B2eVhu/TpXZPyOt/6w0ELdtO6X6cTiWz3CvofxDCR
+environment="VALLEY_PRINCIPAL=patrick" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip
+environment="VALLEY_PRINCIPAL=patrick" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo0Oc728AfV2EMn30DhTWSqdWhmY8xR6np/qf6U7xvn
+environment="VALLEY_PRINCIPAL=patrick" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILc8u2oEFD+sn9vmX0gEbf62V4fmHGSvu10ENPkci3Yd
+environment="VALLEY_PRINCIPAL=stoned-flynn" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG

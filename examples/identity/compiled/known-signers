@@ -1,0 +1,9 @@
+# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Verifier keys whose attestations count, one per line: the name a key
+# signs under, the note format's key hash over that name and key, and
+# base64 of the algorithm byte and the raw ed25519 public key.
+classic-laddie/attestations+9033aa07+AU7/mipW9wcQwVlDmEqBZksGDO3BEG94gb6VBuyDJUgk
+integrator+78dfd4e6+Adyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ
+makers-mark/attestations+45e7639c+Abc8u2oEFD+sn9vmX0gEbf62V4fmHGSvu10ENPkci3Yd
+makers-mark/attestations+4eb59ac2+AW8B2eVhu/TpXZPyOt/6w0ELdtO6X6cTiWz3CvofxDCR
+patrick+58a6cfd9+AWCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip

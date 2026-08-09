@@ -20,7 +20,9 @@
 # enforcement boundary and each key carries a principal name it can read
 # (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) —
 # so it is declared, in the project's `protection` block, and this module
-# only binds principal names to keys and renders the hook.
+# only binds principal names to keys and renders the hook. Those bindings
+# are declared by hand or compiled from the instance's identity registry,
+# and the compiler is off until a consumer turns it on.
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
@@ -100,9 +102,10 @@ let
       "${integratorPackage}/bin/integrator watch"
       "--repo ${cfg.dataDir}/%i.git"
       "--key ${toString cfg.integrator.signingKeyFile}"
-      "--known-signers ${toString cfg.integrator.knownSignersFile}"
+      "--known-signers ${knownSigners}"
       "--interval ${cfg.integrator.interval}"
     ]
+    ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
     ++ (
       if cfg.integrator.instanceProject != null then
         [ "--instance-repo ${instanceRepo}" ]
@@ -181,10 +184,45 @@ let
   integratorStateName = "valley-integrator";
   integratorStateDir = "/var/lib/${integratorStateName}";
 
+  # The identity registry compiler this flake builds. It renders the
+  # registry at the instance repository's integrated tip into what the gates
+  # check (dcr-b87f6e8): the known-signers file the integrator and any
+  # reader of an attestation use, and a tagged authorized_keys for the git
+  # user.
+  identityPackage = (import ./packages.nix { inherit pkgs lib; }).identity;
+
+  identityStateName = "valley-identity";
+  identityStateDir = "/var/lib/${identityStateName}";
+  identityKnownSigners = "${identityStateDir}/known-signers";
+
+  # sshd's AuthorizedKeysFile list is global, so the compiled file is named
+  # with the %u token and only the git user's exists. A fixed path would
+  # authorize every registry key for every account on the host, root
+  # included.
+  identityAuthorizedKeys = "${identityStateDir}/authorized_keys.${cfg.user}";
+  identityAuthorizedKeysPattern = "${identityStateDir}/authorized_keys.%u";
+
+  identityCommand = lib.concatStringsSep " " [
+    "${identityPackage}/bin/identity compile"
+    "--repo ${toString instanceRepo}"
+    "--ref ${cfg.identity.ref}"
+    "--dir ${cfg.identity.directory}"
+    "--known-signers ${identityKnownSigners}"
+    "--authorized-keys ${identityAuthorizedKeys}"
+  ];
+
+  # Whose evidence a controller accepts: the compiled artifact once the
+  # registry machinery is on, and the file the consumer supplied otherwise.
+  knownSigners =
+    if cfg.identity.enable then identityKnownSigners else toString cfg.integrator.knownSignersFile;
+
   # The paths the consumer must supply once the integrator is enabled,
-  # with what each names — for the assertion message.
+  # with what each names — for the assertion message. The signers file is
+  # among them only while the registry does not compile one.
   integratorPathOptions = {
     signingKeyFile = "the key its transfer statements are signed with";
+  }
+  // lib.optionalAttrs (!cfg.identity.enable) {
     knownSignersFile = "the signers whose evidence it accepts";
   };
 
@@ -578,8 +616,14 @@ in
         it is a statement about what the host serves, and lives in the
         project's `protection` block in
         {option}`services.valley.config`. Binding a name to keys is the
-        machine half — the interim form of the identity registry's
-        compilation (dcr-b87f6e8).
+        machine half — the hand-written form of what the identity registry
+        compiles (dcr-b87f6e8).
+
+        With {option}`services.valley.identity.enable` on, the compiled
+        keys are added to what sshd reads and the keys here stay
+        authorized beside them. The list is therefore the way back in when
+        a compilation is wrong or has not happened yet, and it is never
+        empty.
       '';
     };
 
@@ -679,10 +723,29 @@ in
         description = ''
           File of verifier keys whose attestations count, one per line, in
           `attest key` format. This is the identity registry's interim
-          compilation (dcr-b87f6e8): no compiler exists yet, so the file
-          is supplied directly. Evidence signed by nobody in it does not
-          transfer, which a controller reports per check rather than
-          treating as a forgery.
+          compilation (dcr-b87f6e8), supplied directly for a host that does
+          not compile one: turning on
+          {option}`services.valley.identity.enable` renders the same file
+          from the registry, and then this option must be left unset.
+          Evidence signed by nobody in it does not transfer, which a
+          controller reports per check rather than treating as a forgery.
+        '';
+      };
+
+      signingName = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "integrator";
+        description = ''
+          The name a controller's transfer statements are signed under.
+          Unset leaves the binary's own default, which is this host's
+          attestations name — the machine signing as itself.
+
+          Set it to the name the identity registry publishes the
+          integrator's key under. The note format's key hash binds the name
+          to the key (dcr-de9d996), so a controller signing under one name
+          while the registry publishes it under another produces notes no
+          verifier can find a key for.
         '';
       };
 
@@ -695,7 +758,10 @@ in
           the instance policy layer every controller on this host composes
           against. A controller reads it from `policy/instance/` in that
           bare repository's integrated tip, and nothing is materialized on
-          disk in between.
+          disk in between. It is also where the identity registry is read
+          from, for the same reason and at the same altitude: both are the
+          instance's, so a host serving that repository already holds the
+          authoritative copy.
 
           The floor is the instance repository's, read at the tip that has
           been integrated (dcr-f41f718); the instance repository is the
@@ -749,6 +815,55 @@ in
           deliberately: integration requests are durable in git, and the
           controller level-triggers over those refs, so a lost event costs
           one interval and nothing more.
+        '';
+      };
+    };
+
+    # The identity registry compiler (dcr-b87f6e8): the step between the
+    # instance's declared registry and the two gates that read what it
+    # compiles to. Machine options only — whether this host compiles, and
+    # from where. Who the principals are, what they hold and when their
+    # entries end is the registry's, and the registry is a document in the
+    # instance repository, never an option here.
+    identity = {
+      enable = lib.mkEnableOption ''
+        compiling the identity registry into what the gates check: the
+        verifier keys a controller accepts evidence from, and the git
+        user's authorized keys, both rendered from the instance
+        repository's integrated tip'';
+
+      ref = lib.mkOption {
+        type = lib.types.str;
+        default = "refs/heads/main";
+        description = ''
+          The ref of the instance repository whose tip carries the
+          registry. A registry edit takes effect at the first compilation
+          after it lands on this ref, and never before: an edit in a
+          branch, in a worktree, or in an integration request that has not
+          been integrated governs nothing.
+        '';
+      };
+
+      directory = lib.mkOption {
+        type = lib.types.str;
+        default = "identity";
+        description = ''
+          The registry's directory in that tip. It is a CUE package: the
+          directory is the enumeration, and every `*.cue` document
+          directly in it unifies into one registry.
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "5m";
+        example = "1m";
+        description = ''
+          How long between compilations. The compiler is level-triggered
+          and idempotent — it renders the current tip and replaces an
+          artifact only when its bytes changed — so a timer is the whole
+          of the trigger, and a landed registry change takes effect within
+          one interval.
         '';
       };
     };
@@ -841,7 +956,17 @@ in
           message = "services.valley.integrator.enable is on and the host declaration protects no project — a controller only ever serves a protected target, so this would render no service at all.";
         }
       ]
-    );
+    )
+    ++ lib.optionals cfg.identity.enable [
+      {
+        assertion = cfg.integrator.instanceProject != null;
+        message = "services.valley.integrator.instanceProject must be set: the identity registry is read from the served instance repository's integrated tip, so the host has to hold that repository.";
+      }
+      {
+        assertion = cfg.integrator.knownSignersFile == null;
+        message = "services.valley.integrator.knownSignersFile must be unset: the registry compiles that file (${identityKnownSigners}), and two sources for one file is a question about which one won.";
+      }
+    ];
 
     users.groups.${cfg.group} = { };
 
@@ -869,11 +994,22 @@ in
 
     # Honour the principal tag on a key's entry, and nothing else: the
     # pattern-list form admits that one variable name. Rendered only once a
-    # key names a principal, so a host with none keeps the sshd config it
-    # had.
-    services.openssh.settings = lib.optionalAttrs (taggedKeys != [ ]) {
+    # key names a principal — declared here, or compiled from the registry
+    # — so a host with none keeps the sshd config it had.
+    services.openssh.settings = lib.optionalAttrs (taggedKeys != [ ] || cfg.identity.enable) {
       PermitUserEnvironment = principalEnv;
     };
+
+    # The compiled authorized keys, added to the list sshd reads rather than
+    # replacing it. The declared keys above stay authorized: a compiled file
+    # can only ever add, so an empty or missing one — a first boot before
+    # the first compilation, a registry that lost an entry, a bug here —
+    # cannot take the git user's access away. Which is the point: the
+    # assertion above keeps at least one key declared, and that key is the
+    # way back in.
+    services.openssh.authorizedKeysFiles = lib.mkIf cfg.identity.enable [
+      identityAuthorizedKeysPattern
+    ];
 
     # Belt-and-braces hardening for the git user. The trailing `Match All`
     # closes the block so it can't scope directives appended to sshd_config
@@ -1021,6 +1157,70 @@ in
       '';
     };
 
+    # The registry compiler, on a timer. It renders the instance
+    # repository's integrated tip into the two artifacts the gates read;
+    # nothing else on the host writes them.
+    #
+    # It runs as the git user rather than under an identity of its own,
+    # which is the one place this module steps back from the service split
+    # bd-500adf7 asks for. sshd refuses an authorized-keys file owned by
+    # anyone but root or the account it authorizes, so the choice is the git
+    # user or root, and the git user is the smaller grant.
+    #
+    # Level-triggered, like the rest: a compilation reads the current tip
+    # and replaces an artifact only when its bytes changed, so re-running is
+    # free and the timer needs no coordination with anything.
+    systemd.services.valley-identity = lib.mkIf cfg.identity.enable {
+      description = "Compile the valley identity registry into what the gates check";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "valley-init.service" ];
+      requires = [ "valley-init.service" ];
+      unitConfig.RequiresMountsFor = cfg.dataDir;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = identityCommand;
+        User = cfg.user;
+        Group = cfg.group;
+        StateDirectory = identityStateName;
+        # sshd walks every directory above an authorized-keys file and
+        # refuses a group- or world-writable one, so the state directory is
+        # 0755 deliberately rather than the 0700 a service's state usually
+        # takes. Nothing secret lives in it: a registry is public keys.
+        StateDirectoryMode = "0755";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [ identityStateDir ];
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        UMask = "0022";
+      };
+    };
+
+    systemd.timers.valley-identity = lib.mkIf cfg.identity.enable {
+      description = "Re-compile the valley identity registry";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "1m";
+        OnUnitActiveSec = cfg.identity.interval;
+      };
+    };
+
     # One controller per served project, as instances of a single template:
     # the units differ only in the repository they serve, which is the
     # instance name. `watch` rather than a timer firing `reconcile`: the
@@ -1032,8 +1232,14 @@ in
         "network.target"
         "valley-init.service"
       ]
-      ++ lib.optional cfg.bus.enable "valley-bus-init.service";
+      ++ lib.optional cfg.bus.enable "valley-bus-init.service"
+      ++ lib.optional cfg.identity.enable "valley-identity.service";
       requires = [ "valley-init.service" ];
+      # Wants, not requires: a controller reads the compiled signers file,
+      # so it starts after the first compilation — but a compilation that
+      # failed must not keep the controllers down. One that finds no file
+      # says so and restarts, which is the same loop and a louder one.
+      wants = lib.optional cfg.identity.enable "valley-identity.service";
       unitConfig.RequiresMountsFor = cfg.dataDir;
       # nix is not pinned, for the reason the integrator package does not
       # pin it: a check's input closure must be recomputed by the nix this

@@ -31,4 +31,19 @@
     schema = ../../schema/attestation.cue;
     statements = ../../examples/attestations;
   } (builtins.readFile ./attest-schema.sh);
+
+  # The identity registry schema (dcr-b87f6e8). The worked registry vets,
+  # and the ten registries the schema must refuse are refused. Four of those
+  # are the substrate's floor over every instance registry — mandatory
+  # expiry where a raw key is held, an external principal carrying one, no
+  # external principal governing the registry, a genesis entry that governs
+  # it — and a floor that stopped being enforced would be silent, so each is
+  # held to naming its field.
+  identity-schema = pkgs.runCommand "valley-identity-schema" {
+    nativeBuildInputs = [ pkgs.cue ];
+    schema = ../../schema/identity.cue;
+    registry = ../../examples/identity/registry;
+    rejected = ../../examples/identity/rejected;
+    rejectedCases = ./identity-rejected.txt;
+  } (builtins.readFile ./identity-schema.sh);
 }

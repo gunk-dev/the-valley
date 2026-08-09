@@ -122,6 +122,25 @@ in
     };
   };
 
+  # The registry machinery switched on, over the same declaration. The
+  # signers file is not supplied: the compiler renders it, and a consumer
+  # that also named one would be asking which of the two won. The
+  # integrator's signing name is set here too, because a host that compiles
+  # a registry is a host whose registry publishes the integrator's key under
+  # a name, and the controller has to sign under that same name.
+  identityHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      identity.enable = true;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        signingName = "integrator";
+        instanceProject = "open";
+      };
+    };
+  };
+
   # The same host with the instance repository among the served projects —
   # the shape a group's own instance takes, where the repository carrying
   # the floor is itself integrated. The controller serving it reads the

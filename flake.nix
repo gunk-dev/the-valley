@@ -79,6 +79,10 @@
             type = "app";
             program = lib.getExe packages.integrator;
           };
+          identity = {
+            type = "app";
+            program = lib.getExe packages.identity;
+          };
         }
       );
 
@@ -88,7 +92,12 @@
           packages = packagesFor system;
         in
         {
-          inherit (packages) valley attest integrator;
+          inherit (packages)
+            valley
+            attest
+            integrator
+            identity
+            ;
           default = packages.valley;
         }
       );

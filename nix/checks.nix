@@ -7,8 +7,9 @@
 #   hosts.nix        the eval-only host declarations the module checks share
 #   host-module.nix  module-eval — what the NixOS module renders from a
 #                    declaration, and what it must refuse
-#   schema.nix       cue-vet, attest-schema — the schemas against the
-#                    examples they accept and the ones they must reject
+#   schema.nix       cue-vet, attest-schema, identity-schema — the schemas
+#                    against the examples they accept and the ones they
+#                    must reject
 #   knowledge.nix    knowledge-lint and its consumer and rejection forms,
 #                    prose-format — the graph and the prose
 #   attest.nix       attest-conformance, attest-e2e — the written form as a
@@ -18,6 +19,9 @@
 #   hooks.nix        mirror-e2e, bus-e2e, protect-e2e, init-e2e — the hooks
 #                    the module renders, run against real git, and the init
 #                    script that wires them
+#   identity.nix     identity-e2e — the registry compiler over a real
+#                    instance repository, against the hand-written
+#                    artifacts it replaces
 #   cli.nix          valley-cli, review-notes, policy-deriver — bin/valley
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
@@ -56,4 +60,5 @@ import ./checks/host-module.nix args
 // import ./checks/attest.nix args
 // import ./checks/integrator.nix args
 // import ./checks/hooks.nix args
+// import ./checks/identity.nix args
 // import ./checks/cli.nix args

@@ -1,6 +1,7 @@
 # Everything this flake builds: the CLI, the formatter, the attestation
-# helper, the integrator. The flake wires these into packages, apps, and the
-# checks that drive them; nothing here knows about any of those outputs.
+# helper, the integrator, the identity compiler. The flake wires these into
+# packages, apps, and the checks that drive them; nothing here knows about
+# any of those outputs.
 { pkgs, lib }:
 rec {
   # Markdown prose is filled paragraphs hard-wrapped at 100 columns
@@ -87,6 +88,41 @@ rec {
             ]
           } \
           --set-default VALLEY_ATTEST_SCHEMA ${../schema/attestation.cue}
+      '';
+
+  # The identity registry compiler (dcr-b87f6e8). Go, standard library
+  # only, same trade as attest and the integrator — hence vendorHash = null
+  # and no module fetch. Its unit tests pin the note format's key hash
+  # against the reference vector attest is held to.
+  identity-unwrapped = pkgs.buildGoModule {
+    pname = "valley-identity";
+    version = "0";
+    src = ../identity;
+    vendorHash = null;
+    meta.mainProgram = "identity";
+  };
+
+  # The shipping form. git reads the registry out of the instance
+  # repository's tip and cue vets and exports it, both pinned to this
+  # flake's nixpkgs so every host compiles a registry the same way. The
+  # schema travels with the binary: a compiler judging a registry against a
+  # schema the consumer supplied would be no floor at all.
+  identity =
+    pkgs.runCommand "valley-identity"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "identity";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe identity-unwrapped} $out/bin/identity \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.cue
+            ]
+          } \
+          --set-default VALLEY_IDENTITY_SCHEMA ${../schema/identity.cue}
       '';
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

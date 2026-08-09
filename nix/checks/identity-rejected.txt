@@ -1,0 +1,14 @@
+# The registries schema/identity.cue must reject, and — where a field carries
+# the weight — the words the rejection must name. One case per line: the
+# fixture under examples/identity/rejected/, optionally a tab and the text the
+# rejection must contain.
+machine-without-expiry	principals.runner.expires
+external-without-expiry	principals.visitor.expires
+external-governs-registry	externalGovernance."visitor.govern"
+genesis-governs-nothing	genesisGovernance
+genesis-is-nobody	undefined field: founder
+unknown-boundary	boundaries.bus.kind
+unknown-principal-field	principals.root.role
+not-an-ed25519-key	principals.root.keys.0.public
+signing-name-with-plus	principals.root.keys.0.signs
+top-level-typo	unknown top-level field

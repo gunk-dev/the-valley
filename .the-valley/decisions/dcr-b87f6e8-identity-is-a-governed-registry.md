@@ -27,23 +27,29 @@ named set of paths carrying required checks, and for this class the required che
 approval ([[ida-b7025b5]]
 ([ida-b7025b5-human-decisions-are-signed-acts.md](../ideas/ida-b7025b5-human-decisions-are-signed-acts.md))).
 
-An entry, illustratively — the schema itself arrives with the first compiler, below:
+The schema is [schema/identity.cue](../../schema/identity.cue), and it is the authority on what an
+entry may hold; the worked registry at [examples/identity/](../../examples/identity/) is the shape
+read rather than imagined. An entry, illustratively:
 
 ```cue
 principals: "runner-03": {
 	kind: "machine"
 	keys: [{
-		class:  "ssh"
+		class:  "ssh-ed25519"
 		bound:  "host"
 		public: "ssh-ed25519 AAAA…"
+		signs:  "runner-03/attestations"
 	}]
-	grants: fetch: {
-		boundary: "qinling-push"
-		streams: ["the-valley"]
-	}
+	grants: fetch: boundary: "qinling-push"
 	expires: "2026-09-01"
 }
 ```
+
+A key's signing name is recorded per key rather than per entry. The note format's key hash binds the
+name to the key ([[dcr-de9d996]]
+([dcr-de9d996-statement-text-and-signed-note.md](./dcr-de9d996-statement-text-and-signed-note.md))),
+so one person signing from two machines under two names holds two verifier keys, and a compilation
+that recorded the wrong name would write a line no verifier can match.
 
 An agent run holds no entry. A run acts under authority delegated from a principal ([[ida-a8243d2]]
 ([ida-a8243d2-agent-runs-act-under-delegated-authority.md](../ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md)))
@@ -71,8 +77,11 @@ boundaries verify against, holding governance of the registry's own stream.
 
 A grant bundle is a named set of grants; a group is a named set of members. Both are
 instance-defined, and both compile into the same gate-checked artifacts as any entry. A grant's
-scope is its stream list: the streams of the instance it covers. The floor — the substrate's
-mandatory minimum over every instance registry, the counterpart of [[dcr-f41f718]]'s
+scope is the boundary it names, and nothing narrower. A stream list — the streams of the instance a
+grant covers — is the natural next narrowing, and the boundary rule holds it back: the one boundary
+that exists is host-level, so a stream list would be a scope nothing checks. It arrives with the
+first boundary that checks one. The floor — the substrate's mandatory minimum over every instance
+registry, the counterpart of [[dcr-f41f718]]'s
 ([dcr-f41f718-declared-verification-policy.md](./dcr-f41f718-declared-verification-policy.md))
 instance floor over project policy — mandates properties, never names: external principals carry
 expiry, and no external principal holds registry governance.
@@ -133,7 +142,22 @@ authorized keys, replacing the hand-maintained list. That begins the service spl
 real. Bus credentials compile from the same entries when the authentication of [[bd-d853d9c]]
 ([bd-d853d9c-bus-unauthenticated.md](../bugs/bd-d853d9c-bus-unauthenticated.md)) ships, per the
 namespace [[dcr-62ecc36]] ([dcr-62ecc36-signal-contracts.md](./dcr-62ecc36-signal-contracts.md))
-carved. The schema and worked example arrive with that first compiler, deliberately not before.
+carved.
+
+The compiler is [identity/](../../identity/), and it renders two artifacts. One is the known-signers
+file: every attestation-capable key of the registry, written as the note format's verifier keys.
+That single artifact serves both the integrator's acceptance list and any reader's
+`attest verify --known-keys`, so it holds the integrator's own key like any other. The other is the
+git user's authorized keys, one tagged line per key of every principal holding a grant at a push
+boundary — the tagged-key shape the host module already reads a principal name off.
+
+It runs on the host, reading the registry from the served instance repository's integrated tip, the
+same provenance the verification floor has ([[dcr-f41f718]]
+([dcr-f41f718-declared-verification-policy.md](./dcr-f41f718-declared-verification-policy.md))): a
+registry edit governs nothing until it lands. A compilation that fails for any reason — a schema
+violation, a floor violation, an unreachable repository — leaves the last good artifacts exactly as
+they were, because a compiler that emptied them would lock the host's git user out. Access is
+therefore additive over what the host declares by hand, and the declared keys are the way back in.
 
 ## Open
 

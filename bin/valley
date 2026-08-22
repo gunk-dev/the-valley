@@ -13,7 +13,8 @@
 #     $XDG_STATE_HOME/valley/notes.);
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
-#     by checks, which needs the cue CLI —
+#     by checks, which needs the cue CLI, and again by review's [a]sk, which
+#     needs the attest helper —
 #     graduation is now owed; recording the decision node is part of taking it.);
 #   - its behavior gets subtle enough to need real tests
 #     (CROSSED by checks: glob matching is pinned by the policy-deriver
@@ -41,15 +42,36 @@ usage: valley <verb> [args]
   pending          list branches on origin not merged into origin/main
   review <branch>  page through the branch's log and diff vs origin/main,
                    then choose:
+                     [a]sk        file an integration request. runs the
+                                  checks the composed policy requires of
+                                  this change over a throwaway worktree of
+                                  the branch, signs each result as an
+                                  attestation, and publishes the evidence
+                                  and the request ref to origin in ONE
+                                  atomic push. main is never touched: the
+                                  integrator judges the request and lands
+                                  it. needs the attest helper and
+                                  VALLEY_ATTEST_KEY, the ed25519 key this
+                                  host signs with; VALLEY_ATTEST_NAME is
+                                  the name it signs under, defaulting to
+                                  this host's.
                      [i]ntegrate  ff-only merge onto main, push origin main,
                                   delete the merged branch from origin
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
+                   [a]sk and [i]ntegrate are the two ways a change reaches
+                   main, and both stay: [i] writes the protected ref here,
+                   [a] asks the integrator to write it. Nothing here knows
+                   or asks which of the two the operator is entitled to —
+                   origin answers that.
                    a stale branch (won't fast-forward from main) is first
                    offered:
                      [b]ase       rebase it onto origin/main in a throwaway
                                   worktree, push --force-with-lease, then
                                   re-review the diff that would actually land
+                   [a]sk is offered there too: a stale branch is nothing
+                   the integrator cannot apply, so it need not be rebased
+                   first.
                    while paging, press v: less opens the diff in $EDITOR.
                    every line you insert there is a note. it is anchored to
                    the file and new-side line it sits on — to the file alone
@@ -79,7 +101,8 @@ usage: valley <verb> [args]
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
-which also needs the cue CLI, and review's notes, which need less.
+which also needs the cue CLI, review's notes, which need less, and
+review's [a]sk, which needs both the cue CLI and the attest helper.
 No config, no batch mode, and no state but the notes file — the judgment
 stays with the human.
 EOF
@@ -400,11 +423,14 @@ cleanup_rebase_wt() {
   REBASE_WT=""
 }
 
-# Everything review leaves outside the repository: the throwaway worktree and
-# the paged buffer. One handler, installed once by cmd_review, so that no
-# path through the verb — and no ctrl-C in the pager — leaves either behind.
+# Everything review leaves outside the repository: the two throwaway
+# worktrees, the paged buffer, and the scratch the policy deriver writes
+# into. One handler, installed once by cmd_review, so that no path through
+# the verb — and no ctrl-C in the pager — leaves any of them behind.
 cleanup_review() {
   cleanup_rebase_wt
+  cleanup_ask_wt
+  cleanup_policy_tmp
   cleanup_review_tmp
 }
 
@@ -429,6 +455,180 @@ rebase_onto_main() {
   echo "rebased $branch onto origin/main, pushed with --force-with-lease"
 }
 
+# ----------------------------------------------------------------------
+# ask — file an integration request for the branch under review.
+#
+# [i]ntegrate is the operator moving the protected ref themself. [a]sk is
+# the same keystroke over the machine path: the checks the policy requires
+# are run over the branch's tree and signed, the evidence and one request
+# ref are published, and the integrator judges the request and lands it
+# (design/integration.md). main is never touched from here.
+#
+# The two coexist, and this script never asks which one the operator is
+# entitled to. Whether the operator may write a protected ref is a fact
+# about origin's pre-receive hook, and origin is where it is answered.
+#
+# What this verb removes is a second push. `attest run --push` publishes
+# the branch and the attestation refs in one atomic push and knows nothing
+# about a request ref, so filing a request by hand is two beats: the
+# evidence, then the request after it. In between, evidence stands
+# published for a change nobody has asked to land. So this verb does not
+# use --push at all. `attest run` without it stores each note at its ref in
+# the repository and stops, and one `git push --atomic` then carries the
+# evidence and the request together — all of it or none of it. Nothing in
+# attest had to change for that; the sequencing was the whole of it.
+#
+# The branch itself is not in that push. What is under review is
+# origin/<branch>, so the commit the request names is already on origin and
+# the objects with it.
+
+# The tree the checks run over: a throwaway worktree of the branch, as
+# [b]ase uses, so that what is checked is the branch's tree and not the
+# operator's working copy. A global, so the traps clean it up whatever
+# happens.
+ASK_WT=""
+cleanup_ask_wt() {
+  [ -n "$ASK_WT" ] || return 0
+  git worktree remove --force "$ASK_WT" > /dev/null 2>&1 || true
+  rm -rf "$ASK_WT"
+  ASK_WT=""
+}
+
+# Report and fail, without leaving the review. A refusal here is not a
+# reason to end the session: the branch is still under review and the
+# operator can still answer. die() is for the verbs that have nothing left
+# to offer.
+refuse() {
+  printf 'valley: %s\n' "$*" >&2
+  return 1
+}
+
+# The change segment of a request ref. The integrator reads a request as
+# <prefix>/<target>/<change> and refuses a change segment holding a slash
+# (integrator/refs.go), so a branch name with one is written with dashes
+# instead. The ref that results is printed, never left to be assumed.
+change_name() {
+  printf '%s' "${1//\//-}"
+}
+
+# File the request. Called from the review prompt in a condition, which
+# suspends `set -e` for the whole call — so every step below is checked by
+# hand, and the failures say what was published before they happened.
+ask() {
+  local branch="$1" target=main change head base digest root ref check spec
+  local key="${VALLEY_ATTEST_KEY:-}"
+  local -a signer=() owed=() run=() evidence=()
+
+  [ -n "$key" ] || {
+    refuse "no signing key: set VALLEY_ATTEST_KEY to the ed25519 key this host attests with. The host signs; nothing published"
+    return 1
+  }
+  [ -f "$key" ] || {
+    refuse "no signing key at $key; nothing published"
+    return 1
+  }
+  command -v attest > /dev/null 2>&1 || {
+    refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
+    return 1
+  }
+  signer=(--key "$key")
+  [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
+
+  root="$(git rev-parse --show-toplevel)" || {
+    refuse "not a git repository; nothing published"
+    return 1
+  }
+  head="$(git rev-parse "refs/remotes/origin/$branch")" || {
+    refuse "no such branch on origin: $branch; nothing published"
+    return 1
+  }
+  base="$(git merge-base refs/remotes/origin/main "$head")" || {
+    refuse "$branch and main share no history; nothing published"
+    return 1
+  }
+  change="$(change_name "$branch")"
+  ref="refs/the-valley/integration-requests/$target/$change"
+
+  # What the change owes, from the policy the project declares. The
+  # integrator derives this again on its own side, from the policy at the
+  # target's tip — a change never supplies the policy that gates it — so
+  # this is the operator's local reading of the same question, and the
+  # answer is printed for exactly that reason.
+  policy_defaults "$root"
+  derive_owed "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" \
+    "$base" "$head" || return 1
+  [ "${#DERIVED_OWED[@]}" -eq 0 ] \
+    || mapfile -t owed < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
+  [ "${#owed[@]}" -gt 0 ] || {
+    refuse "the policy requires no check of $branch — evidence nobody asked for is not a request; nothing published"
+    return 1
+  }
+  for check in "${owed[@]}"; do
+    case "${CHECK_RUNNER[$check]:-}" in
+      nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
+      command) run+=(--command "$check=${CHECK_COMMAND[$check]}") ;;
+      *)
+        refuse "the policy requires $check but does not say how to run it; nothing published"
+        return 1
+        ;;
+    esac
+  done
+
+  cleanup_ask_wt
+  ASK_WT="$(mktemp -d)" || {
+    refuse "no scratch directory to check $branch in; nothing published"
+    return 1
+  }
+  git worktree add --quiet --detach "$ASK_WT" "$head" || {
+    cleanup_ask_wt
+    refuse "could not check $branch out to run its checks; nothing published"
+    return 1
+  }
+
+  printf '\nchecking %s at %s: %s\n' "$branch" "$(git rev-parse --short "$head")" \
+    "$(printf '%s\n' "${owed[@]}" | join_lines)"
+  if ! attest run --repo "$ASK_WT" "${signer[@]}" "${run[@]}"; then
+    cleanup_ask_wt
+    refuse "the checks did not pass; nothing published, main untouched"
+    return 1
+  fi
+  digest="$(attest digest --repo "$ASK_WT")" || {
+    cleanup_ask_wt
+    refuse "could not digest the tree that was checked; nothing published"
+    return 1
+  }
+  cleanup_ask_wt
+  digest="${digest#*:}"
+
+  # Every attestation stored for this tree, whoever signed it: the evidence
+  # for this change is what the subject digest is keyed by, not what this
+  # run happened to add to it.
+  mapfile -t evidence < <(git for-each-ref --format='%(refname)' \
+    "refs/the-valley/attestations/$digest")
+  [ "${#evidence[@]}" -gt 0 ] || {
+    refuse "no attestation is stored for $digest; nothing published"
+    return 1
+  }
+
+  # The one push: every evidence ref as it stands, and the request ref at
+  # the branch's head. --atomic, so a hook that refuses any of them leaves
+  # origin exactly as it was.
+  local -a push=()
+  for spec in "${evidence[@]}"; do push+=("$spec:$spec"); done
+  push+=("$head:$ref")
+  if ! git push --atomic --quiet origin "${push[@]}"; then
+    refuse "origin refused the push; nothing was published there and main is untouched. The evidence is stored locally at:"
+    printf '  %s\n' "${evidence[@]}" >&2
+    return 1
+  fi
+
+  printf '\nrequested %s -> refs/heads/%s\n' "$branch" "$target"
+  printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
+  printf '  evidence %s\n' "${evidence[@]}"
+  printf '  checks   %s\n' "$(printf '%s\n' "${owed[@]}" | join_lines)"
+  printf '  main is untouched; the integrator judges the request and lands it\n'
+}
+
 # Page the branch and take the verdict. Split out of cmd_review so that
 # every way out of it — integrate, reject, skip — is followed by the notes.
 read_and_decide() {
@@ -436,12 +636,16 @@ read_and_decide() {
   show_review "$branch"
   # A stale branch can't integrate, and its pre-rebase diff is not what would
   # land; offer to rebase it mechanically, then re-review what actually would.
+  # [a]sk is offered here as well, because the integrator applies a delta to
+  # the tip rather than fast-forwarding: a stale branch is a request it can
+  # judge, and rebasing first is a convenience rather than a precondition.
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
     "refs/remotes/origin/$branch"; do
-    printf '%s does not fast-forward from main: [b]ase onto main, [r]eject, [s]kip? ' \
+    printf '%s does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' \
       "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
+      a) ask "$branch" && return ;;
       b)
         rebase_onto_main "$branch"
         fetch_origin
@@ -452,20 +656,24 @@ read_and_decide() {
         echo "skipped $branch; nothing done"
         return
         ;;
-      *) echo "answer b, r, or s" ;;
+      *) echo "answer a, b, r, or s" ;;
     esac
   done
   while true; do
-    printf '%s: [i]ntegrate, [r]eject, [s]kip? ' "$branch"
+    printf '%s: [a]sk, [i]ntegrate, [r]eject, [s]kip? ' "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
+      # A refusal from ask is not a verdict: it says what it did not do and
+      # the prompt comes back, so the branch can still be integrated,
+      # rejected or skipped.
+      a) ask "$branch" && return ;;
       i) integrate "$branch" && return ;;
       r) reject "$branch" && return ;;
       s)
         echo "skipped $branch; nothing done"
         return
         ;;
-      *) echo "answer i, r, or s" ;;
+      *) echo "answer a, i, r, or s" ;;
     esac
   done
 }
@@ -578,11 +786,18 @@ glob_ere() {
   printf '%s$' "$ere"
 }
 
-# The composed policy as one tab-separated line per covered pattern and per
-# required check, so the shell never parses CUE. The field is hidden because
-# the schema's sentinel rejects unknown top-level fields, and `unclassified`
-# is rendered as a class of that name — it is one more source a check can
-# come from.
+# The composed policy as one tab-separated line per covered pattern, per
+# required check, and per field of the check catalogue, so the shell never
+# parses CUE. Every line is three fields — a kind, a name, and a value —
+# whatever the kind, so one reader takes them all. The field is hidden
+# because the schema's sentinel rejects unknown top-level fields, and
+# `unclassified` is rendered as a class of that name: it is one more source
+# a check can come from.
+#
+# The catalogue is rendered because a caller that runs a check needs what
+# the policy says a check IS — its runner, and the attribute or command
+# line that runner takes. `checks` only reports and does not read it;
+# review's [a]sk turns it into the arguments attest is given.
 render_cue() {
   cat <<'EOF'
 package verification
@@ -600,14 +815,40 @@ _render: strings.Join(list.Concat([[
 	for k, on in c.requires if on {"requires\t\(cn)\t\(k)"}
 ], [
 	for k, on in policy.unclassified if on {"requires\tunclassified\t\(k)"}
+], [
+	for n, c in policy.checks {"runner\t\(n)\t\(c.runner)"}
+], [
+	for n, c in policy.checks if c.runner == "nix" {"attribute\t\(n)\t\(c.attribute)"}
+], [
+	for n, c in policy.checks if c.runner == "command" {"command\t\(n)\t\(c.command)"}
 ]]), "\n")
 EOF
 }
 
-# The composed layer, and a scratch directory for the documents this verb
-# writes into the composition. Globals so the probe below can see them.
+# The composed layer, and a scratch directory for the documents the
+# derivation writes into the composition. Globals so the probe below can
+# see them.
 POLICY_LAYER=()
 POLICY_TMP=""
+
+cleanup_policy_tmp() {
+  [ -n "$POLICY_TMP" ] || return 0
+  rm -rf "$POLICY_TMP"
+  POLICY_TMP=""
+}
+
+# Where the schema and the two policy layers live in a project following
+# the convention (dcr-f41f718). `checks` takes an option for each, so a
+# reader can point it anywhere; review's [a]sk does not, because a request
+# is filed against the policy the project declares and nowhere else.
+POLICY_SCHEMA=""
+POLICY_INSTANCE=""
+POLICY_PROJECT=""
+policy_defaults() {
+  POLICY_SCHEMA="$1/schema/verification.cue"
+  POLICY_INSTANCE="$1/examples/policy/instance"
+  POLICY_PROJECT="$1/examples/policy/project"
+}
 
 # Is this check mandatory in this class, or a default the project left
 # alone? The bit is the form of the composed value, so the test is CUE's
@@ -658,13 +899,140 @@ main_ref() {
   return 1
 }
 
+# ----------------------------------------------------------------------
+# The derivation itself, and the globals it answers with. Everything a
+# caller could want from the policy comes out of one pass, because every
+# part of it is a function of the same composition: `checks` prints the
+# answer, review's [a]sk runs what it names.
+#
+# It reports and returns rather than dying, so that a caller inside the
+# review loop is refused rather than ended. Its callers are all in a
+# condition, which suspends `set -e` for the whole call, so every step is
+# checked by hand.
+DERIVED_PATHS=()     # every side of the diff, sorted
+DERIVED_MATCHED=()   # the class names at least one path matched, sorted
+DERIVED_UNCOVERED=() # the paths no class covered
+DERIVED_OWES=0       # whether `unclassified` is what owes something
+declare -A DERIVED_OWED=()    # check -> the classes that required it
+declare -A DERIVED_PINNED=()  # check -> mandatory | default
+declare -A CHECK_RUNNER=()    # check -> nix | command
+declare -A CHECK_ATTRIBUTE=() # check -> the flake check attribute
+declare -A CHECK_COMMAND=()   # check -> the command line
+
+derive_owed() {
+  local schema="$1" instance="$2" project="$3" base="$4" head="$5"
+
+  need_cue
+  [ -f "$schema" ] || {
+    refuse "no policy schema at $schema; nothing derived"
+    return 1
+  }
+  # An unmatched glob stays literal, so the first entry is a real file
+  # exactly when the directory holds a document.
+  local -a instance_docs=("$instance"/*.cue) project_docs=("$project"/*.cue)
+  [ -f "${instance_docs[0]}" ] || {
+    refuse "no instance policy layer at $instance; nothing derived"
+    return 1
+  }
+  [ -f "${project_docs[0]}" ] || {
+    refuse "no project policy layer at $project; nothing derived"
+    return 1
+  }
+
+  DERIVED_PATHS=()
+  mapfile -t DERIVED_PATHS < <(diff_paths "$base" "$head" | sort -u)
+
+  cleanup_policy_tmp
+  POLICY_LAYER=("$schema" "${instance_docs[@]}" "${project_docs[@]}")
+  POLICY_TMP="$(mktemp -d)" || {
+    refuse "no scratch directory to compose the policy in; nothing derived"
+    return 1
+  }
+  render_cue > "$POLICY_TMP/render.cue"
+  cue vet -c "${POLICY_LAYER[@]}" || {
+    refuse "the policy layers do not compose; nothing derived"
+    return 1
+  }
+
+  # Sorted once here, so every list below comes out in a stable order.
+  local -a rendered=()
+  mapfile -t rendered < <(cue eval --out text -e _render \
+    "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" | sort)
+
+  unset CHECK_RUNNER CHECK_ATTRIBUTE CHECK_COMMAND DERIVED_OWED DERIVED_PINNED
+  declare -gA CHECK_RUNNER=() CHECK_ATTRIBUTE=() CHECK_COMMAND=() \
+    DERIVED_OWED=() DERIVED_PINNED=()
+
+  # The middle field is a class name for a coverage or requirement line and
+  # a check name for a catalogue one; `key` is what both are.
+  local -a pat_class=() pat_ere=() req_class=() req_check=()
+  local line kind key value
+  for line in "${rendered[@]}"; do
+    kind="${line%%$'\t'*}"
+    key="${line#*$'\t'}"
+    value="${key#*$'\t'}"
+    key="${key%%$'\t'*}"
+    case "$kind" in
+      path)
+        pat_class+=("$key")
+        pat_ere+=("$(glob_ere "$value")")
+        ;;
+      requires)
+        req_class+=("$key")
+        req_check+=("$value")
+        ;;
+      runner) CHECK_RUNNER["$key"]="$value" ;;
+      attribute) CHECK_ATTRIBUTE["$key"]="$value" ;;
+      command) CHECK_COMMAND["$key"]="$value" ;;
+    esac
+  done
+
+  local -A matched=()
+  local path i hit
+  DERIVED_UNCOVERED=()
+  for path in "${DERIVED_PATHS[@]}"; do
+    hit=0
+    for ((i = 0; i < ${#pat_ere[@]}; i++)); do
+      if [[ "$path" =~ ${pat_ere[i]} ]]; then
+        matched["${pat_class[i]}"]=1
+        hit=1
+      fi
+    done
+    [ "$hit" -eq 1 ] || DERIVED_UNCOVERED+=("$path")
+  done
+  # A path no class covers is answered by the policy's `unclassified` set,
+  # which is why it is treated as one more matched class rather than as an
+  # absence.
+  [ "${#DERIVED_UNCOVERED[@]}" -eq 0 ] || matched[unclassified]=1
+
+  local check
+  DERIVED_OWES=0
+  for ((i = 0; i < ${#req_check[@]}; i++)); do
+    key="${req_class[i]}"
+    check="${req_check[i]}"
+    [ -n "${matched[$key]:-}" ] || continue
+    [ "$key" != unclassified ] || DERIVED_OWES=1
+    DERIVED_OWED["$check"]="${DERIVED_OWED[$check]:+${DERIVED_OWED[$check]}, }$key"
+    if check_is_mandatory "$key" "$check"; then
+      DERIVED_PINNED["$check"]=mandatory
+    else
+      DERIVED_PINNED["$check"]="${DERIVED_PINNED[$check]:-default}"
+    fi
+  done
+
+  DERIVED_MATCHED=()
+  [ "${#matched[@]}" -eq 0 ] \
+    || mapfile -t DERIVED_MATCHED < <(printf '%s\n' "${!matched[@]}" | sort)
+}
+
 cmd_checks() {
   local root schema instance project base head
   root="$(git rev-parse --show-toplevel 2> /dev/null)" \
     || die "not a git repository"
-  schema="$root/schema/verification.cue"
-  instance="$root/examples/policy/instance"
-  project="$root/examples/policy/project"
+  policy_defaults "$root"
+  schema="$POLICY_SCHEMA"
+  instance="$POLICY_INSTANCE"
+  project="$POLICY_PROJECT"
   while [ $# -gt 0 ]; do
     case "$1" in
       --schema) [ $# -ge 2 ] || die "--schema needs a file"; schema="$2"; shift 2 ;;
@@ -676,14 +1044,6 @@ cmd_checks() {
     esac
   done
   [ $# -le 2 ] || die "usage: valley checks [options] [<base> [<head>]]"
-
-  need_cue
-  [ -f "$schema" ] || die "no policy schema at $schema"
-  # An unmatched glob stays literal, so the first entry is a real file
-  # exactly when the directory holds a document.
-  local -a instance_docs=("$instance"/*.cue) project_docs=("$project"/*.cue)
-  [ -f "${instance_docs[0]}" ] || die "no instance policy layer at $instance"
-  [ -f "${project_docs[0]}" ] || die "no project policy layer at $project"
 
   head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
     || die "no such commit: ${2:-HEAD}"
@@ -697,102 +1057,41 @@ cmd_checks() {
       || die "$head and ${against#refs/} do not share history — name a base"
   fi
 
-  local -a paths=()
-  mapfile -t paths < <(diff_paths "$base" "$head" | sort -u)
+  trap cleanup_policy_tmp EXIT
+  derive_owed "$schema" "$instance" "$project" "$base" "$head" || exit 1
 
-  POLICY_LAYER=("$schema" "${instance_docs[@]}" "${project_docs[@]}")
-  POLICY_TMP="$(mktemp -d)"
-  # shellcheck disable=SC2064 # expand POLICY_TMP now, not at trap time
-  trap "rm -rf '$POLICY_TMP'" EXIT
-  render_cue > "$POLICY_TMP/render.cue"
-  cue vet -c "${POLICY_LAYER[@]}" \
-    || die "the policy layers do not compose; nothing derived"
-
-  # Sorted once here, so every list below comes out in a stable order.
-  local -a rendered=()
-  mapfile -t rendered < <(cue eval --out text -e _render \
-    "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" | sort)
-
-  local -a pat_class=() pat_ere=() req_class=() req_check=()
-  local line kind class value
-  for line in "${rendered[@]}"; do
-    kind="${line%%$'\t'*}"
-    class="${line#*$'\t'}"
-    value="${class#*$'\t'}"
-    class="${class%%$'\t'*}"
-    case "$kind" in
-      path)
-        pat_class+=("$class")
-        pat_ere+=("$(glob_ere "$value")")
-        ;;
-      requires)
-        req_class+=("$class")
-        req_check+=("$value")
-        ;;
-    esac
-  done
-
-  local -A matched=()
-  local -a uncovered=()
-  local path i hit
-  for path in "${paths[@]}"; do
-    hit=0
-    for ((i = 0; i < ${#pat_ere[@]}; i++)); do
-      if [[ "$path" =~ ${pat_ere[i]} ]]; then
-        matched["${pat_class[i]}"]=1
-        hit=1
-      fi
-    done
-    [ "$hit" -eq 1 ] || uncovered+=("$path")
-  done
-  # A path no class covers is answered by the policy's `unclassified` set,
-  # which is why it is treated as one more matched class rather than as an
-  # absence.
-  [ "${#uncovered[@]}" -eq 0 ] || matched[unclassified]=1
-
-  local -A owed=() pinned=()
-  local check width=0 uncovered_owes=0
-  for ((i = 0; i < ${#req_check[@]}; i++)); do
-    class="${req_class[i]}"
-    check="${req_check[i]}"
-    [ -n "${matched[$class]:-}" ] || continue
-    [ "$class" != unclassified ] || uncovered_owes=1
-    owed["$check"]="${owed[$check]:+${owed[$check]}, }$class"
-    if check_is_mandatory "$class" "$check"; then
-      pinned["$check"]=mandatory
-    else
-      pinned["$check"]="${pinned[$check]:-default}"
-    fi
+  local check width=0
+  for check in "${!DERIVED_OWED[@]}"; do
     [ "${#check}" -le "$width" ] || width="${#check}"
   done
 
   printf '%s..%s: %d changed path(s)\n' \
     "$(git rev-parse --short "$base")" "$(git rev-parse --short "$head")" \
-    "${#paths[@]}"
+    "${#DERIVED_PATHS[@]}"
   printf 'policy: %s + %s\n' "${instance#"$root"/}" "${project#"$root"/}"
-  if [ "${#matched[@]}" -eq 0 ]; then
+  if [ "${#DERIVED_MATCHED[@]}" -eq 0 ]; then
     printf 'classes matched: none\n\n'
   else
     printf 'classes matched: %s\n\n' \
-      "$(printf '%s\n' "${!matched[@]}" | sort | join_lines)"
+      "$(printf '%s\n' "${DERIVED_MATCHED[@]}" | join_lines)"
   fi
 
-  if [ "${#owed[@]}" -eq 0 ]; then
+  if [ "${#DERIVED_OWED[@]}" -eq 0 ]; then
     echo "required checks: none"
   else
     echo "required checks:"
     while IFS= read -r check; do
       printf '  %-*s  %-9s  %s\n' \
-        "$width" "$check" "${pinned[$check]}" "${owed[$check]}"
-    done < <(printf '%s\n' "${!owed[@]}" | sort)
+        "$width" "$check" "${DERIVED_PINNED[$check]}" "${DERIVED_OWED[$check]}"
+    done < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
   fi
 
-  if [ "${#uncovered[@]}" -gt 0 ]; then
-    printf '\nunclassified: %d path(s) matched no class\n' "${#uncovered[@]}"
-    printf '  %s\n' "${uncovered[@]}"
+  if [ "${#DERIVED_UNCOVERED[@]}" -gt 0 ]; then
+    printf '\nunclassified: %d path(s) matched no class\n' "${#DERIVED_UNCOVERED[@]}"
+    printf '  %s\n' "${DERIVED_UNCOVERED[@]}"
     # The failure the `unclassified` field exists to prevent: paths outside
     # every class that the policy then asks nothing of.
-    [ "$uncovered_owes" -eq 1 ] \
+    [ "$DERIVED_OWES" -eq 1 ] \
       || echo "  the policy requires nothing of them — it is behind the tree"
   fi
 }

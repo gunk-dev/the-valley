@@ -1,5 +1,6 @@
 # bin/valley: that it stays a lint-clean script, what its review verb
-# anchors a note to, and what its deriver makes of a policy and a diff.
+# anchors a note to, what its deriver makes of a policy and a diff, and
+# what its review verb publishes when it files an integration request.
 { pkgs, packages, ... }:
 {
   # The CLI must stay a lint-clean script whose help verb answers
@@ -61,4 +62,22 @@
     fixtures = ../../examples/policy/deriver;
     schema = ../../schema/verification.cue;
   } (builtins.readFile ./policy-deriver.sh);
+
+  # review's [a]sk, driven end to end over scratch repositories: a branch
+  # reviewed, the request filed, and what the receiving side then holds.
+  # The claim is about sequencing, so it is only observable from there —
+  # the bare repo logs every push it receives, and the check reads that
+  # log to see that ONE of them carried the evidence and the request
+  # together. Every check the scratch policy declares uses the command
+  # runner, for the reason attest-e2e gives: a nix build has no daemon.
+  valley-request = pkgs.runCommand "valley-request" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.cue
+      pkgs.openssh
+      packages.attest
+      packages.valley-script
+    ];
+    schemaFile = ../../schema/verification.cue;
+  } (builtins.readFile ./valley-request.sh);
 }

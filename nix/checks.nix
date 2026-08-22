@@ -22,7 +22,8 @@
 #   identity.nix     identity-e2e — the registry compiler over a real
 #                    instance repository, against the hand-written
 #                    artifacts it replaces
-#   cli.nix          valley-cli, review-notes, policy-deriver — bin/valley
+#   cli.nix          valley-cli, review-notes, policy-deriver,
+#                    valley-request — bin/valley
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation

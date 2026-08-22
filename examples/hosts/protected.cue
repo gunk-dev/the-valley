@@ -1,5 +1,7 @@
-// The host the flake's protect-e2e check drives: the three states a
-// project's refs can be in. "guarded" takes the default protected set,
+// The host the flake's protect-e2e check drives: the four states a
+// project's refs can be in. "sealed" is the norm — protected, with no
+// writer, so nothing pushes to it and changes land by integration.
+// "guarded" declares the writers exception over the default protected set,
 // "released" names a wildcard pattern beside it, and "open" declares no
 // protection at all and so has none.
 //
@@ -9,6 +11,8 @@
 package valley
 
 projects: {
+	"sealed": protection: refs: ["refs/heads/main"]
+
 	"guarded": protection: writers: ["integrator"]
 
 	"released": protection: {

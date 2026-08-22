@@ -6,7 +6,7 @@
 { pkgs, ... }:
 {
   # A host declaration: the pilot's own, the compatibility case, the
-  # protection block the installer renders a hook from, and the ten
+  # protection block the installer renders a hook from, and the nine
   # declarations the schema must refuse. The event payloads live here too —
   # the publisher hook's vocabulary is a schema like any other.
   cue-vet = pkgs.runCommand "valley-cue-vet" {

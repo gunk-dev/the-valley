@@ -271,6 +271,7 @@ in
       controllers != [
         "valley-integrator@guarded.service"
         "valley-integrator@released.service"
+        "valley-integrator@sealed.service"
       ]
     then
       throw "valley module-eval: a controller runs for each protected project and no other, not ${lib.concatStringsSep ", " controllers}"

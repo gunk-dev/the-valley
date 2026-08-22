@@ -433,6 +433,10 @@ let
   # attestation ref may only be created. Every other ref is open to anyone
   # with push access, and all policy beyond this lives in the integrator.
   #
+  # A declaration usually names no writer at all, and then the first clause
+  # refuses every push to the ref. That is the norm, not a misconfiguration:
+  # the integrator writes the ref locally, and a local write is not a push.
+  #
   # What is protected and who may write it comes from the declaration's
   # `protection` block, like every other domain fact here. This renders it.
   #
@@ -450,6 +454,15 @@ let
   # Local access is the host's own boundary, not this hook's.
   protectHook =
     name: p:
+    let
+      # What the refusal says about who may write instead. With no writer
+      # declared there is no one, so it says how a change lands.
+      whoMay =
+        if p.writers == [ ] then
+          "no writer is declared — changes land by integration request"
+        else
+          "writers: ${lib.concatStringsSep ", " p.writers}";
+    in
     pkgs.writeShellScript "valley-protect-${name}" ''
       # Managed by services.valley — do not edit.
       set -eu
@@ -493,9 +506,7 @@ let
           case "$ref" in
             $pattern)
               if ! is_writer; then
-                echo "valley: $principal may not write $ref — a protected ref of ${name} (writers: ${
-                  lib.concatStringsSep ", " p.writers
-                })" >&2
+                echo "valley: $principal may not write $ref — a protected ref of ${name} (${whoMay})" >&2
                 rejected=1
               fi
               break

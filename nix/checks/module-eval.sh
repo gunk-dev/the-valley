@@ -62,6 +62,7 @@ grep -q '^ssh-ed25519 .* valley-check$' "$protectedKeysPath"
 
 # The hook goes on the projects whose declaration has a
 # protection block, and nowhere else.
+grep -q "valley-protect-sealed" "$protectedInitPath"
 grep -q "valley-protect-guarded" "$protectedInitPath"
 grep -q "valley-protect-released" "$protectedInitPath"
 if grep -q "valley-protect-open" "$protectedInitPath"; then
@@ -75,9 +76,15 @@ fi
 # hook chain from the init script to each script.
 guardedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$protectedInitPath" | head -n1)"
 releasedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-released' "$protectedInitPath" | head -n1)"
+sealedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-sealed' "$protectedInitPath" | head -n1)"
 grep -qF -- 'protected=( refs/heads/main )' "$guardedHook"
 grep -qF -- "protected=( refs/heads/main 'refs/heads/release/*' )" "$releasedHook"
 grep -qF -- 'writers=( integrator )' "$guardedHook"
+# The norm: a protected ref with no writer declared. The
+# exception list renders empty, and the refusal says how a
+# change lands instead of naming nobody.
+grep -qE -- 'writers=\( *\)' "$sealedHook"
+grep -qF -- 'no writer is declared — changes land by integration request' "$sealedHook"
 
 # A controller is given the repository it serves and the
 # identity it acts under, and nothing about policy: it reads

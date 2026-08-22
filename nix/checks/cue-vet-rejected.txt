@@ -9,6 +9,5 @@ deployment-concern-in-cue
 machine-concern-in-backup
 unimplemented-backup-target
 negative-retention
-protection-with-no-writers	protection.writers
 bare-branch-protected-ref	protection.refs
 unknown-protection-field	protection.requires

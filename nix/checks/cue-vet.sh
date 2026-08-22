@@ -26,6 +26,11 @@ if cue export -e 'projects.open.protection' "${protected[@]}" > open.err 2>&1; t
   exit 1
 fi
 
+# The norm: protection that names no writer. It exports an
+# empty list rather than nothing, so the installer renders a
+# hook whose exception list is empty rather than missing.
+[ "$(cue export -e 'projects.sealed.protection.writers' "${protected[@]}")" = '[]' ]
+
 # The event schema accepts what the publisher hook emits …
 cue vet -d '#RefUpdated' "$eventSchema" "$events/ref-updated.json"
 # … and stays closed: a field outside the git-derivable

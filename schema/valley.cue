@@ -50,9 +50,9 @@ package valley
 	protection?: #Protection
 }
 
-// #Protection states which of a project's refs only a named writer may
-// write. It is the declared half of the one structural git invariant: only
-// a writer may write a protected ref, and attestation refs
+// #Protection states which of a project's refs are closed to pushes. It is
+// the declared half of the one structural git invariant: a protected ref
+// takes a push only from a declared writer, and attestation refs
 // (refs/the-valley/attestations/*) are create-only for everyone. The
 // invariant's other half is not declared because it is not a choice — the
 // attestation clause holds for every protected project, and the namespace
@@ -63,16 +63,20 @@ package valley
 // integrator, never here (design/architecture.md, _a pull-based
 // integrator_).
 #Protection: {
-	// The refs only a writer may create, update, or delete. Patterns are
+	// The refs closed to everyone but a declared writer. Patterns are
 	// matched against the full refname, so they begin with "refs/" — a
 	// bare branch name would protect nothing — and `*` matches any
 	// characters, path separators included.
 	refs: [#RefPattern, ...#RefPattern] | *["refs/heads/main"]
 
-	// The principals allowed to write them. At least one: protection
-	// that names no writer is a declaration left unfinished, and is
-	// rejected rather than rendered as a ref nobody can ever write.
-	writers: [#PrincipalName, ...#PrincipalName]
+	// The principals allowed to push them. Empty by default: a protected
+	// ref admits no pushes at all. The integrator's local ref write is
+	// then the only path onto it, and that privilege is the machinery's
+	// — it is a write made on the host, which no push hook governs — so
+	// it is never declared here. A writers list is the deliberate
+	// exception that punches a named hole in the wall; the transition
+	// arrangement used one for the operator.
+	writers: [...#PrincipalName] | *[]
 }
 
 // #RefPattern is a full refname, optionally with `*` wildcards. The

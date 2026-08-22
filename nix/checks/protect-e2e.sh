@@ -17,6 +17,7 @@ serve() {
   git init --quiet --bare "$1.git"
   ln -s "$hook" "$1.git/hooks/pre-receive"
 }
+serve sealed
 serve guarded
 serve released
 
@@ -49,6 +50,7 @@ lacks_ref() {
 git init --quiet work
 cd work || exit 1
 git commit --quiet --allow-empty -m one
+git remote add sealed "$TMPDIR/sealed.git"
 git remote add guarded "$TMPDIR/guarded.git"
 git remote add released "$TMPDIR/released.git"
 
@@ -152,5 +154,35 @@ att2="refs/the-valley/attestations/$(printf '%064d' 0)/key1"
 git update-ref "$att2" HEAD
 as contributor git push --quiet guarded "$att2:$att2"
 has_ref guarded "$att2"
+
+# The norm, on a project that declares no writer at all: the
+# protected ref takes no push from anyone. Even the principal
+# that writes guarded's main is refused here, and told how a
+# change lands instead of being told who may.
+if as integrator git push --quiet sealed main 2> sealed.err; then
+  echo "protect-e2e: a protected ref with no declared writer took a push" >&2
+  exit 1
+fi
+grep -q 'integrator' sealed.err
+grep -q 'no writer is declared' sealed.err
+grep -q 'integration request' sealed.err
+lacks_ref sealed refs/heads/main
+
+# What the declaration does not name is open there as
+# anywhere: the wall closes one ref, not the project.
+as contributor git push --quiet sealed idea/one v1
+has_ref sealed refs/heads/idea/one
+has_ref sealed refs/tags/v1
+
+# And the attestation namespace is unchanged by any of it —
+# create-only, for everyone, with or without a writers list.
+as contributor git push --quiet sealed "$att:$att"
+has_ref sealed "$att"
+git update-ref "$att" HEAD~1
+if as integrator git push --quiet --force sealed "$att:$att" 2> sealed-att.err; then
+  echo "protect-e2e: an attestation ref was rewritten on a writer-less project" >&2
+  exit 1
+fi
+grep -q 'create-only' sealed-att.err
 
 touch "$out"

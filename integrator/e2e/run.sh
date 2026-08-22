@@ -596,6 +596,11 @@ say "12. a floor the instance repository does not carry names the directory look
 # those three are what the operator compares against the repository in front
 # of them. A floor is either not there at all, or there under a name that
 # holds no documents, and both arrive that way.
+#
+# A missing floor is refused rather than read as requiring nothing, which is
+# the direction the other layer's absence defaults in (dcr-f41f718). The
+# refusal says why in its own sentence, because the operator reading it is
+# being told that the deployment is not one that can land anything.
 git checkout --quiet main
 git pull --quiet --ff-only origin main
 git checkout --quiet -b c11
@@ -605,12 +610,14 @@ git commit --quiet -m "a change whose floor the controller cannot find"
 attest_change c11 "" "" --check prose-format
 request c11 main "$(git rev-parse c11)"
 
+# The sentence every refusal to find a floor ends with.
+unwritten="a valley without a written floor is not a valley whose changes land"
+
 floorless() {
   integrator reconcile \
     --repo "$origin" \
     --key "$work/integrator" --name "$integrator_name" \
-    --known-signers "$work/known_signers" \
-    --instance-repo "$origin" "$@" \
+    --known-signers "$work/known_signers" "$@" \
     --schema "$SCHEMA_VERIFICATION" \
     --attest-schema "$SCHEMA_ATTESTATION" \
     --event-schema "$SCHEMA_EVENTS" \
@@ -620,9 +627,9 @@ floorless() {
 
 # The project's own repository carries policy/project and no policy/instance,
 # so the default directory is not there.
-floorless || true
-grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/heads/main" "$work/last.out" \
-  || die "a missing floor did not name the directory looked in: $(cat "$work/last.out")"
+floorless --instance-repo "$origin" || true
+grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/heads/main: $unwritten" "$work/last.out" \
+  || die "a missing floor did not name the directory looked in, and why that is refused: $(cat "$work/last.out")"
 
 # And the flat layout, which is a directory that exists and holds no
 # documents of its own: policy/ has the two layers under it and no *.cue in
@@ -634,11 +641,22 @@ grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/head
 # request is what an answer is remembered against, so a second one asks the
 # question again.
 request c11-flat main "$(git rev-parse c11)"
-floorless --instance-policy policy || true
-grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/heads/main" "$work/last.out" \
+floorless --instance-repo "$origin" --instance-policy policy || true
+grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/heads/main: $unwritten" "$work/last.out" \
   || die "a floor directory holding no documents did not say so: $(cat "$work/last.out")"
+
+# And the materialized layer, which is how a host that serves no instance
+# repository is given the floor. A directory with nothing in it is the same
+# absence and is refused the same way.
+request c11-bare main "$(git rev-parse c11)"
+nofloor="$work/no-floor-here"
+mkdir -p "$nofloor"
+floorless --instance "$nofloor" || true
+grep -qF "no instance policy layer: $nofloor holds no *.cue: $unwritten" "$work/last.out" \
+  || die "an empty materialized floor was not refused: $(cat "$work/last.out")"
 forget c11
 forget c11-flat
+forget c11-bare
 holds "a floor that is not where the controller looked names the repository, the directory and the ref"
 
 # ----------------------------------------------------------------------
@@ -713,5 +731,96 @@ reports="$(grep -c 'no instance policy layer' "$work/repeat.out" || true)"
   || die "the same refusal was reported $reports times over five ticks: $(cat "$work/repeat.out")"
 forget c13
 holds "a failure a pass cannot get past is reported once and then backs off"
+
+# ----------------------------------------------------------------------
+say "15. a target that carries no project layer of its own is judged under the floor alone"
+
+# The bootstrap this guards is the first policy commit: a project that has
+# not written a layer yet cannot land the commit that writes one, because a
+# change never supplies the policy that gates it. The project layer only
+# ever adds (dcr-f41f718), so its absence adds nothing, and what is left is
+# the floor — which still governs, and is observed governing here.
+
+# The floor grows a requirement of its own first, so that what remains after
+# the project layer goes away is something rather than nothing.
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
+package verification
+
+floor: {
+	checks: "prose-format": {runner: "nix", attribute: "prose-format"}
+	classes: prose: {paths: "docs/**": true, requires: "prose-format": true}
+	unclassified: {}
+}
+EOF
+git -C "$floor" commit --quiet -am "the floor requires prose-format of docs/"
+git -C "$floor" push --quiet "$instance_repo" main
+
+# The project stops carrying a layer. Nothing classifies policy/project
+# itself, so this lands with nothing owed — which is how a project could
+# have arrived without one in the first place.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c14
+git rm --quiet -r policy/project
+git commit --quiet -m "stop carrying a project policy layer"
+request c14 main "$(git rev-parse c14)"
+integrate
+grep -q "^c14 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "dropping the project layer did not land: $(cat "$work/last.out")"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+[ ! -e policy/project ] || die "the project layer is still at the tip; the scenario proves nothing"
+git checkout --quiet -b c15
+echo "a readme judged under the floor alone" > docs/readme.md
+git add -A
+git commit --quiet -m "a change to a project that declares no policy of its own"
+attest_change c15 "" "" --check prose-format
+request c15 main "$(git rev-parse c15)"
+integrate
+grep -q "^c15 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "a change to a project with no layer of its own did not land: $(cat "$work/last.out")"
+grep -qF "policy   no project layer at policy/project; the floor alone" "$work/last.out" \
+  || die "the pass did not say it composed the floor alone"
+grep -q "check    prose-format .*transferred" "$work/last.out" \
+  || die "the floor's own requirement did not govern a project with no layer"
+[ "$(tip)" = "$(git rev-parse c15)" ] || die "main is not at the change's head"
+holds "no project layer is no addition; the floor alone required prose-format and the change landed"
+
+# ----------------------------------------------------------------------
+say "16. a floor that requires nothing, written down, composes and judges"
+
+# Emptiness a floor states is not the same thing as a floor nobody wrote.
+# The document is there, somebody landed it, and what it composes to is a
+# policy that requires nothing — so a change under it lands owing nothing,
+# rather than being refused the way scenario 12's missing floor is.
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
+package verification
+
+floor: {
+	checks: {}
+	classes: {}
+	unclassified: {}
+}
+EOF
+git -C "$floor" commit --quiet -am "the floor requires nothing, and says so"
+git -C "$floor" push --quiet "$instance_repo" main
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c16
+echo "a readme under a floor that requires nothing" > docs/readme.md
+git add -A
+git commit --quiet -m "a change under an empty floor and no project layer"
+request c16 main "$(git rev-parse c16)"
+integrate
+grep -q "^c16 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "a change under an explicitly empty floor did not land: $(cat "$work/last.out")"
+grep -q 'the policy requires no check of the paths this change touches' "$work/last.out" \
+  || die "the verdict did not say the policy required nothing"
+grep -qF "policy   no project layer at policy/project; the floor alone" "$work/last.out" \
+  || die "the pass did not say it composed the floor alone"
+[ "$(tip)" = "$(git rev-parse c16)" ] || die "main is not at the change's head"
+holds "a floor that states it requires nothing composes, judges, and lands the change owing nothing"
 
 printf '\nintegrator-e2e: every scenario held\n'

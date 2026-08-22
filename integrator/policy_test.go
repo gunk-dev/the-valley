@@ -5,6 +5,8 @@ package main
 // here rather than assumed.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +57,73 @@ func TestValidityWindowsAreReadAsThePolicyWritesThem(t *testing.T) {
 		if err != nil || got != c.want {
 			t.Errorf("parseWindow(%q) = %v, %v; want %v", c.in, got, err, c.want)
 		}
+	}
+}
+
+// Each layer's absence defaults in the safe direction of that layer's job,
+// and the two directions are opposite (dcr-f41f718). Both are pinned here,
+// because the value of the rule is that neither is the other.
+
+func TestATargetWithNoProjectLayerIsJudgedUnderTheFloorAlone(t *testing.T) {
+	tip := &worktree{dir: t.TempDir()}
+	p := policySource{projectDir: "policy/project"}
+	done, err := p.openProject(tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if p.note == "" {
+		t.Fatal("the pass said nothing about composing the floor alone")
+	}
+	// What the deriver and the composer are handed is a layer that adds
+	// nothing, not a directory that is not there.
+	docs, err := filepath.Glob(filepath.Join(p.project, "*.cue"))
+	if err != nil || len(docs) != 1 {
+		t.Fatalf("the resolved project layer holds %v (%v)", docs, err)
+	}
+	if body, err := os.ReadFile(docs[0]); err != nil || strings.TrimSpace(string(body)) != "package verification" {
+		t.Fatalf("the layer that adds nothing reads %q (%v)", body, err)
+	}
+	done()
+	if _, err := os.Stat(p.project); !os.IsNotExist(err) {
+		t.Fatalf("the pass left its scratch layer behind: %v", err)
+	}
+}
+
+func TestATargetsOwnProjectLayerIsUsedWhereItIs(t *testing.T) {
+	tip := &worktree{dir: t.TempDir()}
+	own := filepath.Join(tip.dir, "policy/project")
+	if err := os.MkdirAll(own, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(own, "policy.cue"), []byte("package verification\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := policySource{projectDir: "policy/project"}
+	done, err := p.openProject(tip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer done()
+	if p.project != own {
+		t.Fatalf("the project layer resolved to %s, not to %s", p.project, own)
+	}
+	if p.note != "" {
+		t.Fatalf("an ordinary composition said %q", p.note)
+	}
+}
+
+func TestAFloorThatIsNotThereIsRefused(t *testing.T) {
+	// The materialized source, which is the one a test can drive without a
+	// repository. The repository source refuses the same way, and the e2e
+	// observes it there.
+	_, done, err := instanceLayer{path: t.TempDir()}.open()
+	defer done()
+	if err == nil {
+		t.Fatal("a floor directory with no documents in it was accepted")
+	}
+	if !strings.Contains(err.Error(), floorless) {
+		t.Fatalf("the refusal reads %q", err)
 	}
 }
 

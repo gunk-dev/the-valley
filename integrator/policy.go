@@ -17,6 +17,10 @@ package main
 // project's own layer at `policy/project` in the target tip. A repository
 // that keeps either somewhere else says so with --instance-policy or
 // --project-policy.
+//
+// A layer that is not there defaults in the safe direction of that layer's
+// job (dcr-f41f718), and the two directions are opposite: an absent project
+// layer composes the floor alone, and an absent floor is refused.
 
 import (
 	"the-valley/integrator/verdict"
@@ -53,6 +57,13 @@ type instanceLayer struct {
 	path string // a materialized layer, when no repository carries one
 }
 
+// floorless ends every refusal to find a floor. The floor is the minimum,
+// and a missing minimum reads equally as a controller pointed at the wrong
+// directory, a repository nobody seeded, or a floor somebody deleted. What
+// is refused is the absent document; a floor that states it requires
+// nothing composes and judges like any other.
+const floorless = "a valley without a written floor is not a valley whose changes land"
+
 // open resolves the layer to a directory on disk for the length of one pass,
 // and returns what ends it.
 //
@@ -64,12 +75,18 @@ type instanceLayer struct {
 func (l instanceLayer) open() (string, func(), error) {
 	noop := func() {}
 	if l.repo == "" {
+		// The materialized layer is held to the same minimum as the one a
+		// repository carries: a directory with no documents in it is a floor
+		// nobody wrote.
+		if docs, err := filepath.Glob(filepath.Join(l.path, "*.cue")); err != nil || len(docs) == 0 {
+			return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue: %s", l.path, floorless)
+		}
 		return l.path, noop, nil
 	}
 	tree := l.ref + ":" + l.dir
 	listing, err := git(l.repo, "ls-tree", "--name-only", tree)
 	if err != nil {
-		return "", noop, fmt.Errorf("no instance policy layer: %s has no %s/ at %s: %w", l.repo, l.dir, l.ref, err)
+		return "", noop, fmt.Errorf("no instance policy layer: %s has no %s/ at %s: %s", l.repo, l.dir, l.ref, floorless)
 	}
 	dir, err := scratch("valley-integrator-floor")
 	if err != nil {
@@ -96,7 +113,7 @@ func (l instanceLayer) open() (string, func(), error) {
 	}
 	if found == 0 {
 		done()
-		return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue in %s/ at %s", l.repo, l.dir, l.ref)
+		return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue in %s/ at %s: %s", l.repo, l.dir, l.ref, floorless)
 	}
 	return dir, done, nil
 }
@@ -104,25 +121,73 @@ func (l instanceLayer) open() (string, func(), error) {
 // policySource is where the two layers are read from, and the schema they
 // are composed under.
 type policySource struct {
-	schema   string // the verification schema
-	layer    instanceLayer
-	instance string // the instance layer as resolved on disk, for one pass
-	project  string // the project layer, relative to the target tip's tree
-	valley   string // the deriver
-	cue      string // the composer, for the catalogue the deriver does not print
+	schema     string // the verification schema
+	layer      instanceLayer
+	projectDir string // the project layer's directory in the target tip's tree
+	valley     string // the deriver
+	cue        string // the composer, for the catalogue the deriver does not print
+
+	// Both layers as directories of *.cue on disk, resolved by open and
+	// good for one pass.
+	instance string
+	project  string
+
+	// note is the one thing a pass has to say about how the layers
+	// resolved, when that is not what the configuration reads as. Empty
+	// when both were where they are configured to be.
+	note string
 }
 
-// open resolves the instance layer and returns a source that reads it from
-// disk, together with what ends the pass. Held for the whole pass rather
-// than resolved per call, so the deriver and the composer are given the same
+// open resolves both layers and returns a source that reads them from disk,
+// together with what ends the pass. Held for the whole pass rather than
+// resolved per call, so the deriver and the composer are given the same
 // bytes: they are two readings of one policy, not two policies.
-func (p policySource) open() (policySource, func(), error) {
+func (p policySource) open(tip *worktree) (policySource, func(), error) {
 	dir, done, err := p.layer.open()
 	if err != nil {
 		return p, done, err
 	}
 	p.instance = dir
-	return p, done, nil
+	endProject, err := p.openProject(tip)
+	if err != nil {
+		done()
+		return p, func() {}, err
+	}
+	return p, func() { endProject(); done() }, nil
+}
+
+// openProject resolves the project's own layer in the checkout of the target
+// tip, and returns what ends it.
+//
+// A target that carries no layer of its own is judged under the floor
+// alone. The project layer only ever adds (dcr-f41f718), and the identity
+// of "adds" is "adds nothing", so that is what absence means. Refusing the
+// target instead would make a repository unlandable until its first policy
+// commit, which cannot land either: a change never supplies the policy that
+// gates it.
+//
+// Absence is answered with a document that adds nothing rather than with an
+// argument left off, because the deriver and the composer are each handed a
+// directory of *.cue and neither has a spelling for "no layer".
+func (p *policySource) openProject(tip *worktree) (func(), error) {
+	noop := func() {}
+	p.project = filepath.Join(tip.dir, p.projectDir)
+	if docs, err := filepath.Glob(filepath.Join(p.project, "*.cue")); err == nil && len(docs) > 0 {
+		return noop, nil
+	}
+	dir, err := scratch("valley-integrator-project")
+	if err != nil {
+		return noop, err
+	}
+	// A package clause and nothing else: `project` stays what the schema
+	// leaves it, which is three empty sets.
+	if err := os.WriteFile(filepath.Join(dir, "adds-nothing.cue"), []byte("package verification\n"), 0o644); err != nil {
+		_ = os.RemoveAll(dir)
+		return noop, err
+	}
+	p.project = dir
+	p.note = fmt.Sprintf("no project layer at %s; the floor alone", p.projectDir)
+	return func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // derived is one run of the deriver over a diff: which classes the diff
@@ -139,7 +204,7 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 	cmd := exec.Command(p.valley, "checks",
 		"--schema", p.schema,
 		"--instance", p.instance,
-		"--project", filepath.Join(tip.dir, p.project),
+		"--project", p.project,
 		from, to)
 	cmd.Dir = tip.dir
 	out, err := cmd.CombinedOutput()
@@ -214,9 +279,9 @@ type catalogueEntry struct {
 // This is the same composition the deriver ran, over the same layers and
 // the same schema — `cue export` of a field the deriver does not print,
 // not a second opinion about what the policy says.
-func (p policySource) catalogue(tip *worktree) (map[string]catalogueEntry, string, error) {
+func (p policySource) catalogue() (map[string]catalogueEntry, string, error) {
 	args := []string{"export", "--out", "json", "-e", "policy", p.schema}
-	for _, dir := range []string{p.instance, filepath.Join(tip.dir, p.project)} {
+	for _, dir := range []string{p.instance, p.project} {
 		docs, err := filepath.Glob(filepath.Join(dir, "*.cue"))
 		if err != nil || len(docs) == 0 {
 			return nil, "", fmt.Errorf("no policy layer at %s", dir)

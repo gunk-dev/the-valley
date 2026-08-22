@@ -188,6 +188,9 @@ func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 	}
 	v := verdict.Decide(ch, snap)
 	in.report(r, tip, v)
+	if landed.composition != "" {
+		fmt.Fprintf(in.out, "  policy   %s\n", landed.composition)
+	}
 
 	switch v.Outcome {
 	case verdict.Land:
@@ -214,6 +217,10 @@ type landing struct {
 	commit string // the commit that would be the target's new tip
 	digest string // the valley-tree-v1 digest of the resulting tree
 	policy string // a digest of the composed policy the verdict used
+
+	// composition is what the pass has to say about how the policy layers
+	// resolved, or empty when both were where they are configured to be.
+	composition string
 
 	// notes are the contributor's attestations as stored, by check name.
 	// The verdict does not read them; what lands countersigns them.
@@ -248,12 +255,13 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 	// tree being gated: the project layer from this checkout of the target
 	// tip, the floor from the instance repository's integrated tip. Both
 	// are resolved once and held for the whole pass.
-	pol, closeInstance, err := in.policy.open()
+	pol, closePolicy, err := in.policy.open(wt)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
-	defer closeInstance()
-	cat, policyDigest, err := pol.catalogue(wt)
+	defer closePolicy()
+	land.composition = pol.note
+	cat, policyDigest, err := pol.catalogue()
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}

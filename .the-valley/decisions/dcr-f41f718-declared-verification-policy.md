@@ -69,6 +69,38 @@ on a host would therefore be a policy field on _one of several_ possible carrier
 valley, free to diverge from its siblings with neither one wrong. The host is not involved at any
 point, and [schema/valley.cue](../../schema/valley.cue) carries nothing about verification.
 
+## A layer that is not there defaults in the safe direction of that layer's job
+
+Each layer's absence is answered by what that layer is for, and because the two layers have opposite
+jobs the two answers point in opposite directions.
+
+**A project layer that is not there composes the floor alone.** The project layer can only add,
+which is the section above in one sentence, and the identity of "adds" is "adds nothing". Absence
+therefore has a reading that takes nothing away from anyone, and that reading is used. It is an
+ordinary composition rather than an error, and a pass under it is worth a journal line and nothing
+more.
+
+The alternative reading, refusing to judge a target that carries no layer, makes a repository
+unlandable until its first policy commit — and that commit cannot land either, because a change
+never supplies the policy that gates it. Every project would have to have its policy installed by
+hand, around the gate, which is the one thing the gate exists to prevent.
+
+**A floor that is not there is refused, and refused loudly.** The floor is the minimum a valley
+enforces on projects it has not read, and a missing minimum has no safe reading. Nothing
+distinguishes a controller pointed at the wrong directory from an instance repository nobody has
+seeded from a floor that was deleted, and composing against nothing would answer all three the same
+way: by requiring nothing of every project in the valley, silently. The refusal names the
+repository, the directory and the ref that was looked in, because those three are what an operator
+compares against the repository in front of them, and it says why absence is refused — a valley
+without a written floor is not a valley whose changes land.
+
+**Emptiness a document states is not absence.** A floor whose `checks`, `classes` and `unclassified`
+are all empty is a decision that was written down, reviewed, and landed in the instance repository
+under that repository's own policy: a valley that has chosen to run ungated, with the history to
+show who chose it. It composes and judges like any other floor, and every change under it lands
+owing nothing. What is refused is the missing document, because no decision was made and no history
+records one. The floor is mandatory even when what it requires is nothing.
+
 ## Mandatory versus overridable is one bit per check, in CUE's own semantics
 
 This is why CUE suits the model rather than merely carrying it. Unification can only narrow, so the

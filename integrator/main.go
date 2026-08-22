@@ -52,11 +52,12 @@ flags:
                       instance layer is read from its integrated tip
   --instance-ref REF  the ref whose tip carries it (default refs/heads/main)
   --instance-policy P the floor's directory in that tip (default
-                      policy/instance)
+                      policy/instance); a floor that is not there is refused
   --instance DIR      a materialized instance layer, for a host that serves
                       no instance repository; one of this or --instance-repo
   --project-policy P  the project policy layer, relative to the target tip
-                      (default policy/project)
+                      (default policy/project); a target that carries none
+                      is judged under the floor alone
   --schema FILE       the verification schema
   --attest-schema F   the attestation schema
   --event-schema F    the event vocabulary payloads are vetted against
@@ -201,11 +202,11 @@ func run(args []string, loop bool) error {
 		layer.path = abs(*instance)
 	}
 	in.policy = policySource{
-		schema:  abs(*schema),
-		layer:   layer,
-		project: *projectPolicy,
-		valley:  in.valley,
-		cue:     in.cue,
+		schema:     abs(*schema),
+		layer:      layer,
+		projectDir: *projectPolicy,
+		valley:     in.valley,
+		cue:        in.cue,
 	}
 	if *now != "" {
 		if in.clock, err = time.Parse(time.RFC3339, *now); err != nil {

@@ -65,14 +65,6 @@ func TestPublicKeysThatAreNotEd25519AreRefused(t *testing.T) {
 // (bd-8a591dc), so the day it lands on is worth pinning: the declared day is
 // the first day the entry no longer counts.
 func TestAnEntryExpiresOnTheDayItDeclares(t *testing.T) {
-	day := func(s string) time.Time {
-		t.Helper()
-		d, err := time.Parse(dateLayout, s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return d
-	}
 	for _, c := range []struct {
 		expires string
 		on      string
@@ -83,7 +75,7 @@ func TestAnEntryExpiresOnTheDayItDeclares(t *testing.T) {
 		{"2026-10-01", "2026-10-02", true},
 		{"", "2999-01-01", false},
 	} {
-		got, err := hasExpired(c.expires, day(c.on))
+		got, err := hasExpired(c.expires, day(t, c.on))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -91,9 +83,18 @@ func TestAnEntryExpiresOnTheDayItDeclares(t *testing.T) {
 			t.Errorf("expires %q on %s: expired = %v, want %v", c.expires, c.on, got, c.want)
 		}
 	}
-	if _, err := hasExpired("the first of never", day("2026-01-01")); err == nil {
+	if _, err := hasExpired("the first of never", day(t, "2026-01-01")); err == nil {
 		t.Error("a malformed expiry compiled")
 	}
+}
+
+func day(t *testing.T, s string) time.Time {
+	t.Helper()
+	d, err := time.Parse(dateLayout, s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d
 }
 
 // A grant naming a boundary the registry does not run must fail the render
@@ -115,4 +116,71 @@ func TestAGrantAtAnUndeclaredBoundaryFailsTheRender(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "bus") {
 		t.Errorf("render error = %v, want one naming the undeclared boundary", err)
 	}
+}
+
+// The registry's own stream cannot be left in nobody's hand (dcr-2f03be3).
+// The state is arrived at by the clock rather than declared, which is why
+// the compiler refuses it and the schema cannot: one registry, unchanged,
+// renders the day before its only governing entry expires and fails the day
+// it does. The entry still holding a push grant does not save it — a
+// boundary of another kind is not governance.
+func TestARenderThatOrphansGovernanceIsRefused(t *testing.T) {
+	r := governedRegistry()
+	r.Principals["founder"] = expiring(r.Principals["founder"], "2026-10-01")
+	if _, err := render(r, day(t, "2026-09-30")); err != nil {
+		t.Fatalf("the day before the only governing entry expired: %v", err)
+	}
+	for _, on := range []string{"2026-10-01", "2026-11-01"} {
+		_, err := render(r, day(t, on))
+		if err == nil || !strings.Contains(err.Error(), "governanceOrphaned") {
+			t.Errorf("render on %s: error = %v, want one naming governanceOrphaned", on, err)
+		}
+	}
+}
+
+// A registry that governs nothing on any day is refused too. The schema
+// already rejects the document (genesisGovernance), so this is the compiler
+// holding the same floor over whatever reaches it.
+func TestARegistryGoverningNothingIsRefused(t *testing.T) {
+	r := governedRegistry()
+	r.Principals["founder"] = withGrants(r.Principals["founder"], map[string]grant{"push": {Boundary: "push"}})
+	_, err := render(r, day(t, "2026-01-01"))
+	if err == nil || !strings.Contains(err.Error(), "governanceOrphaned") {
+		t.Errorf("render error = %v, want one naming governanceOrphaned", err)
+	}
+}
+
+// A registry that compiles: one entry governing, one pushing.
+func governedRegistry() registry {
+	const public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ"
+	return registry{
+		Boundaries: map[string]boundary{
+			"push":     {Kind: boundaryGitPush},
+			"registry": {Kind: boundaryRegistry},
+		},
+		Genesis: "founder",
+		Principals: map[string]principal{
+			"founder": {
+				Kind:   "human",
+				Keys:   []key{{Public: public, Signs: "founder"}},
+				Grants: map[string]grant{"govern": {Boundary: "registry"}},
+			},
+			"runner": {
+				Kind:    "machine",
+				Keys:    []key{{Public: public}},
+				Grants:  map[string]grant{"push": {Boundary: "push"}},
+				Expires: "2027-01-01",
+			},
+		},
+	}
+}
+
+func expiring(p principal, expires string) principal {
+	p.Expires = expires
+	return p
+}
+
+func withGrants(p principal, g map[string]grant) principal {
+	p.Grants = g
+	return p
 }

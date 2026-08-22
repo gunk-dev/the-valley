@@ -42,6 +42,13 @@ expiry has arrived is omitted from both artifacts and noted on stderr, and
 the rest of the registry still compiles — so access ends at the first
 convergence after expiry.
 
+One state is refused rather than compiled: a registry where, after the
+expiry cut, no remaining principal holds a grant at a boundary of kind
+"registry". Nobody would govern the registry's own stream, so the whole
+render fails with an error naming governanceOrphaned and the last good
+artifacts stand. The rule is here and not in the schema for the same reason
+expiry is — the state is reached by the clock, and a document has none.
+
 A render that fails leaves the last good artifacts exactly as they were.
 Both are computed in full before either is written, and each is replaced by
 rename. A schema violation, an unreachable repository or a bug here costs

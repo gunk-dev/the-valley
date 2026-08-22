@@ -41,9 +41,15 @@ type grant struct {
 	Boundary string `json:"boundary"`
 }
 
-// boundaryGitPush is the boundary kind the authorized_keys artifact is
-// rendered from: sshd on a host serving the instance's repositories.
-const boundaryGitPush = "git-push"
+const (
+	// boundaryGitPush is the boundary kind the authorized_keys artifact is
+	// rendered from: sshd on a host serving the instance's repositories.
+	boundaryGitPush = "git-push"
+
+	// boundaryRegistry is the boundary kind that admits a change to the
+	// registry document itself. A render leaving nobody there is refused.
+	boundaryRegistry = "registry"
+)
 
 // readRegistry takes the registry out of a repository's tip, vets it, and
 // exports it.

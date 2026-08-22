@@ -128,4 +128,72 @@ fi
 diff -u last-good-signers "$TMPDIR/signers" || exit 1
 diff -u last-good-keys "$TMPDIR/keys" || exit 1
 
+# Governance the clock orphans. This registry is valid as a document — the
+# genesis entry governs — and the only entry governing carries an expiry, so
+# whether it compiles depends on the day. The schema cannot see this; the
+# compiler can, and refuses the whole render rather than write artifacts
+# nobody could ever change again.
+mkdir -p orphan-registry
+{
+  echo 'package identity'
+  echo 'boundaries: {'
+  echo '	"push": kind:     "git-push"'
+  echo '	"registry": kind: "registry"'
+  echo '}'
+  echo 'genesis: "founder"'
+  echo 'principals: {'
+  echo '	"founder": {'
+  echo '		kind: "human"'
+  echo '		keys: [{'
+  echo '			class:  "ssh-ed25519"'
+  echo '			bound:  "hardware"'
+  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip"'
+  echo '			signs:  "founder"'
+  echo '		}]'
+  echo '		grants: {'
+  echo '			push: boundary:   "push"'
+  echo '			govern: boundary: "registry"'
+  echo '		}'
+  echo '		expires: "2026-10-01"'
+  echo '	}'
+  echo '	"runner": {'
+  echo '		kind: "machine"'
+  echo '		keys: [{'
+  echo '			class:  "ssh-ed25519"'
+  echo '			bound:  "host"'
+  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"'
+  echo '		}]'
+  echo '		grants: push: boundary: "push"'
+  echo '		expires: "2027-01-01"'
+  echo '	}'
+  echo '}'
+} > orphan-registry/registry.cue
+
+# The day before: an ordinary compilation.
+serve instance orphan-registry
+compile --now 2026-09-30 || exit 1
+grep -q "founder" "$TMPDIR/signers" || {
+  echo "identity-e2e: the governing entry was omitted while still unexpired" >&2
+  exit 1
+}
+cp "$TMPDIR/signers" last-good-signers
+cp "$TMPDIR/keys" last-good-keys
+
+# The day it expires, and a day well past it: the same document, refused. The
+# entry still pushing does not save it — a grant at another boundary is not
+# governance.
+for pinned in 2026-10-01 2026-12-01; do
+  if compile --now "$pinned" 2> orphaned.log; then
+    echo "identity-e2e: a registry nobody governs on $pinned compiled" >&2
+    exit 1
+  fi
+  if ! grep -q "governanceOrphaned" orphaned.log; then
+    echo "identity-e2e: the refusal on $pinned did not name governanceOrphaned" >&2
+    cat orphaned.log >&2
+    exit 1
+  fi
+  diff -u last-good-signers "$TMPDIR/signers" || exit 1
+  diff -u last-good-keys "$TMPDIR/keys" || exit 1
+done
+
 touch "$out"

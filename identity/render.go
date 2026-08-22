@@ -52,6 +52,7 @@ type artifacts struct {
 func render(r registry, day time.Time) (artifacts, error) {
 	var a artifacts
 	var signers, authorized []string
+	governed := false
 
 	names := make([]string, 0, len(r.Principals))
 	for name := range r.Principals {
@@ -72,10 +73,11 @@ func render(r registry, day time.Time) (artifacts, error) {
 			continue
 		}
 
-		pushes, err := hasPushGrant(r, p)
+		pushes, governs, err := heldGrants(r, p)
 		if err != nil {
 			return a, fmt.Errorf("%s: %w", name, err)
 		}
+		governed = governed || governs
 
 		for i, k := range p.Keys {
 			pub, err := sshEd25519Public(k.Public)
@@ -89,6 +91,13 @@ func render(r registry, day time.Time) (artifacts, error) {
 				authorized = append(authorized, fmt.Sprintf("environment=%q %s", principalEnv+"="+name, k.Public))
 			}
 		}
+	}
+
+	// The state the whole render is refused for: after the expiry cut,
+	// nobody governs the registry's own stream (dcr-2f03be3).
+	if !governed {
+		return a, fmt.Errorf("governanceOrphaned: on %s no unexpired principal holds a grant at a boundary of kind %q",
+			day.Format(dateLayout), boundaryRegistry)
 	}
 
 	a.knownSigners, a.signers = artifact(knownSignersHeader, signers)
@@ -109,23 +118,25 @@ func hasExpired(expires string, day time.Time) (bool, error) {
 	return !day.Before(end), nil
 }
 
-// hasPushGrant answers whether the entry holds a grant at a boundary of
-// kind "git-push". A grant naming a boundary the registry does not declare
-// fails the render: the schema already refuses one, and a compiler that
-// silently dropped it would turn a typo into a quiet loss of access.
-func hasPushGrant(r registry, p principal) (bool, error) {
-	pushes := false
+// heldGrants answers which boundary kinds the entry holds a grant at. A
+// grant naming a boundary the registry does not declare fails the render:
+// the schema already refuses one, and a compiler that silently dropped it
+// would turn a typo into a quiet loss of access.
+func heldGrants(r registry, p principal) (pushes, governs bool, err error) {
 	for _, name := range sortedGrants(p.Grants) {
 		b, ok := r.Boundaries[p.Grants[name].Boundary]
 		if !ok {
-			return false, fmt.Errorf("grant %s names boundary %q, which the registry does not declare",
+			return false, false, fmt.Errorf("grant %s names boundary %q, which the registry does not declare",
 				name, p.Grants[name].Boundary)
 		}
-		if b.Kind == boundaryGitPush {
+		switch b.Kind {
+		case boundaryGitPush:
 			pushes = true
+		case boundaryRegistry:
+			governs = true
 		}
 	}
-	return pushes, nil
+	return pushes, governs, nil
 }
 
 func sortedGrants(g map[string]grant) []string {

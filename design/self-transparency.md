@@ -52,7 +52,7 @@ design has been circling without stating:
 If it holds, this invariant is the property that makes the
 [outcome engine](./architecture.md#bet-the-knowledge-graph-read-generatively--an-outcome-dag)
 trustworthy when pointed at itself, and the property
-[federation](./architecture.md#federation-the-group-is-the-unit) must preserve across group
+[federation](./architecture.md#federation-the-valley-is-the-unit) must preserve across valley
 boundaries — a federated change is still a transparent one.
 
 If it holds, this is plausibly the top-level invariant the whole design is an implementation of —

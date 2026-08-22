@@ -11,7 +11,7 @@ source: cosmo-readiness design pass, 2026-07-31
 
 Verification policy — the mapping from path classes to required checks — is declared in CUE. It has
 two layers, and each layer is a policy directory: a CUE package unifies every file in it, so a layer
-is one or more documents and the file count carries no meaning. The group's instance repository
+is one or more documents and the file count carries no meaning. The valley's instance repository
 carries a mandatory floor and a set of project-type templates; the project's own repository carries
 everything above the floor. The effective policy is the unification of the two layers. The schema is
 [schema/verification.cue](../../schema/verification.cue), with a worked example at
@@ -42,10 +42,10 @@ separately in the cosmo-readiness outcome [[oc-87deec8]]
 Both layers are the same schema and the same kind of thing: a policy directory versioned in the
 repository it belongs to. The weight sits in the project layer, and the floor is deliberately small.
 
-The **instance layer** is the group's policy. A group has exactly one instance ([[ida-8482624]]
-([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md))), so the instance
-repository is the group's repository, and for the gunk-dev instance that is qinling. It states the
-minimum: the checks no project in the group may decline, plus project-type templates that give a
+The **instance layer** is the valley's policy. A valley owns one repository ([[dcr-8f069dd]]
+([dcr-8f069dd-valley-is-the-unit.md](./dcr-8f069dd-valley-is-the-unit.md))), so the instance
+repository is the valley's repository, and for the gunk-dev valley that is qinling. It states the
+minimum: the checks no project in the valley may decline, plus project-type templates that give a
 project of a known type a sensible starting set.
 
 The **project layer** is the project's own policy, a policy directory versioned in its own tree. It
@@ -57,18 +57,17 @@ project layer can add to it and cannot subtract from it. Both layers say what; t
 whether a project can answer back. That is what keeps the two halves from being two vocabularies to
 learn, and what makes the composition a single `cue vet`.
 
-The discipline this asks for is keeping the floor minimal. The floor is the minimum a group is
+The discipline this asks for is keeping the floor minimal. The floor is the minimum a valley is
 willing to enforce on projects it has not read; a floor that keeps absorbing checks until it
 describes every class of every project has stopped being a floor.
 
-Policy has no business at a lower layer than the instance. Group to instance is 1-to-1, but instance
-to host deliberately is not: an instance is instantiable on a single machine and equally runnable as
-a distributed system, with git hosting sharding across hosts and nothing in the architecture
-assuming co-location. classic-laddie being the whole of the gunk-dev instance today is a fact about
-deployment, not about the design. A policy field on a host would therefore be a policy field on _one
-of several_ possible carriers of the same instance, free to diverge from its siblings with neither
-one wrong. The host is not involved at any point, and [schema/valley.cue](../../schema/valley.cue)
-carries nothing about verification.
+Policy has no business at a lower layer than the valley. Valley to host deliberately is not 1-to-1:
+a valley runs on a single machine and is equally runnable as a distributed system, with git hosting
+sharding across hosts and nothing in the architecture assuming co-location. classic-laddie being the
+whole of the gunk-dev valley today is a fact about deployment, not about the design. A policy field
+on a host would therefore be a policy field on _one of several_ possible carriers of the same
+valley, free to diverge from its siblings with neither one wrong. The host is not involved at any
+point, and [schema/valley.cue](../../schema/valley.cue) carries nothing about verification.
 
 ## Mandatory versus overridable is one bit per check, in CUE's own semantics
 
@@ -146,7 +145,7 @@ exists. A policy directory is that convention applied again rather than a new me
 
 The obvious comparison is a workflow directory in a hosted forge, and it breaks in two places.
 Workflow files are independent of one another; policy files unify. A new file in the floor directory
-changes the effective policy of every project in the group, and that silent addition has no
+changes the effective policy of every project in the valley, and that silent addition has no
 equivalent in the workflow-directory model. The second difference matters more: a workflow directory
 has no floor. Anyone who can write it controls the checks completely, which is precisely what this
 design denies a project. So the same convention is applied twice with different authority — the
@@ -238,7 +237,7 @@ and not by [nix/valley-host.nix](../../nix/valley-host.nix).
 A project is now self-describing only above the floor, which trims [[ida-3e87f5c]]
 ([ida-3e87f5c-self-describing-projects.md](../ideas/ida-3e87f5c-self-describing-projects.md)). A
 clone of the project alone can no longer state its required set; it can state what the project adds,
-and must consult the instance repository for the rest. That is a deliberate trade for the group
+and must consult the instance repository for the rest. That is a deliberate trade for the valley
 being able to force compliance, which is the whole reason the floor exists. The timing split
 preserves most of the offline story: templates may be pinned, so the only thing a clone genuinely
 cannot answer alone is the current floor, and the floor is small by design.
@@ -322,8 +321,8 @@ Naming these keeps the qinling exercise from being mistaken for cosmo readiness.
 
 - The design this implements: [[ida-1ec03b1]]
   ([ida-1ec03b1-path-scoped-verification-policy.md](../ideas/ida-1ec03b1-path-scoped-verification-policy.md))
-- The group-to-instance binding the instance layer rests on: [[ida-8482624]]
-  ([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md))
+- The unit whose policy the instance layer is: [[dcr-8f069dd]]
+  ([dcr-8f069dd-valley-is-the-unit.md](./dcr-8f069dd-valley-is-the-unit.md))
 - The direction the project layer continues, and that the floor trims: [[ida-3e87f5c]]
   ([ida-3e87f5c-self-describing-projects.md](../ideas/ida-3e87f5c-self-describing-projects.md))
 - The store the policy travels in: [[dcr-5da1f36]]

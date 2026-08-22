@@ -1,13 +1,16 @@
 ---
 type: decision
 id: dcr-2f03be3
-status: decided
+status: superseded
 title: Hosts serve groups; groups on a shared host are strongly isolated
 created: 2026-08-22
 source: design conversation, 2026-08-22
 ---
 
 # Hosts serve groups; groups on a shared host are strongly isolated
+
+**Decided 2026-08-22**; the current decision about hosts and the units they serve is [[dcr-9b5da04]]
+([dcr-9b5da04-hosts-serve-isolated-valleys.md](./dcr-9b5da04-hosts-serve-isolated-valleys.md)).
 
 A host is shared infrastructure. Host and group stand in an N : M relation, and the two directions
 are not equally near: a host serving several groups is present intent and is what the machinery is

@@ -91,7 +91,7 @@ expiry, and no external principal holds registry governance.
 An external collaborator's entry references an identity the person already controls — a domain
 handle or a decentralized identifier — verified at onboarding and re-verifiable by anyone. The
 registry decides what that identity may do here; it never becomes the person's identity. This is the
-shape that the open cross-group identity mapping of [[ida-8482624]]
+shape that the open cross-valley identity mapping of [[ida-8482624]]
 ([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md)) slots into.
 
 ## Web authentication is a registry key class
@@ -187,8 +187,8 @@ therefore additive over what the host declares by hand, and the declared keys ar
   ([ida-45178f6-agent-identity-is-provenance.md](../ideas/ida-45178f6-agent-identity-is-provenance.md))
   — agent runs hold no entry; the registry names the chain's top.
 - [[ida-8482624]] ([ida-8482624-federation-groups.md](../ideas/ida-8482624-federation-groups.md)) —
-  the group-instance binding the registry lives inside, and the cross-group identity mapping this
-  gives a shape to.
+  the federation layer above the valley the registry lives inside, and the cross-valley identity
+  mapping this gives a shape to.
 - [[ida-23aa413]]
   ([ida-23aa413-project-surfaces-are-derived-views.md](../ideas/ida-23aa413-project-surfaces-are-derived-views.md))
   — the web surface that authenticates against the registry.

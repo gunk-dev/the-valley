@@ -64,7 +64,7 @@ configuration change. It also arrives while machine credentials on the host are 
 ([[bd-8a591dc]]
 ([bd-8a591dc-machine-credentials-never-expire.md](../bugs/bd-8a591dc-machine-credentials-never-expire.md))).
 
-**Implementation follows the group's language policy.** The browser-facing ecosystem is the case
+**Implementation follows the valley's language policy.** The browser-facing ecosystem is the case
 that policy most directly concerns.
 
 ## A candidate home for the approval gate

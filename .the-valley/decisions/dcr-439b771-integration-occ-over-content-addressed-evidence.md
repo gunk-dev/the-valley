@@ -79,8 +79,8 @@ the paths of the policy class that requires the check — a policy class being [
 ([dcr-f41f718-declared-verification-policy.md](./dcr-f41f718-declared-verification-policy.md)) unit
 of mapping, a named set of path patterns carrying required checks — and the observation is younger
 than a validity window Δ. Δ is declared policy, per check: a template default a project may
-override, floor-mandatable by the group, in that decision's two layers. A network read of immutable,
-content-addressed data is a pure read; Δ exists only for reads of mutable world.
+override, floor-mandatable by the valley, in that decision's two layers. A network read of
+immutable, content-addressed data is a pure read; Δ exists only for reads of mutable world.
 
 ## Staleness is per-check and computable
 

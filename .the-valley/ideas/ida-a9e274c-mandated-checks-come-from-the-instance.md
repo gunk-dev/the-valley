@@ -16,14 +16,14 @@ project instantiates the check over its own source.
 
 The alternative is that every project writes the check itself and the policy trusts the name. Then
 the policy says `knowledge-lint` and each project decides what those characters mean — which makes
-the floor a naming convention rather than a floor. A group with ten projects would have ten lints
+the floor a naming convention rather than a floor. A valley with ten projects would have ten lints
 drifting apart, and the one that drifted would be the one that stopped failing.
 
 Supplying the derivation carries the toolchain with it. The instance pins the versions the check
-runs against, so two projects in a group get the same answer for the same tree, and a project cannot
-weaken a check by pinning an older tool. This is why the exposed entry point takes a system and a
-tree rather than a package set: a consuming project needs no nixpkgs of its own for a check it did
-not write.
+runs against, so two projects in a valley get the same answer for the same tree, and a project
+cannot weaken a check by pinning an older tool. This is why the exposed entry point takes a system
+and a tree rather than a package set: a consuming project needs no nixpkgs of its own for a check it
+did not write.
 
 What the project keeps is the decision to be checked at all, which is exactly what the policy layers
 already govern ([[dcr-f41f718]]): the instance floor states what a project cannot take back, and the

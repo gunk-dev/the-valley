@@ -162,17 +162,19 @@ stays open ([openquestions.md](./openquestions.md)). Scheduler mechanics and nod
 deliberately absent here; that detail returns when its rung is the top priority. The fuller sketch:
 [.the-valley/ideas/ida-eac723e-outcome-dag.md](../.the-valley/ideas/ida-eac723e-outcome-dag.md).
 
-## Federation: the group is the unit
+## Federation: the valley is the unit
 
 _Serves: small trusted teams (rung S5 and the S7 limit of the [ladder](./user-scenarios.md))._
 
-A **group** — a team, a company, a personal namespace — is the unit of federation. Each group runs
-exactly one instance of the substrate: its hosting and its coordination (the bare repos, the bus,
-the integrator). An instance is instantiable on a single machine — the v1 case — and distributable
-later without changing shape. This frame splits the cross-repo open questions in two:
-**intra-group** (one bus, one integrator — the tractable near-term case) and **inter-group**
-(genuine federation — harder, later). See [openquestions.md](./openquestions.md); anything deeper is
-deferred until its rung is in reach. The fuller sketch:
+A **valley** — a team, a company, a personal namespace — is the unit of federation. A valley is a
+set of people, agents, and projects under shared law, and it carries its own hosting and its own
+coordination: the bare repos, the bus, the integrator. The substrate defines what a valley is, and a
+valley is one of them ([dcr-8f069dd](../.the-valley/decisions/dcr-8f069dd-valley-is-the-unit.md)). A
+valley runs on a single machine — the v1 case — and distributes later without changing shape. This
+frame splits the cross-repo open questions in two: **intra-valley** (one bus, one integrator — the
+tractable near-term case) and **inter-valley** (genuine federation — harder, later). See
+[openquestions.md](./openquestions.md); anything deeper is deferred until its rung is in reach. The
+fuller sketch:
 [.the-valley/ideas/ida-8482624-federation-groups.md](../.the-valley/ideas/ida-8482624-federation-groups.md).
 
 ## System shape and cardinalities
@@ -182,15 +184,15 @@ together: what exists, what relates to what, and how many of each there are.
 
 ### Governance and identity
 
-The group owns a repository, the repository holds the governance, and the registry in it declares
+The valley owns a repository, the repository holds the governance, and the registry in it declares
 the principals whose keys and grants the enforcement boundaries check.
 
 ```mermaid
 erDiagram
-    group ||--|| group-repository : "sovereign home"
-    group-repository ||--|| identity-registry : holds
-    group-repository ||--|| group-floor : holds
-    group-repository ||--o| host-declaration : holds
+    valley ||--|| valley-repository : "sovereign home"
+    valley-repository ||--|| identity-registry : holds
+    valley-repository ||--|| valley-floor : holds
+    valley-repository ||--o| host-declaration : holds
     identity-registry ||--|{ principal : declares
     principal ||--|{ key : holds
     principal ||--o{ grant : carries
@@ -198,26 +200,26 @@ erDiagram
     principal ||..o{ agent-run : "delegates to"
 ```
 
-The group is the unit that owns a repository, and the repository holds the group's governance — the
-registry, the floor, and the declaration of any host the group owns. The registry is one CUE
-document per group. A principal is a human, a machine, or a service. A key carries its own expiry,
+The valley is the unit that owns a repository, and the repository holds the valley's governance —
+the registry, the floor, and the declaration of any host the valley owns. The registry is one CUE
+document per valley. A principal is a human, a machine, or a service. A key carries its own expiry,
 and it signs under exactly one name, because the key hash binds the name and the key together. An
 enforcement boundary is a place that checks: the push boundary at the host, the protected refs a
 controller writes, and the bus. A grant exists only where a boundary checks it.
 
 The dashed edge is the one relation with no registry entry behind it. An agent run acts under a
-principal's delegated authority and holds no entry of its own. One entry is required at group birth:
-the genesis entry, which anchors governance of the registry's own stream.
+principal's delegated authority and holds no entry of its own. One entry is required at the birth of
+a valley: the genesis entry, which anchors governance of the registry's own stream.
 
 ### Structure and machinery
 
-The substrate mandates a floor over groups, groups own projects, and hosts serve groups by running a
-controller per protected project; the dashed edges are the ones still open.
+The substrate mandates a floor over valleys, valleys own projects, and hosts serve valleys by
+running a controller per protected project; the dashed edges are the ones still open.
 
 ```mermaid
 flowchart TD
     substrate["substrate: schema, module, floor"]
-    group["group: one repository, one floor, one registry"]
+    valley["valley: one repository, one floor, one registry"]
     project["project: one git repository"]
     policy["project policy"]
     host["host"]
@@ -227,49 +229,50 @@ flowchart TD
     mirror["mirror: transitional"]
     backup["offsite backup"]
 
-    substrate -->|"floor mandates over, 1 : N"| group
-    group -->|"owns and governs, 1 : N"| project
-    group -->|"declares, 1 : 1"| principal
+    substrate -->|"floor mandates over, 1 : N"| valley
+    valley -->|"owns and governs, 1 : N"| project
+    valley -->|"declares, 1 : 1"| principal
     project -->|"carries, 1 : 1"| policy
-    host -->|"serves, N : M"| group
+    host -->|"serves, N : M"| valley
     host -->|"runs one per protected project, 1 : N"| controller
     host -->|"backed up, periodic"| backup
     controller -->|"writes protected refs of, 1 : 1"| project
     controller -->|"signs as"| principal
-    substrate -.->|"open: the substrate is itself the project of one group"| project
-    host -.->|"open: one bus per group, or group-scoped subjects"| bus
+    substrate -.->|"open: the substrate is itself the project of one valley"| project
+    host -.->|"open: one bus per valley, or valley-scoped subjects"| bus
     project -.->|"mirrored to, 1 : 0..1, credential mechanism open"| mirror
 ```
 
-A host is shared infrastructure serving several groups, and the groups on it are strongly isolated:
-one unix user per group at the push boundary, each user's keys compiled from that group's registry
-alone. The host edge is the asymmetric one. Several groups per host is the case the design carries
-today; a group spanning several hosts is left unprecluded and deferred. Cross-group contribution to
-the substrate is the federation edge, which is why that link is open rather than declared.
+A host is shared infrastructure serving several valleys, and the valleys on it are strongly
+isolated: one unix user per valley at the push boundary, each user's keys compiled from that
+valley's registry alone. The host edge is the asymmetric one. Several valleys per host is the case
+the design carries today; a valley spanning several hosts is left unprecluded and deferred.
+Cross-valley contribution to the substrate is the federation edge, which is why that link is open
+rather than declared.
 
 ### The cardinality ledger
 
-| Relation                       | Cardinality | Where declared                                                                                                                                  |
-| ------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| group — group repository       | 1 : 1       | [dcr-0e9278a](../.the-valley/decisions/dcr-0e9278a-group-is-the-unit.md) — the group's sovereign home                                           |
-| group — host                   | N : M       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — several groups per host now, a group across hosts deferred |
-| group — push unix user         | 1 : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — no compiled artifact unions two groups                     |
-| identity — group               | N : M       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — the same keys cited by each group's registry               |
-| group — integrator principal   | 1 : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — controllers are processes                                  |
-| project — owning group         | N : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md)                                                              |
-| group — project (governs)      | 1 : N       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md) — the floor read from the group repository's tip            |
-| group — identity registry      | 1 : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — one CUE document                                       |
-| registry — principal           | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md)                                                          |
-| principal — key                | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — expiry first-class                                     |
-| grant — enforcement boundary   | N : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — a grant exists only where a boundary checks it         |
-| principal — agent run          | 1 : N       | [ida-a8243d2](../.the-valley/ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md) — a run holds no registry entry                     |
-| key — signing name             | 1 : 1       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — the key hash binds name and key                         |
-| statement — signers            | 1 : N       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — siblings under one text                                 |
-| project — git repository       | 1 : 1       | [dcr-5da1f36](../.the-valley/decisions/dcr-5da1f36-project-is-repo.md)                                                                          |
-| project — project policy       | 1 : 1       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)                                                             |
-| protected project — controller | 1 : 1       | [integration.md](./integration.md) — a protected ref is what a controller exists to write                                                       |
-| project — mirror               | 1 : 0..1    | [dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md) — transitional; the credential mechanism is open  |
-| request — integration outcome  | 1 : 0..1    | [integration.md](./integration.md) — the request is consumed on land                                                                            |
+| Relation                       | Cardinality | Where declared                                                                                                                                     |
+| ------------------------------ | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| valley — valley repository     | 1 : 1       | [dcr-8f069dd](../.the-valley/decisions/dcr-8f069dd-valley-is-the-unit.md) — the valley's sovereign home                                            |
+| valley — host                  | N : M       | [dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md) — several valleys per host now, a valley across hosts deferred |
+| valley — push unix user        | 1 : 1       | [dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md) — no compiled artifact unions two valleys                      |
+| identity — valley              | N : M       | [dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md) — the same keys cited by each valley's registry                |
+| valley — integrator principal  | 1 : 1       | [dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md) — controllers are processes                                    |
+| project — owning valley        | N : 1       | [dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md)                                                                |
+| valley — project (governs)     | 1 : N       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md) — the floor read from the valley repository's tip              |
+| valley — identity registry     | 1 : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — one CUE document                                          |
+| registry — principal           | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md)                                                             |
+| principal — key                | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — expiry first-class                                        |
+| grant — enforcement boundary   | N : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — a grant exists only where a boundary checks it            |
+| principal — agent run          | 1 : N       | [ida-a8243d2](../.the-valley/ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md) — a run holds no registry entry                        |
+| key — signing name             | 1 : 1       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — the key hash binds name and key                            |
+| statement — signers            | 1 : N       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — siblings under one text                                    |
+| project — git repository       | 1 : 1       | [dcr-5da1f36](../.the-valley/decisions/dcr-5da1f36-project-is-repo.md)                                                                             |
+| project — project policy       | 1 : 1       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)                                                                |
+| protected project — controller | 1 : 1       | [integration.md](./integration.md) — a protected ref is what a controller exists to write                                                          |
+| project — mirror               | 1 : 0..1    | [dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md) — transitional; the credential mechanism is open     |
+| request — integration outcome  | 1 : 0..1    | [integration.md](./integration.md) — the request is consumed on land                                                                               |
 
 ### Bootstrap: the loops unroll in time
 
@@ -306,7 +309,7 @@ thing that broke.
 | Loop                                      | The rules                                        | Base case                                                          | Recovery below                                                                                          |
 | ----------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
 | registry over its own changes             | the registry path class, human approval required | genesis entries land by hand review, before compilation is enabled | host root; re-rooting after a genesis-key compromise is open                                            |
-| floor over its own amendments             | the policy at the group repository's tip         | the repository is seeded before the integrator watches it          | the human operator is a declared writer; the history is rebased by hand                                 |
+| floor over its own amendments             | the policy at the valley repository's tip        | the repository is seeded before the integrator watches it          | the human operator is a declared writer; the history is rebased by hand                                 |
 | push boundary over the registry behind it | the compiled `authorized_keys`                   | a hand-written key list until the first compile                    | a failed compile keeps the last-good artifact, and a render that orphans registry governance is refused |
 | host over its own declaration             | the declaration at the tip the host converges on | the first install is manual                                        | offsite backup, and the restore runbook                                                                 |
 

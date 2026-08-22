@@ -1,13 +1,16 @@
 ---
 type: decision
 id: dcr-0e9278a
-status: decided
+status: superseded
 title: The group is the unit
 created: 2026-08-22
 source: design conversation, 2026-08-22
 ---
 
 # The group is the unit
+
+**Decided 2026-08-22**; the current decision about the named unit is [[dcr-8f069dd]]
+([dcr-8f069dd-valley-is-the-unit.md](./dcr-8f069dd-valley-is-the-unit.md)).
 
 The group is the named unit of the system. A group owns a repository, mandates a floor, declares an
 identity registry, and has an integrator principal. Everything that is not a project hangs off it:

@@ -60,7 +60,7 @@ it stops being tolerable.
 
 The mechanism needs a resolution before either of these becomes true:
 
-- a project is served whose changes the group does not read in full, or
+- a project is served whose changes the valley does not read in full, or
 - the policy is relied on to enforce compliance across projects rather than to describe it.
 
 cosmo depending on this for its build gate makes the second true.

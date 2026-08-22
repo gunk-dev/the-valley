@@ -42,41 +42,42 @@ with the phase it waits for.
 
 ## Cross-repo coordination
 
-The [federation frame](./architecture.md#federation-the-group-is-the-unit) splits each of these into
-an **intra-group** case (within one instance — one bus, one integrator; the tractable near-term
-problem) and an **inter-group** case (across instances — genuine federation, harder and later).
+The [federation frame](./architecture.md#federation-the-valley-is-the-unit) splits each of these
+into an **intra-valley** case (within one valley — one bus, one integrator; the tractable near-term
+problem) and an **inter-valley** case (across valleys — genuine federation, harder and later).
 
 - `[architecture]` **Cross-repo integration.** Two requests in two repos that must succeed together
-  (schema producer + consumer). _Intra-group:_ one integrator, shared bus — a wrapper controller can
-  condition B on A; design deferred to v2. _Inter-group:_ events must cross an instance boundary;
+  (schema producer + consumer). _Intra-valley:_ one integrator, shared bus — a wrapper controller
+  can condition B on A; design deferred to v2. _Inter-valley:_ events must cross a valley boundary;
   deferred further still. _Origin: [architecture.md](./architecture.md)._
 - `[architecture]` **Cross-repo feedback.** A change in repo A breaks a consumer in repo B; the
-  consumer's event needs to land somewhere visible to A's thread. _Intra-group:_ both on the same
-  bus, but routing is still non-trivial. _Inter-group:_ the breakage event must federate to A's
-  instance. Deferred. _Origin: [architecture.md](./architecture.md)._
+  consumer's event needs to land somewhere visible to A's thread. _Intra-valley:_ both on the same
+  bus, but routing is still non-trivial. _Inter-valley:_ the breakage event must federate to A's
+  valley. Deferred. _Origin: [architecture.md](./architecture.md)._
 
-- `[architecture]` **Cross-group contribution to a shared project.** The substrate is consumed by
-  every group and is at the same time a project owned by one group, landed by that group's
-  integrator. How a group that does not own such a project contributes to it — carrying a change,
+- `[architecture]` **Cross-valley contribution to a shared project.** The substrate is consumed by
+  every valley and is at the same time a project owned by one valley, landed by that valley's
+  integrator. How a valley that does not own such a project contributes to it — carrying a change,
   its attestations and its approvals across the boundary, and getting them weighed by the owning
-  group's policy — is the federation edge
-  ([ida-8482624](../.the-valley/ideas/ida-8482624-federation-groups.md)). _Inter-group only._
+  valley's policy — is the federation edge
+  ([ida-8482624](../.the-valley/ideas/ida-8482624-federation-groups.md)). _Inter-valley only._
   _Origin: [architecture.md](./architecture.md#system-shape-and-cardinalities)._
 
-## Groups and hosts
+## Valleys and hosts
 
 The [system-shape section](./architecture.md#system-shape-and-cardinalities) settles the
-cardinalities and the isolation between groups sharing a host
-([dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md)). Two questions
+cardinalities and the isolation between valleys sharing a host
+([dcr-9b5da04](../.the-valley/decisions/dcr-9b5da04-hosts-serve-isolated-valleys.md)). Two questions
 survive it.
 
-- `[architecture]` **The bus's group scoping.** One bus per group, or one bus whose subjects are
-  group-scoped and authenticated? The bus is host plumbing today: localhost-only and unauthenticated
-  ([bd-d853d9c](../.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md)), with subjects namespaced
-  per project ([dcr-62ecc36](../.the-valley/decisions/dcr-62ecc36-signal-contracts.md)). When
-  authentication ships, credentials compile from group registries, which makes the bus a group
-  surface — and cross-group event visibility is not a default, so the two shapes are the whole
-  choice. The question is gated on that authentication and answers with it. _Origin:
+- `[architecture]` **The bus's valley scoping.** One bus per valley, or one bus whose subjects are
+  valley-scoped and authenticated? The bus is host plumbing today: localhost-only and
+  unauthenticated ([bd-d853d9c](../.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md)), with
+  subjects namespaced per project
+  ([dcr-62ecc36](../.the-valley/decisions/dcr-62ecc36-signal-contracts.md)). When authentication
+  ships, credentials compile from valley registries, which makes the bus a valley surface — and
+  cross-valley event visibility is not a default, so the two shapes are the whole choice. The
+  question is gated on that authentication and answers with it. _Origin:
   [architecture.md](./architecture.md#system-shape-and-cardinalities)._
 - `[design]` **The mirror credential mechanism.** A mirror host allows one deploy key per
   repository, so a second mirrored repository authenticates only with per-repository keys behind ssh

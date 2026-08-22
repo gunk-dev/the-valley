@@ -33,9 +33,9 @@ fit an ecosystem it does not otherwise participate in.
 
 A tailored format is not a closed one. Two things bound it.
 
-Federation crosses group boundaries. [[ida-8482624]]
-([ida-8482624-federation-groups.md](./ida-8482624-federation-groups.md)) holds that a group — the
-organization that owns a set of repos and shares one trust domain — may import another group's
+Federation crosses valley boundaries. [[ida-8482624]]
+([ida-8482624-federation-groups.md](./ida-8482624-federation-groups.md)) holds that a valley — the
+organization that owns a set of repos and shares one trust domain — may import another valley's
 attestations and decide by its own policy how much they count, and it leaves federated identity
 mapping open. Whatever crosses that boundary is understood by two parties who did not agree in
 advance, so the boundary is where an external format earns its place.

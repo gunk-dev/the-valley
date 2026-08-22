@@ -10,7 +10,7 @@ source: PR #1
 # Federation — group, instance, federation
 
 > Thin form:
-> [architecture.md § federation: the group is the unit](../../design/architecture.md#federation-the-group-is-the-unit).
+> [architecture.md § federation: the valley is the unit](../../design/architecture.md#federation-the-valley-is-the-unit).
 > This node carries the full sketch from PR #1's `design/federation.md` (plus the cross-repo and
 > discovery reframings from its `design/openquestions.md` changes), preserved at full fidelity; the
 > mechanics below return as a design doc when rung S5+ of the

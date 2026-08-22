@@ -175,6 +175,146 @@ later without changing shape. This frame splits the cross-repo open questions in
 deferred until its rung is in reach. The fuller sketch:
 [.the-valley/ideas/ida-8482624-federation-groups.md](../.the-valley/ideas/ida-8482624-federation-groups.md).
 
+## System shape and cardinalities
+
+The bets above say why each piece has the shape it has. This section says how the pieces fit
+together: what exists, what relates to what, and how many of each there are.
+
+### Governance and identity
+
+The group owns a repository, the repository holds the governance, and the registry in it declares
+the principals whose keys and grants the enforcement boundaries check.
+
+```mermaid
+erDiagram
+    group ||--|| group-repository : "sovereign home"
+    group-repository ||--|| identity-registry : holds
+    group-repository ||--|| group-floor : holds
+    group-repository ||--o| host-declaration : holds
+    identity-registry ||--|{ principal : declares
+    principal ||--|{ key : holds
+    principal ||--o{ grant : carries
+    grant }|--|| enforcement-boundary : "checked at"
+    principal ||..o{ agent-run : "delegates to"
+```
+
+The group is the unit that owns a repository, and the repository holds the group's governance — the
+registry, the floor, and the declaration of any host the group owns. The registry is one CUE
+document per group. A principal is a human, a machine, or a service. A key carries its own expiry,
+and it signs under exactly one name, because the key hash binds the name and the key together. An
+enforcement boundary is a place that checks: the push boundary at the host, the protected refs a
+controller writes, and the bus. A grant exists only where a boundary checks it.
+
+The dashed edge is the one relation with no registry entry behind it. An agent run acts under a
+principal's delegated authority and holds no entry of its own. One entry is required at group birth:
+the genesis entry, which anchors governance of the registry's own stream.
+
+### Structure and machinery
+
+The substrate mandates a floor over groups, groups own projects, and hosts serve groups by running a
+controller per protected project; the dashed edges are the ones still open.
+
+```mermaid
+flowchart TD
+    substrate["substrate: schema, module, floor"]
+    group["group: one repository, one floor, one registry"]
+    project["project: one git repository"]
+    policy["project policy"]
+    host["host"]
+    controller["integrator controller: a process, not an identity"]
+    principal["integrator principal"]
+    bus["bus: NATS JetStream"]
+    mirror["mirror: transitional"]
+    backup["offsite backup"]
+
+    substrate -->|"floor mandates over, 1 : N"| group
+    group -->|"owns and governs, 1 : N"| project
+    group -->|"declares, 1 : 1"| principal
+    project -->|"carries, 1 : 1"| policy
+    host -->|"serves, N : M"| group
+    host -->|"runs one per protected project, 1 : N"| controller
+    host -->|"backed up, periodic"| backup
+    controller -->|"writes protected refs of, 1 : 1"| project
+    controller -->|"signs as"| principal
+    substrate -.->|"open: the substrate is itself the project of one group"| project
+    host -.->|"open: one bus per group, or group-scoped subjects"| bus
+    project -.->|"mirrored to, 1 : 0..1, credential mechanism open"| mirror
+```
+
+A host is shared infrastructure serving several groups, and the groups on it are strongly isolated:
+one unix user per group at the push boundary, each user's keys compiled from that group's registry
+alone. The host edge is the asymmetric one. Several groups per host is the case the design carries
+today; a group spanning several hosts is left unprecluded and deferred. Cross-group contribution to
+the substrate is the federation edge, which is why that link is open rather than declared.
+
+### The cardinality ledger
+
+| Relation                       | Cardinality | Where declared                                                                                                                                  |
+| ------------------------------ | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| group — group repository       | 1 : 1       | [dcr-0e9278a](../.the-valley/decisions/dcr-0e9278a-group-is-the-unit.md) — the group's sovereign home                                           |
+| group — host                   | N : M       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — several groups per host now, a group across hosts deferred |
+| group — push unix user         | 1 : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — no compiled artifact unions two groups                     |
+| identity — group               | N : M       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — the same keys cited by each group's registry               |
+| group — integrator principal   | 1 : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md) — controllers are processes                                  |
+| project — owning group         | N : 1       | [dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md)                                                              |
+| group — project (governs)      | 1 : N       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md) — the floor read from the group repository's tip            |
+| group — identity registry      | 1 : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — one CUE document                                       |
+| registry — principal           | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md)                                                          |
+| principal — key                | 1 : N       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — expiry first-class                                     |
+| grant — enforcement boundary   | N : 1       | [dcr-b87f6e8](../.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) — a grant exists only where a boundary checks it         |
+| principal — agent run          | 1 : N       | [ida-a8243d2](../.the-valley/ideas/ida-a8243d2-agent-runs-act-under-delegated-authority.md) — a run holds no registry entry                     |
+| key — signing name             | 1 : 1       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — the key hash binds name and key                         |
+| statement — signers            | 1 : N       | [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md) — siblings under one text                                 |
+| project — git repository       | 1 : 1       | [dcr-5da1f36](../.the-valley/decisions/dcr-5da1f36-project-is-repo.md)                                                                          |
+| project — project policy       | 1 : 1       | [dcr-f41f718](../.the-valley/decisions/dcr-f41f718-declared-verification-policy.md)                                                             |
+| protected project — controller | 1 : 1       | [integration.md](./integration.md) — a protected ref is what a controller exists to write                                                       |
+| project — mirror               | 1 : 0..1    | [dcr-d7952bc](../.the-valley/decisions/dcr-d7952bc-phase0-replication-github-transitional.md) — transitional; the credential mechanism is open  |
+| request — integration outcome  | 1 : 0..1    | [integration.md](./integration.md) — the request is consumed on land                                                                            |
+
+### Bootstrap: the loops unroll in time
+
+Four parts of the system govern their own change. The registry governs the changes to itself. The
+floor judges its own amendments. The push boundary is compiled from content that sits behind the
+push boundary. The host is declared by a repository the host serves.
+
+The cycle unrolls into an induction over history: a hand-made genesis, then each tip judged by the
+rules at the tip before it.
+
+```mermaid
+flowchart LR
+    genesis["genesis: by hand, under the previous regime"]
+    tipN["tip N"]
+    tipNext["tip N+1"]
+    onward["and so on"]
+
+    genesis -->|"judged by genesis rules"| tipN
+    tipN -->|"judged by the rules at tip N"| tipNext
+    tipNext -->|"judged by the rules at tip N+1"| onward
+```
+
+One mechanism resolves all four: the cycle unrolls in time. The rules at tip N judge the landing
+that produces tip N+1, so a rule change is judged by the old rules and binds from the next landing.
+That is the amendment structure, and it is attested rather than assumed — a transfer statement
+records the policy commit it was judged against, so each step of the induction carries its own
+evidence.
+
+What differs per loop is only the base case and the layer recovery falls back to. Every base case is
+genesis before enforcement: the first state is made by hand, under whatever regime preceded the
+machinery. Every recovery is a layer below the machinery, reachable when the machinery itself is the
+thing that broke.
+
+| Loop                                      | The rules                                        | Base case                                                          | Recovery below                                                                                          |
+| ----------------------------------------- | ------------------------------------------------ | ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| registry over its own changes             | the registry path class, human approval required | genesis entries land by hand review, before compilation is enabled | host root; re-rooting after a genesis-key compromise is open                                            |
+| floor over its own amendments             | the policy at the group repository's tip         | the repository is seeded before the integrator watches it          | the human operator is a declared writer; the history is rebased by hand                                 |
+| push boundary over the registry behind it | the compiled `authorized_keys`                   | a hand-written key list until the first compile                    | a failed compile keeps the last-good artifact, and a render that orphans registry governance is refused |
+| host over its own declaration             | the declaration at the tip the host converges on | the first install is manual                                        | offsite backup, and the restore runbook                                                                 |
+
+The sharpest case is an identity introducing itself: the landing that first publishes an
+integrator's key is countersigned by that very key, so it is verifiable only through the tree it
+creates. Its anchor is the signed human approval that the registry path class requires, which is the
+genesis pattern doing its job one landing at a time rather than once at birth.
+
 ## Components
 
 One line each; these are the current picks, not commitments:

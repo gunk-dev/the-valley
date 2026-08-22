@@ -55,6 +55,36 @@ problem) and an **inter-group** case (across instances — genuine federation, h
   bus, but routing is still non-trivial. _Inter-group:_ the breakage event must federate to A's
   instance. Deferred. _Origin: [architecture.md](./architecture.md)._
 
+- `[architecture]` **Cross-group contribution to a shared project.** The substrate is consumed by
+  every group and is at the same time a project owned by one group, landed by that group's
+  integrator. How a group that does not own such a project contributes to it — carrying a change,
+  its attestations and its approvals across the boundary, and getting them weighed by the owning
+  group's policy — is the federation edge
+  ([ida-8482624](../.the-valley/ideas/ida-8482624-federation-groups.md)). _Inter-group only._
+  _Origin: [architecture.md](./architecture.md#system-shape-and-cardinalities)._
+
+## Groups and hosts
+
+The [system-shape section](./architecture.md#system-shape-and-cardinalities) settles the
+cardinalities and the isolation between groups sharing a host
+([dcr-2f03be3](../.the-valley/decisions/dcr-2f03be3-hosts-serve-isolated-groups.md)). Two questions
+survive it.
+
+- `[architecture]` **The bus's group scoping.** One bus per group, or one bus whose subjects are
+  group-scoped and authenticated? The bus is host plumbing today: localhost-only and unauthenticated
+  ([bd-d853d9c](../.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md)), with subjects namespaced
+  per project ([dcr-62ecc36](../.the-valley/decisions/dcr-62ecc36-signal-contracts.md)). When
+  authentication ships, credentials compile from group registries, which makes the bus a group
+  surface — and cross-group event visibility is not a default, so the two shapes are the whole
+  choice. The question is gated on that authentication and answers with it. _Origin:
+  [architecture.md](./architecture.md#system-shape-and-cardinalities)._
+- `[design]` **The mirror credential mechanism.** A mirror host allows one deploy key per
+  repository, so a second mirrored repository authenticates only with per-repository keys behind ssh
+  host aliases, or with a machine account whose one credential reaches every mirror. The fork, and
+  what each way costs the host schema, is stated at
+  [ida-a0e5d03](../.the-valley/ideas/ida-a0e5d03-second-mirror-identity.md); the missing mirrors are
+  declared once it is taken. _Origin: [roadmap.md](./roadmap.md)._
+
 ## Attention, routing, and threads
 
 - `[architecture]` **Priority layer architecture (attention routing).** Which events a human must

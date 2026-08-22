@@ -50,11 +50,17 @@ usage: valley <verb> [args]
                                   and the request ref to origin in ONE
                                   atomic push. main is never touched: the
                                   integrator judges the request and lands
-                                  it. needs the attest helper and
+                                  it. the policy is composed from the
+                                  target's tip and the owning valley's, as
+                                  checks describes below, so your checkout
+                                  can be on any branch. a change the policy
+                                  requires no check of is filed too, as a
+                                  request with no evidence, and says so.
+                                  needs the attest helper and
                                   VALLEY_ATTEST_KEY, the ed25519 key this
-                                  host signs with; VALLEY_ATTEST_NAME is
-                                  the name it signs under, defaulting to
-                                  this host's.
+                                  host signs with, whenever a check is
+                                  owed; VALLEY_ATTEST_NAME is the name it
+                                  signs under, defaulting to this host's.
                      [i]ntegrate  ff-only merge onto main, push origin main,
                                   delete the merged branch from origin
                      [r]eject     delete the remote branch (confirmed first)
@@ -86,11 +92,26 @@ usage: valley <verb> [args]
                    which class made each one required. It prints: no check is
                    run, nothing is gated, nothing is written.
                    base defaults to the merge base with main, head to HEAD.
-                   the policy layers are not discovered — they are named:
+                   by default both layers come from the target's tip
+                   (origin/main), never from your checkout: the project's
+                   own layer is policy/project there, and the owning valley
+                   is named one line at policy/valley there, fetched and
+                   read at policy/instance in that repository's integrated
+                   tip. a valley's own config repository carries
+                   policy/instance and uses it. a target carrying no
+                   policy/project is derived under the floor alone; a floor
+                   that is not there is refused. this is what the
+                   integrator reads, so the answer is the same from any
+                   branch, however stale. an option overrides each layer,
+                   which is the only way to derive against a layer that
+                   does not govern — the worked example under
+                   examples/policy/, say:
                      --schema FILE    default schema/verification.cue
-                     --instance DIR   default examples/policy/instance
-                     --project DIR    default examples/policy/project
-                   all three relative to the repository root.
+                     --instance DIR   default the owning valley's floor
+                     --project DIR    default policy/project at the target
+                   naming a layer stops this reading the source it
+                   replaced. the schema is the shape a policy is written
+                   in rather than a layer, so it comes from this checkout.
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
@@ -103,6 +124,8 @@ Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, and
 review's [a]sk, which needs both the cue CLI and the attest helper.
+Deriving a policy fetches the owning valley's repository, so checks and
+[a]sk also need whatever reaching it takes.
 No config, no batch mode, and no state but the notes file — the judgment
 stays with the human.
 EOF
@@ -424,13 +447,16 @@ cleanup_rebase_wt() {
 }
 
 # Everything review leaves outside the repository: the two throwaway
-# worktrees, the paged buffer, and the scratch the policy deriver writes
-# into. One handler, installed once by cmd_review, so that no path through
-# the verb — and no ctrl-C in the pager — leaves any of them behind.
+# worktrees, the paged buffer, the two policy layers read out of their
+# tips, and the scratch the policy deriver writes into. One handler,
+# installed once by cmd_review, so that no path through the verb — and no
+# ctrl-C in the pager — leaves any of them behind.
 cleanup_review() {
   cleanup_rebase_wt
   cleanup_ask_wt
   cleanup_policy_tmp
+  cleanup_instance_tmp
+  cleanup_project_tmp
   cleanup_review_tmp
 }
 
@@ -515,117 +541,142 @@ change_name() {
 # suspends `set -e` for the whole call — so every step below is checked by
 # hand, and the failures say what was published before they happened.
 ask() {
-  local branch="$1" target=main change head base digest root ref check spec
-  local key="${VALLEY_ATTEST_KEY:-}"
+  local branch="$1" target=main tip change head base digest root ref check spec
+  local key
   local -a signer=() owed=() run=() evidence=()
-
-  [ -n "$key" ] || {
-    refuse "no signing key: set VALLEY_ATTEST_KEY to the ed25519 key this host attests with. The host signs; nothing published"
-    return 1
-  }
-  [ -f "$key" ] || {
-    refuse "no signing key at $key; nothing published"
-    return 1
-  }
-  command -v attest > /dev/null 2>&1 || {
-    refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
-    return 1
-  }
-  signer=(--key "$key")
-  [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
 
   root="$(git rev-parse --show-toplevel)" || {
     refuse "not a git repository; nothing published"
     return 1
   }
+  tip=refs/remotes/origin/main
   head="$(git rev-parse "refs/remotes/origin/$branch")" || {
     refuse "no such branch on origin: $branch; nothing published"
     return 1
   }
-  base="$(git merge-base refs/remotes/origin/main "$head")" || {
+  base="$(git merge-base "$tip" "$head")" || {
     refuse "$branch and main share no history; nothing published"
     return 1
   }
   change="$(change_name "$branch")"
   ref="refs/the-valley/integration-requests/$target/$change"
 
-  # What the change owes, from the policy the project declares. The
-  # integrator derives this again on its own side, from the policy at the
-  # target's tip — a change never supplies the policy that gates it — so
-  # this is the operator's local reading of the same question, and the
-  # answer is printed for exactly that reason.
+  # What the change owes, read out of exactly the sources the integrator
+  # reads: both layers from the target's tip, which review has just
+  # fetched, and the floor from the owning valley's own tip. A change never
+  # supplies the policy that gates it, and neither does the checkout this
+  # runs from — so the answer here is the same answer the integrator will
+  # derive, from whatever branch the operator happens to be on. It is
+  # printed for exactly that reason.
   policy_defaults "$root"
+  resolve_instance_layer "$root" "$tip" || return 1
+  resolve_project_layer "$root" "$tip" || return 1
   derive_owed "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" \
     "$base" "$head" || return 1
   [ "${#DERIVED_OWED[@]}" -eq 0 ] \
     || mapfile -t owed < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
-  [ "${#owed[@]}" -gt 0 ] || {
-    refuse "the policy requires no check of $branch — evidence nobody asked for is not a request; nothing published"
-    return 1
-  }
-  for check in "${owed[@]}"; do
-    case "${CHECK_RUNNER[$check]:-}" in
-      nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
-      command) run+=(--command "$check=${CHECK_COMMAND[$check]}") ;;
-      *)
-        refuse "the policy requires $check but does not say how to run it; nothing published"
-        return 1
-        ;;
-    esac
-  done
 
-  cleanup_ask_wt
-  ASK_WT="$(mktemp -d)" || {
-    refuse "no scratch directory to check $branch in; nothing published"
-    return 1
-  }
-  git worktree add --quiet --detach "$ASK_WT" "$head" || {
-    cleanup_ask_wt
-    refuse "could not check $branch out to run its checks; nothing published"
-    return 1
-  }
+  # A change the policy asks nothing of is still a change, and asking is
+  # how one reaches main. The integrator already lands a request owing no
+  # check and records the landing as one that required nothing
+  # (design/integration.md), so refusing to file it here would strand
+  # exactly the changes the policy requires nothing of. Nothing is owed, so
+  # nothing is signed and no key is needed: what gets published is one
+  # request ref and no evidence at all.
+  if [ "${#owed[@]}" -gt 0 ]; then
+    key="${VALLEY_ATTEST_KEY:-}"
+    [ -n "$key" ] || {
+      refuse "no signing key: set VALLEY_ATTEST_KEY to the ed25519 key this host attests with. The host signs; nothing published"
+      return 1
+    }
+    [ -f "$key" ] || {
+      refuse "no signing key at $key; nothing published"
+      return 1
+    }
+    command -v attest > /dev/null 2>&1 || {
+      refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
+      return 1
+    }
+    signer=(--key "$key")
+    [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
 
-  printf '\nchecking %s at %s: %s\n' "$branch" "$(git rev-parse --short "$head")" \
-    "$(printf '%s\n' "${owed[@]}" | join_lines)"
-  if ! attest run --repo "$ASK_WT" "${signer[@]}" "${run[@]}"; then
+    for check in "${owed[@]}"; do
+      case "${CHECK_RUNNER[$check]:-}" in
+        nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
+        command) run+=(--command "$check=${CHECK_COMMAND[$check]}") ;;
+        *)
+          refuse "the policy requires $check but does not say how to run it; nothing published"
+          return 1
+          ;;
+      esac
+    done
+
     cleanup_ask_wt
-    refuse "the checks did not pass; nothing published, main untouched"
-    return 1
+    ASK_WT="$(mktemp -d)" || {
+      refuse "no scratch directory to check $branch in; nothing published"
+      return 1
+    }
+    git worktree add --quiet --detach "$ASK_WT" "$head" || {
+      cleanup_ask_wt
+      refuse "could not check $branch out to run its checks; nothing published"
+      return 1
+    }
+
+    printf '\nchecking %s at %s: %s\n' "$branch" "$(git rev-parse --short "$head")" \
+      "$(printf '%s\n' "${owed[@]}" | join_lines)"
+    if ! attest run --repo "$ASK_WT" "${signer[@]}" "${run[@]}"; then
+      cleanup_ask_wt
+      refuse "the checks did not pass; nothing published, main untouched"
+      return 1
+    fi
+    digest="$(attest digest --repo "$ASK_WT")" || {
+      cleanup_ask_wt
+      refuse "could not digest the tree that was checked; nothing published"
+      return 1
+    }
+    cleanup_ask_wt
+    digest="${digest#*:}"
+
+    # Every attestation stored for this tree, whoever signed it: the
+    # evidence for this change is what the subject digest is keyed by, not
+    # what this run happened to add to it.
+    mapfile -t evidence < <(git for-each-ref --format='%(refname)' \
+      "refs/the-valley/attestations/$digest")
+    [ "${#evidence[@]}" -gt 0 ] || {
+      refuse "no attestation is stored for $digest; nothing published"
+      return 1
+    }
+  else
+    printf '\n%s owes no check under %s + %s; filing the request with no evidence\n' \
+      "$branch" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
   fi
-  digest="$(attest digest --repo "$ASK_WT")" || {
-    cleanup_ask_wt
-    refuse "could not digest the tree that was checked; nothing published"
-    return 1
-  }
-  cleanup_ask_wt
-  digest="${digest#*:}"
-
-  # Every attestation stored for this tree, whoever signed it: the evidence
-  # for this change is what the subject digest is keyed by, not what this
-  # run happened to add to it.
-  mapfile -t evidence < <(git for-each-ref --format='%(refname)' \
-    "refs/the-valley/attestations/$digest")
-  [ "${#evidence[@]}" -gt 0 ] || {
-    refuse "no attestation is stored for $digest; nothing published"
-    return 1
-  }
 
   # The one push: every evidence ref as it stands, and the request ref at
   # the branch's head. --atomic, so a hook that refuses any of them leaves
-  # origin exactly as it was.
+  # origin exactly as it was. With nothing owed it carries the request
+  # alone, which is the same push with the empty half left out.
   local -a push=()
-  for spec in "${evidence[@]}"; do push+=("$spec:$spec"); done
+  for spec in ${evidence[@]+"${evidence[@]}"}; do push+=("$spec:$spec"); done
   push+=("$head:$ref")
   if ! git push --atomic --quiet origin "${push[@]}"; then
-    refuse "origin refused the push; nothing was published there and main is untouched. The evidence is stored locally at:"
-    printf '  %s\n' "${evidence[@]}" >&2
+    if [ "${#evidence[@]}" -eq 0 ]; then
+      refuse "origin refused the push; nothing was published there and main is untouched"
+    else
+      refuse "origin refused the push; nothing was published there and main is untouched. The evidence is stored locally at:"
+      printf '  %s\n' "${evidence[@]}" >&2
+    fi
     return 1
   fi
 
   printf '\nrequested %s -> refs/heads/%s\n' "$branch" "$target"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
-  printf '  evidence %s\n' "${evidence[@]}"
-  printf '  checks   %s\n' "$(printf '%s\n' "${owed[@]}" | join_lines)"
+  if [ "${#evidence[@]}" -eq 0 ]; then
+    printf '  evidence none — nothing was owed, so nothing was signed\n'
+    printf '  checks   none — the policy requires no check of this change\n'
+  else
+    printf '  evidence %s\n' "${evidence[@]}"
+    printf '  checks   %s\n' "$(printf '%s\n' "${owed[@]}" | join_lines)"
+  fi
   printf '  main is untouched; the integrator judges the request and lands it\n'
 }
 
@@ -837,17 +888,260 @@ cleanup_policy_tmp() {
   POLICY_TMP=""
 }
 
-# Where the schema and the two policy layers live in a project following
-# the convention (dcr-f41f718). `checks` takes an option for each, so a
-# reader can point it anywhere; review's [a]sk does not, because a request
-# is filed against the policy the project declares and nowhere else.
+# Where the schema and the two policy layers come from in a project
+# following the convention (dcr-f41f718).
+#
+# The client derives from exactly the sources the integrator uses
+# (integrator/policy.go), and the working tree is not among them. The
+# project's own layer is read from the TARGET's tip, the pointer naming the
+# owning valley is read from the target's tip, and the floor is read from
+# that valley's integrated tip. A change never supplies the policy that
+# gates it, and neither does whoever happens to be reviewing it: the
+# reviewer's checkout may be any branch, however stale, and derivation
+# gives the same answer from all of them.
+#
+# The schema is not a policy layer. It is the shape a policy is written in,
+# it ships with this tool, and the integrator takes its own from its
+# deployment rather than from the tip for the same reason.
+#
+# Neither layer is ever the worked example under examples/policy/ — a gate
+# derived from an example is a gate nobody wrote. `checks` takes an option
+# for each, so a reader can point it at the example or anywhere else on
+# purpose; review's [a]sk takes no such option, because a request is filed
+# against the policy that governs the project and nowhere else.
+#
+# Neither layer is a path in this tree, so policy_defaults leaves both
+# empty and the two resolvers answer for them. That split is also what
+# keeps `checks --instance DIR` from fetching a repository whose layer it
+# was told to ignore, and `checks --project DIR` from reading a tip whose
+# layer it was told to ignore.
 POLICY_SCHEMA=""
 POLICY_INSTANCE=""
+POLICY_INSTANCE_LABEL=""
 POLICY_PROJECT=""
+POLICY_PROJECT_LABEL=""
 policy_defaults() {
   POLICY_SCHEMA="$1/schema/verification.cue"
-  POLICY_INSTANCE="$1/examples/policy/instance"
-  POLICY_PROJECT="$1/examples/policy/project"
+  POLICY_INSTANCE=""
+  POLICY_INSTANCE_LABEL=""
+  POLICY_PROJECT=""
+  POLICY_PROJECT_LABEL=""
+}
+
+# The floor, copied out of a fetch of the owning valley's repository, and
+# the project's own layer, copied out of the target's tip. Globals, so the
+# traps clean them up whatever happens.
+INSTANCE_TMP=""
+cleanup_instance_tmp() {
+  [ -n "$INSTANCE_TMP" ] || return 0
+  rm -rf "$INSTANCE_TMP"
+  INSTANCE_TMP=""
+}
+
+PROJECT_TMP=""
+cleanup_project_tmp() {
+  [ -n "$PROJECT_TMP" ] || return 0
+  rm -rf "$PROJECT_TMP"
+  PROJECT_TMP=""
+}
+
+# The directory each layer lives in, the file naming this project's owning
+# valley, and the ref of that valley whose tip carries the floor. The floor
+# resolves at the integrated tip, because a floor a project could pin is
+# not a floor (dcr-f41f718).
+INSTANCE_DIR=policy/instance
+PROJECT_DIR=policy/project
+VALLEY_POINTER=policy/valley
+VALLEY_POINTER_REF=refs/heads/main
+
+# The *.cue documents of one directory at one tree-ish, copied out of a
+# repository into a directory on disk. Reading a tip with ls-tree and
+# cat-file rather than checking it out is what lets the layers come from
+# the target while the checkout stays on whatever branch the reviewer is
+# on. 0 copied something, 1 the directory holds no *.cue, 2 the read
+# failed.
+#
+# -z because a path may hold anything but NUL, and *.cue because the layer
+# is the directory's documents — the same reading the composer takes.
+copy_layer() {
+  local gitdir="$1" treeish="$2" dir="$3" dest="$4" path name copied=0
+  while IFS= read -r -d '' path; do
+    case "$path" in *.cue) ;; *) continue ;; esac
+    name="${path##*/}"
+    git -C "$gitdir" cat-file blob "$treeish:$path" > "$dest/$name" || return 2
+    copied=1
+  done < <(git -C "$gitdir" ls-tree --name-only -z "$treeish" "$dir/")
+  [ "$copied" -eq 1 ]
+}
+
+# The ref whose tip supplies the policy, printed the way a person names it,
+# with the commit it stood at. Staleness in a remote-tracking ref is a real
+# thing to see, so the report says which commit the layers came out of
+# rather than only which ref.
+target_label() {
+  local ref="$1" short
+  short="$(git rev-parse --short "$ref")" || short='?'
+  ref="${ref#refs/remotes/}"
+  ref="${ref#refs/heads/}"
+  printf '%s %s' "$ref" "$short"
+}
+
+# Resolve the project's own layer, out of the target's tip, into
+# POLICY_PROJECT, and set POLICY_PROJECT_LABEL to where it came from.
+#
+# A target carrying no layer of its own is derived under the floor alone.
+# The project layer only ever adds (dcr-f41f718), so the identity of "adds"
+# is "adds nothing"; refusing instead would make a repository underivable
+# until its first policy commit, and that commit could not derive either.
+# This is the integrator's own reading (integrator/policy.go), and the two
+# have to agree about an absent layer as much as about a present one.
+#
+# Absence is answered with a document that adds nothing rather than with an
+# argument left off, because the composer is handed a directory of *.cue
+# and has no spelling for "no layer".
+#
+# It reports and returns rather than dying, for the reason derive_owed
+# does: a refusal inside the review loop is not the end of the session.
+resolve_project_layer() {
+  local root="$1" target="$2" rc
+
+  cleanup_project_tmp
+  PROJECT_TMP="$(mktemp -d)" || {
+    refuse "no scratch directory to read the project layer into; nothing derived"
+    return 1
+  }
+  copy_layer "$root" "$target" "$PROJECT_DIR" "$PROJECT_TMP" && rc=0 || rc=$?
+  case "$rc" in
+    0)
+      POLICY_PROJECT="$PROJECT_TMP"
+      POLICY_PROJECT_LABEL="$PROJECT_DIR@$(target_label "$target")"
+      ;;
+    1)
+      printf 'package verification\n' > "$PROJECT_TMP/adds-nothing.cue" || {
+        cleanup_project_tmp
+        refuse "could not compose an empty project layer; nothing derived"
+        return 1
+      }
+      POLICY_PROJECT="$PROJECT_TMP"
+      POLICY_PROJECT_LABEL="no $PROJECT_DIR@$(target_label "$target") — the floor alone"
+      ;;
+    *)
+      cleanup_project_tmp
+      refuse "could not read $PROJECT_DIR/ at $(target_label "$target"); nothing derived"
+      return 1
+      ;;
+  esac
+}
+
+# The first line of the pointer that is neither blank nor a comment. Read
+# in the shell so that naming an owning valley needs nothing beyond what
+# the rest of this script needs.
+pointer_url() {
+  local line url=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line#"${line%%[![:space:]]*}"}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [ -n "$line" ] || continue
+    url="$line"
+    break
+  done < "$1"
+  printf '%s' "$url"
+}
+
+# Resolve the floor to a directory on disk, into POLICY_INSTANCE, and set
+# POLICY_INSTANCE_LABEL to where it came from — a temporary directory is
+# not an answer a reader can check.
+#
+# Every project has exactly one owning valley, and the floor is that
+# valley's (dcr-9b5da04). It is read from the valley's own repository and
+# never from the project's tree, which is the tree under judgment. Two
+# shapes, and the first is a special case of the second:
+#
+#   - a valley's config repository carries policy/instance itself, and is
+#     governed by that floor like every other project. It uses its own,
+#     and fetches nothing.
+#   - every other project names its owning valley at policy/valley. That
+#     repository is fetched into scratch and its policy/instance is read
+#     at the integrated tip. Fetching is all this needs, and anyone the
+#     valley governs necessarily holds fetch on it.
+#
+# Both the pointer and a valley's own floor are read from the TARGET's tip
+# and never from the working tree. The pointer is a file a branch can edit,
+# so reading it from the branch would let a change name the valley that
+# gates it; reading it from the checkout would let whoever is reviewing
+# decide the same thing by accident, which is the failure this fixes. An
+# absent floor is refused — that is the direction absence defaults in for
+# this layer, because the floor is the minimum (dcr-f41f718).
+#
+# It reports and returns rather than dying, for the reason derive_owed
+# does: a refusal inside the review loop is not the end of the session.
+resolve_instance_layer() {
+  local root="$1" target="$2" url bare dest rc
+  cleanup_instance_tmp
+  INSTANCE_TMP="$(mktemp -d)" || {
+    refuse "no scratch directory to read the floor into; nothing derived"
+    return 1
+  }
+  dest="$INSTANCE_TMP/instance"
+  mkdir -p "$dest"
+
+  copy_layer "$root" "$target" "$INSTANCE_DIR" "$dest" && rc=0 || rc=$?
+  case "$rc" in
+    0)
+      POLICY_INSTANCE="$dest"
+      POLICY_INSTANCE_LABEL="$INSTANCE_DIR@$(target_label "$target") (this repository is its own valley)"
+      return 0
+      ;;
+    1) ;; # no floor of its own: the pointer names the valley that has one
+    *)
+      cleanup_instance_tmp
+      refuse "could not read $INSTANCE_DIR/ at $(target_label "$target"); nothing derived"
+      return 1
+      ;;
+  esac
+
+  git -C "$root" cat-file blob "$target:$VALLEY_POINTER" > "$INSTANCE_TMP/pointer" 2> /dev/null || {
+    cleanup_instance_tmp
+    refuse "no owning valley: $VALLEY_POINTER names the repository whose $INSTANCE_DIR is this project's floor, and $(target_label "$target") carries no such file. A valley's own config repository carries $INSTANCE_DIR instead. Nothing derived"
+    return 1
+  }
+  url="$(pointer_url "$INSTANCE_TMP/pointer")"
+  [ -n "$url" ] || {
+    cleanup_instance_tmp
+    refuse "$VALLEY_POINTER at $(target_label "$target") names no repository — it wants one line, the owning valley as git fetch takes it; nothing derived"
+    return 1
+  }
+
+  bare="$INSTANCE_TMP/valley.git"
+  git init --quiet --bare "$bare" || {
+    cleanup_instance_tmp
+    refuse "no scratch repository to fetch the floor into; nothing derived"
+    return 1
+  }
+  git -C "$bare" fetch --quiet --depth 1 "$url" "$VALLEY_POINTER_REF" || {
+    cleanup_instance_tmp
+    refuse "could not fetch the owning valley $url at $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $(target_label "$target")); nothing derived"
+    return 1
+  }
+
+  copy_layer "$bare" FETCH_HEAD "$INSTANCE_DIR" "$dest" && rc=0 || rc=$?
+  case "$rc" in
+    0) ;;
+    1)
+      cleanup_instance_tmp
+      refuse "the owning valley $url holds no *.cue in $INSTANCE_DIR/ at $VALLEY_POINTER_REF; nothing derived"
+      return 1
+      ;;
+    *)
+      cleanup_instance_tmp
+      refuse "could not read $INSTANCE_DIR/ from $url; nothing derived"
+      return 1
+      ;;
+  esac
+
+  POLICY_INSTANCE="$dest"
+  POLICY_INSTANCE_LABEL="$url $INSTANCE_DIR@$VALLEY_POINTER_REF"
 }
 
 # Is this check mandatory in this class, or a default the project left
@@ -890,8 +1184,11 @@ join_lines() {
   printf '%s' "$out"
 }
 
-# The ref a branch is derived against, preferring what origin last said.
-main_ref() {
+# The target: the ref a change is derived against, and the tip both policy
+# layers are read out of. origin's answer is preferred, because the target
+# is the branch as the integrator holds it and not as this checkout last
+# built it.
+target_ref() {
   git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null \
     && { echo refs/remotes/origin/main; return; }
   git rev-parse --verify --quiet refs/heads/main > /dev/null \
@@ -935,7 +1232,7 @@ derive_owed() {
     return 1
   }
   [ -f "${project_docs[0]}" ] || {
-    refuse "no project policy layer at $project; nothing derived"
+    refuse "no project policy layer at $project: a project's own layer is the *.cue documents under $PROJECT_DIR/ (dcr-f41f718). Nothing derived"
     return 1
   }
 
@@ -1026,13 +1323,11 @@ derive_owed() {
 }
 
 cmd_checks() {
-  local root schema instance project base head
+  local root schema instance="" label project="" plabel base head target=""
   root="$(git rev-parse --show-toplevel 2> /dev/null)" \
     || die "not a git repository"
   policy_defaults "$root"
   schema="$POLICY_SCHEMA"
-  instance="$POLICY_INSTANCE"
-  project="$POLICY_PROJECT"
   while [ $# -gt 0 ]; do
     case "$1" in
       --schema) [ $# -ge 2 ] || die "--schema needs a file"; schema="$2"; shift 2 ;;
@@ -1047,17 +1342,40 @@ cmd_checks() {
 
   head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
     || die "no such commit: ${2:-HEAD}"
+  # The target is what the layers are read out of, so it is needed whenever
+  # either layer is left to its default — and it is what an unnamed base
+  # is the merge base with.
+  if [ -z "$instance" ] || [ -z "$project" ] || [ $# -lt 1 ]; then
+    target="$(target_ref)" \
+      || die "no main branch: the target's tip is where the policy layers are read from, and there is none here"
+  fi
   if [ $# -ge 1 ]; then
     base="$(git rev-parse --verify --quiet "$1^{commit}")" \
       || die "no such commit: $1"
   else
-    local against
-    against="$(main_ref)" || die "no main branch to derive a base from — name one"
-    base="$(git merge-base "$against" "$head")" \
-      || die "$head and ${against#refs/} do not share history — name a base"
+    base="$(git merge-base "$target" "$head")" \
+      || die "$head and ${target#refs/} do not share history — name a base"
   fi
 
-  trap cleanup_policy_tmp EXIT
+  trap 'cleanup_policy_tmp; cleanup_instance_tmp; cleanup_project_tmp' EXIT
+  # Each layer is resolved only when nobody named one. --instance and
+  # --project are a reader pointing this at a layer on purpose, and
+  # honouring that means not fetching the repository, and not reading the
+  # tip, that the named layer replaced.
+  if [ -n "$instance" ]; then
+    label="${instance#"$root"/}"
+  else
+    resolve_instance_layer "$root" "$target" || exit 1
+    instance="$POLICY_INSTANCE"
+    label="$POLICY_INSTANCE_LABEL"
+  fi
+  if [ -n "$project" ]; then
+    plabel="${project#"$root"/}"
+  else
+    resolve_project_layer "$root" "$target" || exit 1
+    project="$POLICY_PROJECT"
+    plabel="$POLICY_PROJECT_LABEL"
+  fi
   derive_owed "$schema" "$instance" "$project" "$base" "$head" || exit 1
 
   local check width=0
@@ -1068,7 +1386,7 @@ cmd_checks() {
   printf '%s..%s: %d changed path(s)\n' \
     "$(git rev-parse --short "$base")" "$(git rev-parse --short "$head")" \
     "${#DERIVED_PATHS[@]}"
-  printf 'policy: %s + %s\n' "${instance#"$root"/}" "${project#"$root"/}"
+  printf 'policy: %s + %s\n' "$label" "$plabel"
   if [ "${#DERIVED_MATCHED[@]}" -eq 0 ]; then
     printf 'classes matched: none\n\n'
   else

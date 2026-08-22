@@ -86,4 +86,8 @@ incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/r
 - [`design/roadmap.md`](./design/roadmap.md) — the incremental validation plan.
 - [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
   plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
-  derives the checks a change owes from the declared verification policy, and only reports them.
+  derives the checks a change owes from the declared verification policy, and only reports them. The
+  policy it composes is this project's own layer at `policy/project` and the floor of the valley
+  named at [`policy/valley`](./policy/valley), fetched from that valley's repository. Both are read
+  from the tip of the branch the change targets, never from your checkout, which is what the
+  integrator reads — so the answer is the same from any branch, however stale.

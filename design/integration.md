@@ -27,6 +27,13 @@ is encoded, because nothing else has to be: a change is a diff targeting a strea
 ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md)), and every part of that is
 already in git.
 
+Who pushes that ref is deliberately unconstrained. Asking is authorship's final step, and the author
+may be a person, an agent run, or tooling acting for either; an operator filing a request by hand is
+the transitional case, not the design. Where a person's judgment is required, it arrives as a signed
+statement among the change's evidence
+([ida-b7025b5](../.the-valley/ideas/ida-b7025b5-human-decisions-are-signed-acts.md)), never as the
+act of asking.
+
 This settles what [contribute.md](./contribute.md) left open at its step 7. The attestations
 themselves arrive the way that document already describes, at
 `refs/the-valley/attestations/<tree digest>/<signer key hash>`, and the integrator finds them by

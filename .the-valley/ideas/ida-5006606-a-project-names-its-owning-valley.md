@@ -46,17 +46,17 @@ The working tree is the wrong source entirely, and not only for the reason a bra
 never supplies the policy that gates it, and neither does whoever happens to be reviewing it. A
 reviewer's checkout is whatever branch they were last on. Reading policy from it makes the answer a
 function of that, which is how `[a]sk` came to read `policy/project` from a checkout that predated
-the layer landing and refuse a change nothing was wrong with. The rule also buys something
-positive: review works identically from any branch, however stale, so there is nothing to
-synchronize before reviewing.
+the layer landing and refuse a change nothing was wrong with. The rule also buys something positive:
+review works identically from any branch, however stale, so there is nothing to synchronize before
+reviewing.
 
 Absence has to agree too, layer by layer, because a client that refuses where the integrator
-composes is as wrong as one that composes where the integrator refuses. A target carrying no
-project layer is derived under the floor alone; a floor that is not there is refused.
+composes is as wrong as one that composes where the integrator refuses. A target carrying no project
+layer is derived under the floor alone; a floor that is not there is refused.
 
 The schema is not one of these sources. It is the shape a policy is written in rather than a layer
-of policy, it ships with the tool, and the integrator takes its own from its deployment for the
-same reason.
+of policy, it ships with the tool, and the integrator takes its own from its deployment for the same
+reason.
 
 ## The pointer is never the gate
 

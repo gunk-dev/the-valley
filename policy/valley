@@ -1,4 +1,4 @@
 # The valley that owns this project. Its policy/instance, read at the
 # integrated tip, is this project's floor (dcr-f41f718, dcr-9b5da04).
-# One line, the repository as git fetch takes it.
+# One line: the repository, as git fetch takes it.
 git@classic-laddie:qinling.git

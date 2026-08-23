@@ -34,8 +34,8 @@ Today a redaction's surface is every replica — primary, mirror, backup snapsho
 of transcripts. That enumeration is transitional, not structural: mirroring and backup are the
 interim answer to durability ([[dcr-d7952bc]]
 ([../decisions/dcr-d7952bc-phase0-replication-github-transitional.md](../decisions/dcr-d7952bc-phase0-replication-github-transitional.md))),
-and the direction is a more resilient core storage layer for project state — durability intrinsic
-to the layer that holds it, backup and mirroring foregone — under which redaction collapses to one
+and the direction is a more resilient core storage layer for project state — durability intrinsic to
+the layer that holds it, backup and mirroring foregone — under which redaction collapses to one
 operation at one layer.
 
 ## Related

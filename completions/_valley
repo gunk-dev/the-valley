@@ -10,7 +10,7 @@ _valley() {
   if (( CURRENT == 2 )); then
     local -a verbs=(
       'pending:list branches on origin not merged into origin/main'
-      'review:page through a branch, then integrate, reject, or skip'
+      'review:page through a branch, then ask, reject, or skip'
       'checks:print the checks a change owes under the composed policy'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'

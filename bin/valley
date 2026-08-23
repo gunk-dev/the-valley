@@ -35,7 +35,7 @@ die() {
 
 usage() {
   cat <<'EOF'
-valley — S1 integrator verbs for a valley project (direct-push mode)
+valley — S1 integrator verbs for a valley project
 
 usage: valley <verb> [args]
 
@@ -61,15 +61,11 @@ usage: valley <verb> [args]
                                   host signs with, whenever a check is
                                   owed; VALLEY_ATTEST_NAME is the name it
                                   signs under, defaulting to this host's.
-                     [i]ntegrate  ff-only merge onto main, push origin main,
-                                  delete the merged branch from origin
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
-                   [a]sk and [i]ntegrate are the two ways a change reaches
-                   main, and both stay: [i] writes the protected ref here,
-                   [a] asks the integrator to write it. Nothing here knows
-                   or asks which of the two the operator is entitled to —
-                   origin answers that.
+                   [a]sk is the only way a change reaches main from here.
+                   Nothing in this script writes the protected ref: the
+                   integrator does, having judged the request.
                    a stale branch (won't fast-forward from main) is first
                    offered:
                      [b]ase       rebase it onto origin/main in a throwaway
@@ -214,31 +210,6 @@ cmd_pending() {
   done < <(git for-each-ref --format='%(refname:short)' \
     --no-merged=origin/main refs/remotes/origin)
   [ "$found" -eq 1 ] || echo "nothing pending"
-}
-
-integrate() {
-  local branch="$1" local_main origin_main
-  local_main="$(git rev-parse --verify --quiet refs/heads/main)" \
-    || die "no local main branch to fast-forward — nothing merged"
-  origin_main="$(git rev-parse refs/remotes/origin/main)"
-  [ "$local_main" = "$origin_main" ] \
-    || die "local main is not at origin/main — sync it first; nothing merged"
-  git merge-base --is-ancestor refs/heads/main "refs/remotes/origin/$branch" \
-    || die "$branch does not fast-forward from main — resolve by hand; nothing merged"
-  git checkout --quiet main
-  git merge --ff-only --quiet "refs/remotes/origin/$branch"
-  git push --quiet origin main
-  echo "integrated $branch: main is now $(git rev-parse --short main), pushed to origin"
-  # The branch tip is now an ancestor of the main just pushed, so deleting it
-  # loses nothing; without this every integration leaves a fully-merged ghost
-  # ref that later reads as a confusing "empty" branch. Best-effort: a failed
-  # delete must not report the integration as failed.
-  if git push --quiet origin --delete "$branch"; then
-    echo "deleted merged branch $branch from origin"
-  else
-    printf 'valley: warning: could not delete origin/%s — delete it by hand\n' \
-      "$branch" >&2
-  fi
 }
 
 reject() {
@@ -484,15 +455,15 @@ rebase_onto_main() {
 # ----------------------------------------------------------------------
 # ask — file an integration request for the branch under review.
 #
-# [i]ntegrate is the operator moving the protected ref themself. [a]sk is
-# the same keystroke over the machine path: the checks the policy requires
-# are run over the branch's tree and signed, the evidence and one request
-# ref are published, and the integrator judges the request and lands it
-# (design/integration.md). main is never touched from here.
+# This is the one way a change reaches main from here: the checks the
+# policy requires are run over the branch's tree and signed, the evidence
+# and one request ref are published, and the integrator judges the request
+# and lands it (design/integration.md). main is never touched from here.
 #
-# The two coexist, and this script never asks which one the operator is
-# entitled to. Whether the operator may write a protected ref is a fact
-# about origin's pre-receive hook, and origin is where it is answered.
+# Nothing in this script writes the protected ref. Whether a given pusher
+# may write it is a fact about origin's pre-receive hook, so origin is
+# where it is answered, and a verb that merged onto main locally would only
+# be asking the same question in a worse place.
 #
 # What this verb removes is a second push. `attest run --push` publishes
 # the branch and the attestation refs in one atomic push and knows nothing
@@ -681,15 +652,15 @@ ask() {
 }
 
 # Page the branch and take the verdict. Split out of cmd_review so that
-# every way out of it — integrate, reject, skip — is followed by the notes.
+# every way out of it — ask, reject, skip — is followed by the notes.
 read_and_decide() {
   local branch="$1" choice
   show_review "$branch"
-  # A stale branch can't integrate, and its pre-rebase diff is not what would
-  # land; offer to rebase it mechanically, then re-review what actually would.
-  # [a]sk is offered here as well, because the integrator applies a delta to
-  # the tip rather than fast-forwarding: a stale branch is a request it can
-  # judge, and rebasing first is a convenience rather than a precondition.
+  # A stale branch's pre-rebase diff is not what would land; offer to rebase it
+  # mechanically, then re-review what actually would. [a]sk is offered here as
+  # well, because the integrator applies a delta to the tip rather than
+  # fast-forwarding: a stale branch is a request it can judge, and rebasing
+  # first is a convenience rather than a precondition.
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
     "refs/remotes/origin/$branch"; do
     printf '%s does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' \
@@ -711,20 +682,19 @@ read_and_decide() {
     esac
   done
   while true; do
-    printf '%s: [a]sk, [i]ntegrate, [r]eject, [s]kip? ' "$branch"
+    printf '%s: [a]sk, [r]eject, [s]kip? ' "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
       # A refusal from ask is not a verdict: it says what it did not do and
-      # the prompt comes back, so the branch can still be integrated,
+      # the prompt comes back, so the branch can still be asked about again,
       # rejected or skipped.
       a) ask "$branch" && return ;;
-      i) integrate "$branch" && return ;;
       r) reject "$branch" && return ;;
       s)
         echo "skipped $branch; nothing done"
         return
         ;;
-      *) echo "answer a, i, r, or s" ;;
+      *) echo "answer a, r, or s" ;;
     esac
   done
 }

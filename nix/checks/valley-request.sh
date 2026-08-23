@@ -224,7 +224,6 @@ echo "a note" > docs/notes.md
 git add -A
 git commit --quiet -m "a landing that moves main"
 git push --quiet origin main
-moved="$(git rev-parse main)"
 
 git checkout --quiet -b topic/two "$first"
 printf 'SECRET\n' > src/leak.txt
@@ -318,22 +317,33 @@ if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/top
 fi
 
 # ----------------------------------------------------------------------
-# 6. [i]ntegrate is untouched: both paths coexist until the writers change
-#    lands, and neither verb knows which one the operator may use.
+# 6. [b]ase, and the prompt it comes back to. A stale branch is rebased
+#    onto main in a throwaway worktree and re-reviewed, and the prompt the
+#    loop then prints is the fast-forward one — the path a reader of
+#    bin/valley has to trace two loops to reach, so it is exercised here
+#    rather than argued about.
 git checkout --quiet main
-git checkout --quiet -b topic/three
+git checkout --quiet -b topic/three "$first"
 echo "another readme" > docs/readme.md
 git commit --quiet -am "another readme"
 git push --quiet origin topic/three
+before_base="$(git -C "$origin" rev-parse refs/heads/main)"
 
-printf 'i\n' > "$w/answers"
-valley review topic/three < "$w/answers" > "$w/integrate.out" 2>&1
-grep -qF 'topic/three: [a]sk, [i]ntegrate, [r]eject, [s]kip? ' "$w/integrate.out"
-grep -q 'integrated topic/three: main is now' "$w/integrate.out"
-if [ "$(git -C "$origin" rev-parse refs/heads/main)" = "$moved" ]; then
-  echo "valley-request: [i]ntegrate did not move main" >&2
+printf 'b\ns\n' > "$w/answers"
+valley review topic/three < "$w/answers" > "$w/base.out" 2>&1
+grep -qF 'topic/three does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
+grep -qF 'rebased topic/three onto origin/main, pushed with --force-with-lease' "$w/base.out"
+# The post-[b]ase prompt: the branch fast-forwards now, so the loop falls
+# through to the prompt that has no [b]ase in it.
+grep -qF 'topic/three: [a]sk, [r]eject, [s]kip? ' "$w/base.out"
+grep -q 'skipped topic/three; nothing done' "$w/base.out"
+git merge-base --is-ancestor refs/remotes/origin/main refs/remotes/origin/topic/three \
+  || { echo "valley-request: [b]ase left the branch stale" >&2; exit 1; }
+if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$before_base" ]; then
+  echo "valley-request: the review loop moved main" >&2
   exit 1
 fi
+git checkout --quiet main
 
 # The request filed in 1 is still pending: nothing here consumes it, which
 # is the integrator's own step.
@@ -436,6 +446,29 @@ if grep -q no-secrets "$w/floorless.out"; then
 fi
 cd "$repo" || exit 1
 git checkout --quiet main
+
+# ----------------------------------------------------------------------
+# The verbs the loop offers are the whole of what an operator can do to a
+# branch, so no path may offer one outside the set: [a]sk, [b]ase,
+# [r]eject, [s]kip. Every stream this check captured is scanned at the end,
+# which is what makes the claim about paths rather than about the two
+# prompts pinned character for character above — the fast-forward prompt,
+# the stale one, the one [b]ase comes back to, and the ones a refused [a]sk
+# returns to are all in here. A verb that writes the protected ref from the
+# operator's own checkout — the retired [i]ntegrate, or any successor to
+# it — fails this wherever it is printed.
+offered="$(cat "$w"/*.out | grep -o '\[[a-z]\][a-z]*' | sort -u || true)"
+outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]sk|\[b\]ase|\[r\]eject|\[s\]kip' || true)"
+if [ -n "$outside" ]; then
+  echo "valley-request: a review path offered a verb outside the set:" >&2
+  printf '%s\n' "$outside" >&2
+  exit 1
+fi
+# The scan is only worth something if it saw the offers at all.
+for verb in '[a]sk' '[b]ase' '[r]eject' '[s]kip'; do
+  printf '%s\n' "$offered" | grep -qxF "$verb" \
+    || { echo "valley-request: no captured session offered $verb" >&2; exit 1; }
+done
 
 # No throwaway worktree outlived any of it: only the checkout is left.
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"

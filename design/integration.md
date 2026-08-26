@@ -135,7 +135,10 @@ and which one applies follows from why the evidence stopped standing.
 **The evidence expired.** An effectful check's observation aged past the validity window the policy
 declares for it, and nothing about the tree changed. Re-running that check over the same head
 produces a fresh observation. The request ref already names that head, so it does not move, and the
-resubmission is the new attestations alone.
+resubmission is the new attestations alone. Publishing them is where this shape currently stops: the
+attestation namespace is create-only, so a second statement about a tree one signer has already
+attested has nowhere to go
+([bd-7b7d58f](../.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
 
 **The evidence no longer transfers.** A pure check's input closure changed, because the target moved
 through the paths that closure covers. No attestation over the submitted tree can transfer again:

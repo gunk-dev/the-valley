@@ -449,6 +449,253 @@ cd "$repo" || exit 1
 git checkout --quiet main
 
 # ----------------------------------------------------------------------
+# 10. Resubmission after main moved. This is the case that wedged in live
+#     use. A request goes stale with reason=evidence when main lands
+#     inside a required check's input closure: no attestation over the
+#     submitted tree can transfer again, so the cure is a new head rebased
+#     onto the moved main. That head is not a descendant of the one the
+#     request ref holds, which makes writing it a non-fast-forward
+#     replacement — and a push without a lease is refused by git's own
+#     rule before origin's hook is ever consulted. The verdict that sends
+#     a change down this path is the integrator's and is pinned by
+#     integrator-e2e; what is under test here is that [a]sk can act on it.
+git checkout --quiet -b topic/five origin/main
+echo "a readme worth asking about" > docs/readme.md
+git commit --quiet -am "a readme worth asking about"
+git push --quiet origin topic/five
+stalehead="$(git rev-parse topic/five)"
+staledigest="$(attest digest --rev topic/five | cut -d: -f2)"
+
+printf 'a\n' > "$w/answers"
+valley review topic/five < "$w/answers" > "$w/five-first.out" 2> "$w/five-first.err"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$stalehead")" "$w/five-first.out"
+
+# main moves, and the change is rebased onto it — the operator's half of
+# a resubmission, which [a]sk does not do and does not need to.
+git checkout --quiet main
+echo "a second note" > docs/second.md
+git add -A
+git commit --quiet -m "a landing under the same class"
+git push --quiet origin main
+git checkout --quiet topic/five
+git rebase --quiet main
+git push --quiet --force-with-lease origin topic/five
+newhead="$(git rev-parse topic/five)"
+newdigest="$(attest digest --rev topic/five | cut -d: -f2)"
+
+# The premise of the scenario, asserted rather than assumed: the rebase
+# produced a head off the old one's line and a tree the old evidence is
+# not about. Without both, the push below would be an ordinary one and
+# would prove nothing.
+if git merge-base --is-ancestor "$stalehead" "$newhead"; then
+  echo "valley-request: the rebased head still descends from the old one" >&2
+  exit 1
+fi
+if [ "$staledigest" = "$newdigest" ]; then
+  echo "valley-request: the rebase left the tree the old evidence is about" >&2
+  exit 1
+fi
+
+: > "$pushlog"
+printf 'a\n' > "$w/answers"
+valley review topic/five < "$w/answers" > "$w/five-again.out" 2> "$w/five-again.err"
+
+grep -qx 'requested topic/five -> refs/heads/main' "$w/five-again.out"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
+# Replacing a pending request is said out loud, and the sentence names the
+# head that was replaced.
+grep -qx "  replaced the pending request, which stood at $(git rev-parse --short "$stalehead")" "$w/five-again.out"
+
+if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-five)" \
+  != "$newhead" ]; then
+  echo "valley-request: the resubmitted request does not name the rebased head" >&2
+  exit 1
+fi
+
+# Both attestations stand. The old one is about a tree that will never
+# land, but the namespace is create-only and a record that can be dropped
+# is not one; the resubmission publishes beside it, never over it.
+for stands in "refs/the-valley/attestations/$staledigest/$keyhash" \
+  "refs/the-valley/attestations/$newdigest/$keyhash"; do
+  git -C "$origin" rev-parse --verify --quiet "$stands" > /dev/null || {
+    echo "valley-request: $stands is not on origin after the resubmission" >&2
+    exit 1
+  }
+done
+
+# One push again, and the request ref moved off the old head inside it.
+pushes="$(grep -c '^--- push' "$pushlog" || true)"
+if [ "$pushes" != 1 ]; then
+  echo "valley-request: the resubmission took $pushes pushes, not 1" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+grep -qx "$stalehead $newhead refs/the-valley/integration-requests/main/topic-five" "$pushlog"
+# And every attestation ref in that push is a creation: an all-zero old id
+# is what the create-only namespace admits, and a resubmission that
+# updated one would be refused by the real hook.
+if grep '^[0-9a-f]* [0-9a-f]* refs/the-valley/attestations/' "$pushlog" \
+  | grep -qv '^0* '; then
+  echo "valley-request: the resubmission updated an attestation ref" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$(git rev-parse main)" ]; then
+  echo "valley-request: the resubmission moved main" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
+# 11. Two resubmissions of one change race for one ref, and the loser
+#     loses visibly. The request ref's value is read before the push and
+#     the push is leased against exactly that value, so the second one to
+#     arrive is refused rather than allowed to overwrite the first. The
+#     race is made real: a receive-pack wrapper moves the ref on origin
+#     after [a]sk has read it and before the push it then makes, which is
+#     what another operator getting there first looks like from here.
+git checkout --quiet main
+git checkout --quiet -b topic/six origin/main
+echo "a readme two resubmissions both rebased" > docs/readme.md
+git commit --quiet -am "a readme two resubmissions both rebased"
+git push --quiet origin topic/six
+
+printf 'a\n' > "$w/answers"
+valley review topic/six < "$w/answers" > "$w/six-first.out" 2> "$w/six-first.err"
+grep -qx 'requested topic/six -> refs/heads/main' "$w/six-first.out"
+
+git checkout --quiet main
+echo "a third note" > docs/third.md
+git add -A
+git commit --quiet -m "another landing under the same class"
+git push --quiet origin main
+git checkout --quiet topic/six
+git rebase --quiet main
+git push --quiet --force-with-lease origin topic/six
+sixhead="$(git rev-parse topic/six)"
+sixdigest="$(attest digest --rev topic/six | cut -d: -f2)"
+
+# The other resubmission's head, built where origin can already reach
+# every object in it: the same tree, parented on the same tip, so it is
+# the commit a second operator rebasing this change would have produced.
+racer="$(git -C "$origin" commit-tree "$(git rev-parse 'topic/six^{tree}')" \
+  -p "$(git rev-parse origin/main)" -m "the other resubmission")"
+
+cat > "$TMPDIR/racing-receive-pack" <<EOF
+#!/bin/sh
+# One shot, so only the push under test is raced.
+if [ -e "$TMPDIR/race-armed" ]; then
+  rm -f "$TMPDIR/race-armed"
+  git -C "$origin" update-ref \
+    refs/the-valley/integration-requests/main/topic-six "$racer"
+fi
+exec git-receive-pack "\$@"
+EOF
+chmod +x "$TMPDIR/racing-receive-pack"
+git config remote.origin.receivepack "$TMPDIR/racing-receive-pack"
+touch "$TMPDIR/race-armed"
+
+: > "$pushlog"
+printf 'a\ns\n' > "$w/answers"
+valley review topic/six < "$w/answers" > "$w/race.out" 2> "$w/race.err"
+git config --unset remote.origin.receivepack
+if [ -e "$TMPDIR/race-armed" ]; then
+  echo "valley-request: the racing receive-pack never ran, so nothing was raced" >&2
+  exit 1
+fi
+
+# A refusal, named as one, and the review loop still usable after it.
+grep -q 'the pending request moved while this one was being prepared' "$w/race.err"
+grep -q 'the lease on refs/the-valley/integration-requests/main/topic-six refused' "$w/race.err"
+grep -q 'skipped topic/six; nothing done' "$w/race.out"
+
+# Nothing published. The winner's request stands untouched, the loser's
+# evidence never reached origin, and origin saw no push at all — the lease
+# refuses before any command is sent, which is what --atomic is worth.
+if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-six)" \
+  != "$racer" ]; then
+  echo "valley-request: the lease did not hold; the other resubmission was clobbered" >&2
+  exit 1
+fi
+if git -C "$origin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$sixdigest/$keyhash" > /dev/null; then
+  echo "valley-request: a refused resubmission published its evidence" >&2
+  exit 1
+fi
+if [ -s "$pushlog" ]; then
+  echo "valley-request: a refused resubmission reached origin's hook" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# The checks that were run are not lost with the refusal: their notes are
+# in the operator's own repository, and the refusal says where.
+git rev-parse --verify --quiet "refs/the-valley/attestations/$sixdigest/$keyhash" \
+  > /dev/null || {
+  echo "valley-request: the refused resubmission kept no evidence locally" >&2
+  exit 1
+}
+grep -q 'the evidence is stored locally at:' "$w/race.err"
+grep -qx "  refs/the-valley/attestations/$sixdigest/$keyhash" "$w/race.err"
+git checkout --quiet main
+
+# ----------------------------------------------------------------------
+# 12. Asking again at the same head. Evidence with a validity window
+#     expires while the tree stays the right tree, and the answer to that
+#     is a fresh observation over the same head. The request ref already
+#     names that head, so it is left out of the refspec entirely rather
+#     than pushed at the value origin already holds.
+#
+#     The request is filed by hand here. Origin holding a request at this
+#     head is the whole of the state under test, and re-running [a]sk to
+#     produce it would put a second-granular observation instant in the
+#     note: the same tree re-attested inside one second is the identical
+#     ref, and across a second boundary it is not.
+git checkout --quiet -b topic/seven origin/main
+echo "a readme asked about twice" > docs/readme.md
+git commit --quiet -am "a readme asked about twice"
+git push --quiet origin topic/seven
+sevenhead="$(git rev-parse topic/seven)"
+sevendigest="$(attest digest --rev topic/seven | cut -d: -f2)"
+git push --quiet origin \
+  "$sevenhead:refs/the-valley/integration-requests/main/topic-seven"
+
+: > "$pushlog"
+printf 'a\n' > "$w/answers"
+valley review topic/seven < "$w/answers" > "$w/seven.out" 2> "$w/seven.err"
+
+grep -qx 'requested topic/seven -> refs/heads/main' "$w/seven.out"
+grep -qx '  the request already stood at this head; the evidence is what was published' "$w/seven.out"
+# The evidence went; the request ref was not in the refspec at all.
+grep -q "refs/the-valley/attestations/$sevendigest/$keyhash" "$pushlog"
+if grep -q 'refs/the-valley/integration-requests/main/topic-seven' "$pushlog"; then
+  echo "valley-request: a same-head re-ask pushed the request ref again" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-seven)" \
+  != "$sevenhead" ]; then
+  echo "valley-request: a same-head re-ask disturbed the request ref" >&2
+  exit 1
+fi
+
+# The same head with nothing owed: no evidence to publish and no ref to
+# write, so no push is made at all. topic/quiet's request has stood on
+# origin at this head since 5. A push assembled with an empty refspec
+# would fall back to origin's default one, and pushing whatever that
+# happens to name is not what asking about a change means.
+git checkout --quiet main
+: > "$pushlog"
+printf 'a\n' > "$w/answers"
+env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
+  > "$w/quiet-again.out" 2> "$w/quiet-again.err"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead (already there; nothing to publish)" "$w/quiet-again.out"
+if [ -s "$pushlog" ]; then
+  echo "valley-request: a re-ask with nothing to publish still pushed" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]sk, [b]ase,
 # [r]eject, [s]kip. Every stream this check captured is scanned at the end,

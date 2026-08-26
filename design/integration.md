@@ -128,8 +128,30 @@ the request is taken up again when any of the three moves or when a few minutes 
 whichever comes first. The second half is for the failures that come from outside those three, a bus
 or a disk or a lock, which will be different later.
 
-**6. Anything invalidated is one `request-stale` naming exactly those checks.** The request ref
-stays where it is, so resubmitting is re-attesting the named checks and pushing again.
+**6. Anything invalidated is one `request-stale` naming exactly those checks.** The request ref is
+not consumed, so the answer to a stale verdict is to resubmit. Resubmission takes one of two shapes,
+and which one applies follows from why the evidence stopped standing.
+
+**The evidence expired.** An effectful check's observation aged past the validity window the policy
+declares for it, and nothing about the tree changed. Re-running that check over the same head
+produces a fresh observation. The request ref already names that head, so it does not move, and the
+resubmission is the new attestations alone.
+
+**The evidence no longer transfers.** A pure check's input closure changed, because the target moved
+through the paths that closure covers. No attestation over the submitted tree can transfer again:
+the tree that would land is not the tree that was attested, and re-running the check over the same
+head would recompute the same digest and hit the same mismatch. The only cure is a new head, rebased
+onto the moved target and attested there. That head is not a descendant of the one the request ref
+holds, so writing it replaces the ref rather than advancing it.
+
+Replacing it is legal where it happens. The request namespace is writable by anyone with push
+access, and the integrator judges whatever the ref points at on the pass after it moves. What
+replacement does need is a compare-and-swap. Two resubmissions of one change are two heads racing
+for one ref, and the loser has to lose visibly rather than quietly overwrite the winner. So the
+ref's current value is read before the push, and the push is leased against exactly that value. The
+refspec carries no `+`: a forced refspec defeats every rejection the push rules produce, including
+the lease's own, so the two together are a plain overwrite wearing a lease's name. A resubmission
+whose lease refuses publishes nothing, and the request stands where the winner put it.
 
 ## What the integrator writes down
 

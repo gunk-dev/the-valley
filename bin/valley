@@ -58,6 +58,15 @@ usage: valley <verb> [args]
                                   can be on any branch. a change the policy
                                   requires no check of is filed too, as a
                                   request with no evidence, and says so.
+                                  asking again about a change already
+                                  requested is how it is resubmitted. at
+                                  the same head that publishes the new
+                                  evidence and leaves the ref alone; at a
+                                  head rebased onto a moved main it
+                                  replaces the ref under a lease and names
+                                  the head it replaced, so a resubmission
+                                  that lost a race is refused rather than
+                                  clobbering the one that won.
                                   needs the attest helper and
                                   VALLEY_ATTEST_KEY, the ed25519 key this
                                   host signs with, whenever a check is
@@ -630,14 +639,77 @@ ask() {
       "$branch" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
   fi
 
-  # The one push: every evidence ref as it stands, and the request ref at
-  # the branch's head. --atomic, so a hook that refuses any of them leaves
-  # origin exactly as it was. With nothing owed it carries the request
-  # alone, which is the same push with the empty half left out.
-  local -a push=()
+  # What origin already holds for this request, read once and remembered.
+  # Asking twice for the same change is ordinary: evidence expires, and a
+  # change whose input closure moved under it is told to re-attest. So the
+  # request ref may already exist, and what to do about it depends on
+  # where it points.
+  local pending listing
+  if ! listing="$(git ls-remote origin "$ref" 2>/dev/null)"; then
+    refuse "could not read $ref from origin; nothing published"
+    return 1
+  fi
+  pending="$(printf '%s' "$listing" | cut -f1)"
+
+  # The one push: every evidence ref as it stands, and the request ref
+  # wherever it has to go. --atomic, so a hook that refuses any of them
+  # leaves origin exactly as it was. With nothing owed it carries the
+  # request alone, which is the same push with the empty half left out.
+  #
+  # A pending request at this same head is a re-attestation of the tree
+  # already asked about: the evidence is new and the ref does not move, so
+  # the ref is left out of the refspec entirely.
+  #
+  # A pending request at a different head is a replacement. This is the
+  # shape a change takes when main moved through its checks' input
+  # closures: no attestation over the old tree can transfer again, so the
+  # cure is a new head rebased onto the moved main — and that head is not
+  # a descendant of the old one, which makes replacing the ref a
+  # non-fast-forward update that git refuses unless told. It is told with
+  # a lease against exactly the value read above, so this is a
+  # compare-and-swap: a second resubmission that got there first makes the
+  # lease refuse rather than be clobbered.
+  #
+  # The lease is the whole of the force, and the refspec carries no `+`.
+  # A leading `+` sets git's per-ref force flag, and that flag defeats
+  # every rejection the push rules produce — the lease's stale-info among
+  # them. The two together are a plain force wearing a lease's name.
+  local -a push=() lease=()
   for spec in ${evidence[@]+"${evidence[@]}"}; do push+=("$spec:$spec"); done
-  push+=("$head:$ref")
-  if ! git push --atomic --quiet origin "${push[@]}"; then
+  if [ -z "$pending" ]; then
+    push+=("$head:$ref")
+  elif [ "$pending" != "$head" ]; then
+    lease+=("--force-with-lease=$ref:$pending")
+    push+=("$head:$ref")
+  fi
+
+  # Nothing owed and the request already standing at this head: there is
+  # no ref to write, and a push with an empty refspec would fall back to
+  # origin's default one. So it is not made.
+  if [ "${#push[@]}" -eq 0 ]; then
+    printf '\nrequested %s -> refs/heads/%s\n' "$branch" "$target"
+    printf '  request  %s -> %s (already there; nothing to publish)\n' \
+      "$ref" "$(git rev-parse --short "$head")"
+    printf '  evidence none — nothing was owed, so nothing was signed\n'
+    printf '  checks   none — the policy requires no check of this change\n'
+    printf '  main is untouched; the integrator judges the request and lands it\n'
+    return 0
+  fi
+
+  if ! git push --atomic --quiet ${lease[@]+"${lease[@]}"} origin "${push[@]}"; then
+    # Why it failed, where the answer is knowable. A lease refuses when the
+    # ref it named moved, and reading that ref again is what says whether
+    # it did. Anything else is origin's own refusal, which git has already
+    # printed.
+    if [ "${#lease[@]}" -gt 0 ] \
+      && [ "$(git ls-remote origin "$ref" | cut -f1)" != "$pending" ]; then
+      refuse "the pending request moved while this one was being prepared; the lease on $ref refused. Nothing was published, and the request on origin stands where the other resubmission put it"
+      [ "${#evidence[@]}" -eq 0 ] || {
+        printf 'valley: the evidence is stored locally at:\n' >&2
+        printf '  %s\n' "${evidence[@]}" >&2
+      }
+      return 1
+    fi
     if [ "${#evidence[@]}" -eq 0 ]; then
       refuse "origin refused the push; nothing was published there and main is untouched"
     else
@@ -653,6 +725,12 @@ ask() {
   printf 'Your local checkout has not changed.\n\n'
   printf 'Check the result: valley status %q\n\n' "$branch"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
+  if [ -n "$pending" ] && [ "$pending" != "$head" ]; then
+    printf '  replaced the pending request, which stood at %s\n' \
+      "$(git rev-parse --short "$pending")"
+  elif [ -n "$pending" ]; then
+    printf '  the request already stood at this head; the evidence is what was published\n'
+  fi
   if [ "${#evidence[@]}" -eq 0 ]; then
     printf '  evidence none — nothing was owed, so nothing was signed\n'
     printf '  checks   none — the policy requires no check of this change\n'

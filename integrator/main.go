@@ -295,7 +295,7 @@ func abs(path string) string {
 }
 
 // gitEnv runs a git command with extra environment, for the one place the
-// integrator has to set authorship.
+// integrator has to state who authored and who committed.
 func (in *integrator) gitEnv(extra map[string]string, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Dir = in.repo

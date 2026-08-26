@@ -320,9 +320,23 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 	return ch, snap, land, nil
 }
 
+// committerEmail is the address on the commits the integrator makes. git
+// wants an address and there is none to give: the integrator is a service,
+// not a correspondent. .invalid never resolves, which says so in the address
+// itself. Which integrator committed is carried by the name beside it.
+const committerEmail = "integrator@the-valley.invalid"
+
 // commitTree turns the merged tree into the commit that would become the
 // target's new tip. The tip is its only parent, so the ref write is a
 // fast-forward; the change's authorship is carried over from its head.
+//
+// Both identities are stated here rather than left to git. The author is the
+// asker's, because re-parenting a delta is not authoring it. The committer is
+// the integrator, under the name it signs its transfer statement with: the
+// commit and the statement about it then name the same actor. Leaving either
+// to git would ask git to guess an identity from the environment, and under
+// the unit there is nothing to guess from — which is a landing that fails for
+// a reason that has nothing to do with the change.
 func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 	message, err := git(in.repo, "log", "-1", "--format=%B", r.head)
 	if err != nil {
@@ -337,10 +351,19 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 		return "", fmt.Errorf("cannot read the authorship of %s", verdict.Short(r.head))
 	}
 	cmd := []string{"commit-tree", tree, "-p", tip, "-m", strings.TrimRight(message, "\n")}
+	// The committer date is the author's, so that the commit id is a function
+	// of what the pass decided from — the tree, the tip, the message and the
+	// authorship — and of nothing else. A pass that dies between here and the
+	// ref write recomputes the identical commit next time round instead of
+	// leaving another unreferenced one behind. Nothing reads this date: when
+	// the landing happened is recorded, signed, in the transfer statement.
 	out, err := in.gitEnv(map[string]string{
-		"GIT_AUTHOR_NAME":  fields[0],
-		"GIT_AUTHOR_EMAIL": fields[1],
-		"GIT_AUTHOR_DATE":  fields[2],
+		"GIT_AUTHOR_NAME":     fields[0],
+		"GIT_AUTHOR_EMAIL":    fields[1],
+		"GIT_AUTHOR_DATE":     fields[2],
+		"GIT_COMMITTER_NAME":  in.signerName,
+		"GIT_COMMITTER_EMAIL": committerEmail,
+		"GIT_COMMITTER_DATE":  fields[2],
 	}, cmd...)
 	return strings.TrimSpace(out), err
 }

@@ -322,6 +322,82 @@ grep -qx "predicate.checks.0.rule closure" "$work/rebased.transfer" \
 holds "the contributor's statement stays about its own tree; the transfer statement names the landed one"
 
 # ----------------------------------------------------------------------
+say "2c. a re-parenting landing states its own committer, and needs none from the environment"
+
+# Re-parenting is the one landing that makes a commit of the integrator's
+# own, so it is the one that needs a committer. Under the unit there is
+# nothing to take one from: no git config the service can read, no GIT_* in
+# its environment, and a hostname git will not guess an address from. So the
+# integrator states both identities itself — the asker authored the change,
+# the integrator committed the commit that carries it onto the tip — and the
+# pass below runs with everything git could have fallen back to taken away.
+
+# A scrubbed environment: no global or system config, no GIT_* identity, and
+# auto-detection refused outright, so that a host whose own hostname does
+# resolve cannot hide a dependency on it.
+scrubbed() {
+  env -u GIT_AUTHOR_NAME -u GIT_AUTHOR_EMAIL -u GIT_AUTHOR_DATE \
+    -u GIT_COMMITTER_NAME -u GIT_COMMITTER_EMAIL -u GIT_COMMITTER_DATE -u EMAIL \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.useConfigOnly GIT_CONFIG_VALUE_0=true \
+    "$@"
+}
+scrubbed git -C "$origin" var GIT_COMMITTER_IDENT > /dev/null 2>&1 \
+  && die "the scrub left an identity for git to find; the scenario proves nothing"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c2c
+echo "a readme revised by a stated author" > docs/readme.md
+git add -A
+# A distinct author, so that what the landed commit carries over from the
+# head and what it states of its own are told apart by reading it.
+GIT_AUTHOR_NAME="a contributor" GIT_AUTHOR_EMAIL="contributor@valley.invalid" \
+  git commit --quiet -m "revise the readme under an author of its own"
+attest_change c2c "" "" --check prose-format
+c2c="$(git rev-parse c2c)"
+
+# The intervening landing, outside what prose-format reads, is what moves
+# c2c's base and makes the landing below a re-parent rather than a
+# fast-forward.
+git checkout --quiet main
+git checkout --quiet -b under-c2c
+echo "a fifth source file" > src/fifth.txt
+git add -A
+git commit --quiet -m "add a fifth source file"
+attest_change under-c2c "" "" --check code-build
+request under-c2c main "$(git rev-parse under-c2c)"
+integrate
+grep -q "^under-c2c -> refs/heads/main .*: land$" "$work/last.out" || die "the intervening change did not land"
+
+request c2c main "$c2c"
+scrubbed integrator reconcile \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$instance_repo" \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
+  2>&1 | tee "$work/last.out"
+grep -q "^c2c -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "a landing with no git identity in the environment did not land: $(cat "$work/last.out")"
+
+landed_commit="$(git -C "$origin" rev-parse refs/heads/main)"
+[ "$landed_commit" != "$c2c" ] || die "the landing was a fast-forward; the scenario proves nothing"
+[ "$(git -C "$origin" log -1 --format='%an <%ae>' "$landed_commit")" = "a contributor <contributor@valley.invalid>" ] \
+  || die "the landed commit is not authored by the asker: $(git -C "$origin" log -1 --format='%an <%ae>' "$landed_commit")"
+[ "$(git -C "$origin" log -1 --format='%cn <%ce>' "$landed_commit")" = "$integrator_name <integrator@the-valley.invalid>" ] \
+  || die "the landed commit is not committed by the integrator: $(git -C "$origin" log -1 --format='%cn <%ce>' "$landed_commit")"
+# The commit id is a function of what the pass decided from and nothing
+# else, so a pass that dies before the ref write recomputes this same
+# commit rather than leaving another behind.
+[ "$(git -C "$origin" log -1 --format=%aI "$landed_commit")" = "$(git -C "$origin" log -1 --format=%cI "$landed_commit")" ] \
+  || die "the committer date is not the author's, so the landed commit id is not reproducible"
+holds "the integrator committed under its own name with nothing in the environment to take one from"
+
+# ----------------------------------------------------------------------
 say "3. a conflicting delta is stale, and demands full re-attestation"
 
 git checkout --quiet main

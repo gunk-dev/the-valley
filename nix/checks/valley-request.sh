@@ -35,6 +35,35 @@ cat >> $pushlog
 EOF
 chmod +x "$origin/hooks/pre-receive"
 
+# Interpose on origin's receive-pack so that the request namespace moves
+# between [a]sk's read of it and the push it then makes. That window is
+# where every race below lives, and a hook cannot reach it: by the time
+# pre-receive runs the client has already been told what the refs were.
+# One shot, so only the push under test is raced.
+arm_race() {
+  cat > "$TMPDIR/racing-receive-pack" <<EOF
+#!/bin/sh
+if [ -e "$TMPDIR/race-armed" ]; then
+  rm -f "$TMPDIR/race-armed"
+  $1
+fi
+exec git-receive-pack "\$@"
+EOF
+  chmod +x "$TMPDIR/racing-receive-pack"
+  git config remote.origin.receivepack "$TMPDIR/racing-receive-pack"
+  touch "$TMPDIR/race-armed"
+}
+
+# Put it away, and fail if it never fired: a race nothing raced is a
+# scenario that proved nothing.
+disarm_race() {
+  git config --unset remote.origin.receivepack
+  if [ -e "$TMPDIR/race-armed" ]; then
+    echo "valley-request: the racing receive-pack never ran, so nothing was raced" >&2
+    exit 1
+  fi
+}
+
 # ----------------------------------------------------------------------
 # The owning valley's repository, carrying the floor at policy/instance.
 # The floor is read from here and never from the project, which is the
@@ -504,7 +533,7 @@ grep -qx 'requested topic/five -> refs/heads/main' "$w/five-again.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
 # Replacing a pending request is said out loud, and the sentence names the
 # head that was replaced.
-grep -qx "  replaced the pending request, which stood at $(git rev-parse --short "$stalehead")" "$w/five-again.out"
+grep -qx "  replaced the pending request, which stood at $(git rev-parse --short "$stalehead") (a readme worth asking about)" "$w/five-again.out"
 
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-five)" \
   != "$newhead" ]; then
@@ -558,6 +587,7 @@ git checkout --quiet -b topic/six origin/main
 echo "a readme two resubmissions both rebased" > docs/readme.md
 git commit --quiet -am "a readme two resubmissions both rebased"
 git push --quiet origin topic/six
+sixfiled="$(git rev-parse topic/six)"
 
 printf 'a\n' > "$w/answers"
 valley review topic/six < "$w/answers" > "$w/six-first.out" 2> "$w/six-first.err"
@@ -580,31 +610,15 @@ sixdigest="$(attest digest --rev topic/six | cut -d: -f2)"
 racer="$(git -C "$origin" commit-tree "$(git rev-parse 'topic/six^{tree}')" \
   -p "$(git rev-parse origin/main)" -m "the other resubmission")"
 
-cat > "$TMPDIR/racing-receive-pack" <<EOF
-#!/bin/sh
-# One shot, so only the push under test is raced.
-if [ -e "$TMPDIR/race-armed" ]; then
-  rm -f "$TMPDIR/race-armed"
-  git -C "$origin" update-ref \
-    refs/the-valley/integration-requests/main/topic-six "$racer"
-fi
-exec git-receive-pack "\$@"
-EOF
-chmod +x "$TMPDIR/racing-receive-pack"
-git config remote.origin.receivepack "$TMPDIR/racing-receive-pack"
-touch "$TMPDIR/race-armed"
+arm_race "git -C '$origin' update-ref refs/the-valley/integration-requests/main/topic-six '$racer'"
 
 : > "$pushlog"
 printf 'a\ns\n' > "$w/answers"
 valley review topic/six < "$w/answers" > "$w/race.out" 2> "$w/race.err"
-git config --unset remote.origin.receivepack
-if [ -e "$TMPDIR/race-armed" ]; then
-  echo "valley-request: the racing receive-pack never ran, so nothing was raced" >&2
-  exit 1
-fi
+disarm_race
 
 # A refusal, named as one, and the review loop still usable after it.
-grep -q 'the pending request moved while this one was being prepared' "$w/race.err"
+grep -q "the pending request moved from $(git rev-parse --short "$sixfiled") to $(git rev-parse --short "$racer") while this one was being prepared" "$w/race.err"
 grep -q 'the lease on refs/the-valley/integration-requests/main/topic-six refused' "$w/race.err"
 grep -q 'skipped topic/six; nothing done' "$w/race.out"
 
@@ -634,7 +648,7 @@ git rev-parse --verify --quiet "refs/the-valley/attestations/$sixdigest/$keyhash
   echo "valley-request: the refused resubmission kept no evidence locally" >&2
   exit 1
 }
-grep -q 'the evidence is stored locally at:' "$w/race.err"
+grep -qx 'valley: the evidence is stored locally at:' "$w/race.err"
 grep -qx "  refs/the-valley/attestations/$sixdigest/$keyhash" "$w/race.err"
 git checkout --quiet main
 
@@ -688,12 +702,178 @@ git checkout --quiet main
 printf 'a\n' > "$w/answers"
 env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
   > "$w/quiet-again.out" 2> "$w/quiet-again.err"
-grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead (already there; nothing to publish)" "$w/quiet-again.out"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet-again.out"
+grep -qx '  the request already stood at this head and nothing was owed, so nothing needed publishing' "$w/quiet-again.out"
 if [ -s "$pushlog" ]; then
   echo "valley-request: a re-ask with nothing to publish still pushed" >&2
   cat "$pushlog" >&2
   exit 1
 fi
+
+# ----------------------------------------------------------------------
+# 13. Two operators filing one change at once. Reading that the request
+#     ref is absent is a value like any other, and the lease covers it:
+#     git spells that expectation with an empty value and refuses if the
+#     ref exists at all. Unleased, this push would have fast-forwarded the
+#     other filing away without saying a word.
+git checkout --quiet -b topic/eight origin/main
+echo "a readme two operators both filed" > docs/readme.md
+git commit --quiet -am "a readme two operators both filed"
+git push --quiet origin topic/eight
+eighthead="$(git rev-parse topic/eight)"
+eightdigest="$(attest digest --rev topic/eight | cut -d: -f2)"
+# The other operator's filing: this same tree on this same tip, which is
+# what a second checkout of one branch produces. It is a descendant of
+# nothing here, so an unleased push over it would be a plain fast-forward.
+firstfiler="$(git -C "$origin" commit-tree "$(git rev-parse 'topic/eight^{tree}')" \
+  -p "$(git rev-parse origin/main)" -m "the other operator's filing")"
+
+arm_race "git -C '$origin' update-ref refs/the-valley/integration-requests/main/topic-eight '$firstfiler'"
+: > "$pushlog"
+printf 'a\ns\n' > "$w/answers"
+valley review topic/eight < "$w/answers" > "$w/create-race.out" 2> "$w/create-race.err"
+disarm_race
+
+# The other operator's commit is on origin and not here, so the subject
+# says so rather than inventing one. Scenario 10 pins the case where the
+# replaced head IS local and its subject is printed.
+grep -q "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$firstfiler") (subject not in this repository)" "$w/create-race.err"
+grep -q 'skipped topic/eight; nothing done' "$w/create-race.out"
+if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-eight)" \
+  != "$firstfiler" ]; then
+  echo "valley-request: an unleased filing clobbered the request that got there first" >&2
+  exit 1
+fi
+if git -C "$origin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$eightdigest/$keyhash" > /dev/null; then
+  echo "valley-request: a refused filing published its evidence" >&2
+  exit 1
+fi
+if [ -s "$pushlog" ]; then
+  echo "valley-request: a refused filing reached origin's hook" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
+# 14. A lease that refuses because the ref is gone, not because it moved.
+#     The integrator consumes the request ref when the change lands, so a
+#     resubmission prepared just before that lands into a lease against a
+#     ref that no longer exists. Git reports it as stale info either way,
+#     and only reading the ref again tells the two apart — so the two are
+#     told apart, and the operator is pointed at the landing rather than
+#     at a race that did not happen.
+git checkout --quiet main
+git checkout --quiet -b topic/nine origin/main
+echo "a readme that lands mid-resubmission" > docs/readme.md
+git commit --quiet -am "a readme that lands mid-resubmission"
+git push --quiet origin topic/nine
+
+printf 'a\n' > "$w/answers"
+valley review topic/nine < "$w/answers" > "$w/nine-first.out" 2> "$w/nine-first.err"
+grep -qx 'requested topic/nine -> refs/heads/main' "$w/nine-first.out"
+
+git checkout --quiet main
+echo "a fourth note" > docs/fourth.md
+git add -A
+git commit --quiet -m "a landing that moves main again"
+git push --quiet origin main
+git checkout --quiet topic/nine
+git rebase --quiet main
+git push --quiet --force-with-lease origin topic/nine
+ninedigest="$(attest digest --rev topic/nine | cut -d: -f2)"
+
+arm_race "git -C '$origin' update-ref -d refs/the-valley/integration-requests/main/topic-nine"
+: > "$pushlog"
+printf 'a\ns\n' > "$w/answers"
+valley review topic/nine < "$w/answers" > "$w/consumed.out" 2> "$w/consumed.err"
+disarm_race
+
+grep -q 'the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands' "$w/consumed.err"
+grep -q 'nothing was published; fetch and review the branch again before asking a second time' "$w/consumed.err"
+# Not reported as a race, which is the distinction the re-read buys.
+if grep -q 'the pending request moved from' "$w/consumed.err"; then
+  echo "valley-request: a consumed request was reported as a lost race" >&2
+  cat "$w/consumed.err" >&2
+  exit 1
+fi
+grep -q 'skipped topic/nine; nothing done' "$w/consumed.out"
+if git -C "$origin" rev-parse --verify --quiet \
+  refs/the-valley/integration-requests/main/topic-nine > /dev/null; then
+  echo "valley-request: a refused resubmission re-created the consumed request" >&2
+  exit 1
+fi
+if git -C "$origin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$ninedigest/$keyhash" > /dev/null; then
+  echo "valley-request: a refused resubmission published its evidence" >&2
+  exit 1
+fi
+if [ -s "$pushlog" ]; then
+  echo "valley-request: a refused resubmission reached origin's hook" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
+# 15. The same-head push carries no request ref, so it carries no
+#     compare-and-swap on one either — git leaves an up-to-date ref out of
+#     what it sends. Where the ref stands after that push is therefore not
+#     something the run established, and it is read again rather than
+#     asserted from the read before it.
+#
+#     Nothing re-files it. A request for a change already in the stream is
+#     judged against an empty delta on every pass, which is why the
+#     integrator consumes the ref in the first place; re-creating it here
+#     would be a guess about which of consumption and deletion happened,
+#     paid for with a second push behind the one this verb promises. So
+#     the run says what is true and stops, and asking again is the repair.
+git checkout --quiet main
+git checkout --quiet -b topic/ten origin/main
+echo "a readme consumed under the evidence" > docs/readme.md
+git commit --quiet -am "a readme consumed under the evidence"
+git push --quiet origin topic/ten
+tenhead="$(git rev-parse topic/ten)"
+tendigest="$(attest digest --rev topic/ten | cut -d: -f2)"
+git push --quiet origin \
+  "$tenhead:refs/the-valley/integration-requests/main/topic-ten"
+
+arm_race "git -C '$origin' update-ref -d refs/the-valley/integration-requests/main/topic-ten"
+: > "$pushlog"
+printf 'a\ns\n' > "$w/answers"
+valley review topic/ten < "$w/answers" > "$w/posthoc.out" 2> "$w/posthoc.err"
+disarm_race
+
+grep -q 'the request was consumed while this run was working, which is what the integrator does when a change lands' "$w/posthoc.err"
+grep -q 'Nothing here re-filed it' "$w/posthoc.err"
+# The claim the old code would have made, from a read that had gone out of
+# date under it.
+if grep -q 'the request already stood at this head' "$w/posthoc.out"; then
+  echo "valley-request: a consumed request was reported as still standing" >&2
+  cat "$w/posthoc.out" >&2
+  exit 1
+fi
+grep -q 'skipped topic/ten; nothing done' "$w/posthoc.out"
+
+# The evidence went, because that push succeeded; the request did not come
+# back, because nothing here writes it.
+git -C "$origin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$tendigest/$keyhash" > /dev/null || {
+  echo "valley-request: the evidence push was reported as done and is not on origin" >&2
+  exit 1
+}
+if git -C "$origin" rev-parse --verify --quiet \
+  refs/the-valley/integration-requests/main/topic-ten > /dev/null; then
+  echo "valley-request: the consumed request was re-filed behind the operator" >&2
+  exit 1
+fi
+# And that evidence went in one push, which is still the whole claim.
+pushes="$(grep -c '^--- push' "$pushlog" || true)"
+if [ "$pushes" != 1 ]; then
+  echo "valley-request: the same-head re-ask took $pushes pushes, not 1" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+git checkout --quiet main
 
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a

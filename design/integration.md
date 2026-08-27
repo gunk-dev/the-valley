@@ -151,10 +151,19 @@ Replacing it is legal where it happens. The request namespace is writable by any
 access, and the integrator judges whatever the ref points at on the pass after it moves. What
 replacement does need is a compare-and-swap. Two resubmissions of one change are two heads racing
 for one ref, and the loser has to lose visibly rather than quietly overwrite the winner. So the
-ref's current value is read before the push, and the push is leased against exactly that value. The
-refspec carries no `+`: a forced refspec defeats every rejection the push rules produce, including
-the lease's own, so the two together are a plain overwrite wearing a lease's name. A resubmission
-whose lease refuses publishes nothing, and the request stands where the winner put it.
+ref's current value is read before the push, and the push is leased against exactly that value.
+
+Reading that the ref is absent is a value like any other, and the lease covers it too — git spells
+the expectation with an empty value and refuses if the ref exists at all. So the first filing of a
+change is a compare-and-swap on the same terms as a replacement. Without it, two operators filing
+one change at once would have the second silently fast-forward the first away, which is the same
+loss the replacement case takes care to avoid.
+
+The refspec carries no `+`: a forced refspec defeats every rejection the push rules produce,
+including the lease's own, so the two together are a plain overwrite wearing a lease's name. A push
+whose lease refuses publishes nothing. What refused it is one of three things — another resubmission
+won, the integrator landed the change and consumed the ref, or the ref was never where the reader
+thought — and they are told apart by reading the ref again rather than reported as one.
 
 ## What the integrator writes down
 

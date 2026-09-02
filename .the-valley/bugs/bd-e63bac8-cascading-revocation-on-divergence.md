@@ -31,16 +31,16 @@ In practice, git branches are linear chains of commits. Consider a sequence of e
    fails or that the recorded output digest was forged.
 4. The system revokes trust in the attester.
 
-Revoking trust in the attester does not alter the git tree. Resolving the defect on `main` leaves two
-problematic choices:
+Revoking trust in the attester does not alter the git tree. Resolving the defect on `main` leaves
+two problematic choices:
 
 - **Rewriting `main` (force-push).** Removing commit A from history breaks every contributor clone,
   invalidates all remote-tracking refs, and severs the cryptographic provenance of changes B, C, and
   D.
 - **Landing a revert commit.** Committing a revert of A produces a new tree. This new tree
-  invalidates the input-closure digests and merge bases of all active integration requests and in-flight
-  branches across the entire project. Furthermore, if B, C, or D depended semantically on changes
-  introduced by A, the revert introduces broken builds directly onto `main`.
+  invalidates the input-closure digests and merge bases of all active integration requests and
+  in-flight branches across the entire project. Furthermore, if B, C, or D depended semantically on
+  changes introduced by A, the revert introduces broken builds directly onto `main`.
 
 In an autonomous multi-agent environment with high change velocity, a single diverged attestation
 causes cascading invalidation across the entire outcome DAG and in-flight branch pool.

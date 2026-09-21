@@ -1,0 +1,241 @@
+/* A fixed-page edition sized for the Kindle Scribe's portrait screen. */
+@page {
+  size: 156mm 208mm;
+  margin: 13mm 12mm 16mm;
+
+  @bottom-center {
+    content: "the-valley  ·  " counter(page) " / " counter(pages);
+    font-family: "DejaVu Sans", sans-serif;
+    font-size: 8pt;
+    color: #333;
+  }
+}
+
+@page cover {
+  margin: 0;
+
+  @bottom-center {
+    content: none;
+  }
+}
+
+html {
+  font-family: "DejaVu Serif", serif;
+  font-size: 12pt;
+  line-height: 1.38;
+  color: #111;
+}
+
+body {
+  margin: 0;
+}
+
+.pdf-cover {
+  page: cover;
+  height: 208mm;
+  text-align: center;
+  break-after: page;
+}
+
+.pdf-cover img {
+  display: block;
+  width: 156mm;
+  height: 208mm;
+  object-fit: contain;
+}
+
+p {
+  margin: 0 0 0.75em;
+  orphans: 3;
+  widows: 3;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: "DejaVu Sans", sans-serif;
+  font-weight: bold;
+  line-height: 1.2;
+  text-align: left;
+  break-after: avoid;
+  hyphens: none;
+}
+
+h1 {
+  break-before: page;
+  font-size: 23pt;
+  margin: 0 0 1em;
+  bookmark-level: 1;
+}
+
+h2 {
+  font-size: 16pt;
+  margin: 1.35em 0 0.7em;
+  bookmark-level: 2;
+}
+
+h3 {
+  font-size: 13pt;
+  margin: 1.2em 0 0.65em;
+  bookmark-level: 3;
+}
+
+h4 {
+  font-size: 12pt;
+  margin: 1.1em 0 0.6em;
+  bookmark-level: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 0.5pt;
+}
+
+ul,
+ol {
+  padding-left: 1.4em;
+  margin: 0.6em 0 0.9em;
+}
+
+li {
+  margin-bottom: 0.5em;
+}
+
+li > p:last-child {
+  margin-bottom: 0.4em;
+}
+
+blockquote {
+  margin: 1em 0 1em 0.5em;
+  padding-left: 0.8em;
+  border-left: 1pt solid #777;
+}
+
+code,
+pre,
+.repository-path {
+  font-family: "DejaVu Sans Mono", monospace;
+  font-size: 0.87em;
+  overflow-wrap: anywhere;
+}
+
+pre {
+  white-space: pre-wrap;
+  margin: 1em 0;
+  padding: 0.7em;
+  border: 0.5pt solid #777;
+  line-height: 1.35;
+}
+
+pre code {
+  font-size: inherit;
+}
+
+.table-record {
+  margin: 1em 0;
+  padding: 0 0 0.5em;
+  border-bottom: 0.5pt solid #aaa;
+}
+
+.record-title {
+  font-weight: bold;
+  break-after: avoid;
+}
+
+.record-title p {
+  margin-bottom: 0.5em;
+}
+
+.record-field p {
+  margin-bottom: 0.5em;
+}
+
+table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 10.5pt;
+  line-height: 1.35;
+}
+
+th,
+td {
+  padding: 0.4em;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  hyphens: auto;
+  border-bottom: 0.5pt solid #aaa;
+}
+
+th {
+  font-family: "DejaVu Sans", sans-serif;
+  border-bottom: 1pt solid #333;
+}
+
+tr {
+  break-inside: avoid;
+}
+
+#TOC {
+  break-before: page;
+  break-after: page;
+  font-family: "DejaVu Sans", sans-serif;
+  font-size: 11pt;
+  line-height: 1.35;
+}
+
+#TOC h2 {
+  font-size: 23pt;
+  margin-top: 0;
+  bookmark-level: 1;
+}
+
+#TOC ul {
+  list-style: none;
+  padding-left: 0;
+}
+
+#TOC ul ul {
+  padding-left: 1em;
+  font-size: 10pt;
+}
+
+#TOC li {
+  margin-bottom: 0.65em;
+}
+
+#TOC a {
+  text-decoration: none;
+}
+
+#TOC a::after {
+  content: leader(".") target-counter(attr(href), page);
+}
+
+.footnote-ref {
+  font-family: "DejaVu Sans", sans-serif;
+  font-size: 0.8em;
+  line-height: 0;
+  text-decoration: none;
+}
+
+.footnotes {
+  font-size: 10.5pt;
+}
+
+.footnotes li {
+  break-inside: avoid;
+}
+
+.footnote-back {
+  margin-left: 0.3em;
+}
+
+img,
+svg {
+  max-width: 100%;
+}

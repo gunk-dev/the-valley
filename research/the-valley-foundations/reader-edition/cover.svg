@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2560" viewBox="0 0 1600 2560" role="img" aria-labelledby="title description">
+  <title id="title">the-valley: Foundations &amp; Research Opportunities</title>
+  <desc id="description">A restrained book cover with dark typography on warm white and contour lines descending into a valley. A critical literature and systems review, September 2026.</desc>
+  <rect width="1600" height="2560" fill="#f4f1e8"/>
+  <g fill="#202724">
+    <text x="144" y="215" font-family="DejaVu Sans, sans-serif" font-size="27" letter-spacing="5">THE VALLEY RESEARCH</text>
+    <path d="M144 270 H1456" fill="none" stroke="#202724" stroke-width="3"/>
+    <text x="136" y="594" font-family="DejaVu Serif, Georgia, serif" font-size="172" letter-spacing="-6">the-valley</text>
+    <text x="144" y="751" font-family="DejaVu Serif, Georgia, serif" font-size="67">Foundations &amp;</text>
+    <text x="144" y="844" font-family="DejaVu Serif, Georgia, serif" font-size="67">Research Opportunities</text>
+    <text x="144" y="983" font-family="DejaVu Sans, sans-serif" font-size="31">A critical literature and systems review</text>
+  </g>
+  <g fill="none" stroke="#202724" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M-80 1160 C195 1240 375 1410 565 1590 C720 1737 786 1850 867 1850 C962 1850 1095 1670 1282 1435 C1407 1278 1518 1210 1680 1190" stroke-width="7"/>
+    <path d="M-80 1220 C198 1300 365 1468 553 1651 C706 1800 785 1910 868 1910 C967 1910 1108 1730 1295 1495 C1418 1340 1535 1270 1680 1250" stroke-width="3"/>
+    <path d="M-80 1280 C200 1360 357 1526 541 1712 C693 1865 784 1970 869 1970 C972 1970 1121 1790 1308 1555 C1430 1400 1550 1330 1680 1310" stroke-width="3"/>
+    <path d="M-80 1340 C201 1420 348 1585 529 1773 C680 1929 783 2030 870 2030 C977 2030 1134 1850 1321 1615 C1442 1460 1565 1390 1680 1370" stroke-width="3"/>
+    <path d="M-80 1400 C203 1480 340 1643 517 1834 C667 1995 782 2090 871 2090 C982 2090 1147 1910 1334 1675 C1454 1520 1580 1450 1680 1430" stroke-width="3"/>
+    <path d="M-80 1460 C205 1540 331 1701 505 1895 C654 2060 781 2150 872 2150 C987 2150 1160 1970 1347 1735 C1466 1580 1595 1510 1680 1490" stroke-width="3"/>
+  </g>
+  <g fill="#202724" font-family="DejaVu Sans, sans-serif" font-size="29">
+    <text x="144" y="2393">September 2026</text>
+    <text x="1456" y="2393" text-anchor="end" letter-spacing="3">READER EDITION</text>
+  </g>
+</svg>

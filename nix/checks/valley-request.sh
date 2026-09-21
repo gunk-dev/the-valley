@@ -147,11 +147,12 @@ valley review topic/one < "$w/answers" > "$w/ask.out" 2> "$w/ask.err"
 
 grep -q '^checking topic/one at .*: tree-ok$' "$w/ask.out"
 grep -qE '^check   tree-ok +command  passed$' "$w/ask.out"
-grep -qx 'requested topic/one -> refs/heads/main' "$w/ask.out"
+grep -qx "Submitted topic/one ($(git rev-parse --short topic/one)) for integration into origin/main." "$w/ask.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-one -> $(git rev-parse --short topic/one)" "$w/ask.out"
 grep -qx "  evidence refs/the-valley/attestations/$digest/$keyhash" "$w/ask.out"
 grep -qx '  checks   tree-ok' "$w/ask.out"
-grep -q 'main is untouched' "$w/ask.out"
+grep -qx 'Your local checkout has not changed.' "$w/ask.out"
+grep -qx 'Check the result: valley status topic/one' "$w/ask.out"
 
 # What origin holds now. The attestation is keyed by the digest of the
 # BRANCH's tree, which is what says the checks ran over the right tree and
@@ -293,7 +294,7 @@ env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
 
 grep -q 'owes no check under .* + policy/project@origin/main .*; filing the request with no evidence' "$w/quiet.out"
 grep -qF "$valley policy/instance@refs/heads/main" "$w/quiet.out"
-grep -qx 'requested topic/quiet -> refs/heads/main' "$w/quiet.out"
+grep -q '^Submitted topic/quiet .* for integration into origin/main\.$' "$w/quiet.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet.out"
 grep -qx '  evidence none — nothing was owed, so nothing was signed' "$w/quiet.out"
 grep -qx '  checks   none — the policy requires no check of this change' "$w/quiet.out"
@@ -376,7 +377,7 @@ fi
 printf 'a\n' > "$w/answers"
 valley review topic/nolayer < "$w/answers" \
   > "$w/nolayer.review.out" 2> "$w/nolayer.review.err"
-grep -qx 'requested topic/nolayer -> refs/heads/main' "$w/nolayer.review.out"
+grep -q '^Submitted topic/nolayer .* for integration into origin/main\.$' "$w/nolayer.review.out"
 
 # ----------------------------------------------------------------------
 # 8. The reviewer's checkout contributes nothing. This is the case that
@@ -410,7 +411,7 @@ git checkout --quiet topic/nolayer
 printf 'a\n' > "$w/answers"
 valley review topic/four < "$w/answers" > "$w/stale.out" 2> "$w/stale.err"
 grep -q '^checking topic/four at .*: tree-ok$' "$w/stale.out"
-grep -qx 'requested topic/four -> refs/heads/main' "$w/stale.out"
+grep -q '^Submitted topic/four .* for integration into origin/main\.$' "$w/stale.out"
 grep -qx '  checks   tree-ok' "$w/stale.out"
 
 # ----------------------------------------------------------------------

@@ -11,6 +11,7 @@ _valley() {
     local -a verbs=(
       'pending:list branches on origin not merged into origin/main'
       'review:page through a branch, then ask, reject, or skip'
+      'status:read the integration result for a branch from origin'
       'checks:print the checks a change owes under the composed policy'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
@@ -26,16 +27,18 @@ _valley() {
       '--project:the project policy layer directory'
     )
     _describe -t options 'valley checks option' opts
-  elif (( CURRENT == 3 )) && [[ ${words[2]} == review ]]; then
-    # Branches on origin not merged into origin/main, origin/ prefix
-    # stripped, origin/HEAD + origin/main excluded. Silent outside a git
-    # repo — no errors mid-typing.
-    local -a branches
+  elif (( CURRENT == 3 )) && [[ ${words[2]} == review || ${words[2]} == status ]]; then
+    # Cached topic branches on origin. Review filters out merged branches;
+    # status needs those too. Silent outside a git repo — no errors
+    # mid-typing.
+    local -a branches selection
+    selection=()
+    [[ ${words[2]} == review ]] && selection=(--no-merged=origin/main)
     branches=(${(f)"$(git for-each-ref refs/remotes/origin \
-      --format='%(refname:short)' --no-merged=origin/main 2>/dev/null)"})
-    branches=(${branches:#origin/HEAD})
-    branches=(${branches:#origin/main})
-    branches=(${branches#origin/})
+      --format='%(refname)' "${selection[@]}" 2>/dev/null)"})
+    branches=(${branches:#refs/remotes/origin/HEAD})
+    branches=(${branches:#refs/remotes/origin/main})
+    branches=(${branches#refs/remotes/origin/})
     (( ${#branches} )) && compadd -a branches
   fi
 }

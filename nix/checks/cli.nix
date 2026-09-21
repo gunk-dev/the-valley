@@ -80,4 +80,13 @@
     ];
     schemaFile = ../../schema/verification.cue;
   } (builtins.readFile ./valley-request.sh);
+
+  # Read origin's request/outcome refs and distinguish a pending request,
+  # a recorded decision and a landing, without moving the user's checkout.
+  valley-status = pkgs.runCommand "valley-status" {
+    nativeBuildInputs = [
+      pkgs.git
+      packages.valley-script
+    ];
+  } (builtins.readFile ./valley-status.sh);
 }

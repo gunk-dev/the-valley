@@ -45,6 +45,28 @@ composition, no `git` wrapper command.
 9. **Server-side projection** — the bare repo's `post-receive` hook emits one bus event per updated
    ref; it is a pure projection, no policy and no verification.
 
+## Submitting and checking a request
+
+Run `valley review <branch>` to review a topic branch already pushed to origin. Choosing `[a]sk`
+runs the checks required by the composed policy, signs their results, and publishes the evidence and
+request together. Its success message confirms submission. The integrator decides separately whether
+the change can land on `origin/main`. Review does not wait for that decision or update the local
+checkout.
+
+Run `valley status <branch>` to read the request and recorded result from origin. It reports whether
+the change has integrated, awaits a decision, needs attention, or has a newer commit that has not
+been submitted. It reads once; run it again for a later result. It does not submit a request, rerun
+checks, or update the local checkout. A changed target or new evidence can make an earlier decision
+obsolete. Status reports that a new decision is needed when those inputs have changed.
+
+The stored outcome contains no detailed failure reason. For stale or rejected evidence, or an
+integrator failure, ask the instance operator for the integrator report. A processing failure can
+happen after the change lands, so that result alone does not prove the change is absent from main.
+
+After integration, status shows how to update the local checkout. For a local main branch that can
+advance without a merge, the command is `git pull --ff-only origin main`. If another branch is
+checked out, switch to main first. If local main has diverged, inspect its commits before updating.
+
 ## The one invariant
 
 The bare repo's `pre-receive` hook enforces exactly one structural invariant, with two parts: only

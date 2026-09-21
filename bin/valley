@@ -48,11 +48,13 @@ usage: valley <verb> [args]
                                   the branch, signs each result as an
                                   attestation, and publishes the evidence
                                   and the request ref to origin in ONE
-                                  atomic push. main is never touched: the
-                                  integrator judges the request and lands
-                                  it. the policy is composed from the
-                                  target's tip and the owning valley's, as
-                                  checks describes below, so your checkout
+                                  atomic push. this submits the request;
+                                  it does not wait for integration or
+                                  update your local checkout. use status
+                                  to read the result. the policy comes
+                                  from the target's tip and the owning
+                                  valley's, as checks describes below,
+                                  so your checkout
                                   can be on any branch. a change the policy
                                   requires no check of is filed too, as a
                                   request with no evidence, and says so.
@@ -82,6 +84,12 @@ usage: valley <verb> [args]
                    ~/.local/state) and printed after the verdict. notes
                    survive [b]ase. lines you change or delete instead of
                    inserting are ignored, with a warning.
+  status <branch>  read the request and the integrator's last decision from
+                   origin. distinguish waiting, a decision that needs
+                   attention, and a change integrated into origin/main.
+                   after integration, show how to update the local checkout.
+                   fetches objects without moving local branches or files;
+                   no checks run and no request is submitted.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and
@@ -639,7 +647,11 @@ ask() {
     return 1
   fi
 
-  printf '\nrequested %s -> refs/heads/%s\n' "$branch" "$target"
+  printf '\nSubmitted %s (%s) for integration into origin/%s.\n' \
+    "$branch" "$(git rev-parse --short "$head")" "$target"
+  printf 'The integrator will decide whether this change can land.\n'
+  printf 'Your local checkout has not changed.\n\n'
+  printf 'Check the result: valley status %q\n\n' "$branch"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
   if [ "${#evidence[@]}" -eq 0 ]; then
     printf '  evidence none — nothing was owed, so nothing was signed\n'
@@ -648,7 +660,165 @@ ask() {
     printf '  evidence %s\n' "${evidence[@]}"
     printf '  checks   %s\n' "$(printf '%s\n' "${owed[@]}" | join_lines)"
   fi
-  printf '  main is untouched; the integrator judges the request and lands it\n'
+}
+
+# A status read is a snapshot of origin, not a replay of this checkout's
+# cached refs. Fetch the advertised objects without writing FETCH_HEAD or
+# moving branches. In particular, never prune locally produced evidence.
+# The memo's first three fields are the same inputs the integrator uses
+# to decide whether to judge a request again (integrator/refs.go).
+cmd_status() {
+  [ $# -eq 1 ] || die "usage: valley status <branch>"
+  local branch="${1#origin/}" change request_ref outcome_ref snapshot oid ref
+  local head="" target="" request="" outcome="" memo="" evidence
+  local memo_head="" memo_tip="" memo_evidence="" decision="" failed_at="" extra=""
+  local -a objects=() attestations=()
+  git rev-parse --git-dir >/dev/null 2>&1 || die "not a git repository"
+  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 \
+    || die "not a branch name: $branch"
+  change="$(change_name "$branch")"
+  request_ref="refs/the-valley/integration-requests/main/$change"
+  outcome_ref="refs/the-valley/integration-outcomes/main/$change"
+  snapshot="$(git ls-remote --refs origin "refs/heads/$branch" refs/heads/main \
+    "$request_ref" "$outcome_ref" 'refs/the-valley/attestations/*')" \
+    || die "could not read origin; integration status is unknown. Try valley status $(printf '%q' "$branch") again"
+  while read -r oid ref; do
+    [ -n "$ref" ] || continue
+    if [ "$ref" = refs/heads/main ]; then target="$oid"; fi
+    if [ "$ref" = "refs/heads/$branch" ]; then head="$oid"; fi
+    case "$ref" in
+      "$request_ref") request="$oid" ;;
+      "$outcome_ref") outcome="$oid" ;;
+      refs/the-valley/attestations/*) attestations+=("$ref $oid") ;;
+    esac
+  done <<< "$snapshot"
+  [ -n "$target" ] || die "origin has no main branch; integration status is unknown"
+  if [ -z "$head$request$outcome" ]; then
+    die "$branch: no remote branch or recorded integration request on origin"
+  fi
+  objects+=("$target")
+  [ -z "$head" ] || objects+=("$head")
+  [ -z "$request" ] || objects+=("$request")
+  [ -z "$outcome" ] || objects+=("$outcome")
+  git fetch --quiet --no-tags --no-write-fetch-head origin "${objects[@]}" \
+    || die "could not fetch the status objects; origin may have changed. Try valley status $(printf '%q' "$branch") again"
+
+  if [ -n "$outcome" ]; then
+    memo="$(git cat-file blob "$outcome" 2>/dev/null)" || memo=""
+    read -r memo_head memo_tip memo_evidence decision failed_at extra <<< "$memo" || true
+    # Treat unsupported or damaged records as unknown, never as success.
+    if [[ "$memo" == *$'\n'* || ! "$memo_head" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ \
+      || ! "$memo_tip" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ \
+      || ! "$memo_evidence" =~ ^[0-9a-f]{16}$ || -n "$extra" ]]; then
+      decision="unknown"
+    fi
+    case "$decision" in
+      land | stale | reject) [ -z "$failed_at" ] || decision="unknown" ;;
+      failed) [ -n "$failed_at" ] || decision="unknown" ;;
+      *) decision="unknown" ;;
+    esac
+  fi
+  # A deleted topic can still have a pending request or a recorded result.
+  [ -n "$head" ] || head="${request:-$memo_head}"
+
+  # Main can advance before the integrator records its outcome. A failure
+  # storing evidence afterwards must not hide an integration already there.
+  if [ -n "$head" ] && git cat-file -e "$head^{commit}" 2>/dev/null \
+    && git merge-base --is-ancestor "$head" "$target"; then
+    printf '%s (%s): integrated into origin/main.\n' "$branch" "${head:0:7}"
+    if [ -n "$request" ]; then
+      printf 'The request for %s is still present at %s.\n' "${request:0:7}" "$request_ref"
+    fi
+    status_checkout "$target"
+    return
+  fi
+  # An applied delta may land as a different commit. In that case the
+  # matching land memo, rather than source-commit ancestry, is the report.
+  if [ "$decision" = land ] && [ "$memo_head" = "$head" ] \
+    && { [ -z "$request" ] || [ "$request" = "$head" ]; }; then
+    printf '%s (%s): the integrator recorded it integrated into origin/main.\n' \
+      "$branch" "${head:0:7}"
+    status_checkout "$target"
+    return
+  fi
+
+  if [ -n "$request" ] && [ "$request" != "$head" ]; then
+    printf '%s (%s): latest commit not submitted.\n' "$branch" "${head:0:7}"
+    printf 'An older request for %s is still pending at %s.\n' "${request:0:7}" "$request_ref"
+    printf 'Review the latest commit: valley review %q\n' "$branch"
+    return
+  fi
+  if [ "$decision" = unknown ]; then
+    printf '%s: the stored outcome is unreadable; status is unknown.\n' "$branch"
+    printf 'Ask the instance operator to inspect %s.\n' "$outcome_ref"
+    return
+  fi
+  if [ -z "$request" ]; then
+    printf '%s: not submitted; no pending request for this commit.\n' "$branch"
+    if [ -n "$decision" ]; then
+      printf 'Last recorded decision: %s for %s.\n' "$decision" "${memo_head:0:7}"
+    fi
+    printf 'Submit it through review: valley review %q\n' "$branch"
+    return
+  fi
+
+  printf '%s (%s): ' "$branch" "${head:0:7}"
+  if [ -z "$decision" ] || [ "$memo_head" != "$head" ]; then
+    printf 'awaiting an integrator decision.\n'
+  else
+    evidence="$(
+      if [ "${#attestations[@]}" -gt 0 ]; then printf '%s\n' "${attestations[@]}"; fi \
+        | LC_ALL=C sort | sha256sum
+    )"
+    evidence="${evidence:0:16}"
+    if [ "$memo_tip" != "$target" ] || [ "$memo_evidence" != "$evidence" ]; then
+      printf 'awaiting a new decision; the target or evidence has changed.\n'
+      printf 'Last recorded decision: %s.\n' "$decision"
+    else
+      case "$decision" in
+        stale)
+          printf 'needs attention; the integrator reported stale.\n'
+          printf 'The change conflicts with main, or required evidence does not transfer.\n'
+          ;;
+        reject)
+          printf 'the integrator rejected the evidence.\n'
+          ;;
+        failed)
+          printf 'the integrator failed while processing the request (%s).\n' "$failed_at"
+          printf 'This does not prove that nothing landed; recording can fail after main advances.\n'
+          ;;
+      esac
+      printf 'The stored outcome has no detailed reason. Ask the instance operator for the integrator report.\n'
+    fi
+  fi
+  printf 'Request: %s\n' "$request_ref"
+  printf 'Check again: valley status %q\n' "$branch"
+}
+
+status_checkout() {
+  local target="$1" current local_head
+  if [ "$(git rev-parse --is-bare-repository)" = true ]; then
+    printf 'This is a bare repository; there is no local checkout to update.\n'
+    return
+  fi
+  current="$(git symbolic-ref --quiet --short HEAD)" || current="detached HEAD"
+  local_head="$(git rev-parse --short HEAD)"
+  printf 'Local checkout: %s at %s.\n' "$current" "$local_head"
+  if git merge-base --is-ancestor "$target" HEAD; then
+    printf 'Your local checkout already contains origin/main.\n'
+  elif ! git show-ref --verify --quiet refs/heads/main; then
+    printf 'To create a local main checkout:\n'
+    printf '  git fetch origin\n  git switch --track -c main origin/main\n'
+  elif git merge-base --is-ancestor "$target" refs/heads/main; then
+    printf 'Local main already contains origin/main. To view it:\n  git switch main\n'
+  elif ! git merge-base --is-ancestor refs/heads/main "$target"; then
+    printf 'Local main has diverged from origin/main. Inspect the commits before updating:\n'
+    printf '  git fetch origin\n  git log --oneline --left-right main...origin/main\n'
+  else
+    printf 'To update your local main checkout:\n'
+    [ "$current" = main ] || printf '  git switch main\n'
+    printf '  git pull --ff-only origin main\n'
+  fi
 }
 
 # Page the branch and take the verdict. Split out of cmd_review so that
@@ -1392,6 +1562,7 @@ main() {
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;
+    status) cmd_status "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;

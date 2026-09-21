@@ -26,7 +26,7 @@
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
-#                    valley-request — bin/valley
+#                    valley-request, valley-status — bin/valley
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation

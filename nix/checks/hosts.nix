@@ -103,6 +103,18 @@ in
         }
       ];
       grants.request = [ "requester" ];
+      # released composes a hook of its own after the push policy: it
+      # refuses branches under frozen/, which the policy would accept.
+      extraPreReceive.released = pkgs.writeShellScript "valley-check-released-pre-receive" ''
+        while read -r _ _ ref; do
+          case "$ref" in
+            refs/heads/frozen/*)
+              echo "released: $ref is frozen" >&2
+              exit 1
+              ;;
+          esac
+        done
+      '';
     };
   };
 
@@ -117,12 +129,11 @@ in
         enable = true;
         signingKeyFile = "/run/agenix/valley-integrator-key";
         knownSignersFile = "/var/lib/valley-instance/known_signers";
-        # The floor comes from a repository this host serves and no
-        # controller serves: "open" is declared, unprotected, so it gets no
-        # controller of its own. Every controller here therefore reads the
+        # The floor comes from "sealed", which declares protection, as the
+        # instance repository has to. Every other controller here reads the
         # floor out of a repository that is not the one it serves, which is
         # the cross-repository read the unit has to grant.
-        instanceProject = "open";
+        instanceProject = "sealed";
       };
     };
   };
@@ -141,7 +152,7 @@ in
         enable = true;
         signingKeyFile = "/run/agenix/valley-integrator-key";
         signingName = "integrator";
-        instanceProject = "open";
+        instanceProject = "sealed";
       };
     };
   };
@@ -159,6 +170,50 @@ in
         knownSignersFile = "/var/lib/valley-instance/known_signers";
         instanceProject = "guarded";
       };
+    };
+  };
+
+  # Hosts the module must refuse. Each is one way for the push policy to be
+  # quietly wrong, and each must fail an assertion naming what is wrong.
+  #
+  # The instance repository unprotected: the floor and the registry would
+  # be read from a main any key could push.
+  unprotectedInstanceHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "open";
+      };
+    };
+  };
+
+  # sshd accepting the principal variable from the client.
+  acceptEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.settings.AcceptEnv = "LANG LC_* VALLEY_*";
+  };
+
+  # sshd honouring every variable a key's entry or ~/.ssh/environment sets.
+  permitUserEnvironmentHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.settings.PermitUserEnvironment = lib.mkForce "yes";
+  };
+
+  # One key declared untagged and tagged: which principal it pushes as
+  # would depend on which line sshd reads first.
+  conflictingKeysHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      authorizedKeys = [
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck2 contributor"
+        {
+          principal = "contributor";
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck2 contributor";
+        }
+      ];
     };
   };
 }

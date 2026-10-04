@@ -51,6 +51,15 @@ GitHub allows a given deploy key on one repository. The migration runbook flagge
 deferred until the second migration; cosmo is the second migration. [[ida-a0e5d03]]
 ([ida-a0e5d03-second-mirror-identity.md](../ideas/ida-a0e5d03-second-mirror-identity.md)).
 
+## Protection comes before the move
+
+cosmo's authoritative branches need a protection block before cosmo moves onto the valley. Every
+project a host serves runs the push policy, but a project without protection protects no ref, so any
+key that can push could move its `main`. cosmo's machines deploy from that branch, and its release
+tags are verified on the machines. So the declaration that moves cosmo also protects its `main` and
+names a grant opening its release tags to the principal that signs them
+([bd-75c8721](../bugs/bd-75c8721-pushes-could-write-any-namespace.md)).
+
 ## The phase mapping — what hosting cosmo pulls forward
 
 **cosmo readiness is not an increment on Phase 1.** This is the decision-relevant content of this

@@ -152,21 +152,7 @@ let
       share chmod g+rwxs "$repo/worktrees"
       share chmod -R g+rwX "$repo"
       share find "$repo" -type d -exec chmod g+s {} +
-    '') (lib.attrNames integratedProjects)
-    # The instance repository, when it is not one of the served projects.
-    # Every controller reads the floor from it and none of them writes it,
-    # so read is the whole of the grant — no group write, and no
-    # core.sharedRepository, which is a statement about who writes.
-    + lib.optionalString
-      (
-        cfg.integrator.instanceProject != null
-        && !(integratedProjects ? ${cfg.integrator.instanceProject})
-      )
-      ''
-        repo=${lib.escapeShellArg (toString instanceRepo)}
-        share chmod -R g+rX "$repo"
-        share find "$repo" -type d -exec chmod g+s {} +
-      '';
+    '') (lib.attrNames integratedProjects);
 
   # The integrator's own directory. Four unit settings have to agree about
   # it — its state directory, its working directory, the scratch root TMPDIR
@@ -198,12 +184,9 @@ let
   # The grants the pre-receive hook checks, as the registry names them.
   identityGrants = "${identityStateDir}/grants";
 
-  # sshd's AuthorizedKeysFile list is global, so the compiled file is named
-  # with the %u token and only the git user's exists. A fixed path would
-  # authorize every registry key for every account on the host, root
-  # included.
+  # The compiled authorized keys. sshd reads them for the git user alone:
+  # the git user's Match block below names the files its keys come from.
   identityAuthorizedKeys = "${identityStateDir}/authorized_keys.${cfg.user}";
-  identityAuthorizedKeysPattern = "${identityStateDir}/authorized_keys.%u";
 
   identityCommand = lib.concatStringsSep " " [
     "${identityPackage}/bin/identity compile"
@@ -213,6 +196,7 @@ let
     "--known-signers ${identityKnownSigners}"
     "--authorized-keys ${identityAuthorizedKeys}"
     "--grants ${identityGrants}"
+    "--declared-keys ${declaredKeysFile}"
   ];
 
   # Whose evidence a controller accepts: the compiled artifact once the
@@ -428,8 +412,8 @@ let
   authorizedKeyLine =
     k: if lib.isString k then k else ''environment="${principalEnv}=${k.principal}" ${k.key}'';
 
-  # The program every protected project's pre-receive hook runs: the whole
-  # of the ref policy (valleyhook/), built by this flake.
+  # The program every project's pre-receive hook runs: the whole of the ref
+  # policy (valleyhook/), built by this flake.
   valleyhookPackage = (import ./packages.nix { inherit pkgs lib; }).valleyhook;
 
   # The grants declared by hand, in the format the compiler writes, so the
@@ -446,20 +430,40 @@ let
   # are added to the declared keys: a compilation can only ever grant more.
   grantFiles = [ declaredGrants ] ++ lib.optional cfg.identity.enable identityGrants;
 
+  # The keys a pushed attestation's signature is checked against: the ones
+  # a controller accepts evidence from. An attestation no controller here
+  # would accept cannot take a name in the create-only namespace. A host
+  # that names no such keys checks only what a note claims about its signer.
+  hookVerifiers = lib.optional (knownSigners != "") knownSigners;
+
+  # What a project declares about pushes, as valleyhook reads it: the
+  # protected refs and their writers, empty for a project that declares no
+  # protection, and the project's named grants.
+  pushPolicy =
+    name: p:
+    pkgs.writeText "valley-push-policy-${name}.json" (
+      builtins.toJSON {
+        refs = p.protection.refs or [ ];
+        writers = p.protection.writers or [ ];
+        grants = p.grants or { };
+      }
+    );
+
   # The pre-receive hook: the one structural git invariant
   # (design/architecture.md, design/contribute.md), which is what a push may
-  # write. A protected ref takes a push only from a declared writer, an
-  # attestation ref may only be created, an integration request takes a
-  # write only from a holder of the request grant, a topic branch is open,
-  # and every other namespace is closed — replacement refs, tags and notes
-  # among them — until the project's protection opens a pattern of it by
-  # name. All policy beyond this lives in the integrator.
+  # write. It is installed on every project the host serves. Replacement
+  # refs, notes and the valley's own namespace take no push; a symbolic
+  # ref takes none; topic branches are open; an attestation ref may only be
+  # created, and only holding what its name says; an integration request
+  # takes the request grant; every other ref, tags included, takes a named
+  # grant of the project; and a protected ref also takes a declared writer.
+  # All policy beyond this lives in the integrator.
   #
   # The rules are valleyhook's, in Go, and this script is only how git
-  # reaches it. It hands over the three things the policy is a function of:
-  # the pushing principal, the project's declared protection, and the
-  # grants. The protection is the declaration's own block, exported to JSON
-  # exactly as cue exported it.
+  # reaches it. It hands over what the policy is a function of: the pushing
+  # principal, the project's declared push policy, the grants, the keys an
+  # attestation is checked against, and the hook a project composes after
+  # it, if it declares one.
   #
   # A declaration usually names no writer at all, and then the protected
   # refs take no push from anyone. That is the norm, not a
@@ -471,8 +475,9 @@ let
   # the key instead: services.valley.authorizedKeys tags each key's
   # authorized_keys entry, sshd puts that tag in the environment of the
   # receive-pack this hook runs under, and an untagged key has no principal
-  # at all. The client cannot supply the tag itself — sshd passes on no
-  # client environment (no AcceptEnv).
+  # at all. The client cannot supply the tag itself: the assertions below
+  # hold sshd to accepting no client environment that could carry it, and
+  # valley-init refuses a git user whose own environment file could.
   #
   # This governs pushes, which is every write that crosses the host
   # boundary. It does not govern writes made on the host: the integrator
@@ -484,43 +489,133 @@ let
       # Managed by services.valley — do not edit.
       exec ${valleyhookPackage}/bin/valleyhook pre-receive \
         --project ${lib.escapeShellArg name} \
-        --protection ${pkgs.writeText "valley-protection-${name}.json" (builtins.toJSON p)} \
+        --policy ${pushPolicy name p} \
         ${lib.concatMapStringsSep " " (f: "--grants ${f}") grantFiles} \
+        ${lib.concatMapStringsSep " " (f: "--known-signers ${f}") hookVerifiers} \
+        ${lib.optionalString (cfg.extraPreReceive ? ${name}) "--then ${cfg.extraPreReceive.${name}}"} \
         --principal="''${${principalEnv}:-}"
     '';
 
-  # Per-project pre-receive wiring, from the declaration's protection
-  # blocks. Same rules as the other managed hooks: only ever installs,
-  # updates, or removes a store symlink — a hand-written hook of the same
-  # name is left alone. A project that declares no protection gets no hook,
-  # so a declaration written before the field installs nothing new.
+  # Per-project pre-receive wiring, on every project the host serves. A
+  # hook that is not this module's is a hook that would run instead of the
+  # push policy, so valley-init refuses to leave one in place: it says so,
+  # and the activation fails once everything else is wired. The one
+  # exception is a hook identical to the one the project composes after the
+  # policy (services.valley.extraPreReceive), which is checked byte for byte
+  # and then replaced, since the managed hook runs it. A store symlink is
+  # this module's, whichever store path it names, and is re-pointed.
+  #
+  # core.hooksPath moves where git looks for hooks at all, from any scope
+  # the git user reads — the repository's config, the user's, the system's,
+  # or a file one of them includes. A repository whose hooks path is set is
+  # refused the same way, with no exception.
   protectHookCommands = lib.concatStrings (
-    lib.mapAttrsToList (
-      name: p:
-      let
-        phook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/pre-receive";
-      in
-      if p ? protection then
-        ''
-          phook=${phook}
-          if [ -L "$phook" ]; then
-            case "$(readlink "$phook")" in
-              /nix/store/*) ln -sfn ${protectHook name p.protection} "$phook" ;;
-            esac
-          elif [ ! -e "$phook" ]; then
-            ln -s ${protectHook name p.protection} "$phook"
-          fi
-        ''
+    lib.mapAttrsToList (name: p: ''
+      served=${lib.escapeShellArg "${cfg.dataDir}/${name}.git"}
+      phook="$served/hooks/pre-receive"
+      managed=${protectHook name p}
+      composed=${lib.escapeShellArg (toString (cfg.extraPreReceive.${name} or ""))}
+      if [ -L "$phook" ] && [[ "$(readlink "$phook")" == /nix/store/* ]]; then
+        ln -sfn "$managed" "$phook"
+      elif [ ! -e "$phook" ] && [ ! -L "$phook" ]; then
+        ln -s "$managed" "$phook"
+      elif [ -n "$composed" ] && [ -f "$phook" ] && cmp -s "$phook" "$composed"; then
+        echo "valley-init: ${name}: the pre-receive hook in $served is the one services.valley.extraPreReceive.${name} composes after the push policy, so the managed hook replaces it and runs it" >&2
+        ln -sfn "$managed" "$phook"
       else
-        ''
-          phook=${phook}
-          if [ -L "$phook" ]; then
-            case "$(readlink "$phook")" in
-              /nix/store/*) rm -f "$phook" ;;
-            esac
-          fi
-        ''
-    ) gitProjects
+        echo "valley-init: ${name}: $phook is a pre-receive hook this module did not write, and git would run it instead of the push policy. Declare it as services.valley.extraPreReceive.${name} to run it after the policy, or remove it." >&2
+        conflicts=1
+      fi
+      hooks_path="$(git -C "$served" config --get core.hooksPath)" || hooks_path=""
+      if [ -n "$hooks_path" ]; then
+        echo "valley-init: ${name}: core.hooksPath is $hooks_path for $served, so git would look for hooks there and the push policy would not run. Remove the setting." >&2
+        conflicts=1
+      fi
+    '') gitProjects
+  );
+
+  # sshd's patterns, for the assertions that hold it to accepting no client
+  # environment that could carry the principal. `*` and `?` are the only
+  # wildcards an AcceptEnv pattern has.
+  sshPatternMatches =
+    pattern: name:
+    builtins.match (lib.concatMapStrings (
+      c:
+      if c == "*" then
+        ".*"
+      else if c == "?" then
+        "."
+      else if builtins.match "[A-Za-z0-9_]" c != null then
+        c
+      else
+        "\\${c}"
+    ) (lib.stringToCharacters pattern)) name != null;
+
+  # A refname glob as the declaration writes one, where `*` crosses path
+  # separators (schema/valley.cue).
+  refPatternMatches =
+    pattern: ref:
+    builtins.match (lib.concatMapStrings (
+      c:
+      if c == "*" then
+        ".*"
+      else if builtins.match "[A-Za-z0-9/_-]" c != null then
+        c
+      else
+        "\\${c}"
+    ) (lib.stringToCharacters pattern)) ref != null;
+
+  # Every value sshd is given for one keyword, from the settings and from
+  # any line of extraConfig, in any case: sshd keywords are not
+  # case-sensitive.
+  sshdValues =
+    keyword:
+    let
+      settings = config.services.openssh.settings;
+      fromSettings = lib.concatMap (
+        k:
+        let
+          v = settings.${k};
+          word = x: if lib.isBool x then (if x then "yes" else "no") else toString x;
+        in
+        if lib.isList v then map word v else lib.splitString " " (word v)
+      ) (lib.filter (k: lib.toLower k == lib.toLower keyword && settings.${k} != null) (lib.attrNames settings));
+      fromExtra = lib.concatMap (
+        line:
+        let
+          m = builtins.match "[[:space:]]*${lib.toLower keyword}[[:space:]]+(.*)" (lib.toLower line);
+        in
+        if m == null then [ ] else lib.filter (v: v != "") (lib.splitString " " (lib.head m))
+      ) (lib.splitString "\n" config.services.openssh.extraConfig);
+    in
+    fromSettings ++ fromExtra;
+
+  # Every key line the git user's declared authorized_keys holds, from this
+  # module and from any other, with the principal its tag names ("" for
+  # none) and the key itself.
+  declaredKeyEntries = lib.concatMap (
+    line:
+    let
+      key = builtins.match "(.*[[:space:]])?((ssh|ecdsa|sk)-[^[:space:]\"]+)[[:space:]]+([A-Za-z0-9+/=]+)([[:space:]].*)?" line;
+      tag = builtins.match ".*environment=\"${principalEnv}=([^\"]*)\".*" line;
+    in
+    lib.optional (key != null) {
+      key = lib.elemAt key 3;
+      principal = if tag == null then "" else lib.head tag;
+    }
+  ) config.users.users.${cfg.user}.openssh.authorizedKeys.keys;
+
+  # Keys declared more than once under different tags. sshd authorizes a
+  # key by the first entry that names it, so which principal such a key
+  # pushes as depends on file order; the assertion below refuses it.
+  conflictingKeys = lib.filterAttrs (_: entries: lib.length (lib.unique (map (e: e.principal) entries)) > 1) (
+    lib.groupBy (e: e.key) declaredKeyEntries
+  );
+
+  # The declared key lines, for the compiler: a compiled key that is also
+  # declared under another tag is refused there, for the same reason.
+  declaredKeysFile = pkgs.writeText "valley-declared-keys" (
+    lib.concatLines config.users.users.${cfg.user}.openssh.authorizedKeys.keys
   );
 in
 {
@@ -568,10 +663,12 @@ in
                   Name of the principal this key acts as. Every push made
                   with the key carries the name, and the pre-receive hook
                   decides what the name may write: from the project's
-                  `protection` block in {option}`services.valley.config`,
-                  and from the grants the name holds
-                  ({option}`services.valley.grants`, and the registry's
-                  when it is compiled). Nothing else uses it.
+                  `protection` block and named grants in
+                  {option}`services.valley.config`, and from the grants the
+                  name holds ({option}`services.valley.grants`, and the
+                  registry's when it is compiled). Nothing else uses it.
+                  A key is declared once: the same key under two tags, or
+                  tagged and untagged, is refused.
                 '';
               };
             };
@@ -610,6 +707,28 @@ in
         authorized beside them. The list is therefore the way back in when
         a compilation is wrong or has not happened yet, and it is never
         empty.
+      '';
+    };
+
+    extraPreReceive = lib.mkOption {
+      type = lib.types.attrsOf lib.types.pathInStore;
+      default = { };
+      example = lib.literalExpression ''
+        {
+          cosmo = pkgs.writeShellScript "cosmo-pre-receive" ;
+        }
+      '';
+      description = ''
+        A further pre-receive hook per project, run after the push policy
+        accepts a push, with the same input. It can refuse what the policy
+        accepts and never accept what the policy refuses.
+
+        This is the one way to compose a hook with the managed one. A
+        pre-receive hook the module did not write fails valley-init,
+        because git would run it instead of the policy. A hook that is
+        byte-for-byte the one declared here is the exception: valley-init
+        replaces it with the managed hook, which runs it. The value is a
+        store path, so what runs is exactly what was declared.
       '';
     };
 
@@ -793,6 +912,11 @@ in
           and no staleness to wait out: landing is the whole of publishing
           a floor.
 
+          The project has to declare protection covering refs/heads/main,
+          and the registry's ref when the identity compiler is on. Both
+          are read from that tip, so a ref any push-capable key could move
+          would hand every key the floor and the registry.
+
           Every controller on the host reads the same repository, the
           controller serving that repository included. Both layers are
           resolved from the controller's own side — this one, and the
@@ -974,6 +1098,42 @@ in
         }
       ]
     )
+    ++ lib.optionals (cfg.integrator.instanceProject != null && gitProjects ? ${cfg.integrator.instanceProject}) (
+      let
+        name = cfg.integrator.instanceProject;
+        protected = gitProjects.${name}.protection.refs or [ ];
+        read =
+          lib.optional cfg.integrator.enable "refs/heads/main" ++ lib.optional cfg.identity.enable cfg.identity.ref;
+      in
+      map (ref: {
+        assertion = lib.any (pattern: refPatternMatches pattern ref) protected;
+        message = "services.valley.integrator.instanceProject names ${name}, whose ${ref} is not protected: the floor and the registry are read from it, so any key that can push could rewrite them. Declare a protection block for ${name} covering ${ref}.";
+      }) read
+    )
+    ++ [
+      {
+        assertion = !(lib.any (pattern: sshPatternMatches pattern principalEnv) (sshdValues "AcceptEnv"));
+        message = "sshd accepts ${principalEnv} from the client (AcceptEnv): any key could name any principal. Remove the pattern that admits it.";
+      }
+      {
+        assertion = !(lib.any (lib.hasPrefix "${principalEnv}=") (sshdValues "SetEnv"));
+        message = "sshd sets ${principalEnv} itself (SetEnv), over the tag on every key. Remove it.";
+      }
+      {
+        assertion = lib.all (v: lib.toLower v == "no" || v == principalEnv) (
+          sshdValues "PermitUserEnvironment"
+        );
+        message = "sshd's PermitUserEnvironment must be no, or exactly ${principalEnv} where keys carry a principal tag: anything wider lets a key's entry or the git user's ~/.ssh/environment set variables the push policy does not expect.";
+      }
+      {
+        assertion = conflictingKeys == { };
+        message = "the git user's authorized keys name ${lib.concatStringsSep ", " (lib.attrNames conflictingKeys)} under more than one principal tag (an untagged entry counts as one): sshd authorizes a key by the first entry naming it, so which principal it pushes as would depend on file order. Declare each key once.";
+      }
+      {
+        assertion = config.users.users.${cfg.user}.openssh.authorizedKeys.keyFiles == [ ];
+        message = "users.users.${cfg.user}.openssh.authorizedKeys.keyFiles must be empty: the git user's keys carry the principal tag the push policy reads, so they are declared in services.valley.authorizedKeys, where their tags can be checked.";
+      }
+    ]
     ++ lib.optionals cfg.identity.enable [
       {
         assertion = cfg.integrator.instanceProject != null;
@@ -1017,22 +1177,27 @@ in
       PermitUserEnvironment = principalEnv;
     };
 
-    # The compiled authorized keys, added to the list sshd reads rather than
-    # replacing it. The declared keys above stay authorized: a compiled file
-    # can only ever add, so an empty or missing one — a first boot before
-    # the first compilation, a registry that lost an entry, a bug here —
-    # cannot take the git user's access away. Which is the point: the
-    # assertion above keeps at least one key declared, and that key is the
-    # way back in.
-    services.openssh.authorizedKeysFiles = lib.mkIf cfg.identity.enable [
-      identityAuthorizedKeysPattern
-    ];
-
-    # Belt-and-braces hardening for the git user. The trailing `Match All`
-    # closes the block so it can't scope directives appended to sshd_config
-    # after this snippet.
+    # The git user's key files, named in its Match block so no other file
+    # can authorize a key for it. The declared keys come first, and they stay
+    # authorized beside the compiled ones: a compiled file can only ever
+    # add, so an empty or missing one — a first boot before the first
+    # compilation, a registry that lost an entry, a bug here — cannot take
+    # the git user's access away. Which is the point: the assertion above
+    # keeps at least one key declared, and that key is the way back in.
+    #
+    # Nothing else authorizes a key for the git user. ~/.ssh/authorized_keys
+    # under its home is not read, and no AuthorizedKeysCommand runs, so every
+    # entry a pusher can arrive through carries the tag this module or the
+    # compiler wrote, and the assertions and the compiler hold those to one
+    # tag per key.
+    #
+    # Belt-and-braces hardening for the git user beside it. The trailing
+    # `Match All` closes the block so it can't scope directives appended to
+    # sshd_config after this snippet.
     services.openssh.extraConfig = ''
       Match User ${cfg.user}
+        AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u${lib.optionalString cfg.identity.enable " ${identityAuthorizedKeys}"}
+        AuthorizedKeysCommand none
         AllowTcpForwarding no
         AllowAgentForwarding no
         X11Forwarding no
@@ -1135,8 +1300,25 @@ in
         User = cfg.user;
         Group = cfg.group;
       };
-      path = [ pkgs.git ];
+      path = [
+        pkgs.git
+        pkgs.diffutils
+      ];
+      # Everything init can wire is wired before it fails. A conflict in one
+      # repository is reported, the rest of the host is still converged,
+      # and only then does the unit fail, so the activation fails loudly
+      # without leaving another repository's hook out of date.
       script = ''
+        conflicts=0
+
+        # sshd reads the git user's ~/.ssh/environment for the principal
+        # variable, after the tag on the key, so a file there would make
+        # every key push as whatever it names.
+        if [ -e ${lib.escapeShellArg "${cfg.dataDir}/.ssh/environment"} ]; then
+          echo "valley-init: ${cfg.dataDir}/.ssh/environment exists, and sshd would read ${principalEnv} from it for every key the git user authorizes. Remove it." >&2
+          conflicts=1
+        fi
+
         repos=( ${lib.escapeShellArgs repoNames} )
         for name in "''${repos[@]}"; do
           repo="${cfg.dataDir}/$name.git"
@@ -1174,7 +1356,7 @@ in
         # Per-project push-mirror hooks.
         ${mirrorHookCommands}
 
-        # The one structural invariant, on every project declared protected.
+        # The one structural invariant, on every project the host serves.
         ${protectHookCommands}
 
         # The ref-updated publisher hook, on every repo when the bus is on.
@@ -1182,6 +1364,11 @@ in
 
         # Group-shared repositories, on what the integrator serves.
         ${lib.optionalString cfg.integrator.enable integratorShareCommands}
+
+        if [ "$conflicts" -ne 0 ]; then
+          echo "valley-init: refusing to report this host converged: the push policy is not what every repository runs" >&2
+          exit 1
+        fi
       '';
     };
 

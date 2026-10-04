@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -19,6 +21,7 @@ func compile(args []string) error {
 	knownSigners := fs.String("known-signers", "", "where the verifier keys are written")
 	authorizedKeys := fs.String("authorized-keys", "", "where the tagged authorized_keys is written")
 	grantsFile := fs.String("grants", "", "where the grants the pre-receive hook checks are written")
+	declaredKeys := fs.String("declared-keys", "", "the authorized_keys lines the host declares by hand")
 	now := fs.String("now", "", "the day expiry is judged against")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -46,11 +49,18 @@ func compile(args []string) error {
 		day = parsed
 	}
 
+	var declared map[string]string
+	if *declaredKeys != "" {
+		var err error
+		if declared, err = readDeclaredKeys(*declaredKeys); err != nil {
+			return err
+		}
+	}
 	r, commit, err := readRegistry(*repo, *ref, *dir, *schema)
 	if err != nil {
 		return err
 	}
-	a, err := render(r, day)
+	a, err := render(r, day, declared)
 	if err != nil {
 		return fmt.Errorf("the registry at %s does not compile: %w", commit, err)
 	}
@@ -78,6 +88,43 @@ func compile(args []string) error {
 		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
 		a.granted, changed(grantsWritten))
 	return nil
+}
+
+// readDeclaredKeys reads the authorized_keys lines the host declares by
+// hand, and maps each key to the principal its entry is tagged with.
+func readDeclaredKeys(path string) (map[string]string, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	declared := map[string]string{}
+	for _, line := range strings.Split(string(body), "\n") {
+		blob := keyBlob(line)
+		if blob == "" {
+			continue
+		}
+		tag := ""
+		if m := principalTag.FindStringSubmatch(line); m != nil {
+			tag = m[1]
+		}
+		declared[blob] = tag
+	}
+	return declared, nil
+}
+
+// principalTag is the option a tagged entry carries.
+var principalTag = regexp.MustCompile(`environment="` + principalEnv + `=([^"]*)"`)
+
+// keyBlob is the base64 key in an authorized_keys line: the field after the
+// first one naming a key type.
+func keyBlob(line string) string {
+	fields := strings.Fields(line)
+	for i, f := range fields[:max(len(fields)-1, 0)] {
+		if strings.HasPrefix(f, "ssh-") || strings.HasPrefix(f, "ecdsa-") || strings.HasPrefix(f, "sk-") {
+			return fields[i+1]
+		}
+	}
+	return ""
 }
 
 func changed(written bool) string {

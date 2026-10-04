@@ -34,12 +34,13 @@ is_declared_hook() {
 
 # Three bare repositories that already exist, each in a state the module
 # has to converge from. None of them was created by valley-init: this is
-# the path a host takes when protection is declared over repositories
-# that predate the declaration.
+# the path a host takes when the module is deployed over repositories that
+# predate it.
 #
 #   guarded   real history, no hooks at all — nothing to converge from
-#   released  a hand-written pre-receive, which is not the module's
-#   open      a stale managed hook, for protection no longer declared
+#   released  a hand-written pre-receive identical to the hook released
+#             declares it composes after the push policy
+#   open      a stale managed hook: a store symlink to another hook
 for name in guarded released open; do
   git init --quiet --bare "$data/$name.git"
 done
@@ -48,7 +49,9 @@ git -C work commit --quiet --allow-empty -m one
 git -C work push --quiet origin main
 before="$(git -C work rev-parse HEAD)"
 
-printf '#!/bin/sh\nexit 0\n' > "$(hook released)"
+composed="$(grep -o -- '--then /nix/store/[^ ]*' "$(declared released)" | cut -d' ' -f2)"
+[ -n "$composed" ] || fail "released's managed hook names no composed hook"
+cp "$composed" "$(hook released)"
 chmod +x "$(hook released)"
 ln -s "$(declared guarded)" "$(hook open)"
 
@@ -58,7 +61,7 @@ ln -s "$(declared guarded)" "$(hook open)"
 decoy="$(git -C "$data/guarded.git" commit-tree "$before^{tree}" -m decoy)"
 git -C "$data/guarded.git" update-ref "refs/replace/$before" "$decoy"
 
-bash init.sh 2> init.err || fail "the rendered init script failed over existing repositories"
+bash init.sh 2> init.err || fail "the rendered init script failed over existing repositories: $(cat init.err)"
 grep -q "guarded.git holds replacement refs" init.err ||
   fail "a replacement ref already in a repository was not reported"
 grep -q "refs/replace/$before" init.err ||
@@ -74,27 +77,80 @@ is_declared_hook guarded
 [ "$(git -C "$data/guarded.git" rev-parse main)" = "$before" ] ||
   fail "guarded lost the history it already had"
 
-# A hook the module did not write is not the module's to replace, even
-# where the declaration protects the project.
-[ ! -L "$(hook released)" ] || fail "a hand-written hook was replaced by the managed one"
-[ "$(cat "$(hook released)")" = "$(printf '#!/bin/sh\nexit 0\n')" ] ||
-  fail "a hand-written hook was rewritten"
+# A hand-written hook that is byte for byte the one released composes is
+# the one case init replaces: the managed hook runs it after the policy.
+is_declared_hook released
+grep -q "is the one services.valley.extraPreReceive.released composes" init.err ||
+  fail "a composed hook was replaced without saying so"
 
-# A project that declares no protection ends with no managed hook,
-# whatever it was carrying before.
-[ ! -e "$(hook open)" ] || fail "open kept a managed hook it no longer declares"
+# A project that declares no protection gets the managed hook all the
+# same — the push policy is every project's — re-pointed from the stale
+# store path it carried.
+is_declared_hook open
 
-# Running it again changes nothing, and running it over a hook that has
-# drifted to some other store path re-points it: the script is level
-# triggered, so what a repository carries now does not decide what it
-# ends up with.
+# Each conflict fails init. It says which repository and why, leaves what
+# it found in place, and still converges every repository it can.
+conflict() {
+  local what="$1" says="$2"
+  if bash init.sh 2> conflict.err; then
+    fail "init reported the host converged over $what"
+  fi
+  grep -qF -- "$says" conflict.err || fail "the refusal over $what did not say \"$says\": $(cat conflict.err)"
+  grep -q 'refusing to report this host converged' conflict.err ||
+    fail "init failed over $what without saying the host is not converged"
+}
+exit_zero="$(printf '#!/bin/sh\nexit 0\n')"
+
+# A hook nobody declared, which would run instead of the policy.
+rm "$(hook guarded)"
+printf '%s\n' "$exit_zero" > "$(hook guarded)"
+chmod +x "$(hook guarded)"
+ln -sfn "$(declared guarded)" "$(hook open)"
+conflict "a hand-written hook" "guarded: $(hook guarded) is a pre-receive hook this module did not write"
+[ "$(cat "$(hook guarded)")" = "$exit_zero" ] || fail "init rewrote a hook it refused"
+is_declared_hook open
+rm "$(hook guarded)"
+
+# A hand-written hook where a project composes one, that is not the one it
+# composes.
+rm "$(hook released)"
+printf '%s\n' "$exit_zero" > "$(hook released)"
+chmod +x "$(hook released)"
+conflict "a hook that differs from the declared composition" "released: $(hook released) is a pre-receive hook this module did not write"
+rm "$(hook released)"
+
+# A hooks path, from the repository's config, from a file it includes, and
+# from the git user's own config: each sends git to look for hooks
+# somewhere the managed hook is not.
+git -C "$data/guarded.git" config core.hooksPath "$TMPDIR/elsewhere"
+conflict "a repository's core.hooksPath" "guarded: core.hooksPath is $TMPDIR/elsewhere"
+git -C "$data/guarded.git" config --unset core.hooksPath
+printf '[core]\n\thooksPath = %s\n' "$TMPDIR/included" > "$TMPDIR/hooks.inc"
+git -C "$data/guarded.git" config include.path "$TMPDIR/hooks.inc"
+conflict "an included core.hooksPath" "guarded: core.hooksPath is $TMPDIR/included"
+git -C "$data/guarded.git" config --unset include.path
+git config --global core.hooksPath "$TMPDIR/global"
+conflict "the git user's core.hooksPath" "core.hooksPath is $TMPDIR/global"
+git config --global --unset core.hooksPath
+
+# The git user's ~/.ssh/environment, which sshd would read the principal
+# from for every key.
+mkdir -p "$data/.ssh"
+echo VALLEY_PRINCIPAL=integrator > "$data/.ssh/environment"
+conflict "an ssh environment file" "$data/.ssh/environment exists"
+rm "$data/.ssh/environment"
+
+# With every conflict gone, init converges, and running it again changes
+# nothing: the script is level triggered, so what a repository carries now
+# does not decide what it ends up with.
+bash init.sh || fail "the rendered init script failed once every conflict was gone"
 bash init.sh || fail "the rendered init script failed on a second run"
-is_declared_hook guarded
+for name in guarded released open; do
+  is_declared_hook "$name"
+done
 ln -sfn "$(declared released)" "$(hook guarded)"
-rm -f "$(hook released)"
 bash init.sh || fail "the rendered init script failed over a drifted hook"
 is_declared_hook guarded
-is_declared_hook released
 
 # The converged hook is live. Pushing as a principal is pushing with the
 # tag on; pushing with an untagged key is pushing with it off — the same

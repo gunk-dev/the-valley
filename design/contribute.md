@@ -70,8 +70,12 @@ checked out, switch to main first. If local main has diverged, inspect its commi
 ## The one invariant
 
 The bare repo's `pre-receive` hook enforces exactly one structural invariant: what a push may write.
-Only a declared writer may write a protected ref. Attestation refs are create-only. Only a principal
-holding the request grant may write an integration request. Topic branches are open to anyone with
-push access. Every other namespace, tags and replacement refs among them, is closed unless the
-project's protection opens it by name. All complex policy lives in the integrator
+It runs on every project a host serves. Topic branches are open to anyone with push access.
+Attestation refs are create-only, and the hook reads each new one: its name must be
+`<tree digest>/<signer key hash>`, and every note in it must be about that tree and signed under
+that key hash. Where the host names the keys it accepts, the signature must verify under one of
+them. The pusher need not be the signer, because evidence is relayed. Only a principal holding the
+request grant may write an integration request. Every other ref, tags included, takes a named grant
+of the project. A protected ref also takes a declared writer. Replacement refs, notes and the rest
+of the valley's own namespace take no push. All complex policy lives in the integrator
 ([architecture.md](./architecture.md), _The one structural git invariant_).

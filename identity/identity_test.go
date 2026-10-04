@@ -112,7 +112,7 @@ func TestAGrantAtAnUndeclaredBoundaryFailsTheRender(t *testing.T) {
 			},
 		},
 	}
-	_, err := render(r, time.Now())
+	_, err := render(r, time.Now(), nil)
 	if err == nil || !strings.Contains(err.Error(), "bus") {
 		t.Errorf("render error = %v, want one naming the undeclared boundary", err)
 	}
@@ -127,11 +127,11 @@ func TestAGrantAtAnUndeclaredBoundaryFailsTheRender(t *testing.T) {
 func TestARenderThatOrphansGovernanceIsRefused(t *testing.T) {
 	r := governedRegistry()
 	r.Principals["founder"] = expiring(r.Principals["founder"], "2026-10-01")
-	if _, err := render(r, day(t, "2026-09-30")); err != nil {
+	if _, err := render(r, day(t, "2026-09-30"), nil); err != nil {
 		t.Fatalf("the day before the only governing entry expired: %v", err)
 	}
 	for _, on := range []string{"2026-10-01", "2026-11-01"} {
-		_, err := render(r, day(t, on))
+		_, err := render(r, day(t, on), nil)
 		if err == nil || !strings.Contains(err.Error(), "governanceOrphaned") {
 			t.Errorf("render on %s: error = %v, want one naming governanceOrphaned", on, err)
 		}
@@ -144,7 +144,7 @@ func TestARenderThatOrphansGovernanceIsRefused(t *testing.T) {
 func TestARegistryGoverningNothingIsRefused(t *testing.T) {
 	r := governedRegistry()
 	r.Principals["founder"] = withGrants(r.Principals["founder"], map[string]grant{"push": {Boundary: "push"}})
-	_, err := render(r, day(t, "2026-01-01"))
+	_, err := render(r, day(t, "2026-01-01"), nil)
 	if err == nil || !strings.Contains(err.Error(), "governanceOrphaned") {
 		t.Errorf("render error = %v, want one naming governanceOrphaned", err)
 	}
@@ -167,7 +167,7 @@ func governedRegistry() registry {
 			},
 			"runner": {
 				Kind:    "machine",
-				Keys:    []key{{Public: public}},
+				Keys:    []key{{Public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"}},
 				Grants:  map[string]grant{"push": {Boundary: "push"}},
 				Expires: "2027-01-01",
 			},
@@ -183,4 +183,36 @@ func expiring(p principal, expires string) principal {
 func withGrants(p principal, g map[string]grant) principal {
 	p.Grants = g
 	return p
+}
+
+// sshd authorizes a key by the first entry naming it, so a key authorized
+// as two principals pushes as whichever line comes first. Both ways of
+// getting there are refused: two registry entries holding one key, and a
+// registry key the host also declares by hand under another tag.
+func TestOneKeyAuthorizesOnePrincipal(t *testing.T) {
+	r := governedRegistry()
+	founder := r.Principals["founder"]
+	founder.Grants = map[string]grant{"push": {Boundary: "push"}, "govern": {Boundary: "registry"}}
+	r.Principals["founder"] = founder
+	if _, err := render(r, day(t, "2026-09-30"), nil); err != nil {
+		t.Fatalf("two principals with two keys: %v", err)
+	}
+
+	blob := strings.Fields(r.Principals["runner"].Keys[0].Public)[1]
+	for _, declared := range []string{"", "someone-else"} {
+		_, err := render(r, day(t, "2026-09-30"), map[string]string{blob: declared})
+		if err == nil || !strings.Contains(err.Error(), "declared on this host") {
+			t.Errorf("runner's key declared as %q: error = %v, want one naming the declared entry", declared, err)
+		}
+	}
+	if _, err := render(r, day(t, "2026-09-30"), map[string]string{blob: "runner"}); err != nil {
+		t.Errorf("runner's key declared as runner: %v", err)
+	}
+
+	runner := r.Principals["runner"]
+	runner.Keys = founder.Keys
+	r.Principals["runner"] = runner
+	if _, err := render(r, day(t, "2026-09-30"), nil); err == nil || !strings.Contains(err.Error(), "one key authorizes one principal") {
+		t.Errorf("one key under two principals: error = %v", err)
+	}
 }

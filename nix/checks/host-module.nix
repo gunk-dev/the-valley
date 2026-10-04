@@ -10,6 +10,10 @@
 }:
 let
   inherit (hosts)
+    unprotectedInstanceHost
+    acceptEnvHost
+    permitUserEnvironmentHost
+    conflictingKeysHost
     host
     noBackupHost
     noSecretsHost
@@ -34,6 +38,36 @@ let
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
 
+  # The hosts the module must refuse, each with the words its refusal must
+  # say. An assertion that stopped firing would leave the push policy
+  # quietly wrong, so each is held to naming what is wrong.
+  refusedHosts = [
+    {
+      host = unprotectedInstanceHost;
+      says = "whose refs/heads/main is not protected";
+      why = "an instance repository without protection would let any key that can push rewrite the floor and the registry";
+    }
+    {
+      host = acceptEnvHost;
+      says = "AcceptEnv";
+      why = "sshd accepting the principal variable from the client would let any key name any principal";
+    }
+    {
+      host = permitUserEnvironmentHost;
+      says = "PermitUserEnvironment";
+      why = "a PermitUserEnvironment wider than the principal variable would let a key's entry or ~/.ssh/environment set what the push policy does not expect";
+    }
+    {
+      host = conflictingKeysHost;
+      says = "more than one principal tag";
+      why = "a key declared under two tags would push as whichever entry sshd reads first";
+    }
+  ];
+
+  unrefusedHosts = builtins.filter (
+    r: !(lib.any (a: !a.assertion && lib.hasInfix r.says a.message) r.host.config.assertions)
+  ) refusedHosts;
+
   protectedKeyLines = protectedHost.config.users.users.git.openssh.authorizedKeys.keys;
 
   resticRenderedWithoutDeclaration =
@@ -46,17 +80,18 @@ let
     noBackupHost.config.systemd.services ? valley-bus
     || noBackupHost.config.systemd.services ? valley-bus-init;
 
-  # A declaration written before the field renders the host it always
-  # did: no hook wired, no tag on a key, no sshd change. It still
-  # carries the sweep that removes a hook it once had — the same
-  # discipline the mirror and bus hooks keep, and the only way
-  # protection can be turned off by editing a declaration.
+  # A declaration with no protection block and no tagged key still gets
+  # the push policy on every project — the policy is the host's, and a
+  # protection block only adds protected refs to it — and nothing of the
+  # principal machinery: no tag on a key, no sshd change.
   protectionRenderedWithoutDeclaration =
     noBackupHost.config.services.openssh.settings ? PermitUserEnvironment
     || lib.any (lib.hasInfix "environment=") (
       noBackupHost.config.users.users.git.openssh.authorizedKeys.keys
-    )
-    || lib.hasInfix "valley-protect-" noBackupHost.config.systemd.services.valley-init.script;
+    );
+
+  policyMissingWithoutDeclaration =
+    !(lib.hasInfix "valley-protect-the-valley" noBackupHost.config.systemd.services.valley-init.script);
 
   # The integrator's units. What a controller *does* is not checked here
   # and no VM is booted: that is integrator-e2e's job (the real binaries
@@ -163,11 +198,11 @@ let
       selfCommand = integratorSelfHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
       env = integratorHost.config.systemd.services."valley-integrator@".environment;
     in
-    !(lib.hasInfix "--instance-repo /srv/git/open.git" command)
+    !(lib.hasInfix "--instance-repo /srv/git/sealed.git" command)
     || !(lib.hasInfix "--instance-repo /srv/git/guarded.git" selfCommand)
     || env.GIT_CONFIG_COUNT or null != "2"
     || env.GIT_CONFIG_KEY_1 or null != "safe.directory"
-    || env.GIT_CONFIG_VALUE_1 or null != "/srv/git/open.git";
+    || env.GIT_CONFIG_VALUE_1 or null != "/srv/git/sealed.git";
 
   integratorScratch =
     integratorGitEnv.TMPDIR or null != "/var/lib/${integratorService.StateDirectory}"
@@ -183,6 +218,7 @@ let
     || integratorHost.config.systemd.timers ? valley-identity
     || integratorHost.config.services.openssh.settings ? PermitUserEnvironment
     || lib.any (lib.hasInfix "valley-identity") integratorHost.config.services.openssh.authorizedKeysFiles
+    || lib.hasInfix "valley-identity" integratorHost.config.services.openssh.extraConfig
     || lib.hasInfix "valley-identity" (
       integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
     )
@@ -206,21 +242,24 @@ let
   # user, because sshd equally refuses a file owned by anyone but root or
   # the account it authorizes.
   #
-  # The compiled file is added to what sshd reads rather than replacing it,
-  # and it carries the %u token: a fixed path in that global list would
-  # authorize every registry key for every account on the host.
+  # The compiled file is added to what sshd reads for the git user rather
+  # than replacing it, and for the git user alone: the user's Match block
+  # names the declared keys and the compiled ones, and nothing else — no
+  # ~/.ssh/authorized_keys, no AuthorizedKeysCommand — so every key the git
+  # user accepts carries a tag this module or the compiler wrote. The
+  # compiler is handed the declared keys, so it can refuse a registry key
+  # declared under another tag.
   identityCompiler =
     identityService.User or null != identityHost.config.services.valley.user
     || identityService.StateDirectoryMode or null != "0755"
     || identityService.ReadWritePaths or [ ] != [ identityStateDir ]
-    || !(lib.hasInfix "--repo /srv/git/open.git" identityService.ExecStart)
+    || !(lib.hasInfix "--repo /srv/git/sealed.git" identityService.ExecStart)
     || !(lib.hasInfix "--known-signers ${identityStateDir}/known-signers" identityService.ExecStart)
     || !(lib.hasInfix "--authorized-keys ${identityStateDir}/authorized_keys.git" identityService.ExecStart)
     || !(lib.hasInfix "--grants ${identityStateDir}/grants" identityService.ExecStart)
-    || !(builtins.elem "${identityStateDir}/authorized_keys.%u"
-      identityHost.config.services.openssh.authorizedKeysFiles
-    )
-    || !(builtins.elem "%h/.ssh/authorized_keys" identityHost.config.services.openssh.authorizedKeysFiles);
+    || !(lib.hasInfix "-valley-declared-keys" identityService.ExecStart)
+    || !(lib.hasInfix "AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u ${identityStateDir}/authorized_keys.git\n" identityHost.config.services.openssh.extraConfig)
+    || !(lib.hasInfix "AuthorizedKeysCommand none" identityHost.config.services.openssh.extraConfig);
 
   # A controller under a compiled registry reads the compiled signers file
   # and signs under the name the registry publishes its key under. The key
@@ -258,8 +297,12 @@ in
       !(lib.any (a: lib.hasInfix "services.valley.backup." a.message) missingSecretAssertions)
     then
       throw "valley module-eval: enabling backup without the secret-path options must fail an assertion naming them"
+    else if unrefusedHosts != [ ] then
+      throw "valley module-eval: ${lib.concatMapStringsSep "; " (r: "a host was not refused although ${r.why}") unrefusedHosts}"
     else if protectionRenderedWithoutDeclaration then
-      throw "valley module-eval: write-protection machinery rendered for a declaration with no protection block"
+      throw "valley module-eval: principal machinery rendered for a declaration with no protection block and no tagged key"
+    else if policyMissingWithoutDeclaration then
+      throw "valley module-eval: a project with no protection block got no pre-receive hook — the push policy is installed on every project a host serves"
     else if
       protectedHost.config.services.openssh.settings.PermitUserEnvironment or null != "VALLEY_PRINCIPAL"
     then

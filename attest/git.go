@@ -22,9 +22,90 @@ func git(repo string, args ...string) (string, error) {
 	return gitInput(repo, nil, args...)
 }
 
-func gitInput(repo string, stdin []byte, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// gitCommand is every git this program runs to read or write the
+// repository: with replacement refs off, and in a fixed environment.
+//
+// A replacement ref makes one object stand in for another wherever git
+// looks it up. Left on, a refs/replace/* in the repository could make the
+// tree this program digests, exports or verifies be some other tree than
+// the revision names — so a verification could pass for a revision that
+// is not the one attested, and a run could check one tree and sign for
+// another.
+//
+// No GIT_ variable is inherited but command-scope configuration naming
+// safe.directory, which a caller that does not own the repository needs
+// (the integrator's unit supplies it this way). A GIT_DIR or
+// GIT_OBJECT_DIRECTORY could point git at other objects, and a
+// GIT_CONFIG_PARAMETERS could change how it reads them. System and user
+// configuration are not read. The integrator's environment is fixed the
+// same way (integrator/main.go), and sigverify's.
+func gitCommand(repo string, args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Dir = repo
+	cmd.Env = gitEnvironment(os.Environ())
+	return cmd
+}
+
+// gitPush pushes to a remote. It is the one git this program runs that
+// keeps the person's own configuration — how a remote's URL is rewritten,
+// which ssh command reaches it — because it reads nothing it decides on.
+// Replacement refs are still off.
+func gitPush(repo string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"--no-replace-objects", "push"}, args...)...)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "GIT_NO_REPLACE_OBJECTS=1")
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git push %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+	}
+	return out.String(), nil
+}
+
+// gitEnvironment is the environment gitCommand runs git in: the caller's,
+// less every GIT_ variable but safe.directory entries, with git's own
+// configuration fixed.
+func gitEnvironment(inherited []string) []string {
+	vars := map[string]string{}
+	var kept []string
+	for _, kv := range inherited {
+		name, value, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			vars[name] = value
+			continue
+		}
+		kept = append(kept, kv)
+	}
+
+	var safe []string
+	count, _ := strconv.Atoi(vars["GIT_CONFIG_COUNT"])
+	for i := 0; i < count; i++ {
+		if strings.EqualFold(vars[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)], "safe.directory") {
+			safe = append(safe, vars[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)])
+		}
+	}
+	if len(safe) > 0 {
+		kept = append(kept, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(safe)))
+		for i, dir := range safe {
+			kept = append(kept,
+				fmt.Sprintf("GIT_CONFIG_KEY_%d=safe.directory", i),
+				fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, dir))
+		}
+	}
+
+	return append(kept,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+}
+
+func gitInput(repo string, stdin []byte, args ...string) (string, error) {
+	cmd := gitCommand(repo, args...)
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -49,8 +130,7 @@ func gitBlobSums(repo string, oids []string) ([][32]byte, error) {
 	if len(oids) == 0 {
 		return sums, nil
 	}
-	cmd := exec.Command("git", "cat-file", "--batch")
-	cmd.Dir = repo
+	cmd := gitCommand(repo, "cat-file", "--batch")
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
@@ -95,8 +175,7 @@ func gitBlobSums(repo string, oids []string) ([][32]byte, error) {
 // the subject digest names — an uncommitted edit cannot ride along inside
 // an attestation.
 func exportTree(repo, rev, dir string) error {
-	cmd := exec.Command("git", "archive", "--format=tar", rev)
-	cmd.Dir = repo
+	cmd := gitCommand(repo, "archive", "--format=tar", rev)
 	var errb bytes.Buffer
 	cmd.Stderr = &errb
 	stdout, err := cmd.StdoutPipe()

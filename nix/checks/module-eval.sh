@@ -7,6 +7,11 @@
 grep -q "the-valley" "$initScriptPath"
 grep -q "valley-mirrors" "$initScriptPath"
 grep -q "Match All" "$sshdConfigPath"
+# The git user's keys come from the declared file and nothing
+# else: not ~/.ssh/authorized_keys, not a command. Every key it
+# accepts therefore carries a tag this module wrote.
+grep -qx '  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u' "$sshdConfigPath"
+grep -qx '  AuthorizedKeysCommand none' "$sshdConfigPath"
 
 # The mirror publishes main and tags only — a heads glob
 # would publish every topic branch awaiting review — with
@@ -60,34 +65,54 @@ grep -qx "/srv/git" "$staticPaths"
 grep -q '^environment="VALLEY_PRINCIPAL=integrator" ssh-ed25519 ' "$protectedKeysPath"
 grep -q '^ssh-ed25519 .* valley-check$' "$protectedKeysPath"
 
-# The hook goes on the projects whose declaration has a
-# protection block, and nowhere else.
-grep -q "valley-protect-sealed" "$protectedInitPath"
-grep -q "valley-protect-guarded" "$protectedInitPath"
-grep -q "valley-protect-released" "$protectedInitPath"
-if grep -q "valley-protect-open" "$protectedInitPath"; then
-  echo "module-eval: a project nobody protected was wired with the hook" >&2
-  exit 1
-fi
+# The hook goes on every project the host serves, protected
+# or not: a protection block only adds protected refs to the
+# push policy, and "open" declares none.
+for name in sealed guarded released open; do
+  grep -q "valley-protect-$name" "$protectedInitPath"
+done
 
 # And what it enforces is what the declaration says, down
 # to the file the hook reads: released names a pattern beside
-# main and opens release tags, guarded takes the schema's
-# default set. Follow the hook chain from the init script to
-# each script, and from each script to its protection, which
-# is the declaration's own block exported to JSON.
+# main and grants release tags, guarded takes the schema's
+# default set, open protects nothing. Follow the hook chain
+# from the init script to each script, and from each script to
+# its push policy, which is the declaration's protected refs,
+# writers and grants exported to JSON.
 guardedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$protectedInitPath" | head -n1)"
 releasedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-released' "$protectedInitPath" | head -n1)"
 sealedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-sealed' "$protectedInitPath" | head -n1)"
-protection() { grep -o '/nix/store/[^ ]*-valley-protection-[^ ]*\.json' "$1" | head -n1; }
-grep -qF -- '"refs":["refs/heads/main"]' "$(protection "$guardedHook")"
-grep -qF -- '"writers":["integrator"]' "$(protection "$guardedHook")"
-grep -qF -- '"refs":["refs/heads/main","refs/heads/release/*"]' "$(protection "$releasedHook")"
-grep -qF -- '"allow":[{"refs":["refs/tags/release/*"],"writers":["integrator"]}]' "$(protection "$releasedHook")"
+openHook="$(grep -o '/nix/store/[^ ]*-valley-protect-open' "$protectedInitPath" | head -n1)"
+policy() { grep -o '/nix/store/[^ ]*-valley-push-policy-[^ ]*\.json' "$1" | head -n1; }
+grep -qF -- '"refs":["refs/heads/main"]' "$(policy "$guardedHook")"
+grep -qF -- '"writers":["integrator"]' "$(policy "$guardedHook")"
+grep -qF -- '"refs":["refs/heads/main","refs/heads/release/*","refs/the-valley/integration-requests/*"]' "$(policy "$releasedHook")"
+grep -qF -- '"grants":{"release-tags":{"refs":["refs/tags/release/*"],"writers":["integrator"]}}' "$(policy "$releasedHook")"
 # The norm: a protected ref with no writer declared, and
-# nothing opened. Both lists render empty rather than missing.
-grep -qF -- '"writers":[]' "$(protection "$sealedHook")"
-grep -qF -- '"allow":[]' "$(protection "$sealedHook")"
+# nothing granted. Both render empty rather than missing.
+grep -qF -- '"writers":[]' "$(policy "$sealedHook")"
+grep -qF -- '"grants":{}' "$(policy "$sealedHook")"
+# A project with no protection block protects nothing, and
+# is held to the rest of the policy all the same.
+grep -qF -- '{"grants":{},"refs":[],"writers":[]}' "$(policy "$openHook")"
+
+# A project that composes a hook after the policy hands it to
+# valleyhook to run, and only that project does.
+grep -q -- '--then /nix/store/[^ ]*-valley-check-released-pre-receive' "$releasedHook"
+if grep -q -- '--then' "$guardedHook"; then
+  echo "module-eval: a project that composes no hook was handed one" >&2
+  exit 1
+fi
+
+# A hook the module did not write, or a hooks path that sends
+# git elsewhere, fails init rather than being left in place:
+# either would run instead of the policy.
+grep -qF -- 'conflicts=1' "$protectedInitPath"
+grep -qF -- 'config --get core.hooksPath' "$protectedInitPath"
+grep -qF -- 'cmp -s "$phook" "$composed"' "$protectedInitPath"
+grep -qF -- '/srv/git/.ssh/environment' "$protectedInitPath"
+tail -n 5 "$protectedInitPath" > init-tail
+grep -qF -- 'exit 1' init-tail
 
 # The rules are valleyhook's, and the script is only how git
 # reaches it: it hands over the principal sshd tagged the
@@ -128,10 +153,10 @@ grep -q -- '--repo /srv/git/%i.git' "$integratorUnitPath"
 grep -q -- '--key /run/agenix/valley-integrator-key' "$integratorUnitPath"
 grep -q -- '--known-signers /var/lib/valley-instance/known_signers' "$integratorUnitPath"
 # The floor's source, not a copy of it: the repository whose
-# integrated tip carries it. It is named, and it is not the
-# repository the controller serves — every controller here
-# reads the floor out of "open", which no controller serves.
-grep -q -- '--instance-repo /srv/git/open.git' "$integratorUnitPath"
+# integrated tip carries it. It is named, and for every
+# controller here but sealed's it is not the repository the
+# controller serves.
+grep -q -- '--instance-repo /srv/git/sealed.git' "$integratorUnitPath"
 if grep -q -- '--project-policy' "$integratorUnitPath"; then
   echo "module-eval: the module must not tell a controller where the project's policy is" >&2
   exit 1
@@ -157,7 +182,7 @@ grep -qF -- 'Environment="GIT_CONFIG_COUNT=2"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_KEY_0=safe.directory"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_VALUE_0=/srv/git/%i.git"' "$integratorUnitPath"
 grep -qF -- 'Environment="GIT_CONFIG_KEY_1=safe.directory"' "$integratorUnitPath"
-grep -qF -- 'Environment="GIT_CONFIG_VALUE_1=/srv/git/open.git"' "$integratorUnitPath"
+grep -qF -- 'Environment="GIT_CONFIG_VALUE_1=/srv/git/sealed.git"' "$integratorUnitPath"
 
 # It writes refs as itself, so the repositories it serves are
 # group-shared — and only those. The sharing block names each
@@ -165,21 +190,13 @@ grep -qF -- 'Environment="GIT_CONFIG_VALUE_1=/srv/git/open.git"' "$integratorUni
 grep -qxF -- "repo=/srv/git/guarded.git" "$integratorInitPath"
 grep -qxF -- "repo=/srv/git/released.git" "$integratorInitPath"
 grep -qF -- 'config core.sharedRepository group' "$integratorInitPath"
-# "open" is protected by nobody, so no controller serves it — and on
-# this host it is the instance repository, which every controller reads
-# the floor from. Read is the whole of that grant: no group write, and
-# no core.sharedRepository, which is a statement about who writes.
-open_block="$(awk '/^repo=/ { inside = ($0 == "repo=/srv/git/open.git") } inside' "$integratorInitPath")"
-if [ -z "$open_block" ]; then
-  echo "module-eval: the instance repository must be readable by the git group even where no controller serves it" >&2
-  exit 1
-fi
-if ! printf '%s\n' "$open_block" | grep -qF -- 'chmod -R g+rX "$repo"'; then
-  echo "module-eval: the instance repository must be made group-readable" >&2
-  exit 1
-fi
-if printf '%s\n' "$open_block" | grep -qE 'g\+rwX|sharedRepository'; then
-  echo "module-eval: a project nobody protected was made group-writable — the floor is read, never written" >&2
+# The instance repository declares protection, so a controller serves
+# it and it is shared like every other served repository.
+grep -qxF -- "repo=/srv/git/sealed.git" "$integratorInitPath"
+# "open" is protected by nobody, so no controller serves it and nothing
+# shares it.
+if grep -qxF -- "repo=/srv/git/open.git" "$integratorInitPath"; then
+  echo "module-eval: a project nobody protected was made group-writable" >&2
   exit 1
 fi
 

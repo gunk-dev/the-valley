@@ -169,7 +169,7 @@ func cmdRun(args []string) error {
 	head = strings.TrimPrefix(head, "refs/heads/")
 	branchSpec := fmt.Sprintf("refs/heads/%s:refs/heads/%s", head, head)
 	refSpec := ref + ":" + ref
-	out, err := git(root, "push", "--atomic", *push, branchSpec, refSpec)
+	out, err := gitPush(root, "--atomic", *push, branchSpec, refSpec)
 	if err != nil {
 		return err
 	}

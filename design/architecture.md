@@ -103,19 +103,28 @@ per check, so that refreshing one is not refreshing all of them, is
 
 ### The one structural git invariant
 
-The bare repo enforces exactly one invariant: **what a push may write**. A protected ref takes a
-push only from a declared writer, and the integrator writes it on the host, where no push hook
-applies. Attestation refs are create-only. An integration request takes a write only from a
-principal holding the request grant
-([dcr-e544f20](../.the-valley/decisions/dcr-e544f20-access-is-verbs-on-projects.md)). Topic branches
-are open to anyone with push access. Every other namespace is closed until a project opens a pattern
-of it to named principals.
+Every repository a valley host serves enforces exactly one invariant: **what a push may write**. A
+write must pass every rule that applies to its ref, and no rule stands in for another:
 
-Replacement refs are closed to every push. A replacement ref makes one object stand in for another
-for every reader of the repository, so it would let a push change what the integrator judges without
-moving a ref. The programs that make decisions also read git with replacement refs turned off, so
-one that is already there decides nothing
+- Topic branches are open to anyone with push access.
+- Attestation refs may only be created, and only holding what their name says: notes about that
+  tree, signed by that signer.
+- An integration request takes the request grant
+  ([dcr-e544f20](../.the-valley/decisions/dcr-e544f20-access-is-verbs-on-projects.md)).
+- Every other ref, tags included, takes a named grant of the project.
+- A protected ref also takes a declared writer. The integrator writes protected refs on the host,
+  where no push hook applies.
+- Replacement refs, notes and the rest of the valley's own namespace take no push at all, and
+  neither does a ref that is symbolic in the repository.
+
+Replacement refs matter most. A replacement ref makes one object stand in for another for every
+reader of the repository, so it would let a push change what the integrator judges without moving a
+ref. The programs that make decisions also read git with replacement refs turned off, so one that is
+already there decides nothing
 ([bd-75c8721](../.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md)).
+
+The repository that carries the floor and the registry has to protect its main. Both are read from
+that tip, so a main any key could move would hand every key the floor and the registry.
 
 That is one small `pre-receive` hook; all complex policy lives in the integrator.
 

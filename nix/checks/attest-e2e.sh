@@ -259,4 +259,36 @@ if [ "$rewritten" = "$digest" ]; then
 fi
 verify statement.note "$TMPDIR/known_keys" > rebased.out
 grep -q 'matches the recorded subject digest' rebased.out
+
+# A replacement ref in the repository changes nothing a standalone
+# verify reads. refs/replace/<commit> makes git read another commit
+# wherever it looks that one up, so a reader that left replacement
+# refs on would digest the attested tree for a revision holding a
+# different one, and pass it. The caller's environment asking for
+# replacement refs is not listened to either.
+attested="$(git rev-parse HEAD)"
+echo "a change nobody attested" > evil.txt
+git add evil.txt
+git commit --quiet -m "a change nobody attested"
+evil="$(git rev-parse HEAD)"
+git update-ref "refs/replace/$evil" "$attested"
+if [ "$(git rev-parse "$evil^{tree}")" != "$(git rev-parse "$attested^{tree}")" ]; then
+  echo "attest-e2e: the replacement did not take, so this case proves nothing" >&2
+  exit 1
+fi
+if GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" attest verify --note statement.note \
+  --known-keys "$TMPDIR/known_keys" --repo "$repo" --rev "$evil" > replaced.out 2>&1; then
+  echo "attest-e2e: a replacement ref made an unattested revision verify" >&2
+  cat replaced.out >&2
+  exit 1
+fi
+if grep -q 'matches the recorded subject digest' replaced.out; then
+  echo "attest-e2e: the digest of a replaced revision matched the attested one" >&2
+  exit 1
+fi
+[ "$(attest digest --rev "$evil" | sed 's/^valley-tree-v1://')" != "$digest" ] || {
+  echo "attest-e2e: attest digested the replacement, not the revision" >&2
+  exit 1
+}
+git update-ref -d "refs/replace/$evil"
 touch "$out"

@@ -44,37 +44,70 @@ package valley
 	// concern (the installer documents how); they are not declared here.
 	mirrors: [...string] | *[]
 
-	// The project's write protection. Optional: a project without it is a
-	// project whose refs are all open to anyone with push access, and
-	// evaluates exactly as it did before this field existed. That includes
-	// replacement refs (refs/replace/*). The programs that make decisions
-	// from a repository read it with replacement refs disabled, so one
-	// planted there changes nothing they decide.
+	// The project's write protection. Optional: a project without it has
+	// no protected refs, so its branches are open to every push. Every
+	// other rule of the push policy (#Protection describes them) applies
+	// to it unchanged.
 	protection?: #Protection
+
+	// Named grants, each opening ref patterns the push policy closes by
+	// default to the principals it names. A signed release tag pushed by a
+	// person is the case they exist for: tags take no push except through
+	// one. Empty by default, so a project opens nothing it does not name.
+	grants: [#GrantName]: #RefGrant
 }
 
-// #Protection states what a push may write to the project. It is the
-// declared half of the one structural git invariant, which the pre-receive
-// hook enforces (valleyhook/) on every project that declares this block.
+// #RefGrant is one named grant: ref patterns, and the principals who may
+// write the refs they match. A grant only adds writers. A protected ref it
+// covers still takes a declared writer too.
+#RefGrant: {
+	// The refs opened, as full refnames with `*` matching any characters.
+	refs: [#GrantPattern, ...#GrantPattern]
+
+	// Who may write them. At least one: a grant that opens a pattern to
+	// nobody opens nothing.
+	writers: [#PrincipalName, ...#PrincipalName]
+}
+
+// #GrantName names a grant. It appears in what a refusal says.
+#GrantName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+
+// #GrantPattern is a pattern a grant may name. The namespaces whose rule
+// is fixed are refused: branches are open already, replacement refs and
+// notes are closed to every push, and the valley's own namespace has rules
+// of its own. A declaration that tries to open one fails rather than
+// reading as a grant the hook never applies.
+#GrantPattern: #RefPattern & !~"^refs/(heads|replace|notes|the-valley)/"
+
+// #Protection states which of a project's refs are protected: closed to
+// every push but a declared writer's. It is the declared half of the one
+// structural git invariant, which the pre-receive hook (valleyhook/)
+// enforces on every project a host serves, protected or not.
 //
-// The hook holds every push to an allowlist and refuses the rest:
+// The hook holds every push to an allowlist, and a write must pass every
+// rule that applies to its ref:
 //
-//   - a protected ref takes a push only from a declared writer;
-//   - attestation refs (refs/the-valley/attestations/*) may be created by
-//     anyone, and never updated or deleted;
+//   - replacement refs (refs/replace/*), notes (refs/notes/*) and the
+//     valley's own namespace (refs/the-valley/*, but for the two below)
+//     take no push at all;
+//   - a ref that is symbolic in the repository takes no push;
+//   - topic branches (refs/heads/*) are open;
+//   - attestation refs (refs/the-valley/attestations/<digest>/<key hash>)
+//     may be created by anyone, never updated or deleted, and only
+//     pointing at notes about that digest signed under that key hash;
 //   - integration requests (refs/the-valley/integration-requests/*) take
 //     writes only from a principal holding the request grant (dcr-e544f20);
-//   - topic branches (refs/heads/*) are open;
-//   - everything else is closed — tags, notes, replacement refs, and any
-//     namespace not named here — until an allow entry below opens a pattern
-//     of it to named principals.
+//   - every other ref, tags included, takes a named grant of the project
+//     (#Project.grants) that opens it to the pusher;
+//   - a protected ref also takes a declared writer.
 //
-// Only the protected set, its writers and the allow entries are declared.
-// The other rules are not choices: the namespaces they cover are fixed by
-// the contributor protocol (design/contribute.md), and replacement refs
-// are closed to every push because they would change what every reader of
-// the repository sees. All policy beyond the invariant lives in the
-// integrator, never here (design/architecture.md, _a pull-based
+// Only the protected set, its writers and the project's grants are
+// declared. The other rules are not choices: the namespaces they cover are
+// fixed by the contributor protocol (design/contribute.md), and the closed
+// ones change what every reader of the repository sees. Protection only
+// adds a requirement — a writer of a pattern covering integration requests
+// still needs the request grant. All policy beyond the invariant lives in
+// the integrator, never here (design/architecture.md, _a pull-based
 // integrator_).
 #Protection: {
 	// The refs closed to everyone but a declared writer. Patterns are
@@ -91,28 +124,6 @@ package valley
 	// exception that punches a named hole in the wall; the transition
 	// arrangement used one for the operator.
 	writers: [...#PrincipalName] | *[]
-
-	// Refs the hook closes by default, opened to named principals. A
-	// signed release tag pushed by a person is the case this exists for:
-	// tags are closed to every push, and an entry opening
-	// "refs/tags/release/<project>/*" to the operator is how one becomes
-	// pushable. Empty by default.
-	//
-	// An entry only adds writers. It cannot open a protected ref, which
-	// stays its writers' alone, and it cannot name the three namespaces
-	// whose rule is fixed.
-	allow: [...#Opening] | *[]
-}
-
-// #Opening is one allow entry: ref patterns, and the principals who may
-// write the refs they match.
-#Opening: {
-	// The refs opened, as full refnames with `*` matching any characters.
-	refs: [#OpenablePattern, ...#OpenablePattern]
-
-	// Who may write them. At least one: an entry that opens a pattern to
-	// nobody opens nothing.
-	writers: [#PrincipalName, ...#PrincipalName]
 }
 
 // #RefPattern is a full refname, optionally with `*` wildcards. The
@@ -120,12 +131,6 @@ package valley
 // rejected here too, so a pattern that could never match a real ref fails
 // the declaration rather than sitting dead in a hook.
 #RefPattern: =~"^refs/[^ ~^:?\\\\[]+$"
-
-// #OpenablePattern is a pattern an allow entry may name. The namespaces
-// whose rule is fixed — replacement refs, attestations and integration
-// requests — are refused, so a declaration that tries to open one fails
-// rather than reading as an opening the hook never applies.
-#OpenablePattern: #RefPattern & !~"^refs/(replace|the-valley/(attestations|integration-requests))/"
 
 // #PrincipalName names a principal — a human, machine, or service the
 // instance grants something to — in the instance's identity registry

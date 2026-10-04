@@ -153,14 +153,19 @@ rec {
   };
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
-  # protected project. Go, standard library only — hence vendorHash = null
-  # and no module fetch. It runs no other program, so it ships unwrapped,
-  # and its unit tests run in the checkPhase.
+  # project a valley host serves. Go, standard library only — hence
+  # vendorHash = null and no module fetch. Its unit tests run in the
+  # checkPhase.
+  #
+  # The git it reads the repository with is fixed at build time, the way
+  # sigverify's is: an absolute store path compiled into the binary, so no
+  # PATH a hook runs under can change which git that is.
   valleyhook = pkgs.buildGoModule {
     pname = "valley-valleyhook";
     version = "0";
     src = ../valleyhook;
     vendorHash = null;
+    ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
     meta.mainProgram = "valleyhook";
   };
 

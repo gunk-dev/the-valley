@@ -53,6 +53,11 @@ expiry has arrived is omitted from every artifact and noted on stderr, and
 the rest of the registry still compiles — so access ends at the first
 convergence after expiry.
 
+One key authorized as two principals is refused too, whether both entries
+are the registry's or one is the host's own (--declared-keys). sshd
+authorizes a key by the first entry that names it, so which principal such
+a key pushes as would depend on the order of lines and files.
+
 One state is refused rather than compiled: a registry where, after the
 expiry cut, no remaining principal holds a grant at a boundary of kind
 "registry". Nobody would govern the registry's own stream, so the whole
@@ -76,6 +81,11 @@ flags:
   --authorized-keys FILE where the tagged authorized_keys is written
   --grants FILE          where the grants the pre-receive hook checks are
                          written
+  --declared-keys FILE   the authorized_keys lines the host declares by
+                         hand. A registry key that is also declared under
+                         another tag, or untagged, fails the render: sshd
+                         reads the declared entry first, so the key would
+                         never push as its registry principal.
   --now YYYY-MM-DD       the day expiry is judged against (default: today,
                          UTC)
 `

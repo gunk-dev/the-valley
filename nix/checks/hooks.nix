@@ -33,11 +33,18 @@
   # What sshd would set from a key's authorized_keys entry, these
   # pushes set in the environment directly — that rendering is pinned
   # by module-eval, and everything the hook decides after it is what
-  # this check exercises: protected refs, create-only attestations,
-  # integration requests and the request grant, allow entries, and the
-  # namespaces every push is refused.
+  # this check exercises: protected refs, attestations and the names
+  # they may take, integration requests and the request grant, named
+  # grants, symbolic refs, a composed hook, and the namespaces every push
+  # is refused. Projects with and without protection are both served.
   protect-e2e = pkgs.runCommand "valley-protect-e2e" {
-    nativeBuildInputs = [ pkgs.git ];
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.openssh
+      # Real attestations, made the way a contributor makes them, for the
+      # namespace the hook checks the contents of.
+      packages.attest
+    ];
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./protect-e2e.sh);

@@ -83,8 +83,8 @@ git -C instance.git update-ref -d "refs/replace/$landed"
 
 # What the hook does with the compiled grants. A bare repository is wired
 # with the pre-receive hook a host compiling this registry renders,
-# followed from its init script; the one edit is the path of the compiled
-# grants file, which a host keeps under /var/lib and this sandbox cannot.
+# followed from its init script; the one edit is the directory of the
+# compiled files, which a host keeps under /var/lib and this sandbox cannot.
 # Pushing as a principal is pushing with the tag on, the substitution for
 # sshd the hook checks make everywhere.
 rendered="$(grep -o "/nix/store/[^ ]*-valley-protect-guarded" "$identityInitScriptPath" | head -n1)"
@@ -93,7 +93,12 @@ if ! grep -qF -- "--grants /var/lib/valley-identity/grants" "$rendered"; then
   cat "$rendered" >&2
   exit 1
 fi
-sed "s|/var/lib/valley-identity/grants|$TMPDIR/grants|" "$rendered" > hook
+sed -e "s|/var/lib/valley-identity/grants|$TMPDIR/grants|" \
+  -e "s|/var/lib/valley-identity/known-signers|$TMPDIR/signers|" "$rendered" > hook
+grep -qF -- "--known-signers $TMPDIR/signers" hook || {
+  echo "identity-e2e: the hook of a host compiling the registry does not check attestations against the compiled keys" >&2
+  exit 1
+}
 chmod +x hook
 git init --quiet --bare guarded.git
 ln -s "$TMPDIR/hook" guarded.git/hooks/pre-receive
@@ -274,5 +279,114 @@ for pinned in 2026-10-01 2026-12-01; do
   diff -u last-good-signers "$TMPDIR/signers" || exit 1
   diff -u last-good-keys "$TMPDIR/keys" || exit 1
 done
+
+# A key the host declares by hand under one tag, and the registry
+# authorizes as another principal, is refused: sshd reads the declared
+# entry first, so the registry's principal would never be the one pushing.
+serve instance "$registry"
+compile --now 2026-08-09 || exit 1
+cp "$TMPDIR/keys" last-good-keys
+patrick_key="$(grep -m1 -o 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip' "$registry/registry.cue")"
+for declared in "$patrick_key operator@laptop" "environment=\"VALLEY_PRINCIPAL=someone\" $patrick_key"; do
+  printf '%s\n' "$declared" > declared-keys
+  if compile --now 2026-08-09 --declared-keys declared-keys 2> declared.err; then
+    echo "identity-e2e: a registry key declared by hand under another tag compiled" >&2
+    exit 1
+  fi
+  grep -q 'declared on this host' declared.err || {
+    echo "identity-e2e: the refusal did not name the declared entry" >&2
+    cat declared.err >&2
+    exit 1
+  }
+  diff -u last-good-keys "$TMPDIR/keys" || exit 1
+done
+printf 'environment="VALLEY_PRINCIPAL=patrick" %s\n' "$patrick_key" > declared-keys
+compile --now 2026-08-09 --declared-keys declared-keys || exit 1
+
+# Attestation names. Under a registry with two signers, the hook checks
+# each pushed attestation's signature against the compiled keys, so a name
+# in the create-only namespace can only be taken by the evidence it is
+# named for. The pusher is never the question: evidence is relayed.
+for who in victim attacker stranger; do
+  ssh-keygen -q -t ed25519 -N "" -C "$who" -f "$TMPDIR/$who"
+done
+mkdir -p signers-registry
+{
+  echo 'package identity'
+  echo 'boundaries: {'
+  echo '	"push": kind:     "git-push"'
+  echo '	"registry": kind: "registry"'
+  echo '}'
+  echo 'genesis: "victim"'
+  for who in victim attacker; do
+    printf 'principals: "%s": {\n' "$who"
+    echo '	kind: "human"'
+    echo '	keys: [{'
+    echo '		class:  "ssh-ed25519"'
+    echo '		bound:  "hardware"'
+    printf '\t\tpublic: "%s"\n' "$(cut -d' ' -f1,2 < "$TMPDIR/$who.pub")"
+    printf '\t\tsigns:  "%s/attestations"\n' "$who"
+    echo '	}]'
+    if [ "$who" = victim ]; then
+      echo '	grants: {push: boundary: "push", govern: boundary: "registry"}'
+    else
+      echo '	grants: push: boundary: "push"'
+    fi
+    echo '}'
+  done
+} > signers-registry/registry.cue
+serve instance signers-registry
+compile --now 2026-08-09 || exit 1
+
+git init --quiet --bare attested.git
+ln -s "$TMPDIR/hook" attested.git/hooks/pre-receive
+git init --quiet occ
+git -C occ commit --quiet --allow-empty -m "a tree to attest"
+attestation() {
+  attest run --repo occ --key "$TMPDIR/$1" --name "$1/attestations" --command ok=true |
+    sed -n 's/^stored  \(refs[^ ]*\) -> .*/\1/p'
+}
+mine="$(attestation attacker)"
+theirs="$(attestation victim)"
+unknown="$(attestation stranger)"
+digest="$(echo "$mine" | cut -d/ -f4)"
+victim_hash="$(echo "$theirs" | cut -d/ -f5)"
+squat="refs/the-valley/attestations/$digest/$victim_hash"
+push_as() { VALLEY_PRINCIPAL="$1" git -C occ push --quiet "$TMPDIR/attested.git" "$2"; }
+must_refuse() {
+  if push_as attacker "$1" 2> occupied.err; then
+    echo "identity-e2e: $2 took an attestation name" >&2
+    exit 1
+  fi
+  grep -qF -- "$3" occupied.err || {
+    echo "identity-e2e: the refusal of $2 did not say \"$3\"" >&2
+    cat occupied.err >&2
+    exit 1
+  }
+}
+# The attacker's own evidence, under its own name: accepted.
+push_as attacker "$mine:$mine"
+# The attacker's note, filed under the victim's key hash.
+must_refuse "$mine:$squat" "the attacker's note under the victim's name" \
+  "no signature under the key hash $victim_hash by a key this host accepts"
+# A note whose signature line claims the victim's key and carries the
+# attacker's signature.
+git -C occ cat-file blob "$mine:ok/statement.note" > mine.note
+sig="$(sed -n 's/^— attacker\/attestations //p' mine.note)"
+forged_sig="$( { printf "$(echo "$victim_hash" | sed 's/../\\x&/g')"; printf '%s' "$sig" | base64 -d | tail -c 64; } | base64 -w0)"
+sed "s|^— attacker/attestations .*|— victim/attestations $forged_sig|" mine.note > forged.note
+blob="$(git -C occ hash-object -w "$TMPDIR/forged.note")"
+sub="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git -C occ mktree)"
+top="$(printf '040000 tree %s\tok\n' "$sub" | git -C occ mktree)"
+must_refuse "$top:$squat" "a forged signature" "does not check out"
+# A key the registry does not hold, under its own name.
+must_refuse "$unknown:$unknown" "an unknown signer's note" "by a key this host accepts"
+# And the victim's own evidence, relayed by the attacker, takes the name
+# that none of the above could.
+push_as attacker "$theirs:$theirs"
+git -C attested.git rev-parse --verify --quiet "$theirs" > /dev/null || {
+  echo "identity-e2e: relayed evidence could not take its own name" >&2
+  exit 1
+}
 
 touch "$out"

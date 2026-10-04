@@ -29,6 +29,12 @@ ref keyed by the subject digest:
 ` + refPrefix + `/<tree digest>/<signer key hash>.
 The host signs; there is no unsigned mode.
 
+Every repository read — the tree digested, exported and verified — is made
+with git's replacement refs off, and with no GIT_ variable inherited but
+safe.directory entries and no user or system configuration read. A
+refs/replace/* in the repository cannot make a revision read as some other
+tree. A push to a remote keeps the person's own configuration.
+
 run flags:
   --repo DIR          repository to attest (default: the git toplevel here)
   --rev REV           revision whose tree is the subject (default: HEAD)

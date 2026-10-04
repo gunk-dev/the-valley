@@ -59,11 +59,20 @@ type artifacts struct {
 	granted        int
 }
 
-// render turns a registry into every artifact as of one day.
-func render(r registry, day time.Time) (artifacts, error) {
+// render turns a registry into every artifact as of one day. declared maps
+// each key the host authorizes by hand to the principal its entry is
+// tagged with, "" for an untagged one; nil when the caller names none.
+//
+// One key authorized as two principals is refused, whether both entries
+// are the registry's or one is the host's. sshd authorizes a key by the
+// first entry that names it, so which principal such a key pushed as would
+// depend on the order of lines and files, and a grant could silently stop
+// applying to the principal that holds it.
+func render(r registry, day time.Time, declared map[string]string) (artifacts, error) {
 	var a artifacts
 	var signers, authorized, granted []string
 	governed := false
+	authorizedAs := map[string]string{}
 
 	names := make([]string, 0, len(r.Principals))
 	for name := range r.Principals {
@@ -103,6 +112,17 @@ func render(r registry, day time.Time) (artifacts, error) {
 				signers = append(signers, verifierKey(k.Signs, pub))
 			}
 			if pushes {
+				blob := strings.Fields(k.Public)[1]
+				if other, ok := authorizedAs[blob]; ok && other != name {
+					return a, fmt.Errorf("%s: key %d is also %s's, and one key authorizes one principal", name, i, other)
+				}
+				authorizedAs[blob] = name
+				if tag, ok := declared[blob]; ok && tag != name {
+					if tag == "" {
+						tag = "an untagged entry"
+					}
+					return a, fmt.Errorf("%s: key %d is also declared on this host as %s, and sshd reads the declared entry first, so the key would never push as %s; tag the declared key as %s or remove it", name, i, tag, name, name)
+				}
 				authorized = append(authorized, fmt.Sprintf("environment=%q %s", principalEnv+"="+name, k.Public))
 			}
 		}

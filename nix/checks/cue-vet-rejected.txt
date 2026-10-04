@@ -11,4 +11,6 @@ unimplemented-backup-target
 negative-retention
 bare-branch-protected-ref	protection.refs
 unknown-protection-field	protection.requires
-allow-replacement-refs	protection.allow.0.refs.0
+grant-opens-replacement-refs	grants.replace.refs.0
+grant-opens-requests	grants.requests.refs.0
+allow-in-protection	protection.allow

@@ -27,6 +27,8 @@
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    valley-request, valley-status — bin/valley
+#   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
+#                    NixOS machine, and the request grant's handoff
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation
@@ -67,3 +69,4 @@ import ./checks/host-module.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args
 // import ./checks/cli.nix args
+// import ./checks/ssh-e2e.nix args

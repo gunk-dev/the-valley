@@ -232,6 +232,7 @@ func TestVerifyRequiresAPrincipal(t *testing.T) {
 	sig := approver.Sign(message, "git", 0x01)
 	for name, opts := range map[string]Options{
 		"none":     {Namespace: "git"},
+		"a NUL":    {Namespace: "git", Principal: "release\x00x"},
 		"both":     {Namespace: "git", Principal: release, AnyPrincipal: true},
 		"no class": {Namespace: "git", Principal: release, Policy: Policy{Classes: []Class{"yubikey"}}},
 	} {
@@ -433,6 +434,8 @@ func TestParseAllowedSignersRefuses(t *testing.T) {
 		"a mislabelled key":                  `a@b ssh-ed25519 ` + strings.Fields(key)[1],
 		"an unsupported type":                `a@b ssh-dss AAAAB3NzaC1kc3MAAACBAP`,
 		"a key that is not b64":              `a@b ` + approver.Type + ` !!!`,
+		"a NUL in the principals":            "*,!release\x00x " + key,
+		"a NUL in a comment":                 "# a comment\x00",
 		"a key with stray b64 bits":          `a@b ` + approver.Type + " " + strayBits(t, strings.Fields(key)[1]),
 		"tkey-signer on a security key":      `a@b tkey-signer ` + key,
 		"tkey-signer on sk-ecdsa":            `a@b tkey-signer ` + ecdsaSK.PublicLine(),

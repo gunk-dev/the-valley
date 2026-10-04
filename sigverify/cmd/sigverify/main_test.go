@@ -346,6 +346,27 @@ func TestPrincipalMatchingAgreesWithSSHKeygen(t *testing.T) {
 	}
 }
 
+// OpenSSH reads an allowed-signers line as a C string, so a NUL ends it.
+// This line then has no key, and ssh-keygen rejects it. Read as Go bytes,
+// "!release<NUL>x" would be an exclusion that excludes nothing, and the
+// "*" before it would admit release. sigverify refuses the file instead.
+func TestNULLinesAgreeWithSSHKeygen(t *testing.T) {
+	dir := t.TempDir()
+	key := skforge.Ed25519SK("nul lines")
+	const message = "a message\n"
+	sig := write(t, filepath.Join(dir, "sig"), string(key.Sign([]byte(message), "git", 0x01)))
+	allowed := allowedSigners(t, dir, "*,!release\x00x "+key.PublicLine())
+
+	if ref, ok := sh(t, dir, "", nil, "ssh-keygen", "-Y", "match-principals", "-f", allowed, "-I", "release"); ok {
+		t.Errorf("ssh-keygen matched release against a line holding a NUL:\n%s", ref)
+	}
+	out, errOut, code := cli(t, message, "verify", "--namespace", "git", "--signature", sig,
+		"--allowed-signers", allowed, "--principal", "release")
+	if code != exitError || out != "" || !strings.Contains(errOut, "NUL") {
+		t.Errorf("exit %d:\n%s%s", code, out, errOut)
+	}
+}
+
 // The gap this verifier closes. ssh-keygen -Y verify accepts every one of
 // these security-key signatures; sigverify refuses the ones nobody touched.
 func TestSecurityKeysWithSSHKeygen(t *testing.T) {
@@ -831,7 +852,7 @@ func TestVerifyExitStatus(t *testing.T) {
 	} {
 		out, errOut, code := cli(t, c.stdin, c.args...)
 		refused(t, c.name, c.reason, out, errOut, code)
-		if !strings.HasPrefix(errOut, "sigverify: refused: ") {
+		if !strings.HasPrefix(errOut, "sigverify: refused ("+c.reason+"): ") {
 			t.Errorf("%s: stderr %q", c.name, errOut)
 		}
 	}

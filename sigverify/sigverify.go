@@ -241,6 +241,8 @@ func Verify(signers *AllowedSigners, message, signature []byte, opts Options) (*
 		return nil, errors.New("sigverify: no principal given, and AnyPrincipal is not set")
 	case opts.Principal != "" && opts.AnyPrincipal:
 		return nil, errors.New("sigverify: both a principal and AnyPrincipal given")
+	case strings.IndexByte(opts.Principal, 0) >= 0 || strings.IndexByte(opts.Namespace, 0) >= 0:
+		return nil, errors.New("sigverify: a principal or namespace holds a NUL byte")
 	}
 	for _, c := range opts.Policy.Classes {
 		if _, err := ParseClass(string(c)); err != nil {

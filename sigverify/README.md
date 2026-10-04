@@ -53,6 +53,19 @@ the app's version for bookkeeping, as `tkey-signer="1.0.0"`. sigverify reports t
 compares it with anything. Upgrading the app changes the key, so it is a planned trust-root
 rotation.
 
+A class marker is an enrollment assertion: sigverify believes it and cannot check it. A
+`tkey-signer` line holding a software key makes that software key pass a TKey-only call. A `fido-sk`
+line holding a key made in software makes it pass as a security key, with whatever flags its maker
+chose. Nothing in a signature's bytes shows any of these:
+
+- that the key lives in genuine hardware
+- which app a TKey runs, or that it is the version the line records
+- that a TKey was touched for this signature, or that its user was verified
+- that a touch was an informed approval of what was signed
+
+So every line must come from a trusted enrollment of genuine hardware. Requirement 3 of
+[the caller's contract](#the-callers-contract) says what that means.
+
 Each call names the classes it accepts. By default only `fido-sk` signers verify. A call accepts
 other classes only when it asks for them, with `--allow-class`. Giving `--allow-class` replaces the
 default. So:
@@ -92,8 +105,9 @@ for a security key, the authenticator flags and the signature counter.
 sigverify trusts the allowed-signers file completely. Anyone can make a software key in the
 security-key format, and its signatures would carry whatever flags its maker chose. sigverify does
 not check the enrollment attestation that would tell the two apart. So whoever can write the file
-can sign anything; requirement 1 of the caller's contract is about this. sigverify also does not
-track the signature counter, so it does not detect a replayed signature or a cloned key.
+can sign anything, and whoever enrolls a key decides what it counts as. Requirements 1 and 3 of the
+caller's contract are about this. sigverify also does not track the signature counter, so it does
+not detect a replayed signature or a cloned key.
 
 ## What is refused
 
@@ -148,6 +162,9 @@ sigverify is stricter than `ssh-keygen -Y verify` in these ways:
 - It refuses an allowed-signers file with any line it cannot parse, including unknown options.
   ssh-keygen skips such a line, so a typo could silently drop a signer's restrictions.
 - It refuses an allowed-signers file with a `no-touch-required` option on any line.
+- It refuses an allowed-signers file that holds a NUL byte anywhere. ssh-keygen reads each line as a
+  C string, which ends at the first NUL, so it rejects a line like `*,!release<NUL>x K` as having no
+  key. Read byte by byte, the same line would admit `release`.
 - It adds two allowed-signers options, `verify-required` and `tkey-signer`. `verify-required` is the
   keyword sshd uses in `authorized_keys`. ssh-keygen does not know either one, and skips any line
   carrying them.
@@ -195,9 +212,14 @@ The output depends on the exit status:
 
 - **0:** stdout is `verified`, followed by lines of the form `name value`. The whole report goes out
   in one write. If that write fails, the exit status is 2, never 0.
-- **1:** stdout is exactly one line, `refused <reason>`. stderr explains the refusal in a sentence.
-  Nothing about a refused tag's target appears anywhere, because none of it is authenticated.
-- **2:** stdout is empty, and stderr says what went wrong.
+- **1:** stdout is exactly one line, `refused <reason>`. stderr repeats the reason and explains the
+  refusal in a sentence, as `sigverify: refused (<reason>): <sentence>`. Nothing about a refused
+  tag's target appears anywhere, because none of it is authenticated.
+- **2:** stderr says what went wrong. sigverify writes nothing to stdout on an error, with one
+  exception: a report write that fails partway leaves the part already written on stdout.
+
+So the rule for callers is plain: **discard stdout whenever the exit status is not 0.** Everything
+worth logging about a refusal or an error is on stderr.
 
 A verified release tag looks like this:
 
@@ -218,6 +240,17 @@ tag v2026.10.04
 commit 5d1c...
 ```
 
+The report's lines, and their order, are fixed:
+
+1. `verified`
+2. `namespace`, `principal`, `class`, `key-type` and `fingerprint`
+3. for a `fido-sk` signer: `flags`, `user-presence`, `user-verification` and `counter`
+4. for a `tkey-signer` line that records a version: `signer-app`
+5. for git-tag only: `tag`, then `commit`, which is always the last line
+
+Each name appears at most once. A git-tag report always holds exactly one `tag` line and one
+`commit` line. Both come from the signed tag object, read after its signature verified.
+
 The flake exposes the command as `packages.<system>.sigverify`, for `x86_64-linux` and
 `aarch64-linux`. Its checks are defined for both systems.
 
@@ -225,7 +258,8 @@ The flake exposes the command as `packages.<system>.sigverify`, for `x86_64-linu
 
 sigverify answers one question: does this signature verify against this file, under this policy?
 These requirements are for the host-side caller that turns that answer into an activated release,
-such as cosmo's converge. Each one closes a hole that sigverify cannot close by itself.
+such as cosmo's converge. Each one closes a hole that sigverify cannot close by itself. The caller
+must meet all of them before a host activates anything on sigverify's word.
 
 1. **Keep every trust root out of the operator account's reach.** The operator account must not be
    able to write any of these:
@@ -234,21 +268,63 @@ such as cosmo's converge. Each one closes a hole that sigverify cannot close by 
    - the sigverify binary
    - the invocation policy: the flags the caller passes
    - the activation service
-   - the rollback state of requirement 4
+   - the rollback state of requirement 8
 
    Each must be owned by root and not writable by the operator, or be in the Nix store of the
    running system. Never take any of them from the candidate release being verified. Whoever can
    write the allowed-signers file can list a software key in security-key format and sign any
    release with UP and UV set.
 
-2. **Verify releases with a principal and with UV.** Always pass `--principal` with the release
-   principal. Always pass `--require-uv`, or mark every release signer `verify-required` in the
-   protected allowed-signers file. Never pass `--any-principal`, `--allow-non-sk` or `--allow-class`
-   for a release.
+2. **Protect the repository and the build until activation.** The operator account must not be able
+   to write any of these, from fetch through activation:
+   - the repository's object storage, including any alternates it borrows objects from
+   - the repository's local configuration and hooks
+   - the checkout of the verified commit
+   - every input of the build
 
-3. **Apply exactly what was verified.**
-   - Act only on exit status 0 and a complete report, which starts with `verified` and has a
-     `commit` line.
+   sigverify reads the objects as they are when it runs. Whoever can change the object storage, the
+   checkout or the build inputs afterwards can change what gets built under the verified commit id.
+   Disabling replacement refs does not prevent that.
+
+3. **Enroll every signer through a trusted ceremony.** Every allowed-signers line is an enrollment
+   assertion, and sigverify cannot check it (see [Signer classes](#signer-classes)). So each line
+   must record a key that was enrolled from genuine hardware:
+   - a `fido-sk` line, from a security key in hand, with the public key taken from that key at
+     enrollment
+   - a `tkey-signer` line, from a TKey in hand running the intended touch-requiring signer app, with
+     the public key taken from that TKey under that app
+
+   File ownership does not establish any of this. A root-owned file can still list a key that never
+   lived in hardware.
+
+4. **Accept exactly the classes and options a release needs.** `--allow-class`, `--allow-non-sk` and
+   `--any-principal` each make sigverify accept more:
+   - `--allow-class` replaces the default class, and repeating it adds more classes.
+   - `--allow-non-sk` adds software keys, which prove nothing about presence.
+   - `--any-principal` ignores the principals field.
+
+   A release caller passes exactly what it intends. For a release, that is:
+   - `--principal` with the release principal
+   - the default class, `fido-sk`, so no `--allow-class` other than `--allow-class fido-sk`
+   - `--require-uv`, or a `verify-required` mark on every release signer in the protected file
+   - never `--allow-non-sk` or `--any-principal`
+
+5. **Use a clock the operator account cannot set.** sigverify judges `valid-after` and
+   `valid-before` at the host's current time, or at `--verify-time`. Whoever sets that time can
+   bring an expired signer back, or bring a future one forward. So the host's clock must be one the
+   operator account cannot change, or the caller passes `--verify-time` from a source it trusts.
+   Never pass the tagger date: the signer chooses it.
+
+6. **Require the complete success report.**
+   - Act only on exit status 0. Discard stdout whenever the exit status is not 0.
+   - Require the whole git-tag report: the first line is `verified`, there is exactly one `tag` line
+     and exactly one `commit` line, and `commit` is the last line (see
+     [Using the command](#using-the-command)).
+   - Require the `tag` line to name the tag the caller asked for, and the `commit` line to hold a
+     full hexadecimal commit id.
+   - Treat any other output as a failure.
+
+7. **Apply exactly what was verified.**
    - Use only the commit id on the `commit` line. Never resolve the tag name again, because a ref
      can move after verification.
    - Keep replacement refs disabled through fetch, checkout and build, with
@@ -257,19 +333,30 @@ such as cosmo's converge. Each one closes a hole that sigverify cannot close by 
    - Run git with a sanitized environment throughout: no inherited `GIT_*` variables, and no user or
      system configuration.
 
-4. **Refuse rollback.**
-   - Derive a release sequence number from authenticated content: the verified tag name. Bind it to
-     the release stream and to the commit.
-   - Under an exclusive activation lock, compare it with the last accepted release in durable,
-     protected state. Reject a lower sequence. Reject an equal sequence that names a different
-     commit. Accept an equal sequence with the same commit only as an explicit retry of that
-     release.
-   - Write the accepted sequence and commit to that state crash-safely before activating. Hold the
-     lock until activation finishes, so an older activation cannot complete after a newer one.
-   - An authorized rollback is a newly signed release with a higher sequence that points at the
-     older commit.
+8. **Refuse rollback.**
+   - **Parse release names one way.** Derive the release stream and sequence number from the
+     verified tag name, and from nothing else. Use one strict grammar, with exactly one spelling for
+     each stream and number: for example, a decimal number with no sign, no spaces and no leading
+     zeros. Refuse a tag name that does not parse. Two different tag names must never give the same
+     stream and number.
+   - **Start from a trusted floor.** A host that has never accepted a release takes its starting
+     floor from protected provisioning, such as the Nix store of its running system. It never takes
+     it from the first release it sees.
+   - **Compare under a lock.** Under an exclusive activation lock, compare the candidate with the
+     last accepted release in durable, protected state. Reject a lower sequence. Reject an equal
+     sequence that names a different commit. Accept an equal sequence with the same commit only as
+     an explicit retry of that release.
+   - **Record before activating.** Write the accepted sequence and commit to that state crash-safely
+     before activating. Hold the lock until activation finishes, so an older activation cannot
+     complete after a newer one.
+   - **Fail closed on missing or corrupt state.** If the rollback state is missing, unreadable or
+     inconsistent, activate nothing. Never rebuild it from the candidate release or from the
+     repository. Recovery is a documented procedure in which the operator, present at the host,
+     restores the floor from a trusted record.
+   - **Roll back forward.** An authorized rollback is a newly signed release with a higher sequence
+     that points at the older commit.
 
-5. **Never identify a release by its signature bytes.** Do not use the raw signature, or the bytes
+9. **Never identify a release by its signature bytes.** Do not use the raw signature, or the bytes
    of the tag object, to identify a release or to detect a replay. The same signed content can be
    encoded more than one way (see [Encodings](#encodings)). Identify a release by its verified tag
    name and commit id.
@@ -300,5 +387,6 @@ refusing silent signatures, only those subtests fail. That failure is a change u
 sigverify regression.
 
 The tests compare sigverify's verdicts with `ssh-keygen -Y verify` across namespaces and validity
-windows, and with `ssh-keygen -Y match-principals` across principal patterns. Outside nix,
-`go test ./...` skips the `sk-dummy` cases unless `SIGVERIFY_SK_PROVIDER` names the provider.
+windows, and with `ssh-keygen -Y match-principals` across principal patterns and a line holding a
+NUL byte. Outside nix, `go test ./...` skips the `sk-dummy` cases unless `SIGVERIFY_SK_PROVIDER`
+names the provider.

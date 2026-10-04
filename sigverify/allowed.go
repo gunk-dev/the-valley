@@ -75,6 +75,14 @@ func LoadAllowedSigners(path string) (*AllowedSigners, error) {
 func ParseAllowedSigners(source string, data []byte) (*AllowedSigners, error) {
 	a := &AllowedSigners{source: source}
 	for i, raw := range strings.Split(string(data), "\n") {
+		// OpenSSH reads each line as a C string, which ends at the first
+		// NUL. A line holding one means something different to ssh-keygen
+		// than to this parser: "*,!release<NUL>x K" is a line ssh-keygen
+		// rejects, where this would read an exclusion that excludes
+		// nothing. A NUL anywhere refuses the file.
+		if strings.IndexByte(raw, 0) >= 0 {
+			return nil, fmt.Errorf("%s:%d: the line holds a NUL byte", source, i+1)
+		}
 		line := strings.TrimLeft(raw, " \t\r\n")
 		if line == "" || line[0] == '#' {
 			continue

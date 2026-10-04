@@ -43,8 +43,10 @@ signers are accepted.
 
 On success stdout is "verified" followed by "name value" lines describing
 the signature. On refusal stdout is exactly one line, "refused <reason>",
-and stderr says why in a sentence. On error stdout is empty. The reasons
-are listed in sigverify/README.md.
+and stderr gives the reason again with a sentence saying why. On error
+sigverify prints nothing to stdout, but a write that fails partway can
+leave part of a report there. So a caller must discard stdout whenever
+the exit status is not 0. The reasons are listed in sigverify/README.md.
 
 exit status:
   0  verified, and the whole report was written to stdout
@@ -140,7 +142,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	var refusal *sigverify.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		fmt.Fprintf(stderr, "sigverify: refused: %s\n", refusal.Detail)
+		fmt.Fprintf(stderr, "sigverify: refused (%s): %s\n", refusal.Reason, refusal.Detail)
 		return emit(stdout, stderr, []byte("refused "+string(refusal.Reason)+"\n"), exitRefused)
 	case err != nil:
 		fmt.Fprintf(stderr, "sigverify %s: %v\n", args[0], err)
@@ -155,6 +157,8 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 // emit writes the whole of out to stdout in one write, and returns code
 // only if that write succeeded. A report that did not reach its reader is
 // an error, so a full disk or a closed pipe can never yield exit status 0.
+// A write can fail after part of out is written, and that part stays on
+// stdout. That is why callers discard stdout on any nonzero exit status.
 func emit(stdout, stderr io.Writer, out []byte, code int) int {
 	if _, err := stdout.Write(out); err != nil {
 		fmt.Fprintf(stderr, "sigverify: writing the report: %v\n", err)

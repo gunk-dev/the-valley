@@ -2,7 +2,6 @@ package sigverify
 
 import (
 	"bytes"
-	"encoding/hex"
 	"errors"
 	"fmt"
 )
@@ -79,18 +78,31 @@ func removeSignatureHeaders(object []byte) []byte {
 	return out
 }
 
-// Tag is the header of a signed git tag object.
+// Tag is the header of a verified git tag object.
 type Tag struct {
-	Name       string // the name the tag was signed with
-	Object     string // the id of the object it points to
-	ObjectType string // that object's type, usually "commit"
+	Name   string // the name the tag was signed with
+	Commit string // the id of the commit it points at
 }
 
 // VerifyTag verifies the SSH signature on a raw git tag object, as
-// `git verify-tag` would, and then checks that the tag was signed with the
-// name it is being verified under. A signature covers the tag's name, but a
-// ref can point at any tag object: without this check, a signed tag for an
-// old release could be republished under a new release's name.
+// `git verify-tag` would, and then checks what the signature covers:
+//
+//   - The tag was signed with the name it is being verified under. A
+//     signature covers the tag's name, but a ref can point at any tag
+//     object. Without this check, a signed tag for an old release could be
+//     republished under a new release's name.
+//   - The tag points at a commit. A signed tag may point at another tag, a
+//     tree or a blob, and a caller that applies "the verified commit"
+//     must get a commit.
+//
+// The header is read only from the signed payload, and only after the
+// signature verifies. The Tag is returned only on success: nothing about
+// a refused tag's target is reported, because nothing about it is
+// authenticated.
+//
+// VerifyTag checks the type the tag declares. That the object exists in a
+// repository, and has that type, is the caller's to check, with git
+// replacement refs disabled.
 //
 // The namespace is always "git", whatever opts says. The verify time is
 // opts.Time, or now, and never the tagger date. git verifies at the tagger
@@ -104,28 +116,34 @@ func VerifyTag(signers *AllowedSigners, object []byte, name string, opts Options
 	if signature == nil {
 		return nil, nil, &Refusal{Reason: Unsigned, Detail: "the tag object carries no signature"}
 	}
-	tag, err := parseTagHeader(payload)
-	if err != nil {
-		return nil, nil, &Refusal{Reason: Malformed, Detail: "the tag object " + err.Error()}
-	}
 	opts.Namespace = GitNamespace
 	result, err := Verify(signers, payload, signature, opts)
 	if err != nil {
-		return nil, tag, err
+		return nil, nil, err
 	}
-	if tag.Name != name {
-		return nil, tag, &Refusal{
-			Reason: TagNameMismatch,
-			Detail: fmt.Sprintf("the tag was signed as %q and is being verified as %q", tag.Name, name),
-			Signer: &result.Signer,
-		}
+	refuse := func(reason Reason, format string, args ...any) (*Result, *Tag, error) {
+		return nil, nil, &Refusal{Reason: reason, Detail: fmt.Sprintf(format, args...), Signer: &result.Signer}
 	}
-	return result, tag, nil
+	header, err := parseTagHeader(payload)
+	if err != nil {
+		return refuse(Malformed, "the signed tag object %s", err)
+	}
+	if header.name != name {
+		return refuse(TagNameMismatch, "the tag was signed as %q and is being verified as %q", header.name, name)
+	}
+	if header.objectType != "commit" {
+		return refuse(TargetNotCommit, "the tag points at a %s, not a commit", header.objectType)
+	}
+	return result, &Tag{Name: header.name, Commit: header.object}, nil
+}
+
+type tagHeader struct {
+	object, objectType, name string
 }
 
 // parseTagHeader reads the object, type and tag lines that open a tag
 // object, in the order git writes and requires them.
-func parseTagHeader(payload []byte) (*Tag, error) {
+func parseTagHeader(payload []byte) (*tagHeader, error) {
 	header, _, _ := bytes.Cut(payload, []byte("\n\n"))
 	lines := bytes.Split(header, []byte("\n"))
 	field := func(i int, name string) (string, error) {
@@ -134,19 +152,33 @@ func parseTagHeader(payload []byte) (*Tag, error) {
 		}
 		return string(lines[i][len(name)+1:]), nil
 	}
-	tag := &Tag{}
+	h := &tagHeader{}
 	var err error
-	if tag.Object, err = field(0, "object"); err != nil {
+	if h.object, err = field(0, "object"); err != nil {
 		return nil, err
 	}
-	if _, err := hex.DecodeString(tag.Object); err != nil || (len(tag.Object) != 40 && len(tag.Object) != 64) {
-		return nil, fmt.Errorf("points at %q, which is not an object id", tag.Object)
+	if !isObjectID(h.object) {
+		return nil, errors.New("points at something that is not a lowercase hex object id")
 	}
-	if tag.ObjectType, err = field(1, "type"); err != nil {
+	if h.objectType, err = field(1, "type"); err != nil {
 		return nil, err
 	}
-	if tag.Name, err = field(2, "tag"); err != nil {
+	if h.name, err = field(2, "tag"); err != nil {
 		return nil, err
 	}
-	return tag, nil
+	return h, nil
+}
+
+// isObjectID reports whether id is a SHA-1 or SHA-256 object id in the
+// lowercase hex git writes.
+func isObjectID(id string) bool {
+	if len(id) != 40 && len(id) != 64 {
+		return false
+	}
+	for _, c := range id {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
 }

@@ -10,10 +10,12 @@
       # Checks use import-from-derivation (the module's cue export), so they
       # are only defined for the system that can actually build them here.
       systems = [ "x86_64-linux" ];
-      # Packages are plain builds with no import-from-derivation, which lets
-      # them be offered for every Linux system a consumer runs. A Raspberry
-      # Pi, for one, takes sigverify from here.
-      packageSystems = systems ++ [ "aarch64-linux" ];
+      # sigverify is also built and tested for aarch64-linux, because cosmo's
+      # Raspberry Pis verify their releases with it. Its checks need no
+      # import-from-derivation, so they are defined there too, and an
+      # aarch64 builder (or binfmt emulation) runs them. Nothing else here
+      # is offered on aarch64, because nothing else is tested there.
+      sigverifySystems = [ "aarch64-linux" ];
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
@@ -65,59 +67,78 @@
           pkgs = pkgsFor system;
         };
 
-      apps = lib.genAttrs packageSystems (
-        system:
-        let
-          packages = packagesFor system;
-        in
-        {
-          fmt = {
-            type = "app";
-            program = lib.getExe packages.prose-fmt;
-          };
-          attest = {
-            type = "app";
-            program = lib.getExe packages.attest;
-          };
-          integrator = {
-            type = "app";
-            program = lib.getExe packages.integrator;
-          };
-          identity = {
-            type = "app";
-            program = lib.getExe packages.identity;
-          };
+      apps =
+        lib.genAttrs systems (
+          system:
+          let
+            packages = packagesFor system;
+          in
+          {
+            fmt = {
+              type = "app";
+              program = lib.getExe packages.prose-fmt;
+            };
+            attest = {
+              type = "app";
+              program = lib.getExe packages.attest;
+            };
+            integrator = {
+              type = "app";
+              program = lib.getExe packages.integrator;
+            };
+            identity = {
+              type = "app";
+              program = lib.getExe packages.identity;
+            };
+            sigverify = {
+              type = "app";
+              program = lib.getExe packages.sigverify;
+            };
+          }
+        )
+        // lib.genAttrs sigverifySystems (system: {
           sigverify = {
             type = "app";
-            program = lib.getExe packages.sigverify;
+            program = lib.getExe (packagesFor system).sigverify;
           };
-        }
-      );
+        });
 
-      packages = lib.genAttrs packageSystems (
-        system:
-        let
-          packages = packagesFor system;
-        in
-        {
-          inherit (packages)
-            valley
-            attest
-            integrator
-            identity
-            sigverify
-            ;
-          default = packages.valley;
-        }
-      );
+      packages =
+        lib.genAttrs systems (
+          system:
+          let
+            packages = packagesFor system;
+          in
+          {
+            inherit (packages)
+              valley
+              attest
+              integrator
+              identity
+              sigverify
+              ;
+            default = packages.valley;
+          }
+        )
+        // lib.genAttrs sigverifySystems (system: {
+          inherit (packagesFor system) sigverify;
+        });
 
-      checks = lib.genAttrs systems (
-        system:
-        import ./nix/checks.nix {
-          inherit lib self system;
-          pkgs = pkgsFor system;
-          packages = packagesFor system;
-        }
-      );
+      checks =
+        lib.genAttrs systems (
+          system:
+          import ./nix/checks.nix {
+            inherit lib self system;
+            pkgs = pkgsFor system;
+            packages = packagesFor system;
+          }
+        )
+        // lib.genAttrs sigverifySystems (
+          system:
+          import ./nix/checks/sigverify.nix {
+            pkgs = pkgsFor system;
+            packages = packagesFor system;
+          }
+        );
     };
 }

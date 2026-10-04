@@ -17,10 +17,19 @@ import (
 //
 // The principals field is a comma-separated pattern list. The options are
 // the four OpenSSH defines: cert-authority, namespaces="list",
-// valid-after="time" and valid-before="time". This package adds one,
-// verify-required, which demands the user-verification bit on every
-// signature by that line's key. It is the same keyword sshd accepts in
-// authorized_keys.
+// valid-after="time" and valid-before="time". This package adds two:
+//
+//   - verify-required demands the user-verification bit on every signature
+//     by that line's key. It is the same keyword sshd accepts in
+//     authorized_keys.
+//   - tkey-signer, or tkey-signer="version", marks the line's key as a
+//     Tillitis TKey running the touch-requiring signer app. The version is
+//     bookkeeping: it is reported, and never compared with anything.
+//
+// Every line has a signer class. A security key is fido-sk. An ssh-ed25519
+// key on a tkey-signer line is tkey-signer. Any other key is software. A
+// caller names the classes it accepts, and a line of any other class never
+// authorizes a signature.
 //
 // A line carrying no-touch-required is an error. User presence is not
 // negotiable here, so a file that asks to waive it is refused whole rather
@@ -45,8 +54,11 @@ type signerLine struct {
 	validAfter     int64 // Unix seconds; 0 when absent
 	validBefore    int64
 	verifyRequired bool
+	tkeySigner     bool
+	signerApp      string // the tkey-signer value, if any
 
-	key []byte // the public key's wire encoding
+	key   []byte // the public key's wire encoding
+	class Class
 }
 
 // LoadAllowedSigners reads and parses an allowed-signers file.
@@ -103,8 +115,31 @@ func parseSignerLine(line string) (signerLine, error) {
 		rest = after
 	}
 
-	l.key, err = keyField(rest)
-	return l, err
+	var keyType string
+	if l.key, keyType, err = keyField(rest); err != nil {
+		return l, err
+	}
+	switch {
+	case keyType == TypeSKEd25519 || keyType == TypeSKECDSA:
+		if l.tkeySigner {
+			return l, fmt.Errorf("tkey-signer marks a TKey's ssh-ed25519 key, and this is a %s key", keyType)
+		}
+		l.class = ClassFIDO
+	case l.tkeySigner:
+		if keyType != TypeEd25519 {
+			return l, fmt.Errorf("tkey-signer marks a TKey's ssh-ed25519 key, and this is a %s key", keyType)
+		}
+		if l.verifyRequired {
+			return l, errors.New("verify-required cannot hold for a tkey-signer line: a TKey signature cannot prove user verification")
+		}
+		if l.certAuthority {
+			return l, errors.New("a tkey-signer line cannot be a cert-authority")
+		}
+		l.class = ClassTKey
+	default:
+		l.class = ClassSoftware
+	}
+	return l, nil
 }
 
 // principalsField splits off the first field the way OpenSSH's strdelimw
@@ -183,6 +218,11 @@ func (l *signerLine) parseOptions(opts string) error {
 			l.certAuthority = true
 		case name == "verify-required" && !hasValue:
 			l.verifyRequired = true
+		case name == "tkey-signer":
+			if hasValue && !validSignerApp(value) {
+				return fmt.Errorf("tkey-signer=%q is not a version: use 1 to 64 letters, digits and . _ + : -", value)
+			}
+			l.tkeySigner, l.signerApp = true, value
 		case name == "namespaces" && hasValue:
 			l.hasNamespaces, l.namespaces = true, value
 		case name == "valid-after" && hasValue:
@@ -240,29 +280,43 @@ func dequote(s string) (value, rest string, err error) {
 	return "", "", errors.New("the value has no closing quote")
 }
 
+// validSignerApp holds a tkey-signer version to a plain token.
+func validSignerApp(v string) bool {
+	if len(v) == 0 || len(v) > 64 {
+		return false
+	}
+	for _, c := range v {
+		ok := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || strings.ContainsRune("._+:-", c)
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
 // keyField reads "keytype base64 [comment]" and returns the key's wire
-// encoding.
-func keyField(rest string) ([]byte, error) {
+// encoding and type.
+func keyField(rest string) ([]byte, string, error) {
 	fields := strings.Fields(rest)
 	if len(fields) < 2 {
-		return nil, errors.New("the line has no key")
+		return nil, "", errors.New("the line has no key")
 	}
 	typ := fields[0]
 	if !knownKeyType(typ) {
-		return nil, fmt.Errorf("keys of type %q are not supported", typ)
+		return nil, "", fmt.Errorf("keys of type %q are not supported", typ)
 	}
-	blob, err := base64.StdEncoding.DecodeString(fields[1])
+	blob, err := base64.StdEncoding.Strict().DecodeString(fields[1])
 	if err != nil {
-		return nil, fmt.Errorf("the %s key is not base64: %w", typ, err)
+		return nil, "", fmt.Errorf("the %s key is not canonical base64: %w", typ, err)
 	}
 	key, err := parsePublicKey(blob)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if key.typ != typ {
-		return nil, fmt.Errorf("the key is labelled %s but holds a %s key", typ, key.typ)
+		return nil, "", fmt.Errorf("the key is labelled %s but holds a %s key", typ, key.typ)
 	}
-	return blob, nil
+	return blob, typ, nil
 }
 
 // looksLikeKeyType catches OpenSSH key types this package does not read,
@@ -314,74 +368,112 @@ func ParseTime(s string) (time.Time, error) {
 	return t, nil
 }
 
-// lookup finds the lines that let key sign in namespace at time at, for
-// principal if one is given. It mirrors sshsig_check_allowed_keys: a line
-// matches when its key is key, its principals pattern list matches the
-// principal, its namespaces (if any) match the namespace, and at falls in
-// its validity window. Certificate-authority lines never match, because
-// this package does not verify certificates.
+// request is what lookup matches lines against.
+type request struct {
+	key       []byte
+	principal string // empty only when any principal will do
+	namespace string
+	at        time.Time
+	classes   map[Class]bool
+}
+
+// match is what the lines that matched a request say about it.
+type match struct {
+	principal  string
+	class      Class
+	signerApp  string
+	uvRequired bool
+}
+
+// lookup finds the lines that let a key sign. It mirrors
+// sshsig_check_allowed_keys, and adds the signer class. A line matches
+// when:
 //
-// With no match it returns the most specific refusal any line produced.
-// With a match it returns the first matching line's principals field, and
-// whether any matching line carries verify-required.
-func (a *AllowedSigners) lookup(key []byte, principal, namespace string, at time.Time) (principals string, uvRequired bool, refusal *Refusal) {
-	refusal = &Refusal{Reason: UnknownKey, Detail: fmt.Sprintf("no line in %s lists this key", a.source)}
+//   - its key is the request's key
+//   - its class is one the request accepts
+//   - its principals pattern list matches the principal, unless any
+//     principal will do
+//   - its namespaces, if present, match the namespace
+//   - the request's time falls in its validity window
+//
+// Certificate-authority lines never match, because this package does not
+// verify certificates.
+//
+// With no match, lookup returns the most specific refusal any line
+// produced. With a match, it reports the first matching line's class and
+// signer app, and the principal: the requested one, or with any principal
+// that line's principals field. UV is required if any matching line
+// carries verify-required, so the strictest line holds.
+func (a *AllowedSigners) lookup(req request) (*match, *Refusal) {
+	refusal := &Refusal{Reason: UnknownKey, Detail: fmt.Sprintf("no line in %s lists this key", a.source)}
 	rank := 0
 	note := func(r int, reason Reason, detail string) {
 		if r > rank {
 			rank, refusal = r, &Refusal{Reason: reason, Detail: detail}
 		}
 	}
-	now := at.Unix()
-	found := false
+	now := req.at.Unix()
+	var m *match
 	for _, l := range a.lines {
-		if l.certAuthority || !bytes.Equal(l.key, key) {
+		if l.certAuthority || !bytes.Equal(l.key, req.key) {
 			continue
 		}
 		where := fmt.Sprintf("%s:%d", a.source, l.number)
 		switch {
-		case principal != "" && matchPatternList(principal, l.principals) != 1:
-			note(1, PrincipalNotAllowed, fmt.Sprintf("%s lists this key for %q, which does not match %q", where, l.principals, principal))
-		case l.hasNamespaces && matchPatternList(namespace, l.namespaces) != 1:
-			note(2, NamespaceNotAllowed, fmt.Sprintf("%s allows this key only in namespaces %q, which do not match %q", where, l.namespaces, namespace))
+		case !req.classes[l.class]:
+			note(1, ClassNotAllowed, fmt.Sprintf("%s lists this key as a %s signer, and this call accepts only %s", where, l.class, classList(req.classes)))
+		case req.principal != "" && matchPatternList(req.principal, l.principals) != 1:
+			note(2, PrincipalNotAllowed, fmt.Sprintf("%s lists this key for %q, which does not match %q", where, l.principals, req.principal))
+		case l.hasNamespaces && matchPatternList(req.namespace, l.namespaces) != 1:
+			note(3, NamespaceNotAllowed, fmt.Sprintf("%s allows this key only in namespaces %q, which do not match %q", where, l.namespaces, req.namespace))
 		case l.validAfter != 0 && now < l.validAfter:
-			note(3, NotYetValid, fmt.Sprintf("%s makes this key valid only from %s, and the verify time is %s", where, stamp(l.validAfter), stamp(now)))
+			note(4, NotYetValid, fmt.Sprintf("%s makes this key valid only from %s, and the verify time is %s", where, stamp(l.validAfter), stamp(now)))
 		case l.validBefore != 0 && now > l.validBefore:
-			note(3, Expired, fmt.Sprintf("%s made this key valid only until %s, and the verify time is %s", where, stamp(l.validBefore), stamp(now)))
+			note(4, Expired, fmt.Sprintf("%s made this key valid only until %s, and the verify time is %s", where, stamp(l.validBefore), stamp(now)))
 		default:
-			if !found {
-				principals = l.principals
-				if principal != "" {
-					principals = principal
+			if m == nil {
+				m = &match{principal: req.principal, class: l.class, signerApp: l.signerApp}
+				if m.principal == "" {
+					m.principal = l.principals
 				}
 			}
-			found = true
-			uvRequired = uvRequired || l.verifyRequired
+			m.uvRequired = m.uvRequired || l.verifyRequired
 		}
 	}
-	if !found {
-		return "", false, refusal
+	if m == nil {
+		return nil, refusal
 	}
-	return principals, uvRequired, nil
+	return m, nil
 }
 
 func stamp(unix int64) string {
 	return time.Unix(unix, 0).UTC().Format(time.RFC3339)
 }
 
-// matchPatternList is OpenSSH's match_pattern_list. It returns 1 when s
-// matches a pattern in the comma-separated list, -1 when it matches a
-// pattern negated with "!", which overrides any positive match, and 0
-// otherwise. Matching is case-sensitive.
+// matchPatternList is OpenSSH's match_pattern_list, transliterated. It
+// returns 1 when s matches a pattern in the comma-separated list, -1 when
+// it matches a pattern negated with "!", which overrides any positive
+// match, and 0 otherwise. Matching is case-sensitive. As in OpenSSH, a
+// pattern of 1023 bytes or more makes the whole list match nothing.
 func matchPatternList(s, list string) int {
-	if list == "" {
-		return 0
-	}
+	const maxPattern = 1024 - 1 // OpenSSH's sub[1024] buffer, less its NUL
 	positive := 0
-	for _, pattern := range strings.Split(list, ",") {
-		negated := strings.HasPrefix(pattern, "!")
+	for i := 0; i < len(list); {
+		negated := list[i] == '!'
 		if negated {
-			pattern = pattern[1:]
+			i++
+		}
+		j := i
+		for j < len(list) && j-i < maxPattern && list[j] != ',' {
+			j++
+		}
+		if j-i >= maxPattern {
+			return 0
+		}
+		pattern := list[i:j]
+		i = j
+		if i < len(list) && list[i] == ',' {
+			i++
 		}
 		if matchPattern(s, pattern) {
 			if negated {
@@ -393,28 +485,41 @@ func matchPatternList(s, list string) int {
 	return positive
 }
 
-// matchPattern is OpenSSH's match_pattern: "*" matches any run of bytes,
-// "?" matches one byte, and every other byte matches itself.
+// matchPattern is OpenSSH's match_pattern, transliterated: "*" matches any
+// run of bytes, "?" matches one byte, and every other byte matches itself.
+// A "*" or "?" in the pattern is always a wildcard, even where s holds the
+// same byte.
 func matchPattern(s, pattern string) bool {
-	si, pi := 0, 0
-	star, mark := -1, 0
-	for si < len(s) {
-		switch {
-		case pi < len(pattern) && (pattern[pi] == '?' || pattern[pi] == s[si]):
-			si++
-			pi++
-		case pi < len(pattern) && pattern[pi] == '*':
-			star, mark = pi, si
-			pi++
-		case star >= 0:
-			mark++
-			si, pi = mark, star+1
-		default:
+	for {
+		if pattern == "" {
+			return s == ""
+		}
+		if pattern[0] == '*' {
+			pattern = strings.TrimLeft(pattern, "*")
+			if pattern == "" {
+				return true
+			}
+			if pattern[0] != '?' {
+				for i := 0; i < len(s); i++ {
+					if s[i] == pattern[0] && matchPattern(s[i+1:], pattern[1:]) {
+						return true
+					}
+				}
+				return false
+			}
+			for i := 0; i < len(s); i++ {
+				if matchPattern(s[i:], pattern) {
+					return true
+				}
+			}
 			return false
 		}
+		if s == "" {
+			return false
+		}
+		if pattern[0] != '?' && pattern[0] != s[0] {
+			return false
+		}
+		s, pattern = s[1:], pattern[1:]
 	}
-	for pi < len(pattern) && pattern[pi] == '*' {
-		pi++
-	}
-	return pi == len(pattern)
 }

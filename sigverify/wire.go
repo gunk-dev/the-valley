@@ -59,15 +59,20 @@ func (r *reader) str() []byte {
 	return r.take(int(n))
 }
 
-// mpint reads a non-negative multiple-precision integer. OpenSSH refuses
-// negative values, and so does this.
+// mpint reads a non-negative multiple-precision integer in its minimal
+// encoding. OpenSSH refuses negative values and accepts redundant leading
+// zero bytes. This refuses both, so that one integer has one encoding.
 func (r *reader) mpint() *big.Int {
 	b := r.str()
 	if r.err != nil {
 		return nil
 	}
-	if len(b) > 0 && b[0]&0x80 != 0 {
+	switch {
+	case len(b) > 0 && b[0]&0x80 != 0:
 		r.err = errors.New("holds a negative integer")
+		return nil
+	case len(b) > 0 && b[0] == 0 && (len(b) == 1 || b[1]&0x80 == 0):
+		r.err = errors.New("holds an integer with a redundant leading zero")
 		return nil
 	}
 	return new(big.Int).SetBytes(b)

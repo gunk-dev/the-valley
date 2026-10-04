@@ -128,35 +128,29 @@ rec {
 
   # The security-key signature verifier (sigverify/README.md). Go,
   # standard library only — hence vendorHash = null and no module fetch.
+  #
+  # The git its git-tag command runs is fixed at build time to this
+  # flake's git, as an absolute store path compiled into the binary. A
+  # wrapper that puts git on PATH would leave the binary inside it looking
+  # git up on PATH, and a caller's environment could change which git that
+  # is. Compiled in, there is no PATH lookup to change.
+  #
   # Its tests run in the checkPhase against real ssh-keygen and git. The
   # security-key cases among them need OpenSSH's sk-dummy authenticator,
   # which only the sigverify-unit check supplies; here they skip, so a
   # consumer building this package never builds OpenSSH.
-  sigverify-unwrapped = pkgs.buildGoModule {
+  sigverify = pkgs.buildGoModule {
     pname = "valley-sigverify";
     version = "0";
     src = ../sigverify;
     vendorHash = null;
+    ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
     nativeCheckInputs = [
       pkgs.git
       pkgs.openssh
     ];
     meta.mainProgram = "sigverify";
   };
-
-  # The shipping form. The git-tag command reads tag objects with git, so
-  # git travels with it.
-  sigverify =
-    pkgs.runCommand "valley-sigverify"
-      {
-        nativeBuildInputs = [ pkgs.makeWrapper ];
-        meta.mainProgram = "sigverify";
-      }
-      ''
-        mkdir -p $out/bin
-        makeWrapper ${lib.getExe sigverify-unwrapped} $out/bin/sigverify \
-          --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
-      '';
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
   # same trade as attest — hence vendorHash = null and no module fetch.

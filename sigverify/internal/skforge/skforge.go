@@ -16,6 +16,9 @@
 // It rebuilds the signed bytes independently of the verifier, so that a
 // mistake in one does not hide the same mistake in the other. The tests
 // also check real ssh-keygen signatures, which keeps both honest.
+//
+// Envelope takes a finished signature apart so a test can change one field
+// after signing, as an attacker holding the signature could.
 package skforge
 
 import (
@@ -56,7 +59,17 @@ func ECDSASK(seed string) Key {
 	return Key{Type: "sk-ecdsa-sha2-nistp256@openssh.com", application: "ssh:", ec: priv}
 }
 
-// Ed25519 is a plain ssh-ed25519 software key derived from seed.
+// WithApplication returns the same security key enrolled under another
+// FIDO application. Its public key blob changes, and so do the bytes it
+// signs.
+func (k Key) WithApplication(application string) Key {
+	k.application = application
+	return k
+}
+
+// Ed25519 is a plain ssh-ed25519 software key derived from seed. A TKey's
+// signatures are exactly what this key makes: the TKey's guarantees live in
+// the device and in which public key it has, not in the signature bytes.
 func Ed25519(seed string) Key {
 	return Key{Type: "ssh-ed25519", ed: edKey(seed)}
 }
@@ -131,6 +144,73 @@ func (k Key) Sign(message []byte, namespace string, flags byte) []byte {
 	blob = bytesStr(blob, sig)
 	return Armor(blob)
 }
+
+// Envelope is an SSHSIG blob split into its fields, so a test can change
+// one and reassemble the rest exactly.
+type Envelope struct {
+	Version   uint32
+	PublicKey []byte
+	Namespace string
+	Reserved  []byte
+	HashAlg   string
+	Signature []byte
+	Trailing  []byte // bytes after the last field
+}
+
+// ParseEnvelope splits an armored SSHSIG. It panics on input this package
+// did not make.
+func ParseEnvelope(armored []byte) Envelope {
+	text := strings.TrimSpace(string(armored))
+	text = strings.TrimPrefix(text, "-----BEGIN SSH SIGNATURE-----")
+	text = strings.TrimSuffix(text, "-----END SSH SIGNATURE-----")
+	blob, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(text), ""))
+	if err != nil || !strings.HasPrefix(string(blob), "SSHSIG") {
+		panic("skforge: not an armored SSHSIG")
+	}
+	r := Reader{Rest: blob[len("SSHSIG"):]}
+	e := Envelope{Version: r.U32()}
+	e.PublicKey = r.String()
+	e.Namespace = string(r.String())
+	e.Reserved = r.String()
+	e.HashAlg = string(r.String())
+	e.Signature = r.String()
+	e.Trailing = r.Rest
+	return e
+}
+
+// Blob reassembles the raw SSHSIG.
+func (e Envelope) Blob() []byte {
+	b := binary.BigEndian.AppendUint32([]byte("SSHSIG"), e.Version)
+	b = bytesStr(b, e.PublicKey)
+	b = str(b, e.Namespace)
+	b = bytesStr(b, e.Reserved)
+	b = str(b, e.HashAlg)
+	b = bytesStr(b, e.Signature)
+	return append(b, e.Trailing...)
+}
+
+// Armored reassembles the armored SSHSIG.
+func (e Envelope) Armored() []byte { return Armor(e.Blob()) }
+
+// Reader reads SSH wire strings, for taking a signature blob apart. It
+// panics on a short read: tests only use it on blobs they made.
+type Reader struct{ Rest []byte }
+
+func (r *Reader) U32() uint32 {
+	v := binary.BigEndian.Uint32(r.Rest)
+	r.Rest = r.Rest[4:]
+	return v
+}
+
+func (r *Reader) String() []byte {
+	n := r.U32()
+	s := r.Rest[:n]
+	r.Rest = r.Rest[n:]
+	return s
+}
+
+// String encodes b as an SSH wire string.
+func String(b []byte) []byte { return bytesStr(nil, b) }
 
 // Armor wraps a raw SSHSIG blob the way ssh-keygen does.
 func Armor(blob []byte) []byte {

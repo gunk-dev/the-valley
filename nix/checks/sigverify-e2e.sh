@@ -30,10 +30,14 @@ git commit --quiet -m release
 git -c user.signingKey="$TMPDIR/touched" tag -s v1 -m 'release 1'
 git -c user.signingKey="$TMPDIR/untouched" tag -s v2 -m 'release 2'
 
+# sigverify runs with an empty environment: no PATH to find a git on, and
+# no GIT_* variables. The git it runs is compiled into it.
+sigverify="$(command -v sigverify)"
 verify() {
   status=0
-  sigverify git-tag --repo "$TMPDIR/repo" --tag "$1" \
-    --allowed-signers "$TMPDIR/allowed_signers" > "$1.out" 2> "$1.err" || status=$?
+  env -i "$sigverify" git-tag --repo "$TMPDIR/repo" --tag "$1" \
+    --allowed-signers "$TMPDIR/allowed_signers" --principal release@valley.invalid \
+    > "$1.out" 2> "$1.err" || status=$?
 }
 
 # A touched tag is verified, and the output names the commit to apply.
@@ -44,7 +48,7 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 grep -qx verified v1.out
-grep -qx "object $(git rev-parse HEAD)" v1.out
+grep -qx "commit $(git rev-parse HEAD)" v1.out
 grep -qx 'user-presence yes' v1.out
 
 # git verify-tag accepts the untouched tag. sigverify refuses it, with
@@ -60,13 +64,28 @@ if [ "$status" -ne 1 ]; then
   cat v2.out v2.err >&2
   exit 1
 fi
-grep -qx 'refused no-user-presence' v2.out
+# A refusal is its reason and nothing else.
+if [ "$(cat v2.out)" != 'refused no-user-presence' ]; then
+  echo "sigverify-e2e: the refusal printed more than its reason" >&2
+  cat v2.out >&2
+  exit 1
+fi
 
 # A tag that does not exist is an error, exit status 2: nothing was
 # verified or refused.
 verify v3
+if [ "$status" -ne 2 ] || [ -s v3.out ]; then
+  echo "sigverify-e2e: a missing tag gave exit status $status, not 2, or printed a report" >&2
+  exit 1
+fi
+
+# A report that cannot be written is an error, never exit status 0.
+status=0
+env -i "$sigverify" git-tag --repo "$TMPDIR/repo" --tag v1 \
+  --allowed-signers "$TMPDIR/allowed_signers" --principal release@valley.invalid \
+  > /dev/full 2> full.err || status=$?
 if [ "$status" -ne 2 ]; then
-  echo "sigverify-e2e: a missing tag gave exit status $status, not 2" >&2
+  echo "sigverify-e2e: a report written to /dev/full gave exit status $status, not 2" >&2
   exit 1
 fi
 

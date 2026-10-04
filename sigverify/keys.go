@@ -226,14 +226,13 @@ func verifyRSA(pub *rsa.PublicKey, sigType string, r *reader, data []byte) (bool
 	if err := r.end(); err != nil {
 		return false, fmt.Errorf("the RSA signature %w", err)
 	}
-	// OpenSSH left-pads a short signature to the modulus length.
-	size := pub.Size()
-	if len(raw) > size {
-		return false, fmt.Errorf("the RSA signature is longer than the key")
+	// OpenSSH accepts a short signature and left-pads it. It never writes
+	// one, so this requires the full modulus length: one signature, one
+	// encoding.
+	if len(raw) != pub.Size() {
+		return false, fmt.Errorf("the RSA signature holds %d bytes, not the key's %d", len(raw), pub.Size())
 	}
-	padded := make([]byte, size)
-	copy(padded[size-len(raw):], raw)
 	d := h.New()
 	d.Write(data)
-	return rsa.VerifyPKCS1v15(pub, h, d.Sum(nil), padded) == nil, nil
+	return rsa.VerifyPKCS1v15(pub, h, d.Sum(nil), raw) == nil, nil
 }

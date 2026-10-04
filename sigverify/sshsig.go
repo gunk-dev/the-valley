@@ -47,7 +47,12 @@ func parseSignature(sig []byte) (*envelope, error) {
 		publicKey: r.str(),
 		namespace: string(r.str()),
 	}
-	r.str() // reserved: ssh-keygen ignores it here, and it is never signed
+	// The reserved field is read and ignored, as ssh-keygen does. The bytes
+	// a key signs always hold an empty reserved field, so what the envelope
+	// carries here cannot change what was signed. It does mean two
+	// envelopes can carry one signature, which is one reason signature
+	// bytes are no release identity.
+	r.str()
 	env.hashAlg = string(r.str())
 	env.signature = r.str()
 	if err := r.end(); err != nil {
@@ -59,9 +64,11 @@ func parseSignature(sig []byte) (*envelope, error) {
 	return env, nil
 }
 
-// dearmor follows sshsig_dearmor in OpenSSH: the header opens the input,
-// the footer follows a newline, and the base64 between them may be wrapped.
-// Anything after the footer is ignored.
+// dearmor follows sshsig_dearmor in OpenSSH, more strictly. The header
+// opens the input and the footer follows a newline, as there. Between them
+// is base64 wrapped onto lines, with canonical padding and nothing else.
+// After the footer only whitespace may follow, where ssh-keygen ignores
+// anything at all.
 func dearmor(armored []byte) ([]byte, error) {
 	rest := armored[len(armorBegin):]
 	switch {
@@ -76,10 +83,13 @@ func dearmor(armored []byte) ([]byte, error) {
 	if end < 0 {
 		return nil, errors.New("the armor has no footer")
 	}
-	encoded := strings.Join(strings.Fields(string(rest[:end])), "")
-	blob, err := base64.StdEncoding.DecodeString(encoded)
+	if after := rest[end+1+len(armorEnd):]; len(bytes.TrimSpace(after)) != 0 {
+		return nil, errors.New("the armor footer is followed by more than whitespace")
+	}
+	encoded := strings.NewReplacer("\r", "", "\n", "").Replace(string(rest[:end]))
+	blob, err := base64.StdEncoding.Strict().DecodeString(encoded)
 	if err != nil {
-		return nil, fmt.Errorf("the armored signature is not base64: %w", err)
+		return nil, fmt.Errorf("the armored signature is not canonical base64: %w", err)
 	}
 	return blob, nil
 }

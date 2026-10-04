@@ -37,13 +37,13 @@ in
   # ssh-keygen signing through sk-dummy, including a key stub rewritten
   # to skip the touch, which ssh-keygen -Y verify and git verify-tag both
   # accept and sigverify must refuse.
-  sigverify-unit = packages.sigverify-unwrapped.overrideAttrs (old: {
+  sigverify-unit = packages.sigverify.overrideAttrs (old: {
     env = (old.env or { }) // {
       SIGVERIFY_SK_PROVIDER = provider;
     };
   });
 
-  # The shipped command, wrapper and all, run the way a consumer runs it.
+  # The shipped command, run the way a consumer runs it.
   sigverify-e2e = pkgs.runCommand "valley-sigverify-e2e" {
     nativeBuildInputs = [
       pkgs.git

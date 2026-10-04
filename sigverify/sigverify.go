@@ -15,16 +15,17 @@
 // stub on disk. So a check that a person was present has to happen here,
 // in the verifier.
 //
-// Verify checks, in order:
+// Every allowed signer has a class, and each call names the classes it
+// accepts (see Class). Verify checks, in order:
 //
 //  1. The signature is a well-formed SSHSIG.
 //  2. Its namespace is the one the caller expects.
-//  3. Its key is a security key, unless the policy admits software keys.
-//  4. The signature verifies over the message.
-//  5. The allowed-signers file lists the key, for the requested principal
-//     if there is one, in this namespace, at the verify time.
-//  6. A security key's signature has UP set, always.
-//  7. It has UV set, when the policy or the signer's line requires it.
+//  3. The signature verifies over the message.
+//  4. An allowed-signers line lists the key, in a class the call accepts,
+//     for the requested principal, in this namespace, at the verify time.
+//  5. A security key's signature has UP set, always.
+//  6. It has UV set, when the policy or the signer's line requires it. A
+//     TKey or software signature cannot prove UV, so then it is refused.
 //
 // The first check that fails is the refusal, with a Reason that names it.
 package sigverify
@@ -32,6 +33,8 @@ package sigverify
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -39,6 +42,27 @@ import (
 const (
 	FlagUserPresent  = 0x01
 	FlagUserVerified = 0x04
+)
+
+// Class is the kind of signer an allowed-signers line names. It decides
+// what a signature by that line's key can prove.
+type Class string
+
+const (
+	// ClassFIDO is a FIDO security key: sk-ssh-ed25519@openssh.com or
+	// sk-ecdsa-sha2-nistp256@openssh.com. Its signatures carry the UP and UV
+	// bits, and UP is always required.
+	ClassFIDO Class = "fido-sk"
+	// ClassTKey is a Tillitis TKey running the stock signer app, on a line
+	// marked tkey-signer. Its signatures are plain ssh-ed25519 and carry no
+	// flags. They can still be trusted to need a touch: the app requires
+	// one for every signature, and the TKey derives the key from the hash
+	// of the app it runs, so an app that skips the touch has a different
+	// key. The line pins the key, and with it the app.
+	ClassTKey Class = "tkey-signer"
+	// ClassSoftware is any other key. Its signatures prove nothing about
+	// presence.
+	ClassSoftware Class = "software"
 )
 
 // Reason names why a signature was refused. The values are stable, and
@@ -55,14 +79,15 @@ const (
 	// UnsupportedKey: the signing key is of a type this package does not
 	// verify, such as a certificate.
 	UnsupportedKey Reason = "unsupported-key"
-	// NotSecurityKey: the key is a software key, and the policy requires a
-	// FIDO security key.
-	NotSecurityKey Reason = "not-security-key"
 	// BadSignature: the signature does not verify over the message. Either
 	// the message changed, or the signature is not that key's.
 	BadSignature Reason = "bad-signature"
 	// UnknownKey: no allowed-signers line lists the key.
 	UnknownKey Reason = "unknown-key"
+	// ClassNotAllowed: the key is listed, but only in a signer class this
+	// call does not accept. A software key where a security key is
+	// required is refused for this reason.
+	ClassNotAllowed Reason = "class-not-allowed"
 	// PrincipalNotAllowed: the key is listed, but not for the requested
 	// principal.
 	PrincipalNotAllowed Reason = "principal-not-allowed"
@@ -82,6 +107,12 @@ const (
 	// TagNameMismatch: a signed git tag object is reachable under a name
 	// other than the one it was signed with.
 	TagNameMismatch Reason = "tag-name-mismatch"
+	// TargetNotCommit: a signed git tag points at something other than a
+	// commit, such as another tag or a tree.
+	TargetNotCommit Reason = "target-not-commit"
+	// TargetMissing: the commit a signed git tag points at is not in the
+	// repository.
+	TargetMissing Reason = "target-missing"
 )
 
 // Refusal is the error Verify returns when it examined a signature and
@@ -103,13 +134,50 @@ func (r *Refusal) Error() string {
 // User presence is not in it: every security-key signature must have UP
 // set, and nothing turns that off.
 type Policy struct {
-	// RequireUV refuses any signature that does not prove user
-	// verification. A software key cannot prove it, so with RequireUV
-	// set only security keys can pass.
-	RequireUV bool
-	// AllowNonSK admits signatures by software keys, which prove nothing
-	// about presence. Leave it off for anything a human approves.
+	// Classes is the signer classes the call accepts. Empty means fido-sk
+	// only. A trust-root operation that only the TKey may authorize asks
+	// for exactly ClassTKey, and then no security key satisfies it.
+	Classes []Class
+	// AllowNonSK adds ClassSoftware to Classes. Software keys prove nothing
+	// about presence: leave it off for anything a human approves. It never
+	// makes a key count as a TKey: only a tkey-signer line does that.
 	AllowNonSK bool
+	// RequireUV refuses any signature that does not prove user
+	// verification. Only a security key can prove it, so with RequireUV
+	// set, TKey and software signatures are refused.
+	RequireUV bool
+}
+
+func (p Policy) classes() map[Class]bool {
+	set := map[Class]bool{}
+	for _, c := range p.Classes {
+		set[c] = true
+	}
+	if len(set) == 0 {
+		set[ClassFIDO] = true
+	}
+	if p.AllowNonSK {
+		set[ClassSoftware] = true
+	}
+	return set
+}
+
+func classList(set map[Class]bool) string {
+	var names []string
+	for c := range set {
+		names = append(names, string(c))
+	}
+	slices.Sort(names)
+	return strings.Join(names, ", ")
+}
+
+// ParseClass reads a class name.
+func ParseClass(name string) (Class, error) {
+	switch c := Class(name); c {
+	case ClassFIDO, ClassTKey, ClassSoftware:
+		return c, nil
+	}
+	return "", fmt.Errorf("%q is not a signer class: use %s, %s or %s", name, ClassFIDO, ClassTKey, ClassSoftware)
 }
 
 // Options says what to verify against.
@@ -117,11 +185,15 @@ type Options struct {
 	// Namespace is the SSHSIG namespace the signature must carry, such as
 	// "git" for git objects. Required.
 	Namespace string
-	// Principal, if set, is the identity the signature must be valid for,
-	// as with `ssh-keygen -Y verify -I`. If empty, any principal the key
-	// is listed under will do, as with `ssh-keygen -Y find-principals`.
+	// Principal is the identity the signature must be valid for, as with
+	// `ssh-keygen -Y verify -I`. Required, unless AnyPrincipal is set.
 	Principal string
-	Policy    Policy
+	// AnyPrincipal accepts any line that lists the key, whatever its
+	// principals field says, as `ssh-keygen -Y find-principals` does. Even
+	// a line whose principals are all negated, such as "!*", then
+	// authorizes its key. Use it only where the key alone decides.
+	AnyPrincipal bool
+	Policy       Policy
 	// Time is when the signer's validity window is judged. The zero value
 	// means now.
 	Time time.Time
@@ -133,34 +205,47 @@ type Signer struct {
 	Fingerprint string // SHA256:..., as `ssh-keygen -l` prints it
 	SecurityKey bool
 	// Flags and Counter are the authenticator's flags byte and signature
-	// counter. They are zero for a software key.
+	// counter. They are zero for a key that is not a security key.
 	Flags   byte
 	Counter uint32
 }
 
-// UserPresent reports whether the signature proves a touch.
+// UserPresent reports whether the signature carries the UP bit.
 func (s Signer) UserPresent() bool { return s.SecurityKey && s.Flags&FlagUserPresent != 0 }
 
-// UserVerified reports whether the signature proves a PIN or biometric.
+// UserVerified reports whether the signature carries the UV bit.
 func (s Signer) UserVerified() bool { return s.SecurityKey && s.Flags&FlagUserVerified != 0 }
 
 // Result is a verified signature.
 type Result struct {
 	Signer
 	Namespace string
-	// Principal is the requested principal or, if none was requested, the
+	// Principal is the requested principal or, with AnyPrincipal, the
 	// principals field of the first allowed-signers line that matched.
 	Principal string
+	// Class is the matching line's signer class.
+	Class Class
+	// SignerApp is the version a tkey-signer line records, if any.
+	SignerApp string
 }
 
 // Verify checks signature, an armored or raw SSHSIG, over message.
 // It returns a *Refusal if the signature is not acceptable.
 func Verify(signers *AllowedSigners, message, signature []byte, opts Options) (*Result, error) {
-	if opts.Namespace == "" {
+	switch {
+	case opts.Namespace == "":
 		return nil, errors.New("sigverify: no namespace given")
-	}
-	if signers == nil {
+	case signers == nil:
 		return nil, errors.New("sigverify: no allowed signers given")
+	case opts.Principal == "" && !opts.AnyPrincipal:
+		return nil, errors.New("sigverify: no principal given, and AnyPrincipal is not set")
+	case opts.Principal != "" && opts.AnyPrincipal:
+		return nil, errors.New("sigverify: both a principal and AnyPrincipal given")
+	}
+	for _, c := range opts.Policy.Classes {
+		if _, err := ParseClass(string(c)); err != nil {
+			return nil, fmt.Errorf("sigverify: %w", err)
+		}
 	}
 	at := opts.Time
 	if at.IsZero() {
@@ -187,9 +272,6 @@ func Verify(signers *AllowedSigners, message, signature []byte, opts Options) (*
 	if env.namespace != opts.Namespace {
 		return refuse(WrongNamespace, "the signature is for namespace %q, not %q", env.namespace, opts.Namespace)
 	}
-	if !signer.SecurityKey && !opts.Policy.AllowNonSK {
-		return refuse(NotSecurityKey, "the signature is by a %s software key, and only FIDO security keys are accepted", key.typ)
-	}
 	data, err := signedData(env.namespace, env.hashAlg, message)
 	if err != nil {
 		return refuse(Malformed, "%s", err)
@@ -203,25 +285,41 @@ func Verify(signers *AllowedSigners, message, signature []byte, opts Options) (*
 	}
 	signer.Flags, signer.Counter = auth.flags, auth.counter
 
-	principal, uvRequired, refusal := signers.lookup(key.blob, opts.Principal, opts.Namespace, at)
+	m, refusal := signers.lookup(request{
+		key:       key.blob,
+		principal: opts.Principal,
+		namespace: opts.Namespace,
+		at:        at,
+		classes:   opts.Policy.classes(),
+	})
 	if refusal != nil {
 		refusal.Signer = signer
 		return nil, refusal
 	}
 
-	if signer.SecurityKey && !signer.UserPresent() {
+	if m.class == ClassFIDO && !signer.UserPresent() {
 		return refuse(NoUserPresence, "the signature by %s is genuine, but its authenticator flags are 0x%02x: the key was not touched", signer.Fingerprint, signer.Flags)
 	}
-	if (opts.Policy.RequireUV || uvRequired) && !signer.UserVerified() {
+	if opts.Policy.RequireUV || m.uvRequired {
 		why := "the policy requires it"
 		if !opts.Policy.RequireUV {
 			why = "the signer's line carries verify-required"
 		}
-		if !signer.SecurityKey {
+		switch {
+		case m.class == ClassTKey:
+			return refuse(NoUserVerification, "user verification is required (%s), and a TKey signature cannot prove it", why)
+		case m.class != ClassFIDO:
 			return refuse(NoUserVerification, "user verification is required (%s), and a %s software key cannot prove it", why, key.typ)
+		case !signer.UserVerified():
+			return refuse(NoUserVerification, "user verification is required (%s), and the authenticator flags are 0x%02x", why, signer.Flags)
 		}
-		return refuse(NoUserVerification, "user verification is required (%s), and the authenticator flags are 0x%02x", why, signer.Flags)
 	}
 
-	return &Result{Signer: *signer, Namespace: env.namespace, Principal: principal}, nil
+	return &Result{
+		Signer:    *signer,
+		Namespace: env.namespace,
+		Principal: m.principal,
+		Class:     m.class,
+		SignerApp: m.signerApp,
+	}, nil
 }

@@ -216,6 +216,7 @@ let
     || !(lib.hasInfix "--repo /srv/git/open.git" identityService.ExecStart)
     || !(lib.hasInfix "--known-signers ${identityStateDir}/known-signers" identityService.ExecStart)
     || !(lib.hasInfix "--authorized-keys ${identityStateDir}/authorized_keys.git" identityService.ExecStart)
+    || !(lib.hasInfix "--grants ${identityStateDir}/grants" identityService.ExecStart)
     || !(builtins.elem "${identityStateDir}/authorized_keys.%u"
       identityHost.config.services.openssh.authorizedKeysFiles
     )
@@ -290,7 +291,7 @@ in
     else if identityRenderedWithoutEnable then
       throw "valley module-eval: registry-compilation machinery rendered for a host that never enabled it — nothing may change until a consumer opts in"
     else if identityCompiler then
-      throw "valley module-eval: the compiler must run as the git user, write only its own 0755 state directory, read the registry from the instance repository, and have its authorized_keys added to what sshd reads under the %u token — sshd refuses a keys file owned by anyone but root or the account it authorizes, and a fixed path in that global list would authorize every registry key for every account on the host"
+      throw "valley module-eval: the compiler must run as the git user, write only its own 0755 state directory, read the registry from the instance repository, write the grants the pre-receive hook reads, and have its authorized_keys added to what sshd reads under the %u token — sshd refuses a keys file owned by anyone but root or the account it authorizes, and a fixed path in that global list would authorize every registry key for every account on the host"
     else if identityIntegrator then
       throw "valley module-eval: a controller under a compiled registry must read the compiled signers file, start after the compilation, and sign under the name the registry publishes its key under"
     else if identityKeepsDeclaredKeys then
@@ -305,6 +306,7 @@ in
         protectedKeys = lib.concatStringsSep "\n" protectedKeyLines;
         integratorUnit = integratorHost.config.systemd.units."valley-integrator@.service".text;
         integratorInit = integratorHost.config.systemd.services.valley-init.script;
+        identityInit = identityHost.config.systemd.services.valley-init.script;
         passAsFile = [
           "initScript"
           "sshdConfig"
@@ -314,6 +316,7 @@ in
           "protectedKeys"
           "integratorUnit"
           "integratorInit"
+          "identityInit"
         ];
       } (builtins.readFile ./module-eval.sh);
 }

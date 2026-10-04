@@ -3,9 +3,10 @@
 // into the artifacts its enforcement boundaries check.
 //
 // It renders, and enforces nothing itself. sshd refuses a key that is not
-// in the authorized_keys it writes, and the integrator refuses evidence
-// signed by nobody in the known-signers it writes; this program is the step
-// between the document and those two gates.
+// in the authorized_keys it writes, the integrator refuses evidence signed
+// by nobody in the known-signers it writes, and the pre-receive hook
+// refuses an integration request from anybody not in the grants it writes;
+// this program is the step between the document and those three gates.
 package main
 
 import (
@@ -22,7 +23,7 @@ const usage = `usage: identity <command> [flags]
 The registry is one declared CUE document in the instance repository
 (dcr-b87f6e8), read from that repository's integrated tip and never from a
 working tree: an edit in a branch or a worktree governs nothing until it
-lands. Two artifacts come out of it.
+lands. Three artifacts come out of it.
 
 The known-signers file is every attestation-capable key, written as the
 note format's verifier keys. It is both the integrator's acceptance list
@@ -37,8 +38,18 @@ principal's name. sshd puts that tag in the environment of the receive-pack
 the pre-receive hook runs under, which is the only thing that can tell one
 pusher from another over a shared git user.
 
+The grants file is every grant the pre-receive hook checks, one line per
+holder: "request <principal>" for each principal holding a grant at a
+boundary of kind "request". The hook takes writes to the integration
+request namespace only from a principal named there.
+
+The registry is read with git's replacement refs off and with no GIT_
+variable or user or system configuration inherited, so the registry
+compiled is the one the tip holds and not an object something else has
+been made to stand in for.
+
 Expiry is enforced here, because a document has no clock. An entry whose
-expiry has arrived is omitted from both artifacts and noted on stderr, and
+expiry has arrived is omitted from every artifact and noted on stderr, and
 the rest of the registry still compiles — so access ends at the first
 convergence after expiry.
 
@@ -50,9 +61,9 @@ artifacts stand. The rule is here and not in the schema for the same reason
 expiry is — the state is reached by the clock, and a document has none.
 
 A render that fails leaves the last good artifacts exactly as they were.
-Both are computed in full before either is written, and each is replaced by
-rename. A schema violation, an unreachable repository or a bug here costs
-the compilation and never the git user's access.
+All of them are computed in full before any is written, and each is
+replaced by rename. A schema violation, an unreachable repository or a bug
+here costs the compilation and never the git user's access.
 
 flags:
   --repo DIR             the bare instance repository carrying the registry
@@ -63,6 +74,8 @@ flags:
                          $VALLEY_IDENTITY_SCHEMA)
   --known-signers FILE   where the verifier keys are written
   --authorized-keys FILE where the tagged authorized_keys is written
+  --grants FILE          where the grants the pre-receive hook checks are
+                         written
   --now YYYY-MM-DD       the day expiry is judged against (default: today,
                          UTC)
 `

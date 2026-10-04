@@ -16,12 +16,12 @@
 #                    fixed contract, and the helper driven end to end
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
-#   hooks.nix        mirror-e2e, bus-e2e, protect-e2e, init-e2e — the hooks
-#                    the module renders, run against real git, and the init
-#                    script that wires them
+#   hooks.nix        valleyhook-unit, mirror-e2e, bus-e2e, protect-e2e,
+#                    init-e2e — the hooks the module renders, run against
+#                    real git, and the init script that wires them
 #   identity.nix     identity-e2e — the registry compiler over a real
 #                    instance repository, against the hand-written
-#                    artifacts it replaces
+#                    artifacts it replaces, and the hook reading its grants
 #   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator

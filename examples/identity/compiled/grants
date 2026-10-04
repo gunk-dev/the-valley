@@ -1,0 +1,4 @@
+# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Grants the pre-receive hook checks, one per line: the grant, then the
+# principal holding it. A principal not named here holds none.
+request patrick

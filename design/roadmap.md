@@ -241,8 +241,9 @@ solo.
 
 **What gets built.** Two things:
 
-- **The structural invariant.** The one-line `pre-receive` hook: only the integrator key writes
-  `refs/heads/<protected>`; attestation refs are create-only; everything else is open
+- **The structural invariant.** The `pre-receive` hook: only a declared writer writes
+  `refs/heads/<protected>`; attestation refs are create-only; integration requests take the request
+  grant; topic branches are open and every other namespace is closed
   ([contribute.md](./contribute.md), _The one invariant_; [architecture.md](./architecture.md), _The
   one structural git invariant_).
 - **The integrator controller.** Pull-based, subscribing to `integration-requested`. Verifies

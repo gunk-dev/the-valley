@@ -74,15 +74,89 @@ fi
 grep -q '<untagged key>' untagged.err
 lacks_ref guarded refs/heads/main
 
-# Everything else is wide open to the same non-writer: topic
-# branches, tags, and refs no declaration protects.
+# Topic branches are open to the same non-writer, including a
+# branch some other project's declaration protects.
 git branch idea/one
 git tag v1
 git branch release/1.0
-as contributor git push --quiet guarded idea/one v1 release/1.0
+as contributor git push --quiet guarded idea/one release/1.0
 has_ref guarded refs/heads/idea/one
-has_ref guarded refs/tags/v1
 has_ref guarded refs/heads/release/1.0
+
+# Every other namespace is closed, and a refusal names the
+# namespace and what would open it. Tags first: nothing in
+# guarded's protection opens one.
+if as contributor git push --quiet guarded v1 2> tag.err; then
+  echo "protect-e2e: a tag was pushed that no allow entry opens" >&2
+  exit 1
+fi
+grep -q 'refs/tags/ is closed to pushes' tag.err
+grep -q 'no allow entry' tag.err
+lacks_ref guarded refs/tags/v1
+
+# Notes, and the valley's own namespaces that only the
+# integrator writes on the host: an outcome is the
+# controller's record of a verdict, and a pushed one would be
+# a forged verdict.
+git notes add -m "a note" HEAD
+if as contributor git push --quiet guarded refs/notes/commits 2> notes.err; then
+  echo "protect-e2e: a notes ref was pushed" >&2
+  exit 1
+fi
+grep -q 'refs/notes/ is closed to pushes' notes.err
+lacks_ref guarded refs/notes/commits
+outcome=refs/the-valley/integration-outcomes/main/idea
+if as contributor git push --quiet guarded "HEAD:$outcome" 2> outcome.err; then
+  echo "protect-e2e: an integration outcome was pushed" >&2
+  exit 1
+fi
+grep -q 'refs/the-valley/integration-outcomes/ is closed to pushes' outcome.err
+lacks_ref guarded "$outcome"
+
+# Replacement refs are closed to every push, a declared
+# writer's included: one makes an object stand in for another
+# wherever git looks it up, which would change what every
+# reader of the repository sees.
+git commit --quiet --allow-empty -m decoy
+replaced="refs/replace/$(git rev-parse HEAD~1)"
+git update-ref "$replaced" HEAD
+for who in contributor integrator; do
+  if as "$who" git push --quiet guarded "$replaced:$replaced" 2> replace.err; then
+    echo "protect-e2e: $who pushed a replacement ref" >&2
+    exit 1
+  fi
+  grep -q 'refs/replace/ is closed to every push' replace.err
+  lacks_ref guarded "$replaced"
+done
+git update-ref -d "$replaced"
+git reset --quiet --hard HEAD~1
+
+# Integration requests take writes only from a holder of the
+# request grant. Pushing to a topic branch does not make a
+# principal one, and neither does being a declared writer.
+request=refs/the-valley/integration-requests/main/idea
+for who in contributor integrator anonymous; do
+  if as "$who" git push --quiet guarded "idea/one:$request" 2> request.err; then
+    echo "protect-e2e: $who filed a request without the request grant" >&2
+    exit 1
+  fi
+  grep -q 'refs/the-valley/integration-requests/' request.err
+  grep -q 'request grant' request.err
+  lacks_ref guarded "$request"
+done
+
+# The holder files one, replaces it with a head that does not
+# descend from the first, and withdraws it.
+git commit --quiet --allow-empty -m "first ask"
+as requester git push --quiet guarded "HEAD:$request"
+has_ref guarded "$request"
+git reset --quiet --hard HEAD~1
+git commit --quiet --allow-empty -m "second ask"
+as requester git push --quiet --force guarded "HEAD:$request"
+[ "$(git -C "$TMPDIR/guarded.git" rev-parse "$request")" = "$(git rev-parse HEAD)" ]
+as requester git push --quiet --delete guarded "$request"
+lacks_ref guarded "$request"
+git reset --quiet --hard HEAD~1
 
 # The same ref is protected where a declaration says so: the
 # glob in released's set matches it.
@@ -168,11 +242,37 @@ grep -q 'no writer is declared' sealed.err
 grep -q 'integration request' sealed.err
 lacks_ref sealed refs/heads/main
 
-# What the declaration does not name is open there as
-# anywhere: the wall closes one ref, not the project.
-as contributor git push --quiet sealed idea/one v1
+# What the declaration does not name is decided there as
+# anywhere: the wall closes one ref, not the project, and the
+# namespaces the allowlist leaves out stay closed.
+as contributor git push --quiet sealed idea/one
 has_ref sealed refs/heads/idea/one
-has_ref sealed refs/tags/v1
+if as contributor git push --quiet sealed v1 2> sealed-tag.err; then
+  echo "protect-e2e: a tag was pushed to a project that opens none" >&2
+  exit 1
+fi
+lacks_ref sealed refs/tags/v1
+
+# An allow entry opens what it names to whom it names, and
+# nothing more. released opens release tags to the integrator
+# principal: that principal pushes one, nobody else does, and
+# a tag outside the pattern stays closed to it too.
+git tag release/1.0
+tag=refs/tags/release/1.0
+if as contributor git push --quiet released "$tag:$tag" 2> opened.err; then
+  echo "protect-e2e: an allow entry opened a ref to a principal it does not name" >&2
+  exit 1
+fi
+grep -q 'opens this ref to integrator only' opened.err
+lacks_ref released "$tag"
+as integrator git push --quiet released "$tag:$tag"
+has_ref released "$tag"
+if as integrator git push --quiet released v1 2> unopened.err; then
+  echo "protect-e2e: an allow entry opened a ref outside its pattern" >&2
+  exit 1
+fi
+grep -q 'no allow entry' unopened.err
+lacks_ref released refs/tags/v1
 
 # And the attestation namespace is unchanged by any of it —
 # create-only, for everyone, with or without a writers list.

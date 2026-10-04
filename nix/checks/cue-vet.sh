@@ -31,6 +31,13 @@ fi
 # hook whose exception list is empty rather than missing.
 [ "$(cue export -e 'projects.sealed.protection.writers' "${protected[@]}")" = '[]' ]
 
+# The same for allow entries: none by default, so the hook reads a
+# declaration that opens nothing as exactly that. An entry exports its
+# patterns and its writers as declared.
+[ "$(cue export -e 'projects.sealed.protection.allow' "${protected[@]}")" = '[]' ]
+cue export -e 'projects.released.protection.allow' "${protected[@]}" > allow.json
+grep -q '"refs/tags/release/\*"' allow.json
+
 # The event schema accepts what the publisher hook emits …
 cue vet -d '#RefUpdated' "$eventSchema" "$events/ref-updated.json"
 # … and stays closed: a field outside the git-derivable

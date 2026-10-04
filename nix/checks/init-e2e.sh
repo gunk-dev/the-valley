@@ -52,7 +52,20 @@ printf '#!/bin/sh\nexit 0\n' > "$(hook released)"
 chmod +x "$(hook released)"
 ln -s "$(declared guarded)" "$(hook open)"
 
-bash init.sh || fail "the rendered init script failed over existing repositories"
+# A replacement ref written before any hook refused one. The hook cannot
+# remove what is already there, so init reports it on every activation and
+# leaves it in place: what it is evidence of is the operator's to read.
+decoy="$(git -C "$data/guarded.git" commit-tree "$before^{tree}" -m decoy)"
+git -C "$data/guarded.git" update-ref "refs/replace/$before" "$decoy"
+
+bash init.sh 2> init.err || fail "the rendered init script failed over existing repositories"
+grep -q "guarded.git holds replacement refs" init.err ||
+  fail "a replacement ref already in a repository was not reported"
+grep -q "refs/replace/$before" init.err ||
+  fail "the report did not name the replacement ref"
+git -C "$data/guarded.git" rev-parse --verify --quiet "refs/replace/$before" > /dev/null ||
+  fail "init deleted a replacement ref instead of reporting it"
+git -C "$data/guarded.git" update-ref -d "refs/replace/$before"
 
 # The declared hook is installed where there was none, and the history
 # that was already there is untouched — an existing repository is wired,

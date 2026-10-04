@@ -46,20 +46,34 @@ package valley
 
 	// The project's write protection. Optional: a project without it is a
 	// project whose refs are all open to anyone with push access, and
-	// evaluates exactly as it did before this field existed.
+	// evaluates exactly as it did before this field existed. That includes
+	// replacement refs (refs/replace/*). The programs that make decisions
+	// from a repository read it with replacement refs disabled, so one
+	// planted there changes nothing they decide.
 	protection?: #Protection
 }
 
-// #Protection states which of a project's refs are closed to pushes. It is
-// the declared half of the one structural git invariant: a protected ref
-// takes a push only from a declared writer, and attestation refs
-// (refs/the-valley/attestations/*) are create-only for everyone. The
-// invariant's other half is not declared because it is not a choice — the
-// attestation clause holds for every protected project, and the namespace
-// is fixed by the contributor protocol (design/contribute.md).
+// #Protection states what a push may write to the project. It is the
+// declared half of the one structural git invariant, which the pre-receive
+// hook enforces (valleyhook/) on every project that declares this block.
 //
-// Everything this does not name stays open: topic branches, tags, new
-// attestation refs. All policy beyond the invariant lives in the
+// The hook holds every push to an allowlist and refuses the rest:
+//
+//   - a protected ref takes a push only from a declared writer;
+//   - attestation refs (refs/the-valley/attestations/*) may be created by
+//     anyone, and never updated or deleted;
+//   - integration requests (refs/the-valley/integration-requests/*) take
+//     writes only from a principal holding the request grant (dcr-e544f20);
+//   - topic branches (refs/heads/*) are open;
+//   - everything else is closed — tags, notes, replacement refs, and any
+//     namespace not named here — until an allow entry below opens a pattern
+//     of it to named principals.
+//
+// Only the protected set, its writers and the allow entries are declared.
+// The other rules are not choices: the namespaces they cover are fixed by
+// the contributor protocol (design/contribute.md), and replacement refs
+// are closed to every push because they would change what every reader of
+// the repository sees. All policy beyond the invariant lives in the
 // integrator, never here (design/architecture.md, _a pull-based
 // integrator_).
 #Protection: {
@@ -77,6 +91,28 @@ package valley
 	// exception that punches a named hole in the wall; the transition
 	// arrangement used one for the operator.
 	writers: [...#PrincipalName] | *[]
+
+	// Refs the hook closes by default, opened to named principals. A
+	// signed release tag pushed by a person is the case this exists for:
+	// tags are closed to every push, and an entry opening
+	// "refs/tags/release/<project>/*" to the operator is how one becomes
+	// pushable. Empty by default.
+	//
+	// An entry only adds writers. It cannot open a protected ref, which
+	// stays its writers' alone, and it cannot name the three namespaces
+	// whose rule is fixed.
+	allow: [...#Opening] | *[]
+}
+
+// #Opening is one allow entry: ref patterns, and the principals who may
+// write the refs they match.
+#Opening: {
+	// The refs opened, as full refnames with `*` matching any characters.
+	refs: [#OpenablePattern, ...#OpenablePattern]
+
+	// Who may write them. At least one: an entry that opens a pattern to
+	// nobody opens nothing.
+	writers: [#PrincipalName, ...#PrincipalName]
 }
 
 // #RefPattern is a full refname, optionally with `*` wildcards. The
@@ -85,14 +121,19 @@ package valley
 // the declaration rather than sitting dead in a hook.
 #RefPattern: =~"^refs/[^ ~^:?\\\\[]+$"
 
+// #OpenablePattern is a pattern an allow entry may name. The namespaces
+// whose rule is fixed — replacement refs, attestations and integration
+// requests — are refused, so a declaration that tries to open one fails
+// rather than reading as an opening the hook never applies.
+#OpenablePattern: #RefPattern & !~"^refs/(replace|the-valley/(attestations|integration-requests))/"
+
 // #PrincipalName names a principal — a human, machine, or service the
 // instance grants something to — in the instance's identity registry
-// (dcr-b87f6e8). That registry is not an artifact yet, and these names are
-// deliberately ahead of it: genesis before enforcement. The names declared
-// here are what the registry's compilation will bind to keys, and until it
-// exists the binding is the installer's — the NixOS module in this repo
-// maps each name to the keys that act as it. The shape is the project-name
-// shape, for the same reason: a name travels into files and command lines.
+// (dcr-b87f6e8). The registry's compilation (identity/) binds each name to
+// the keys that act as it, and on a host that compiles no registry the
+// installer does — the NixOS module in this repo maps each name to its
+// keys by hand. The shape is the project-name shape, for the same reason: a
+// name travels into files and command lines.
 #PrincipalName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 
 // #Backup is the durability policy for the host's data: that an offsite

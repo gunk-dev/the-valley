@@ -11,10 +11,11 @@
 //
 // One tool reads this file: the compiler (identity/), which renders a
 // registry into the artifacts the enforcement boundaries check — the
-// known-signers file the integrator and `attest verify` read, and the git
-// user's authorized_keys. Expiry is enforced there rather than here,
-// because a document has no clock: the compiler omits an expired entry, so
-// access ends at the first convergence after expiry.
+// known-signers file the integrator and `attest verify` read, the git
+// user's authorized_keys, and the grants the pre-receive hook checks.
+// Expiry is enforced there rather than here, because a document has no
+// clock: the compiler omits an expired entry, so access ends at the first
+// convergence after expiry.
 //
 // Like the host, event and policy schemas, this file is deliberately not
 // Nix. A registry names principals, keys and boundaries; it never names
@@ -97,11 +98,13 @@ package identity
 	boundary: #Name
 
 	// A grant carries its boundary and nothing else. The decision names a
-	// grant's scope as its stream list; the one boundary that exists today
-	// is host-level, because per-project access is not honestly enforceable
-	// over a shared git user (dcr-0f5d9b1), so a stream list here would be a
-	// scope nothing checks. It arrives with the first boundary that checks
-	// one — the bus's per-subject authorization (bd-d853d9c).
+	// grant's scope as its stream list; the boundaries that exist today are
+	// compiled host-wide, and push cannot be anything else, because
+	// per-project access is not honestly enforceable over a shared git user
+	// (dcr-0f5d9b1). A stream list here would be a scope nothing checks. It
+	// arrives with the first boundary that checks one — the bus's
+	// per-subject authorization (bd-d853d9c), or the request boundary once
+	// its compiled grants name a project.
 }
 
 // An enforcement boundary: the point in the running system that refuses an
@@ -119,7 +122,16 @@ package identity
 	// document itself. Governance of the registry's own stream is a grant
 	// here, and the required checks of that path class include human
 	// approval (ida-b7025b5).
-	kind: "git-push" | "registry"
+	//
+	// "request" — the pre-receive hook (valleyhook/) on a host serving the
+	// instance's repositories, checking writes to the integration-request
+	// namespace (refs/the-valley/integration-requests/*). This is the
+	// request verb of dcr-e544f20. The compiler writes each holder into the
+	// grants file the hook reads, and the hook refuses a principal it does
+	// not name there: it cannot file, replace or withdraw a request. The
+	// grant rides on push — only a key sshd admits reaches the hook — so a
+	// principal that files requests holds a "git-push" grant too.
+	kind: "git-push" | "registry" | "request"
 }
 
 // An identity the registry cites rather than mints.
@@ -198,5 +210,5 @@ externalGovernance: {
 	!="principals" &
 	!="genesis" &
 	!="genesisGovernance" &
-	!="externalGovernance"
+	!="externalGovernance",
 ]: "INVALID: unknown top-level field; only \"boundaries\", \"principals\" and \"genesis\" are allowed"

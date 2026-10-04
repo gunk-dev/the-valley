@@ -2,8 +2,9 @@
 // project's refs can be in. "sealed" is the norm — protected, with no
 // writer, so nothing pushes to it and changes land by integration.
 // "guarded" declares the writers exception over the default protected set,
-// "released" names a wildcard pattern beside it, and "open" declares no
-// protection at all and so has none.
+// "released" names a wildcard pattern beside it and opens release tags to
+// the principal that cuts them, and "open" declares no protection at all
+// and so has none.
 //
 // Which keys act as the "integrator" principal is machine integration
 // (services.valley.authorizedKeys), not declared here — the name is what
@@ -18,6 +19,10 @@ projects: {
 	"released": protection: {
 		refs: ["refs/heads/main", "refs/heads/release/*"]
 		writers: ["integrator"]
+		allow: [{
+			refs: ["refs/tags/release/*"]
+			writers: ["integrator"]
+		}]
 	}
 
 	"open": {}

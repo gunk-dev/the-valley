@@ -2,10 +2,17 @@
 # checkable against something already written down: the known-signers file
 # the instance maintains by hand today is exactly what the registry must
 # compile to, so the golden case is a byte-for-byte comparison against the
-# artifact this compiler exists to replace.
+# artifact this compiler exists to replace. The grants it compiles are then
+# read by the pre-receive hook a host renders, and the registry is read past
+# a replacement ref planted to forge it.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
-{ pkgs, packages, ... }:
+{
+  pkgs,
+  packages,
+  hosts,
+  ...
+}:
 {
   identity-e2e = pkgs.runCommand "valley-identity-e2e" {
     nativeBuildInputs = [
@@ -23,5 +30,10 @@
     # property of the floor rather than on a typo, so the check also
     # observes that a floor violation is what stops a compilation.
     invalid = ../../examples/identity/rejected/external-governs-registry.cue;
+    # A host compiling the registry, whose rendered pre-receive hook reads
+    # the compiled grants. The check follows the hook out of its init
+    # script, so what it drives is what such a host would run.
+    identityInitScript = hosts.identityHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "identityInitScript" ];
   } (builtins.readFile ./identity-e2e.sh);
 }

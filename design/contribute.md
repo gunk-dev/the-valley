@@ -36,9 +36,9 @@ composition, no `git` wrapper command.
 7. **Signal integration intent** — push one ref,
    `refs/the-valley/integration-requests/<target>/<change>`, pointing at the change's head. The
    target segment names the protected branch and the last segment names the change; the delta is the
-   merge base with that branch's tip up to the head. Nothing else is encoded, because a change is a
-   diff targeting a stream and every part of that is already in git
-   ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md),
+   merge base with that branch's tip up to the head. Writing it takes the request grant. Nothing
+   else is encoded, because a change is a diff targeting a stream and every part of that is already
+   in git ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md),
    [integration.md](./integration.md)).
 8. **Push atomically** — `git push --atomic` of the topic branch plus its attestation refs; all land
    or none do.
@@ -69,7 +69,9 @@ checked out, switch to main first. If local main has diverged, inspect its commi
 
 ## The one invariant
 
-The bare repo's `pre-receive` hook enforces exactly one structural invariant, with two parts: only
-the integrator's key may write protected refs, and attestation refs are create-only. Everything else
-is open to anyone with push access. All complex policy lives in the integrator
+The bare repo's `pre-receive` hook enforces exactly one structural invariant: what a push may write.
+Only a declared writer may write a protected ref. Attestation refs are create-only. Only a principal
+holding the request grant may write an integration request. Topic branches are open to anyone with
+push access. Every other namespace, tags and replacement refs among them, is closed unless the
+project's protection opens it by name. All complex policy lives in the integrator
 ([architecture.md](./architecture.md), _The one structural git invariant_).

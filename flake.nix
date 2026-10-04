@@ -115,6 +115,7 @@
               attest
               integrator
               identity
+              valleyhook
               sigverify
               ;
             default = packages.valley;

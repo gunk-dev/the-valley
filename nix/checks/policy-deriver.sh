@@ -115,4 +115,18 @@ grep -q '^classes matched: unclassified$' <<<"$report"
 grep -q '^unclassified: 1 path(s) matched no class$' <<<"$report"
 grep -q '^  Makefile$' <<<"$report"
 
+# A replacement ref changes nothing the derivation reads. Here
+# refs/replace/<head> makes git read the uncovered case's head as
+# the flat case's, so a deriver that left replacement refs on
+# would derive the src/ checks for a change that touches only
+# the Makefile — and the caller asking for them is not listened
+# to either.
+git update-ref "refs/replace/$(git rev-parse uncovered)" "$(git rev-parse flat)"
+git diff --name-only "$base" uncovered | grep -x src/one.rs > /dev/null \
+  || { echo "policy-deriver: the replacement did not take, so this case proves nothing" >&2; exit 1; }
+git checkout --quiet uncovered
+report="$(GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" derive)"
+expect "c-uncovered" "a replacement ref must not change the derived checks"
+git update-ref -d "refs/replace/$(git rev-parse uncovered)"
+
 touch "$out"

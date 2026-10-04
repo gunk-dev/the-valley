@@ -1,6 +1,6 @@
 # Everything this flake builds: the CLI, the formatter, the attestation
-# helper, the integrator, the identity compiler, the security-key signature
-# verifier. The flake wires these into packages, apps, and the checks that
+# helper, the integrator, the identity compiler, the pre-receive hook's
+# policy, the security-key signature verifier. The flake wires these into packages, apps, and the checks that
 # drive them; nothing here knows about any of those outputs.
 { pkgs, lib }:
 rec {
@@ -150,6 +150,18 @@ rec {
       pkgs.openssh
     ];
     meta.mainProgram = "sigverify";
+  };
+
+  # The pre-receive hook's policy (valleyhook/): what a push may write to a
+  # protected project. Go, standard library only — hence vendorHash = null
+  # and no module fetch. It runs no other program, so it ships unwrapped,
+  # and its unit tests run in the checkPhase.
+  valleyhook = pkgs.buildGoModule {
+    pname = "valley-valleyhook";
+    version = "0";
+    src = ../valleyhook;
+    vendorHash = null;
+    meta.mainProgram = "valleyhook";
   };
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

@@ -17,6 +17,11 @@ boundaries: {
 
 	// The integration path that admits a change to this document.
 	"registry": kind: "registry"
+
+	// The same host's pre-receive hook, deciding who may write an
+	// integration request. A key it does not find among the holders cannot
+	// ask for anything to land.
+	"classic-laddie-request": kind: "request"
 }
 
 genesis: "patrick"
@@ -26,7 +31,8 @@ principals: {
 	// varies per key rather than per entry: two keys on makers-mark sign
 	// under that machine's attestations name, the plain key on
 	// classic-laddie signs under the operator's own name, and the two that
-	// sign nothing push and never attest.
+	// sign nothing push and never attest. The operator files integration
+	// requests, so the entry holds request beside push.
 	"patrick": {
 		kind: "human"
 		keys: [
@@ -60,15 +66,16 @@ principals: {
 			},
 		]
 		grants: {
-			push: boundary:   "classic-laddie-push"
-			govern: boundary: "registry"
+			push: boundary:    "classic-laddie-push"
+			request: boundary: "classic-laddie-request"
+			govern: boundary:  "registry"
 		}
 	}
 
-	// A scratch machine: it clones and pushes, decrypts nothing, and holds
-	// its raw key until the certificate issuance service exists. Hence the
-	// expiry, which is what makes the compilation a revocation already
-	// scheduled (bd-8a591dc).
+	// A scratch machine: it clones and pushes topic branches, files no
+	// request, decrypts nothing, and holds its raw key until the
+	// certificate issuance service exists. Hence the expiry, which is what
+	// makes the compilation a revocation already scheduled (bd-8a591dc).
 	"stoned-flynn": {
 		kind: "machine"
 		keys: [{

@@ -20,9 +20,9 @@
 # enforcement boundary and each key carries a principal name it can read
 # (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) —
 # so it is declared, in the project's `protection` block, and this module
-# only binds principal names to keys and renders the hook. Those bindings
-# are declared by hand or compiled from the instance's identity registry,
-# and the compiler is off until a consumer turns it on.
+# only binds principal names to keys and grants, and installs the hook.
+# Those bindings are declared by hand or compiled from the instance's
+# identity registry, and the compiler is off until a consumer turns it on.
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
@@ -195,6 +195,9 @@ let
   identityStateDir = "/var/lib/${identityStateName}";
   identityKnownSigners = "${identityStateDir}/known-signers";
 
+  # The grants the pre-receive hook checks, as the registry names them.
+  identityGrants = "${identityStateDir}/grants";
+
   # sshd's AuthorizedKeysFile list is global, so the compiled file is named
   # with the %u token and only the git user's exists. A fixed path would
   # authorize every registry key for every account on the host, root
@@ -209,6 +212,7 @@ let
     "--dir ${cfg.identity.directory}"
     "--known-signers ${identityKnownSigners}"
     "--authorized-keys ${identityAuthorizedKeys}"
+    "--grants ${identityGrants}"
   ];
 
   # Whose evidence a controller accepts: the compiled artifact once the
@@ -424,21 +428,43 @@ let
   authorizedKeyLine =
     k: if lib.isString k then k else ''environment="${principalEnv}=${k.principal}" ${k.key}'';
 
-  # Where a contributor's attestations live (design/contribute.md, step 5).
-  attestationNamespace = "refs/the-valley/attestations/";
+  # The program every protected project's pre-receive hook runs: the whole
+  # of the ref policy (valleyhook/), built by this flake.
+  valleyhookPackage = (import ./packages.nix { inherit pkgs lib; }).valleyhook;
+
+  # The grants declared by hand, in the format the compiler writes, so the
+  # hook reads one format whichever wrote it.
+  declaredGrants = pkgs.writeText "valley-grants" (
+    ''
+      # Declared in services.valley.grants — do not edit.
+    ''
+    + lib.concatMapStrings (principal: "request ${principal}\n") cfg.grants.request
+  );
+
+  # Every file the hook reads grants from. The compiled file is added to the
+  # declared one rather than replacing it, the same way the compiled keys
+  # are added to the declared keys: a compilation can only ever grant more.
+  grantFiles = [ declaredGrants ] ++ lib.optional cfg.identity.enable identityGrants;
 
   # The pre-receive hook: the one structural git invariant
-  # (design/architecture.md, design/contribute.md). Two clauses and nothing
-  # else — only a declared writer may update a protected ref, and an
-  # attestation ref may only be created. Every other ref is open to anyone
-  # with push access, and all policy beyond this lives in the integrator.
+  # (design/architecture.md, design/contribute.md), which is what a push may
+  # write. A protected ref takes a push only from a declared writer, an
+  # attestation ref may only be created, an integration request takes a
+  # write only from a holder of the request grant, a topic branch is open,
+  # and every other namespace is closed — replacement refs, tags and notes
+  # among them — until the project's protection opens a pattern of it by
+  # name. All policy beyond this lives in the integrator.
   #
-  # A declaration usually names no writer at all, and then the first clause
-  # refuses every push to the ref. That is the norm, not a misconfiguration:
-  # the integrator writes the ref locally, and a local write is not a push.
+  # The rules are valleyhook's, in Go, and this script is only how git
+  # reaches it. It hands over the three things the policy is a function of:
+  # the pushing principal, the project's declared protection, and the
+  # grants. The protection is the declaration's own block, exported to JSON
+  # exactly as cue exported it.
   #
-  # What is protected and who may write it comes from the declaration's
-  # `protection` block, like every other domain fact here. This renders it.
+  # A declaration usually names no writer at all, and then the protected
+  # refs take no push from anyone. That is the norm, not a
+  # misconfiguration: the integrator writes the ref locally, and a local
+  # write is not a push.
   #
   # Pushes arrive over SSH as one shared git user, so the unix account
   # behind a push says nothing about who pushed. The principal comes from
@@ -454,67 +480,13 @@ let
   # Local access is the host's own boundary, not this hook's.
   protectHook =
     name: p:
-    let
-      # What the refusal says about who may write instead. With no writer
-      # declared there is no one, so it says how a change lands.
-      whoMay =
-        if p.writers == [ ] then
-          "no writer is declared — changes land by integration request"
-        else
-          "writers: ${lib.concatStringsSep ", " p.writers}";
-    in
     pkgs.writeShellScript "valley-protect-${name}" ''
       # Managed by services.valley — do not edit.
-      set -eu
-
-      principal="''${${principalEnv}:-}"
-      [ -n "$principal" ] || principal="<untagged key>"
-      writers=( ${lib.escapeShellArgs p.writers} )
-      protected=( ${lib.escapeShellArgs p.refs} )
-
-      is_writer() {
-        local w
-        for w in ''${writers[@]+"''${writers[@]}"}; do
-          if [ "$w" = "$principal" ]; then return 0; fi
-        done
-        return 1
-      }
-
-      rejected=0
-      while read -r old new ref; do
-        [ -n "$ref" ] || continue
-
-        # An attestation is a record of what was checked; a record that can
-        # be rewritten or dropped is not one. So the namespace is
-        # create-only, for everyone — an all-zero old id is a creation, at
-        # any hash length.
-        case "$ref" in
-          ${attestationNamespace}*)
-            case "$old" in
-              *[!0]*)
-                echo "valley: $principal may not update $ref — attestation refs are create-only" >&2
-                rejected=1
-                ;;
-            esac
-            continue
-            ;;
-        esac
-
-        # Protected refs, matched as shell globs (so `*` crosses path
-        # separators). Unprotected refs are not the hook's business.
-        for pattern in ''${protected[@]+"''${protected[@]}"}; do
-          case "$ref" in
-            $pattern)
-              if ! is_writer; then
-                echo "valley: $principal may not write $ref — a protected ref of ${name} (${whoMay})" >&2
-                rejected=1
-              fi
-              break
-              ;;
-          esac
-        done
-      done
-      exit "$rejected"
+      exec ${valleyhookPackage}/bin/valleyhook pre-receive \
+        --project ${lib.escapeShellArg name} \
+        --protection ${pkgs.writeText "valley-protection-${name}.json" (builtins.toJSON p)} \
+        ${lib.concatMapStringsSep " " (f: "--grants ${f}") grantFiles} \
+        --principal="''${${principalEnv}:-}"
     '';
 
   # Per-project pre-receive wiring, from the declaration's protection
@@ -594,9 +566,12 @@ in
                 example = "integrator";
                 description = ''
                   Name of the principal this key acts as. Every push made
-                  with the key carries the name, and
-                  {option}`services.valley.protect` decides what a name may
-                  write. Nothing else uses it.
+                  with the key carries the name, and the pre-receive hook
+                  decides what the name may write: from the project's
+                  `protection` block in {option}`services.valley.config`,
+                  and from the grants the name holds
+                  ({option}`services.valley.grants`, and the registry's
+                  when it is compiled). Nothing else uses it.
                 '';
               };
             };
@@ -636,6 +611,37 @@ in
         a compilation is wrong or has not happened yet, and it is never
         empty.
       '';
+    };
+
+    # Grants held by hand. The registry names who holds a grant
+    # (dcr-b87f6e8, dcr-e544f20), and these options are the hand-written
+    # form of what it compiles, beside it the way the declared keys sit
+    # beside the compiled ones.
+    grants = {
+      request = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
+        default = [ ];
+        example = [ "operator" ];
+        description = ''
+          Principals holding the request grant: the ones whose pushes may
+          file, replace and withdraw an integration request
+          (`refs/the-valley/integration-requests/*`) on a protected
+          project. The pre-receive hook refuses every other write to that
+          namespace, so a principal named neither here nor in the
+          registry cannot ask for anything to land.
+
+          The grant rides on push. Only a key sshd admits reaches the hook,
+          so a principal named here also needs a key, declared in
+          {option}`services.valley.authorizedKeys` or compiled from the
+          registry.
+
+          With {option}`services.valley.identity.enable` on, the holders
+          the registry names are added to these, and a compiled file can
+          only ever add. The list is therefore how a host grants request
+          before its registry does — including to the operator who has to
+          file the registry change that grants it.
+        '';
+      };
     };
 
     config = lib.mkOption {
@@ -1138,6 +1144,17 @@ in
           # empty directory still gets initialized.
           if [ ! -e "$repo/HEAD" ]; then
             git init --bare --initial-branch=main "$repo"
+          fi
+
+          # Replacement refs make one object stand in for another wherever
+          # git looks it up. No push may write one, and every reader that
+          # makes a decision disables them, but a ref written before the
+          # hook refused them is still there. It is reported on every
+          # activation and left in place: what it is evidence of is the
+          # operator's to read before anyone deletes it.
+          replaced="$(git -C "$repo" for-each-ref --format='  %(refname) -> %(objectname)' refs/replace/)" || replaced=""
+          if [ -n "$replaced" ]; then
+            printf 'valley-init: %s holds replacement refs, which no push may write; inspect each and delete it with git update-ref -d:\n%s\n' "$repo" "$replaced" >&2
           fi
 
           # Hook scaffolding: post-receive dispatches to post-receive.d/.

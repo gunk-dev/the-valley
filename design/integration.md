@@ -27,10 +27,14 @@ is encoded, because nothing else has to be: a change is a diff targeting a strea
 ([ida-93e4f91](../.the-valley/ideas/ida-93e4f91-changes-not-branches.md)), and every part of that is
 already in git.
 
-Who pushes that ref is deliberately unconstrained. Asking is authorship's final step, and the author
-may be a person, an agent run, or tooling acting for either; an operator filing a request by hand is
-the transitional case, not the design. Where a person's judgment is required, it arrives as a signed
-statement among the change's evidence
+Who may push that ref is a grant. The pre-receive hook takes writes to the namespace only from a
+principal holding request
+([dcr-e544f20](../.the-valley/decisions/dcr-e544f20-access-is-verbs-on-projects.md)). Who holds it,
+together with which path classes demand approval statements, decides how much lands without a
+person. Among the holders, asking is authorship's final step. The author may be a person, an agent
+run, or tooling acting for either; an operator filing a request by hand is the transitional case,
+not the design. Where a person's judgment is required, it arrives as a signed statement among the
+change's evidence
 ([ida-b7025b5](../.the-valley/ideas/ida-b7025b5-human-decisions-are-signed-acts.md)), never as the
 act of asking.
 

@@ -25,7 +25,8 @@ serve() {
 
 compile() {
   identity compile --repo "$TMPDIR/instance.git" \
-    --known-signers "$TMPDIR/signers" --authorized-keys "$TMPDIR/keys" "$@"
+    --known-signers "$TMPDIR/signers" --authorized-keys "$TMPDIR/keys" \
+    --grants "$TMPDIR/grants" "$@"
 }
 
 # The worked registry compiles to exactly the artifacts checked in beside
@@ -35,6 +36,78 @@ serve instance "$registry"
 compile --now 2026-08-09 2> first.log || exit 1
 diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
+diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+
+# A replacement ref planted in the instance repository changes nothing the
+# compiler reads. refs/replace/<blob> makes git read another object wherever
+# it looks that blob up, so a reader that leaves replacement refs on would
+# compile a registry nobody landed — here, one granting a key push and
+# request — while main stays exactly where it was.
+ssh-keygen -q -t ed25519 -N "" -C intruder -f "$TMPDIR/intruder"
+cp "$registry/registry.cue" forged.cue
+chmod u+w forged.cue
+{
+  echo
+  echo 'principals: "intruder": {'
+  echo '	kind: "human"'
+  echo '	keys: [{'
+  echo '		class:  "ssh-ed25519"'
+  echo '		bound:  "hardware"'
+  printf '\t\tpublic: "%s"\n' "$(cut -d' ' -f1,2 < "$TMPDIR/intruder.pub")"
+  echo '	}]'
+  echo '	grants: {'
+  echo '		push: boundary:    "classic-laddie-push"'
+  echo '		request: boundary: "classic-laddie-request"'
+  echo '	}'
+  echo '}'
+} >> forged.cue
+landed="$(git -C instance.git rev-parse main:identity/registry.cue)"
+forged="$(git -C instance.git hash-object -w "$TMPDIR/forged.cue")"
+git -C instance.git update-ref "refs/replace/$landed" "$forged"
+if ! git -C instance.git show main:identity/registry.cue | grep intruder > /dev/null; then
+  echo "identity-e2e: the planted replacement did not take, so the check below proves nothing" >&2
+  exit 1
+fi
+compile --now 2026-08-09 || exit 1
+diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
+diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
+diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+if grep -q intruder "$TMPDIR/keys" "$TMPDIR/grants"; then
+  echo "identity-e2e: a replacement ref put a principal nobody landed into the compiled artifacts" >&2
+  exit 1
+fi
+# The same holds when the caller's environment asks for replacement refs.
+GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" compile --now 2026-08-09 || exit 1
+diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+git -C instance.git update-ref -d "refs/replace/$landed"
+
+# What the hook does with the compiled grants. A bare repository is wired
+# with the pre-receive hook a host compiling this registry renders,
+# followed from its init script; the one edit is the path of the compiled
+# grants file, which a host keeps under /var/lib and this sandbox cannot.
+# Pushing as a principal is pushing with the tag on, the substitution for
+# sshd the hook checks make everywhere.
+rendered="$(grep -o "/nix/store/[^ ]*-valley-protect-guarded" "$identityInitScriptPath" | head -n1)"
+if ! grep -qF -- "--grants /var/lib/valley-identity/grants" "$rendered"; then
+  echo "identity-e2e: the hook of a host compiling the registry does not read the compiled grants" >&2
+  cat "$rendered" >&2
+  exit 1
+fi
+sed "s|/var/lib/valley-identity/grants|$TMPDIR/grants|" "$rendered" > hook
+chmod +x hook
+git init --quiet --bare guarded.git
+ln -s "$TMPDIR/hook" guarded.git/hooks/pre-receive
+request=refs/the-valley/integration-requests/main/topic
+if VALLEY_PRINCIPAL=stoned-flynn git -C work push --quiet "$TMPDIR/guarded.git" "main:$request" 2> refused.err; then
+  echo "identity-e2e: a principal the registry grants push and not request filed a request" >&2
+  exit 1
+fi
+grep -q 'request grant' refused.err
+VALLEY_PRINCIPAL=patrick git -C work push --quiet "$TMPDIR/guarded.git" "main:$request"
+git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null || {
+  echo "identity-e2e: the principal the registry grants request could not file one" >&2
+  exit 1
+}
 
 # Level-triggered: compiling again converges on the same bytes and touches
 # nothing.
@@ -92,10 +165,14 @@ grep -q "stoned-flynn/attestations" "$TMPDIR/signers" || {
   echo "identity-e2e: an unexpired entry was omitted" >&2
   exit 1
 }
+grep -qx "request stoned-flynn" "$TMPDIR/grants" || {
+  echo "identity-e2e: an unexpired holder of request was omitted from the grants" >&2
+  exit 1
+}
 compile --now 2026-11-01 2> expired.log || exit 1
-if grep -q "stoned-flynn" "$TMPDIR/signers" "$TMPDIR/keys"; then
+if grep -q "stoned-flynn" "$TMPDIR/signers" "$TMPDIR/keys" "$TMPDIR/grants"; then
   echo "identity-e2e: an expired entry stayed in the compiled artifacts" >&2
-  cat "$TMPDIR/signers" "$TMPDIR/keys" >&2
+  cat "$TMPDIR/signers" "$TMPDIR/keys" "$TMPDIR/grants" >&2
   exit 1
 fi
 if ! grep -q "stoned-flynn expired 2026-10-01" expired.log; then
@@ -113,6 +190,7 @@ grep -q "patrick" "$TMPDIR/keys" || {
 # compiler bug that emptied them would lock the git user out of the host.
 cp "$TMPDIR/signers" last-good-signers
 cp "$TMPDIR/keys" last-good-keys
+cp "$TMPDIR/grants" last-good-grants
 mkdir -p invalid-registry
 cp "$invalid" invalid-registry/registry.cue
 serve instance invalid-registry
@@ -127,6 +205,7 @@ if ! grep -q "externalGovernance" refused.log; then
 fi
 diff -u last-good-signers "$TMPDIR/signers" || exit 1
 diff -u last-good-keys "$TMPDIR/keys" || exit 1
+diff -u last-good-grants "$TMPDIR/grants" || exit 1
 
 # Governance the clock orphans. This registry is valid as a document — the
 # genesis entry governs — and the only entry governing carries an expiry, so

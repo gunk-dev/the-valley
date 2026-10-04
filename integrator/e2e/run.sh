@@ -582,7 +582,9 @@ git add -A
 git commit --quiet -m "a change beside a malformed request"
 attest_change c9 "" "" --check prose-format
 # A name with no target segment at all, and one with a segment too many.
-# Anyone with push access can write this namespace.
+# This repository is served with no pre-receive hook, so the namespace takes
+# whatever is pushed; on a host only a holder of the request grant writes
+# it, and a holder can still write a name that is not a request.
 git push --quiet origin "$(git rev-parse c9):refs/the-valley/integration-requests/garbage"
 git push --quiet origin "$(git rev-parse c9):refs/the-valley/integration-requests/main/too/deep"
 request c9 main "$(git rev-parse c9)"
@@ -898,5 +900,63 @@ grep -qF "policy   no project layer at policy/project; the floor alone" "$work/l
   || die "the pass did not say it composed the floor alone"
 [ "$(tip)" = "$(git rev-parse c16)" ] || die "main is not at the change's head"
 holds "a floor that states it requires nothing composes, judges, and lands the change owing nothing"
+
+# ----------------------------------------------------------------------
+say "17. a planted replacement ref changes nothing the controller reads"
+
+# refs/replace/<id> makes git read another object wherever it looks <id> up.
+# Two are planted here, and each alone would land a change that owes
+# evidence and carries none. One swaps the floor's blob in the instance
+# repository for a floor that requires nothing. The other swaps the change's
+# head in the served repository for a commit that touches no class. Neither
+# moves a ref the controller watches. A controller that left replacement
+# refs on would read both and land the change; this one reads the objects
+# the refs actually name, and holds the change stale.
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
+package verification
+
+floor: {
+	checks: "prose-format": {runner: "nix", attribute: "prose-format"}
+	classes: prose: {paths: "docs/**": true, requires: "prose-format": true}
+	unclassified: {}
+}
+EOF
+git -C "$floor" commit --quiet -am "the floor requires prose-format of docs/ again"
+git -C "$floor" push --quiet "$instance_repo" main
+landed_floor="$(git -C "$instance_repo" rev-parse main:policy/instance/floor.cue)"
+empty_floor="$(git -C "$instance_repo" rev-parse main~1:policy/instance/floor.cue)"
+git -C "$instance_repo" update-ref "refs/replace/$landed_floor" "$empty_floor"
+git -C "$instance_repo" show main:policy/instance/floor.cue | grep 'checks: {}' > /dev/null \
+  || die "the floor's replacement did not take, so this scenario proves nothing"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c17-decoy
+echo "a note no class covers" > notes.txt
+git commit --quiet -am "a decoy that touches no class"
+git checkout --quiet main
+git checkout --quiet -b c17
+echo "a readme no evidence covers" > docs/readme.md
+git commit --quiet -am "a change that owes prose-format and carries no evidence"
+git push --quiet origin c17 c17-decoy
+git -C "$origin" update-ref "refs/replace/$(git rev-parse c17)" "$(git rev-parse c17-decoy)"
+git -C "$origin" diff --name-only main c17 | grep -x notes.txt > /dev/null \
+  || die "the head's replacement did not take, so this scenario proves nothing"
+request c17 main "$(git rev-parse c17)"
+
+# The environment asks for replacement refs too, and is not listened to.
+before="$(tip)"
+GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" integrate
+grep -q "^c17 -> refs/heads/main .*: stale$" "$work/last.out" \
+  || die "a planted replacement ref decided the verdict: $(cat "$work/last.out")"
+grep -q "check    prose-format" "$work/last.out" \
+  || die "the landed floor's requirement was not what the controller read"
+grep -q 'no attestation for this check accompanies the change' "$work/last.out" \
+  || die "the missing evidence was not reported"
+[ "$(tip)" = "$before" ] || die "main moved under a change that owes evidence"
+git -C "$instance_repo" update-ref -d "refs/replace/$landed_floor"
+git -C "$origin" update-ref -d "refs/replace/$(git rev-parse c17)"
+forget c17
+holds "the floor and the change were read as landed and as pushed, past both replacements"
 
 printf '\nintegrator-e2e: every scenario held\n'

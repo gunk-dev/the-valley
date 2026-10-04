@@ -37,21 +37,32 @@ const authorizedKeysHeader = `# Compiled from the identity registry — do not e
 # under, which is what tells one pusher from another over a shared user.
 `
 
-// artifacts is a whole compilation: both files, what was left out, and the
+const grantsHeader = `# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Grants the pre-receive hook checks, one per line: the grant, then the
+# principal holding it. A principal not named here holds none.
+`
+
+// grantRequest is the line a holder of a grant at a boundary of kind
+// "request" is written under: the verb the hook checks (dcr-e544f20).
+const grantRequest = "request"
+
+// artifacts is a whole compilation: every file, what was left out, and the
 // counts the journal line reports. Nothing is written until every part of
-// this exists, so a failure anywhere leaves the last good pair intact.
+// this exists, so a failure anywhere leaves the last good set intact.
 type artifacts struct {
 	knownSigners   []byte
 	authorizedKeys []byte
+	grants         []byte
 	notes          []string
 	signers        int
 	authorized     int
+	granted        int
 }
 
-// render turns a registry into both artifacts as of one day.
+// render turns a registry into every artifact as of one day.
 func render(r registry, day time.Time) (artifacts, error) {
 	var a artifacts
-	var signers, authorized []string
+	var signers, authorized, granted []string
 	governed := false
 
 	names := make([]string, 0, len(r.Principals))
@@ -69,15 +80,19 @@ func render(r registry, day time.Time) (artifacts, error) {
 		}
 		if expired {
 			a.notes = append(a.notes, fmt.Sprintf(
-				"%s expired %s: %d key(s) omitted from both artifacts", name, p.Expires, len(p.Keys)))
+				"%s expired %s: %d key(s) and every grant omitted from all artifacts", name, p.Expires, len(p.Keys)))
 			continue
 		}
 
-		pushes, governs, err := heldGrants(r, p)
+		held, err := heldKinds(r, p)
 		if err != nil {
 			return a, fmt.Errorf("%s: %w", name, err)
 		}
-		governed = governed || governs
+		governed = governed || held[boundaryRegistry]
+		pushes := held[boundaryGitPush]
+		if held[boundaryRequest] {
+			granted = append(granted, grantRequest+" "+name)
+		}
 
 		for i, k := range p.Keys {
 			pub, err := sshEd25519Public(k.Public)
@@ -102,6 +117,7 @@ func render(r registry, day time.Time) (artifacts, error) {
 
 	a.knownSigners, a.signers = artifact(knownSignersHeader, signers)
 	a.authorizedKeys, a.authorized = artifact(authorizedKeysHeader, authorized)
+	a.grants, a.granted = artifact(grantsHeader, granted)
 	return a, nil
 }
 
@@ -118,25 +134,21 @@ func hasExpired(expires string, day time.Time) (bool, error) {
 	return !day.Before(end), nil
 }
 
-// heldGrants answers which boundary kinds the entry holds a grant at. A
+// heldKinds answers which boundary kinds the entry holds a grant at. A
 // grant naming a boundary the registry does not declare fails the render:
 // the schema already refuses one, and a compiler that silently dropped it
 // would turn a typo into a quiet loss of access.
-func heldGrants(r registry, p principal) (pushes, governs bool, err error) {
+func heldKinds(r registry, p principal) (map[string]bool, error) {
+	held := map[string]bool{}
 	for _, name := range sortedGrants(p.Grants) {
 		b, ok := r.Boundaries[p.Grants[name].Boundary]
 		if !ok {
-			return false, false, fmt.Errorf("grant %s names boundary %q, which the registry does not declare",
+			return nil, fmt.Errorf("grant %s names boundary %q, which the registry does not declare",
 				name, p.Grants[name].Boundary)
 		}
-		switch b.Kind {
-		case boundaryGitPush:
-			pushes = true
-		case boundaryRegistry:
-			governs = true
-		}
+		held[b.Kind] = true
 	}
-	return pushes, governs, nil
+	return held, nil
 }
 
 func sortedGrants(g map[string]grant) []string {

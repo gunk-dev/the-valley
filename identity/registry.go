@@ -49,6 +49,11 @@ const (
 	// boundaryRegistry is the boundary kind that admits a change to the
 	// registry document itself. A render leaving nobody there is refused.
 	boundaryRegistry = "registry"
+
+	// boundaryRequest is the boundary kind the grants artifact is rendered
+	// from: the pre-receive hook's check of writes to the integration
+	// request namespace (valleyhook/).
+	boundaryRequest = "request"
 )
 
 // readRegistry takes the registry out of a repository's tip, vets it, and
@@ -116,12 +121,42 @@ func readRegistry(repo, ref, dir, schema string) (registry, string, error) {
 	return r, commit, nil
 }
 
+// git runs git over the instance repository with replacement refs off. A
+// replacement ref makes one object stand in for another wherever git looks
+// it up, so a refs/replace/<blob> pushed to the instance repository could
+// swap in a registry that authorizes any key it liked without moving the
+// ref this program reads. The repository is read as it is.
 func git(repo string, args ...string) (string, error) {
-	out, err := exec.Command("git", append([]string{"-C", repo}, args...)...).Output()
+	cmd := exec.Command("git", append([]string{"--no-replace-objects", "-C", repo}, args...)...)
+	cmd.Env = gitEnvironment(os.Environ())
+	out, err := cmd.Output()
 	if err != nil {
 		return "", commandError(err)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
+}
+
+// gitEnvironment is the environment git runs in: the caller's, less every
+// GIT_ variable, and with git's own configuration fixed the way sigverify
+// fixes it. A GIT_DIR, GIT_OBJECT_DIRECTORY or GIT_CONFIG_PARAMETERS in the
+// caller's environment could point git at other objects or change how it
+// reads them, and system and user configuration are not read. What is not
+// git's own is inherited.
+func gitEnvironment(environ []string) []string {
+	var env []string
+	for _, kv := range environ {
+		if !strings.HasPrefix(kv, "GIT_") {
+			env = append(env, kv)
+		}
+	}
+	return append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
 }
 
 // cue returns combined output, because its diagnosis is the error message

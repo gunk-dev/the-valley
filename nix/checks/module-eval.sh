@@ -71,20 +71,54 @@ if grep -q "valley-protect-open" "$protectedInitPath"; then
 fi
 
 # And what it enforces is what the declaration says, down
-# to the rendered script: released names a pattern beside
-# main, guarded takes the schema's default set. Follow the
-# hook chain from the init script to each script.
+# to the file the hook reads: released names a pattern beside
+# main and opens release tags, guarded takes the schema's
+# default set. Follow the hook chain from the init script to
+# each script, and from each script to its protection, which
+# is the declaration's own block exported to JSON.
 guardedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$protectedInitPath" | head -n1)"
 releasedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-released' "$protectedInitPath" | head -n1)"
 sealedHook="$(grep -o '/nix/store/[^ ]*-valley-protect-sealed' "$protectedInitPath" | head -n1)"
-grep -qF -- 'protected=( refs/heads/main )' "$guardedHook"
-grep -qF -- "protected=( refs/heads/main 'refs/heads/release/*' )" "$releasedHook"
-grep -qF -- 'writers=( integrator )' "$guardedHook"
-# The norm: a protected ref with no writer declared. The
-# exception list renders empty, and the refusal says how a
-# change lands instead of naming nobody.
-grep -qE -- 'writers=\( *\)' "$sealedHook"
-grep -qF -- 'no writer is declared — changes land by integration request' "$sealedHook"
+protection() { grep -o '/nix/store/[^ ]*-valley-protection-[^ ]*\.json' "$1" | head -n1; }
+grep -qF -- '"refs":["refs/heads/main"]' "$(protection "$guardedHook")"
+grep -qF -- '"writers":["integrator"]' "$(protection "$guardedHook")"
+grep -qF -- '"refs":["refs/heads/main","refs/heads/release/*"]' "$(protection "$releasedHook")"
+grep -qF -- '"allow":[{"refs":["refs/tags/release/*"],"writers":["integrator"]}]' "$(protection "$releasedHook")"
+# The norm: a protected ref with no writer declared, and
+# nothing opened. Both lists render empty rather than missing.
+grep -qF -- '"writers":[]' "$(protection "$sealedHook")"
+grep -qF -- '"allow":[]' "$(protection "$sealedHook")"
+
+# The rules are valleyhook's, and the script is only how git
+# reaches it: it hands over the principal sshd tagged the
+# push with, and nothing it decides itself.
+grep -qF -- 'valleyhook pre-receive' "$guardedHook"
+# shellcheck disable=SC2016  # the text pinned is the script's, not ours
+grep -qF -- '--principal="${VALLEY_PRINCIPAL:-}"' "$guardedHook"
+if grep -qE '^ *(case|for|while|if) ' "$guardedHook"; then
+  echo "module-eval: the rendered hook decides something itself — the policy belongs to valleyhook" >&2
+  exit 1
+fi
+
+# The grants it reads. A grant declared by hand renders into
+# a file in the format the compiler writes, and a host that
+# compiles no registry reads that file alone.
+grants="$(grep -o '/nix/store/[^ ]*-valley-grants' "$guardedHook" | head -n1)"
+grep -qx 'request requester' "$grants"
+if grep -q '/var/lib/valley-identity' "$guardedHook"; then
+  echo "module-eval: a host that compiles no registry reads compiled grants" >&2
+  exit 1
+fi
+# A host that compiles one reads the compiled grants beside
+# the declared ones, which a compiled file can only add to.
+identityHook="$(grep -o '/nix/store/[^ ]*-valley-protect-guarded' "$identityInitPath" | head -n1)"
+grep -qF -- '--grants /var/lib/valley-identity/grants' "$identityHook"
+grep -q -- '-valley-grants ' "$identityHook"
+
+# Replacement refs a push wrote before the hook refused them
+# are reported on every activation, in every repository.
+grep -qF -- 'for-each-ref' "$protectedInitPath"
+grep -qF -- 'refs/replace/' "$protectedInitPath"
 
 # A controller is given the repository it serves and the
 # identity it acts under, and nothing about policy: it reads

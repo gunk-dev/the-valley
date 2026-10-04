@@ -68,6 +68,13 @@ flags:
   --now TIME          judge as at this RFC 3339 instant, for the effectful
                       window; defaults to the clock
 
+Every program the controller runs reads git with replacement refs off. A
+replacement ref makes one object stand in for another wherever git looks
+it up, so a pushed refs/replace/* could swap the floor, a project's policy
+or a change's tree without moving any ref the controller watches. No GIT_
+variable is inherited except the safe.directory entries of command-scope
+configuration, and system and user configuration are not read.
+
 --known-signers is the registry's interim compilation. Identity is a
 governed registry (dcr-b87f6e8) whose entries compile into what each
 enforcement boundary checks; no compiler exists yet, so the file is
@@ -112,6 +119,13 @@ func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
+	}
+	// Before anything runs git, so that every git this process starts — its
+	// own, and the ones attest and the deriver start — inherits the result.
+	os.Clearenv()
+	for _, kv := range gitEnvironment(environ) {
+		name, value, _ := strings.Cut(kv, "=")
+		os.Setenv(name, value)
 	}
 	var err error
 	switch os.Args[1] {
@@ -286,6 +300,65 @@ func defaultSignerName() string {
 }
 
 func env(name string) string { return os.Getenv(name) }
+
+// environ is the environment the process started with, read before main
+// replaces it.
+var environ = os.Environ()
+
+// gitEnvironment is the environment the controller runs in: the one it
+// started with, with git's part of it fixed.
+//
+// Replacement refs are off. A replacement ref makes one object stand in for
+// another wherever git looks it up, so a refs/replace/<blob> pushed to the
+// served repository or the instance repository could swap the floor, the
+// project's policy or a change's tree for anything its author liked,
+// without moving any ref the controller watches. Every judgement here reads
+// the repository's own objects.
+//
+// No other GIT_ variable is inherited, as sigverify inherits none: a GIT_DIR
+// or GIT_OBJECT_DIRECTORY could point git at other objects, and a
+// GIT_CONFIG_PARAMETERS could change how it reads them. System and user
+// configuration are not read either. The one thing kept is command-scope
+// configuration naming safe.directory, which is how the unit tells git it
+// may read repositories the controller does not own (nix/valley-host.nix).
+// Those entries are carried over, renumbered, and no other key is.
+func gitEnvironment(inherited []string) []string {
+	vars := map[string]string{}
+	var kept []string
+	for _, kv := range inherited {
+		name, value, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "GIT_") {
+			vars[name] = value
+			continue
+		}
+		kept = append(kept, kv)
+	}
+
+	var safe []string
+	count, _ := strconv.Atoi(vars["GIT_CONFIG_COUNT"])
+	for i := 0; i < count; i++ {
+		if strings.EqualFold(vars[fmt.Sprintf("GIT_CONFIG_KEY_%d", i)], "safe.directory") {
+			safe = append(safe, vars[fmt.Sprintf("GIT_CONFIG_VALUE_%d", i)])
+		}
+	}
+	if len(safe) > 0 {
+		kept = append(kept, fmt.Sprintf("GIT_CONFIG_COUNT=%d", len(safe)))
+		for i, dir := range safe {
+			kept = append(kept,
+				fmt.Sprintf("GIT_CONFIG_KEY_%d=safe.directory", i),
+				fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, dir))
+		}
+	}
+
+	return append(kept,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_ATTR_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+}
 
 func abs(path string) string {
 	if p, err := filepath.Abs(path); err == nil {

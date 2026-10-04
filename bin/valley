@@ -28,6 +28,18 @@
 
 set -euo pipefail
 
+# Every verb reads the repository's own objects. A replacement ref makes one
+# object stand in for another wherever git looks it up, so a fetched or
+# planted refs/replace/* could change the diff a reviewer reads, the policy
+# a derivation composes, and the tree a request is filed for. git is told
+# to ignore them, whatever configuration says, and the variables that point
+# it at other objects or at another replacement namespace are dropped. What
+# chooses the repository and the person's own configuration are kept: a
+# fetch of the owning valley needs that configuration, and neither changes
+# what an object id reads as once replacement refs are off.
+export GIT_NO_REPLACE_OBJECTS=1
+unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
 die() {
   printf 'valley: %s\n' "$*" >&2
   exit 1

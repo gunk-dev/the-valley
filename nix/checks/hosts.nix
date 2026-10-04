@@ -82,9 +82,9 @@ in
   };
 
   # The protection declaration, plus the machine half it needs: keys
-  # bound to the principal names it uses. The baseline key above is
-  # anonymous and stays in the list, so this host also renders the
-  # two forms of key side by side.
+  # bound to the principal names it uses, and the request grant held by
+  # hand. The baseline key above is anonymous and stays in the list, so
+  # this host also renders the two forms of key side by side.
   protectedHost = mkHost {
     services.valley = {
       config = ../../examples/hosts/protected.cue;
@@ -97,7 +97,12 @@ in
           principal = "contributor";
           key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck2 contributor";
         }
+        {
+          principal = "requester";
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck3 requester";
+        }
       ];
+      grants.request = [ "requester" ];
     };
   };
 

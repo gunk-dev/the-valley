@@ -18,6 +18,7 @@ func compile(args []string) error {
 	schema := fs.String("schema", os.Getenv("VALLEY_IDENTITY_SCHEMA"), "the identity schema")
 	knownSigners := fs.String("known-signers", "", "where the verifier keys are written")
 	authorizedKeys := fs.String("authorized-keys", "", "where the tagged authorized_keys is written")
+	grantsFile := fs.String("grants", "", "where the grants the pre-receive hook checks are written")
 	now := fs.String("now", "", "the day expiry is judged against")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -27,6 +28,7 @@ func compile(args []string) error {
 		{"schema", *schema},
 		{"known-signers", *knownSigners},
 		{"authorized-keys", *authorizedKeys},
+		{"grants", *grantsFile},
 	} {
 		if required.value == "" {
 			return fmt.Errorf("--%s is required", required.flag)
@@ -67,9 +69,14 @@ func compile(args []string) error {
 	if err != nil {
 		return err
 	}
+	grantsWritten, err := writeArtifact(*grantsFile, a.grants)
+	if err != nil {
+		return err
+	}
 
-	fmt.Fprintf(os.Stderr, "identity: %s at %s: %d verifier key(s)%s, %d authorized key(s)%s\n",
-		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten))
+	fmt.Fprintf(os.Stderr, "identity: %s at %s: %d verifier key(s)%s, %d authorized key(s)%s, %d grant(s)%s\n",
+		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
+		a.granted, changed(grantsWritten))
 	return nil
 }
 
@@ -81,9 +88,9 @@ func changed(written bool) string {
 }
 
 // writeArtifact replaces one file by rename, and only when its content
-// differs. Both artifacts are rendered before either is written, so the
-// only way to see one of them newer than the other is a crash between the
-// two renames — and neither can ever be seen half-written.
+// differs. Every artifact is rendered before any is written, so the only
+// way to see one of them newer than another is a crash between two renames
+// — and none can ever be seen half-written.
 func writeArtifact(path string, content []byte) (bool, error) {
 	if old, err := os.ReadFile(path); err == nil && bytes.Equal(old, content) {
 		return false, nil

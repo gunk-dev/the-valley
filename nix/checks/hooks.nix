@@ -22,12 +22,20 @@
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./mirror-e2e.sh);
 
+  # The pre-receive hook's policy, rule by rule where a rule is
+  # subtle: the glob matching of a declared pattern, and the order in
+  # which the rules are tried. What the hook does to a real push is
+  # protect-e2e's.
+  valleyhook-unit = packages.valleyhook;
+
   # The one structural invariant, driven for real: bare repos wired
   # with the rendered pre-receive hook, pushed to as each principal.
   # What sshd would set from a key's authorized_keys entry, these
   # pushes set in the environment directly — that rendering is pinned
   # by module-eval, and everything the hook decides after it is what
-  # this check exercises.
+  # this check exercises: protected refs, create-only attestations,
+  # integration requests and the request grant, allow entries, and the
+  # namespaces every push is refused.
   protect-e2e = pkgs.runCommand "valley-protect-e2e" {
     nativeBuildInputs = [ pkgs.git ];
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;

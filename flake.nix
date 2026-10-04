@@ -10,6 +10,10 @@
       # Checks use import-from-derivation (the module's cue export), so they
       # are only defined for the system that can actually build them here.
       systems = [ "x86_64-linux" ];
+      # Packages are plain builds with no import-from-derivation, which lets
+      # them be offered for every Linux system a consumer runs. A Raspberry
+      # Pi, for one, takes sigverify from here.
+      packageSystems = systems ++ [ "aarch64-linux" ];
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
@@ -61,7 +65,7 @@
           pkgs = pkgsFor system;
         };
 
-      apps = lib.genAttrs systems (
+      apps = lib.genAttrs packageSystems (
         system:
         let
           packages = packagesFor system;
@@ -83,10 +87,14 @@
             type = "app";
             program = lib.getExe packages.identity;
           };
+          sigverify = {
+            type = "app";
+            program = lib.getExe packages.sigverify;
+          };
         }
       );
 
-      packages = lib.genAttrs systems (
+      packages = lib.genAttrs packageSystems (
         system:
         let
           packages = packagesFor system;
@@ -97,6 +105,7 @@
             attest
             integrator
             identity
+            sigverify
             ;
           default = packages.valley;
         }

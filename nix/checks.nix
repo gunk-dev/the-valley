@@ -22,6 +22,9 @@
 #   identity.nix     identity-e2e — the registry compiler over a real
 #                    instance repository, against the hand-written
 #                    artifacts it replaces
+#   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
+#                    signature verifier against real ssh-keygen, real git
+#                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    valley-request — bin/valley
 #
@@ -62,4 +65,5 @@ import ./checks/host-module.nix args
 // import ./checks/integrator.nix args
 // import ./checks/hooks.nix args
 // import ./checks/identity.nix args
+// import ./checks/sigverify.nix args
 // import ./checks/cli.nix args

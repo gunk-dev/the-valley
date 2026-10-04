@@ -1,7 +1,7 @@
 # Everything this flake builds: the CLI, the formatter, the attestation
-# helper, the integrator, the identity compiler. The flake wires these into
-# packages, apps, and the checks that drive them; nothing here knows about
-# any of those outputs.
+# helper, the integrator, the identity compiler, the security-key signature
+# verifier. The flake wires these into packages, apps, and the checks that
+# drive them; nothing here knows about any of those outputs.
 { pkgs, lib }:
 rec {
   # Markdown prose is filled paragraphs hard-wrapped at 100 columns
@@ -124,6 +124,38 @@ rec {
             ]
           } \
           --set-default VALLEY_IDENTITY_SCHEMA ${../schema/identity.cue}
+      '';
+
+  # The security-key signature verifier (sigverify/README.md). Go,
+  # standard library only — hence vendorHash = null and no module fetch.
+  # Its tests run in the checkPhase against real ssh-keygen and git. The
+  # security-key cases among them need OpenSSH's sk-dummy authenticator,
+  # which only the sigverify-unit check supplies; here they skip, so a
+  # consumer building this package never builds OpenSSH.
+  sigverify-unwrapped = pkgs.buildGoModule {
+    pname = "valley-sigverify";
+    version = "0";
+    src = ../sigverify;
+    vendorHash = null;
+    nativeCheckInputs = [
+      pkgs.git
+      pkgs.openssh
+    ];
+    meta.mainProgram = "sigverify";
+  };
+
+  # The shipping form. The git-tag command reads tag objects with git, so
+  # git travels with it.
+  sigverify =
+    pkgs.runCommand "valley-sigverify"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "sigverify";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe sigverify-unwrapped} $out/bin/sigverify \
+          --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
       '';
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

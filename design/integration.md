@@ -124,6 +124,10 @@ failure in any of them is reported against a landing that has already happened. 
 request ref is consumed even then, because a request left pending for a change already in the stream
 is re-judged against an empty delta on every pass.
 
+The request ref is consumed only if it still names the head that landed. A resubmission can replace
+it while the pass works, since the asker reads the request before leasing its write against it. A
+request that moved is a new request, and it stands for the next pass.
+
 **A pass that cannot act on its own verdict records that it could not.** The level-trigger's memo is
 what keeps the controller from re-announcing an unchanged answer, and a failure is an answer of that
 kind: the same request, tip and evidence produce the same failure, so retrying at tick rate is a

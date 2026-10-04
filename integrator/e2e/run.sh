@@ -959,4 +959,45 @@ git -C "$origin" update-ref -d "refs/replace/$(git rev-parse c17)"
 forget c17
 holds "the floor and the change were read as landed and as pushed, past both replacements"
 
+# ----------------------------------------------------------------------
+say "18. a request resubmitted while its previous head lands stands for the next pass"
+
+# The asker's resubmission is leased against the request it read, and
+# nothing stops it reading the head this pass is about to land. So the
+# request can move between the pass reading it and the pass consuming it.
+# The landing is still the old head's, and the request that moved is a new
+# request: consuming it would drop a change nobody judged.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c18
+echo "a readme asked for once" > docs/readme.md
+git commit --quiet -am "the first ask"
+attest_change c18 "" "" --check prose-format
+request c18 main "$(git rev-parse c18)"
+# main moves under the request, outside anything the check reads. The pass
+# then recomputes the check's closure over the landed tree, and that
+# evaluation is where the resubmission happens.
+git checkout --quiet main
+echo "a note landed in between" > notes.txt
+git commit --quiet -am "a note landed in between"
+git push --quiet origin main
+git checkout --quiet c18
+git checkout --quiet -b c18-again
+echo "a readme asked for again" > docs/readme.md
+git commit --quiet -am "the second ask"
+git push --quiet origin c18-again
+again="$(git rev-parse c18-again)"
+moving="refs/the-valley/integration-requests/main/c18"
+before="$(tip)"
+VALLEY_E2E_DURING_PASS="git -C '$origin' update-ref '$moving' '$again'" integrate
+grep -q "^c18 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "the first ask did not land: $(cat "$work/last.out")"
+[ "$(tip)" != "$before" ] || die "main did not move for the first ask"
+[ "$(git -C "$origin" rev-parse --verify --quiet "$moving")" = "$again" ] \
+  || die "the resubmitted request was consumed with the landing of the one before it: $(git -C "$origin" for-each-ref refs/the-valley/integration-requests) $(cat "$work/last.out")"
+grep -q "request  $moving moved to .* while .* landed; it stands for the next pass" "$work/last.out" \
+  || die "the moved request was not reported: $(cat "$work/last.out")"
+forget c18
+holds "a request that moved while its previous head landed was left standing, and said so"
+
 printf '\nintegrator-e2e: every scenario held\n'

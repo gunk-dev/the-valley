@@ -52,8 +52,9 @@ type request struct {
 // deterministic, along with the refs under the namespace that are not
 // requests at all.
 //
-// Anyone with push access can write this namespace, so a name that does not
-// parse is an ordinary thing to find there and not a reason to stop: one
+// Any holder of the request grant can write this namespace, and anyone at all
+// where a repository is served without the pre-receive hook, so a name that
+// does not parse is an ordinary thing to find there and not a reason to stop: one
 // unreadable ref must not hold up every readable one. It is reported and
 // skipped.
 func (in *integrator) requests() ([]request, []string, error) {
@@ -415,8 +416,19 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	for _, ref := range refs {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
-	if _, err := git(in.repo, "update-ref", "-d", r.ref); err != nil {
-		unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
+	// The request is consumed only if it still names the head that landed.
+	// A resubmission can replace it while this pass works — the asker's
+	// write is leased against what it read, and nothing stops it reading
+	// the request this pass is about to land — and a delete that did not
+	// compare would take the new request with the old one. A request that
+	// moved is a new request, and it stands for the next pass.
+	if _, err := git(in.repo, "update-ref", "-d", r.ref, r.head); err != nil {
+		if now, found := gitTry(in.repo, "rev-parse", "--verify", "--quiet", r.ref); found && now != r.head {
+			fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
+				r.ref, verdict.Short(now), verdict.Short(r.head))
+		} else {
+			unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
+		}
 	}
 	in.publishLanded(ch, v, tip, l.commit)
 	if len(unrecorded) > 0 {

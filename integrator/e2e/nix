@@ -16,6 +16,13 @@
 # the manifest and the digest, and the integrator compares them.
 set -euo pipefail
 
+# A scenario that needs something to happen while a pass is working names
+# it here. Evaluating a check is the middle of a pass — after the requests
+# are read and before anything lands — so the stand-in runs it then.
+if [ -n "${VALLEY_E2E_DURING_PASS:-}" ]; then
+  sh -c "$VALLEY_E2E_DURING_PASS"
+fi
+
 store="${VALLEY_FAKE_STORE:?VALLEY_FAKE_STORE is not set}"
 mkdir -p "$store"
 

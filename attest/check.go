@@ -7,7 +7,7 @@ package main
 // are all named, and any verifier holding the same tree can re-derive
 // them. The command runner claims nothing beyond having run — its
 // statement is a notarization naming the environment and the time
-// (design/verification.md).
+// (archive/design/verification.md).
 
 import (
 	"bytes"

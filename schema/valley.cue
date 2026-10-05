@@ -103,11 +103,11 @@ package valley
 //
 // Only the protected set, its writers and the project's grants are
 // declared. The other rules are not choices: the namespaces they cover are
-// fixed by the contributor protocol (design/contribute.md), and the closed
+// fixed by the contributor protocol (archive/design/contribute.md), and the closed
 // ones change what every reader of the repository sees. Protection only
 // adds a requirement — a writer of a pattern covering integration requests
 // still needs the request grant. All policy beyond the invariant lives in
-// the integrator, never here (design/architecture.md, _a pull-based
+// the integrator, never here (archive/design/architecture.md, _a pull-based
 // integrator_).
 #Protection: {
 	// The refs closed to everyone but a declared writer. Patterns are

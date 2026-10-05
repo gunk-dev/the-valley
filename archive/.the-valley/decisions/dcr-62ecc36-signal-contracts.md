@@ -22,7 +22,7 @@ architecture does not name.
 ## Domain events — durable
 
 Domain events are the class Phase 1 built: schema'd one event type at a time in
-[schema/events.cue](../../schema/events.cue), carried on the bus's durable stream (JetStream),
+[schema/events.cue](../../../schema/events.cue), carried on the bus's durable stream (JetStream),
 deterministically replayable, and a projection of git. This decision leaves them unchanged. The
 properties that make the bus trustworthy — durability, schemas, replay — belong to this class alone.
 
@@ -49,8 +49,8 @@ retention policy is itself an output the loop tunes, governed like any configura
 ([self-transparency.md](../../design/self-transparency.md)).
 
 The declared-tiers shape already exists in this schema: `#Backup.retention` in
-[schema/valley.cue](../../schema/valley.cue) declares keep-counts as policy with defaults. The same
-move extends to signals.
+[schema/valley.cue](../../../schema/valley.cue) declares keep-counts as policy with defaults. The
+same move extends to signals.
 
 Species differ and carry distinct defaults: some signals are already kept indefinitely at negligible
 cost, others are bulky with fast-decaying value. Policy is per species, not one number.

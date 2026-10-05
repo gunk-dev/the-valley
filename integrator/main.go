@@ -1,5 +1,5 @@
 // integrator is the Phase 3 controller that lands changes by verifying
-// evidence (design/roadmap.md). It is a single writer per target stream and
+// evidence (archive/design/roadmap.md). It is a single writer per target stream and
 // the commit point of dcr-439b771: it applies a change's delta to the
 // current tip, checks per required check that the contributor's evidence
 // still transfers, and either fast-forwards the protected ref or says which

@@ -8,9 +8,9 @@ makes one hard to forge.
 The shape of an attestation — its statement, its signer, its envelope, where it is stored, and how
 several of them compose — is fixed by
 [dcr-0de694f](../.the-valley/decisions/dcr-0de694f-phase2-attestation-shape.md), and the statement's
-fields are [schema/attestation.cue](../schema/attestation.cue). How a statement is written down and
-signed is [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md), and
-the sections below are that decision's detail.
+fields are [schema/attestation.cue](../../schema/attestation.cue). How a statement is written down
+and signed is [dcr-de9d996](../.the-valley/decisions/dcr-de9d996-statement-text-and-signed-note.md),
+and the sections below are that decision's detail.
 
 ## Two kinds of checks, two kinds of attestation
 
@@ -181,9 +181,9 @@ something a verifier settles by reading rather than a claim it has to take on tr
 duplicated key, a set out of order and a value no line can carry all fail the same way, because none
 of them is what a renderer would have produced.
 
-[schema/attestation.cue](../schema/attestation.cue) is the gate, and it holds every value and every
-field name to what a line can carry. So a statement with no written form fails validation before a
-run has built anything, rather than in a renderer after a check has already passed.
+[schema/attestation.cue](../../schema/attestation.cue) is the gate, and it holds every value and
+every field name to what a line can carry. So a statement with no written form fails validation
+before a run has built anything, rather than in a renderer after a check has already passed.
 
 ## The envelope is a signed note
 
@@ -235,8 +235,8 @@ parameter and provisioning one is deployment.
 
 `nix run .#attest` is the Phase 2 helper. `attest run` digests the tree, runs the checks over an
 export of that tree rather than over the working directory, composes one statement per check, vets
-each against [schema/attestation.cue](../schema/attestation.cue), writes each out as statement text,
-signs each as a note, and stores them at
+each against [schema/attestation.cue](../../schema/attestation.cue), writes each out as statement
+text, signs each as a note, and stores them at
 `refs/the-valley/attestations/<tree digest>/<signer key hash>`. With `--push` it publishes the topic
 branch and that ref in one atomic native-git push. A failing check publishes nothing, and neither
 does a statement the schema rejects or a statement with no written form.
@@ -261,7 +261,7 @@ latency has no business on the commit point's path.
 note or adds a signature line to one, and `attest key` prints the verifier key for a signing key.
 Those bytes are an interop contract rather than an internal step: a second implementation that
 writes them differently signs different bytes over the same statement, and every signature already
-made stops verifying against it. So [attest/conformance/](../attest/conformance/) holds fixed
+made stops verifying against it. So [attest/conformance/](../../attest/conformance/) holds fixed
 documents paired with their exact text and notes, along with the documents and texts that must be
 refused, and the flake's `attest-conformance` check runs the whole set.
 

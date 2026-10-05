@@ -220,7 +220,7 @@ delta landed on a moved tip they are two refs, each keyed by the tree its statem
 
 ## What it publishes
 
-Two events, in [schema/events.cue](../schema/events.cue), on
+Two events, in [schema/events.cue](../../schema/events.cue), on
 `valley.git.<repo>.integration-succeeded` and `valley.git.<repo>.request-stale`. The mechanism is
 the post-receive hook's, exactly: one `nats pub`, best-effort, never fatal — git is the source of
 truth and the bus is the replaceable component.
@@ -231,7 +231,7 @@ which runs no hook, and it runs as its own user, which does not hold the mirror 
 writes the move it made into the repository's publish queue. A unit running as the git user drains
 the queue with the same mirror pusher and event publisher the hook runs. A push never writes the
 queue, so each move is published once. The mechanism is in
-[nix/valley-host.nix](../nix/valley-host.nix).
+[nix/valley-host.nix](../../nix/valley-host.nix).
 
 **There is no rejection event, on purpose.** A note whose signature does not check out, text that is
 not the written form of what it says, or a statement about a different tree is not staleness:

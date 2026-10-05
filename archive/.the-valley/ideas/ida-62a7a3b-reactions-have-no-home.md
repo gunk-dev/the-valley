@@ -21,8 +21,8 @@ cosmo carries three bots, and they are two different shapes:
 
 - **Reactive to a ref update.** `update-klaus.yml` and `update-the-valley.yml` fire on
   `repository_dispatch` and bump exactly one flake input each. Their input is an upstream push. That
-  is precisely what `ref-updated` already carries ([schema/events.cue](../../schema/events.cue)) —
-  the event exists, the subscriber does not.
+  is precisely what `ref-updated` already carries ([schema/events.cue](../../../schema/events.cue))
+  — the event exists, the subscriber does not.
 - **Scheduled.** `update-flake-lock.yml` runs nightly on cron, does a full `nix flake update`, opens
   a pull request, and enables auto-merge on it. Its input is a clock. Nothing on the host owns a
   clock that can start work inside a project.

@@ -8,6 +8,11 @@ project: {
 	// the-valley keeps a knowledge graph, so it takes the lint the docs
 	// template offers rather than declining it.
 	#docs
+
+	// The graph is archived under archive/.the-valley/, which the
+	// template's `.the-valley/**` does not reach, so the knowledge class
+	// adds the archived path. nix/checks/knowledge.nix lints that root.
+	classes: knowledge: paths: "archive/.the-valley/**": true
 }
 
 // The Go, Nix, CUE and shell sources in this tree are covered by no class

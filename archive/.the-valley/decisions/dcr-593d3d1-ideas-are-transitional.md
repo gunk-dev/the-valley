@@ -22,7 +22,7 @@ thinking, and its status should say so.
 A graduated idea carries `graduated_into`: the id of the decision node, or the repo-root-relative
 path of the design document, its thinking moved to. The field is required exactly when the status is
 `graduated`, so a graduation cannot be half-declared — the same coupling `supersedes` has with the
-`superseded` status. [schema/node.cue](../../schema/node.cue) makes the states and the field
+`superseded` status. [schema/node.cue](../../../schema/node.cue) makes the states and the field
 checkable, and the knowledge lint checks that the destination exists.
 
 ## When a blocker clears

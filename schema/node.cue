@@ -1,10 +1,10 @@
 // The structured layer of a knowledge-graph node: what a node's YAML
 // frontmatter must say. The prose body is not described here — it is prose,
-// and the writing conventions that govern it (.the-valley/README.md) are
+// and the writing conventions that govern it (archive/.the-valley/README.md) are
 // for a reader, not a validator.
 //
 // The convention this file makes checkable is documented in
-// .the-valley/README.md: one file per node, `<id>-<slug>.md`, in the
+// archive/.the-valley/README.md: one file per node, `<id>-<slug>.md`, in the
 // directory its type names. The type table below carries the directory
 // names so the linter and the schema agree on them by construction.
 //
@@ -38,7 +38,7 @@ package knowledge
 	created: #Date
 
 	// Where the content came from: a date and a venue, never a person
-	// (.the-valley/README.md, disembodied voice).
+	// (archive/.the-valley/README.md, disembodied voice).
 	source?: string
 
 	if type == "outcome" {
@@ -99,7 +99,7 @@ package knowledge
 }
 
 // A node id: a type prefix and the first 7 hex characters of the SHA-256 of
-// the slug (.the-valley/README.md). CUE cannot compute the hash, so only the
+// the slug (archive/.the-valley/README.md). CUE cannot compute the hash, so only the
 // shape is checked here; the lint re-derives it for the nodes the rule
 // covers.
 #Id: =~"^(oc|bd|ida|dcr)-[0-9a-f]{7}$"

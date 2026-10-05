@@ -9,9 +9,9 @@ source: cosmo readiness analysis, 2026-07-31
 
 # The second mirrored project needs an identity the schema does not describe
 
-[schema/valley.cue](../../schema/valley.cue)'s `mirrors` field declares URLs and says outright that
-credentials are the host's concern and are not declared there. That holds exactly as long as the
-host mirrors one repository. GitHub accepts a given deploy key on one repository only, and
+[schema/valley.cue](../../../schema/valley.cue)'s `mirrors` field declares URLs and says outright
+that credentials are the host's concern and are not declared there. That holds exactly as long as
+the host mirrors one repository. GitHub accepts a given deploy key on one repository only, and
 the-valley's mirror has already consumed the host's replication identity — the single
 `valley-git-ssh-key` the git user pushes with. A second mirrored project cannot authenticate without
 a decision about identity, so cosmo's migration is where the deferral runs out.

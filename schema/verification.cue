@@ -14,7 +14,7 @@
 // Two tools read this file. `valley checks` composes the two layers with it
 // and prints the checks a change owes (dcr-f41f718); that deriver only
 // reports. The Phase 3 integrator asks the deriver the same question and
-// acts on the answer, which is the enforcement point (design/integration.md).
+// acts on the answer, which is the enforcement point (archive/design/integration.md).
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
 // policy names checks; it never names derivations, systems, or store
@@ -121,7 +121,7 @@ package verification
 	// a check is. "nix" builds a flake check attribute and claims purity
 	// strongly; "command" runs a command line and claims nothing beyond
 	// having run it, which is the effectful class of
-	// design/verification.md.
+	// archive/design/verification.md.
 	runner: "nix" | "command"
 
 	// The flake check attribute, for the nix runner.

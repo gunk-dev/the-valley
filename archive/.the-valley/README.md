@@ -63,7 +63,7 @@ printf '%s' '<slug>' | sha256sum | cut -c1-7
 The lint checks the derivation for every node created after 2026-08-05; earlier nodes keep the ids
 they have, checked for shape and uniqueness only.
 
-The same table in checkable form is [`schema/node.cue`](../schema/node.cue), which the knowledge
+The same table in checkable form is [`schema/node.cue`](../../schema/node.cue), which the knowledge
 lint vets every node's frontmatter against.
 
 ## Writing a node
@@ -99,7 +99,7 @@ thinking got there. That history is in git history, and only there.
 Two rules that govern the design documents govern nodes identically, and are stated once, where they
 already live:
 
-- **Disembodied voice** — [AGENTS.md](../AGENTS.md), writing standard. A node speaks about
+- **Disembodied voice** — [AGENTS.md](../../AGENTS.md), writing standard. A node speaks about
   the-valley itself: no names, no second person, no reference to project participants. Roles are
   fine, as are external prior art and its authors. Frontmatter `source:` follows the same rule; it
   names a date and a venue, never a person.
@@ -114,15 +114,15 @@ already live:
 - **Listing is `ls`. Search is `grep`. History is `git log`.**
 - No indexer and no events.
 - **The convention is checked, not enforced.** `nix flake check` runs `knowledge-lint`: every node's
-  frontmatter vetted against [`schema/node.cue`](../schema/node.cue), every filename agreeing with
-  the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id, `supersedes` id,
+  frontmatter vetted against [`schema/node.cue`](../../schema/node.cue), every filename agreeing
+  with the frontmatter it carries, and every `[[wiki-link]]`, `blocked_by` id, `supersedes` id,
   `graduated_into` target and relative link resolving. A `supersedes` id must further name a node
   whose own status is `superseded`. It reports; nothing stops a broken graph from landing until
   there is an integrator to stop it.
 
 The lint is not this repo's alone. The flake exposes it as `lib.knowledgeLint`, so any project that
 keeps a graph gets the same check by taking the-valley as a flake input and instantiating it over
-its own tree — see the comment on that output in [flake.nix](../flake.nix) for the whole of a
+its own tree — see the comment on that output in [flake.nix](../../flake.nix) for the whole of a
 consuming flake, and [[ida-a9e274c]]
 ([ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md](./ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md))
 for why the derivation travels rather than the convention.

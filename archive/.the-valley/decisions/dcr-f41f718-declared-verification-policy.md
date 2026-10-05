@@ -14,8 +14,8 @@ two layers, and each layer is a policy directory: a CUE package unifies every fi
 is one or more documents and the file count carries no meaning. The valley's instance repository
 carries a mandatory floor and a set of project-type templates; the project's own repository carries
 everything above the floor. The effective policy is the unification of the two layers. The schema is
-[schema/verification.cue](../../schema/verification.cue), with a worked example at
-[examples/policy/](../../examples/policy/), so the shape can be read rather than imagined.
+[schema/verification.cue](../../../schema/verification.cue), with a worked example at
+[examples/policy/](../../../examples/policy/), so the shape can be read rather than imagined.
 
 The design this gives a home to is already written down. [[ida-1ec03b1]]
 ([ida-1ec03b1-path-scoped-verification-policy.md](../ideas/ida-1ec03b1-path-scoped-verification-policy.md))
@@ -67,7 +67,7 @@ sharding across hosts and nothing in the architecture assuming co-location. clas
 whole of the gunk-dev valley today is a fact about deployment, not about the design. A policy field
 on a host would therefore be a policy field on _one of several_ possible carriers of the same
 valley, free to diverge from its siblings with neither one wrong. The host is not involved at any
-point, and [schema/valley.cue](../../schema/valley.cue) carries nothing about verification.
+point, and [schema/valley.cue](../../../schema/valley.cue) carries nothing about verification.
 
 ## A layer that is not there defaults in the safe direction of that layer's job
 
@@ -189,7 +189,7 @@ Factoring a layer across several documents is safe rather than risky. Two floor 
 contribute mandatory checks to the same class and compose without complaint, and two documents that
 disagree on the same check fail at vet time with an error naming both files and both line numbers,
 so a silent last-write-wins is not possible. In the worked directory at
-[examples/policy/](../../examples/policy/), a third floor document contradicting the second fails
+[examples/policy/](../../../examples/policy/), a third floor document contradicting the second fails
 vet:
 
 ```
@@ -221,7 +221,7 @@ check that silently stops being required.
 ## Evidence: the worked example
 
 The claims above are pinned by running `cue vet`, not by inspection. The example is the policy
-directory at [examples/policy/](../../examples/policy/). The instance layer makes `prose-format`
+directory at [examples/policy/](../../../examples/policy/). The instance layer makes `prose-format`
 mandatory over `**/*.md` and for uncovered paths, requires `link-check` over the same class from a
 second document, and offers a `docs` project type whose knowledge lint is a default. The project
 layer embeds that type, adds a `shellcheck` class of its own, and declines the defaulted knowledge
@@ -261,8 +261,9 @@ floor exactly.
 The example is evidence for the schema and nothing more. It is not the live exercise on qinling,
 which is a separate step described below. The rejections above are demonstrated rather than run
 continuously: the flake's `cue-vet` check does not cover them. The schema is read by one tool, the
-deriver of step 3 below, and by nothing else — not by [schema/valley.cue](../../schema/valley.cue)
-and not by [nix/valley-host.nix](../../nix/valley-host.nix).
+deriver of step 3 below, and by nothing else — not by
+[schema/valley.cue](../../../schema/valley.cue) and not by
+[nix/valley-host.nix](../../../nix/valley-host.nix).
 
 ## What this costs
 
@@ -308,10 +309,10 @@ Four pieces, none of which is an enforcement point:
    or shared.
 3. A read-only deriver: given the instance tip, a project tree, and two commits, compose the policy,
    list the changed paths, match them against the composed classes, and print the required check
-   names. It reports; it blocks nothing. This is `valley checks` in [bin/valley](../../bin/valley).
-   It is told where the two layers are and defaults to the worked example, because nothing yet
-   resolves a project to its instance — and that resolution is the whole of the floor's forcing, so
-   the deriver has no floor until something supplies it.
+   names. It reports; it blocks nothing. This is `valley checks` in
+   [bin/valley](../../../bin/valley). It is told where the two layers are and defaults to the worked
+   example, because nothing yet resolves a project to its instance — and that resolution is the
+   whole of the floor's forcing, so the deriver has no floor until something supplies it.
 4. The two checks are run against the trees the deriver named.
 
 ### What observing it succeed looks like

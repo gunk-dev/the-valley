@@ -36,7 +36,7 @@ passing, as an optional extra on the git host
 
 ## What the surface inherits
 
-**It is a view, never the interface.** Among the [README](../../README.md)'s objections to the
+**It is a view, never the interface.** Among the [README](../../../README.md)'s objections to the
 hosted forge is that agents are second-class there, because the platform is built around a human
 clicking through a web interface. A surface that becomes the way things are done reintroduces
 exactly that. Everything the surface offers must be equally reachable without it.

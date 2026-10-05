@@ -27,9 +27,9 @@ named set of paths carrying required checks, and for this class the required che
 approval ([[ida-b7025b5]]
 ([ida-b7025b5-human-decisions-are-signed-acts.md](../ideas/ida-b7025b5-human-decisions-are-signed-acts.md))).
 
-The schema is [schema/identity.cue](../../schema/identity.cue), and it is the authority on what an
-entry may hold; the worked registry at [examples/identity/](../../examples/identity/) is the shape
-read rather than imagined. An entry, illustratively:
+The schema is [schema/identity.cue](../../../schema/identity.cue), and it is the authority on what
+an entry may hold; the worked registry at [examples/identity/](../../../examples/identity/) is the
+shape read rather than imagined. An entry, illustratively:
 
 ```cue
 principals: "runner-03": {
@@ -144,9 +144,9 @@ real. Bus credentials compile from the same entries when the authentication of [
 namespace [[dcr-62ecc36]] ([dcr-62ecc36-signal-contracts.md](./dcr-62ecc36-signal-contracts.md))
 carved.
 
-The compiler is [identity/](../../identity/), and it renders two artifacts. One is the known-signers
-file: every attestation-capable key of the registry, written as the note format's verifier keys.
-That single artifact serves both the integrator's acceptance list and any reader's
+The compiler is [identity/](../../../identity/), and it renders two artifacts. One is the
+known-signers file: every attestation-capable key of the registry, written as the note format's
+verifier keys. That single artifact serves both the integrator's acceptance list and any reader's
 `attest verify --known-keys`, so it holds the integrator's own key like any other. The other is the
 git user's authorized keys, one tagged line per key of every principal holding a grant at a push
 boundary — the tagged-key shape the host module already reads a principal name off.

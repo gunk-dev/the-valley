@@ -2,7 +2,7 @@
 # valley — the S1 integrator's verbs, as a plain shell script.
 #
 # EVICTION CLAUSE (owner-ratified; the decision node is
-# .the-valley/decisions/dcr-74c3158-valley-cli-lifecycle.md).
+# archive/.the-valley/decisions/dcr-74c3158-valley-cli-lifecycle.md).
 # This tool is deliberately a shell script: it runs from any checkout with
 # nothing but git and coreutils — no machinery, the portability stance of
 # ida-b9f646c. It GRADUATES to its own repo and a real language the moment
@@ -496,7 +496,7 @@ rebase_onto_main() {
 # This is the one way a change reaches main from here: the checks the
 # policy requires are run over the branch's tree and signed, the evidence
 # and one request ref are published, and the integrator judges the request
-# and lands it (design/integration.md). main is never touched from here.
+# and lands it (archive/design/integration.md). main is never touched from here.
 #
 # Nothing in this script writes the protected ref. Whether a given pusher
 # may write it is a fact about origin's pre-receive hook, so origin is
@@ -669,7 +669,7 @@ ask() {
   # A change the policy asks nothing of is still a change, and asking is
   # how one reaches main. The integrator already lands a request owing no
   # check and records the landing as one that required nothing
-  # (design/integration.md), so refusing to file it here would strand
+  # (archive/design/integration.md), so refusing to file it here would strand
   # exactly the changes the policy requires nothing of. Nothing is owed, so
   # nothing is signed and no key is needed: what gets published is one
   # request ref and no evidence at all.

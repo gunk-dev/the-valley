@@ -15,10 +15,10 @@
 # Identity is deliberately thin and host-level: one git user, git-shell,
 # key-only, Tailscale ACLs in front. Per-project *access* is not honestly
 # enforceable with this mechanism, so it is deliberately not an option
-# (.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md). Per-project
+# (archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md). Per-project
 # *write protection* is, because the pre-receive hook below is a real
 # enforcement boundary and each key carries a principal name it can read
-# (.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) —
+# (archive/.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) —
 # so it is declared, in the project's `protection` block, and this module
 # only binds principal names to keys and grants, and installs the hook.
 # Those bindings are declared by hand or compiled from the instance's
@@ -297,7 +297,7 @@ let
       exit 0
     '';
 
-  # The event bus (design/roadmap.md, Phase 1): NATS JetStream, onto which
+  # The event bus (archive/design/roadmap.md, Phase 1): NATS JetStream, onto which
   # the ref-updated hook below projects this host's git activity. The bus is
   # never load-bearing for durable state — per-repo events are durable in
   # git itself, and `valley replay` rebuilds the stream from a repo's refs —
@@ -594,7 +594,7 @@ let
     );
 
   # The pre-receive hook: the one structural git invariant
-  # (design/architecture.md, design/contribute.md), which is what a push may
+  # (archive/design/architecture.md, archive/design/contribute.md), which is what a push may
   # write. It is installed on every project the host serves. Replacement
   # refs, notes and the valley's own namespace take no push; a symbolic
   # ref takes none; topic branches are open; an attestation ref may only be
@@ -994,7 +994,7 @@ in
       };
     };
 
-    # The integrator (design/roadmap.md, Phase 3): the controller that
+    # The integrator (archive/design/roadmap.md, Phase 3): the controller that
     # lands a change once its evidence still transfers to the current tip.
     # Machine options only — whether this host runs controllers, who they
     # are, and how often they look. Which projects get one is not an option

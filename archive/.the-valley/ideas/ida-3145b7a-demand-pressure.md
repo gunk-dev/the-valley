@@ -91,7 +91,7 @@ mirrors its build semantics is pleasingly self-similar.
 Without pressure the graph is a passive tracker — an issue list with extra steps. Pressure is what
 makes it a production _engine_: the standing force that turns "here is what blocks what" into "this
 is being produced." It is load-bearing for the **recursive, transparent outcome-production engine**
-framing in the [README](../../README.md).
+framing in the [README](../../../README.md).
 
 ## Related
 

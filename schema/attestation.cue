@@ -7,13 +7,13 @@
 //
 // The statement is self-contained: a verifier that holds these bytes and
 // the tree they name needs nothing else to understand the claim. That is
-// why the pure-versus-effectful distinction of design/verification.md is
+// why the pure-versus-effectful distinction of archive/design/verification.md is
 // `predicateType` — inside the signed bytes — rather than a property of
 // where the statement was found.
 //
 // This file is the gate a statement passes on the way in and on the way
 // out, and it reads JSON. What a signature covers is the statement's
-// written form, which is lines (design/verification.md); the two carry the
+// written form, which is lines (archive/design/verification.md); the two carry the
 // same fields, and the constraints below on what a value may be are what
 // keep every validated statement writable as lines.
 //
@@ -49,7 +49,7 @@ package attestation
 // check what it was handed, so it fails vet rather than being carried
 // through as an opaque string.
 #DigestSet: {
-	// The valley tree digest, defined in design/verification.md. SHA-256
+	// The valley tree digest, defined in archive/design/verification.md. SHA-256
 	// over a canonical manifest of the tree's entries, so it is a function
 	// of the tree alone: no commit, no author, no time, no path outside
 	// the tree.
@@ -108,7 +108,7 @@ package attestation
 //   context: #SegmentKeyed & {[string]: #Line}
 #SegmentKeyed: {[#KeySegment]: _}
 
-// The two kinds of claim of design/verification.md. A pure check's
+// The two kinds of claim of archive/design/verification.md. A pure check's
 // attestation is re-derivable: it carries input, derivation and output
 // digests, and any verifier can re-run and confirm. An effectful check's
 // attestation is a notarization: a named environment ran the check at a

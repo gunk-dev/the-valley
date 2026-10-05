@@ -15,10 +15,10 @@ fit an ecosystem it does not otherwise participate in.
 
 ## Where this already holds
 
-- The host declaration ([`schema/valley.cue`](../../schema/valley.cue)) and the event vocabulary
-  ([`schema/events.cue`](../../schema/events.cue)) are CUE documents that are deliberately not Nix.
-  Installers are their consumers: the NixOS module in this repo is one, and another installer reads
-  the same files.
+- The host declaration ([`schema/valley.cue`](../../../schema/valley.cue)) and the event vocabulary
+  ([`schema/events.cue`](../../../schema/events.cue)) are CUE documents that are deliberately not
+  Nix. Installers are their consumers: the NixOS module in this repo is one, and another installer
+  reads the same files.
 - The attestation vocabulary of [[dcr-0de694f]]
   ([decisions/dcr-0de694f-phase2-attestation-shape.md](../decisions/dcr-0de694f-phase2-attestation-shape.md))
   is the project's own. Its predicate types and digest schemes are named for this project, so no

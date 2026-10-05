@@ -11,10 +11,13 @@
 {
   # This repo's own graph, checked by the derivation the flake
   # exposes rather than by a second implementation of it. Whatever a
-  # consuming project runs, this repo runs.
+  # consuming project runs, this repo runs. The graph is archived, so
+  # the root is named: the lint passes a tree with no graph at its root,
+  # and the default root would check nothing.
   knowledge-lint = self.lib.knowledgeLint {
     inherit system;
     src = self;
+    root = "archive/.the-valley";
   };
 
   # The reusable form, exercised over a foreign tree: a project that

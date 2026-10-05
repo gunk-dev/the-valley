@@ -29,7 +29,7 @@ ship with its gate.
 
 ## The resolution
 
-The hook's rules are one Go program, [valleyhook/](../../valleyhook/). It runs on every project a
+The hook's rules are one Go program, [valleyhook/](../../../valleyhook/). It runs on every project a
 host serves, protected or not, and the hook a host installs only hands it the pushing principal, the
 project's declared push policy, the grants, and the keys attestations are checked against. A write
 must pass every rule that applies to its ref, and no rule stands in for another:
@@ -54,10 +54,10 @@ holder into a grants file the hook reads. A host can also grant it by hand, and 
 hand grant matters the first time: the hook refuses the request that would land the registry change
 granting request, unless the host already grants it to whoever files that change.
 
-The note envelope has one reading, the note module ([note/](../../note/)), which `attest` signs and
-verifies with and the hook checks pushed notes with. A relayer can change a note's signature block
-and nothing else, and every line it could add that one reader refuses, every reader refuses. So a
-note the hook lets into the create-only namespace is a note every verifier opens.
+The note envelope has one reading, the note module ([note/](../../../note/)), which `attest` signs
+and verifies with and the hook checks pushed notes with. A relayer can change a note's signature
+block and nothing else, and every line it could add that one reader refuses, every reader refuses.
+So a note the hook lets into the create-only namespace is a note every verifier opens.
 
 Replacement refs are also turned off wherever git is read for a decision: in the identity compiler,
 in `attest` (so a standalone `attest verify` too), in the integrator and every program it runs, and

@@ -1,6 +1,6 @@
 # User scenarios
 
-The docs are layered: premise ([README](../README.md)) → requirements
+The docs are layered: premise ([README](../../README.md)) → requirements
 ([requirements.md](./requirements.md)) → architecture ([architecture.md](./architecture.md)) →
 design. This document sits at the requirements layer: an escalating ladder of user scenarios,
 ordered by actors and trust, that the requirements fall out of. It is strictly problem-space — what

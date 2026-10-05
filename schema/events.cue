@@ -1,5 +1,5 @@
 // The event vocabulary of a valley host: what its bus carries. Phase 1
-// (design/roadmap.md) defined exactly one event; later phases add an event
+// (archive/design/roadmap.md) defined exactly one event; later phases add an event
 // or a field at a time, never more. Phase 3 adds the integrator's two
 // outcomes, #IntegrationSucceeded and #RequestStale.
 //

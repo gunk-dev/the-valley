@@ -1,5 +1,5 @@
 // The valley host declaration for the-valley itself — the Phase 0 pilot
-// (design/roadmap.md). This file is the single domain input: the NixOS
+// (archive/design/roadmap.md). This file is the single domain input: the NixOS
 // module validates it against schema/valley.cue and provisions the host
 // from it. Machines never redefine what is declared here.
 //
@@ -8,7 +8,7 @@
 package valley
 
 projects: {
-	// The pilot repo (design/user-scenarios.md § S1). GitHub is retained
+	// The pilot repo (archive/design/user-scenarios.md § S1). GitHub is retained
 	// as a transitional publication mirror during migration: every push
 	// to the primary replicates main and the tags there, best-effort.
 	// Topic branches awaiting review stay on the primary (dcr-24d62f7).

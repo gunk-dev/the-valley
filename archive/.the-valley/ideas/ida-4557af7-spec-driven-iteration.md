@@ -13,9 +13,9 @@ source: design conversation, 2026-07-15 — captured imperfect on purpose ("even
 iterate a _tight spec_ for the-valley, and use the spec to drive implementation iteration over time.
 
 **Proof of pattern, already shipped.** The CUE host schema is spec-driven development in one corner:
-[schema/valley.cue](../../schema/valley.cue) is "the canonical domain model … deliberately not Nix"
-([roadmap](../../design/roadmap.md)), the installers are implementations consuming it, `cue vet` at
-build time is the conformance gate, and [[ida-b9f646c]]
+[schema/valley.cue](../../../schema/valley.cue) is "the canonical domain model … deliberately not
+Nix" ([roadmap](../../design/roadmap.md)), the installers are implementations consuming it,
+`cue vet` at build time is the conformance gate, and [[ida-b9f646c]]
 ([ida-b9f646c-nix-backend-not-substrate.md](./ida-b9f646c-nix-backend-not-substrate.md)) pins the
 implementability floor: every schema realizable by a shell script on Debian. The generalization:
 what CUE does for the host declaration, some checkable spec should do for each component as it

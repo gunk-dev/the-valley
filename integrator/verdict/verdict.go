@@ -41,7 +41,7 @@ const (
 	Reject Outcome = "reject"
 )
 
-// Kind is the two kinds of claim of design/verification.md, which decide
+// Kind is the two kinds of claim of archive/design/verification.md, which decide
 // which transfer rule applies.
 type Kind string
 

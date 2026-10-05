@@ -38,7 +38,7 @@ convergence after expiry, with no separate revocation act. Provisioning a machin
 entry rather than a host declaration, so granting it no longer requires a rebuild of the primary
 host for each machine.
 
-The compiler is [identity/](../../identity/), staged first against the host's push boundary — the
+The compiler is [identity/](../../../identity/), staged first against the host's push boundary — the
 same boundary this bug was raised against. A compilation that fails for any reason leaves the last
 good artifacts as they were, so a bad registry edit cannot lock the host's git user out; the
 declared keys remain the way back in.

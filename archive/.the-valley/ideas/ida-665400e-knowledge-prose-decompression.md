@@ -11,8 +11,8 @@ source: knowledge base design review, 2026-09-01
 
 The knowledge graph and companion design documents have accumulated a dense, aphoristic, and overly
 abstract writing style. This style obfuscates the underlying mechanics of the system and directly
-violates the writing standards defined in [AGENTS.md](../../AGENTS.md). The remedy is a systematic
-decompression of the knowledge base into a plain engineering register: leading with plain
+violates the writing standards defined in [AGENTS.md](../../../AGENTS.md). The remedy is a
+systematic decompression of the knowledge base into a plain engineering register: leading with plain
 statements, unpacking mechanisms before theoretical justifications, and eliminating theological and
 self-referential vocabulary.
 
@@ -44,7 +44,7 @@ modes that recur across nodes:
 
 ## The concrete node template
 
-To restore readability and adhere to [AGENTS.md](../../AGENTS.md), each node in the graph must
+To restore readability and adhere to [AGENTS.md](../../../AGENTS.md), each node in the graph must
 follow a four-part structure that bans ungrounded abstraction:
 
 1. **Plain Statement (The What):** One to two sentences stating what the component, format, or
@@ -74,7 +74,7 @@ Decompressing the knowledge base proceeds in four stages:
 
 ## Related
 
-- The repository writing standard: [AGENTS.md](../../AGENTS.md)
+- The repository writing standard: [AGENTS.md](../../../AGENTS.md)
 - Knowledge conventions: [.the-valley/README.md](../README.md)
 - Integration decision: [[dcr-439b771]]
   ([dcr-439b771-integration-occ-over-content-addressed-evidence.md](../decisions/dcr-439b771-integration-occ-over-content-addressed-evidence.md))

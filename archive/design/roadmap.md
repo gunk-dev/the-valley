@@ -65,7 +65,7 @@ tlog), **cosmo** (the operator's NixOS infra — the consumer that installs this
 and **classic-laddie** (the pilot host: a box on the operator's tailnet, already running the klaus
 webhook relay; it hosts every server-side phase below first). Hostnames are pilot detail, not
 design: the durable content of this plan is portable, and what any host serves is declared in the
-host schema this repo ships ([schema/valley.cue](../schema/valley.cue)).
+host schema this repo ships ([schema/valley.cue](../../schema/valley.cue)).
 
 ---
 
@@ -82,8 +82,8 @@ enough that you'd trust it with the only copy — before there's ever only one c
 
 **What gets built — and what already is.** Hosting only. Bare git over SSH on a host the operator
 controls (the pilot host: classic-laddie). The first artifacts are shipped: a CUE host schema
-([schema/valley.cue](../schema/valley.cue)) declaring what a valley host serves — projects, each
-with a git store and push mirrors — and a `valley-host` NixOS module ([flake.nix](../flake.nix))
+([schema/valley.cue](../../schema/valley.cue)) declaring what a valley host serves — projects, each
+with a git store and push mirrors — and a `valley-host` NixOS module ([flake.nix](../../flake.nix))
 that installs a host from that declaration; cosmo consumes the module for the pilot host (in
 flight). The schema is the domain model and is deliberately not Nix: the NixOS module is one
 installer consuming it, and any other installer can consume the same file. Identity is Tailscale
@@ -140,7 +140,7 @@ it's swappable.
 is checked.
 
 **Links.** [architecture.md](./architecture.md) (_Hosting_, _Identity / access_ rows),
-[schema/valley.cue](../schema/valley.cue), [examples/host.cue](../examples/host.cue).
+[schema/valley.cue](../../schema/valley.cue), [examples/host.cue](../../examples/host.cue).
 
 **Open questions.** One remains from this phase: Phase-0 identity being Tailscale-ACL-based (thin,
 swappable) — see [Open questions](#open-questions). The replication mechanism was the other and is
@@ -467,7 +467,7 @@ Some things aren't a phase; they run through all of them.
 
 - **CUE schemas.** One schema language across the system. Event schemas are shared across producers
   and consumers, reused from armstrong — minimal in Phase 1, growing a field or a type each phase.
-  Host config already speaks it ([schema/valley.cue](../schema/valley.cue), shipped in Phase 0);
+  Host config already speaks it ([schema/valley.cue](../../schema/valley.cue), shipped in Phase 0);
   knowledge-node frontmatter and verification policy are candidates to follow. Schema evolution is a
   standing concern, not a phase — tracked in [openquestions.md](./openquestions.md) (_Storage,
   retention, and evolution_).

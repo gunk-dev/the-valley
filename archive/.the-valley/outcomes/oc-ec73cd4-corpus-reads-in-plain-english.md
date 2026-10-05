@@ -23,7 +23,7 @@ This outcome tracks the corpus-wide execution of that plan.
 
 ## The acceptance standard
 
-Per [AGENTS.md](../../AGENTS.md), prose must satisfy the plain engineering test:
+Per [AGENTS.md](../../../AGENTS.md), prose must satisfy the plain engineering test:
 
 1. **Lead with the plain statement.** Every document, section, and node opens by stating what the
    thing is in ordinary software engineering terms before qualifying, justifying, or elaborating it.
@@ -83,6 +83,6 @@ The work spans the design documents, core decisions, and premise:
 
 - Prose decompression idea: [[ida-665400e]]
   ([ida-665400e-knowledge-prose-decompression.md](../ideas/ida-665400e-knowledge-prose-decompression.md))
-- Writing standard: [AGENTS.md](../../AGENTS.md)
+- Writing standard: [AGENTS.md](../../../AGENTS.md)
 - Prior corpus audit: [[oc-9b94fe4]]
   ([oc-9b94fe4-corpus-states-each-claim-once.md](./oc-9b94fe4-corpus-states-each-claim-once.md))

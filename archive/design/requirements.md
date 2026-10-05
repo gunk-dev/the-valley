@@ -5,7 +5,7 @@ requirement derives from a rung of the [scenario ladder](./user-scenarios.md#the
 says what a user experiences; the requirement is what must hold for the rung to be true. The mapping
 runs both ways — every rung below S7 leaves a mark here, and a requirement no rung demands has no
 business on this page. The one exception is the constraints, which are imposed by the premise
-([README](../README.md)) rather than derived: they bind the solutions, not the problem.
+([README](../../README.md)) rather than derived: they bind the solutions, not the problem.
 
 ## Who it's for
 
@@ -44,9 +44,9 @@ The ladder is ordered by actors and trust, so the audience falls straight out of
    remembered: the incident becomes durable project knowledge, not a war story. When the record
    assigns blame, it carries its uncertainty honestly — a confidently wrong attribution is worse
    than none.
-7. **Demand-shaped work** ([README: where this goes](../README.md#where-this-goes)). Work to be done
-   is itself knowledge — outcomes on a dependency graph the system is under pressure to complete
-   toward what someone actually asked for, not merely to record.
+7. **Demand-shaped work** ([README: where this goes](../../README.md#where-this-goes)). Work to be
+   done is itself knowledge — outcomes on a dependency graph the system is under pressure to
+   complete toward what someone actually asked for, not merely to record.
 
 **The unbundling note.** The concerns this design unbundles are enumerated once, in the
 [architecture](./architecture.md)'s table. They cut across these needs rather than mapping
@@ -60,7 +60,7 @@ change can close the outcome it serves (S4); incidents file their own nodes, wit
 ## Constraints
 
 Not derived from the ladder — imposed on every solution to it, from the premise
-([README](../README.md)):
+([README](../../README.md)):
 
 - **Open source.** The substrate must be inspectable and forkable; a closed dependency reintroduces
   the lock-in being escaped.

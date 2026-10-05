@@ -17,7 +17,7 @@ are one question: the bytes a signature covers, and how a signature sits beside 
 The written form is
 [design/verification.md](../../design/verification.md#a-statement-is-written-down-as-lines); the
 envelope is [the section after it](../../design/verification.md#the-envelope-is-a-signed-note). The
-statement's shape is [schema/attestation.cue](../../schema/attestation.cue), and the reference
+statement's shape is [schema/attestation.cue](../../../schema/attestation.cue), and the reference
 implementation is `attest/text.go` and `attest/sign.go`.
 
 ## The written form is lines, in the order a reader reads them
@@ -136,7 +136,7 @@ conformance vectors already make.
 ## Conformance vectors are what hold a second implementation
 
 The written form and the note are an interop contract, so they are pinned by fixed files rather than
-by the code that happens to produce them. [attest/conformance/](../../attest/conformance/) holds
+by the code that happens to produce them. [attest/conformance/](../../../attest/conformance/) holds
 statements paired with their exact text, notes that must verify — including one carrying two
 signatures — and the documents and texts that must be refused. The flake's `attest-conformance`
 check runs the whole set, and it holds the implementation to the reference one from the other side

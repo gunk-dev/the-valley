@@ -12,8 +12,8 @@ automation?
 ## The pain
 
 GitHub bundles every concern of source management — from hosting through verification to project
-knowledge; [design/architecture.md](./design/architecture.md) tables them one by one — and does
-several of them poorly enough that unbundling looks attractive:
+knowledge; [archive/design/architecture.md](./archive/design/architecture.md) tables them one by one
+— and does several of them poorly enough that unbundling looks attractive:
 
 - **CI is slow and YAML-shaped.** The feedback loop that matters most runs in minutes on someone
   else's infrastructure, configured in a language nobody chose.
@@ -35,7 +35,7 @@ instead of the bundle's compromise, and everything that matters survives the los
 At its most general, the-valley is a **recursive, transparent outcome-production engine**: its unit
 of work is the outcome — a thing someone wants to exist that does not yet — and its job is to
 complete the dependency graph outcomes form, transparently
-([ida-eac723e](./.the-valley/ideas/ida-eac723e-outcome-dag.md) carries the full sketch). The
+([ida-eac723e](./archive/.the-valley/ideas/ida-eac723e-outcome-dag.md) carries the full sketch). The
 software development lifecycle is the v1 reference implementation, not the boundary: everything
 above is how the engine gets pointed at code first. Recursive includes the engine itself —
 the-valley builds the-valley.
@@ -46,7 +46,7 @@ the-valley builds the-valley.
 - **Minimal.** Prefer composing small tools over building a platform.
 - **Nix-native.** Builds, verification, and artifacts run as derivations in the reference
   implementation — Nix is a backend, not the substrate, and every schema stays portable beyond it
-  ([ida-b9f646c](./.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
+  ([ida-b9f646c](./archive/.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
 - **Decentralized where possible.** Accept centralization only where ordering or coordination
   genuinely require it, and be explicit about it.
 
@@ -62,28 +62,29 @@ event bus onto which every push's ref updates are projected as events
 convention has a checkable form as well: [`schema/node.cue`](./schema/node.cue) describes a node's
 frontmatter, and the flake exposes the lint that enforces it as `lib.knowledgeLint`, so any project
 can instantiate the same check over its own tree from a flake input. The plan-of-record —
-incremental, MVP-first, validation-gated — is [`design/roadmap.md`](./design/roadmap.md).
+incremental, MVP-first, validation-gated — is
+[`archive/design/roadmap.md`](./archive/design/roadmap.md).
 
 ## The docs
 
-- [`design/user-scenarios.md`](./design/user-scenarios.md) — the escalating ladder of problem-space
-  user scenarios the requirements derive from; only the top-priority rung carries acceptance
-  criteria.
-- [`design/requirements.md`](./design/requirements.md) — what the system must be: who it's for, the
-  unbundled needs, the constraints, non-goals.
-- [`design/architecture.md`](./design/architecture.md) — the bets and their rationale: the event
-  log, attestations instead of CI gates, the pull-based integrator, review as feedback, knowledge as
-  a graph.
-- [`design/contribute.md`](./design/contribute.md) — the contributor protocol: what a human or agent
-  does to push a change and request integration.
-- [`design/verification.md`](./design/verification.md) — pure vs. effectful checks and what makes an
-  attestation hard to forge.
-- [`design/self-transparency.md`](./design/self-transparency.md) — **DRAFT.** A candidate invariant,
-  deliberately unresolved: no actor can durably change the system or an output without transparency,
-  recursively. Names the facets; decides nothing.
-- [`design/openquestions.md`](./design/openquestions.md) — consolidated open questions, tagged by
-  layer.
-- [`design/roadmap.md`](./design/roadmap.md) — the incremental validation plan.
+- [`archive/design/user-scenarios.md`](./archive/design/user-scenarios.md) — the escalating ladder
+  of problem-space user scenarios the requirements derive from; only the top-priority rung carries
+  acceptance criteria.
+- [`archive/design/requirements.md`](./archive/design/requirements.md) — what the system must be:
+  who it's for, the unbundled needs, the constraints, non-goals.
+- [`archive/design/architecture.md`](./archive/design/architecture.md) — the bets and their
+  rationale: the event log, attestations instead of CI gates, the pull-based integrator, review as
+  feedback, knowledge as a graph.
+- [`archive/design/contribute.md`](./archive/design/contribute.md) — the contributor protocol: what
+  a human or agent does to push a change and request integration.
+- [`archive/design/verification.md`](./archive/design/verification.md) — pure vs. effectful checks
+  and what makes an attestation hard to forge.
+- [`archive/design/self-transparency.md`](./archive/design/self-transparency.md) — **DRAFT.** A
+  candidate invariant, deliberately unresolved: no actor can durably change the system or an output
+  without transparency, recursively. Names the facets; decides nothing.
+- [`archive/design/openquestions.md`](./archive/design/openquestions.md) — consolidated open
+  questions, tagged by layer.
+- [`archive/design/roadmap.md`](./archive/design/roadmap.md) — the incremental validation plan.
 - [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
   plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
   derives the checks a change owes from the declared verification policy, and only reports them. The

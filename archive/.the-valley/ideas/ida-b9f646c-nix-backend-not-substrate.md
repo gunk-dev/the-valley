@@ -17,7 +17,7 @@ Where Nix is actually load-bearing today:
 
 - **Hosting** — not coupled. The host module's work (git user, git-shell, bare repos, hooks) is
   plain POSIX; the NixOS module is a _reference installer_ consuming
-  [valley.cue](../../schema/valley.cue). Another installer can consume the same file.
+  [valley.cue](../../../schema/valley.cue). Another installer can consume the same file.
 - **Events, knowledge** — not coupled.
 - **Verification** — the junction. Checks-as-derivations is the reference implementation, not the
   contract: the attestation schema must record _what check ran, on what tree, what result_, with

@@ -38,7 +38,7 @@ EXTERNAL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 # A graduated_into target that is a node id rather than a document path.
 DECISION_ID = re.compile(r"^dcr-[0-9a-f]{7}$")
 
-# The id-derivation rule (.the-valley/README.md): a node's id hash is the
+# The id-derivation rule (archive/.the-valley/README.md): a node's id hash is the
 # first 7 hex characters of the SHA-256 of its slug. The rule covers every
 # node created after this date; nodes created on or before it keep their
 # ids, checked for shape and uniqueness only.

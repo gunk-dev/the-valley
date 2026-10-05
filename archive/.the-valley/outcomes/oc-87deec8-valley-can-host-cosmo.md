@@ -18,8 +18,9 @@ depends on still runs, and its machines deploy without reading GitHub.
 ## What the host serves today, and why it was enough once
 
 A valley host serves exactly four things: a bare git repository per project, publication mirrors, a
-host-level restic backup, and a `ref-updated` bus ([schema/valley.cue](../../schema/valley.cue),
-[schema/events.cue](../../schema/events.cue), [nix/valley-host.nix](../../nix/valley-host.nix)).
+host-level restic backup, and a `ref-updated` bus ([schema/valley.cue](../../../schema/valley.cue),
+[schema/events.cue](../../../schema/events.cue),
+[nix/valley-host.nix](../../../nix/valley-host.nix)).
 
 That was enough for the pilot repo because the pilot repo's gate is a human reading a diff, its only
 consumer is a flake input, and it is the only repository the host's single replication identity has

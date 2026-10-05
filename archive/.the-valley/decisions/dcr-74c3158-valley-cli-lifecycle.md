@@ -11,11 +11,11 @@ source: ratified 2026-07-13
 
 **Decided 2026-07-13.**
 
-The `valley` CLI lives at [`bin/valley`](../../bin/valley) in the engine repo because its verbs are
-engine-generic — `pending` and `review` serve any valley project's integrator, not just this one. It
-ships two ways: run directly from any checkout, or as the flake package (`nix run .#valley`). It is
-deliberately a shell script — runs from any checkout, no machinery — the portability stance of
-[[ida-b9f646c]].
+The `valley` CLI lives at [`bin/valley`](../../../bin/valley) in the engine repo because its verbs
+are engine-generic — `pending` and `review` serve any valley project's integrator, not just this
+one. It ships two ways: run directly from any checkout, or as the flake package
+(`nix run .#valley`). It is deliberately a shell script — runs from any checkout, no machinery — the
+portability stance of [[ida-b9f646c]].
 
 **Tripwires.** It graduates to its own repo and a real language the moment ANY of these is crossed:
 it grows past ~300 lines; it needs persistent state, config, or a daemon; it needs dependencies

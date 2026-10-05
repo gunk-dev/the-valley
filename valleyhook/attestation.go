@@ -12,7 +12,7 @@ import (
 
 // An attestation ref is named for what it holds: the digest of the tree
 // its notes are about, then the key hash of the signer it is filed under
-// (design/contribute.md, step 5). attest writes the digest as 64 lowercase
+// (archive/design/contribute.md, step 5). attest writes the digest as 64 lowercase
 // hex digits and the key hash as 8.
 var attestationName = regexp.MustCompile(`^refs/the-valley/attestations/([0-9a-f]{64})/([0-9a-f]{8})$`)
 

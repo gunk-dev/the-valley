@@ -101,9 +101,11 @@ Each repository's `post-receive` hook runs every program in `hooks/post-receive.
   `valley-publish-queue/`, and returns. A dead mirror therefore never slows or fails a push.
 
 The integrator moves refs with `git update-ref`, which runs no `post-receive` hook. So it does both
-jobs itself for each landing (`integrator/bus.go`). It publishes the `ref-updated` event straight to
-the bus, with the same payload the bus publisher would send. It also writes the move to the same
-publish queue.
+jobs itself for each landing (`integrator/bus.go`). It writes the move to the same publish queue. It
+also publishes the `ref-updated` event straight to the bus, with the same payload the bus publisher
+would send. It publishes only after the landing is fully recorded: the queue entry written, the
+evidence stored and the request consumed. Each publish is stopped after 10 seconds, so a bus that
+hangs cannot hold up a landing. Checked by `integrator-e2e`.
 
 One unit pushes the mirrors: `valley-publish@<project>`, a service that runs as git. A systemd path
 unit starts it whenever the project's queue is not empty. Mirrors are a list of URLs

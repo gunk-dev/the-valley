@@ -39,6 +39,9 @@
     SCHEMA_ATTESTATION = ../../schema/attestation.cue;
     SCHEMA_VERIFICATION = ../../schema/verification.cue;
     SCHEMA_EVENTS = ../../schema/events.cue;
+    # The binary without its wrapper, whose PATH puts the real nats first:
+    # one scenario stands a bus that never answers in for it.
+    INTEGRATOR_UNWRAPPED = pkgs.lib.getExe packages.integrator-unwrapped;
     # No bus in a sandbox: the payloads are still composed and
     # vetted against the vocabulary, and printed rather than
     # published. What publishing does is the post-receive hook's

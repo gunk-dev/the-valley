@@ -408,7 +408,6 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 		return fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
 	}
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
-	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.queueRefUpdate(ch.Target, tip, l.commit)
 
 	var unrecorded []string
@@ -433,6 +432,10 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 			unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
 		}
 	}
+	// The bus comes last. Everything above is the landing's own record; an
+	// event is a best-effort notice of it, and a bus that fails or hangs
+	// must not leave any of that record undone.
+	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)
 	if len(unrecorded) > 0 {
 		return fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",

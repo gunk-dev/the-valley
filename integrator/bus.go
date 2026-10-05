@@ -5,6 +5,9 @@ package main
 // satisfying schema/events.cue. Failure to publish is logged and never
 // fatal — git is the source of truth and the bus is the replaceable
 // component, so a bus problem costs a log line and one `valley replay`.
+// Each publish is cut off after busDeadline, so a bus that hangs costs at
+// most that long, and a landing publishes only after its own record is
+// complete (refs.go).
 //
 // Nothing here consumes. Bus authentication (bd-d853d9c) gates automated
 // consumers, and the integrator level-triggers over the request refs
@@ -13,6 +16,7 @@ package main
 import (
 	"the-valley/integrator/verdict"
 
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -58,9 +62,9 @@ func (in *integrator) publishStale(ch verdict.Change, v verdict.Verdict, tip str
 // publishRefUpdated publishes the ref-updated event for a landing's move.
 // A push gets the event from the post-receive hook. The integrator moves
 // refs with update-ref, which runs no hook, so it publishes the event
-// itself, at once, and never behind a mirror push. The fields are the host
-// publisher's, in its order (nix/valley-host.nix, and `valley replay` in
-// bin/valley); change one only with the others.
+// itself, once the landing is recorded, and never behind a mirror push.
+// The fields are the host publisher's, in its order (nix/valley-host.nix,
+// and `valley replay` in bin/valley); change one only with the others.
 func (in *integrator) publishRefUpdated(ref, old, new string) {
 	in.publish("ref-updated", struct {
 		Event string `json:"event"`
@@ -129,6 +133,10 @@ func writeRefUpdate(queue, ref, old, new string) error {
 // consumer could read is not a thing to publish, and the discipline that
 // keeps the vocabulary one schema'd event at a time is worth nothing if the
 // publisher can sidestep it.
+// busDeadline bounds one `nats pub`. A local server answers in
+// milliseconds; anything near this long is a bus that is not answering.
+const busDeadline = 10 * time.Second
+
 func (in *integrator) publish(kind string, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -144,8 +152,16 @@ func (in *integrator) publish(kind string, payload any) {
 		return
 	}
 	subject := fmt.Sprintf("valley.git.%s.%s", in.project, kind)
-	cmd := exec.Command(in.nats, "--server", in.bus, "pub", subject, string(body))
+	ctx, cancel := context.WithTimeout(context.Background(), busDeadline)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, in.nats, "--server", in.bus, "pub", subject, string(body))
+	// The deadline kills nats itself. WaitDelay stops the wait for its
+	// output too, should anything it started still hold the pipe.
+	cmd.WaitDelay = time.Second
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			err = fmt.Errorf("no answer within %s", busDeadline)
+		}
 		fmt.Fprintf(in.out, "  bus      publish of %s FAILED: %v: %s\n", subject, err, firstLine(string(out)))
 		return
 	}

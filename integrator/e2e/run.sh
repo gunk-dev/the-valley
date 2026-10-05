@@ -1003,4 +1003,58 @@ grep -q "request  $moving moved to .* while .* landed; it stands for the next pa
 forget c18
 holds "a request that moved while its previous head landed was left standing, and said so"
 
+# ----------------------------------------------------------------------
+say "19. a bus that never answers does not hold up a landing"
+
+# The landing's own record comes first: main moves, the move is queued for
+# the mirrors, the evidence is stored and the request consumed. Only then
+# does the integrator publish, and each publish is cut off at its deadline.
+# The shipped wrapper puts the real nats first on the path, so the bare
+# binary runs here, behind a nats that never exits.
+mkdir "$work/hung-bus" "$work/queue"
+cat > "$work/hung-bus/nats" <<EOF
+#!$(command -v bash)
+exec sleep 1000
+EOF
+chmod +x "$work/hung-bus/nats"
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c19
+echo "landed past a bus that never answers" > docs/bus.md
+git add -A
+git commit --quiet -m "past a hung bus"
+attest_change c19 "" "" --check prose-format
+request c19 main "$(git rev-parse c19)"
+before="$(tip)"
+started=$SECONDS
+PATH="$work/hung-bus:$PATH" timeout 120 "$INTEGRATOR_UNWRAPPED" reconcile \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$instance_repo" \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  --bus nats://127.0.0.1:1 \
+  --publish-queue "$work/queue" \
+  2>&1 | tee "$work/last.out" \
+  || die "the pass did not finish with a bus that never answers: $(cat "$work/last.out")"
+elapsed=$((SECONDS - started))
+grep -q "^c19 -> refs/heads/main .*: land$" "$work/last.out" || die "c19 did not land: $(cat "$work/last.out")"
+[ "$(tip)" = "$(git rev-parse c19)" ] || die "main is not at c19's head"
+[ "$(cat "$work"/queue/*)" = "$before $(git rev-parse c19) refs/heads/main" ] \
+  || die "the move was not queued for the mirrors: $(ls -A "$work/queue")"
+git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c19 > /dev/null \
+  && die "the request outlived the landing"
+grep -q "^  evidence " "$work/last.out" || die "the evidence was not stored"
+first_evidence="$(grep -n "^  evidence " "$work/last.out" | head -n1 | cut -d: -f1)"
+first_bus="$(grep -n "^  bus " "$work/last.out" | head -n1 | cut -d: -f1)"
+[ "$first_evidence" -lt "$first_bus" ] || die "the integrator asked the bus before it stored the evidence"
+grep -q "bus      publish of valley.git.project.ref-updated FAILED: no answer within 10s" "$work/last.out" \
+  || die "the hung ref-updated publish was not cut off: $(cat "$work/last.out")"
+grep -q "bus      publish of valley.git.project.integration-succeeded FAILED: no answer within 10s" "$work/last.out" \
+  || die "the hung integration-succeeded publish was not cut off"
+[ "$elapsed" -lt 60 ] || die "the pass took ${elapsed}s behind a bus that never answers"
+holds "c19 landed, queued and consumed its request before a hung bus was asked, and each publish gave up after 10s (${elapsed}s in all)"
+
 printf '\nintegrator-e2e: every scenario held\n'

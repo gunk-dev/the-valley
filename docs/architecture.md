@@ -103,12 +103,24 @@ Each repository's `post-receive` hook runs every program in `hooks/post-receive.
   best effort. The push uses the git user's own ssh identity, which the host provides. Failures go
   to the log only. Checked by `mirror-e2e`.
 
+Every mirror publish of a project holds one lock: `flock` on `valley-publish.flock` in the bare
+repository. The publisher takes it before git reads any local ref and keeps it through the push and
+the branch deletion. Without it, two publishers can rewind a mirror. git reads the local refs before
+it contacts the mirror, so a publisher can read an old `main`, stall, and then force-push that old
+`main` over a newer one another publisher pushed meanwhile. With the lock, the publishers run one at
+a time, and each pushes the `main` of the moment it holds the lock, so the last one pushes the
+newest. A publisher that waits or runs longer than 15 minutes is stopped. Checked by `mirror-e2e`,
+which also shows the rewind happening without the lock.
+
 Git runs `post-receive` only for a push. The integrator moves refs with `git update-ref`, so it
 writes each landing to a queue directory in the repository instead (`integrator/bus.go`). A systemd
 path unit, `valley-publish@<project>`, starts a service as git when the queue is not empty. The
-service feeds the queue to the bus publisher, deletes the queue files, and runs the mirror pusher.
-Checked by `publish-e2e`. That cosmo's deployed hosts run this publish queue is a deployment record:
-cosmo #934 merged and laddie healthy, in the handoff of 2026-10-04.
+service holds the publish lock, feeds each queued move to the bus publisher once, and runs the
+mirror pusher. It deletes the queue files only after every mirror push succeeds. When a mirror push
+fails, the files stay and the service fails, and systemd runs it again after a delay that grows from
+30 seconds to 15 minutes. The bus stays best effort: a move already sent to the bus is not sent
+again on a retry. Checked by `publish-e2e`. That cosmo's deployed hosts run this publish queue is a
+deployment record: cosmo #934 merged and laddie healthy, in the handoff of 2026-10-04.
 
 The bus is NATS with JetStream, listening on `127.0.0.1:4222`. `valley-bus-init` creates one stream,
 `valley`, over the subjects `valley.>`, with file storage and NATS defaults. The events are defined

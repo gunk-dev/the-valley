@@ -16,8 +16,16 @@
   # git can tell. Relative mirror URLs (mirrorHost) resolve against
   # the pushing repo, so the shipped scripts run with no
   # substitution: this is exactly what a host executes.
+  #
+  # It also drives two publishers of one project into the window where
+  # git has read the local refs and not yet the mirror's, and checks the
+  # publish lock keeps the later main on the mirror. The same ordering
+  # without the lock rewinds it.
   mirror-e2e = pkgs.runCommand "valley-mirror-e2e" {
-    nativeBuildInputs = [ pkgs.git ];
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.util-linux
+    ];
     initScript = hosts.mirrorHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./mirror-e2e.sh);

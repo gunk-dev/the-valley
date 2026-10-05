@@ -261,15 +261,21 @@ let
   # push so it cannot change that push's reported outcome. --mirror is
   # rejected outright: it also tries to delete remote-only namespaces, and on
   # GitHub the read-only refs/pull/* makes that fail every push, masking real
-  # replication failures.
+  # replication failures. The pusher exits non-zero when a replication push
+  # fails. Post-receive ignores that; the publish drain below retries on it.
+  #
+  # Every run of the pusher holds the project's publish lock (below), so it
+  # never runs alongside another publish of the same project.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
+      status=0
       for url in ${lib.escapeShellArgs mirrors}; do
         if ${pkgs.git}/bin/git push --prune "$url" '+refs/heads/main:refs/heads/main' '+refs/tags/*:refs/tags/*' >/dev/null 2>&1; then
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: pushed to $url" || true
         else
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: push to $url FAILED" || true
+          status=1
         fi
 
         # Unpublish anything but main. Refnames cannot contain whitespace, so
@@ -286,14 +292,33 @@ let
           fi
         fi
       done
+      exit "$status"
     '';
+
+  # The publish lock: one per project, a file in its bare repository, taken
+  # with flock by every path that publishes the project's mirrors. Both paths
+  # run with the repository as their working directory, so the name is
+  # relative. git snapshots the local refs before it reads the mirror's, so
+  # two unserialized pushers can rewind a mirror: one reads an old main and
+  # stalls, the other pushes a newer main, and the first then force-pushes
+  # its old one over it. Under the lock, a pusher reads the refs only once
+  # it holds the lock and keeps it through the push and the sweep. Each
+  # publish pushes the main of the moment it holds the lock, so the last
+  # publisher pushes the newest main.
+  #
+  # Waiting is bounded. A publisher gives up, lock wait included, after the
+  # publish timeout, so a mirror that hangs cannot hold the lock for good.
+  publishLock = "valley-publish.flock";
+  # One spelling both timeout(1) and systemd read as fifteen minutes.
+  publishTimeout = "15m";
 
   mirrorHook =
     name: mirrors:
     pkgs.writeShellScript "valley-mirrors-${name}" ''
       # Managed by services.valley — best-effort push mirrors for ${name}.
       cat >/dev/null   # updated refs unused: the push replicates main and tags
-      ${pkgs.util-linux}/bin/setsid -f ${mirrorPusher name mirrors} </dev/null >/dev/null 2>&1
+      ${pkgs.util-linux}/bin/setsid -f ${pkgs.coreutils}/bin/timeout ${publishTimeout} \
+        ${pkgs.util-linux}/bin/flock ${publishLock} ${mirrorPusher name mirrors} </dev/null >/dev/null 2>&1
       exit 0
     '';
 
@@ -346,8 +371,9 @@ let
   # directory in the repository: the publish queue. A path unit watches the
   # queue, and when it holds anything, starts a oneshot running as the git
   # user. That drain hands every queued line to the bus publisher above,
-  # deletes the lines, and runs the mirror pusher once. The pusher and the
-  # publisher are the ones post-receive runs.
+  # runs the mirror pusher once, and deletes the lines once the mirrors hold
+  # what they record. The pusher and the publisher are the ones post-receive
+  # runs.
   #
   # The alternatives fall to the user split. Calling the post-receive
   # dispatcher from the integrator would push as the integrator's user, and
@@ -358,25 +384,44 @@ let
   # path unit is woken by inotify rather than a poll, and the queue is
   # durable, so a move queued while the host goes down is published after.
   #
-  # Each move is published once. A push never writes the queue, and the
-  # integrator never runs post-receive, so no move takes both paths. A drain
-  # that dies between publishing and deleting republishes on its next run,
-  # which repeats a ref-updated event and an idempotent mirror push.
+  # Each move is published by one path. A push never writes the queue, and
+  # the integrator never runs post-receive, so no move takes both paths.
+  #
+  # The bus and the mirrors are settled separately, because they fail
+  # differently. The bus is best effort, as it is after a push: each move is
+  # handed to the bus publisher once, then marked sent by renaming its file,
+  # whether or not the event reached the server. A lost event is rebuilt by
+  # `valley replay`. The mirrors are what a queued move waits for: its file
+  # stays in the queue until a mirror push succeeds. When one fails, the
+  # drain fails, and systemd runs it again after a delay. So a mirror outage
+  # neither holds back the bus nor repeats its events, and a failed mirror
+  # push is retried without waiting for another landing. A drain that dies
+  # between handing a move to the bus and marking it sent repeats that
+  # ref-updated event on its next run. Repeating the mirror push is harmless:
+  # it pushes the current main, whatever the queue records.
   publishQueueName = "valley-publish-queue";
 
   # The drain, per project. It runs synchronously: the unit is already
   # detached from the landing, and a detached child would be killed with the
-  # oneshot's cgroup when it exits.
+  # oneshot's cgroup when it exits. The unit runs it under the publish lock.
   publishDrain =
     name: p:
     pkgs.writeShellScript "valley-publish-${name}" ''
       # Managed by services.valley — publish what the integrator moved on ${name}.
       shopt -s nullglob
-      moves=( ${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}/* )
+      queue=${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}
+      moves=( "$queue"/* )
       [ "''${#moves[@]}" -gt 0 ] || exit 0
-      ${lib.optionalString cfg.bus.enable ''cat -- "''${moves[@]}" | ${busPublisher}''}
+      ${lib.optionalString cfg.bus.enable ''
+        for move in "''${moves[@]}"; do
+          case "$move" in *.sent) continue ;; esac
+          ${busPublisher} <"$move"
+          mv -- "$move" "$move.sent"
+        done
+        moves=( "$queue"/*.sent )
+      ''}
+      ${lib.optionalString (p.mirrors != [ ]) "${mirrorPusher name p.mirrors} || exit 1"}
       rm -f -- "''${moves[@]}"
-      ${lib.optionalString (p.mirrors != [ ]) "${mirrorPusher name p.mirrors}"}
     '';
 
   # Every drain, by project name, so the template unit runs its instance's.
@@ -1710,11 +1755,15 @@ in
     };
 
     # It runs as the git user, with ssh on its path, because the mirror
-    # credentials are that user's. Each run drains the whole queue, so starts
+    # credentials are that user's, and under the publish lock, taken before
+    # the drain reads anything. Each run drains the whole queue, so starts
     # are at most one per landing, and a burst of landings must not trip
     # systemd's start limit and leave the queue undrained. A run is bounded
-    # instead: a mirror that hangs is cut off, and the next landing runs the
-    # drain again.
+    # instead: one that waits on the lock or a mirror for the publish timeout
+    # is cut off. A run that fails or is cut off leaves its moves queued, and
+    # systemd starts it again after a delay that grows from 30 seconds to 15
+    # minutes, until a run succeeds. While it waits to restart, the unit is
+    # not inactive, so the path unit does not start it again sooner.
     systemd.services."valley-publish@" = lib.mkIf cfg.integrator.enable {
       description = "Publish the integrator's landings on %i";
       after = [ "valley-init.service" ] ++ lib.optional cfg.bus.enable "valley-bus-init.service";
@@ -1723,11 +1772,15 @@ in
       path = [ config.programs.ssh.package ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${publishDrains}/%i";
+        ExecStart = "${pkgs.util-linux}/bin/flock ${publishLock} ${publishDrains}/%i";
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = "${cfg.dataDir}/%i.git";
-        TimeoutStartSec = "15min";
+        TimeoutStartSec = publishTimeout;
+        Restart = "on-failure";
+        RestartSec = "30s";
+        RestartSteps = 5;
+        RestartMaxDelaySec = "15min";
       };
     };
 

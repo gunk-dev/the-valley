@@ -85,4 +85,93 @@ git -C deadwork commit --quiet --allow-empty -m one
 timeout 60 git -C deadwork push --quiet origin main
 [ "$(git -C dead-mirror.git rev-parse main)" = "$(git -C deadwork rev-parse HEAD)" ]
 
+# Two publishers of one project. git reads the local refs before it
+# contacts the mirror, so a publisher that stalls between the two can
+# force-push the old main it read over a newer one. The race mirror is
+# an ssh URL, and this stand-in for ssh runs the remote git here. The
+# first connection made while `hold` exists takes it and waits for `go`:
+# that stalls one publisher in the window, every time.
+racehook="$(grep -o '/nix/store/[^ ]*-valley-mirrors-race' "$initScriptPath" | head -n1)"
+pusher="$(grep -o '/nix/store/[^ ]*-valley-mirror-push-race' "$racehook" | head -n1)"
+test -x "$racehook" && test -x "$pusher"
+cat >fake-ssh <<EOF
+#!$(command -v sh)
+if mv "$PWD/hold" "$PWD/held" 2>/dev/null; then
+  while [ ! -e "$PWD/go" ]; do sleep 0.1; done
+fi
+exec sh -c "\$2"
+EOF
+chmod +x fake-ssh
+git init --quiet --bare race.git
+git init --quiet --bare race-mirror.git
+git -C race.git config core.sshCommand "$PWD/fake-ssh"
+git -C race.git config ssh.variant simple
+git init --quiet racework
+git -C racework commit --quiet --allow-empty -m old
+git -C racework commit --quiet --allow-empty -m new
+old="$(git -C racework rev-parse HEAD~1)"
+new="$(git -C racework rev-parse HEAD)"
+# A fetch runs no hook, so the commits arrive unpublished.
+git -C race.git fetch --quiet ../racework "+$new:refs/heads/main"
+
+set_main() { git -C race.git update-ref refs/heads/main "$1"; }
+race_main_is() { [ "$(git -C race-mirror.git rev-parse --verify --quiet main)" = "$1" ]; }
+race_reset() {
+  rm -f hold held go
+  git -C race-mirror.git update-ref -d refs/heads/main 2>/dev/null || true
+  set_main "$old"
+}
+# The pusher alone, as an unserialized publisher runs it.
+unlocked() { (cd race.git && "$pusher"); }
+# The real hook, as post-receive runs it: detached, under the lock.
+hooked() { (cd race.git && "$racehook" </dev/null 8>&-); }
+lock_free() { flock -n race.git/valley-publish.flock true; }
+
+# The negative control. Without the lock, the publisher that read the
+# old main stalls, the other pushes the new main, and the first then
+# rewinds the mirror to the old one.
+race_reset
+touch hold
+unlocked &
+stalled=$!
+wait_for test -e held
+set_main "$new"
+unlocked
+race_main_is "$new"
+touch go
+wait "$stalled"
+race_main_is "$old"
+
+# With the lock, the same ordering ends at the new main. The first
+# publisher stalls holding the lock; the second, started after main
+# moved, waits for it and pushes last.
+race_reset
+touch hold
+hooked
+wait_for test -e held
+set_main "$new"
+hooked
+sleep 1
+race_main_is ""
+touch go
+wait_for race_main_is "$new"
+wait_for lock_free
+race_main_is "$new"
+
+# A publisher takes the lock before it reads main. Hold the lock here,
+# start a publisher, and move main while it waits: it publishes the
+# main it finds once it holds the lock.
+race_reset
+exec 8>>race.git/valley-publish.flock
+flock 8
+hooked
+sleep 1
+race_main_is ""
+set_main "$new"
+flock -u 8
+exec 8>&-
+wait_for race_main_is "$new"
+wait_for lock_free
+race_main_is "$new"
+
 touch "$out"

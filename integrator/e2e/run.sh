@@ -188,6 +188,9 @@ grep -q "^c1 -> refs/heads/main .*: land$" "$work/last.out" || die "c1 did not l
 grep -q "check    prose-format .*transferred" "$work/last.out" || die "prose-format did not transfer"
 grep -q "check    reachable .*transferred (untouched)" "$work/last.out" || die "the effectful check did not transfer"
 grep -q '"event":"integration-succeeded"' "$work/last.out" || die "no integration-succeeded event"
+# The landing's own ref-updated event, vetted against #RefUpdated like the rest.
+grep -qF "event    ref-updated {\"event\":\"ref-updated\",\"repo\":" "$work/last.out" \
+  || die "no ref-updated event"
 [ "$(tip)" != "$before" ] || die "the protected ref did not move"
 [ "$(tip)" = "$(git rev-parse c1)" ] || die "main is not at the change's head"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c1 > /dev/null \

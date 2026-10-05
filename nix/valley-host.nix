@@ -246,13 +246,12 @@ let
     done
   '';
 
-  # Best-effort push replication. Publication mirror: main and tags only.
-  # A push runs it from post-receive, through the hook below; an integrator
-  # landing runs it from the publish unit further down.
+  # Push replication. Publication mirror: main and tags only. Only the
+  # publish drain further down runs it, for pushes and integrator landings
+  # alike.
   # Topic branches are review-queue state, not published — the mirror exists
   # so consumers can fetch what has been integrated; durability is restic's
-  # job, not the mirror's. Pushes run detached (setsid) so a dead mirror can
-  # only ever cost a log line — never block or fail the primary push.
+  # job, not the mirror's.
   # --prune propagates tag deletions (glob refspec); it is a no-op for heads
   # now that the heads refspec names one ref, so a separate best-effort sweep
   # deletes every mirror head but main — which also strips anything that
@@ -262,10 +261,7 @@ let
   # rejected outright: it also tries to delete remote-only namespaces, and on
   # GitHub the read-only refs/pull/* makes that fail every push, masking real
   # replication failures. The pusher exits non-zero when a replication push
-  # fails. Post-receive ignores that; the publish drain below retries on it.
-  #
-  # Every run of the pusher holds the project's publish lock (below), so it
-  # never runs alongside another publish of the same project.
+  # fails, and the drain retries on that.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
@@ -295,30 +291,23 @@ let
       exit "$status"
     '';
 
-  # The publish lock: one per project, a file in its bare repository, taken
-  # with flock by every path that publishes the project's mirrors. Both paths
-  # run with the repository as their working directory, so the name is
-  # relative. git snapshots the local refs before it reads the mirror's, so
-  # two unserialized pushers can rewind a mirror: one reads an old main and
-  # stalls, the other pushes a newer main, and the first then force-pushes
-  # its old one over it. Under the lock, a pusher reads the refs only once
-  # it holds the lock and keeps it through the push and the sweep. Each
-  # publish pushes the main of the moment it holds the lock, so the last
-  # publisher pushes the newest main.
-  #
-  # Waiting is bounded. A publisher gives up, lock wait included, after the
-  # publish timeout, so a mirror that hangs cannot hold the lock for good.
-  publishLock = "valley-publish.flock";
-  # One spelling both timeout(1) and systemd read as fifteen minutes.
-  publishTimeout = "15m";
-
+  # The post-receive.d hook of a project with mirrors. It does not push. It
+  # queues the push's ref moves for the publish drain, as the integrator
+  # queues a landing, and returns. So a dead mirror can only ever cost a log
+  # line and a retry, never block or fail the primary push. The file is
+  # written beside the queue and renamed into it, so the drain never reads a
+  # partial one. A push whose moves cannot be queued is logged, and stands.
   mirrorHook =
-    name: mirrors:
+    name:
     pkgs.writeShellScript "valley-mirrors-${name}" ''
-      # Managed by services.valley — best-effort push mirrors for ${name}.
-      cat >/dev/null   # updated refs unused: the push replicates main and tags
-      ${pkgs.util-linux}/bin/setsid -f ${pkgs.coreutils}/bin/timeout ${publishTimeout} \
-        ${pkgs.util-linux}/bin/flock ${publishLock} ${mirrorPusher name mirrors} </dev/null >/dev/null 2>&1
+      # Managed by services.valley — queue this push for ${name}'s mirrors.
+      bin=${pkgs.coreutils}/bin
+      tmp="$($bin/mktemp .valley-publish-XXXXXXXX)" &&
+        $bin/cat >"$tmp" &&
+        $bin/mv -- "$tmp" "${publishQueueName}/$($bin/date +%s%N)-push-$$" || {
+        $bin/rm -f -- "$tmp"
+        ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: queueing a push FAILED" || true
+      }
       exit 0
     '';
 
@@ -361,19 +350,40 @@ let
     done
   '';
 
-  # How an integrator landing reaches the mirrors and the bus.
+  # How a move reaches the mirrors: the publish queue.
   #
-  # A push reaches them through post-receive. The integrator moves refs
-  # with update-ref, which runs no post-receive hook, and it runs as its own
-  # user, which does not hold the git user's mirror credentials and must not.
-  # So the integrator does not publish its landings. It writes each move it
-  # makes to a target, as the line post-receive would read, into a queue
-  # directory in the repository: the publish queue. A path unit watches the
-  # queue, and when it holds anything, starts a oneshot running as the git
-  # user. That drain hands every queued line to the bus publisher above,
-  # runs the mirror pusher once, and deletes the lines once the mirrors hold
-  # what they record. The pusher and the publisher are the ones post-receive
-  # runs.
+  # One thing pushes a project's mirrors: the publish drain, a oneshot unit
+  # per project that runs as the git user. Whatever moves a ref writes the
+  # move into a queue directory in the repository, as the line post-receive
+  # reads: old, new, ref. A path unit watches the queue, and when it holds
+  # anything, starts the drain. A push queues its moves from post-receive,
+  # through the mirror hook above. The integrator moves refs with
+  # update-ref, which runs no post-receive hook, so it queues each landing
+  # itself (integrator/bus.go). It runs as its own user, which does not hold
+  # the git user's mirror credentials and must not.
+  #
+  # A single publisher is what keeps a mirror from being rewound. git reads
+  # the local refs before it contacts the mirror, so two pushers running at
+  # once can rewind it: one reads an old main and stalls, the other pushes a
+  # newer main, and the first then force-pushes its old main over it.
+  # systemd never runs two instances of one unit at the same time, so the
+  # drain's pushes for a project never overlap, and nothing else pushes.
+  # The drain lists the queue before git reads any ref, and deletes only what
+  # it listed, after the push succeeds. A move is queued after its ref moved,
+  # so the push covers every listed move. A move queued during the push stays
+  # for the next run, which pushes the newer main. No lock is taken: the
+  # drain runs only as the unit. To publish by hand, start the unit
+  # (systemctl start valley-publish@<project>), never the script.
+  #
+  # A run that fails leaves the queue as it was, and systemd runs it again
+  # after a delay (the unit, further down). So a failed mirror push does not
+  # wait for another move to be retried. Repeating a push is harmless: it
+  # pushes the current main, whatever the queue records.
+  #
+  # The bus is not the drain's business. A push publishes its ref-updated
+  # events from post-receive, through the bus hook below. The integrator
+  # publishes its landing's ref-updated event itself. So a mirror outage, and
+  # the drain's retries, never delay an event.
   #
   # The alternatives fall to the user split. Calling the post-receive
   # dispatcher from the integrator would push as the integrator's user, and
@@ -383,45 +393,33 @@ let
   # and carry no record of what moved. The queue costs one directory, the
   # path unit is woken by inotify rather than a poll, and the queue is
   # durable, so a move queued while the host goes down is published after.
-  #
-  # Each move is published by one path. A push never writes the queue, and
-  # the integrator never runs post-receive, so no move takes both paths.
-  #
-  # The bus and the mirrors are settled separately, because they fail
-  # differently. The bus is best effort, as it is after a push: each move is
-  # handed to the bus publisher once, then marked sent by renaming its file,
-  # whether or not the event reached the server. A lost event is rebuilt by
-  # `valley replay`. The mirrors are what a queued move waits for: its file
-  # stays in the queue until a mirror push succeeds. When one fails, the
-  # drain fails, and systemd runs it again after a delay. So a mirror outage
-  # neither holds back the bus nor repeats its events, and a failed mirror
-  # push is retried without waiting for another landing. A drain that dies
-  # between handing a move to the bus and marking it sent repeats that
-  # ref-updated event on its next run. Repeating the mirror push is harmless:
-  # it pushes the current main, whatever the queue records.
   publishQueueName = "valley-publish-queue";
 
-  # The drain, per project. It runs synchronously: the unit is already
-  # detached from the landing, and a detached child would be killed with the
-  # oneshot's cgroup when it exits. The unit runs it under the publish lock.
+  # The projects with a publish queue and a drain: every one with mirrors,
+  # and every one the integrator serves. The integrator queues its landings
+  # whether or not the project has mirrors. A drain with no mirrors to push
+  # only empties the queue.
+  publishedProjects = lib.filterAttrs (
+    name: p: p.mirrors != [ ] || (cfg.integrator.enable && integratedProjects ? ${name})
+  ) gitProjects;
+
+  # The drain, per project. Its working directory is the repository. It runs
+  # synchronously: the unit is already detached from the push or the
+  # landing, and a detached child would be killed with the oneshot's cgroup
+  # when it exits.
   publishDrain =
     name: p:
     pkgs.writeShellScript "valley-publish-${name}" ''
-      # Managed by services.valley — publish what the integrator moved on ${name}.
+      # Managed by services.valley — push the moves queued on ${name} to its mirrors.
       shopt -s nullglob
-      queue=${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}
-      moves=( "$queue"/* )
+      # Listed before the pusher reads any ref, so the push covers them all.
+      moves=( ${publishQueueName}/* )
       [ "''${#moves[@]}" -gt 0 ] || exit 0
-      ${lib.optionalString cfg.bus.enable ''
-        for move in "''${moves[@]}"; do
-          case "$move" in *.sent) continue ;; esac
-          ${busPublisher} <"$move"
-          mv -- "$move" "$move.sent"
-        done
-        moves=( "$queue"/*.sent )
-      ''}
       ${lib.optionalString (p.mirrors != [ ]) "${mirrorPusher name p.mirrors} || exit 1"}
-      rm -f -- "''${moves[@]}"
+      # A move that cannot be deleted fails the run, so systemd retries it
+      # after a delay. A run that succeeded would leave the queue non-empty,
+      # and the path unit would start the drain again at once, over and over.
+      rm -f -- "''${moves[@]}" || exit 1
     '';
 
   # Every drain, by project name, so the template unit runs its instance's.
@@ -429,10 +427,16 @@ let
     lib.mapAttrsToList (name: p: {
       inherit name;
       path = publishDrain name p;
-    }) integratedProjects
+    }) publishedProjects
   );
 
-  # The post-receive.d hook, with the mirror hook's failure semantics: the
+  # The queue directory of every published project. The integrator's
+  # projects also get it group-shared, with the rest of the repository.
+  publishQueueCommands = lib.concatMapStrings (name: ''
+    mkdir -p ${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}
+  '') (lib.attrNames publishedProjects);
+
+  # The post-receive.d hook that publishes a push's ref-updated events. The
   # publisher runs detached (setsid, inheriting the updates on stdin), so a
   # bus problem can only ever cost a log line — never block or fail the
   # push. git is the source of truth; the bus is the replaceable component.
@@ -485,10 +489,10 @@ let
           mhook=${mhook}
           if [ -L "$mhook" ]; then
             case "$(readlink "$mhook")" in
-              /nix/store/*) ln -sfn ${mirrorHook name p.mirrors} "$mhook" ;;
+              /nix/store/*) ln -sfn ${mirrorHook name} "$mhook" ;;
             esac
           elif [ ! -e "$mhook" ]; then
-            ln -s ${mirrorHook name p.mirrors} "$mhook"
+            ln -s ${mirrorHook name} "$mhook"
           fi
         ''
       else
@@ -551,8 +555,9 @@ let
       fi
     done
 
-    # Per-project push-mirror hooks.
+    # Per-project push-mirror hooks, and the queue they write.
     ${mirrorHookCommands}
+    ${publishQueueCommands}
 
     # The one structural invariant, on every project the host serves.
     ${protectHookCommands}
@@ -1747,36 +1752,36 @@ in
       };
     };
 
-    # What publishes a controller's landings: a path unit per served
-    # repository, watching its publish queue, and the drain it starts.
-    systemd.paths."valley-publish@" = lib.mkIf cfg.integrator.enable {
+    # What pushes the mirrors: a path unit per published project, watching
+    # its publish queue, and the drain it starts.
+    systemd.paths."valley-publish@" = lib.mkIf (publishedProjects != { }) {
       description = "Watch the publish queue of %i";
       pathConfig.DirectoryNotEmpty = "${cfg.dataDir}/%i.git/${publishQueueName}";
     };
 
     # It runs as the git user, with ssh on its path, because the mirror
-    # credentials are that user's, and under the publish lock, taken before
-    # the drain reads anything. Each run drains the whole queue, so starts
-    # are at most one per landing, and a burst of landings must not trip
+    # credentials are that user's. Each run drains the whole queue, so starts
+    # are at most one per queued move, and a burst of moves must not trip
     # systemd's start limit and leave the queue undrained. A run is bounded
-    # instead: one that waits on the lock or a mirror for the publish timeout
-    # is cut off. A run that fails or is cut off leaves its moves queued, and
-    # systemd starts it again after a delay that grows from 30 seconds to 15
-    # minutes, until a run succeeds. While it waits to restart, the unit is
-    # not inactive, so the path unit does not start it again sooner.
-    systemd.services."valley-publish@" = lib.mkIf cfg.integrator.enable {
-      description = "Publish the integrator's landings on %i";
-      after = [ "valley-init.service" ] ++ lib.optional cfg.bus.enable "valley-bus-init.service";
+    # instead: one that hangs on a mirror is cut off after 15 minutes, and
+    # systemd stops its whole cgroup, so nothing it started outlives it. A
+    # run that fails or is cut off leaves its moves queued, and systemd
+    # starts it again after a delay that grows from 30 seconds to 15 minutes,
+    # until a run succeeds. While it waits to restart, the unit is not
+    # inactive, so the path unit does not start it again sooner.
+    systemd.services."valley-publish@" = lib.mkIf (publishedProjects != { }) {
+      description = "Push the moves queued on %i to its mirrors";
+      after = [ "valley-init.service" ];
       unitConfig.RequiresMountsFor = cfg.dataDir;
       startLimitIntervalSec = 0;
       path = [ config.programs.ssh.package ];
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${pkgs.util-linux}/bin/flock ${publishLock} ${publishDrains}/%i";
+        ExecStart = "${publishDrains}/%i";
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = "${cfg.dataDir}/%i.git";
-        TimeoutStartSec = publishTimeout;
+        TimeoutStartSec = "15min";
         Restart = "on-failure";
         RestartSec = "30s";
         RestartSteps = 5;
@@ -1786,12 +1791,16 @@ in
 
     # wantedBy on a template unit enables nothing, so the instances the
     # declaration asks for are pulled in by name.
-    systemd.targets.valley-integrators = lib.mkIf cfg.integrator.enable {
-      description = "The valley integrator's controllers, and what publishes their landings";
+    systemd.targets.valley-publish = lib.mkIf (publishedProjects != { }) {
+      description = "What pushes the valley's mirrors";
       wantedBy = [ "multi-user.target" ];
-      wants =
-        map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects)
-        ++ map (name: "valley-publish@${name}.path") (lib.attrNames integratedProjects);
+      wants = map (name: "valley-publish@${name}.path") (lib.attrNames publishedProjects);
+    };
+
+    systemd.targets.valley-integrators = lib.mkIf cfg.integrator.enable {
+      description = "The valley integrator's controllers";
+      wantedBy = [ "multi-user.target" ];
+      wants = map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects);
     };
 
     # Offsite backup, rendered only when the declaration asks for it. The

@@ -65,8 +65,8 @@ flags:
                       nothing and still prints every payload
   --publish-queue DIR the host's queue of ref moves to publish: each landing
                       leaves its target's move there, and the host pushes it
-                      to the mirrors and the bus as it does a pushed one;
-                      empty leaves nothing
+                      to the mirrors as it does a pushed one; empty leaves
+                      nothing
   --system SYSTEM     flake system for closure recomputation
   --interval D        watch: how long to wait between passes (default 15s)
   --now TIME          judge as at this RFC 3339 instant, for the effectful

@@ -3,8 +3,9 @@
 # integration rather than by push. The landing has to reach the mirror and
 # the bus exactly as a push does, though the integrator moves the ref with
 # update-ref under its own user, and post-receive never runs. The mirror is
-# missing at first, so the landing also has to survive a failed mirror push
-# and be published by the retry, which waits for the project's publish lock.
+# missing at first. The landing's event has to reach the bus anyway, at
+# once, and the landing has to stay queued through the failed mirror push
+# until systemd's retry publishes it.
 {
   pkgs,
   lib,
@@ -92,7 +93,22 @@ in
       # The repositories belong to the git user, so git reads them as it.
       git = "sudo -u git git"
       queue = "/srv/git/project.git/valley-publish-queue"
-      lock = "/srv/git/project.git/valley-publish.flock"
+
+      def unit(prop):
+          return host.succeed(f"systemctl show -p {prop} --value valley-publish@project").strip()
+
+      # Every payload on the bus, as published.
+      def payloads():
+          out = host.succeed(
+              "n=$(nats --server nats://127.0.0.1:4222 stream info valley --json | jq .state.messages);"
+              " for i in $(seq 1 $n); do"
+              "   nats --server nats://127.0.0.1:4222 stream get valley $i --json | jq -r .data | base64 -d; echo;"
+              " done"
+          )
+          return [line for line in out.splitlines() if line.strip()]
+
+      def events():
+          return [json.loads(line) for line in payloads()]
 
       # The mirror does not exist yet, so the first push to it fails.
 
@@ -130,55 +146,56 @@ in
           host.wait_until_succeeds(
               "journalctl -t valley-mirror | grep -q 'project: push to /srv/mirror.git FAILED'", timeout=60
           )
-          # The move went to the bus, so it is marked sent, and it stays.
-          host.succeed(f"ls {queue} | grep -q '[.]sent$'")
+          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-publish@project)\" = auto-restart")
+          host.succeed(f"test -n \"$(ls -A {queue})\"")
 
-      with subtest("the retry waits for the publish lock"):
-          # Held here, as the git user, between two runs: while the unit waits
-          # to restart, the lock is free.
-          host.succeed(
-              "systemd-run --unit=hold-publish-lock -p User=git"
-              f" ${pkgs.util-linux}/bin/flock {lock} ${pkgs.runtimeShell}"
-              " -c '${pkgs.coreutils}/bin/touch /tmp/publish-lock-held; exec ${pkgs.coreutils}/bin/sleep infinity'"
+      # The integrator publishes the event itself, so the mirror being down
+      # does not hold it back. Its payload is byte for byte the one the host
+      # publishes for a push of the same move.
+      with subtest("the landing is on the bus while the mirror is down"):
+          host.wait_until_succeeds(
+              "nats --server nats://127.0.0.1:4222 stream get valley --last-for valley.git.project.ref-updated"
           )
-          host.wait_for_file("/tmp/publish-lock-held", timeout=30)
+          host.succeed(f"test -n \"$(ls -A {queue})\"")
+          moved = [p for p in payloads() if '"event":"ref-updated"' in p]
+          assert moved == [
+              f'{{"event":"ref-updated","repo":"project","ref":"refs/heads/main","old":"{base}","new":"{change}"}}'
+          ], moved
+
+      with subtest("systemd retries the push after a delay, and the retry reaches the mirror"):
           host.succeed(
               "mkdir /srv/mirror.git && chown git:git /srv/mirror.git",
               f"{git} init --quiet --bare /srv/mirror.git",
           )
-          # systemd, not the path unit, starts the retry, after its delay.
           host.wait_until_succeeds(
-              "test \"$(systemctl show -p SubState --value valley-publish@project)\" = start", timeout=90
-          )
-          restarts = host.succeed("systemctl show -p NRestarts --value valley-publish@project").strip()
-          assert restarts == "1", restarts
-          host.sleep(3)
-          host.fail(f"{git} -C /srv/mirror.git rev-parse --verify --quiet refs/heads/main")
-          host.succeed(f"test -n \"$(ls -A {queue})\"")
-          host.succeed("systemctl stop hold-publish-lock")
-
-      with subtest("the retry reaches the mirror, pushed as the git user"):
-          host.wait_until_succeeds(
-              f"test \"$({git} -C /srv/mirror.git rev-parse refs/heads/main)\" = {change}", timeout=60
+              f"test \"$({git} -C /srv/mirror.git rev-parse refs/heads/main)\" = {change}", timeout=90
           )
           host.wait_until_succeeds("journalctl -t valley-mirror | grep -q 'project: pushed to /srv/mirror.git'")
           host.wait_until_succeeds(f"test -z \"$(ls -A {queue})\"")
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-publish@project)\" = inactive")
+          # One failed run, then one retry 30 seconds later: no respin.
+          restarts = unit("NRestarts")
+          assert restarts == "1", restarts
 
-      def events():
-          out = host.succeed(
-              "n=$(nats --server nats://127.0.0.1:4222 stream info valley --json | jq .state.messages);"
-              " for i in $(seq 1 $n); do"
-              "   nats --server nats://127.0.0.1:4222 stream get valley $i --json | jq -r .data | base64 -d; echo;"
-              " done"
-          )
-          return [json.loads(line) for line in out.splitlines() if line.strip()]
-
-      # Once, though the drain ran twice: a retry does not resend to the bus.
-      with subtest("the landing is one ref-updated event on the bus"):
+      with subtest("a move that cannot be deleted fails the run, which waits to retry"):
+          # A directory in the queue is a move rm -f cannot delete.
+          host.succeed(f"sudo -u git mkdir {queue}/stuck", f"sudo -u git touch {queue}/stuck/x")
           host.wait_until_succeeds(
-              "nats --server nats://127.0.0.1:4222 stream get valley --last-for valley.git.project.ref-updated"
+              "journalctl -u valley-publish@project | grep -q 'cannot remove .*stuck'", timeout=60
           )
+          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-publish@project)\" = auto-restart")
+          restarts = unit("NRestarts")
+          host.sleep(10)
+          assert unit("NRestarts") == restarts, "the drain restarted without waiting"
+          assert unit("SubState") == "auto-restart"
+          host.succeed("systemctl is-active valley-publish@project.path")
+          host.succeed(f"rm -r {queue}/stuck")
+          host.wait_until_succeeds(
+              "test \"$(systemctl show -p ActiveState --value valley-publish@project)\" = inactive", timeout=300
+          )
+          host.succeed(f"test -z \"$(ls -A {queue})\"")
+
+      with subtest("the landing is one ref-updated event on the bus"):
           moved = [e for e in events() if e["event"] == "ref-updated"]
           assert moved == [
               {"event": "ref-updated", "repo": "project", "ref": "refs/heads/main", "old": base, "new": change}

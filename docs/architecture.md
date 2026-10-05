@@ -96,31 +96,39 @@ Each repository's `post-receive` hook runs every program in `hooks/post-receive.
 
 - **The bus publisher**, when the bus is on. It publishes one `ref-updated` event for every ref the
   push updated, on the subject `valley.git.<repo>.ref-updated`. Checked by `bus-e2e`.
-- **The mirror pusher**, when the project declares mirrors. Mirrors are a list of URLs
-  (`schema/valley.cue`). The pusher runs `git push --prune` of `main` and all tags to each URL, then
-  deletes every other branch on the mirror. Tags are copied whether or not `main` reaches them, refs
-  outside `refs/heads/` and `refs/tags/` on the mirror are left alone, and the branch deletion is
-  best effort. The push uses the git user's own ssh identity, which the host provides. Failures go
-  to the log only. Checked by `mirror-e2e`.
+- **The mirror hook**, when the project declares mirrors. It does not push. It writes the push's ref
+  moves, one `<old> <new> <ref>` line each, as a file in the repository's publish queue,
+  `valley-publish-queue/`, and returns. A dead mirror therefore never slows or fails a push.
 
-Every mirror publish of a project holds one lock: `flock` on `valley-publish.flock` in the bare
-repository. The publisher takes it before git reads any local ref and keeps it through the push and
-the branch deletion. Without it, two publishers can rewind a mirror. git reads the local refs before
-it contacts the mirror, so a publisher can read an old `main`, stall, and then force-push that old
-`main` over a newer one another publisher pushed meanwhile. With the lock, the publishers run one at
-a time, and each pushes the `main` of the moment it holds the lock, so the last one pushes the
-newest. A publisher that waits or runs longer than 15 minutes is stopped. Checked by `mirror-e2e`,
-which also shows the rewind happening without the lock.
+The integrator moves refs with `git update-ref`, which runs no `post-receive` hook. So it does both
+jobs itself for each landing (`integrator/bus.go`). It publishes the `ref-updated` event straight to
+the bus, with the same payload the bus publisher would send. It also writes the move to the same
+publish queue.
 
-Git runs `post-receive` only for a push. The integrator moves refs with `git update-ref`, so it
-writes each landing to a queue directory in the repository instead (`integrator/bus.go`). A systemd
-path unit, `valley-publish@<project>`, starts a service as git when the queue is not empty. The
-service holds the publish lock, feeds each queued move to the bus publisher once, and runs the
-mirror pusher. It deletes the queue files only after every mirror push succeeds. When a mirror push
-fails, the files stay and the service fails, and systemd runs it again after a delay that grows from
-30 seconds to 15 minutes. The bus stays best effort: a move already sent to the bus is not sent
-again on a retry. Checked by `publish-e2e`. That cosmo's deployed hosts run this publish queue is a
-deployment record: cosmo #934 merged and laddie healthy, in the handoff of 2026-10-04.
+One unit pushes the mirrors: `valley-publish@<project>`, a service that runs as git. A systemd path
+unit starts it whenever the project's queue is not empty. Mirrors are a list of URLs
+(`schema/valley.cue`). The service lists the queued files and then runs `git push --prune` of `main`
+and all tags to each URL. After that it deletes every other branch on the mirror. Tags are copied
+whether or not `main` reaches them, refs outside `refs/heads/` and `refs/tags/` on the mirror are
+left alone, and the branch deletion is best effort. The push uses the git user's own ssh identity,
+which the host provides. Checked by `mirror-e2e`.
+
+The service deletes the files it listed only after every mirror push succeeds. When a push or a
+deletion fails, the service fails and the files stay. systemd then runs the service again after a
+delay that grows from 30 seconds to 15 minutes. A run that lasts 15 minutes is stopped with
+everything it started. Checked by `publish-e2e`. Because the integrator publishes its events itself,
+a mirror outage never delays an event on the bus.
+
+Having one publisher is what keeps a mirror from being rewound. git reads the local refs before it
+contacts the mirror. So when two pushes run at once, one can read an old `main`, stall, and then
+force-push that old `main` over a newer one the other pushed meanwhile. systemd never runs two
+instances of one unit at the same time, and nothing else pushes the mirrors. A move queued while a
+push runs stays in the queue, so the next run pushes the newer `main`. `mirror-e2e` stalls a push in
+that window: two pushers at once rewind the mirror, and the service ends at the newer `main`.
+
+That cosmo's deployed hosts run a publish queue is a deployment record: cosmo #934 merged and laddie
+healthy, in the handoff of 2026-10-04. At that point the service also published the integrator's
+events, and a push ran its own mirror pusher.
 
 The bus is NATS with JetStream, listening on `127.0.0.1:4222`. `valley-bus-init` creates one stream,
 `valley`, over the subjects `valley.>`, with file storage and NATS defaults. The events are defined

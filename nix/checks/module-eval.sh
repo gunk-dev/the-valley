@@ -22,10 +22,19 @@ grep -qx '  ExposeAuthInfo yes' "$sshdConfigPath"
 # any other head (--prune cannot: it ignores non-glob
 # refspecs). Never --mirror: it also deletes remote-only
 # refs, and GitHub's read-only refs/pull/* fails every such
-# push. Follow the hook chain from the init script to the
-# rendered push script and pin the invocation there.
+# push. Follow the publish unit to the drains and on to the
+# rendered push script, and pin the invocation there.
+drains="$(sed -n 's|^ExecStart=\(.*\)/%i$|\1|p' "$publishUnitPath")"
+mirrorPush="$(cat "$drains"/* | grep -o '/nix/store/[^ ]*-valley-mirror-push-[^ ]*' | head -n1)"
+test -x "$mirrorPush"
+# The drain is the only publisher: the mirror hook post-receive
+# runs queues the push and pushes nothing itself.
 mirrorHook="$(grep -o '/nix/store/[^ ]*-valley-mirrors-[^ ]*' "$initScriptPath" | head -n1)"
-mirrorPush="$(grep -o '/nix/store/[^ ]*-valley-mirror-push-[^ ]*' "$mirrorHook" | head -n1)"
+grep -q 'valley-publish-queue' "$mirrorHook"
+if grep -q -e 'git push' -e 'valley-mirror-push' "$mirrorHook"; then
+  echo "module-eval: the mirror hook must queue the push, not push" >&2
+  exit 1
+fi
 grep -q -- 'push --prune' "$mirrorPush"
 grep -qF -- '+refs/heads/main:refs/heads/main' "$mirrorPush"
 grep -qF -- '+refs/tags/*:refs/tags/*' "$mirrorPush"

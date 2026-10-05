@@ -168,11 +168,11 @@ let
     || protectedHost.config.systemd.targets ? valley-integrators
     || lib.hasInfix "sharedRepository" protectedHost.config.systemd.services.valley-init.script;
 
-  # The target pulls in each controller and the path unit that publishes
-  # its landings.
+  # One target pulls in each controller, and another the path unit that
+  # publishes each project's queued moves, landings included.
   integratorWants = integratorHost.config.systemd.targets.valley-integrators.wants;
   controllers = lib.filter (lib.hasPrefix "valley-integrator@") integratorWants;
-  publishers = lib.filter (lib.hasPrefix "valley-publish@") integratorWants;
+  publishers = integratorHost.config.systemd.targets.valley-publish.wants;
 
   integratorUser = integratorHost.config.systemd.services."valley-integrator@".serviceConfig.User;
 
@@ -396,6 +396,7 @@ in
         protectedShell = protectedHost.config.users.users.git.shell;
         integratorUnit = integratorHost.config.systemd.units."valley-integrator@.service".text;
         integratorInit = integratorHost.config.systemd.services.valley-init.script;
+        publishUnit = host.config.systemd.units."valley-publish@.service".text;
         identityInit = identityHost.config.systemd.services.valley-init.script;
         passAsFile = [
           "initScript"
@@ -406,6 +407,7 @@ in
           "protectedKeys"
           "integratorUnit"
           "integratorInit"
+          "publishUnit"
           "identityInit"
         ];
       } (builtins.readFile ./module-eval.sh);

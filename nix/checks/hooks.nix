@@ -9,25 +9,27 @@
 }:
 {
   # What a mirror ends up holding, end to end and unmocked: a bare
-  # repo wired with the real rendered hooks, pushed to for real, and
-  # a second bare repo standing in for the mirror. The refspec is
-  # easy to get subtly wrong — --prune ignores the non-glob heads
-  # refspec, so pruning heads is the sweep's job — and only running
-  # git can tell. Relative mirror URLs (mirrorHost) resolve against
-  # the pushing repo, so the shipped scripts run with no
-  # substitution: this is exactly what a host executes.
+  # repo wired with the real rendered hooks, pushed to for real, the
+  # real drain run as its unit would run it, and a second bare repo
+  # standing in for the mirror. The refspec is easy to get subtly
+  # wrong — --prune ignores the non-glob heads refspec, so pruning
+  # heads is the sweep's job — and only running git can tell.
+  # Relative mirror URLs (mirrorHost) resolve against the pushing
+  # repo, so the shipped scripts run with no substitution: this is
+  # exactly what a host executes.
   #
-  # It also drives two publishers of one project into the window where
-  # git has read the local refs and not yet the mirror's, and checks the
-  # publish lock keeps the later main on the mirror. The same ordering
-  # without the lock rewinds it.
+  # It also stalls a push in the window where git has read the local
+  # refs and not yet the mirror's. Two pushers at once rewind the
+  # mirror there; the drain, the only publisher, leaves the newer
+  # move queued and publishes it next.
   mirror-e2e = pkgs.runCommand "valley-mirror-e2e" {
-    nativeBuildInputs = [
-      pkgs.git
-      pkgs.util-linux
-    ];
+    nativeBuildInputs = [ pkgs.git ];
     initScript = hosts.mirrorHost.config.systemd.services.valley-init.script;
-    passAsFile = [ "initScript" ];
+    publishUnit = hosts.mirrorHost.config.systemd.units."valley-publish@.service".text;
+    passAsFile = [
+      "initScript"
+      "publishUnit"
+    ];
   } (builtins.readFile ./mirror-e2e.sh);
 
   # The pre-receive hook's policy, rule by rule where a rule is

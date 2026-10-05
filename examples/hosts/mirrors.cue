@@ -6,8 +6,8 @@
 //
 // The race mirror is an ssh URL. The check points the race repository's
 // core.sshCommand at a stand-in that runs the remote git locally, so it can
-// stall one publisher where git has read its local refs and not yet the
-// mirror's: the window in which two publishers can rewind a mirror.
+// stall a push where git has read its local refs and not yet the mirror's:
+// the window in which two pushers at once can rewind a mirror.
 package valley
 
 projects: {

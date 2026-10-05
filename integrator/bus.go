@@ -55,16 +55,32 @@ func (in *integrator) publishStale(ch verdict.Change, v verdict.Verdict, tip str
 	})
 }
 
-// queueRefUpdate hands one ref move to the host, which publishes it the way
-// it publishes a push: to the project's push mirrors, and as a ref-updated
-// event. A push reaches both through the post-receive hook. The integrator
-// moves refs with update-ref, which runs no hook, so its landings reach
-// neither unless it says what it moved.
+// publishRefUpdated publishes the ref-updated event for a landing's move.
+// A push gets the event from the post-receive hook. The integrator moves
+// refs with update-ref, which runs no hook, so it publishes the event
+// itself, at once, and never behind a mirror push. The fields are the host
+// publisher's, in its order (nix/valley-host.nix, and `valley replay` in
+// bin/valley); change one only with the others.
+func (in *integrator) publishRefUpdated(ref, old, new string) {
+	in.publish("ref-updated", struct {
+		Event string `json:"event"`
+		Repo  string `json:"repo"`
+		Ref   string `json:"ref"`
+		Old   string `json:"old"`
+		New   string `json:"new"`
+	}{"ref-updated", in.project, ref, old, new})
+}
+
+// queueRefUpdate hands one ref move to the host, which pushes it to the
+// project's mirrors the way it pushes a push's moves. A push queues its
+// moves from the post-receive hook. The integrator moves refs with
+// update-ref, which runs no hook, so its landings reach the mirrors only if
+// it says what it moved.
 //
-// The integrator does not publish the move itself. The mirror credentials
+// The integrator does not push the mirrors itself. The mirror credentials
 // belong to the git user, and this process runs as its own user. A unit
-// running as the git user watches the queue and drains it with the same
-// pusher and publisher post-receive runs (nix/valley-host.nix).
+// running as the git user watches the queue and drains it, and it is the
+// only thing that pushes the mirrors (nix/valley-host.nix).
 //
 // One file per move, holding the line post-receive reads: old, new, ref.
 // The file is written beside the queue and renamed into it, so the drain
@@ -113,7 +129,7 @@ func writeRefUpdate(queue, ref, old, new string) error {
 // consumer could read is not a thing to publish, and the discipline that
 // keeps the vocabulary one schema'd event at a time is worth nothing if the
 // publisher can sidestep it.
-func (in *integrator) publish(kind string, payload map[string]any) {
+func (in *integrator) publish(kind string, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Fprintf(in.out, "  bus      %s not published: %v\n", kind, err)
@@ -139,6 +155,7 @@ func (in *integrator) publish(kind string, payload map[string]any) {
 // eventDefinition names the schema definition a payload is vetted against.
 var eventDefinition = map[string]string{
 	"integration-succeeded": "#IntegrationSucceeded",
+	"ref-updated":           "#RefUpdated",
 	"request-stale":         "#RequestStale",
 }
 

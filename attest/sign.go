@@ -31,50 +31,41 @@ package main
 // attestation from any other note a key signs is therefore the text's own
 // first line, which is the statement type.
 //
-// # On not taking the dependency
+// # One reading of the envelope
 //
-// golang.org/x/mod/sumdb/note is the reference implementation of this
-// format, and this file is that format written out again. The trade was
-// weighed as follows.
+// The envelope is read and written by the note module (../note), not by
+// this program alone. attest signs with it and attest verify opens with
+// it, and so does the pre-receive hook a valley host checks pushed
+// attestations with (valleyhook/). One reading means a note the hook
+// accepts into the create-only namespace is a note every verifier opens,
+// and a note this program writes is one the hook accepts.
 //
-// The format is frozen. It is what sum.golang.org publishes and what every
-// checkpoint verifier already reads, so it cannot drift out from under a
-// second implementation the way a live API would. Writing it out is
-// roughly a hundred lines over crypto/ed25519, all of it visible here.
-//
-// Against that, gunk-dev holds that the size of a dependency graph is
-// itself the exposure. This program depends on nothing outside the
-// standard library today: it builds with vendorHash = null, it fetches
-// nothing, and the whole of what it runs is in this directory. One module
-// would end that property for code this short.
-//
-// Interoperability is bought by pinning bytes rather than by sharing code.
+// golang.org/x/mod/sumdb/note is the reference implementation of the
+// format, and the note module is that format written out again. The
+// format is frozen — it is what sum.golang.org publishes and every
+// checkpoint verifier reads — and gunk-dev holds that the size of a
+// dependency graph is itself the exposure, so the valley's programs depend
+// on nothing outside the standard library and their own repository.
+// Interoperability is bought by pinning bytes rather than by sharing code:
 // attest/conformance/ holds notes that must verify, and the unit tests
 // re-derive the published key hash of sum.golang.org from its name and its
-// public key — an answer the reference implementation computed, which this
-// implementation has to match exactly or the vectors are worthless.
+// public key.
 
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
 	"os"
-	"strings"
-	"unicode"
-	"unicode/utf8"
+
+	"the-valley/note"
 )
 
 // algEd25519 is the algorithm identifier the note format prefixes a public
 // key with. Ed25519 is the only algorithm this program signs or verifies
-// with; a signature under any other is reported and left unchecked.
-const algEd25519 = 1
-
-// signatureMark opens a signature line. U+2014 EM DASH, then a space.
-const signatureMark = "— "
+// with.
+const algEd25519 = note.AlgEd25519
 
 // signer is a key this host signs with: a name, the private key, and the
 // key hash the two together produce.
@@ -86,94 +77,25 @@ type signer struct {
 
 // verifierKey is a key a verifier is willing to accept a signature from.
 // It is written as one line — the name, the key hash in hex, and base64 of
-// the algorithm byte and the public key, joined by plus signs:
-//
-//	laddie.gunk.dev/attestations+1f9c40b2+AbUmzL2t…
+// the algorithm byte and the public key, joined by plus signs.
 //
 // This is the whole of what a verifier is given. There is no allowed
 // signers file, no certificate and no directory lookup: `attest verify`
 // takes a file of these lines, and a signature by a key not among them is
 // a signature by nobody it accepts.
-type verifierKey struct {
-	name string
-	hash uint32
-	pub  ed25519.PublicKey
-}
+type verifierKey = note.VerifierKey
 
-// keyHash is the note format's identifier for a name-and-key pair:
-// SHA-256 over the name, a newline, the algorithm byte and the public key,
-// truncated to its first four bytes.
-//
-// The name is inside the hash and outside the signature. So the same
-// public key published under two names is two verifier keys and cannot be
-// confused, while the signature itself commits only to the text — which is
-// what makes the text's first line, rather than the signer's name, the
-// thing that separates one kind of note from another.
-func keyHash(name string, pub ed25519.PublicKey) uint32 {
-	h := sha256.New()
-	h.Write([]byte(name))
-	h.Write([]byte("\n"))
-	h.Write([]byte{algEd25519})
-	h.Write(pub)
-	return binary.BigEndian.Uint32(h.Sum(nil))
-}
+func keyHash(name string, pub ed25519.PublicKey) uint32 { return note.KeyHash(name, pub) }
 
-// checkSignerName holds a name to what a signature line can carry: no
-// space, because a space separates the name from the base64 that follows,
-// and no plus, because a plus separates the fields of a verifier key.
-func checkSignerName(name string) error {
-	switch {
-	case name == "":
-		return fmt.Errorf("a signer name may not be empty")
-	case !utf8.ValidString(name):
-		return fmt.Errorf("signer name %q is not valid utf-8", name)
-	case strings.ContainsFunc(name, unicode.IsSpace):
-		return fmt.Errorf("signer name %q holds a space, which separates the name from the signature", name)
-	case strings.Contains(name, "+"):
-		return fmt.Errorf("signer name %q holds a plus, which separates the fields of a verifier key", name)
-	}
-	return nil
-}
+func checkSignerName(name string) error { return note.CheckName(name) }
 
-func (v verifierKey) String() string {
-	return fmt.Sprintf("%s+%08x+%s", v.name, v.hash,
-		base64.StdEncoding.EncodeToString(append([]byte{algEd25519}, v.pub...)))
-}
+func checkNoteText(text []byte) error { return note.CheckText(text) }
 
 func (s signer) verifierKey() verifierKey {
-	return verifierKey{name: s.name, hash: s.hash, pub: s.priv.Public().(ed25519.PublicKey)}
+	return note.NewVerifierKey(s.name, s.priv.Public().(ed25519.PublicKey))
 }
 
-// parseVerifierKey reads one verifier key line. The key hash it carries is
-// checked against the one its name and public key produce, so a line whose
-// hash was edited is refused here rather than quietly matching nothing at
-// verification time.
-func parseVerifierKey(line string) (verifierKey, error) {
-	malformed := fmt.Errorf("%q is not a verifier key: one is name+hash+base64", line)
-	name, rest, found := strings.Cut(strings.TrimSpace(line), "+")
-	if !found {
-		return verifierKey{}, malformed
-	}
-	written, encoded, found := strings.Cut(rest, "+")
-	if !found {
-		return verifierKey{}, malformed
-	}
-	if err := checkSignerName(name); err != nil {
-		return verifierKey{}, err
-	}
-	raw, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil {
-		return verifierKey{}, fmt.Errorf("verifier key %s: %w", name, err)
-	}
-	if len(raw) != 1+ed25519.PublicKeySize || raw[0] != algEd25519 {
-		return verifierKey{}, fmt.Errorf("verifier key %s is not an ed25519 key", name)
-	}
-	v := verifierKey{name: name, hash: keyHash(name, raw[1:]), pub: raw[1:]}
-	if fmt.Sprintf("%08x", v.hash) != written {
-		return verifierKey{}, fmt.Errorf("verifier key %s carries hash %s, but its name and key produce %08x", name, written, v.hash)
-	}
-	return v, nil
-}
+func parseVerifierKey(line string) (verifierKey, error) { return note.ParseVerifierKey(line) }
 
 // readVerifierKeys reads a known-keys file: one verifier key per line,
 // with blank lines and # comments ignored.
@@ -182,17 +104,9 @@ func readVerifierKeys(path string) ([]verifierKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	var keys []verifierKey
-	for i, line := range strings.Split(string(raw), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		v, err := parseVerifierKey(line)
-		if err != nil {
-			return nil, fmt.Errorf("%s:%d: %w", path, i+1, err)
-		}
-		keys = append(keys, v)
+	keys, err := note.ParseVerifierKeys(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(keys) == 0 {
 		return nil, fmt.Errorf("%s lists no verifier keys", path)
@@ -202,39 +116,15 @@ func readVerifierKeys(path string) ([]verifierKey, error) {
 
 // signNote writes a note: the text, a blank line, and one signature line.
 func signNote(text []byte, s signer) ([]byte, error) {
-	if err := checkNoteText(text); err != nil {
-		return nil, err
-	}
-	var b bytes.Buffer
-	b.Write(text)
-	b.WriteByte('\n')
-	b.WriteString(signatureLine(text, s))
-	return b.Bytes(), nil
+	return note.Sign(text, s.name, s.priv)
 }
 
 // addSignature adds a signature line to a note that already carries one.
 // This is how several parties attest to one subject: the second signer
 // signs the same text, and its signature lands beside the first, under the
 // text both of them cover.
-func addSignature(note []byte, s signer) ([]byte, error) {
-	text, sigs, err := splitNote(note)
-	if err != nil {
-		return nil, err
-	}
-	line := signatureLine(text, s)
-	for _, existing := range sigs {
-		if existing == strings.TrimSuffix(line, "\n") {
-			return note, nil
-		}
-	}
-	return append(append([]byte{}, note...), line...), nil
-}
-
-func signatureLine(text []byte, s signer) string {
-	var hb [4]byte
-	binary.BigEndian.PutUint32(hb[:], s.hash)
-	blob := append(hb[:], ed25519.Sign(s.priv, text)...)
-	return signatureMark + s.name + " " + base64.StdEncoding.EncodeToString(blob) + "\n"
+func addSignature(n []byte, s signer) ([]byte, error) {
+	return note.AddSignature(n, s.name, s.priv)
 }
 
 // noteSignature is one signature line as read back: who it says signed,
@@ -246,99 +136,21 @@ type noteSignature struct {
 	verified bool
 }
 
-// splitNote separates a note's text from its signature lines. The blank
-// line before the signature block is the separator, and the last one wins,
-// so text holding a blank line of its own does not move the split.
-func splitNote(note []byte) (text []byte, sigs []string, err error) {
-	if err := checkNoteBytes(note); err != nil {
-		return nil, nil, err
-	}
-	split := bytes.LastIndex(note, []byte("\n\n"))
-	if split < 0 {
-		return nil, nil, fmt.Errorf("this is not a note: no blank line separates the text from its signatures")
-	}
-	text, block := note[:split+1], note[split+2:]
-	if len(block) == 0 || block[len(block)-1] != '\n' {
-		return nil, nil, fmt.Errorf("this is not a note: the signature block is empty or does not end with a newline")
-	}
-	for _, line := range strings.Split(strings.TrimSuffix(string(block), "\n"), "\n") {
-		if !strings.HasPrefix(line, signatureMark) {
-			return nil, nil, fmt.Errorf("%q is not a signature line: one opens with an em-dash and a space", line)
-		}
-		sigs = append(sigs, line)
-	}
-	return text, sigs, nil
-}
-
-// openNote checks a note against the keys a verifier holds. It returns the
-// text and what became of every signature line over it.
-//
-// A signature line naming a key the verifier holds must check out, or the
-// whole note is refused: one good signature standing beside a forgery is
-// not a note anybody should read past. A line naming a key the verifier
-// does not hold is neither an error nor evidence — it is reported as
-// unknown and carried through.
-func openNote(note []byte, known []verifierKey) ([]byte, []noteSignature, error) {
-	text, lines, err := splitNote(note)
+// openNote checks a note against the keys a verifier holds, and returns
+// the text and what became of every signature line over it. The reading
+// and the rules are the note module's: a signature by a key the verifier
+// holds must check out, at least one must, and a line that is not a
+// well-formed Ed25519 signature line refuses the note.
+func openNote(n []byte, known []verifierKey) ([]byte, []noteSignature, error) {
+	text, checked, err := note.Open(n, known)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := checkNoteText(text); err != nil {
-		return nil, nil, err
-	}
 	var found []noteSignature
-	verified := 0
-	for _, line := range lines {
-		name, encoded, ok := strings.Cut(strings.TrimPrefix(line, signatureMark), " ")
-		if !ok {
-			return nil, nil, fmt.Errorf("the signature line for %q carries no signature", name)
-		}
-		blob, err := base64.StdEncoding.DecodeString(encoded)
-		if err != nil || len(blob) < 5 {
-			return nil, nil, fmt.Errorf("the signature line for %q does not decode", name)
-		}
-		sig := noteSignature{name: name, hash: binary.BigEndian.Uint32(blob[:4])}
-		for _, k := range known {
-			if k.name != name || k.hash != sig.hash {
-				continue
-			}
-			sig.known = true
-			if len(blob[4:]) != ed25519.SignatureSize || !ed25519.Verify(k.pub, text, blob[4:]) {
-				return nil, nil, fmt.Errorf("the signature by %s+%08x does not check out over this text", name, sig.hash)
-			}
-			sig.verified = true
-			verified++
-			break
-		}
-		found = append(found, sig)
-	}
-	if verified == 0 {
-		return nil, nil, fmt.Errorf("no signature on this note is by a key the verifier holds")
+	for _, c := range checked {
+		found = append(found, noteSignature{name: c.Name, hash: c.Hash, known: c.Known, verified: c.Verified})
 	}
 	return text, found, nil
-}
-
-// checkNoteText holds a note's text to what the format allows: valid
-// UTF-8, no ASCII control character but the newline, and a closing
-// newline. Statement text satisfies all of it by construction; a caller
-// signing something else is held to it here.
-func checkNoteText(text []byte) error {
-	if len(text) == 0 || text[len(text)-1] != '\n' {
-		return fmt.Errorf("a note's text must end with a newline")
-	}
-	return checkNoteBytes(text)
-}
-
-func checkNoteBytes(b []byte) error {
-	if !utf8.Valid(b) {
-		return fmt.Errorf("a note is valid utf-8, and this is not")
-	}
-	for _, c := range b {
-		if c < 0x20 && c != '\n' || c == 0x7f {
-			return fmt.Errorf("a note holds no ascii control character but the newline, and this holds %#02x", c)
-		}
-	}
-	return nil
 }
 
 // loadSigner reads an unencrypted OpenSSH Ed25519 private key and pairs it

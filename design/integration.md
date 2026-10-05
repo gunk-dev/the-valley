@@ -43,6 +43,27 @@ themselves arrive the way that document already describes, at
 `refs/the-valley/attestations/<tree digest>/<signer key hash>`, and the integrator finds them by
 digesting the request's tree.
 
+## A protected stream starts from a seed
+
+The integrator lands a change onto a target that already has a tip. It never creates one. A
+protected branch takes no push, so a new protected project's first `main` cannot arrive by push
+either.
+
+So the first `main` is seeded on the host, by the git user. The instance's human operator fetches
+the project's history from a source whose commit they have checked, such as the project's existing
+mirror at a known commit. They compare what arrived with the commit they expect, and then create
+`main` at it:
+
+```
+git -C /srv/git/<project>.git fetch --no-tags <source> <ref>
+test "$(git -C /srv/git/<project>.git rev-parse FETCH_HEAD)" = <expected commit>
+git -C /srv/git/<project>.git update-ref refs/heads/main <expected commit> ""
+```
+
+The empty old value makes the last write a creation: it refuses if a `main` exists already. A write
+made on the host is not a push, so no hook is asked. The seed is trusted because the person making
+it checked what it is. Every change after it lands by integration request.
+
 ## The controller polls, deliberately
 
 The integrator is a reconciliation loop over those refs. Each pass lists the pending requests,

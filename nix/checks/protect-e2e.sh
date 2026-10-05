@@ -9,20 +9,30 @@ git config --global init.defaultBranch main
 git config --global advice.detachedHead false
 cd "$TMPDIR" || exit 1
 
-# A bare repo wired exactly as valley-init wires it, with
-# the real store path followed from the rendered init script.
-# Every project the host serves gets the hook, protected or not.
+# The keys this host accepts evidence from, as a controller would: the
+# signer's, and nobody else's.
+ssh-keygen -q -t ed25519 -N "" -C signer -f "$TMPDIR/signer"
+ssh-keygen -q -t ed25519 -N "" -C other -f "$TMPDIR/other"
+attest key --key "$TMPDIR/signer" --name signer.valley.invalid/attestations > "$TMPDIR/known_signers"
+
+# A bare repo wired as valley-init wires it, with the hook followed from
+# the rendered init script. Every project the host serves gets the hook,
+# protected or not. The one edit is where the verifier keys are, which a
+# host keeps under /var/lib and this sandbox cannot; open's points at no
+# file at all, as a host that names no keys would.
 serve() {
-  local hook
+  local hook keys="$2"
   hook="$(grep -o "/nix/store/[^ ]*-valley-protect-$1" "$initScriptPath" | head -n1)"
   test -x "$hook"
+  grep -qF -- '--known-signers /var/lib/valley-instance/known_signers' "$hook"
   git init --quiet --bare "$1.git"
-  ln -s "$hook" "$1.git/hooks/pre-receive"
+  sed "s|/var/lib/valley-instance/known_signers|$keys|" "$hook" > "$1.git/hooks/pre-receive"
+  chmod +x "$1.git/hooks/pre-receive"
 }
-serve sealed
-serve guarded
-serve released
-serve open
+serve sealed "$TMPDIR/known_signers"
+serve guarded "$TMPDIR/known_signers"
+serve released "$TMPDIR/known_signers"
+serve open "$TMPDIR/no_such_keys"
 
 # Pushing as a principal is pushing with the tag on; pushing
 # with an untagged key is pushing with it off. That sshd sets
@@ -271,11 +281,7 @@ has_ref open "$request"
 
 # ----------------------------------------------------------------------
 # Attestation refs: anyone may create one, if it is what its
-# name says. This host names no verifier keys, so what a note
-# claims about its signer is checked and its signature is not
-# (identity-e2e checks the signature against compiled keys).
-ssh-keygen -q -t ed25519 -N "" -C signer -f "$TMPDIR/signer"
-ssh-keygen -q -t ed25519 -N "" -C other -f "$TMPDIR/other"
+# name says, and it opens under the keys this host accepts.
 attest run --key "$TMPDIR/signer" --name signer.valley.invalid/attestations \
   --command ok=true > run.out
 att="$(sed -n 's/^stored  \(refs[^ ]*\) -> .*/\1/p' run.out)"
@@ -328,9 +334,33 @@ grep -q 'is about the tree' subject.err
 # Something that is not a tree of notes at all.
 occupy "$elsewhere/$keyhash" HEAD commit.err "a commit"
 grep -q 'points at a commit' commit.err
+# The real signer's note with a line appended that no verifier
+# would read: the signature in it is still genuine, and the
+# note is still unusable, so it may not take the name either.
+git cat-file blob "$landed:ok/statement.note" > genuine.note
+{ cat genuine.note; printf '— x\t AAAAAAA=\n'; } > poisoned.note
+blob="$(git hash-object -w poisoned.note)"
+sub="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git mktree)"
+poisoned="$(printf '040000 tree %s\tok\n' "$sub" | git mktree)"
+occupy "$digest/$keyhash" "$poisoned" poisoned.err "a poisoned note"
+grep -q 'does not open' poisoned.err
+# A tree naming one subtree over and over, which describes more
+# paths than any walk could visit, is refused at a bound.
+wide="$sub"
+for _ in 1 2; do
+  wide="$(for i in $(seq -w 1 64); do printf '040000 tree %s\tt%s\n' "$wide" "$i"; done | git mktree)"
+done
+occupy "$digest/$keyhash" "$wide" wide.err "a tree of shared subtrees"
+grep -q 'entries in all' wide.err
 # The ref the real evidence wants is still free, and takes it.
 as anonymous git push --quiet sealed "$att:$att"
 has_ref sealed "$att"
+
+# A host that names no keys accepts no attestation at all.
+refused nokeys.err "an attestation was accepted where no key is named" \
+  as anonymous git push --quiet open "$att:$att"
+grep -q 'names no keys it accepts evidence from' nokeys.err
+lacks_ref open "$att"
 
 # ----------------------------------------------------------------------
 # A hook a project composes after the policy runs once the
@@ -343,5 +373,25 @@ grep -q 'released: refs/heads/frozen/one is frozen' frozen.err
 lacks_ref released refs/heads/frozen/one
 as contributor git push --quiet released idea/one
 has_ref released refs/heads/idea/one
+
+# ----------------------------------------------------------------------
+# A protected project's first main. No push may create it — sealed's main
+# has refused every one above — and the integrator lands only onto a main
+# that exists. So it is seeded on the host, by the git user, from a source
+# whose commit the operator has checked: fetched, compared with the commit
+# expected, and created only if no main exists yet. A local write is not a
+# push, so no hook is asked.
+expected="$(git rev-parse HEAD)"
+git -C "$TMPDIR/sealed.git" fetch --quiet --no-tags "$TMPDIR/work" HEAD
+[ "$(git -C "$TMPDIR/sealed.git" rev-parse FETCH_HEAD)" = "$expected" ]
+git -C "$TMPDIR/sealed.git" update-ref refs/heads/main "$expected" ""
+has_ref sealed refs/heads/main
+# The empty old value makes the seed a creation: over a main that exists,
+# it refuses.
+if git -C "$TMPDIR/sealed.git" update-ref refs/heads/main "$expected~1" "" 2> /dev/null; then
+  echo "protect-e2e: a seed overwrote a main that existed" >&2
+  exit 1
+fi
+[ "$(git -C "$TMPDIR/sealed.git" rev-parse main)" = "$expected" ]
 
 touch "$out"

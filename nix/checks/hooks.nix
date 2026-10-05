@@ -28,6 +28,9 @@
   # protect-e2e's.
   valleyhook-unit = packages.valleyhook;
 
+  # The note envelope every reader of an attestation shares (note/).
+  note-unit = packages.note;
+
   # The one structural invariant, driven for real: bare repos wired
   # with the rendered pre-receive hook, pushed to as each principal.
   # What sshd would set from a key's authorized_keys entry, these

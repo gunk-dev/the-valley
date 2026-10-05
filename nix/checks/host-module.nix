@@ -12,6 +12,9 @@ let
   inherit (hosts)
     unprotectedInstanceHost
     acceptEnvHost
+    matchAcceptEnvHost
+    wildcardAcceptEnvHost
+    setEnvHost
     permitUserEnvironmentHost
     conflictingKeysHost
     host
@@ -51,6 +54,21 @@ let
       host = acceptEnvHost;
       says = "AcceptEnv";
       why = "sshd accepting the principal variable from the client would let any key name any principal";
+    }
+    {
+      host = matchAcceptEnvHost;
+      says = "GIT_CONFIG_*";
+      why = "sshd accepting GIT_ variables in the git user's Match block, in whatever case the keyword is written, would let a client set git's configuration";
+    }
+    {
+      host = wildcardAcceptEnvHost;
+      says = "G?T_*";
+      why = "a wildcard that admits GIT_ variables admits them however it is spelled";
+    }
+    {
+      host = setEnvHost;
+      says = "SetEnv";
+      why = "sshd setting the principal itself would make every key push as it";
     }
     {
       host = permitUserEnvironmentHost;
@@ -303,10 +321,12 @@ in
       throw "valley module-eval: principal machinery rendered for a declaration with no protection block and no tagged key"
     else if policyMissingWithoutDeclaration then
       throw "valley module-eval: a project with no protection block got no pre-receive hook — the push policy is installed on every project a host serves"
+    else if protectedHost.config.services.openssh.settings ? PermitUserEnvironment then
+      throw "valley module-eval: sshd must pass no key's environment on: the git user's shell derives the principal from the authenticated key"
     else if
-      protectedHost.config.services.openssh.settings.PermitUserEnvironment or null != "VALLEY_PRINCIPAL"
+      !(lib.hasInfix "valley-git-shell" protectedHost.config.users.users.git.shell)
     then
-      throw "valley module-eval: a key naming a principal needs sshd to honour that one variable and no other"
+      throw "valley module-eval: the git user's login shell must be the valley's, which derives the principal and pauses pushes until init converges"
     else if integratorRenderedWithoutEnable then
       throw "valley module-eval: integrator machinery rendered for a protected declaration that never enabled the service"
     else if !(integratorHost.config.systemd.services ? "valley-integrator@") then
@@ -347,6 +367,7 @@ in
         resticTimer = host.config.systemd.units."restic-backups-valley.timer".text;
         protectedInit = protectedHost.config.systemd.services.valley-init.script;
         protectedKeys = lib.concatStringsSep "\n" protectedKeyLines;
+        protectedShell = protectedHost.config.users.users.git.shell;
         integratorUnit = integratorHost.config.systemd.units."valley-integrator@.service".text;
         integratorInit = integratorHost.config.systemd.services.valley-init.script;
         identityInit = identityHost.config.systemd.services.valley-init.script;

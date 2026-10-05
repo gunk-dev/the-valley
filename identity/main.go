@@ -34,9 +34,9 @@ key published under a second name is a second, unrelated verifier key.
 
 The authorized_keys file is every key of every principal holding a grant at
 a boundary of kind "git-push", each line tagging its key with the
-principal's name. sshd puts that tag in the environment of the receive-pack
-the pre-receive hook runs under, which is the only thing that can tell one
-pusher from another over a shared git user.
+principal's name. The git user's shell reads the tag off the entry of the
+key sshd authenticated and hands it to the pre-receive hook, which is the
+only thing that can tell one pusher from another over a shared git user.
 
 The grants file is every grant the pre-receive hook checks, one line per
 holder: "request <principal>" for each principal holding a grant at a

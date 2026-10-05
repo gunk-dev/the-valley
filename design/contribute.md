@@ -73,9 +73,10 @@ The bare repo's `pre-receive` hook enforces exactly one structural invariant: wh
 It runs on every project a host serves. Topic branches are open to anyone with push access.
 Attestation refs are create-only, and the hook reads each new one: its name must be
 `<tree digest>/<signer key hash>`, and every note in it must be about that tree and signed under
-that key hash. Where the host names the keys it accepts, the signature must verify under one of
-them. The pusher need not be the signer, because evidence is relayed. Only a principal holding the
-request grant may write an integration request. Every other ref, tags included, takes a named grant
-of the project. A protected ref also takes a declared writer. Replacement refs, notes and the rest
-of the valley's own namespace take no push. All complex policy lives in the integrator
-([architecture.md](./architecture.md), _The one structural git invariant_).
+that key hash. Each note must open the way a verifier opens it, under the keys the host accepts
+evidence from, so a host that names no such keys accepts no attestation. The pusher need not be the
+signer, because evidence is relayed. Only a principal holding the request grant may write an
+integration request. Every other ref, tags included, takes a named grant of the project. A protected
+ref also takes a declared writer. Replacement refs, notes and the rest of the valley's own namespace
+take no push. All complex policy lives in the integrator ([architecture.md](./architecture.md), _The
+one structural git invariant_).

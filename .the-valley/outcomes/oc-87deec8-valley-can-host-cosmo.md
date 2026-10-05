@@ -60,6 +60,11 @@ tags are verified on the machines. So the declaration that moves cosmo also prot
 names a grant opening its release tags to the principal that signs them
 ([bd-75c8721](../bugs/bd-75c8721-pushes-could-write-any-namespace.md)).
 
+That protection also means cosmo's first `main` on the valley cannot be pushed. It is seeded on the
+host by the git user, from the GitHub mirror at a commit the operator has checked, and every change
+after it lands by integration request ([integration.md](../../design/integration.md), _A protected
+stream starts from a seed_).
+
 ## The phase mapping — what hosting cosmo pulls forward
 
 **cosmo readiness is not an increment on Phase 1.** This is the decision-relevant content of this

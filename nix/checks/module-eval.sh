@@ -12,6 +12,9 @@ grep -q "Match All" "$sshdConfigPath"
 # accepts therefore carries a tag this module wrote.
 grep -qx '  AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u' "$sshdConfigPath"
 grep -qx '  AuthorizedKeysCommand none' "$sshdConfigPath"
+# sshd names the authenticated key to the session, and the git
+# user's shell derives the principal from it.
+grep -qx '  ExposeAuthInfo yes' "$sshdConfigPath"
 
 # The mirror publishes main and tags only — a heads glob
 # would publish every topic branch awaiting review — with
@@ -110,9 +113,31 @@ fi
 grep -qF -- 'conflicts=1' "$protectedInitPath"
 grep -qF -- 'config --get core.hooksPath' "$protectedInitPath"
 grep -qF -- 'cmp -s "$phook" "$composed"' "$protectedInitPath"
-grep -qF -- '/srv/git/.ssh/environment' "$protectedInitPath"
-tail -n 5 "$protectedInitPath" > init-tail
-grep -qF -- 'exit 1' init-tail
+
+# Pushes pause while the host is not converged. The record the
+# git user's shell checks is removed before anything else init
+# does, written only after the refusal above, and names the
+# configuration the shell was rendered with.
+record=/srv/git/.valley-converged
+first="$(grep -n -- "rm -f $record" "$protectedInitPath" | head -n1 | cut -d: -f1)"
+refusal="$(grep -n -- 'refusing to report this host converged' "$protectedInitPath" | head -n1 | cut -d: -f1)"
+last="$(grep -n -- "mv -f $record.tmp $record" "$protectedInitPath" | head -n1 | cut -d: -f1)"
+if [ -z "$first" ] || [ -z "$refusal" ] || [ -z "$last" ] ||
+  [ "$first" -ge "$refusal" ] || [ "$refusal" -ge "$last" ]; then
+  echo "module-eval: init must remove the converged record first and write it only after the refusal" >&2
+  exit 1
+fi
+id="$(awk -v r="$record.tmp" '$1 == "printf" && $NF == r { print $3 }' "$protectedInitPath")"
+[ -n "$id" ] || { echo "module-eval: init writes no configuration id into the record" >&2; exit 1; }
+grep -qF -- "--converged $record" "$protectedShell"
+grep -qF -- "--expect $id" "$protectedShell"
+grep -qF -- '--hold /srv/git/.valley-hold' "$protectedShell"
+if grep -q -- '.valley-hold' "$protectedInitPath"; then
+  echo "module-eval: init must never touch the operator's hold" >&2
+  exit 1
+fi
+grep -qF -- '--authorized-keys /etc/ssh/authorized_keys.d/git' "$protectedShell"
+grep -qF -- 'valleyhook shell' "$protectedShell"
 
 # The rules are valleyhook's, and the script is only how git
 # reaches it: it hands over the principal sshd tagged the

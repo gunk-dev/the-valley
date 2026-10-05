@@ -123,27 +123,33 @@ rm "$(hook released)"
 # from the git user's own config: each sends git to look for hooks
 # somewhere the managed hook is not.
 git -C "$data/guarded.git" config core.hooksPath "$TMPDIR/elsewhere"
-conflict "a repository's core.hooksPath" "guarded: core.hooksPath is $TMPDIR/elsewhere"
+conflict "a repository's core.hooksPath" "guarded: core.hooksPath is set for $data/guarded.git (to '$TMPDIR/elsewhere')"
 git -C "$data/guarded.git" config --unset core.hooksPath
 printf '[core]\n\thooksPath = %s\n' "$TMPDIR/included" > "$TMPDIR/hooks.inc"
 git -C "$data/guarded.git" config include.path "$TMPDIR/hooks.inc"
-conflict "an included core.hooksPath" "guarded: core.hooksPath is $TMPDIR/included"
+conflict "an included core.hooksPath" "guarded: core.hooksPath is set for $data/guarded.git (to '$TMPDIR/included')"
 git -C "$data/guarded.git" config --unset include.path
 git config --global core.hooksPath "$TMPDIR/global"
-conflict "the git user's core.hooksPath" "core.hooksPath is $TMPDIR/global"
+conflict "the git user's core.hooksPath" "core.hooksPath is set for $data/guarded.git (to '$TMPDIR/global')"
 git config --global --unset core.hooksPath
+# An empty value is a value: git then looks for hooks relative to where it
+# runs, which is not where the managed hook is.
+git -C "$data/guarded.git" config core.hooksPath ""
+conflict "an empty core.hooksPath" "core.hooksPath is set for $data/guarded.git (to '')"
+git -C "$data/guarded.git" config --unset core.hooksPath
 
-# The git user's ~/.ssh/environment, which sshd would read the principal
-# from for every key.
-mkdir -p "$data/.ssh"
-echo VALLEY_PRINCIPAL=integrator > "$data/.ssh/environment"
-conflict "an ssh environment file" "$data/.ssh/environment exists"
-rm "$data/.ssh/environment"
+# While init is failing, the record the git user's shell lets pushes
+# through on is gone: a failed convergence leaves no write path open.
+[ ! -e "$data/.valley-converged" ] || fail "a failed init left the converged record in place"
 
 # With every conflict gone, init converges, and running it again changes
 # nothing: the script is level triggered, so what a repository carries now
 # does not decide what it ends up with.
 bash init.sh || fail "the rendered init script failed once every conflict was gone"
+# Converged, and the record names this configuration.
+id="$(awk -v r="$data/.valley-converged.tmp" '$1 == "printf" && $NF == r { print $3 }' init.sh)"
+[ -n "$id" ] && [ "$(cat "$data/.valley-converged")" = "$id" ] ||
+  fail "a converged init did not record the configuration it converged on"
 bash init.sh || fail "the rendered init script failed on a second run"
 for name in guarded released open; do
   is_declared_hook "$name"

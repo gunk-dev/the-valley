@@ -380,7 +380,16 @@ sub="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git -C occ mktree)"
 top="$(printf '040000 tree %s\tok\n' "$sub" | git -C occ mktree)"
 must_refuse "$top:$squat" "a forged signature" "does not check out"
 # A key the registry does not hold, under its own name.
-must_refuse "$unknown:$unknown" "an unknown signer's note" "by a key this host accepts"
+must_refuse "$unknown:$unknown" "an unknown signer's note" "does not open"
+# The victim's genuine note, with a line appended that no verifier reads.
+# Its signature still verifies, and the note is still one no verifier
+# opens, so it may not take the victim's name.
+git -C occ cat-file blob "$theirs:ok/statement.note" > theirs.note
+{ cat theirs.note; printf '— x\t AAAAAAA=\n'; } > poisoned.note
+blob="$(git -C occ hash-object -w "$TMPDIR/poisoned.note")"
+sub="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git -C occ mktree)"
+top="$(printf '040000 tree %s\tok\n' "$sub" | git -C occ mktree)"
+must_refuse "$top:$theirs" "a poisoned relay of the victim's note" "does not open"
 # And the victim's own evidence, relayed by the attacker, takes the name
 # that none of the above could.
 push_as attacker "$theirs:$theirs"

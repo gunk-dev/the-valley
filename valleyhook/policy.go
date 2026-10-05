@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"strings"
+
+	"the-valley/note"
 )
 
 // pushPolicy is what a project declares about pushes to it, as the host
@@ -48,11 +50,9 @@ type policy struct {
 	push    pushPolicy
 	grants  grants
 
-	// verify is whether the host names the keys it accepts attestations
-	// from, and verifiers are those keys. When it names none, only the
-	// claim a note makes about its signer is checked.
-	verify    bool
-	verifiers []verifierKey
+	// verifiers are the keys the host accepts evidence from. An
+	// attestation is accepted only under one of them.
+	verifiers []note.VerifierKey
 
 	// repo answers what the decision needs to know about the repository:
 	// whether a ref is symbolic there, and what a pushed object holds.

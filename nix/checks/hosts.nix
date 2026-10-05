@@ -79,6 +79,8 @@ in
   # one reachable sibling repo, one that does not exist.
   mirrorHost = mkHost {
     services.valley.config = ../../examples/hosts/mirrors.cue;
+    # Client environment the push boundary does not read stays acceptable.
+    services.openssh.settings.AcceptEnv = "LANG LC_*";
   };
 
   # The protection declaration, plus the machine half it needs: keys
@@ -103,6 +105,9 @@ in
         }
       ];
       grants.request = [ "requester" ];
+      # The keys attestations pushed here are checked against: the ones a
+      # controller would accept evidence from, though this host runs none.
+      integrator.knownSignersFile = "/var/lib/valley-instance/known_signers";
       # released composes a hook of its own after the push policy: it
       # refuses branches under frozen/, which the policy would accept.
       extraPreReceive.released = pkgs.writeShellScript "valley-check-released-pre-receive" ''
@@ -194,6 +199,29 @@ in
   acceptEnvHost = mkHost {
     services.valley.config = ../../examples/hosts/protected.cue;
     services.openssh.settings.AcceptEnv = "LANG LC_* VALLEY_*";
+  };
+
+  # The same, in the git user's own Match block, with the keyword in another
+  # case: sshd reads keywords in any case.
+  matchAcceptEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.extraConfig = lib.mkAfter ''
+      Match User git
+        ACCEPTENV GIT_CONFIG_*
+      Match All
+    '';
+  };
+
+  # A pattern that names neither variable outright and still admits one.
+  wildcardAcceptEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.settings.AcceptEnv = "LANG G?T_*";
+  };
+
+  # sshd setting the principal itself, over every key.
+  setEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.extraConfig = lib.mkAfter "SetEnv VALLEY_PRINCIPAL=patrick";
   };
 
   # sshd honouring every variable a key's entry or ~/.ssh/environment sets.

@@ -399,18 +399,103 @@ let
     ) gitProjects
   );
 
-  # The environment variable carrying the pushing key's principal name.
-  # sshd sets it from the key's own authorized_keys entry; the pre-receive
-  # hook reads it. One name, honoured only because PermitUserEnvironment
-  # below names it.
+  # The environment variable carrying the pushing key's principal name. The
+  # git user's shell sets it from the tag on the authenticated key's own
+  # authorized_keys entry, and the pre-receive hook reads it.
   principalEnv = "VALLEY_PRINCIPAL";
-
-  # Keys that name a principal. An entry written as a bare string names
-  # none, and renders exactly as it always did.
-  taggedKeys = lib.filter (k: !lib.isString k) cfg.authorizedKeys;
 
   authorizedKeyLine =
     k: if lib.isString k then k else ''environment="${principalEnv}=${k.principal}" ${k.key}'';
+
+  # What valley-init does to converge the host: create missing repositories
+  # and (re)wire the managed hooks. Its last step refuses to report the host
+  # converged over anything that would run instead of the push policy.
+  valleyInitBody = ''
+    conflicts=0
+
+    repos=( ${lib.escapeShellArgs repoNames} )
+    for name in "''${repos[@]}"; do
+      repo="${cfg.dataDir}/$name.git"
+      # Check HEAD rather than the directory itself so a pre-existing
+      # empty directory still gets initialized.
+      if [ ! -e "$repo/HEAD" ]; then
+        git init --bare --initial-branch=main "$repo"
+      fi
+
+      # Replacement refs make one object stand in for another wherever
+      # git looks it up. No push may write one, and every reader that
+      # makes a decision disables them, but a ref written before the
+      # hook refused them is still there. It is reported on every
+      # activation and left in place: what it is evidence of is the
+      # operator's to read before anyone deletes it.
+      replaced="$(git -C "$repo" for-each-ref --format='  %(refname) -> %(objectname)' refs/replace/)" || replaced=""
+      if [ -n "$replaced" ]; then
+        printf 'valley-init: %s holds replacement refs, which no push may write; inspect each and delete it with git update-ref -d:\n%s\n' "$repo" "$replaced" >&2
+      fi
+
+      # Hook scaffolding: post-receive dispatches to post-receive.d/.
+      # Only manage the hook if it is absent or already ours (a store
+      # symlink) — a hand-written hook is left alone.
+      mkdir -p "$repo/hooks/post-receive.d"
+      hook="$repo/hooks/post-receive"
+      if [ -L "$hook" ]; then
+        case "$(readlink "$hook")" in
+          /nix/store/*) ln -sfn ${postReceiveDispatch} "$hook" ;;
+        esac
+      elif [ ! -e "$hook" ]; then
+        ln -s ${postReceiveDispatch} "$hook"
+      fi
+    done
+
+    # Per-project push-mirror hooks.
+    ${mirrorHookCommands}
+
+    # The one structural invariant, on every project the host serves.
+    ${protectHookCommands}
+
+    # The ref-updated publisher hook, on every repo when the bus is on.
+    ${busHookCommands}
+
+    # Group-shared repositories, on what the integrator serves.
+    ${lib.optionalString cfg.integrator.enable integratorShareCommands}
+
+    if [ "$conflicts" -ne 0 ]; then
+      echo "valley-init: refusing to report this host converged: the push policy is not what every repository runs" >&2
+      exit 1
+    fi
+  '';
+
+  # The configuration a convergence is of: the init script itself, which
+  # names every hook and every policy file it wires. valley-init records it
+  # when it converges, and the git user's shell lets a push through only
+  # while the record names the configuration the shell was rendered with.
+  convergenceId = builtins.substring 0 32 (builtins.hashString "sha256" valleyInitBody);
+
+  # The record, in the git user's home: valley-init writes it, and nothing
+  # a session reaches can. A dot file never collides with a repository,
+  # because project names begin with an alphanumeric.
+  convergedRecord = "${cfg.dataDir}/.valley-converged";
+
+  # The operator's hold on pushes: while this file exists, the git user's
+  # shell refuses every push, whatever valley-init has recorded. valley-init
+  # never touches it, so a hold placed before a deploy outlasts the
+  # convergence and lasts until the operator removes it — the window a
+  # deploy's audits need.
+  pushHold = "${cfg.dataDir}/.valley-hold";
+
+  # The git user's login shell (valleyhook shell). sshd runs it for every
+  # session, and it names the key files sshd authorizes the git user's keys
+  # from, in sshd's order, so it can find the authenticated key's tag.
+  gitShell = pkgs.writeShellScriptBin "valley-git-shell" ''
+    exec ${valleyhookPackage}/bin/valleyhook shell \
+      --converged ${convergedRecord} \
+      --expect ${convergenceId} \
+      --hold ${pushHold} \
+      --authorized-keys /etc/ssh/authorized_keys.d/${cfg.user} ${
+        lib.optionalString cfg.identity.enable "--authorized-keys ${identityAuthorizedKeys}"
+      } \
+      -- "$@"
+  '';
 
   # The program every project's pre-receive hook runs: the whole of the ref
   # policy (valleyhook/), built by this flake.
@@ -432,8 +517,8 @@ let
 
   # The keys a pushed attestation's signature is checked against: the ones
   # a controller accepts evidence from. An attestation no controller here
-  # would accept cannot take a name in the create-only namespace. A host
-  # that names no such keys checks only what a note claims about its signer.
+  # would accept cannot take a name in the create-only namespace, and a host
+  # that names no such keys accepts no attestation at all.
   hookVerifiers = lib.optional (knownSigners != "") knownSigners;
 
   # What a project declares about pushes, as valleyhook reads it: the
@@ -473,11 +558,12 @@ let
   # Pushes arrive over SSH as one shared git user, so the unix account
   # behind a push says nothing about who pushed. The principal comes from
   # the key instead: services.valley.authorizedKeys tags each key's
-  # authorized_keys entry, sshd puts that tag in the environment of the
+  # authorized_keys entry, the git user's shell reads the tag off the entry
+  # of the key sshd authenticated and puts it in the environment of the
   # receive-pack this hook runs under, and an untagged key has no principal
-  # at all. The client cannot supply the tag itself: the assertions below
-  # hold sshd to accepting no client environment that could carry it, and
-  # valley-init refuses a git user whose own environment file could.
+  # at all. The client cannot supply the tag itself: the shell drops any it
+  # arrives with, and the assertions below hold sshd to offering no client
+  # environment that could carry it.
   #
   # This governs pushes, which is every write that crosses the host
   # boundary. It does not govern writes made on the host: the integrator
@@ -507,8 +593,9 @@ let
   #
   # core.hooksPath moves where git looks for hooks at all, from any scope
   # the git user reads — the repository's config, the user's, the system's,
-  # or a file one of them includes. A repository whose hooks path is set is
-  # refused the same way, with no exception.
+  # or a file one of them includes. A repository whose hooks path is set at
+  # all, to an empty value included, is refused the same way, with no
+  # exception.
   protectHookCommands = lib.concatStrings (
     lib.mapAttrsToList (name: p: ''
       served=${lib.escapeShellArg "${cfg.dataDir}/${name}.git"}
@@ -526,17 +613,21 @@ let
         echo "valley-init: ${name}: $phook is a pre-receive hook this module did not write, and git would run it instead of the push policy. Declare it as services.valley.extraPreReceive.${name} to run it after the policy, or remove it." >&2
         conflicts=1
       fi
-      hooks_path="$(git -C "$served" config --get core.hooksPath)" || hooks_path=""
-      if [ -n "$hooks_path" ]; then
-        echo "valley-init: ${name}: core.hooksPath is $hooks_path for $served, so git would look for hooks there and the push policy would not run. Remove the setting." >&2
+      # Exit status 1 is the one answer that means unset. A value, an
+      # empty one included — git then looks for hooks relative to where it
+      # runs — and a configuration git cannot read are all refused.
+      hooks_path="$(git -C "$served" config --get core.hooksPath)" && status=0 || status=$?
+      if [ "$status" -ne 1 ]; then
+        echo "valley-init: ${name}: core.hooksPath is set for $served (to '$hooks_path'), so git would look for hooks there and the push policy would not run. Remove the setting, wherever it is." >&2
         conflicts=1
       fi
     '') gitProjects
   );
 
-  # sshd's patterns, for the assertions that hold it to accepting no client
-  # environment that could carry the principal. `*` and `?` are the only
-  # wildcards an AcceptEnv pattern has.
+  # sshd's environment patterns, for the assertions that hold it to
+  # accepting no client environment the push boundary reads. `*` and `?` are
+  # the only wildcards an AcceptEnv pattern has, and a pattern is matched
+  # as written: variable names are case-sensitive.
   sshPatternMatches =
     pattern: name:
     builtins.match (lib.concatMapStrings (
@@ -550,6 +641,32 @@ let
       else
         "\\${c}"
     ) (lib.stringToCharacters pattern)) name != null;
+
+  # Whether some name beginning with prefix matches pattern: the pattern
+  # walked over the prefix, with the rest of the name free.
+  sshPatternMatchesSomeName =
+    pattern: prefix:
+    if prefix == "" then
+      true
+    else if pattern == "" then
+      false
+    else
+      let
+        c = builtins.substring 0 1 pattern;
+        rest = builtins.substring 1 (-1) pattern;
+        next = builtins.substring 1 (-1) prefix;
+      in
+      if c == "*" then
+        sshPatternMatchesSomeName rest prefix || sshPatternMatchesSomeName pattern next
+      else if c == "?" || c == builtins.substring 0 1 prefix then
+        sshPatternMatchesSomeName rest next
+      else
+        false;
+
+  # A variable the push boundary reads, and no client may supply: the
+  # principal, and anything git reads its configuration, hooks or objects
+  # from.
+  boundaryVariable = pattern: sshPatternMatches pattern principalEnv || sshPatternMatchesSomeName pattern "GIT_";
 
   # A refname glob as the declaration writes one, where `*` crosses path
   # separators (schema/valley.cue).
@@ -566,26 +683,32 @@ let
     ) (lib.stringToCharacters pattern)) ref != null;
 
   # Every value sshd is given for one keyword, from the settings and from
-  # any line of extraConfig, in any case: sshd keywords are not
-  # case-sensitive.
+  # every line of extraConfig, inside a Match block or not. The keyword is
+  # matched in any case, as sshd matches it, with or without `=` after it;
+  # the values are kept as written, because sshd's patterns and variable
+  # names are case-sensitive. Quotes around a value are dropped.
   sshdValues =
     keyword:
     let
       settings = config.services.openssh.settings;
+      word = x: if lib.isBool x then (if x then "yes" else "no") else toString x;
+      words = v: lib.filter (w: w != "") (map (lib.removeSuffix "\"") (map (lib.removePrefix "\"") (lib.splitString " " v)));
       fromSettings = lib.concatMap (
         k:
         let
           v = settings.${k};
-          word = x: if lib.isBool x then (if x then "yes" else "no") else toString x;
         in
-        if lib.isList v then map word v else lib.splitString " " (word v)
+        if lib.isList v then map word v else words (word v)
       ) (lib.filter (k: lib.toLower k == lib.toLower keyword && settings.${k} != null) (lib.attrNames settings));
       fromExtra = lib.concatMap (
         line:
         let
-          m = builtins.match "[[:space:]]*${lib.toLower keyword}[[:space:]]+(.*)" (lib.toLower line);
+          m = builtins.match "[[:space:]]*([A-Za-z]+)[[:space:]]*=?[[:space:]]*(.*)" line;
         in
-        if m == null then [ ] else lib.filter (v: v != "") (lib.splitString " " (lib.head m))
+        if m == null || lib.toLower (lib.head m) != lib.toLower keyword then
+          [ ]
+        else
+          words (builtins.replaceStrings [ "\t" ] [ " " ] (lib.elemAt m 1))
       ) (lib.splitString "\n" config.services.openssh.extraConfig);
     in
     fromSettings ++ fromExtra;
@@ -1112,18 +1235,16 @@ in
     )
     ++ [
       {
-        assertion = !(lib.any (pattern: sshPatternMatches pattern principalEnv) (sshdValues "AcceptEnv"));
-        message = "sshd accepts ${principalEnv} from the client (AcceptEnv): any key could name any principal. Remove the pattern that admits it.";
+        assertion = !(lib.any boundaryVariable (sshdValues "AcceptEnv"));
+        message = "sshd accepts ${lib.concatStringsSep " " (lib.filter boundaryVariable (sshdValues "AcceptEnv"))} from the client (AcceptEnv), a pattern that admits ${principalEnv} or a GIT_ variable. The git user's shell drops them, and sshd must not offer them either. Remove the pattern.";
       }
       {
-        assertion = !(lib.any (lib.hasPrefix "${principalEnv}=") (sshdValues "SetEnv"));
-        message = "sshd sets ${principalEnv} itself (SetEnv), over the tag on every key. Remove it.";
+        assertion = !(lib.any (v: boundaryVariable (lib.head (lib.splitString "=" v))) (sshdValues "SetEnv"));
+        message = "sshd sets ${principalEnv} or a GIT_ variable itself (SetEnv). Remove it.";
       }
       {
-        assertion = lib.all (v: lib.toLower v == "no" || v == principalEnv) (
-          sshdValues "PermitUserEnvironment"
-        );
-        message = "sshd's PermitUserEnvironment must be no, or exactly ${principalEnv} where keys carry a principal tag: anything wider lets a key's entry or the git user's ~/.ssh/environment set variables the push policy does not expect.";
+        assertion = lib.all (v: lib.toLower v == "no") (sshdValues "PermitUserEnvironment");
+        message = "sshd's PermitUserEnvironment must be no: the git user's shell derives the principal from the authenticated key, and nothing a key's entry or ~/.ssh/environment sets is the push boundary's to read.";
       }
       {
         assertion = conflictingKeys == { };
@@ -1151,9 +1272,12 @@ in
       isSystemUser = true;
       group = cfg.group;
       home = cfg.dataDir;
-      # git-shell only allows git-upload-pack/git-receive-pack/git-upload-archive;
-      # interactive logins are rejected (no ~/git-shell-commands).
-      shell = "${pkgs.git}/bin/git-shell";
+      # The valley's shell, in front of git-shell: it derives the principal
+      # from the authenticated key, drops the GIT_ environment, and pauses
+      # pushes until valley-init has converged. git-shell then allows only
+      # git-upload-pack, git-receive-pack and git-upload-archive, and rejects
+      # interactive logins (no ~/git-shell-commands).
+      shell = "${gitShell}/bin/valley-git-shell";
       openssh.authorizedKeys.keys = map authorizedKeyLine cfg.authorizedKeys;
     };
 
@@ -1168,14 +1292,6 @@ in
     };
 
     services.openssh.enable = lib.mkDefault true;
-
-    # Honour the principal tag on a key's entry, and nothing else: the
-    # pattern-list form admits that one variable name. Rendered only once a
-    # key names a principal — declared here, or compiled from the registry
-    # — so a host with none keeps the sshd config it had.
-    services.openssh.settings = lib.optionalAttrs (taggedKeys != [ ] || cfg.identity.enable) {
-      PermitUserEnvironment = principalEnv;
-    };
 
     # The git user's key files, named in its Match block so no other file
     # can authorize a key for it. The declared keys come first, and they stay
@@ -1198,6 +1314,7 @@ in
       Match User ${cfg.user}
         AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u${lib.optionalString cfg.identity.enable " ${identityAuthorizedKeys}"}
         AuthorizedKeysCommand none
+        ExposeAuthInfo yes
         AllowTcpForwarding no
         AllowAgentForwarding no
         X11Forwarding no
@@ -1309,66 +1426,12 @@ in
       # and only then does the unit fail, so the activation fails loudly
       # without leaving another repository's hook out of date.
       script = ''
-        conflicts=0
-
-        # sshd reads the git user's ~/.ssh/environment for the principal
-        # variable, after the tag on the key, so a file there would make
-        # every key push as whatever it names.
-        if [ -e ${lib.escapeShellArg "${cfg.dataDir}/.ssh/environment"} ]; then
-          echo "valley-init: ${cfg.dataDir}/.ssh/environment exists, and sshd would read ${principalEnv} from it for every key the git user authorizes. Remove it." >&2
-          conflicts=1
-        fi
-
-        repos=( ${lib.escapeShellArgs repoNames} )
-        for name in "''${repos[@]}"; do
-          repo="${cfg.dataDir}/$name.git"
-          # Check HEAD rather than the directory itself so a pre-existing
-          # empty directory still gets initialized.
-          if [ ! -e "$repo/HEAD" ]; then
-            git init --bare --initial-branch=main "$repo"
-          fi
-
-          # Replacement refs make one object stand in for another wherever
-          # git looks it up. No push may write one, and every reader that
-          # makes a decision disables them, but a ref written before the
-          # hook refused them is still there. It is reported on every
-          # activation and left in place: what it is evidence of is the
-          # operator's to read before anyone deletes it.
-          replaced="$(git -C "$repo" for-each-ref --format='  %(refname) -> %(objectname)' refs/replace/)" || replaced=""
-          if [ -n "$replaced" ]; then
-            printf 'valley-init: %s holds replacement refs, which no push may write; inspect each and delete it with git update-ref -d:\n%s\n' "$repo" "$replaced" >&2
-          fi
-
-          # Hook scaffolding: post-receive dispatches to post-receive.d/.
-          # Only manage the hook if it is absent or already ours (a store
-          # symlink) — a hand-written hook is left alone.
-          mkdir -p "$repo/hooks/post-receive.d"
-          hook="$repo/hooks/post-receive"
-          if [ -L "$hook" ]; then
-            case "$(readlink "$hook")" in
-              /nix/store/*) ln -sfn ${postReceiveDispatch} "$hook" ;;
-            esac
-          elif [ ! -e "$hook" ]; then
-            ln -s ${postReceiveDispatch} "$hook"
-          fi
-        done
-
-        # Per-project push-mirror hooks.
-        ${mirrorHookCommands}
-
-        # The one structural invariant, on every project the host serves.
-        ${protectHookCommands}
-
-        # The ref-updated publisher hook, on every repo when the bus is on.
-        ${busHookCommands}
-
-        # Group-shared repositories, on what the integrator serves.
-        ${lib.optionalString cfg.integrator.enable integratorShareCommands}
-
-        if [ "$conflicts" -ne 0 ]; then
-          echo "valley-init: refusing to report this host converged: the push policy is not what every repository runs" >&2
-          exit 1
-        fi
+        # Pushes pause the moment a convergence starts, and resume only once
+        # it has finished: the record is removed first and written last.
+        rm -f ${convergedRecord}
+        ${valleyInitBody}
+        printf '%s\n' ${convergenceId} > ${convergedRecord}.tmp
+        mv -f ${convergedRecord}.tmp ${convergedRecord}
       '';
     };
 

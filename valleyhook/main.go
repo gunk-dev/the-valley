@@ -21,6 +21,9 @@ import (
 )
 
 const usage = `usage: valleyhook pre-receive [flags] < ref updates
+       valleyhook shell [flags] -- [-c COMMAND]
+
+shell is the git user's login shell; see "valleyhook shell -h".
 
 The pre-receive hook of every project on a valley host. git hands it one
 line per ref a push would update: the old id, the new id and the refname.
@@ -40,9 +43,10 @@ A write is allowed only if every rule that applies to its ref allows it:
   refs/heads/*      anyone: topic branches.
   refs/the-valley/attestations/<digest>/<key hash>
                     anyone, and only to create one. The ref must point at
-                    a tree of notes about that digest, each signed under
-                    that key hash. With --known-signers, that signature
-                    must verify under a key the file names.
+                    a tree of notes about that digest, read within fixed
+                    bounds, each opening under the --known-signers keys
+                    the way attest verify opens it, with a verified
+                    signature under that key hash.
   refs/the-valley/integration-requests/*
                     principals holding the request grant. They may file,
                     replace and withdraw a request.
@@ -68,9 +72,8 @@ flags:
                         the flag to read more than one file; what they
                         grant adds up.
   --known-signers FILE  verifier keys, one per line, that an attestation's
-                        signature is checked against. Repeatable. Without
-                        it, only what a note claims about its signer is
-                        checked.
+                        signature is checked against. Repeatable. With no
+                        key named, no attestation is accepted.
   --principal NAME      the pushing principal; empty for a key that names
                         none
   --then FILE           a further pre-receive hook, run only once this one
@@ -86,6 +89,8 @@ func main() {
 	switch os.Args[1] {
 	case "pre-receive":
 		os.Exit(preReceive(os.Args[2:], os.Stdin, os.Stderr, gitRepository{}))
+	case "shell":
+		os.Exit(shell(os.Args[2:], os.Stderr))
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 	default:
@@ -124,7 +129,7 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	// Everything the decision needs is read before any ref is looked at,
 	// so a policy that cannot be read refuses the push as a whole rather
 	// than part of the way through it.
-	p := policy{project: *project, grants: grants{}, repo: repo, verify: len(keyFiles) > 0}
+	p := policy{project: *project, grants: grants{}, repo: repo}
 	if err := readPolicy(*policyFile, &p.push); err != nil {
 		return failClosed(stderr, err)
 	}

@@ -529,7 +529,7 @@ fi
 printf 'a\n' > "$w/answers"
 valley review topic/five < "$w/answers" > "$w/five-again.out" 2> "$w/five-again.err"
 
-grep -qx 'requested topic/five -> refs/heads/main' "$w/five-again.out"
+grep -q '^Submitted topic/five .* for integration into origin/main\.$' "$w/five-again.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
 # Replacing a pending request is said out loud, and the sentence names the
 # head that was replaced.
@@ -591,7 +591,7 @@ sixfiled="$(git rev-parse topic/six)"
 
 printf 'a\n' > "$w/answers"
 valley review topic/six < "$w/answers" > "$w/six-first.out" 2> "$w/six-first.err"
-grep -qx 'requested topic/six -> refs/heads/main' "$w/six-first.out"
+grep -q '^Submitted topic/six .* for integration into origin/main\.$' "$w/six-first.out"
 
 git checkout --quiet main
 echo "a third note" > docs/third.md
@@ -677,7 +677,7 @@ git push --quiet origin \
 printf 'a\n' > "$w/answers"
 valley review topic/seven < "$w/answers" > "$w/seven.out" 2> "$w/seven.err"
 
-grep -qx 'requested topic/seven -> refs/heads/main' "$w/seven.out"
+grep -q '^Submitted topic/seven .* for integration into origin/main\.$' "$w/seven.out"
 grep -qx '  the request already stood at this head; the evidence is what was published' "$w/seven.out"
 # The evidence went; the request ref was not in the refspec at all.
 grep -q "refs/the-valley/attestations/$sevendigest/$keyhash" "$pushlog"
@@ -771,7 +771,7 @@ git push --quiet origin topic/nine
 
 printf 'a\n' > "$w/answers"
 valley review topic/nine < "$w/answers" > "$w/nine-first.out" 2> "$w/nine-first.err"
-grep -qx 'requested topic/nine -> refs/heads/main' "$w/nine-first.out"
+grep -q '^Submitted topic/nine .* for integration into origin/main\.$' "$w/nine-first.out"
 
 git checkout --quiet main
 echo "a fourth note" > docs/fourth.md

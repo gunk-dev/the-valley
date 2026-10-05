@@ -32,9 +32,9 @@ const knownSignersHeader = `# Compiled from the identity registry — do not edi
 `
 
 const authorizedKeysHeader = `# Compiled from the identity registry — do not edit (dcr-b87f6e8).
-# Keys that may push, each tagged with the principal it acts as. sshd puts
-# the tag in the environment of the receive-pack the pre-receive hook runs
-# under, which is what tells one pusher from another over a shared user.
+# Keys that may push, each tagged with the principal it acts as. The git
+# user's shell reads the tag off the entry of the key sshd authenticated,
+# which is what tells one pusher from another over a shared user.
 `
 
 const grantsHeader = `# Compiled from the identity registry — do not edit (dcr-b87f6e8).

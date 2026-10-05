@@ -4,6 +4,27 @@
 # drive them; nothing here knows about any of those outputs.
 { pkgs, lib }:
 rec {
+  # The source of a Go program that reads signed notes: its own directory
+  # and the note module (../note), which its go.mod replaces with that local
+  # directory. One reading of the envelope is shared by the programs that
+  # write, verify and admit attestations, and none of them fetches it.
+  withNote =
+    dir:
+    lib.fileset.toSource {
+      root = ../.;
+      fileset = lib.fileset.unions [
+        dir
+        ../note
+      ];
+    };
+
+  # vendorHash = null builds in vendor mode, which has no reading of a local
+  # replace. The replaced module is a directory beside the program and
+  # nothing is fetched either way, so these builds read go.mod as written.
+  readsGoMod = ''
+    export GOFLAGS="''${GOFLAGS//-mod=vendor/-mod=mod}"
+  '';
+
   # Markdown prose is filled paragraphs hard-wrapped at 100 columns
   # (ida-1ec03b1). One flag string backs both the formatter app and the
   # prose-format check, so the two cannot drift. Embedded-language
@@ -58,8 +79,10 @@ rec {
   attest-unwrapped = pkgs.buildGoModule {
     pname = "valley-attest";
     version = "0";
-    src = ../attest;
+    src = withNote ../attest;
+    modRoot = "attest";
     vendorHash = null;
+    preBuild = readsGoMod;
     nativeCheckInputs = [
       pkgs.git
       pkgs.openssh
@@ -153,7 +176,9 @@ rec {
   };
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
-  # project a valley host serves. Go, standard library only — hence
+  # project a valley host serves. The same binary is the git user's login
+  # shell, which derives the pushing principal and pauses pushes until the
+  # host has converged. Go, standard library only — hence
   # vendorHash = null and no module fetch. Its unit tests run in the
   # checkPhase.
   #
@@ -163,10 +188,23 @@ rec {
   valleyhook = pkgs.buildGoModule {
     pname = "valley-valleyhook";
     version = "0";
-    src = ../valleyhook;
+    src = withNote ../valleyhook;
+    modRoot = "valleyhook";
     vendorHash = null;
+    preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
+    # The walk's tests build hostile trees with real git.
+    nativeCheckInputs = [ pkgs.git ];
     meta.mainProgram = "valleyhook";
+  };
+
+  # The note envelope's own tests, which hold it to refusing every line a
+  # relayer could append that one of its readers would refuse.
+  note = pkgs.buildGoModule {
+    pname = "valley-note";
+    version = "0";
+    src = ../note;
+    vendorHash = null;
   };
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

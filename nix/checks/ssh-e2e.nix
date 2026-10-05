@@ -112,6 +112,14 @@ in
         # The same host with the hand grant removed, as the end of the
         # handoff leaves it.
         specialisation.handed-off.configuration.services.valley.grants.request = lib.mkForce [ ];
+        # The same host with sshd misconfigured to accept the variables the
+        # push boundary reads, which the module's assertions refuse. They
+        # are switched off here so the git user's shell can be shown to
+        # neutralise what sshd lets through anyway.
+        specialisation.misconfigured.configuration = {
+          services.openssh.settings.AcceptEnv = "VALLEY_PRINCIPAL GIT_*";
+          assertions = lib.mkForce [ ];
+        };
       };
 
     testScript = ''
@@ -153,6 +161,7 @@ in
       with subtest("the principal is the one the key's entry names"):
           host.succeed(push("contributor", "+HEAD:refs/heads/topic"))
           refused(push("contributor", f"HEAD:{request}"), "contributor may not write")
+          refused(push("contributor", "HEAD:refs/heads/main"), "a protected ref of project")
           refused(push("stranger", "HEAD:refs/heads/main", repo="instance"), "<untagged key> may not write")
           host.succeed(push("integrator", "HEAD:refs/heads/main", repo="instance"))
 
@@ -178,6 +187,31 @@ in
               " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null git@localhost env"
           )
 
+      with subtest("a host that has not converged takes no push, and still serves fetches"):
+          host.succeed(
+              "printf '#!/bin/sh\\nexit 0\\n' > /srv/git/project.git/hooks/pre-receive.hand",
+              "mv -f /srv/git/project.git/hooks/pre-receive /srv/git/project.git/hooks/pre-receive.managed",
+              "mv /srv/git/project.git/hooks/pre-receive.hand /srv/git/project.git/hooks/pre-receive",
+              "chmod +x /srv/git/project.git/hooks/pre-receive",
+              "chown -h git:git /srv/git/project.git/hooks/pre-receive",
+          )
+          host.fail("systemctl restart valley-init.service")
+          refused(push("integrator", "HEAD:refs/heads/main", repo="instance"), "pushes to this host are paused")
+          refused(push("contributor", "+HEAD:refs/heads/topic"), "pushes to this host are paused")
+          host.succeed(
+              "GIT_SSH_COMMAND='ssh -i /root/keys/stranger -o IdentitiesOnly=yes -o BatchMode=yes"
+              " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+              " git ls-remote git@localhost:project.git refs/heads/topic | grep -q topic"
+          )
+          host.succeed("rm /srv/git/project.git/hooks/pre-receive", "systemctl restart valley-init.service")
+          host.succeed(push("contributor", "+HEAD:refs/heads/topic"))
+          # The operator's hold outlasts a convergence, and only its
+          # removal lifts it.
+          host.succeed("sudo -u git touch /srv/git/.valley-hold", "systemctl restart valley-init.service")
+          refused(push("contributor", "+HEAD:refs/heads/topic"), "pushes to this host are held by its operator")
+          host.succeed("rm /srv/git/.valley-hold")
+          host.succeed(push("contributor", "+HEAD:refs/heads/topic"))
+
       with subtest("before the registry compiles, the hand grant is the only one"):
           host.succeed(push("operator", f"HEAD:{request}"))
           host.succeed(push("requester", f"+HEAD:{request}"))
@@ -201,6 +235,28 @@ in
           host.succeed("grep -qx 'request operator' /var/lib/valley-identity/grants")
           host.succeed(push("operator", f"+HEAD:{request}"))
           host.succeed(push("requester", f"+HEAD:{request}"))
+
+      with subtest("what sshd lets through, the git user's shell does not"):
+          host.succeed(
+              "/run/booted-system/specialisation/misconfigured/bin/switch-to-configuration test",
+              "systemctl restart valley-init.service",
+          )
+          spoof = "VALLEY_PRINCIPAL=integrator"
+          refused(
+              push("stranger", "+HEAD:refs/heads/main", repo="instance", env=spoof, ssh="-o SendEnv=VALLEY_PRINCIPAL"),
+              "<untagged key> may not write",
+          )
+          # Sent through, these would point git's hooks at nothing, and the
+          # protected main would take the push.
+          hooks_off = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null"
+          refused(
+              push("contributor", "+HEAD:refs/heads/main", env=hooks_off, ssh="-o SendEnv=GIT_CONFIG_*"),
+              "a protected ref of project",
+          )
+          host.succeed(
+              "/run/booted-system/bin/switch-to-configuration test",
+              "systemctl restart valley-init.service",
+          )
 
       with subtest("removing the hand grant leaves the compiled one standing"):
           host.succeed(

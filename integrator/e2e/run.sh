@@ -1057,4 +1057,54 @@ grep -q "bus      publish of valley.git.project.integration-succeeded FAILED: no
 [ "$elapsed" -lt 60 ] || die "the pass took ${elapsed}s behind a bus that never answers"
 holds "c19 landed, queued and consumed its request before a hung bus was asked, and each publish gave up after 10s (${elapsed}s in all)"
 
+# ----------------------------------------------------------------------
+say "20. a cue that never answers a payload's vet does not hold up a landing"
+
+# The payload is vetted before it is published, and the vet is bounded the
+# same way. This cue hangs only when asked to vet against the event schema;
+# every other use, judging included, goes to the real one.
+real_cue="$(command -v cue)"
+mkdir "$work/hung-cue" "$work/queue20"
+cat > "$work/hung-cue/cue" <<EOF
+#!$(command -v bash)
+for arg; do [ "\$arg" = "$SCHEMA_EVENTS" ] && exec sleep 1000; done
+exec "$real_cue" "\$@"
+EOF
+chmod +x "$work/hung-cue/cue"
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c20
+echo "landed past a cue that never answers" > docs/cue.md
+git add -A
+git commit --quiet -m "past a hung cue"
+attest_change c20 "" "" --check prose-format
+request c20 main "$(git rev-parse c20)"
+before="$(tip)"
+started=$SECONDS
+PATH="$work/hung-cue:$PATH" timeout 120 "$INTEGRATOR_UNWRAPPED" reconcile \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$instance_repo" \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  --publish-queue "$work/queue20" \
+  2>&1 | tee "$work/last.out" \
+  || die "the pass did not finish with a cue that never answers: $(cat "$work/last.out")"
+elapsed=$((SECONDS - started))
+grep -q "^c20 -> refs/heads/main .*: land$" "$work/last.out" || die "c20 did not land: $(cat "$work/last.out")"
+[ "$(tip)" = "$(git rev-parse c20)" ] || die "main is not at c20's head"
+[ "$(cat "$work"/queue20/*)" = "$before $(git rev-parse c20) refs/heads/main" ] \
+  || die "the move was not queued for the mirrors: $(ls -A "$work/queue20")"
+git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c20 > /dev/null \
+  && die "the request outlived the landing"
+grep -q "^  evidence " "$work/last.out" || die "the evidence was not stored"
+grep -q "bus      ref-updated not published: cue vet against #RefUpdated gave no answer within 10s" "$work/last.out" \
+  || die "the hung vet of ref-updated was not cut off: $(cat "$work/last.out")"
+grep -q "bus      integration-succeeded not published: cue vet against #IntegrationSucceeded gave no answer within 10s" "$work/last.out" \
+  || die "the hung vet of integration-succeeded was not cut off"
+[ "$elapsed" -lt 60 ] || die "the pass took ${elapsed}s behind a cue that never answers"
+holds "c20 landed, queued and consumed its request, and each hung vet gave up after 10s and skipped its publish (${elapsed}s in all)"
+
 printf '\nintegrator-e2e: every scenario held\n'

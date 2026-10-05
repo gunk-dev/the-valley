@@ -5,8 +5,8 @@ package main
 // satisfying schema/events.cue. Failure to publish is logged and never
 // fatal — git is the source of truth and the bus is the replaceable
 // component, so a bus problem costs a log line and one `valley replay`.
-// Each publish is cut off after busDeadline, so a bus that hangs costs at
-// most that long, and a landing publishes only after its own record is
+// Each vet and each publish is cut off after busDeadline, so a helper that
+// hangs costs at most that long, and a landing publishes only after its own record is
 // complete (refs.go).
 //
 // Nothing here consumes. Bus authentication (bd-d853d9c) gates automated
@@ -128,15 +128,17 @@ func writeRefUpdate(queue, ref, old, new string) error {
 	return os.Rename(tmp.Name(), filepath.Join(queue, name))
 }
 
+// busDeadline bounds one `nats pub`, and one `cue vet` of a payload. A
+// local server answers in milliseconds and a vet takes well under a second;
+// anything near this long is a helper that is not answering.
+const busDeadline = 10 * time.Second
+
 // publish writes one event. The payload is validated against the event
 // vocabulary before it is sent when a schema is configured: an event no
 // consumer could read is not a thing to publish, and the discipline that
 // keeps the vocabulary one schema'd event at a time is worth nothing if the
-// publisher can sidestep it.
-// busDeadline bounds one `nats pub`. A local server answers in
-// milliseconds; anything near this long is a bus that is not answering.
-const busDeadline = 10 * time.Second
-
+// publisher can sidestep it. A vet that fails or times out skips the
+// publish, and like a failed publish it never affects the landing.
 func (in *integrator) publish(kind string, payload any) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -188,8 +190,14 @@ func (in *integrator) vetEvent(kind string, body []byte) error {
 		return err
 	}
 	defer removeTemp(file)
-	cmd := exec.Command(in.cue, "vet", "-d", def, in.eventSchema, file)
+	ctx, cancel := context.WithTimeout(context.Background(), busDeadline)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, in.cue, "vet", "-d", def, in.eventSchema, file)
+	cmd.WaitDelay = time.Second
 	if out, err := cmd.CombinedOutput(); err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("cue vet against %s gave no answer within %s", def, busDeadline)
+		}
 		return fmt.Errorf("the payload does not satisfy %s: %s", def, firstLine(string(out)))
 	}
 	return nil

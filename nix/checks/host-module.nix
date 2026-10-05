@@ -168,7 +168,11 @@ let
     || protectedHost.config.systemd.targets ? valley-integrators
     || lib.hasInfix "sharedRepository" protectedHost.config.systemd.services.valley-init.script;
 
-  controllers = integratorHost.config.systemd.targets.valley-integrators.wants;
+  # The target pulls in each controller and the path unit that publishes
+  # its landings.
+  integratorWants = integratorHost.config.systemd.targets.valley-integrators.wants;
+  controllers = lib.filter (lib.hasPrefix "valley-integrator@") integratorWants;
+  publishers = lib.filter (lib.hasPrefix "valley-publish@") integratorWants;
 
   integratorUser = integratorHost.config.systemd.services."valley-integrator@".serviceConfig.User;
 
@@ -351,6 +355,16 @@ in
       ]
     then
       throw "valley module-eval: a controller runs for each protected project and no other, not ${lib.concatStringsSep ", " controllers}"
+    else if
+      publishers != [
+        "valley-publish@guarded.path"
+        "valley-publish@released.path"
+        "valley-publish@sealed.path"
+      ]
+    then
+      throw "valley module-eval: each controller's landings are published by a path unit of its own, not ${lib.concatStringsSep ", " publishers}"
+    else if integratorHost.config.systemd.services."valley-publish@".serviceConfig.User != "git" then
+      throw "valley module-eval: a landing is published as the git user, which holds the mirror credentials"
     else if integratorUser == integratorHost.config.services.valley.user then
       throw "valley module-eval: the integrator must not run as the git user — it has its own (bd-500adf7)"
     else if !(integratorHost.config.users.users ? ${integratorUser}) then

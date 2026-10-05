@@ -26,9 +26,10 @@
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
-# cosmo, via its secrets). Nothing here plumbs secrets: the backup options
-# below take *paths* to consumer-provisioned secret files; the contents
-# never pass through this module or the store.
+# cosmo, via its secrets). Every mirror push runs as the git user, whether
+# a push or an integrator landing moved the ref. Nothing here plumbs
+# secrets: the backup options below take *paths* to consumer-provisioned
+# secret files; the contents never pass through this module or the store.
 #
 # One service runs under its own unix user rather than the git one: the
 # integrator. That is the first half of the split bd-500adf7 asks for.
@@ -113,6 +114,7 @@ let
         [ "--instance ${toString cfg.integrator.instancePolicy}" ]
     )
     ++ lib.optional cfg.bus.enable "--bus ${busUrl}"
+    ++ [ "--publish-queue ${cfg.dataDir}/%i.git/${publishQueueName}" ]
   );
 
   # The one filesystem grant the integrator's user gets. It writes refs,
@@ -150,6 +152,10 @@ let
       # chmod that warns, and the repository is served either way.
       mkdir -p "$repo/worktrees"
       share chmod g+rwxs "$repo/worktrees"
+      # The publish queue is the git user's for the same reason: the
+      # integrator writes into it and the publish unit deletes from it.
+      mkdir -p "$repo/${publishQueueName}"
+      share chmod g+rwxs "$repo/${publishQueueName}"
       share chmod -R g+rwX "$repo"
       share find "$repo" -type d -exec chmod g+s {} +
     '') (lib.attrNames integratedProjects);
@@ -241,6 +247,8 @@ let
   '';
 
   # Best-effort push replication. Publication mirror: main and tags only.
+  # A push runs it from post-receive, through the hook below; an integrator
+  # landing runs it from the publish unit further down.
   # Topic branches are review-queue state, not published — the mirror exists
   # so consumers can fetch what has been integrated; durability is restic's
   # job, not the mirror's. Pushes run detached (setsid) so a dead mirror can
@@ -327,6 +335,57 @@ let
       fi
     done
   '';
+
+  # How an integrator landing reaches the mirrors and the bus.
+  #
+  # A push reaches them through post-receive. The integrator moves refs
+  # with update-ref, which runs no post-receive hook, and it runs as its own
+  # user, which does not hold the git user's mirror credentials and must not.
+  # So the integrator does not publish its landings. It writes each move it
+  # makes to a target, as the line post-receive would read, into a queue
+  # directory in the repository: the publish queue. A path unit watches the
+  # queue, and when it holds anything, starts a oneshot running as the git
+  # user. That drain hands every queued line to the bus publisher above,
+  # deletes the lines, and runs the mirror pusher once. The pusher and the
+  # publisher are the ones post-receive runs.
+  #
+  # The alternatives fall to the user split. Calling the post-receive
+  # dispatcher from the integrator would push as the integrator's user, and
+  # so would a reference-transaction hook, which runs as whoever ran git; it
+  # would also fire inside every push and for every bookkeeping ref the
+  # integrator writes. Starting a unit directly would take a polkit grant
+  # and carry no record of what moved. The queue costs one directory, the
+  # path unit is woken by inotify rather than a poll, and the queue is
+  # durable, so a move queued while the host goes down is published after.
+  #
+  # Each move is published once. A push never writes the queue, and the
+  # integrator never runs post-receive, so no move takes both paths. A drain
+  # that dies between publishing and deleting republishes on its next run,
+  # which repeats a ref-updated event and an idempotent mirror push.
+  publishQueueName = "valley-publish-queue";
+
+  # The drain, per project. It runs synchronously: the unit is already
+  # detached from the landing, and a detached child would be killed with the
+  # oneshot's cgroup when it exits.
+  publishDrain =
+    name: p:
+    pkgs.writeShellScript "valley-publish-${name}" ''
+      # Managed by services.valley — publish what the integrator moved on ${name}.
+      shopt -s nullglob
+      moves=( ${lib.escapeShellArg "${cfg.dataDir}/${name}.git/${publishQueueName}"}/* )
+      [ "''${#moves[@]}" -gt 0 ] || exit 0
+      ${lib.optionalString cfg.bus.enable ''cat -- "''${moves[@]}" | ${busPublisher}''}
+      rm -f -- "''${moves[@]}"
+      ${lib.optionalString (p.mirrors != [ ]) "${mirrorPusher name p.mirrors}"}
+    '';
+
+  # Every drain, by project name, so the template unit runs its instance's.
+  publishDrains = pkgs.linkFarm "valley-publish-drains" (
+    lib.mapAttrsToList (name: p: {
+      inherit name;
+      path = publishDrain name p;
+    }) integratedProjects
+  );
 
   # The post-receive.d hook, with the mirror hook's failure semantics: the
   # publisher runs detached (setsid, inheriting the updates on stdin), so a
@@ -1643,12 +1702,43 @@ in
       };
     };
 
+    # What publishes a controller's landings: a path unit per served
+    # repository, watching its publish queue, and the drain it starts.
+    systemd.paths."valley-publish@" = lib.mkIf cfg.integrator.enable {
+      description = "Watch the publish queue of %i";
+      pathConfig.DirectoryNotEmpty = "${cfg.dataDir}/%i.git/${publishQueueName}";
+    };
+
+    # It runs as the git user, with ssh on its path, because the mirror
+    # credentials are that user's. Each run drains the whole queue, so starts
+    # are at most one per landing, and a burst of landings must not trip
+    # systemd's start limit and leave the queue undrained. A run is bounded
+    # instead: a mirror that hangs is cut off, and the next landing runs the
+    # drain again.
+    systemd.services."valley-publish@" = lib.mkIf cfg.integrator.enable {
+      description = "Publish the integrator's landings on %i";
+      after = [ "valley-init.service" ] ++ lib.optional cfg.bus.enable "valley-bus-init.service";
+      unitConfig.RequiresMountsFor = cfg.dataDir;
+      startLimitIntervalSec = 0;
+      path = [ config.programs.ssh.package ];
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${publishDrains}/%i";
+        User = cfg.user;
+        Group = cfg.group;
+        WorkingDirectory = "${cfg.dataDir}/%i.git";
+        TimeoutStartSec = "15min";
+      };
+    };
+
     # wantedBy on a template unit enables nothing, so the instances the
     # declaration asks for are pulled in by name.
     systemd.targets.valley-integrators = lib.mkIf cfg.integrator.enable {
-      description = "The valley integrator's controllers";
+      description = "The valley integrator's controllers, and what publishes their landings";
       wantedBy = [ "multi-user.target" ];
-      wants = map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects);
+      wants =
+        map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects)
+        ++ map (name: "valley-publish@${name}.path") (lib.attrNames integratedProjects);
     };
 
     # Offsite backup, rendered only when the declaration asks for it. The

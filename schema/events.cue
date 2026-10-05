@@ -98,7 +98,8 @@ package valley
 // naming one has to agree with it.
 #CheckName: =~"^[a-z0-9][a-z0-9-]*$"
 
-// #RefUpdated is published once per ref a push updates, on the subject
+// #RefUpdated is published once per ref a push updates, and once per
+// landing for the target the integrator moved, on the subject
 // valley.git.<repo>.ref-updated: the ref's name and its object id before
 // and after. Creation and deletion carry the all-zero id on the
 // corresponding side — git's own convention. A replay of a repo's current

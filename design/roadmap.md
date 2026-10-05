@@ -119,12 +119,12 @@ a verified copy — is
 
 **Migration strategy: mirror-first, then cut over.** Mirrors are declared config, not a manual
 dual-push: the host declaration's per-project `mirrors` field replicates main and the tags out to
-each mirror URL on every push to the primary — deletions propagated, best-effort, a dead mirror
-never rejects the primary push. A mirror publishes what has been integrated, so topic branches
-awaiting review stay on the primary. GitHub stays declared as one such mirror while confidence
-builds; the canonical `origin` flips per-repo once it's earned. The same field is the
-public-exposure mechanism later — migration dual-push and publishing are one mechanism. Reversible
-at every step; supports iteration.
+each mirror URL on every push to the primary and every landing the integrator makes — deletions
+propagated, best-effort, a dead mirror never rejects the primary push or fails a landing. A mirror
+publishes what has been integrated, so topic branches awaiting review stay on the primary. GitHub
+stays declared as one such mirror while confidence builds; the canonical `origin` flips per-repo
+once it's earned. The same field is the public-exposure mechanism later — migration dual-push and
+publishing are one mechanism. Reversible at every step; supports iteration.
 
 **Pilot: the-valley itself.** the-valley's own repo is the first off GitHub — dogfooding, low
 stakes, and every later phase is developed against it. Later repos roll out after the pilot proves

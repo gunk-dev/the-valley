@@ -15,7 +15,10 @@ import (
 
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"time"
 )
 
 func (in *integrator) publishLanded(ch verdict.Change, v verdict.Verdict, old, new string) {
@@ -50,6 +53,59 @@ func (in *integrator) publishStale(ch verdict.Change, v verdict.Verdict, tip str
 		"reason": v.StaleReason,
 		"checks": checks,
 	})
+}
+
+// queueRefUpdate hands one ref move to the host, which publishes it the way
+// it publishes a push: to the project's push mirrors, and as a ref-updated
+// event. A push reaches both through the post-receive hook. The integrator
+// moves refs with update-ref, which runs no hook, so its landings reach
+// neither unless it says what it moved.
+//
+// The integrator does not publish the move itself. The mirror credentials
+// belong to the git user, and this process runs as its own user. A unit
+// running as the git user watches the queue and drains it with the same
+// pusher and publisher post-receive runs (nix/valley-host.nix).
+//
+// One file per move, holding the line post-receive reads: old, new, ref.
+// The file is written beside the queue and renamed into it, so the drain
+// never reads a partial one, and names sort in the order the moves were
+// made. Like the bus, this is best-effort: a move that cannot be queued is
+// reported and the landing stands, because git is the source of truth.
+func (in *integrator) queueRefUpdate(ref, old, new string) {
+	if in.publishQueue == "" {
+		return
+	}
+	if err := writeRefUpdate(in.publishQueue, ref, old, new); err != nil {
+		fmt.Fprintf(in.out, "  publish  %s not queued: %v\n", ref, err)
+		return
+	}
+	fmt.Fprintf(in.out, "  publish  %s queued\n", ref)
+}
+
+func writeRefUpdate(queue, ref, old, new string) error {
+	if info, err := os.Stat(queue); err != nil || !info.IsDir() {
+		return fmt.Errorf("%s is not a directory the host drains", queue)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(queue), ".valley-publish-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	// The drain runs as the git user, which reads the file through the
+	// group, and CreateTemp makes it readable by its owner alone.
+	if err := tmp.Chmod(0o640); err != nil {
+		tmp.Close()
+		return err
+	}
+	if _, err := fmt.Fprintf(tmp, "%s %s %s\n", old, new, ref); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	name := fmt.Sprintf("%020d-%s", time.Now().UnixNano(), new)
+	return os.Rename(tmp.Name(), filepath.Join(queue, name))
 }
 
 // publish writes one event. The payload is validated against the event

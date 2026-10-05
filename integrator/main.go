@@ -63,6 +63,10 @@ flags:
   --event-schema F    the event vocabulary payloads are vetted against
   --bus URL           nats server to publish outcomes to; empty publishes
                       nothing and still prints every payload
+  --publish-queue DIR the host's queue of ref moves to publish: each landing
+                      leaves its target's move there, and the host pushes it
+                      to the mirrors and the bus as it does a pushed one;
+                      empty leaves nothing
   --system SYSTEM     flake system for closure recomputation
   --interval D        watch: how long to wait between passes (default 15s)
   --now TIME          judge as at this RFC 3339 instant, for the effectful
@@ -107,8 +111,9 @@ type integrator struct {
 	keyHash      string
 	knownSigners string
 
-	bus    string
-	system string
+	bus          string
+	publishQueue string
+	system       string
 
 	// clock, when set, is the instant the effectful window is measured
 	// against. Zero means the wall clock.
@@ -163,6 +168,7 @@ func run(args []string, loop bool) error {
 	attestSchema := fs.String("attest-schema", env("VALLEY_ATTEST_SCHEMA"), "the attestation schema")
 	eventSchema := fs.String("event-schema", env("VALLEY_EVENT_SCHEMA"), "the event vocabulary")
 	bus := fs.String("bus", "", "nats server to publish outcomes to")
+	publishQueue := fs.String("publish-queue", "", "the host's queue of ref moves to publish")
 	system := fs.String("system", "", "flake system")
 	interval := fs.Duration("interval", 15*time.Second, "how long to wait between passes")
 	now := fs.String("now", "", "judge as at this instant")
@@ -180,6 +186,7 @@ func run(args []string, loop bool) error {
 		signerName:   *name,
 		knownSigners: *known,
 		bus:          *bus,
+		publishQueue: *publishQueue,
 		system:       *system,
 	}
 	for _, missing := range []struct{ flag, value string }{

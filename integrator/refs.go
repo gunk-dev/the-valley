@@ -385,10 +385,11 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 // to redo.
 //
 // Past the commit point the landing is a fact in the stream, and what is
-// left is recording it: storing the evidence, consuming the request, and
-// saying so on the bus. None of those may be skipped because an earlier one
-// failed, and consuming the request in particular may not be reachable only
-// through something that can fail — a request left pending for a change
+// left is recording it: handing the ref move to the host to publish,
+// storing the evidence, consuming the request, and saying so on the bus.
+// None of those may be skipped because an earlier one failed, and
+// consuming the request in particular may not be reachable only through
+// something that can fail — a request left pending for a change
 // already in the stream is re-judged against an empty delta on every pass,
 // forever. So each step runs, each failure is reported, and the landing is
 // reported as having happened, because it did.
@@ -407,6 +408,7 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 		return fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
 	}
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
+	in.queueRefUpdate(ch.Target, tip, l.commit)
 
 	var unrecorded []string
 	refs, err := in.store(evidence)

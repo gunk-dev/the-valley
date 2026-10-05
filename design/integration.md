@@ -225,6 +225,14 @@ Two events, in [schema/events.cue](../schema/events.cue), on
 the post-receive hook's, exactly: one `nats pub`, best-effort, never fatal — git is the source of
 truth and the bus is the replaceable component.
 
+A landing also reaches the push mirrors and the bus's `ref-updated` events, as a push does. A push
+gets there through the post-receive hook. The integrator moves the target with `git update-ref`,
+which runs no hook, and it runs as its own user, which does not hold the mirror credentials. So it
+writes the move it made into the repository's publish queue. A unit running as the git user drains
+the queue with the same mirror pusher and event publisher the hook runs. A push never writes the
+queue, so each move is published once. The mechanism is in
+[nix/valley-host.nix](../nix/valley-host.nix).
+
 **There is no rejection event, on purpose.** A note whose signature does not check out, text that is
 not the written form of what it says, or a statement about a different tree is not staleness:
 re-attesting would not fix it, and calling it stale would tell a contributor to redo work that is

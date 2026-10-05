@@ -29,6 +29,9 @@
 #                    valley-request, valley-status — bin/valley
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff
+#   publish-e2e.nix  publish-e2e — an integrator landing reaching the push
+#                    mirror and the bus, in a NixOS machine running the
+#                    real controller
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation
@@ -70,3 +73,4 @@ import ./checks/host-module.nix args
 // import ./checks/sigverify.nix args
 // import ./checks/cli.nix args
 // import ./checks/ssh-e2e.nix args
+// import ./checks/publish-e2e.nix args

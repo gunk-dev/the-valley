@@ -48,6 +48,22 @@ func TestAWalkStopsAtItsBoundsBeforeReadingPastThem(t *testing.T) {
 		}
 	}
 
+	// A tree past the size bound is refused on its type and size alone:
+	// its content is never asked for.
+	wide := mktree(t, dir, 400, "100644 blob "+note, "a-name-long-enough-to-make-the-tree-large-")
+	objects, err := openObjects()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = walkNotes(objects, wide)
+	objects.close()
+	if err == nil || !strings.Contains(err.Error(), "more than the 16384") {
+		t.Errorf("an oversized tree: error = %v", err)
+	}
+	if got := strings.Join(objects.requests, "; "); got != "info "+wide {
+		t.Errorf("an oversized tree: requests = %s, want its info alone", got)
+	}
+
 	// And what attest writes is read whole.
 	attested := mktree(t, dir, 1, "040000 tree "+leaf, "prose-format")
 	notes, err := gitRepository{}.notes(attested)

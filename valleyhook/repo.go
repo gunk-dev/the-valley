@@ -68,17 +68,20 @@ func (gitRepository) symbolic(ref string) (bool, error) {
 }
 
 // notes walks the tree id names and returns every note in it, keyed by
-// path. Every tree is read one level at a time and every object's type and
-// size are read before its content, so a bound is enforced before the
-// bytes it bounds are read. Any entry that is not a tree or a plain file,
-// and any bound crossed, refuses the whole tree.
+// path. Every tree is read one level at a time, and every object's type
+// and size are asked for, and checked against the bounds, before its
+// content is asked for at all. Any entry that is not a tree or a plain
+// file, and any bound crossed, refuses the whole tree.
 func (gitRepository) notes(id string) (map[string][]byte, error) {
 	objects, err := openObjects()
 	if err != nil {
 		return nil, err
 	}
 	defer objects.close()
+	return walkNotes(objects, id)
+}
 
+func walkNotes(objects *objectStream, id string) (map[string][]byte, error) {
 	w := walk{objects: objects, hashSize: len(id) / 2, found: map[string][]byte{}}
 	if err := w.tree(id, "", 1); err != nil {
 		return nil, err
@@ -158,17 +161,20 @@ func treeEntry(body []byte, hashSize int) (mode, name, id string, rest []byte, e
 }
 
 // objectStream reads objects one at a time out of a single
-// `git cat-file --batch`, which answers each request with the object's id,
-// type and size on one line before its content.
+// `git cat-file --batch-command`. It asks for an object's type and size
+// first (`info`), and asks for its content (`contents`) only once those
+// have passed every bound, so git is never asked to produce an object the
+// walk would refuse. requests records what was asked, in order.
 type objectStream struct {
-	cmd   *exec.Cmd
-	in    io.WriteCloser
-	out   *bufio.Reader
-	spent int
+	cmd      *exec.Cmd
+	in       io.WriteCloser
+	out      *bufio.Reader
+	spent    int
+	requests []string
 }
 
 func openObjects() (*objectStream, error) {
-	cmd := exec.Command(gitProgram, "--no-replace-objects", "cat-file", "--batch")
+	cmd := exec.Command(gitProgram, "--no-replace-objects", "cat-file", "--batch-command")
 	cmd.Env = gitEnvironment(os.Environ())
 	in, err := cmd.StdinPipe()
 	if err != nil {
@@ -184,36 +190,53 @@ func openObjects() (*objectStream, error) {
 	return &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096)}, nil
 }
 
-// read returns the content of object id, which must be of type kind and at
-// most max bytes, and must fit what is left of the walk's byte budget.
-// Both are checked against the size git reports before the content is
-// read, so an object past a bound is never read at all.
-func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
-	if _, err := fmt.Fprintln(s.in, id); err != nil {
-		return nil, err
+// ask sends one command and reads the header line git answers it with:
+// the object's id, type and size.
+func (s *objectStream) ask(command, id string) (kind string, size int, err error) {
+	s.requests = append(s.requests, command+" "+id)
+	if _, err := fmt.Fprintf(s.in, "%s %s\n", command, id); err != nil {
+		return "", 0, err
 	}
 	header, err := s.out.ReadString('\n')
 	if err != nil {
-		return nil, fmt.Errorf("could not be read: %v", err)
+		return "", 0, fmt.Errorf("could not be read: %v", err)
 	}
 	fields := strings.Fields(header)
 	if len(fields) == 2 && fields[1] == "missing" {
-		return nil, errors.New("names an object the push did not bring")
+		return "", 0, errors.New("names an object the push did not bring")
 	}
 	if len(fields) != 3 {
-		return nil, fmt.Errorf("could not be read: git answered %q", strings.TrimSpace(header))
+		return "", 0, fmt.Errorf("could not be read: git answered %q", strings.TrimSpace(header))
 	}
-	if fields[1] != kind {
-		return nil, fmt.Errorf("points at a %s, where an attestation holds a %s", fields[1], kind)
+	size, err = strconv.Atoi(fields[2])
+	if err != nil || size < 0 {
+		return "", 0, fmt.Errorf("could not be read: git answered %q", strings.TrimSpace(header))
 	}
-	size, err := strconv.Atoi(fields[2])
+	return fields[1], size, nil
+}
+
+// read returns the content of object id, which must be of type kind and at
+// most max bytes, and must fit what is left of the walk's byte budget. The
+// type and size are asked for and checked first; the content is asked for
+// only once they pass, so an object past a bound is never produced.
+func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
+	got, size, err := s.ask("info", id)
 	switch {
-	case err != nil || size < 0:
-		return nil, fmt.Errorf("could not be read: git answered %q", strings.TrimSpace(header))
+	case err != nil:
+		return nil, err
+	case got != kind:
+		return nil, fmt.Errorf("points at a %s, where an attestation holds a %s", got, kind)
 	case size > max:
 		return nil, fmt.Errorf("is a %s of %d bytes, more than the %d an attestation's may be", kind, size, max)
 	case s.spent+size > maxBytes:
 		return nil, fmt.Errorf("would take the walk past the %d bytes an attestation may hold", maxBytes)
+	}
+	again, confirmed, err := s.ask("contents", id)
+	if err != nil {
+		return nil, err
+	}
+	if again != kind || confirmed != size {
+		return nil, fmt.Errorf("changed between being sized and being read: git answered %s %d", again, confirmed)
 	}
 	s.spent += size
 	body := make([]byte, size+1) // the content and git's closing newline
@@ -223,8 +246,8 @@ func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
 	return body[:size], nil
 }
 
-// close ends the stream. A walk that stopped at a bound leaves an object
-// unread, so the process is killed rather than drained.
+// close ends the stream. The process is killed rather than asked to
+// finish, since a walk that stopped at a bound has nothing more to ask.
 func (s *objectStream) close() {
 	_ = s.in.Close()
 	_ = s.cmd.Process.Kill()

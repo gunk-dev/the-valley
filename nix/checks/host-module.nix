@@ -14,6 +14,8 @@ let
     acceptEnvHost
     matchAcceptEnvHost
     wildcardAcceptEnvHost
+    quotedAcceptEnvHost
+    tabAcceptEnvHost
     setEnvHost
     permitUserEnvironmentHost
     conflictingKeysHost
@@ -64,6 +66,16 @@ let
       host = wildcardAcceptEnvHost;
       says = "G?T_*";
       why = "a wildcard that admits GIT_ variables admits them however it is spelled";
+    }
+    {
+      host = quotedAcceptEnvHost;
+      says = "holds a quote or a backslash";
+      why = "a quoted name is one sshd unquotes and admits, so a check that read it differently would pass it";
+    }
+    {
+      host = tabAcceptEnvHost;
+      says = "VALLEY_PRINCIPAL from the client";
+      why = "a name after a tab is a name sshd admits";
     }
     {
       host = setEnvHost;

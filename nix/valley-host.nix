@@ -686,19 +686,22 @@ let
   # every line of extraConfig, inside a Match block or not. The keyword is
   # matched in any case, as sshd matches it, with or without `=` after it;
   # the values are kept as written, because sshd's patterns and variable
-  # names are case-sensitive. Quotes around a value are dropped.
+  # names are case-sensitive. Values are split on any whitespace, tabs
+  # included, as sshd splits them. Quoting and escapes are not unpicked
+  # here: a value holding a quote or a backslash is refused below instead,
+  # because a reading that differed from sshd's would be a hole.
   sshdValues =
     keyword:
     let
       settings = config.services.openssh.settings;
       word = x: if lib.isBool x then (if x then "yes" else "no") else toString x;
-      words = v: lib.filter (w: w != "") (map (lib.removeSuffix "\"") (map (lib.removePrefix "\"") (lib.splitString " " v)));
+      words = v: lib.filter (w: lib.isString w && w != "") (builtins.split "[[:space:]]+" v);
       fromSettings = lib.concatMap (
         k:
         let
           v = settings.${k};
         in
-        if lib.isList v then map word v else words (word v)
+        if lib.isList v then lib.concatMap (x: words (word x)) v else words (word v)
       ) (lib.filter (k: lib.toLower k == lib.toLower keyword && settings.${k} != null) (lib.attrNames settings));
       fromExtra = lib.concatMap (
         line:
@@ -708,7 +711,7 @@ let
         if m == null || lib.toLower (lib.head m) != lib.toLower keyword then
           [ ]
         else
-          words (builtins.replaceStrings [ "\t" ] [ " " ] (lib.elemAt m 1))
+          words (lib.elemAt m 1)
       ) (lib.splitString "\n" config.services.openssh.extraConfig);
     in
     fromSettings ++ fromExtra;
@@ -1234,6 +1237,12 @@ in
       }) read
     )
     ++ [
+      {
+        assertion = !(lib.any (v: builtins.match ".*[\"'\\\\].*" v != null) (
+          sshdValues "AcceptEnv" ++ sshdValues "SetEnv"
+        ));
+        message = "sshd's AcceptEnv or SetEnv here holds a quote or a backslash, which sshd unpicks and this module does not. Write each name plainly, separated by spaces, so what is checked is what sshd reads.";
+      }
       {
         assertion = !(lib.any boundaryVariable (sshdValues "AcceptEnv"));
         message = "sshd accepts ${lib.concatStringsSep " " (lib.filter boundaryVariable (sshdValues "AcceptEnv"))} from the client (AcceptEnv), a pattern that admits ${principalEnv} or a GIT_ variable. The git user's shell drops them, and sshd must not offer them either. Remove the pattern.";

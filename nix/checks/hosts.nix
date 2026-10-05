@@ -212,6 +212,18 @@ in
     '';
   };
 
+  # The principal, single-quoted: sshd strips the quotes and admits it.
+  quotedAcceptEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.extraConfig = lib.mkAfter "AcceptEnv LANG 'VALLEY_PRINCIPAL'";
+  };
+
+  # The principal, separated from the pattern before it by a tab.
+  tabAcceptEnvHost = mkHost {
+    services.valley.config = ../../examples/hosts/protected.cue;
+    services.openssh.settings.AcceptEnv = "LANG\tVALLEY_PRINCIPAL";
+  };
+
   # A pattern that names neither variable outright and still admits one.
   wildcardAcceptEnvHost = mkHost {
     services.valley.config = ../../examples/hosts/protected.cue;

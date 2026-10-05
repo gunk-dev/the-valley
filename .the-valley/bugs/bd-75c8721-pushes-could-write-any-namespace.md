@@ -107,11 +107,16 @@ because requests already queued were filed before anything checked who filed the
    registry rather than compile a grant that would never apply.
 2. Declare `services.valley.grants.request` for whoever files the registry change, and protect the
    instance repository's main.
-3. Before deploying, stop the integrators and confirm they are inactive. Hold pushes with the
-   operator's hold file. The new shell honours it from the moment the host switches, through
-   valley-init's convergence, until the audits below are done.
-4. Deploy. Resolve whatever valley-init refuses: a hand-written pre-receive hook, a
-   `core.hooksPath`. Read the replacement refs it reports before deleting them.
+3. Build the new system before switching to it, and list the integrators it defines, including any
+   for a project this deployment newly protects.
+4. Before the switch, block git logins without touching sshd, by giving the git user a shell that
+   refuses every session, and drain the git sessions already running. Hold pushes with the
+   operator's hold file. Mask and stop every integrator, those running now and those the new system
+   defines. Then deploy. The switch restores the valley's shell, which honours the hold through
+   valley-init's convergence until the audits below are done. After the switch, list the integrators
+   from the running system's unit files and confirm each is masked and inactive. Resolve whatever
+   valley-init refuses: a hand-written pre-receive hook, a `core.hooksPath`. Read the replacement
+   refs it reports before deleting them.
 5. Audit the integration-request queue. A request records no filer. Where a request's origin is in
    doubt, withdraw it, to be filed again by a principal holding the grant.
 6. Release the hold, then start the integrators again.

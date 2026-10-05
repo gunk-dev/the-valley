@@ -136,12 +136,16 @@ usage: valley <verb> [args]
                    which is the only way to derive against a layer that
                    does not govern — the worked example under
                    examples/policy/, say:
-                     --schema FILE    default schema/verification.cue
+                     --schema FILE    default $VALLEY_VERIFICATION_SCHEMA
                      --instance DIR   default the owning valley's floor
                      --project DIR    default policy/project at the target
                    naming a layer stops this reading the source it
                    replaced. the schema is the shape a policy is written
-                   in rather than a layer, so it comes from this checkout.
+                   in rather than a layer, so it ships with this tool: the
+                   package sets VALLEY_VERIFICATION_SCHEMA to its own copy.
+                   with that unset, as when this script runs straight from
+                   a the-valley checkout, it is schema/verification.cue in
+                   the checkout.
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
@@ -1243,8 +1247,11 @@ cleanup_policy_tmp() {
 # gives the same answer from all of them.
 #
 # The schema is not a policy layer. It is the shape a policy is written in,
-# it ships with this tool, and the integrator takes its own from its
-# deployment rather than from the tip for the same reason.
+# and it ships with this tool: the package sets VALLEY_VERIFICATION_SCHEMA
+# to the copy it was built with, as the integrator's package does. Only
+# the-valley's own tree carries schema/, so this script reads the schema
+# there only when it runs straight from such a checkout with the variable
+# unset.
 #
 # Neither layer is ever the worked example under examples/policy/ — a gate
 # derived from an example is a gate nobody wrote. `checks` takes an option
@@ -1263,7 +1270,7 @@ POLICY_INSTANCE_LABEL=""
 POLICY_PROJECT=""
 POLICY_PROJECT_LABEL=""
 policy_defaults() {
-  POLICY_SCHEMA="$1/schema/verification.cue"
+  POLICY_SCHEMA="${VALLEY_VERIFICATION_SCHEMA:-$1/schema/verification.cue}"
   POLICY_INSTANCE=""
   POLICY_INSTANCE_LABEL=""
   POLICY_PROJECT=""

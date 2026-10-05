@@ -34,7 +34,7 @@ rec {
   # The integrator's CLI (bin/valley) wrapped for `nix run`. The script
   # itself must keep running bare from any checkout — the package is the
   # second of its two shipping modes, never a dependency of the first.
-  valley-script = pkgs.writeShellApplication {
+  valley-script-unwrapped = pkgs.writeShellApplication {
     name = "valley";
     runtimeInputs = [
       pkgs.git
@@ -45,6 +45,22 @@ rec {
     ];
     text = builtins.readFile ../bin/valley;
   };
+
+  # The shipping form. The verification schema travels with the script, as
+  # it does with the integrator: only the-valley's own tree carries
+  # schema/, so a project's checkout has none to read. --set-default leaves
+  # an explicit VALLEY_VERIFICATION_SCHEMA in charge.
+  valley-script =
+    pkgs.runCommand "valley"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe valley-script-unwrapped} $out/bin/valley \
+          --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
+      '';
 
   # The installed package: the wrapped script plus the shell completions,
   # at the standard paths home-manager/NixOS auto-link.

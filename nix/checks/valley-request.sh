@@ -113,6 +113,10 @@ git -C "$valleywork" push --quiet "$valley" main
 # check they require is named `phantom`. Nothing may derive it: a gate that
 # came from a worked example is a gate nobody wrote, and the name is here
 # so that the failure would be visible rather than plausible.
+#
+# schema/ is here because the-valley's own tree carries it. The packaged
+# CLI never reads it; only bin/valley run straight from the checkout does
+# (16).
 repo="$TMPDIR/project"
 git init --quiet "$repo"
 cd "$repo" || exit 1
@@ -456,8 +460,7 @@ repo2="$TMPDIR/floorless"
 git init --quiet "$repo2"
 cd "$repo2" || exit 1
 git remote add origin "$bare2"
-mkdir -p docs schema policy
-cp "$schemaFile" schema/verification.cue
+mkdir -p docs policy
 echo "the readme" > docs/readme.md
 echo "$valley" > policy/valley
 git add -A
@@ -874,6 +877,85 @@ if [ "$pushes" != 1 ]; then
   exit 1
 fi
 git checkout --quiet main
+
+# ----------------------------------------------------------------------
+# 16. A project other than the-valley carries no schema/. The schema ships
+#     with the tool, so the packaged CLI derives what a change owes and
+#     files the request from a checkout that has none. This is the case
+#     that failed in live use: [a]sk in a valley's config repository, which
+#     carries its own floor at policy/instance, refused with "no policy
+#     schema" and published nothing.
+cfgorigin="$TMPDIR/config.git"
+git init --quiet --bare "$cfgorigin"
+cfg="$TMPDIR/config"
+git init --quiet "$cfg"
+cd "$cfg" || exit 1
+git remote add origin "$cfgorigin"
+mkdir -p docs policy/instance
+cp "$valleywork/policy/instance/floor.cue" policy/instance/floor.cue
+echo "the readme" > docs/readme.md
+git add -A
+git commit --quiet -m base
+git push --quiet -u origin main
+git checkout --quiet -b topic/config
+echo "a config readme" > docs/readme.md
+git commit --quiet -am "a config readme"
+git push --quiet origin topic/config
+cfgdigest="$(attest digest --rev topic/config | cut -d: -f2)"
+
+printf 'a\n' > "$w/answers"
+valley review topic/config < "$w/answers" > "$w/config.out" 2> "$w/config.err"
+if grep -q 'no policy schema' "$w/config.err"; then
+  echo "valley-request: [a]sk looked for the schema in a project's checkout" >&2
+  cat "$w/config.err" >&2
+  exit 1
+fi
+grep -q '^checking topic/config at .*: tree-ok$' "$w/config.out"
+grep -qx "Submitted topic/config ($(git rev-parse --short topic/config)) for integration into origin/main." "$w/config.out"
+git -C "$cfgorigin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$cfgdigest/$keyhash" > /dev/null || {
+  echo "valley-request: [a]sk in a project without schema/ published no evidence" >&2
+  exit 1
+}
+if [ "$(git -C "$cfgorigin" rev-parse refs/the-valley/integration-requests/main/topic-config)" \
+  != "$(git rev-parse topic/config)" ]; then
+  echo "valley-request: [a]sk in a project without schema/ filed no request for its head" >&2
+  exit 1
+fi
+
+# checks without --schema reads the packaged schema too, and derives what
+# [a]sk ran from this repository's own floor.
+valley checks > "$w/config-checks.out" 2> "$w/config-checks.err"
+grep -qF '(this repository is its own valley)' "$w/config-checks.out"
+grep -qE '^  tree-ok +mandatory +prose$' "$w/config-checks.out"
+
+# The packaged schema is a default and not a pin. A schema named in the
+# environment is the one read, and --schema overrides both.
+if VALLEY_VERIFICATION_SCHEMA="$TMPDIR/no-such-schema.cue" valley checks \
+  > "$w/envschema.out" 2> "$w/envschema.err"; then
+  echo "valley-request: VALLEY_VERIFICATION_SCHEMA did not replace the packaged schema" >&2
+  exit 1
+fi
+grep -qF "no policy schema at $TMPDIR/no-such-schema.cue" "$w/envschema.err"
+VALLEY_VERIFICATION_SCHEMA="$TMPDIR/no-such-schema.cue" valley checks --schema "$schemaFile" \
+  > "$w/flagschema.out" 2> "$w/flagschema.err"
+grep -qE '^  tree-ok +mandatory +prose$' "$w/flagschema.out"
+
+# bin/valley run straight from a checkout, with nothing setting the
+# variable, reads schema/verification.cue in that checkout. the-valley's own
+# tree carries one, as the first scratch project does, and every other
+# project's tree does not.
+if env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks \
+  > "$w/bare-config.out" 2> "$w/bare-config.err"; then
+  echo "valley-request: bin/valley run bare found a schema in a checkout without one" >&2
+  exit 1
+fi
+grep -qF "no policy schema at $(git rev-parse --show-toplevel)/schema/verification.cue" \
+  "$w/bare-config.err"
+cd "$repo" || exit 1
+env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "$first" topic/one \
+  > "$w/bare.out" 2> "$w/bare.err"
+grep -qE '^  tree-ok +mandatory +prose$' "$w/bare.out"
 
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a

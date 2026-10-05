@@ -70,6 +70,10 @@
   # log to see that ONE of them carried the evidence and the request
   # together. Every check the scratch policy declares uses the command
   # runner, for the reason attest-e2e gives: a nix build has no daemon.
+  # The packaged CLI carries its own schema, so the scratch projects that
+  # stand for projects other than the-valley carry no schema/. cliScript is
+  # bin/valley itself, for its other shipping mode: run straight from a
+  # the-valley checkout, it reads the schema there.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git
@@ -79,6 +83,7 @@
       packages.valley-script
     ];
     schemaFile = ../../schema/verification.cue;
+    cliScript = ../../bin/valley;
   } (builtins.readFile ./valley-request.sh);
 
   # Read origin's request/outcome refs and distinguish a pending request,

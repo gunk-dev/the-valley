@@ -20,12 +20,11 @@ The roadmap gives no dates. Each step says what it unlocks. What runs today is i
 | 6    | M7: throughput and research                     | Ongoing, after step 5         |
 
 M2 (real builds, a binary cache, promotion and canaries) and the rest of M4 (the-valley's refocus)
-are planned. They have no place in the sequence yet.
+are under Further work below. The plan gives them no position in the sequence.
 
 ### 1. Close present-day holes (done)
 
-These steps closed the paths by which an agent could reach root on a host, or change a host, with no
-human act:
+This step closes particular paths from an agent to a host:
 
 - M0, containment: klaus does not merge on approval, unifi-sync runs only by hand, and the update
   workflows open pull requests.
@@ -34,21 +33,25 @@ human act:
 - M1-A, converge: a host health-checks each new generation, rolls back on failure, and holds the bad
   revision.
 - M1-B, the verifier: `sigverify` checks OpenSSH signatures, including the hardware key's presence
-  bit. It is landed and not wired to anything yet.
+  bit. It is on `main` and not wired to anything yet.
 - The ref policy: the valley's push hook is default-deny, and filing an integration request needs
   the `request` grant.
-- The CI runners' root helpers are hardened, so a pull request job cannot reach root on the CI host.
+- The CI runners' root helpers run with a clean environment, which closes the known path from a pull
+  request job to root on the CI host. Isolating the runners (M2) is the durable fix.
 
-**Unlocks:** no agent-approved change reaches `main` automatically, and a bad rollout undoes itself.
+**Unlocks:** an agent's approval does not merge a change by itself, and a failed activation rolls
+back or holds. A merge to cosmo's `main` on GitHub still deploys, and `patflynn-agent` can make one
+(see [security.md](./security.md#residual-risks)).
 
 ### 2. M3: agent isolation (done)
 
-The coordinator and all agents run in the `klaus-env` VM on classic-laddie. On GitHub they act as
-the `patflynn-agent` account. On the valley they push as the `klaus-env` principal, which may push
-topic branches and nothing else. The operator's Unix account runs no agents.
+Per the cutover record of 2026-10-04 (plan Status), the coordinator and all agents run in the
+`klaus-env` VM on classic-laddie, and the operator's Unix account runs no agents. On GitHub they act
+as the `patflynn-agent` account. On the valley they push as the `klaus-env` principal, which holds a
+push grant and no `request` grant.
 
 **Unlocks:** the valley's server-side gates bind agents whether or not the agents follow the rules.
-An agent cannot file an integration request, because only the operator's principal holds `request`.
+An agent cannot file an integration request, because its principal does not hold `request`.
 
 ### 3. M5: cosmo on the valley (next)
 
@@ -75,7 +78,8 @@ This step is rebuilt on `sigverify`. It has two halves.
   moves to the operator's `ssh:valley-approve` YubiKey keys, so filing a request takes a touch. A Go
   `valley approve` signs the repository, the change, the candidate commit, the target and the policy
   snapshot, with batching. The integrator enforces approvals per path class. By default the
-  approval-required classes are governance, policy, identity, check definitions and `docs/`.
+  approval-required classes are governance, policy, identity and check definitions. `docs/` is an
+  approval-required class by plan decision 10, and this rework is where that is enforced.
 
 **Unlocks:** landing on `main` and deploying to a host become separate acts, each signed by the
 operator. Agents can then hold `request` for low-risk paths, while infrastructure changes still need
@@ -103,7 +107,7 @@ where agent wall-clock time goes.
 
 **Unlocks:** more accepted changes per human touch, measured against unchanged acceptance criteria.
 
-## Planned, not yet sequenced
+## Further work
 
 - **M2, builds and rollout.** CI builds every converging host, including the aarch64 Pis. Harmonia
   on classic-laddie serves the cache. CI runners get memory and CPU caps. `cosmo-promote` runs in
@@ -148,7 +152,6 @@ where agent wall-clock time goes.
 3. **The work-profile switch.** Keep it paused, or bring it under signed promotion.
 4. **Phase 2 release manifests.** When releases pin exact closures, signed off classic-laddie, so
    the cache becomes untrusted transport.
-5. **`docs/` as an approval-required path class.** Now, or with the approval rework.
-6. **The `klaus-env` memory size.** The VM's memory is too small for a full `nix flake check` of
+5. **The `klaus-env` memory size.** The VM's memory is too small for a full `nix flake check` of
    cosmo.
-7. **Where new knowledge-graph nodes go.** See the proposal in [AGENTS.md](../AGENTS.md).
+6. **Where new knowledge-graph nodes go.** See the proposal in [AGENTS.md](../AGENTS.md).

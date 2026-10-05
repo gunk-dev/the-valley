@@ -1,9 +1,16 @@
 # Security and rollouts
 
 This document describes how the-valley and cosmo protect the operator's hosts. It follows the path a
-change takes, and names the gate at each step, its status, and the check that demonstrates it. A
-claim with no check says so. The components are described in [architecture.md](./architecture.md),
-and the planned gates are in [roadmap.md](./roadmap.md).
+change takes, and names the gate at each step and its status. The components are described in
+[architecture.md](./architecture.md), and the planned gates are in [roadmap.md](./roadmap.md).
+
+The document makes three kinds of statement:
+
+- **Behaviour** is what the code does, cited to the files that do it.
+- **A deployment record** reports an observation of a live host. It names its source and date, for
+  example the cutover record of 2026-10-04 in the plan's Status table.
+- **A guarantee** names the executable check that demonstrates it. A statement with no named check
+  is unchecked, and says so.
 
 The main threat is an AI agent acting as the operator. So the gates must hold even when an agent
 ignores its instructions. The human act of authority is a touch on a hardware key. An approval gate
@@ -20,20 +27,25 @@ counts as done only when a check has shown it refusing what it should refuse
 | 2    | Only the operator can file an integration request | Live                       |
 | 3    | Filing takes a touch                              | Queued                     |
 | 4    | Hosts deploy only what the operator signed        | Designed, redesign pending |
-| 5    | Bad rollouts undo themselves                      | Live                       |
+| 5    | A failed rollout rolls back or holds              | Live                       |
 
 ### 1. Agents are not the operator
 
-The coordinator and all agents run in the `klaus-env` VM on classic-laddie (cosmo
-`modules/klaus-env/`, `hosts/classic-laddie/klaus-env.nix`, `docs/klaus-env.md`). The operator's
-Unix account runs no agents.
+The cutover record of 2026-10-04 (plan Status) puts the coordinator and all agents in the
+`klaus-env` VM on classic-laddie, and no agents in the operator's Unix account. The VM is defined in
+cosmo `modules/klaus-env/` and `hosts/classic-laddie/klaus-env.nix`.
 
-- **The boundary is the VM.** The guest has no host directory shares and no operator secrets. It
-  runs its own Nix daemon. Root inside the guest is accepted.
-- **Its own identities.** On GitHub the guest acts as `patflynn-agent`. On the valley its key
-  belongs to the `klaus-env` principal, which may push topic branches and nothing else.
+- **The boundary is the VM.** The guest runs its own NixOS kernel under cloud-hypervisor, using the
+  host's KVM. It has no host directory shares and no operator secrets. It runs its own Nix daemon.
+  Root inside the guest is accepted.
+- **Its own identities.** On GitHub the guest acts as `patflynn-agent`. On the valley, the cutover
+  record registers the guest's key as the `klaus-env` principal, with a push grant and no `request`
+  grant. Like any admitted key, it can push topic branches and create attestation refs. The hook
+  accepts an attestation ref only when every note in it verifies under a known signer
+  (`valleyhook/policy.go`, `valleyhook/attestation.go`).
 - **Caps.** The VM has 8 vCPUs and 10 GiB of memory. Its systemd slice caps CPU at 900% and memory
-  at 12 GiB, so guest builds cannot starve the host.
+  at 12 GiB, and gives it a low I/O weight. The source notes the I/O weighting is advisory on ZFS.
+  No check exercises the caps.
 - **Egress.** Host firewall tables (`modules/klaus-env/host.nix`) let the guest reach the two LAN
   DNS resolvers, ssh on the host itself, and TCP 443 on public IPv4. Everything else is dropped:
   private and other special-purpose ranges, the tailnet, other host ports, spoofed sources and all
@@ -43,19 +55,20 @@ Unix account runs no agents.
 
 Checks: cosmo `checks.x86_64-linux.klaus-env-firewall` (a three-node VM test with negative
 controls), `klaus-env-sshd` (the host's real sshd config) and `klaus-env-check` (the probe tool's
-unit tests). From inside the running guest, `klaus-env-check` probes the live boundary; its last run
-passed 54 of 54. That the guest's valley key cannot file a request is shown by the refusal of a
-request push from the guest (step 2).
+unit tests). The cutover record also reports a run of `klaus-env-check` inside the live guest, which
+passed 54 of 54 probes.
 
 ### 2. Only the operator can file an integration request
 
 The push hook refuses an integration-request ref unless the pushing principal holds the `request`
 grant (`valleyhook/policy.go`). The principal comes from the key that logged in, and a client cannot
-set it (`valleyhook/shell.go`). The registry gives `request` to the operator's principal only. Every
-key of that principal holds it.
+set it (`valleyhook/shell.go`). Checks: `protect-e2e` and `ssh-e2e`, which use test identities, a
+grant holder and a non-holder, behind a real sshd.
 
-Checks: `protect-e2e` and `ssh-e2e` (a real sshd, a grant holder and a non-holder) in the-valley.
-From the guest, a request push and a `refs/replace` push are refused and a topic push is accepted.
+Who holds the grant on the live host is a deployment record. The ref-policy deployment record of
+2026-10-04 (plan Status) shows the compiled grants file naming only the operator's principal. Every
+key of that principal holds the grant. The cutover record reports that, from the guest, a request
+push and a `refs/replace` push are refused and a topic push is accepted.
 
 ### 3. Filing takes a touch (queued)
 
@@ -67,72 +80,89 @@ test. The registry schema does not accept hardware-backed keys yet.
 ### 4. Hosts deploy only what the operator signed (designed, redesign pending)
 
 The design is M1-C: hosts verify signed, sequenced release tags and never track `main`. It is being
-rebuilt on `sigverify`. Today the converging hosts (classic-laddie, weller, cutie-pi and sweetie-pi)
-build and activate the tip of cosmo's `main` (cosmo `modules/converge/`, `docs/converge.md`). On
-classic-laddie and weller a GitHub push webhook starts the run. Every converging host also runs it
-hourly. So a merge to cosmo's `main` deploys within the hour.
+rebuilt on `sigverify`.
 
-### 5. Bad rollouts undo themselves
+The converging hosts (classic-laddie, weller, cutie-pi and sweetie-pi) build and activate the tip of
+cosmo's `main` (cosmo `modules/converge/`, `docs/converge.md`). On classic-laddie and weller a
+GitHub push webhook starts a run. Every converging host also runs on an hourly timer with up to five
+minutes of random delay. Converge accepts any new commit on `main`; it does not check who made it.
+The build time, a standing hold, or a kernel or systemd change that waits for a reboot can delay
+activation further. No check bounds the delay.
+
+### 5. A failed rollout rolls back or holds
 
 cosmo's converge activates a new generation with `switch-to-configuration test`, then runs the last
-known good generation's health check (cosmo `modules/converge/`, `docs/converge.md`). The health
-check covers required units, an sshd banner, the default route, and on the Pis their DNS service.
+known good generation's health check (cosmo `modules/converge/scripts.nix`). The health check covers
+required units, an sshd banner, the default route, and on the Pis their DNS service.
 
-- **Pass:** converge commits the generation with `switch`.
-- **Fail:** converge switches back to the running system, quarantines the revision, and records
-  `phase=failed`. A quarantined revision is not applied again until the operator clears it or `main`
-  moves past it.
+- **Pass:** converge commits the generation with `switch`. The health check runs before this second
+  activation, so a failure that appears only during `switch` is not checked.
+- **Fail:** converge switches back to the running system with `test`, quarantines the revision, and
+  records `phase=failed`. If switching back fails, converge holds for the operator. A quarantined
+  revision is not applied again until the operator clears it or `main` moves past it.
+- **Interrupted run:** a run interrupted midway gets one repair attempt, then holds for the operator
+  as `needs-operator`.
 - **Kernel or boot changes:** converge stages the generation for the next boot. After the reboot,
   the health check runs. On failure, converge stages the last good generation back and the next
   reboot restores it.
-- **Resolvers:** a Pi does not reboot while its peer resolver is unhealthy (cosmo
-  `hosts/pi-dns/peer-check.nix`). classic-laddie has a public fallback resolver.
+- **Resolvers:** a Pi reboots only when a peer resolver answers, unless its own resolver is failing
+  or converge has staged a rollback (cosmo `hosts/pi-dns/peer-check.nix`). classic-laddie has a
+  public fallback resolver.
 
 Checks: cosmo `checks.x86_64-linux.cosmo-rebuild`, `cosmo-rebuild-vm` (a VM test of rollback),
-`auto-reboot`, `resolver-redundancy` and `converge-status`.
+`auto-reboot`, `resolver-redundancy` and `converge-status`. The plan records open review findings on
+converge, and cosmo's ROADMAP D11 carries them as the acceptance criteria of a Go port.
 
 ## Threat model
 
-| Threat                             | Response today                                                                                                                                      |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent acting as the operator    | Agents run in `klaus-env` with their own identities and no operator keys (step 1). The push hook scopes refs by principal (step 2).                 |
-| The interactive coordinator        | It runs in `klaus-env` with the other agents. Only a verified touch stops an agent that holds a grant, and that gate is queued (step 3).            |
-| A compromised agent                | Assume arbitrary commands inside the VM. The VM has no production secrets and no signing sockets, and its egress is limited.                        |
-| A broken but honest change         | Owed checks must pass before a landing. A bad rollout rolls back (step 5). A human signature authorizes risk; it does not prove correctness.        |
-| A lost hardware key                | An offline backup YubiKey is enrolled for every role.                                                                                               |
-| classic-laddie compromised or down | Other hosts keep their current systems. Recovery that does not depend on classic-laddie is planned with M1-C.                                       |
-| A bad network or DNS change        | Pi reboots wait for a healthy peer resolver, and classic-laddie has a fallback resolver. unifi-sync has no automatic trigger and runs only by hand. |
+| Threat                             | Response today                                                                                                                                                  |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent acting as the operator    | Agents run in `klaus-env` with their own identities and no operator keys (step 1). The push hook scopes refs by principal (step 2).                             |
+| The interactive coordinator        | It runs in `klaus-env` with the other agents. Only a verified touch stops an agent that holds a grant, and that gate is queued (step 3).                        |
+| A compromised agent                | Assume arbitrary commands inside the VM. The VM has no production secrets and no signing sockets, and its egress is limited.                                    |
+| A broken but honest change         | A landing needs a signed statement that each owed check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness. |
+| A lost hardware key                | An offline backup YubiKey holds every role (plan Trust roots, 2026-10-04).                                                                                      |
+| classic-laddie compromised or down | Other hosts keep their current systems. Recovery that does not depend on classic-laddie arrives with M1-C.                                                      |
+| A bad network or DNS change        | A Pi's reboot waits for a peer resolver, with the exceptions in step 5. classic-laddie has a fallback resolver. unifi-sync has no automatic trigger.            |
 
 ## Trust roots
 
-- **Two YubiKeys**, a primary and an offline backup. Each holds an approve key
-  (`ssh:valley-approve`, touch), a release key (`ssh:cosmo-release`, PIN and touch) and an age PIV
-  identity for secrets. The ssh keys are enrolled, and no code uses them yet. The age identities are
-  cosmo's `keys.admins` (cosmo `secrets/keys.nix`).
-- **A Tillitis TKey** is planned as the offline root for trust-root changes. It is not set up yet.
+- **Two YubiKeys**, a primary and an offline backup. Per the plan's Trust roots record of
+  2026-10-04, each holds an approve key (`ssh:valley-approve`, touch), a release key
+  (`ssh:cosmo-release`, PIN and touch) and an age PIV identity for secrets. No code uses the ssh
+  keys yet. The age identities are cosmo's `keys.admins` (cosmo `secrets/keys.nix`).
+- **A Tillitis TKey** is the intended offline root for trust-root changes. It is not set up.
   `sigverify` has a `tkey-signer` class for it.
 - **Host ssh keys**, which agenix uses to decrypt each host's secrets (cosmo `secrets/keys.nix`).
 
 ## Secrets
 
 cosmo keeps its secrets in agenix (cosmo `secrets/secrets.nix`, `docs/secrets-management.md`). Every
-secret is encrypted to the two YubiKey age identities and the host keys, and to no user key. So
-decrypting a secret off a host takes a YubiKey touch. Decrypted secrets on a host are mode `0400`.
-No check asserts the recipient list. A rekey is verified by reading the age headers.
+secret is encrypted to the two YubiKey age identities and to every host key, and to no user key.
 
-## What only the operator does
+- Decrypting with a YubiKey identity takes a touch.
+- The host keys are software keys. A copy of any host's private key decrypts every secret, on any
+  machine.
+- The recipients include the host key of the retired `klaus-worker-0` VM until the next rekey.
 
-- Files integration requests, with `valley review` and `[a]sk`.
-- Merges on GitHub, for repositories still developed there.
+Decrypted secrets on a host are mode `0400`. No check asserts the recipient list. A rekey is
+verified by reading the age headers.
+
+## What the operator does
+
+- Files integration requests, with `valley review` and `[a]sk`. This is the only act on this list
+  that a check enforces (step 2).
+- Merges on GitHub, for repositories still developed there. `patflynn-agent` can merge too (see
+  Residual risks).
 - Rekeys and edits secrets, with a YubiKey touch.
-- Later, with M1-C: signs releases and approves protected path classes.
+- With M1-C: signs releases and approves protected path classes.
 
 ## The autonomy ladder
 
-Automation comes back in deterministic forms, under policy the operator signs. Agents never decide
-for themselves when to deploy.
+Automation grows in deterministic forms, under policy the operator signs. Agents never decide for
+themselves when to deploy.
 
-1. **Today.** A human merge is the gate, and a merge deploys within the hour.
+1. **Today.** A merge to cosmo's `main` is the gate, and converge deploys it on its next run.
 2. **After M1-C.** A signed release is the gate, and a merge does not deploy. One touch and PIN
    signs a batch. Rollout through canaries, soak and rollback runs unattended.
 3. **A batched cadence.** A scheduled release promotes everything accumulated, and one touch signs
@@ -141,23 +171,27 @@ for themselves when to deploy.
    integration, cosmo's bumps of them can merge when checks pass. They still ship through releases.
 5. **A delegated release signer.** A machine key in the release environment, out of agents' reach,
    signs releases that touch only declared low-risk path classes. The operator signs that policy
-   with a touch. Entry criterion: health-gated rollback has caught real failures in production, and
-   the touches per week are measured.
+   with a touch. Entry criterion: a record of health-gated rollback catching real failures in
+   production, and a measured count of touches per week.
 
 ## Residual risks
 
-- **`patflynn-agent` can write to cosmo on GitHub.** An agent could merge to cosmo's `main`, which
-  deploys within the hour. This closes when cosmo moves onto the valley (M5).
+- **`patflynn-agent` can write to cosmo on GitHub.** An agent can merge to cosmo's `main`, and
+  converge deploys it on its next run. This closes when cosmo moves onto the valley (M5).
 - **Old secret ciphertext stays decryptable.** cosmo's git history holds secrets encrypted to a key
   agents could once read. Rotation is deferred.
-- **A guest escape lands on classic-laddie.** The VM shares classic-laddie's kernel and hypervisor,
-  and classic-laddie also runs the valley.
+- **A guest escape lands on classic-laddie.** The guest has its own kernel. An escape through KVM or
+  cloud-hypervisor reaches classic-laddie, which also runs the valley.
 - **Every key of the operator's principal holds `request`.** Filing needs no touch until step 3
   lands.
 - **Check definitions come from the change.** A change can edit the flake check it is judged by
   ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md)).
-  the-valley's own code paths owe only the floor's `unclassified` checks.
+  the-valley's project layer declares no class for its own code paths. Whether the floor does
+  depends on qinling's private policy.
 - **Two hosts update unsigned.** johnny-walker and makers-nix run `system.autoUpgrade` from GitHub
   (cosmo `modules/common/system.nix`).
 - **The bus has no authentication.** Any local process on classic-laddie can publish events. Nothing
   treats an event as authoritative.
+- **`integrator` is a named writer of `main`.** cosmo lists it in `protection.writers` for both
+  projects (cosmo `hosts/classic-laddie/valley.cue`). A key tagged `integrator` could push `main`
+  directly. The host's declared keys carry no such tag. The registry's keys live in qinling.

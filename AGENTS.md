@@ -30,23 +30,35 @@ back?
 The docs are layered. Each document stays at its altitude:
 
 1. **Premise** — [README.md](./README.md). What this is and why it matters. No mechanisms.
-2. **Problem space** — [archive/design/user-scenarios.md](./archive/design/user-scenarios.md) and
-   [archive/design/requirements.md](./archive/design/requirements.md). What must hold, derived from
-   the scenarios. No solution detail.
-3. **Architecture** — [archive/design/architecture.md](./archive/design/architecture.md). The bets
-   and their rationale, traced to requirements.
-4. **Detailed design** — the remaining files under [archive/design/](./archive/design/). Internals,
-   formats, mechanics.
+2. **Purpose and principles** — [docs/purpose.md](./docs/purpose.md). The operator's goals, the
+   principles that govern the system, ownership boundaries, and what makes a change fitting or
+   unfitting.
+3. **Architecture and security** — [docs/architecture.md](./docs/architecture.md) and
+   [docs/security.md](./docs/security.md). What runs in production, how each gate along the path of
+   a change protects the hosts, and which executable check verifies each guarantee.
+4. **Roadmap** — [docs/roadmap.md](./docs/roadmap.md). Sequenced milestones, what each step unlocks,
+   deliberately deferred ideas, and open decisions.
+5. **Archive** — [archive/design/](./archive/design/) and
+   [archive/.the-valley/](./archive/.the-valley/). Read-only historical exploration and
+   knowledge-graph nodes kept so stable node IDs (`dcr-*`, `ida-*`, `bd-*`, `oc-*`) cited in code,
+   schemas, and commit history continue to resolve.
 
 When you find detail at the wrong altitude, move it down rather than piling on. Prune elaboration
 freely — mechanics, taxonomies, and formats can be re-derived, and deleted text lives in git
 history. Never silently compress insight: a conceptual move or reframe does not re-derive on demand.
-If an insight does not fit the document it arose in, capture it at full fidelity as a
-knowledge-graph node and leave a one-line pointer.
 
 ## Knowledge-graph nodes
 
-Node mechanics — types, ids, frontmatter, linking — are defined in
-[archive/.the-valley/README.md](./archive/.the-valley/README.md). For the body: open with one plain
-paragraph saying what the idea, decision, or outcome is. Context, implications, and open questions
-follow it.
+Historical knowledge-graph nodes live under [archive/.the-valley/](./archive/.the-valley/), with
+node mechanics — types, IDs, frontmatter, and linking — defined in
+[archive/.the-valley/README.md](./archive/.the-valley/README.md). Each node opens with one plain
+paragraph stating the idea, decision, bug, or outcome, followed by context, implications, and open
+questions.
+
+**Proposal (open decision for the operator):** Keep `archive/.the-valley/` frozen as read-only
+history and record active design decisions directly in
+[docs/architecture.md](./docs/architecture.md), [docs/security.md](./docs/security.md), and
+[docs/roadmap.md](./docs/roadmap.md). When a durable insight or subtle bug discovery arises that
+does not belong in the four top-level docs, capture it as a new node in
+`docs/decisions/<id>-<slug>.md` validated by `schema/node.cue` and leave a one-line pointer in the
+relevant doc.

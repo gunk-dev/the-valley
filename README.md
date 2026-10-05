@@ -61,30 +61,20 @@ event bus onto which every push's ref updates are projected as events
 ([`schema/events.cue`](./schema/events.cue)), watchable with `valley tail`. The knowledge-graph
 convention has a checkable form as well: [`schema/node.cue`](./schema/node.cue) describes a node's
 frontmatter, and the flake exposes the lint that enforces it as `lib.knowledgeLint`, so any project
-can instantiate the same check over its own tree from a flake input. The plan-of-record —
-incremental, MVP-first, validation-gated — is
-[`archive/design/roadmap.md`](./archive/design/roadmap.md).
+can instantiate the same check over its own tree from a flake input. The plan of record is
+[`docs/roadmap.md`](./docs/roadmap.md).
 
 ## The docs
 
-- [`archive/design/user-scenarios.md`](./archive/design/user-scenarios.md) — the escalating ladder
-  of problem-space user scenarios the requirements derive from; only the top-priority rung carries
-  acceptance criteria.
-- [`archive/design/requirements.md`](./archive/design/requirements.md) — what the system must be:
-  who it's for, the unbundled needs, the constraints, non-goals.
-- [`archive/design/architecture.md`](./archive/design/architecture.md) — the bets and their
-  rationale: the event log, attestations instead of CI gates, the pull-based integrator, review as
-  feedback, knowledge as a graph.
-- [`archive/design/contribute.md`](./archive/design/contribute.md) — the contributor protocol: what
-  a human or agent does to push a change and request integration.
-- [`archive/design/verification.md`](./archive/design/verification.md) — pure vs. effectful checks
-  and what makes an attestation hard to forge.
-- [`archive/design/self-transparency.md`](./archive/design/self-transparency.md) — **DRAFT.** A
-  candidate invariant, deliberately unresolved: no actor can durably change the system or an output
-  without transparency, recursively. Names the facets; decides nothing.
-- [`archive/design/openquestions.md`](./archive/design/openquestions.md) — consolidated open
-  questions, tagged by layer.
-- [`archive/design/roadmap.md`](./archive/design/roadmap.md) — the incremental validation plan.
+- [`docs/purpose.md`](./docs/purpose.md) — purpose and principles.
+- [`docs/architecture.md`](./docs/architecture.md) — the-valley as deployed: what runs, and the life
+  of a change.
+- [`docs/security.md`](./docs/security.md) — security and rollouts: the gates along the path a
+  change takes, the trust roots, and the residual risks.
+- [`docs/roadmap.md`](./docs/roadmap.md) — the milestones, what each unlocks, what is deferred, and
+  the open decisions.
+- [`archive/`](./archive/) — the earlier design documents and knowledge graph, kept read-only so the
+  node ids cited in code still resolve.
 - [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
   plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
   derives the checks a change owes from the declared verification policy, and only reports them. The

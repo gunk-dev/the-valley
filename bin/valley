@@ -51,7 +51,9 @@ valley — S1 integrator verbs for a valley project
 
 usage: valley <verb> [args]
 
-  pending          list branches on origin not merged into origin/main
+  pending          list branches on origin not merged into origin/main,
+                   one line each: branch | head subject | age | author |
+                   ahead N | diffstat
   review <branch>  page through the branch's log and diff vs origin/main,
                    then choose:
                      [a]sk        file an integration request. runs the
@@ -225,14 +227,16 @@ page_file() {
 }
 
 pending_line() {
-  local ref="$1" age author ahead stat
+  local ref="$1" subject age author ahead stat
+  subject="$(git log -1 --format='%s' "$ref")"
+  [ "${#subject}" -le 60 ] || subject="${subject:0:57}..."
   age="$(git log -1 --format='%cr' "$ref")"
   author="$(git log -1 --format='%an' "$ref")"
   ahead="$(git rev-list --count "origin/main..$ref")"
   stat="$(git diff --shortstat "origin/main...$ref")"
   stat="${stat# }"
-  printf '%s | %s | %s | ahead %s | %s\n' \
-    "${ref#origin/}" "$age" "$author" "$ahead" "${stat:-no file changes}"
+  printf '%s | %s | %s | %s | ahead %s | %s\n' \
+    "${ref#origin/}" "$subject" "$age" "$author" "$ahead" "${stat:-no file changes}"
 }
 
 cmd_pending() {

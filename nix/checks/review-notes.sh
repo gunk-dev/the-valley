@@ -79,4 +79,15 @@ grep -q '^diff --git a/alpha.md b/alpha.md$' piped.log
 grep -q 'skipped scratch; nothing done' piped.log
 ! grep -q 'note(s) on scratch' piped.log
 
+# The pending list names each branch by its head commit's subject,
+# and truncates a long one with an ellipsis.
+valley pending > pending.log
+grep -q '^scratch | touch both files | ' pending.log
+git checkout --quiet -b longsubject origin/main
+git commit --quiet --allow-empty -m "$(printf 'x%.0s' $(seq 1 80))"
+git push --quiet origin longsubject
+git checkout --quiet main
+valley pending > pending.log
+grep -qE "^longsubject \| x{57}\.\.\. \| " pending.log
+
 touch "$out"

@@ -280,7 +280,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 
 | Command               | What it does                                                                                      |
 | --------------------- | ------------------------------------------------------------------------------------------------- |
-| `valley pending`      | Lists branches not merged into `main`.                                                            |
+| `valley pending`      | Lists branches not merged into `main`, each with its head commit's subject.                       |
 | `valley review <b>`   | Shows a branch and offers `[a]sk`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
 | `valley checks`       | Reports the checks a change owes. It runs nothing.                                                |
 | `valley status <b>`   | Reads the request and outcome record for a branch.                                                |

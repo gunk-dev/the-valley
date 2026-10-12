@@ -294,19 +294,24 @@ for tool in git sort cue; do
   done
 done
 
-# A diff cut short mid-record — a status with no path after it — is a
-# failure too, even though git exited 0.
-for opts in "" --names; do
-  # shellcheck disable=SC2086 # an empty $opts is no option at all
-  if SHIM_TRUNCATE=1 SHIM_REAL_PATH="$PATH" PATH="$shims:$PATH" \
-    bash "$cliScript" checks --schema "$schema" \
-    --instance "$policy/instance" --project "$policy/project" $opts \
-    "$base" HEAD > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
-    shim_fail "a truncated diff derived an answer"
-  fi
-  [ ! -s "$TMPDIR/shim.out" ] || shim_fail "a truncated diff printed to stdout"
-  grep -q 'truncated diff output' "$TMPDIR/shim.err" \
-    || shim_fail "a truncated diff was not named as one"
+# A diff cut short mid-record is a failure too, even though git exited 0:
+# cut inside the first path, after one status, and inside the second
+# status, after one whole record. The last is the one a plain `while
+# read` ends on quietly, dropping the record it cut.
+for cut in 1 2; do
+  for opts in "" --names; do
+    # shellcheck disable=SC2086 # an empty $opts is no option at all
+    if SHIM_TRUNCATE="$cut" SHIM_REAL_PATH="$PATH" PATH="$shims:$PATH" \
+      bash "$cliScript" checks --schema "$schema" \
+      --instance "$policy/instance" --project "$policy/project" $opts \
+      "$base" HEAD > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
+      shim_fail "a diff cut after $cut field(s) derived an answer"
+    fi
+    [ ! -s "$TMPDIR/shim.out" ] \
+      || shim_fail "a diff cut after $cut field(s) printed to stdout"
+    grep -q 'truncated diff output' "$TMPDIR/shim.err" \
+      || shim_fail "a diff cut after $cut field(s) was not named as one"
+  done
 done
 
 touch "$out"

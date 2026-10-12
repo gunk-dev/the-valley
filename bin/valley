@@ -1557,10 +1557,11 @@ check_is_mandatory() {
 # Every side of the diff: an added, modified or deleted path, and both the
 # old and the new path of a rename or copy. It reads `git diff -z
 # --name-status` on stdin, because a path may contain anything but NUL, and
-# fails on a record cut short.
+# fails on a record cut short — including one cut inside its status, which
+# a plain `while read` would end on quietly, dropping the record.
 diff_paths() {
   local status path
-  while IFS= read -r -d '' status; do
+  while IFS= read -r -d '' status || { [ -z "$status" ] || return 1; false; }; do
     IFS= read -r -d '' path || return 1
     printf '%s\n' "$path"
     case "$status" in

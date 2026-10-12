@@ -44,7 +44,7 @@ unclassified: 1 path(s) matched no class
 }
 
 // The deriver ends its report with what each owed check costs. Those lines
-// are for an author and owe nothing, so a report carrying them reads as
+// group the owed checks and owe nothing, so a report carrying them reads as
 // exactly the report without them — with an unclassified block between
 // the table and the summary, and with the summary straight after the table.
 func TestTheCostSummaryChangesNothingRead(t *testing.T) {
@@ -62,8 +62,8 @@ unclassified: 1 path(s) matched no class
   odd.txt
 `
 	summary := `
-run before pushing: code-build, prose-format
-left to the operator's [a]sk: vm-test
+quick: code-build, prose-format
+slow: vm-test
 `
 	for _, before := range []string{table, table + unclassified} {
 		want, err := parseDerived(before)
@@ -94,8 +94,8 @@ classes matched: code
 
 required checks:
 
-run before pushing: none
-left to the operator's [a]sk: none
+quick: none
+slow: none
 `},
 		{"a required-checks heading that ends the output", `abc1234..def5678: 2 changed path(s)
 policy: instance + policy

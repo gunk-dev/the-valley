@@ -104,7 +104,7 @@ expect "c-docs c-tmpl" "a deletion must count"
 grep -qE '^  c-docs +mandatory +docs$' <<<"$report"
 grep -qE '^  c-tmpl +default +docs$' <<<"$report"
 
-# A check's cost is advice and nothing more. The same diff under a
+# A check's cost is a declared property and owes nothing. The same diff under a
 # project layer that marks c-docs slow owes the same checks, for the
 # same classes, with the same mandatory bits: every line above the
 # cost summary is the same. Only the summary moves c-docs.
@@ -121,16 +121,16 @@ derive_slow() {
 quick_report="$report"
 report="$(derive_slow)"
 expect "c-docs c-tmpl" "a slow check must be owed as a quick one is"
-above_summary() { sed -e '/^run before pushing:/,$d' -e '/^policy:/d' <<<"$1"; }
+above_summary() { sed -e '/^quick:/,$d' -e '/^policy:/d' <<<"$1"; }
 [ "$(above_summary "$quick_report")" = "$(above_summary "$report")" ] || {
   echo "policy-deriver: marking a check slow changed what is owed" >&2
   diff <(above_summary "$quick_report") <(above_summary "$report") >&2
   exit 1
 }
-grep -qx 'run before pushing: c-docs, c-tmpl' <<<"$quick_report"
-grep -qx "left to the operator's \[a\]sk: none" <<<"$quick_report"
-grep -qx 'run before pushing: c-tmpl' <<<"$report"
-grep -qx "left to the operator's \[a\]sk: c-docs" <<<"$report"
+grep -qx 'quick: c-docs, c-tmpl' <<<"$quick_report"
+grep -qx 'slow: none' <<<"$quick_report"
+grep -qx 'quick: c-tmpl' <<<"$report"
+grep -qx 'slow: c-docs' <<<"$report"
 
 # The names alone are what an agent reads, so they are exactly the owed
 # names, one per line, and --cost filters them.
@@ -152,7 +152,7 @@ fi
 report="$(valley checks --schema "$schema" \
   --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")"
 grep -qx 'required checks: none' <<<"$report"
-if grep -q '^run before pushing:' <<<"$report"; then
+if grep -q '^quick:' <<<"$report"; then
   echo "policy-deriver: a change owing nothing printed a cost summary" >&2
   exit 1
 fi

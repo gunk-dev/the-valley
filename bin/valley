@@ -148,18 +148,17 @@ usage: valley <verb> [args]
                    with that unset, as when this script runs straight from
                    a the-valley checkout, it is schema/verification.cue in
                    the checkout.
-                   after the report, two lines split the owed checks by
-                   the cost the policy declares: `run before pushing` for
-                   the quick ones, and `left to the operator's [a]sk` for
-                   the slow ones, which take minutes or special hardware.
-                   [a]sk runs every owed check either way; the cost never
-                   changes what is owed.
+                   after the report, two lines group the owed checks by
+                   the cost the policy declares, `quick` or `slow`. a slow
+                   check takes minutes or needs special hardware. the cost
+                   changes nothing owed: [a]sk runs every owed check
+                   whatever its cost, and the integrator requires evidence
+                   for every one.
                      --names          print only the owed check names,
                                       one per line
                      --cost COST      with --names, only the quick or
-                                      the slow ones. an agent runs
-                                      `valley checks --names --cost quick`
-                                      and builds each name it prints
+                                      the slow ones, e.g.
+                                      `valley checks --names --cost slow`
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
@@ -1211,10 +1210,9 @@ glob_ere() {
 #
 # The catalogue is rendered because a caller that runs a check needs what
 # the policy says a check IS — its runner, and the attribute or command
-# line that runner takes — and an author deciding what to run first needs
-# its cost. `checks` reads only the cost, to say which owed checks can
-# wait for [a]sk; review's [a]sk turns the rest into the arguments attest
-# is given.
+# line that runner takes — and a tool that groups the owed checks needs
+# their cost. `checks` reads only the cost, to group the owed checks by
+# it; review's [a]sk turns the rest into the arguments attest is given.
 render_cue() {
   cat <<'EOF'
 package verification
@@ -1874,9 +1872,9 @@ cmd_checks() {
   fi
   derive_owed "$schema" "$instance" "$project" "$base" "$head" || exit 1
 
-  # The owed checks, sorted, and split by what the policy says they cost.
-  # The split is advice to an author and changes nothing owed: [a]sk runs
-  # every owed check, whatever it costs.
+  # The owed checks, sorted, and grouped by the cost the policy declares.
+  # The grouping changes nothing owed: [a]sk runs every owed check, and the
+  # integrator requires evidence for every one, whatever it costs.
   local check width=0
   local -a owed=() quick=() slow=() listed=()
   sort_into owed "${!DERIVED_OWED[@]}" \
@@ -1940,8 +1938,8 @@ cmd_checks() {
   # Below every line the integrator reads (integrator/policy.go), and
   # unindented, so neither line can read as a required check.
   if [ "${#owed[@]}" -gt 0 ]; then
-    printf '\nrun before pushing: %s\n' "$(join_or_none "${quick[@]}")"
-    printf "left to the operator's [a]sk: %s\n" "$(join_or_none "${slow[@]}")"
+    printf '\nquick: %s\n' "$(join_or_none "${quick[@]}")"
+    printf 'slow: %s\n' "$(join_or_none "${slow[@]}")"
   fi
 }
 

@@ -81,6 +81,5 @@ can instantiate the same check over its own tree from a flake input. The plan of
   policy it composes is this project's own layer at `policy/project` and the floor of the valley
   named at [`policy/valley`](./policy/valley), fetched from that valley's repository. Both are read
   from the tip of the branch the change targets, never from your checkout, which is what the
-  integrator reads — so the answer is the same from any branch, however stale. It also says which
-  owed checks to run before pushing, and which slow ones to leave to the operator's `[a]sk`;
-  `valley checks --names --cost quick` lists the first set, one name per line.
+  integrator reads — so the answer is the same from any branch, however stale. It also groups the
+  owed checks by their declared cost.

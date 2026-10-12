@@ -160,16 +160,14 @@ package verification
 	// window and a project can only narrow it.
 	validity?: #Duration
 
-	// What running the check costs its runner. A "quick" check is cheap
-	// enough to run before every push. A "slow" check takes minutes, or
-	// needs special hardware such as virtualisation support, so an author
-	// can leave it to the run made when the change is filed for
-	// integration. That run repeats every owed check, and it is the run
-	// whose results the integrator judges.
+	// What running the check costs its runner. A "quick" check is cheap.
+	// A "slow" check takes minutes, or needs special hardware such as
+	// virtualisation support.
 	//
-	// The cost is advice for an author, and `valley checks` reports it.
-	// It never changes which checks a change owes, and it never changes
-	// what the integrator requires or accepts.
+	// The cost is a declared property. `valley checks` groups the owed
+	// checks by it and can filter them by it. The integrator does not
+	// read it: [a]sk runs every owed check, and the integrator requires
+	// evidence for every owed check, whatever its cost.
 	cost: *"quick" | "slow"
 }
 

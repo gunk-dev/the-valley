@@ -990,6 +990,67 @@ for ((at = 1; at <= calls; at++)); do
   fi
 done
 
+# The same, for the derivation that resolves its own base: `merge-base` is
+# a call the explicit-base runs above never make, and --names is a second
+# way of printing what the derivation found. A run is shimmed for each
+# call, with the arguments the caller gives.
+defaulted_checks() {
+  echo 0 > "$TMPDIR/shim-count"
+  env -u VALLEY_VERIFICATION_SCHEMA SHIM_REAL_PATH="$PATH" SHIM_TOOL=git \
+    SHIM_FAIL_AT="$1" SHIM_STATUS=128 SHIM_COUNT="$TMPDIR/shim-count" \
+    PATH="$shims:$PATH" bash "$cliScript" checks "${@:2}"
+}
+git checkout --quiet topic/one
+for mode in report names; do
+  margs=()
+  [ "$mode" != names ] || margs=(--names)
+  defaulted_checks 0 "${margs[@]}" > "$w/dshim-want.out"
+  [ -s "$w/dshim-want.out" ] || {
+    echo "valley-request: default resolution ($mode) printed nothing" >&2
+    exit 1
+  }
+  calls="$(cat "$TMPDIR/shim-count")"
+  sawmb=0
+  for ((at = 1; at <= calls; at++)); do
+    if defaulted_checks "$at" "${margs[@]}" > "$w/dshim.out" 2> "$w/dshim.err" \
+      || [ -s "$w/dshim.out" ] || ! grep -q '^valley: ' "$w/dshim.err"; then
+      echo "valley-request: default resolution ($mode): git call $at of $calls failed, and the deriver did not refuse cleanly" >&2
+      cat "$w/dshim.out" "$w/dshim.err" >&2
+      exit 1
+    fi
+  done
+done
+git checkout --quiet -
+
+# A write that fails is a failure of the derivation, not a shorter list.
+# diff_paths runs with errexit off, so its printf is the case: the function
+# is cut out of the script and given a full disk to write to.
+fn="$(sed -n '/^diff_paths() {/,/^}/p' "$cliScript")"
+[ -n "$fn" ] || { echo "valley-request: diff_paths not found in the script" >&2; exit 1; }
+if (
+  eval "$fn"
+  printf 'M\0docs/a.md\0R100\0old\0new\0' | diff_paths > /dev/full
+) 2> "$w/full.err"; then
+  echo "valley-request: diff_paths returned 0 after its write failed" >&2
+  exit 1
+fi
+# And end to end: with no file allowed to grow, every intermediate file the
+# derivation writes fails, and nothing may print. The pipe keeps the
+# refusal readable, since a file stream would be cut off too.
+for mode in report names; do
+  margs=()
+  [ "$mode" != names ] || margs=(--names)
+  if out="$(
+    ulimit -f 0
+    trap '' XFSZ
+    env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "${margs[@]}" "$first" topic/one 2> /dev/null
+  )" || [ -n "$out" ]; then
+    echo "valley-request: a derivation with unwritable scratch files ($mode) did not fail cleanly" >&2
+    printf '%s\n' "$out" >&2
+    exit 1
+  fi
+done
+
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]sk, [b]ase,

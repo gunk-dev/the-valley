@@ -1541,8 +1541,9 @@ resolve_instance_layer() {
 # cannot disagree with `cue vet`.
 #
 # This is the one producer whose failure does not end the derivation. A
-# probe that fails for any other reason reads as mandatory, which is the
-# strict answer, and the bit never changes which checks are owed.
+# probe that fails for any other reason, or that cannot be written, reads as
+# mandatory, which is the strict answer, and the bit never changes which
+# checks are owed.
 check_is_mandatory() {
   local class="$1" check="$2" field
   if [ "$class" = unclassified ]; then
@@ -1550,7 +1551,10 @@ check_is_mandatory() {
   else
     field="policy: classes: \"$class\": requires: \"$check\": false"
   fi
-  printf 'package verification\n%s\n' "$field" > "$POLICY_TMP/probe.cue"
+  # A probe that could not be written may leave the last one in its place,
+  # and that one answers for another check. Mandatory is the strict answer.
+  printf 'package verification\n%s\n' "$field" > "$POLICY_TMP/probe.cue" \
+    || return 0
   ! cue vet "${POLICY_LAYER[@]}" "$POLICY_TMP/probe.cue" > /dev/null 2>&1
 }
 
@@ -1558,16 +1562,18 @@ check_is_mandatory() {
 # old and the new path of a rename or copy. It reads `git diff -z
 # --name-status` on stdin, because a path may contain anything but NUL, and
 # fails on a record cut short — including one cut inside its status, which
-# a plain `while read` would end on quietly, dropping the record.
+# a plain `while read` would end on quietly, dropping the record. It also
+# fails when a write fails: the caller runs without `errexit`, so a lost
+# path would otherwise end in a normal EOF and a status of 0.
 diff_paths() {
   local status path
   while IFS= read -r -d '' status || { [ -z "$status" ] || return 1; false; }; do
     IFS= read -r -d '' path || return 1
-    printf '%s\n' "$path"
+    printf '%s\n' "$path" || return 1
     case "$status" in
       R* | C*)
         IFS= read -r -d '' path || return 1
-        printf '%s\n' "$path"
+        printf '%s\n' "$path" || return 1
         ;;
     esac
   done

@@ -83,6 +83,116 @@ left to the operator's [a]sk: vm-test
 	}
 }
 
+// A deriver that fails partway and still exits zero prints something that
+// is not a whole report. Read as one, each of these owes nothing, so each
+// is refused.
+func TestAPartialReportIsRefused(t *testing.T) {
+	for _, c := range []struct{ name, out string }{
+		{"a required-checks heading with no checks under it", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+
+required checks:
+
+run before pushing: none
+left to the operator's [a]sk: none
+`},
+		{"a required-checks heading that ends the output", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+
+required checks:
+`},
+		{"no required-checks section", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+`},
+		{"no header", `policy: instance + policy
+classes matched: code
+
+required checks:
+  code-build  mandatory  code
+`},
+		{"nothing at all", ``},
+		{"changed paths and no class", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: none
+
+required checks: none
+`},
+		{"no changed paths and a class", `abc1234..def5678: 0 changed path(s)
+policy: instance + policy
+classes matched: code
+
+required checks:
+  code-build  mandatory  code
+`},
+	} {
+		if d, err := parseDerived(c.out); err == nil {
+			t.Errorf("%s: read as %+v", c.name, d)
+		}
+	}
+}
+
+// The report of a diff with nothing in it is still a whole report, and it
+// owes nothing.
+func TestAnEmptyDiffReadsAsOwingNothing(t *testing.T) {
+	d, err := parseDerived(`abc1234..abc1234: 0 changed path(s)
+policy: instance + policy
+classes matched: none
+
+required checks: none
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.paths != 0 || len(d.classes) != 0 || len(d.requires) != 0 {
+		t.Fatalf("an empty diff reads as %+v", d)
+	}
+}
+
+// A report of no changed paths is believed only when git agrees. The
+// stand-in deriver prints a whole, well-formed report of no changed paths —
+// what a deriver whose diff failed silently would print — and the
+// derivation is read over two commits with one tree, and refused over two
+// commits whose trees differ.
+func TestAReportOfNoChangedPathsIsCheckedAgainstGit(t *testing.T) {
+	repo := t.TempDir()
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := git(repo, append([]string{"-c", "user.name=t", "-c", "user.email=t@localhost"}, args...)...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(out)
+	}
+	run("init", "--quiet")
+	run("commit", "--quiet", "--allow-empty", "-m", "one")
+	one := run("rev-parse", "HEAD")
+	run("commit", "--quiet", "--allow-empty", "-m", "the same tree")
+	same := run("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(repo, "changed.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run("add", "changed.txt")
+	run("commit", "--quiet", "-m", "a change")
+	changed := run("rev-parse", "HEAD")
+
+	deriver := filepath.Join(t.TempDir(), "valley")
+	report := `printf '%s\n' 'x..y: 0 changed path(s)' 'policy: a + b' 'classes matched: none' '' 'required checks: none'`
+	if err := os.WriteFile(deriver, []byte("#!/bin/sh\n"+report+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := policySource{valley: deriver}
+	tip := &worktree{dir: repo}
+	if _, err := p.derive(tip, one, same); err != nil {
+		t.Fatalf("an empty diff reported as empty was refused: %v", err)
+	}
+	if d, err := p.derive(tip, one, changed); err == nil {
+		t.Fatalf("a change reported as touching nothing was read as %+v", d)
+	}
+}
+
 func TestValidityWindowsAreReadAsThePolicyWritesThem(t *testing.T) {
 	for _, c := range []struct {
 		in   string

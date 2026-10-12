@@ -30,6 +30,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -190,9 +192,11 @@ func (p *policySource) openProject(tip *worktree) (func(), error) {
 	return func() { _ = os.RemoveAll(dir) }, nil
 }
 
-// derived is one run of the deriver over a diff: which classes the diff
-// matched, and which checks that made required.
+// derived is one run of the deriver over a diff: how many changed paths it
+// read, which classes the diff matched, and which checks that made
+// required.
 type derived struct {
+	paths    int
 	classes  map[string]bool
 	requires map[string][]string // check name -> the classes requiring it
 }
@@ -211,19 +215,48 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 	if err != nil {
 		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w\n%s", verdict.Short(from), verdict.Short(to), err, strings.TrimSpace(string(out)))
 	}
-	return parseDerived(string(out))
+	d, err := parseDerived(string(out))
+	if err != nil {
+		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w", verdict.Short(from), verdict.Short(to), err)
+	}
+	// A diff the deriver failed to read reads as no changed paths, and no
+	// changed paths owe nothing. So a report of none is believed only when
+	// git agrees that the two trees are the same.
+	if d.paths == 0 {
+		if _, err := git(tip.dir, "diff-tree", "--quiet", from, to); err != nil {
+			return derived{}, fmt.Errorf("the deriver read no changed paths in %s..%s, and git does not agree: %w", verdict.Short(from), verdict.Short(to), err)
+		}
+	}
+	return d, nil
 }
+
+// reportHeader is the first line of the deriver's report: the two commits,
+// and how many changed paths it read between them.
+var reportHeader = regexp.MustCompile(`^\S+\.\.\S+: ([0-9]+) changed path\(s\)$`)
 
 // parseDerived reads what `valley checks` printed. The deriver reports for
 // a person, so this is the one place the two programs are coupled by
 // output; the coupling is pinned by the integrator's own checks rather
 // than assumed.
+//
+// Output that is not a whole report is refused rather than read as one
+// owing nothing: no header, no required-checks section, a required-checks
+// heading with no checks under it, or classes that disagree with the
+// number of changed paths. The deriver never prints any of those, so each
+// is a deriver that failed partway and still exited zero.
 func parseDerived(out string) (derived, error) {
 	d := derived{classes: map[string]bool{}, requires: map[string][]string{}}
+	header, required := false, false
 	lines := strings.Split(out, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		switch {
+		case reportHeader.MatchString(line):
+			n, err := strconv.Atoi(reportHeader.FindStringSubmatch(line)[1])
+			if err != nil {
+				return derived{}, fmt.Errorf("the deriver printed %q, which is not a count of changed paths", line)
+			}
+			d.paths, header = n, true
 		case strings.HasPrefix(line, "classes matched:"):
 			rest := strings.TrimSpace(strings.TrimPrefix(line, "classes matched:"))
 			if rest == "none" {
@@ -235,6 +268,8 @@ func parseDerived(out string) (derived, error) {
 				}
 			}
 		case line == "required checks:":
+			required = true
+			rows := len(d.requires)
 			for i++; i < len(lines); i++ {
 				body := lines[i]
 				if !strings.HasPrefix(body, "  ") || strings.TrimSpace(body) == "" {
@@ -255,9 +290,25 @@ func parseDerived(out string) (derived, error) {
 				}
 				d.requires[name] = classes
 			}
+			if len(d.requires) == rows {
+				return derived{}, fmt.Errorf("the deriver printed a required-checks heading with no checks under it")
+			}
 		case strings.HasPrefix(line, "required checks: none"):
 			// Nothing owed; the map stays empty.
+			required = true
 		}
+	}
+	switch {
+	case !header:
+		return derived{}, fmt.Errorf("the deriver printed no header line counting the changed paths, so this is not a report")
+	case !required:
+		return derived{}, fmt.Errorf("the deriver printed no required-checks section, so this is not a report")
+	case d.paths > 0 && len(d.classes) == 0:
+		// Every changed path matches a class, or else it is unclassified,
+		// which the deriver reports as a class of that name.
+		return derived{}, fmt.Errorf("the deriver read %d changed path(s) and matched no class", d.paths)
+	case d.paths == 0 && (len(d.classes) > 0 || len(d.requires) > 0):
+		return derived{}, fmt.Errorf("the deriver read no changed paths and still matched classes or required checks")
 	}
 	return d, nil
 }

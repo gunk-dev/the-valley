@@ -230,6 +230,8 @@ rec {
     version = "0";
     src = ../integrator;
     vendorHash = null;
+    # The policy bridge's tests check a deriver's report against real git.
+    nativeCheckInputs = [ pkgs.git ];
     meta.mainProgram = "integrator";
   };
 

@@ -189,6 +189,13 @@ checks of every class one of its paths matches. A path no class matches owes the
 checks. The integrator gets this answer by running `valley checks`, which diffs with renames counted
 on both sides. Checked by `policy-deriver` and `cue-vet`.
 
+The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
+policy makes `valley checks` exit non-zero and print no report. Without that, the failure would read
+as an empty list, and an empty list derives a change that owes nothing. The integrator also refuses
+output that is not a whole report: no header, no required-checks section, or a required-checks
+heading with no checks under it. It believes a report of no changed paths only when git agrees that
+the two trees are the same. Checked by `policy-deriver`, `valley-request` and `integrator-unit`.
+
 A check also declares a `cost`, `quick` by default. A `slow` check takes minutes, or needs special
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
 report it prints two lines: the owed checks to run before pushing, and the slow ones an author may

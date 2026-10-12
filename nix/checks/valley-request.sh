@@ -1040,13 +1040,13 @@ fi
 for mode in report names; do
   margs=()
   [ "$mode" != names ] || margs=(--names)
-  if out="$(
+  if wrote="$(
     ulimit -f 0
     trap '' XFSZ
     env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "${margs[@]}" "$first" topic/one 2> /dev/null
-  )" || [ -n "$out" ]; then
+  )" || [ -n "$wrote" ]; then
     echo "valley-request: a derivation with unwritable scratch files ($mode) did not fail cleanly" >&2
-    printf '%s\n' "$out" >&2
+    printf '%s\n' "$wrote" >&2
     exit 1
   fi
 done

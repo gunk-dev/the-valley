@@ -20,11 +20,15 @@ _valley() {
     _describe -t verbs 'valley verb' verbs
   elif (( CURRENT == 3 )) && [[ ${words[2]} == replay ]]; then
     _files -/
+  elif [[ ${words[2]} == checks && ${words[CURRENT-1]} == --cost ]]; then
+    compadd quick slow
   elif [[ ${words[2]} == checks && ${words[CURRENT]} == -* ]]; then
     local -a opts=(
       '--schema:the policy schema to compose against'
       '--instance:the instance policy layer directory'
       '--project:the project policy layer directory'
+      '--names:print only the owed check names, one per line'
+      '--cost:with --names, only the quick or the slow checks'
     )
     _describe -t options 'valley checks option' opts
   elif (( CURRENT == 3 )) && [[ ${words[2]} == review || ${words[2]} == status ]]; then

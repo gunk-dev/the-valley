@@ -52,7 +52,9 @@
   # naive reader drops: a rename's old path and a deletion. Each is
   # pinned by driving the real script over a scratch repository and
   # the scratch policy in examples/policy/deriver/, whose floor is
-  # one glob boundary per class.
+  # one glob boundary per class. A check's cost is pinned the same way:
+  # marking a check slow moves it between the summary lines and the
+  # --cost lists, and changes nothing owed.
   policy-deriver = pkgs.runCommand "valley-policy-deriver" {
     nativeBuildInputs = [
       pkgs.git

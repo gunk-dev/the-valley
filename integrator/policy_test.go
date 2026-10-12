@@ -7,6 +7,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,46 @@ unclassified: 1 path(s) matched no class
 	}
 	if len(d.requires) != 2 {
 		t.Fatalf("required = %v", d.requires)
+	}
+}
+
+// The deriver ends its report with what each owed check costs. Those lines
+// are for an author and owe nothing, so a report carrying them reads as
+// exactly the report without them — with an unclassified block between
+// the table and the summary, and with the summary straight after the table.
+func TestTheCostSummaryChangesNothingRead(t *testing.T) {
+	table := `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code, prose
+
+required checks:
+  code-build      mandatory  code
+  vm-test         default    code
+  prose-format    default    prose, knowledge
+`
+	unclassified := `
+unclassified: 1 path(s) matched no class
+  odd.txt
+`
+	summary := `
+run before pushing: code-build, prose-format
+left to the operator's [a]sk: vm-test
+`
+	for _, before := range []string{table, table + unclassified} {
+		want, err := parseDerived(before)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(want.requires) != 3 || len(want.classes) != 2 {
+			t.Fatalf("the report without a summary reads as %+v", want)
+		}
+		got, err := parseDerived(before + summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("with the cost summary, the report reads as %+v, not %+v", got, want)
+		}
 	}
 }
 

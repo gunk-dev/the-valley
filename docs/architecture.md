@@ -189,6 +189,14 @@ checks of every class one of its paths matches. A path no class matches owes the
 checks. The integrator gets this answer by running `valley checks`, which diffs with renames counted
 on both sides. Checked by `policy-deriver` and `cue-vet`.
 
+A check also declares a `cost`, `quick` by default. A `slow` check takes minutes, or needs special
+hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
+report it prints two lines: the owed checks to run before pushing, and the slow ones an author may
+leave to the operator's `[a]sk`. `valley checks --names` prints the owed check names alone, one per
+line, and `--cost quick` or `--cost slow` keeps one set. `[a]sk` runs every owed check, whatever its
+cost. The cost never changes which checks a change owes, or what the integrator requires or accepts.
+Checked by `policy-deriver` and `integrator-unit`.
+
 The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 [dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and
 [dcr-f41f718](../archive/.the-valley/decisions/dcr-f41f718-declared-verification-policy.md).
@@ -282,7 +290,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | --------------------- | ------------------------------------------------------------------------------------------------- |
 | `valley pending`      | Lists branches not merged into `main`, each with its head commit's subject.                       |
 | `valley review <b>`   | Shows a branch and offers `[a]sk`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
-| `valley checks`       | Reports the checks a change owes. It runs nothing.                                                |
+| `valley checks`       | Reports the checks a change owes, and which to run before pushing. It runs nothing.               |
 | `valley status <b>`   | Reads the request and outcome record for a branch.                                                |
 | `valley tail [subj]`  | Subscribes to bus events.                                                                         |
 | `valley replay [dir]` | Publishes one `ref-updated` event per current ref.                                                |

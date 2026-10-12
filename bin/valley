@@ -148,6 +148,18 @@ usage: valley <verb> [args]
                    with that unset, as when this script runs straight from
                    a the-valley checkout, it is schema/verification.cue in
                    the checkout.
+                   after the report, two lines split the owed checks by
+                   the cost the policy declares: `run before pushing` for
+                   the quick ones, and `left to the operator's [a]sk` for
+                   the slow ones, which take minutes or special hardware.
+                   [a]sk runs every owed check either way; the cost never
+                   changes what is owed.
+                     --names          print only the owed check names,
+                                      one per line
+                     --cost COST      with --names, only the quick or
+                                      the slow ones. an agent runs
+                                      `valley checks --names --cost quick`
+                                      and builds each name it prints
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
@@ -1197,8 +1209,10 @@ glob_ere() {
 #
 # The catalogue is rendered because a caller that runs a check needs what
 # the policy says a check IS — its runner, and the attribute or command
-# line that runner takes. `checks` only reports and does not read it;
-# review's [a]sk turns it into the arguments attest is given.
+# line that runner takes — and an author deciding what to run first needs
+# its cost. `checks` reads only the cost, to say which owed checks can
+# wait for [a]sk; review's [a]sk turns the rest into the arguments attest
+# is given.
 render_cue() {
   cat <<'EOF'
 package verification
@@ -1222,6 +1236,8 @@ _render: strings.Join(list.Concat([[
 	for n, c in policy.checks if c.runner == "nix" {"attribute\t\(n)\t\(c.attribute)"}
 ], [
 	for n, c in policy.checks if c.runner == "command" {"command\t\(n)\t\(c.command)"}
+], [
+	for n, c in policy.checks {"cost\t\(n)\t\(c.cost)"}
 ]]), "\n")
 EOF
 }
@@ -1537,6 +1553,11 @@ join_lines() {
   printf '%s' "$out"
 }
 
+# Arguments in, one comma-separated line out, or `none` when there are none.
+join_or_none() {
+  if [ $# -eq 0 ]; then echo none; else printf '%s\n' "$@" | join_lines; fi
+}
+
 # The target: the ref a change is derived against, and the tip both policy
 # layers are read out of. origin's answer is preferred, because the target
 # is the branch as the integrator holds it and not as this checkout last
@@ -1568,6 +1589,7 @@ declare -A DERIVED_PINNED=()  # check -> mandatory | default
 declare -A CHECK_RUNNER=()    # check -> nix | command
 declare -A CHECK_ATTRIBUTE=() # check -> the flake check attribute
 declare -A CHECK_COMMAND=()   # check -> the command line
+declare -A CHECK_COST=()      # check -> quick | slow
 
 derive_owed() {
   local schema="$1" instance="$2" project="$3" base="$4" head="$5"
@@ -1604,14 +1626,22 @@ derive_owed() {
     return 1
   }
 
+  # The render is checked before it is read. A render that fails prints
+  # nothing, and an empty render reads as a policy that owes nothing. A
+  # schema older than this script fails it, by lacking a field it reads.
+  cue eval --out text -e _render "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" \
+    > "$POLICY_TMP/rendered" || {
+    refuse "the composed policy does not render (a schema older than this script is one cause); nothing derived"
+    return 1
+  }
   # Sorted once here, so every list below comes out in a stable order.
   local -a rendered=()
-  mapfile -t rendered < <(cue eval --out text -e _render \
-    "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" | sort)
+  mapfile -t rendered < <(sort "$POLICY_TMP/rendered")
 
-  unset CHECK_RUNNER CHECK_ATTRIBUTE CHECK_COMMAND DERIVED_OWED DERIVED_PINNED
+  unset CHECK_RUNNER CHECK_ATTRIBUTE CHECK_COMMAND CHECK_COST DERIVED_OWED \
+    DERIVED_PINNED
   declare -gA CHECK_RUNNER=() CHECK_ATTRIBUTE=() CHECK_COMMAND=() \
-    DERIVED_OWED=() DERIVED_PINNED=()
+    CHECK_COST=() DERIVED_OWED=() DERIVED_PINNED=()
 
   # The middle field is a class name for a coverage or requirement line and
   # a check name for a catalogue one; `key` is what both are.
@@ -1634,6 +1664,7 @@ derive_owed() {
       runner) CHECK_RUNNER["$key"]="$value" ;;
       attribute) CHECK_ATTRIBUTE["$key"]="$value" ;;
       command) CHECK_COMMAND["$key"]="$value" ;;
+      cost) CHECK_COST["$key"]="$value" ;;
     esac
   done
 
@@ -1677,6 +1708,7 @@ derive_owed() {
 
 cmd_checks() {
   local root schema instance="" label project="" plabel base head target=""
+  local names=0 cost=""
   root="$(git rev-parse --show-toplevel 2> /dev/null)" \
     || die "not a git repository"
   policy_defaults "$root"
@@ -1686,12 +1718,20 @@ cmd_checks() {
       --schema) [ $# -ge 2 ] || die "--schema needs a file"; schema="$2"; shift 2 ;;
       --instance) [ $# -ge 2 ] || die "--instance needs a directory"; instance="$2"; shift 2 ;;
       --project) [ $# -ge 2 ] || die "--project needs a directory"; project="$2"; shift 2 ;;
+      --names) names=1; shift ;;
+      --cost) [ $# -ge 2 ] || die "--cost needs quick or slow"; cost="$2"; shift 2 ;;
       --) shift; break ;;
       -*) die "unknown option: $1" ;;
       *) break ;;
     esac
   done
   [ $# -le 2 ] || die "usage: valley checks [options] [<base> [<head>]]"
+  case "$cost" in
+    '' | quick | slow) ;;
+    *) die "--cost takes quick or slow, not '$cost'" ;;
+  esac
+  [ -z "$cost" ] || [ "$names" -eq 1 ] \
+    || die "--cost filters the --names list; pass --names too"
 
   head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
     || die "no such commit: ${2:-HEAD}"
@@ -1731,10 +1771,32 @@ cmd_checks() {
   fi
   derive_owed "$schema" "$instance" "$project" "$base" "$head" || exit 1
 
+  # The owed checks, sorted, and split by what the policy says they cost.
+  # The split is advice to an author and changes nothing owed: [a]sk runs
+  # every owed check, whatever it costs.
   local check width=0
-  for check in "${!DERIVED_OWED[@]}"; do
+  local -a owed=() quick=() slow=() listed=()
+  [ "${#DERIVED_OWED[@]}" -eq 0 ] \
+    || mapfile -t owed < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
+  for check in "${owed[@]}"; do
     [ "${#check}" -le "$width" ] || width="${#check}"
+    if [ "${CHECK_COST[$check]}" = slow ]; then
+      slow+=("$check")
+    else
+      quick+=("$check")
+    fi
   done
+
+  # The form for agents and scripts: the names alone, one per line.
+  if [ "$names" -eq 1 ]; then
+    case "$cost" in
+      quick) listed=("${quick[@]}") ;;
+      slow) listed=("${slow[@]}") ;;
+      *) listed=("${owed[@]}") ;;
+    esac
+    [ "${#listed[@]}" -eq 0 ] || printf '%s\n' "${listed[@]}"
+    return
+  fi
 
   printf '%s..%s: %d changed path(s)\n' \
     "$(git rev-parse --short "$base")" "$(git rev-parse --short "$head")" \
@@ -1751,10 +1813,10 @@ cmd_checks() {
     echo "required checks: none"
   else
     echo "required checks:"
-    while IFS= read -r check; do
+    for check in "${owed[@]}"; do
       printf '  %-*s  %-9s  %s\n' \
         "$width" "$check" "${DERIVED_PINNED[$check]}" "${DERIVED_OWED[$check]}"
-    done < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
+    done
   fi
 
   if [ "${#DERIVED_UNCOVERED[@]}" -gt 0 ]; then
@@ -1764,6 +1826,13 @@ cmd_checks() {
     # every class that the policy then asks nothing of.
     [ "$DERIVED_OWES" -eq 1 ] \
       || echo "  the policy requires nothing of them — it is behind the tree"
+  fi
+
+  # Below every line the integrator reads (integrator/policy.go), and
+  # unindented, so neither line can read as a required check.
+  if [ "${#owed[@]}" -gt 0 ]; then
+    printf '\nrun before pushing: %s\n' "$(join_or_none "${quick[@]}")"
+    printf "left to the operator's [a]sk: %s\n" "$(join_or_none "${slow[@]}")"
   fi
 }
 

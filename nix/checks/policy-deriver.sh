@@ -29,7 +29,7 @@ base="$(git rev-parse HEAD)"
 derive() {
   valley checks --schema "$schema" \
     --instance "$policy/instance" --project "$policy/project" \
-    "$base" HEAD
+    "$@" "$base" HEAD
 }
 
 # The check names in the deriver's table, sorted, on one line.
@@ -103,6 +103,78 @@ expect "c-docs c-tmpl" "a deletion must count"
 # concrete `true` against the template's `bool | *true`.
 grep -qE '^  c-docs +mandatory +docs$' <<<"$report"
 grep -qE '^  c-tmpl +default +docs$' <<<"$report"
+
+# A check's cost is advice and nothing more. The same diff under a
+# project layer that marks c-docs slow owes the same checks, for the
+# same classes, with the same mandatory bits: every line above the
+# cost summary is the same. Only the summary moves c-docs.
+cp -R "$policy/project" "$policy/project-slow"
+cat > "$policy/project-slow/slow.cue" <<'EOF'
+package verification
+project: checks: "c-docs": {runner: "nix", attribute: "c-docs", cost: "slow"}
+EOF
+derive_slow() {
+  valley checks --schema "$schema" \
+    --instance "$policy/instance" --project "$policy/project-slow" \
+    "$@" "$base" HEAD
+}
+quick_report="$report"
+report="$(derive_slow)"
+expect "c-docs c-tmpl" "a slow check must be owed as a quick one is"
+above_summary() { sed -e '/^run before pushing:/,$d' -e '/^policy:/d' <<<"$1"; }
+[ "$(above_summary "$quick_report")" = "$(above_summary "$report")" ] || {
+  echo "policy-deriver: marking a check slow changed what is owed" >&2
+  diff <(above_summary "$quick_report") <(above_summary "$report") >&2
+  exit 1
+}
+grep -qx 'run before pushing: c-docs, c-tmpl' <<<"$quick_report"
+grep -qx "left to the operator's \[a\]sk: none" <<<"$quick_report"
+grep -qx 'run before pushing: c-tmpl' <<<"$report"
+grep -qx "left to the operator's \[a\]sk: c-docs" <<<"$report"
+
+# The names alone are what an agent reads, so they are exactly the owed
+# names, one per line, and --cost filters them.
+[ "$(derive_slow --names)" = "$(printf 'c-docs\nc-tmpl')" ]
+[ "$(derive_slow --names --cost quick)" = c-tmpl ]
+[ "$(derive_slow --names --cost slow)" = c-docs ]
+[ "$(derive --names --cost slow)" = "" ]
+if derive_slow --names --cost fast 2> "$TMPDIR/cost.err"; then
+  echo "policy-deriver: --cost fast was accepted" >&2
+  exit 1
+fi
+grep -q "cost takes quick or slow, not 'fast'" "$TMPDIR/cost.err"
+if derive_slow --cost quick 2> /dev/null; then
+  echo "policy-deriver: --cost without --names was accepted" >&2
+  exit 1
+fi
+
+# A change that owes nothing prints no names and no cost summary.
+report="$(valley checks --schema "$schema" \
+  --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")"
+grep -qx 'required checks: none' <<<"$report"
+if grep -q '^run before pushing:' <<<"$report"; then
+  echo "policy-deriver: a change owing nothing printed a cost summary" >&2
+  exit 1
+fi
+[ "$(valley checks --schema "$schema" --names \
+  --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")" = "" ]
+
+# A schema that predates `cost` cannot render the composed policy. The
+# deriver refuses rather than reading the empty render as a policy that
+# owes nothing.
+grep -v '^	cost: \*"quick" | "slow"$' "$schema" > "$TMPDIR/costless.cue"
+if cmp -s "$schema" "$TMPDIR/costless.cue"; then
+  echo "policy-deriver: the costless schema still declares cost, so this case proves nothing" >&2
+  exit 1
+fi
+if valley checks --schema "$TMPDIR/costless.cue" \
+  --instance "$policy/instance" --project "$policy/project" \
+  "$base" HEAD > "$TMPDIR/costless.out" 2>&1; then
+  echo "policy-deriver: a schema the render cannot read derived an answer" >&2
+  cat "$TMPDIR/costless.out" >&2
+  exit 1
+fi
+grep -q 'does not render' "$TMPDIR/costless.out"
 
 # A path no class covers takes the unclassified set, and says
 # so by name.

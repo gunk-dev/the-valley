@@ -17,9 +17,20 @@ project: {
 		runner:    "nix"
 		attribute: "shellcheck"
 	}
+
+	// A check that installs the scripts in a virtual machine takes minutes,
+	// so it is marked slow. An author may leave it to the run made when the
+	// change is filed for integration. It is owed exactly as a quick check
+	// is.
+	checks: "install-vm": {
+		runner:    "nix"
+		attribute: "install-vm"
+		cost:      "slow"
+	}
 	classes: scripts: {
 		paths: "bin/**":        true
 		requires: "shellcheck": true
+		requires: "install-vm": true
 	}
 
 	// The template offered the knowledge lint as a default, so this project

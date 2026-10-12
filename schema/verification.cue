@@ -159,6 +159,18 @@ package verification
 	// here it composes across the two layers, so a group can floor a
 	// window and a project can only narrow it.
 	validity?: #Duration
+
+	// What running the check costs its runner. A "quick" check is cheap
+	// enough to run before every push. A "slow" check takes minutes, or
+	// needs special hardware such as virtualisation support, so an author
+	// can leave it to the run made when the change is filed for
+	// integration. That run repeats every owed check, and it is the run
+	// whose results the integrator judges.
+	//
+	// The cost is advice for an author, and `valley checks` reports it.
+	// It never changes which checks a change owes, and it never changes
+	// what the integrator requires or accepts.
+	cost: *"quick" | "slow"
 }
 
 // A validity window: a whole number of seconds, minutes, hours or days.

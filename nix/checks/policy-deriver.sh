@@ -201,4 +201,112 @@ report="$(GIT_CONFIG_PARAMETERS="'core.usereplacerefs'='true'" derive)"
 expect "c-uncovered" "a replacement ref must not change the derived checks"
 git update-ref -d "refs/replace/$(git rev-parse uncovered)"
 
+# ----------------------------------------------------------------------
+# Every producer fails closed. The deriver's calls of git, sort and cue
+# are failed one at a time, one per run, by fail-nth standing in for the
+# tool first on PATH. A producer read through a process substitution
+# loses its status, and its failure then reads as an empty list — no
+# paths, no catalogue, no classes — which derives a change that owes
+# nothing. So every failure must end the run non-zero, say so, and print
+# nothing on stdout: no report, and no names.
+#
+# This runs bin/valley itself, because the package's wrapper puts its own
+# git ahead of anything on PATH. The case touches a class, a second class
+# through `**`, the template's default, and an uncovered path, so every
+# producer has something to lose.
+case_start mixed
+echo edit > docs/kept.md
+echo edit > src/one.rs
+echo edit > Makefile
+git commit --quiet -am mixed
+
+shims="$TMPDIR/shims"
+mkdir -p "$shims"
+for tool in git sort cue; do ln -s "$failNth" "$shims/$tool"; done
+
+# shimmed TOOL N [option…]: derive the mixed case with TOOL's Nth call
+# failing (0 fails none). The count of TOOL's calls is left in
+# $TMPDIR/shim-count.
+shimmed() {
+  local tool="$1" at="$2" status=2
+  shift 2
+  [ "$tool" != git ] || status=128 # git's own status for a fatal error
+  echo 0 > "$TMPDIR/shim-count"
+  SHIM_REAL_PATH="$PATH" SHIM_TOOL="$tool" SHIM_FAIL_AT="$at" \
+    SHIM_STATUS="$status" SHIM_COUNT="$TMPDIR/shim-count" PATH="$shims:$PATH" \
+    bash "$cliScript" checks --schema "$schema" \
+    --instance "$policy/instance" --project "$policy/project" \
+    "$@" "$base" HEAD
+}
+
+# The check names a run's stdout owes, sorted, on one line.
+owed_in() {
+  if [ "$1" = names ]; then
+    sort "$2" | paste -sd' ' -
+  else
+    report="$(cat "$2")"
+    named
+  fi
+}
+
+shim_fail() {
+  echo "policy-deriver: $1" >&2
+  for f in shim.out shim.err; do
+    echo "--- $f" >&2
+    cat "$TMPDIR/$f" >&2
+  done
+  exit 1
+}
+
+for tool in git sort cue; do
+  for mode in report names; do
+    opts=()
+    [ "$mode" = report ] || opts=(--names)
+    shimmed "$tool" 0 "${opts[@]}" > "$TMPDIR/shim.want"
+    want="$(owed_in "$mode" "$TMPDIR/shim.want")"
+    [ "$want" = "c-deep c-docs c-flat c-tmpl c-uncovered" ] || {
+      echo "policy-deriver: the mixed case owes $want" >&2
+      exit 1
+    }
+    calls="$(cat "$TMPDIR/shim-count")"
+    [ "$calls" -gt 0 ] || {
+      echo "policy-deriver: the $mode run never called $tool, so failing it proves nothing" >&2
+      exit 1
+    }
+    for ((at = 1; at <= calls; at++)); do
+      what="$mode run, $tool call $at of $calls"
+      if shimmed "$tool" "$at" "${opts[@]}" > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
+        # The one failure a run may survive is a cue probe after the
+        # composition and the render: it asks whether a requirement is
+        # mandatory, and a probe that fails reads as mandatory, the strict
+        # answer. What is owed must not move.
+        [ "$tool" = cue ] && [ "$at" -gt 2 ] \
+          || shim_fail "the $what failed and the deriver still answered"
+        [ "$(owed_in "$mode" "$TMPDIR/shim.out")" = "$want" ] \
+          || shim_fail "the $what failed and changed what is owed"
+        continue
+      fi
+      [ ! -s "$TMPDIR/shim.out" ] \
+        || shim_fail "the $what failed and the deriver printed to stdout"
+      grep -q '^valley: ' "$TMPDIR/shim.err" \
+        || shim_fail "the $what failed and the deriver did not say so"
+    done
+  done
+done
+
+# A diff cut short mid-record — a status with no path after it — is a
+# failure too, even though git exited 0.
+for opts in "" --names; do
+  # shellcheck disable=SC2086 # an empty $opts is no option at all
+  if SHIM_TRUNCATE=1 SHIM_REAL_PATH="$PATH" PATH="$shims:$PATH" \
+    bash "$cliScript" checks --schema "$schema" \
+    --instance "$policy/instance" --project "$policy/project" $opts \
+    "$base" HEAD > "$TMPDIR/shim.out" 2> "$TMPDIR/shim.err"; then
+    shim_fail "a truncated diff derived an answer"
+  fi
+  [ ! -s "$TMPDIR/shim.out" ] || shim_fail "a truncated diff printed to stdout"
+  grep -q 'truncated diff output' "$TMPDIR/shim.err" \
+    || shim_fail "a truncated diff was not named as one"
+done
+
 touch "$out"

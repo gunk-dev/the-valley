@@ -957,6 +957,39 @@ env -u VALLEY_VERIFICATION_SCHEMA bash "$cliScript" checks "$first" topic/one \
   > "$w/bare.out" 2> "$w/bare.err"
 grep -qE '^  tree-ok +mandatory +prose$' "$w/bare.out"
 
+# Every git call the default derivation makes fails closed: finding the
+# target, reading both layers out of its tip, reading the pointer,
+# fetching the owning valley, and the diff. fail-nth fails them one at a
+# time, and each run must end non-zero, say so, and print nothing on
+# stdout. The layer reads matter most here: a listing of policy/project
+# that failed, read as an empty directory, would derive under the floor
+# alone, and a read of origin/main that failed, read as no such ref,
+# would derive from the local main.
+shims="$TMPDIR/shims"
+mkdir -p "$shims"
+ln -s "$failNth" "$shims/git"
+shimmed_checks() {
+  echo 0 > "$TMPDIR/shim-count"
+  env -u VALLEY_VERIFICATION_SCHEMA SHIM_REAL_PATH="$PATH" SHIM_TOOL=git \
+    SHIM_FAIL_AT="$1" SHIM_STATUS=128 SHIM_COUNT="$TMPDIR/shim-count" \
+    PATH="$shims:$PATH" bash "$cliScript" checks "$first" topic/one
+}
+shimmed_checks 0 > "$w/shim-want.out"
+grep -qE '^  tree-ok +mandatory +prose$' "$w/shim-want.out"
+calls="$(cat "$TMPDIR/shim-count")"
+[ "$calls" -gt 0 ] || {
+  echo "valley-request: the derivation never called git, so failing it proves nothing" >&2
+  exit 1
+}
+for ((at = 1; at <= calls; at++)); do
+  if shimmed_checks "$at" > "$w/shim.out" 2> "$w/shim.err" || [ -s "$w/shim.out" ] \
+    || ! grep -q '^valley: ' "$w/shim.err"; then
+    echo "valley-request: git call $at of $calls failed, and the deriver did not refuse cleanly" >&2
+    cat "$w/shim.out" "$w/shim.err" >&2
+    exit 1
+  fi
+done
+
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]sk, [b]ase,

@@ -2,6 +2,11 @@
 # anchors a note to, what its deriver makes of a policy and a diff, and
 # what its review verb publishes when it files an integration request.
 { pkgs, packages, ... }:
+let
+  # A stand-in for git, sort or cue that fails one chosen call; see
+  # fail-nth.sh.
+  failNth = pkgs.writeShellScript "fail-nth" (builtins.readFile ./fail-nth.sh);
+in
 {
   # The CLI must stay a lint-clean script whose help verb answers
   # without a repo or a remote — the cheap end of its eviction clause
@@ -55,6 +60,13 @@
   # one glob boundary per class. A check's cost is pinned the same way:
   # marking a check slow moves it between the summary lines and the
   # --cost lists, and changes nothing owed.
+  #
+  # And the deriver fails closed: failNth stands in for git, sort and
+  # cue, and fails each call the deriver makes in turn. Every failure
+  # must end the derivation with nothing on stdout, because a failure
+  # read as an empty list is a change that owes nothing. cliScript is
+  # bin/valley itself, because the package's wrapper puts its own git
+  # ahead of anything on PATH.
   policy-deriver = pkgs.runCommand "valley-policy-deriver" {
     nativeBuildInputs = [
       pkgs.git
@@ -63,6 +75,8 @@
     ];
     fixtures = ../../examples/policy/deriver;
     schema = ../../schema/verification.cue;
+    cliScript = ../../bin/valley;
+    inherit failNth;
   } (builtins.readFile ./policy-deriver.sh);
 
   # review's [a]sk, driven end to end over scratch repositories: a branch
@@ -86,6 +100,7 @@
     ];
     schemaFile = ../../schema/verification.cue;
     cliScript = ../../bin/valley;
+    inherit failNth;
   } (builtins.readFile ./valley-request.sh);
 
   # Read origin's request/outcome refs and distinguish a pending request,

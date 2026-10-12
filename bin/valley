@@ -679,8 +679,10 @@ ask() {
   resolve_project_layer "$root" "$tip" || return 1
   derive_owed "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" \
     "$base" "$head" || return 1
-  [ "${#DERIVED_OWED[@]}" -eq 0 ] \
-    || mapfile -t owed < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
+  sort_into owed "${!DERIVED_OWED[@]}" || {
+    refuse "could not sort the owed checks; nothing published"
+    return 1
+  }
 
   # A change the policy asks nothing of is still a change, and asking is
   # how one reaches main. The integrator already lands a request owing no
@@ -1332,24 +1334,35 @@ VALLEY_POINTER_REF=refs/heads/main
 #
 # -z because a path may hold anything but NUL, and *.cue because the layer
 # is the directory's documents — the same reading the composer takes.
+#
+# The listing is written out and its status checked before it is read. A
+# listing read straight from a process substitution that failed reads as a
+# directory holding nothing, and for the project layer that is the floor
+# alone: fewer checks owed, from a read that never happened. The listing's
+# name is not a *.cue name, so the composer never reads it.
 copy_layer() {
   local gitdir="$1" treeish="$2" dir="$3" dest="$4" path name copied=0
+  local listing="$dest/.listing"
+  git -C "$gitdir" ls-tree --name-only -z "$treeish" "$dir/" > "$listing" \
+    || return 2
   while IFS= read -r -d '' path; do
     case "$path" in *.cue) ;; *) continue ;; esac
     name="${path##*/}"
     git -C "$gitdir" cat-file blob "$treeish:$path" > "$dest/$name" || return 2
     copied=1
-  done < <(git -C "$gitdir" ls-tree --name-only -z "$treeish" "$dir/")
+  done < "$listing"
+  rm -f "$listing"
   [ "$copied" -eq 1 ]
 }
 
 # The ref whose tip supplies the policy, printed the way a person names it,
 # with the commit it stood at. Staleness in a remote-tracking ref is a real
 # thing to see, so the report says which commit the layers came out of
-# rather than only which ref.
+# rather than only which ref. A ref that cannot be read fails, so that no
+# report names a tip nobody read.
 target_label() {
   local ref="$1" short
-  short="$(git rev-parse --short "$ref")" || short='?'
+  short="$(git rev-parse --short "$ref")" || return 1
   ref="${ref#refs/remotes/}"
   ref="${ref#refs/heads/}"
   printf '%s %s' "$ref" "$short"
@@ -1372,8 +1385,12 @@ target_label() {
 # It reports and returns rather than dying, for the reason derive_owed
 # does: a refusal inside the review loop is not the end of the session.
 resolve_project_layer() {
-  local root="$1" target="$2" rc
+  local root="$1" target="$2" rc at
 
+  at="$(target_label "$target")" || {
+    refuse "could not read $target; nothing derived"
+    return 1
+  }
   cleanup_project_tmp
   PROJECT_TMP="$(mktemp -d)" || {
     refuse "no scratch directory to read the project layer into; nothing derived"
@@ -1383,7 +1400,7 @@ resolve_project_layer() {
   case "$rc" in
     0)
       POLICY_PROJECT="$PROJECT_TMP"
-      POLICY_PROJECT_LABEL="$PROJECT_DIR@$(target_label "$target")"
+      POLICY_PROJECT_LABEL="$PROJECT_DIR@$at"
       ;;
     1)
       printf 'package verification\n' > "$PROJECT_TMP/adds-nothing.cue" || {
@@ -1392,11 +1409,11 @@ resolve_project_layer() {
         return 1
       }
       POLICY_PROJECT="$PROJECT_TMP"
-      POLICY_PROJECT_LABEL="no $PROJECT_DIR@$(target_label "$target") — the floor alone"
+      POLICY_PROJECT_LABEL="no $PROJECT_DIR@$at — the floor alone"
       ;;
     *)
       cleanup_project_tmp
-      refuse "could not read $PROJECT_DIR/ at $(target_label "$target"); nothing derived"
+      refuse "could not read $PROJECT_DIR/ at $at; nothing derived"
       return 1
       ;;
   esac
@@ -1446,7 +1463,11 @@ pointer_url() {
 # It reports and returns rather than dying, for the reason derive_owed
 # does: a refusal inside the review loop is not the end of the session.
 resolve_instance_layer() {
-  local root="$1" target="$2" url bare dest rc
+  local root="$1" target="$2" url bare dest rc at
+  at="$(target_label "$target")" || {
+    refuse "could not read $target; nothing derived"
+    return 1
+  }
   cleanup_instance_tmp
   INSTANCE_TMP="$(mktemp -d)" || {
     refuse "no scratch directory to read the floor into; nothing derived"
@@ -1459,26 +1480,26 @@ resolve_instance_layer() {
   case "$rc" in
     0)
       POLICY_INSTANCE="$dest"
-      POLICY_INSTANCE_LABEL="$INSTANCE_DIR@$(target_label "$target") (this repository is its own valley)"
+      POLICY_INSTANCE_LABEL="$INSTANCE_DIR@$at (this repository is its own valley)"
       return 0
       ;;
     1) ;; # no floor of its own: the pointer names the valley that has one
     *)
       cleanup_instance_tmp
-      refuse "could not read $INSTANCE_DIR/ at $(target_label "$target"); nothing derived"
+      refuse "could not read $INSTANCE_DIR/ at $at; nothing derived"
       return 1
       ;;
   esac
 
   git -C "$root" cat-file blob "$target:$VALLEY_POINTER" > "$INSTANCE_TMP/pointer" 2> /dev/null || {
     cleanup_instance_tmp
-    refuse "no owning valley: $VALLEY_POINTER names the repository whose $INSTANCE_DIR is this project's floor, and $(target_label "$target") carries no such file. A valley's own config repository carries $INSTANCE_DIR instead. Nothing derived"
+    refuse "no owning valley: $VALLEY_POINTER names the repository whose $INSTANCE_DIR is this project's floor, and $at carries no such file. A valley's own config repository carries $INSTANCE_DIR instead. Nothing derived"
     return 1
   }
   url="$(pointer_url "$INSTANCE_TMP/pointer")"
   [ -n "$url" ] || {
     cleanup_instance_tmp
-    refuse "$VALLEY_POINTER at $(target_label "$target") names no repository — it wants one line, the owning valley as git fetch takes it; nothing derived"
+    refuse "$VALLEY_POINTER at $at names no repository — it wants one line, the owning valley as git fetch takes it; nothing derived"
     return 1
   }
 
@@ -1490,7 +1511,7 @@ resolve_instance_layer() {
   }
   git -C "$bare" fetch --quiet --depth 1 "$url" "$VALLEY_POINTER_REF" || {
     cleanup_instance_tmp
-    refuse "could not fetch the owning valley $url at $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $(target_label "$target")); nothing derived"
+    refuse "could not fetch the owning valley $url at $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $at); nothing derived"
     return 1
   }
 
@@ -1518,6 +1539,10 @@ resolve_instance_layer() {
 # own: a project supplying `false` either conflicts or unifies cleanly.
 # Answering by unifying rather than by inspecting syntax means the script
 # cannot disagree with `cue vet`.
+#
+# This is the one producer whose failure does not end the derivation. A
+# probe that fails for any other reason reads as mandatory, which is the
+# strict answer, and the bit never changes which checks are owed.
 check_is_mandatory() {
   local class="$1" check="$2" field
   if [ "$class" = unclassified ]; then
@@ -1530,20 +1555,21 @@ check_is_mandatory() {
 }
 
 # Every side of the diff: an added, modified or deleted path, and both the
-# old and the new path of a rename or copy. -z because a path may contain
-# anything but NUL.
+# old and the new path of a rename or copy. It reads `git diff -z
+# --name-status` on stdin, because a path may contain anything but NUL, and
+# fails on a record cut short.
 diff_paths() {
-  local base="$1" head="$2" status path
+  local status path
   while IFS= read -r -d '' status; do
-    IFS= read -r -d '' path || die "truncated diff output; nothing derived"
+    IFS= read -r -d '' path || return 1
     printf '%s\n' "$path"
     case "$status" in
       R* | C*)
-        IFS= read -r -d '' path || die "truncated diff output; nothing derived"
+        IFS= read -r -d '' path || return 1
         printf '%s\n' "$path"
         ;;
     esac
-  done < <(git diff --no-relative --name-status -M -z "$base" "$head")
+  done
 }
 
 # Lines in, one comma-separated line out.
@@ -1558,15 +1584,44 @@ join_or_none() {
   if [ $# -eq 0 ]; then echo none; else printf '%s\n' "$@" | join_lines; fi
 }
 
+# The remaining arguments, sorted, into the array the first one names. The
+# sort is captured and its status returned: a sort read through a process
+# substitution that fails reads as a sort of nothing, and for a list of
+# owed checks that is a change owing none.
+#
+# The destination is a nameref, so what is assigned is the caller's array,
+# and the linter cannot see that array being read.
+# shellcheck disable=SC2034
+sort_into() {
+  local -n sort_into_dest="$1"
+  local sorted
+  shift
+  sort_into_dest=()
+  [ $# -gt 0 ] || return 0
+  sorted="$(printf '%s\n' "$@" | sort)" || return 1
+  mapfile -t sort_into_dest <<<"$sorted"
+}
+
 # The target: the ref a change is derived against, and the tip both policy
 # layers are read out of. origin's answer is preferred, because the target
 # is the branch as the integrator holds it and not as this checkout last
 # built it.
+#
+# Only a ref that is not there falls through to the next. show-ref says
+# "not there" with 1 and fails any other way with another status, so a
+# read of origin's ref that failed ends here: falling through would read
+# the policy out of the local main, which may be older. 1 no main at all,
+# 2 a read failed.
 target_ref() {
-  git rev-parse --verify --quiet refs/remotes/origin/main > /dev/null \
-    && { echo refs/remotes/origin/main; return; }
-  git rev-parse --verify --quiet refs/heads/main > /dev/null \
-    && { echo refs/heads/main; return; }
+  local ref rc
+  for ref in refs/remotes/origin/main refs/heads/main; do
+    git show-ref --verify --quiet "$ref" && rc=0 || rc=$?
+    case "$rc" in
+      0) echo "$ref"; return 0 ;;
+      1) ;;
+      *) return 2 ;;
+    esac
+  done
   return 1
 }
 
@@ -1580,6 +1635,13 @@ target_ref() {
 # review loop is refused rather than ended. Its callers are all in a
 # condition, which suspends `set -e` for the whole call, so every step is
 # checked by hand.
+#
+# Every producer — git, cue, sort — writes a file or a variable, and its
+# status is checked before anything reads what it wrote. A producer read
+# through a process substitution loses its status, and a failed one then
+# reads as an empty list: no changed paths, no catalogue, no classes. Each
+# of those derives a change that owes nothing, which is the one answer a
+# failure must never give.
 DERIVED_PATHS=()     # every side of the diff, sorted
 DERIVED_MATCHED=()   # the class names at least one path matched, sorted
 DERIVED_UNCOVERED=() # the paths no class covered
@@ -1611,16 +1673,32 @@ derive_owed() {
     return 1
   }
 
-  DERIVED_PATHS=()
-  mapfile -t DERIVED_PATHS < <(diff_paths "$base" "$head" | sort -u)
-
   cleanup_policy_tmp
   POLICY_LAYER=("$schema" "${instance_docs[@]}" "${project_docs[@]}")
   POLICY_TMP="$(mktemp -d)" || {
     refuse "no scratch directory to compose the policy in; nothing derived"
     return 1
   }
-  render_cue > "$POLICY_TMP/render.cue"
+
+  git diff --no-relative --name-status -M -z "$base" "$head" > "$POLICY_TMP/diff" || {
+    refuse "could not diff $base..$head; nothing derived"
+    return 1
+  }
+  diff_paths < "$POLICY_TMP/diff" > "$POLICY_TMP/paths" || {
+    refuse "truncated diff output; nothing derived"
+    return 1
+  }
+  sort -u "$POLICY_TMP/paths" > "$POLICY_TMP/paths.sorted" || {
+    refuse "could not sort the changed paths; nothing derived"
+    return 1
+  }
+  DERIVED_PATHS=()
+  mapfile -t DERIVED_PATHS < "$POLICY_TMP/paths.sorted"
+
+  render_cue > "$POLICY_TMP/render.cue" || {
+    refuse "could not write the policy render; nothing derived"
+    return 1
+  }
   cue vet -c "${POLICY_LAYER[@]}" || {
     refuse "the policy layers do not compose; nothing derived"
     return 1
@@ -1635,8 +1713,12 @@ derive_owed() {
     return 1
   }
   # Sorted once here, so every list below comes out in a stable order.
+  sort "$POLICY_TMP/rendered" > "$POLICY_TMP/rendered.sorted" || {
+    refuse "could not sort the composed policy; nothing derived"
+    return 1
+  }
   local -a rendered=()
-  mapfile -t rendered < <(sort "$POLICY_TMP/rendered")
+  mapfile -t rendered < "$POLICY_TMP/rendered.sorted"
 
   unset CHECK_RUNNER CHECK_ATTRIBUTE CHECK_COMMAND CHECK_COST DERIVED_OWED \
     DERIVED_PINNED
@@ -1668,16 +1750,26 @@ derive_owed() {
     esac
   done
 
+  # A pattern bash cannot compile answers 2, not 1. Read as "no match", it
+  # would drop the pattern's class from every change it covers.
   local -A matched=()
-  local path i hit
+  local path i hit rc
   DERIVED_UNCOVERED=()
   for path in "${DERIVED_PATHS[@]}"; do
     hit=0
     for ((i = 0; i < ${#pat_ere[@]}; i++)); do
-      if [[ "$path" =~ ${pat_ere[i]} ]]; then
-        matched["${pat_class[i]}"]=1
-        hit=1
-      fi
+      [[ "$path" =~ ${pat_ere[i]} ]] && rc=0 || rc=$?
+      case "$rc" in
+        0)
+          matched["${pat_class[i]}"]=1
+          hit=1
+          ;;
+        1) ;;
+        *)
+          refuse "class ${pat_class[i]} has a path pattern that does not compile (${pat_ere[i]}); nothing derived"
+          return 1
+          ;;
+      esac
     done
     [ "$hit" -eq 1 ] || DERIVED_UNCOVERED+=("$path")
   done
@@ -1701,14 +1793,15 @@ derive_owed() {
     fi
   done
 
-  DERIVED_MATCHED=()
-  [ "${#matched[@]}" -eq 0 ] \
-    || mapfile -t DERIVED_MATCHED < <(printf '%s\n' "${!matched[@]}" | sort)
+  sort_into DERIVED_MATCHED "${!matched[@]}" || {
+    refuse "could not sort the matched classes; nothing derived"
+    return 1
+  }
 }
 
 cmd_checks() {
   local root schema instance="" label project="" plabel base head target=""
-  local names=0 cost=""
+  local names=0 cost="" costed=0 short_base short_head
   root="$(git rev-parse --show-toplevel 2> /dev/null)" \
     || die "not a git repository"
   policy_defaults "$root"
@@ -1719,19 +1812,20 @@ cmd_checks() {
       --instance) [ $# -ge 2 ] || die "--instance needs a directory"; instance="$2"; shift 2 ;;
       --project) [ $# -ge 2 ] || die "--project needs a directory"; project="$2"; shift 2 ;;
       --names) names=1; shift ;;
-      --cost) [ $# -ge 2 ] || die "--cost needs quick or slow"; cost="$2"; shift 2 ;;
+      --cost) [ $# -ge 2 ] || die "--cost needs quick or slow"; cost="$2"; costed=1; shift 2 ;;
       --) shift; break ;;
       -*) die "unknown option: $1" ;;
       *) break ;;
     esac
   done
   [ $# -le 2 ] || die "usage: valley checks [options] [<base> [<head>]]"
-  case "$cost" in
-    '' | quick | slow) ;;
-    *) die "--cost takes quick or slow, not '$cost'" ;;
-  esac
-  [ -z "$cost" ] || [ "$names" -eq 1 ] \
-    || die "--cost filters the --names list; pass --names too"
+  if [ "$costed" -eq 1 ]; then
+    case "$cost" in
+      quick | slow) ;;
+      *) die "--cost takes quick or slow, not '$cost'" ;;
+    esac
+    [ "$names" -eq 1 ] || die "--cost filters the --names list; pass --names too"
+  fi
 
   head="$(git rev-parse --verify --quiet "${2:-HEAD}^{commit}")" \
     || die "no such commit: ${2:-HEAD}"
@@ -1739,8 +1833,10 @@ cmd_checks() {
   # either layer is left to its default — and it is what an unnamed base
   # is the merge base with.
   if [ -z "$instance" ] || [ -z "$project" ] || [ $# -lt 1 ]; then
-    target="$(target_ref)" \
-      || die "no main branch: the target's tip is where the policy layers are read from, and there is none here"
+    target="$(target_ref)" || {
+      [ $? -eq 1 ] || die "could not read the main branch; nothing derived"
+      die "no main branch: the target's tip is where the policy layers are read from, and there is none here"
+    }
   fi
   if [ $# -ge 1 ]; then
     base="$(git rev-parse --verify --quiet "$1^{commit}")" \
@@ -1776,8 +1872,8 @@ cmd_checks() {
   # every owed check, whatever it costs.
   local check width=0
   local -a owed=() quick=() slow=() listed=()
-  [ "${#DERIVED_OWED[@]}" -eq 0 ] \
-    || mapfile -t owed < <(printf '%s\n' "${!DERIVED_OWED[@]}" | sort)
+  sort_into owed "${!DERIVED_OWED[@]}" \
+    || die "could not sort the owed checks; nothing derived"
   for check in "${owed[@]}"; do
     [ "${#check}" -le "$width" ] || width="${#check}"
     if [ "${CHECK_COST[$check]}" = slow ]; then
@@ -1798,8 +1894,14 @@ cmd_checks() {
     return
   fi
 
-  printf '%s..%s: %d changed path(s)\n' \
-    "$(git rev-parse --short "$base")" "$(git rev-parse --short "$head")" \
+  # Read before the first line is printed, so a read that fails leaves no
+  # partial report behind.
+  short_base="$(git rev-parse --short "$base")" \
+    || die "could not read $base; nothing derived"
+  short_head="$(git rev-parse --short "$head")" \
+    || die "could not read $head; nothing derived"
+
+  printf '%s..%s: %d changed path(s)\n' "$short_base" "$short_head" \
     "${#DERIVED_PATHS[@]}"
   printf 'policy: %s + %s\n' "$label" "$plabel"
   if [ "${#DERIVED_MATCHED[@]}" -eq 0 ]; then

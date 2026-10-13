@@ -62,7 +62,9 @@ A write is allowed only if every rule that applies to its ref allows it:
                     with that record as the one parent. Only a holder of
                     the request grant may delete one. Every other write is
                     refused. A push may update at most 32 records, and a
-                    repository may hold at most 2000.
+                    repository may hold at most 2000. That bound is soft:
+                    pushes running at once can pass it by the records
+                    they create.
   anything else     principals a named grant of the project opens the ref
                     to. Tags open only this way.
   a protected ref   also a declared writer of the project. Protection adds

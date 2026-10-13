@@ -146,8 +146,14 @@ parents in another order, a head that is not a commit, a tree of another shape, 
 `ready` without a new version. The owner, the target and the change ID never change.
 
 Each record commit is at most 4 KiB, its tree at most 1 KiB, and its `record.json` at most 64 KiB. A
-push may update at most 32 records, and a repository may hold at most 2000, counted with one
-`for-each-ref`. The hook checks each bound before it reads anything past it.
+push may update at most 32 records. The hook checks each of these bounds before it reads anything
+past it.
+
+A repository may hold at most 2000 records, counted with one `for-each-ref`. This bound is soft. A
+pre-receive hook runs before git installs any ref, and nothing serializes two pushes' hooks. So
+pushes that run at the same time can each count the same records and each create more. The count can
+then pass 2000 by at most the record updates those pushes had in flight, which is 32 per push. Once
+the count is past 2000, every later create is refused.
 
 The writer numbers versions, and the hook holds them to append-only and gap-free. When the
 integrator starts reading records, it takes this numbering as it is. For now, a change is owned by

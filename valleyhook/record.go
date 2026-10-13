@@ -27,7 +27,7 @@ const (
 	maxRecordTree    = 1 << 10  // bytes in its tree
 	maxRecordBlob    = 64 << 10 // bytes in its record.json
 	maxRecordUpdates = 32       // change record updates in one push
-	maxRecords       = 2000     // change records a repository holds
+	maxRecords       = 2000     // change records a repository holds; a soft bound, below
 
 	// recordTarget is the one target a change may name for now.
 	recordTarget = "main"
@@ -121,6 +121,13 @@ func (gitRepository) kind(id string) (string, error) {
 
 // records counts the refs under refs/the-valley/changes/, past the bound
 // by one at most: for-each-ref stops printing there.
+//
+// The bound it is checked against is soft. A pre-receive hook runs before
+// git installs any ref, and nothing serializes the hooks of two pushes, so
+// pushes running at once can each count the same records and each create
+// more. The repository can then hold more than maxRecords, by at most the
+// record updates those pushes had in flight: maxRecordUpdates each. Once
+// it is over the bound, every later create is refused.
 func (gitRepository) records() (int, error) {
 	out, err := run(nil, "for-each-ref", fmt.Sprintf("--count=%d", maxRecords+1), "--format=x", change.RefPrefix)
 	if err != nil {

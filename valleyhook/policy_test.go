@@ -35,10 +35,10 @@ func TestAPatternMatchesTheWholeRefnameAndItsStarsCrossSeparators(t *testing.T) 
 	}
 }
 
-// fakeRepository holds the symbolic refs of a repository and no objects.
-type fakeRepository struct{ symrefs map[string]bool }
+// fakeRepository holds no objects.
+type fakeRepository struct{}
 
-func (f fakeRepository) symbolic(ref string) (bool, error) { return f.symrefs[ref], nil }
+func (f fakeRepository) symbolic([]string) (map[string]bool, error) { return nil, nil }
 func (f fakeRepository) notes(string) (map[string][]byte, error) {
 	return nil, errors.New("holds no objects")
 }
@@ -67,8 +67,9 @@ func TestNoRuleStandsInForAnother(t *testing.T) {
 				"everything": {Refs: []string{"refs/*"}, Writers: []string{"writer", "opened"}},
 			},
 		},
-		grants: grants{"requester": {"request": true}},
-		repo:   fakeRepository{symrefs: map[string]bool{"refs/heads/alias": true}},
+		grants:  grants{"requester": {"request": true}},
+		repo:    fakeRepository{},
+		symrefs: map[string]bool{"refs/heads/alias": true},
 	}
 	for _, c := range []struct {
 		who, ref string

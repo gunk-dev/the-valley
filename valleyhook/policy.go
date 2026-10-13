@@ -56,8 +56,13 @@ type policy struct {
 	verifiers []note.VerifierKey
 
 	// repo answers what the decision needs to know about the repository:
-	// whether a ref is symbolic there, and what a pushed object holds.
+	// what a pushed object holds, and how many change records it has.
 	repo repository
+
+	// symrefs are the refs the push writes that are symbolic in the
+	// repository. preReceive reads them all at once, before any update is
+	// decided.
+	symrefs map[string]bool
 
 	// recordCreates is how many change records the push creates, and
 	// existingRecords how many the repository held before it. preReceive
@@ -113,10 +118,7 @@ func (p policy) decide(principal string, u update) string {
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
 
-	switch symbolic, err := p.repo.symbolic(u.ref); {
-	case err != nil:
-		return refuse("write", fmt.Sprintf("whether it is a symbolic ref could not be read: %v", err))
-	case symbolic:
+	if p.symrefs[u.ref] {
 		return refuse("write", "it is a symbolic ref in this repository, and a push to it would write the ref it points at instead")
 	}
 

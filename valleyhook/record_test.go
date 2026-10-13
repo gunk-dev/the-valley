@@ -378,8 +378,8 @@ func TestAPushIsBoundInTheRecordsItWrites(t *testing.T) {
 		return out
 	}
 
-	// 33 record updates are refused before any is read: this repository
-	// fails the test if one is.
+	// 33 record updates are refused before any is read, or any ref looked
+	// up: this repository fails the test if one is.
 	var many []string
 	for _, id := range ids(0, maxRecordUpdates+1) {
 		many = append(many, zeroID+" "+h+" "+change.Ref("main", id))
@@ -434,7 +434,10 @@ func TestAPushIsBoundInTheRecordsItWrites(t *testing.T) {
 // unreadable is a repository whose objects must not be read.
 type unreadable struct{ t *testing.T }
 
-func (u unreadable) symbolic(string) (bool, error) { return false, nil }
+func (u unreadable) symbolic([]string) (map[string]bool, error) {
+	u.t.Error("the refs were read")
+	return nil, errors.New("unread")
+}
 func (u unreadable) notes(string) (map[string][]byte, error) {
 	u.t.Error("an object was read")
 	return nil, errors.New("unread")

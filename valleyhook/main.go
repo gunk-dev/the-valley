@@ -71,6 +71,9 @@ A write is allowed only if every rule that applies to its ref allows it:
 The integrator's own writes are not pushes. A controller updates the refs
 it writes on the host, and no push hook sees a local write.
 
+A push may update at most 1000 refs. One that updates more is refused as a
+whole, at the first update past the bound, before any ref is decided.
+
 A policy, grants or keys file that cannot be read refuses the whole push.
 The hook fails closed: a policy it cannot read is not a policy it can
 apply. A grants or keys file that does not exist grants nothing and names
@@ -111,6 +114,9 @@ func main() {
 		os.Exit(2)
 	}
 }
+
+// maxUpdates is how many refs one push may update.
+const maxUpdates = 1000
 
 // preReceive runs the hook over the updates on stdin and returns its exit
 // status: 0 accepts the push, anything else refuses it.
@@ -159,21 +165,28 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		p.verifiers = append(p.verifiers, keys...)
 	}
 
-	input, err := io.ReadAll(stdin)
-	if err != nil {
-		return failClosed(stderr, err)
-	}
+	// The updates are read one line at a time, and a push that updates
+	// more refs than the bound is refused at the first line past it,
+	// before anything more is kept. The rest of the input is read and
+	// dropped, so that git is not left writing to a hook that has gone.
+	var input bytes.Buffer
 	var updates []update
-	lines := bufio.NewScanner(bytes.NewReader(input))
+	lines := bufio.NewScanner(stdin)
 	for lines.Scan() {
 		if strings.TrimSpace(lines.Text()) == "" {
 			continue
+		}
+		if len(updates) == maxUpdates {
+			_, _ = io.Copy(io.Discard, stdin)
+			fmt.Fprintf(stderr, "valley: the push is refused: it updates more than %d refs, the most one push may\n", maxUpdates)
+			return 1
 		}
 		fields := strings.Fields(lines.Text())
 		if len(fields) != 3 {
 			return failClosed(stderr, fmt.Errorf("git sent %q, which is not an old id, a new id and a refname", lines.Text()))
 		}
 		updates = append(updates, update{old: fields[0], new: fields[1], ref: fields[2]})
+		input.WriteString(lines.Text() + "\n")
 	}
 	if err := lines.Err(); err != nil {
 		return failClosed(stderr, err)
@@ -195,10 +208,22 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		return 1
 	}
 	if p.recordCreates > 0 {
+		var err error
 		if p.existingRecords, err = repo.records(); err != nil {
 			return failClosed(stderr, err)
 		}
 	}
+
+	// Which of the refs are symbolic is read once for the whole push.
+	refs := make([]string, len(updates))
+	for i, u := range updates {
+		refs[i] = u.ref
+	}
+	symrefs, err := repo.symbolic(refs)
+	if err != nil {
+		return failClosed(stderr, err)
+	}
+	p.symrefs = symrefs
 
 	refused := false
 	for _, u := range updates {
@@ -211,7 +236,7 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		return 1
 	}
 	if *then != "" {
-		return runThen(*then, input, stderr)
+		return runThen(*then, input.Bytes(), stderr)
 	}
 	return 0
 }

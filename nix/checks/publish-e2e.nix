@@ -134,7 +134,7 @@ in
       seed("instance", f"{base}:refs/heads/main")
       seed("project", f"{base}:refs/heads/main")
       host.fail(f"{git} -C /srv/mirror.git rev-parse --verify --quiet refs/heads/main")
-      # The request ref alone asks for the change to land.
+      # The request ref alone files the change for integration.
       seed("project", f"{change}:refs/the-valley/integration-requests/main/one")
 
       with subtest("the landing moves main"):

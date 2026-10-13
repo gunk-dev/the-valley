@@ -10,7 +10,9 @@ _valley() {
   if (( CURRENT == 2 )); then
     local -a verbs=(
       'pending:list branches on origin not merged into origin/main'
-      'review:page through a branch, then ask, reject, or skip'
+      'review:page through a branch, then approve, reject, or skip'
+      'approve:approve a change without paging it, filing its integration request'
+      'rebase:rebase a change onto origin/main and push it with a lease'
       'status:read the integration result for a branch from origin'
       'checks:print the checks a change owes under the composed policy'
       'tail:watch bus events scroll by'
@@ -31,13 +33,17 @@ _valley() {
       '--cost:with --names, only the quick or the slow checks'
     )
     _describe -t options 'valley checks option' opts
-  elif (( CURRENT == 3 )) && [[ ${words[2]} == review || ${words[2]} == status ]]; then
-    # Cached topic branches on origin. Review filters out merged branches;
-    # status needs those too. Silent outside a git repo — no errors
-    # mid-typing.
+  elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
+    local -a opts=('--json:print the status as one valley-status/v1 JSON object')
+    _describe -t options 'valley status option' opts
+  elif [[ ${words[2]} == (review|approve|rebase|status) ]] \
+    && { (( CURRENT == 3 )) || [[ ${words[2]} == status ]]; }; then
+    # Cached topic branches on origin. Review, approve and rebase filter
+    # out merged branches; status needs those too. Silent outside a git
+    # repo — no errors mid-typing.
     local -a branches selection
     selection=()
-    [[ ${words[2]} == review ]] && selection=(--no-merged=origin/main)
+    [[ ${words[2]} != status ]] && selection=(--no-merged=origin/main)
     branches=(${(f)"$(git for-each-ref refs/remotes/origin \
       --format='%(refname)' "${selection[@]}" 2>/dev/null)"})
     branches=(${branches:#refs/remotes/origin/HEAD})

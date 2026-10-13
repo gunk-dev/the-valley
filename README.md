@@ -82,4 +82,6 @@ can instantiate the same check over its own tree from a flake input. The plan of
   named at [`policy/valley`](./policy/valley), fetched from that valley's repository. Both are read
   from the tip of the branch the change targets, never from your checkout, which is what the
   integrator reads — so the answer is the same from any branch, however stale. It also groups the
-  owed checks by their declared cost.
+  owed checks by their declared cost. `valley approve` and `valley rebase` do what review's keys do,
+  for front ends that show a change their own way, and `valley status --json` gives them the
+  change's status as a versioned JSON object.

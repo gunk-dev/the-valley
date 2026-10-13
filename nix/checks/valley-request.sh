@@ -24,7 +24,7 @@ keyhash="$(attest key --key "$TMPDIR/host" --name "$VALLEY_ATTEST_NAME" | cut -d
 origin="$TMPDIR/project.git"
 git init --quiet --bare "$origin"
 
-# Every push the bare repo receives, as its hook sees it. The claim [a]sk
+# Every push the bare repo receives, as its hook sees it. The claim approve
 # makes is that ONE push carries the evidence and the request together, and
 # that claim is only observable from the receiving side.
 pushlog="$TMPDIR/pushlog"
@@ -36,7 +36,7 @@ EOF
 chmod +x "$origin/hooks/pre-receive"
 
 # Interpose on origin's receive-pack so that the request namespace moves
-# between [a]sk's read of it and the push it then makes. That window is
+# between approve's read of it and the push it then makes. That window is
 # where every race below lives, and a hook cannot reach it: by the time
 # pre-receive runs the client has already been told what the refs were.
 # One shot, so only the push under test is raced.
@@ -176,16 +176,16 @@ digest="$(attest digest --rev topic/one | cut -d: -f2)"
 
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
-valley review topic/one < "$w/answers" > "$w/ask.out" 2> "$w/ask.err"
+valley review topic/one < "$w/answers" > "$w/approve.out" 2> "$w/approve.err"
 
-grep -q '^checking topic/one at .*: tree-ok$' "$w/ask.out"
-grep -qE '^check   tree-ok +command  passed$' "$w/ask.out"
-grep -qx "Submitted topic/one ($(git rev-parse --short topic/one)) for integration into origin/main." "$w/ask.out"
-grep -qx "  request  refs/the-valley/integration-requests/main/topic-one -> $(git rev-parse --short topic/one)" "$w/ask.out"
-grep -qx "  evidence refs/the-valley/attestations/$digest/$keyhash" "$w/ask.out"
-grep -qx '  checks   tree-ok' "$w/ask.out"
-grep -qx 'Your local checkout has not changed.' "$w/ask.out"
-grep -qx 'Check the result: valley status topic/one' "$w/ask.out"
+grep -q '^checking topic/one at .*: tree-ok$' "$w/approve.out"
+grep -qE '^check   tree-ok +command  passed$' "$w/approve.out"
+grep -qx "Submitted topic/one ($(git rev-parse --short topic/one)) for integration into origin/main." "$w/approve.out"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-one -> $(git rev-parse --short topic/one)" "$w/approve.out"
+grep -qx "  evidence refs/the-valley/attestations/$digest/$keyhash" "$w/approve.out"
+grep -qx '  checks   tree-ok' "$w/approve.out"
+grep -qx 'Your local checkout has not changed.' "$w/approve.out"
+grep -qx 'Check the result: valley status topic/one' "$w/approve.out"
 
 # What origin holds now. The attestation is keyed by the digest of the
 # BRANCH's tree, which is what says the checks ran over the right tree and
@@ -199,7 +199,7 @@ if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/top
   exit 1
 fi
 if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$first" ]; then
-  echo "valley-request: [a]sk moved main" >&2
+  echo "valley-request: [a]pprove moved main" >&2
   exit 1
 fi
 
@@ -249,7 +249,7 @@ grep -qE '^  phantom +mandatory' "$w/example.out"
 grep -qx 'policy: examples/policy/instance + examples/policy/project' "$w/example.out"
 
 # ----------------------------------------------------------------------
-# 3. main moves on, so the next branch is stale. [a]sk is offered there
+# 3. main moves on, so the next branch is stale. [a]pprove is offered there
 #    too — the integrator applies a delta to the tip rather than
 #    fast-forwarding — and a branch whose check fails publishes nothing
 #    and leaves the review loop usable.
@@ -272,7 +272,7 @@ valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 # The prompt is the whole of what the operator is offered, so it is pinned
 # character for character: a verb that stops being offered, or one that
 # starts, is a change to the review loop and not an incidental one.
-grep -qF 'topic/two does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
+grep -qF 'topic/two does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
 grep -q '^checking topic/two at .*: no-secrets$' "$w/fail.out"
 grep -qE '^check   no-secrets +command  failed$' "$w/fail.out"
 grep -q 'the checks did not pass; nothing published, main untouched' "$w/fail.err"
@@ -365,11 +365,11 @@ before_base="$(git -C "$origin" rev-parse refs/heads/main)"
 
 printf 'b\ns\n' > "$w/answers"
 valley review topic/three < "$w/answers" > "$w/base.out" 2>&1
-grep -qF 'topic/three does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
+grep -qF 'topic/three does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
 grep -qF 'rebased topic/three onto origin/main, pushed with --force-with-lease' "$w/base.out"
 # The post-[b]ase prompt: the branch fast-forwards now, so the loop falls
 # through to the prompt that has no [b]ase in it.
-grep -qF 'topic/three: [a]sk, [r]eject, [s]kip? ' "$w/base.out"
+grep -qF 'topic/three: [a]pprove, [r]eject, [s]kip? ' "$w/base.out"
 grep -q 'skipped topic/three; nothing done' "$w/base.out"
 git merge-base --is-ancestor refs/remotes/origin/main refs/remotes/origin/topic/three \
   || { echo "valley-request: [b]ase left the branch stale" >&2; exit 1; }
@@ -432,7 +432,7 @@ if ! cmp -s "$w/from-main.out" "$w/from-stale.out"; then
   exit 1
 fi
 
-# And [a]sk, which is where it failed: a request filed from that same
+# And [a]pprove, which is where it failed: a request filed from that same
 # checkout, over a branch the stale tree knows nothing about.
 git checkout --quiet -b topic/four origin/main
 echo "one more readme" > docs/readme.md
@@ -490,10 +490,10 @@ git checkout --quiet main
 #     replacement — and a push without a lease is refused by git's own
 #     rule before origin's hook is ever consulted. The verdict that sends
 #     a change down this path is the integrator's and is pinned by
-#     integrator-e2e; what is under test here is that [a]sk can act on it.
+#     integrator-e2e; what is under test here is that [a]pprove can act on it.
 git checkout --quiet -b topic/five origin/main
-echo "a readme worth asking about" > docs/readme.md
-git commit --quiet -am "a readme worth asking about"
+echo "a readme worth approving" > docs/readme.md
+git commit --quiet -am "a readme worth approving"
 git push --quiet origin topic/five
 stalehead="$(git rev-parse topic/five)"
 staledigest="$(attest digest --rev topic/five | cut -d: -f2)"
@@ -503,7 +503,7 @@ valley review topic/five < "$w/answers" > "$w/five-first.out" 2> "$w/five-first.
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$stalehead")" "$w/five-first.out"
 
 # main moves, and the change is rebased onto it — the operator's half of
-# a resubmission, which [a]sk does not do and does not need to.
+# a resubmission, which [a]pprove does not do and does not need to.
 git checkout --quiet main
 echo "a second note" > docs/second.md
 git add -A
@@ -536,7 +536,7 @@ grep -q '^Submitted topic/five .* for integration into origin/main\.$' "$w/five-
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
 # Replacing a pending request is said out loud, and the sentence names the
 # head that was replaced.
-grep -qx "  replaced the pending request, which stood at $(git rev-parse --short "$stalehead") (a readme worth asking about)" "$w/five-again.out"
+grep -qx "  replaced the pending request, which stood at $(git rev-parse --short "$stalehead") (a readme worth approving)" "$w/five-again.out"
 
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-five)" \
   != "$newhead" ]; then
@@ -583,7 +583,7 @@ fi
 #     the push is leased against exactly that value, so the second one to
 #     arrive is refused rather than allowed to overwrite the first. The
 #     race is made real: a receive-pack wrapper moves the ref on origin
-#     after [a]sk has read it and before the push it then makes, which is
+#     after approve has read it and before the push it then makes, which is
 #     what another operator getting there first looks like from here.
 git checkout --quiet main
 git checkout --quiet -b topic/six origin/main
@@ -656,20 +656,20 @@ grep -qx "  refs/the-valley/attestations/$sixdigest/$keyhash" "$w/race.err"
 git checkout --quiet main
 
 # ----------------------------------------------------------------------
-# 12. Asking again at the same head. Evidence with a validity window
+# 12. Approving again at the same head. Evidence with a validity window
 #     expires while the tree stays the right tree, and the answer to that
 #     is a fresh observation over the same head. The request ref already
 #     names that head, so it is left out of the refspec entirely rather
 #     than pushed at the value origin already holds.
 #
 #     The request is filed by hand here. Origin holding a request at this
-#     head is the whole of the state under test, and re-running [a]sk to
+#     head is the whole of the state under test, and re-running [a]pprove to
 #     produce it would put a second-granular observation instant in the
 #     note: the same tree re-attested inside one second is the identical
 #     ref, and across a second boundary it is not.
 git checkout --quiet -b topic/seven origin/main
-echo "a readme asked about twice" > docs/readme.md
-git commit --quiet -am "a readme asked about twice"
+echo "a readme approved twice" > docs/readme.md
+git commit --quiet -am "a readme approved twice"
 git push --quiet origin topic/seven
 sevenhead="$(git rev-parse topic/seven)"
 sevendigest="$(attest digest --rev topic/seven | cut -d: -f2)"
@@ -685,13 +685,13 @@ grep -qx '  the request already stood at this head; the evidence is what was pub
 # The evidence went; the request ref was not in the refspec at all.
 grep -q "refs/the-valley/attestations/$sevendigest/$keyhash" "$pushlog"
 if grep -q 'refs/the-valley/integration-requests/main/topic-seven' "$pushlog"; then
-  echo "valley-request: a same-head re-ask pushed the request ref again" >&2
+  echo "valley-request: a same-head re-approval pushed the request ref again" >&2
   cat "$pushlog" >&2
   exit 1
 fi
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-seven)" \
   != "$sevenhead" ]; then
-  echo "valley-request: a same-head re-ask disturbed the request ref" >&2
+  echo "valley-request: a same-head re-approval disturbed the request ref" >&2
   exit 1
 fi
 
@@ -699,7 +699,7 @@ fi
 # write, so no push is made at all. topic/quiet's request has stood on
 # origin at this head since 5. A push assembled with an empty refspec
 # would fall back to origin's default one, and pushing whatever that
-# happens to name is not what asking about a change means.
+# happens to name is not what approving a change means.
 git checkout --quiet main
 : > "$pushlog"
 printf 'a\n' > "$w/answers"
@@ -708,7 +708,7 @@ env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet-again.out"
 grep -qx '  the request already stood at this head and nothing was owed, so nothing needed publishing' "$w/quiet-again.out"
 if [ -s "$pushlog" ]; then
-  echo "valley-request: a re-ask with nothing to publish still pushed" >&2
+  echo "valley-request: a re-approval with nothing to publish still pushed" >&2
   cat "$pushlog" >&2
   exit 1
 fi
@@ -793,7 +793,7 @@ valley review topic/nine < "$w/answers" > "$w/consumed.out" 2> "$w/consumed.err"
 disarm_race
 
 grep -q 'the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands' "$w/consumed.err"
-grep -q 'nothing was published; fetch and review the branch again before asking a second time' "$w/consumed.err"
+grep -q 'nothing was published; fetch and review the branch again before approving it a second time' "$w/consumed.err"
 # Not reported as a race, which is the distinction the re-read buys.
 if grep -q 'the pending request moved from' "$w/consumed.err"; then
   echo "valley-request: a consumed request was reported as a lost race" >&2
@@ -829,7 +829,7 @@ fi
 #     integrator consumes the ref in the first place; re-creating it here
 #     would be a guess about which of consumption and deletion happened,
 #     paid for with a second push behind the one this verb promises. So
-#     the run says what is true and stops, and asking again is the repair.
+#     the run says what is true and stops, and approving again is the repair.
 git checkout --quiet main
 git checkout --quiet -b topic/ten origin/main
 echo "a readme consumed under the evidence" > docs/readme.md
@@ -872,7 +872,7 @@ fi
 # And that evidence went in one push, which is still the whole claim.
 pushes="$(grep -c '^--- push' "$pushlog" || true)"
 if [ "$pushes" != 1 ]; then
-  echo "valley-request: the same-head re-ask took $pushes pushes, not 1" >&2
+  echo "valley-request: the same-head re-approval took $pushes pushes, not 1" >&2
   cat "$pushlog" >&2
   exit 1
 fi
@@ -882,7 +882,7 @@ git checkout --quiet main
 # 16. A project other than the-valley carries no schema/. The schema ships
 #     with the tool, so the packaged CLI derives what a change owes and
 #     files the request from a checkout that has none. This is the case
-#     that failed in live use: [a]sk in a valley's config repository, which
+#     that failed in live use: [a]pprove in a valley's config repository, which
 #     carries its own floor at policy/instance, refused with "no policy
 #     schema" and published nothing.
 cfgorigin="$TMPDIR/config.git"
@@ -906,7 +906,7 @@ cfgdigest="$(attest digest --rev topic/config | cut -d: -f2)"
 printf 'a\n' > "$w/answers"
 valley review topic/config < "$w/answers" > "$w/config.out" 2> "$w/config.err"
 if grep -q 'no policy schema' "$w/config.err"; then
-  echo "valley-request: [a]sk looked for the schema in a project's checkout" >&2
+  echo "valley-request: [a]pprove looked for the schema in a project's checkout" >&2
   cat "$w/config.err" >&2
   exit 1
 fi
@@ -914,17 +914,17 @@ grep -q '^checking topic/config at .*: tree-ok$' "$w/config.out"
 grep -qx "Submitted topic/config ($(git rev-parse --short topic/config)) for integration into origin/main." "$w/config.out"
 git -C "$cfgorigin" rev-parse --verify --quiet \
   "refs/the-valley/attestations/$cfgdigest/$keyhash" > /dev/null || {
-  echo "valley-request: [a]sk in a project without schema/ published no evidence" >&2
+  echo "valley-request: [a]pprove in a project without schema/ published no evidence" >&2
   exit 1
 }
 if [ "$(git -C "$cfgorigin" rev-parse refs/the-valley/integration-requests/main/topic-config)" \
   != "$(git rev-parse topic/config)" ]; then
-  echo "valley-request: [a]sk in a project without schema/ filed no request for its head" >&2
+  echo "valley-request: [a]pprove in a project without schema/ filed no request for its head" >&2
   exit 1
 fi
 
 # checks without --schema reads the packaged schema too, and derives what
-# [a]sk ran from this repository's own floor.
+# [a]pprove ran from this repository's own floor.
 valley checks > "$w/config-checks.out" 2> "$w/config-checks.err"
 grep -qF '(this repository is its own valley)' "$w/config-checks.out"
 grep -qE '^  tree-ok +mandatory +prose$' "$w/config-checks.out"
@@ -1052,24 +1052,165 @@ for mode in report names; do
 done
 
 # ----------------------------------------------------------------------
+# 17. The approve verb: [a]pprove without the pager, for a front end that
+#     has shown the change its own way. It runs the function the key
+#     runs, so it publishes what the key's session in 1 published, the
+#     evidence and the request in one push, and prints what that session
+#     printed. stdin is closed, because no answer is read, and the change
+#     is named the way status accepts it, with origin/ in front.
+git checkout --quiet -b topic/verb origin/main
+echo "a readme approved without the pager" > docs/readme.md
+git commit --quiet -am "a readme approved without the pager"
+git push --quiet origin topic/verb
+verbhead="$(git rev-parse topic/verb)"
+verbdigest="$(attest digest --rev topic/verb | cut -d: -f2)"
+git checkout --quiet main
+
+: > "$pushlog"
+valley approve origin/topic/verb < /dev/null > "$w/verb.out" 2> "$w/verb.err"
+grep -q '^checking topic/verb at .*: tree-ok$' "$w/verb.out"
+grep -qx "Submitted topic/verb ($(git rev-parse --short "$verbhead")) for integration into origin/main." "$w/verb.out"
+grep -qx "  request  refs/the-valley/integration-requests/main/topic-verb -> $(git rev-parse --short "$verbhead")" "$w/verb.out"
+grep -qx "  evidence refs/the-valley/attestations/$verbdigest/$keyhash" "$w/verb.out"
+grep -qx '  checks   tree-ok' "$w/verb.out"
+grep -qx 'Check the result: valley status topic/verb' "$w/verb.out"
+if grep -q '\[[a-z]\]' "$w/verb.out"; then
+  echo "valley-request: the approve verb offered a prompt" >&2
+  cat "$w/verb.out" >&2
+  exit 1
+fi
+if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-verb)" \
+  != "$verbhead" ]; then
+  echo "valley-request: the approve verb's request does not name the branch's head" >&2
+  exit 1
+fi
+git -C "$origin" rev-parse --verify --quiet \
+  "refs/the-valley/attestations/$verbdigest/$keyhash" > /dev/null || {
+  echo "valley-request: the approve verb published no evidence" >&2
+  exit 1
+}
+pushes="$(grep -c '^--- push' "$pushlog" || true)"
+if [ "$pushes" != 1 ]; then
+  echo "valley-request: the approve verb took $pushes pushes, not 1" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# A refusal is the verb's exit status, after the same words the key's
+# refusal prints, and it publishes nothing.
+: > "$pushlog"
+if valley approve topic/two < /dev/null > "$w/verb-refused.out" 2> "$w/verb-refused.err"; then
+  echo "valley-request: the approve verb exited 0 for a change whose check failed" >&2
+  exit 1
+fi
+grep -q 'the checks did not pass; nothing published, main untouched' "$w/verb-refused.err"
+if [ -s "$pushlog" ]; then
+  echo "valley-request: a refused approve verb pushed something" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+if valley approve topic/no-such-change < /dev/null > "$w/verb-missing.out" 2> "$w/verb-missing.err"; then
+  echo "valley-request: the approve verb exited 0 for a change origin does not have" >&2
+  exit 1
+fi
+grep -q 'no such branch on origin: topic/no-such-change' "$w/verb-missing.err"
+
+# ----------------------------------------------------------------------
+# 18. The rebase verb: [b]ase without the pager. A stale branch is
+#     rebased onto main in a throwaway worktree and pushed under a lease,
+#     and the new head is printed. Nothing is approved and nothing is
+#     re-reviewed: rebasing is mechanics, and the judgment on what it
+#     produced stays with whoever reads it next.
+git checkout --quiet -b topic/behind "$first"
+echo "a readme left behind" > docs/behind.md
+git add -A
+git commit --quiet -m "a readme left behind"
+git push --quiet origin topic/behind
+behindhead="$(git rev-parse topic/behind)"
+git checkout --quiet main
+if git -C "$origin" merge-base --is-ancestor refs/heads/main refs/heads/topic/behind; then
+  echo "valley-request: the branch to rebase fast-forwarded from main already" >&2
+  exit 1
+fi
+before_rebase="$(git -C "$origin" rev-parse refs/heads/main)"
+
+: > "$pushlog"
+valley rebase topic/behind < /dev/null > "$w/rebase.out" 2> "$w/rebase.err"
+rebased="$(git -C "$origin" rev-parse refs/heads/topic/behind)"
+grep -qx 'rebased topic/behind onto origin/main, pushed with --force-with-lease' "$w/rebase.out"
+grep -qx "  head     $rebased" "$w/rebase.out"
+if [ "$rebased" = "$behindhead" ]; then
+  echo "valley-request: the rebase verb left the branch where it was" >&2
+  exit 1
+fi
+git -C "$origin" merge-base --is-ancestor refs/heads/main "$rebased" || {
+  echo "valley-request: the rebased head does not fast-forward from main" >&2
+  exit 1
+}
+if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$before_rebase" ]; then
+  echo "valley-request: the rebase verb moved main" >&2
+  exit 1
+fi
+if git -C "$origin" rev-parse --verify --quiet \
+  refs/the-valley/integration-requests/main/topic-behind > /dev/null; then
+  echo "valley-request: the rebase verb filed a request" >&2
+  exit 1
+fi
+pushes="$(grep -c '^--- push' "$pushlog" || true)"
+if [ "$pushes" != 1 ] || grep -v '^--- push' "$pushlog" | grep -qv ' refs/heads/topic/behind$'; then
+  echo "valley-request: the rebase verb pushed something besides the branch" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# A branch that fast-forwards from main already is left as it is.
+: > "$pushlog"
+valley rebase topic/behind < /dev/null > "$w/rebase-again.out" 2> "$w/rebase-again.err"
+grep -qx 'topic/behind already fast-forwards from origin/main; nothing rebased' "$w/rebase-again.out"
+grep -qx "  head     $rebased" "$w/rebase-again.out"
+if [ -s "$pushlog" ]; then
+  echo "valley-request: rebasing a branch that fast-forwards pushed something" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# A rebase that conflicts changes nothing, says so, and exits non-zero.
+git checkout --quiet -b topic/clash "$first"
+echo "a note that clashes" > docs/notes.md
+git add -A
+git commit --quiet -m "a note that clashes"
+git push --quiet origin topic/clash
+clashhead="$(git rev-parse topic/clash)"
+git checkout --quiet main
+if valley rebase topic/clash < /dev/null > "$w/clash.out" 2> "$w/clash.err"; then
+  echo "valley-request: a rebase that conflicts exited 0" >&2
+  exit 1
+fi
+grep -q 'topic/clash conflicts with main — resolve by hand; nothing changed' "$w/clash.err"
+if [ "$(git -C "$origin" rev-parse refs/heads/topic/clash)" != "$clashhead" ]; then
+  echo "valley-request: a rebase that conflicted moved the branch" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
-# branch, so no path may offer one outside the set: [a]sk, [b]ase,
+# branch, so no path may offer one outside the set: [a]pprove, [b]ase,
 # [r]eject, [s]kip. Every stream this check captured is scanned at the end,
 # which is what makes the claim about paths rather than about the two
 # prompts pinned character for character above — the fast-forward prompt,
-# the stale one, the one [b]ase comes back to, and the ones a refused [a]sk
+# the stale one, the one [b]ase comes back to, and the ones a refused [a]pprove
 # returns to are all in here. A verb that writes the protected ref from the
 # operator's own checkout — the retired [i]ntegrate, or any successor to
 # it — fails this wherever it is printed.
 offered="$(cat "$w"/*.out | grep -o '\[[a-z]\][a-z]*' | sort -u || true)"
-outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]sk|\[b\]ase|\[r\]eject|\[s\]kip' || true)"
+outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]pprove|\[b\]ase|\[r\]eject|\[s\]kip' || true)"
 if [ -n "$outside" ]; then
   echo "valley-request: a review path offered a verb outside the set:" >&2
   printf '%s\n' "$outside" >&2
   exit 1
 fi
 # The scan is only worth something if it saw the offers at all.
-for verb in '[a]sk' '[b]ase' '[r]eject' '[s]kip'; do
+for verb in '[a]pprove' '[b]ase' '[r]eject' '[s]kip'; do
   printf '%s\n' "$offered" | grep -qxF "$verb" \
     || { echo "valley-request: no captured session offered $verb" >&2; exit 1; }
 done
@@ -1084,7 +1225,7 @@ fi
 
 echo "every scenario held"
 {
-  cat "$w/ask.out"
+  cat "$w/approve.out"
   printf '\n--- the scratch origin, after all of it ---\n'
   git -C "$origin" for-each-ref --format='%(objectname) %(refname)'
 } > "$out"

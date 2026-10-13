@@ -200,7 +200,7 @@ A check also declares a `cost`, `quick` by default. A `slow` check takes minutes
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
 report it prints two lines, `quick:` and `slow:`, each listing the owed checks of that cost.
 `valley checks --names` prints the owed check names alone, one per line, and `--cost quick` or
-`--cost slow` keeps one set. The integration gate does not read the cost. `[a]sk` runs every owed
+`--cost slow` keeps one set. The integration gate does not read the cost. Approving runs every owed
 check, and the integrator requires evidence for every owed check, whatever its cost. The cost
 changes neither which checks a change owes nor what the integrator accepts. Checked by
 `policy-deriver` and `integrator-unit`.
@@ -295,21 +295,29 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`
 verb is a Go program, `valley-status` (`status/`), which the package puts on the script's `PATH`.
 
-| Command                      | What it does                                                                                      |
-| ---------------------------- | ------------------------------------------------------------------------------------------------- |
-| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject.                       |
-| `valley review <b>`          | Shows a branch and offers `[a]sk`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
-| `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                      |
-| `valley status [--json] <b>` | Reads the request and outcome record for a branch. `--json` prints the `valley-status/v1` object. |
-| `valley tail [subj]`         | Subscribes to bus events.                                                                         |
-| `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                |
+| Command                      | What it does                                                                                          |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject.                           |
+| `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
+| `valley approve <change>`    | Does what `[a]pprove` does, without showing the branch.                                               |
+| `valley rebase <change>`     | Does what `[b]ase` does, without showing the branch, and prints the new head.                         |
+| `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                          |
+| `valley status [--json] <b>` | Reads the request and outcome record for a branch. `--json` prints the `valley-status/v1` object.     |
+| `valley tail [subj]`         | Subscribes to bus events.                                                                             |
+| `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
-`[a]sk` runs the owed checks with `attest` in a worktree of the branch head. Then one atomic push
-carries the evidence refs and the request ref, with a lease on the request. When the request already
-names this head, the push leaves the request ref out. When nothing is owed as well, there is no
-push. `[b]ase` rebases the branch in a temporary worktree and pushes it with a lease. `[r]eject`
-deletes the remote branch after a prompt. Checked by `valley-cli`, `valley-request`, `valley-status`
-and `review-notes`.
+`[a]pprove` is the operator's approval of a change. It runs the owed checks with `attest` in a
+worktree of the branch head. Then one atomic push carries the evidence refs and the integration
+request, with a lease on the request ref. When the request already names this head, the push leaves
+the request ref out. When nothing is owed as well, there is no push. `[b]ase` rebases the branch in
+a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
+prompt.
+
+`valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
+change their own way. Each runs the same function as its key, so the output and the refusals are the
+same. A change is named by its branch for now. `approve` exits non-zero when it refuses. `rebase`
+does not re-review the result, and it leaves a branch that already fast-forwards from `main` alone.
+Checked by `valley-cli`, `valley-request`, `valley-status` and `review-notes`.
 
 `valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
 moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in
@@ -368,8 +376,9 @@ tests in `status/` for the outcome record's parser.
 
 1. An author pushes a topic branch. The hook accepts it, the bus gets `ref-updated`, and the mirrors
    prune it.
-2. The operator runs `valley review <branch>` and chooses `[a]sk`. The owed checks run, and one push
-   files the evidence and the request. The hook verifies each note and the `request` grant.
+2. The operator approves the change, with `[a]pprove` in `valley review <branch>` or with
+   `valley approve <branch>`. The owed checks run, and one push files the evidence and the
+   integration request. The hook verifies each note and the `request` grant.
 3. On its next pass the integrator builds the candidate, derives the policy, judges the evidence,
    and lands or refuses.
 4. On a landing, the publisher sends `ref-updated` to the bus and pushes `main` and tags to the

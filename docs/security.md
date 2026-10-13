@@ -150,8 +150,8 @@ verified by reading the age headers.
 
 ## What the operator does
 
-- Files integration requests, with `valley review` and `[a]sk`. This is the only act on this list
-  that a check enforces (step 2).
+- Approves changes, with `[a]pprove` in `valley review` or with `valley approve`. Approving a change
+  files its integration request. This is the only act on this list that a check enforces (step 2).
 - Merges on GitHub, for repositories still developed there. `patflynn-agent` can merge too (see
   Residual risks).
 - Rekeys and edits secrets, with a YubiKey touch.

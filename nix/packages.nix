@@ -40,9 +40,9 @@ rec {
     runtimeInputs = [
       pkgs.git
       pkgs.natscli # tail and replay only; every other verb needs just git
-      pkgs.cue # checks and review's [a]sk — it composes the policy layers
+      pkgs.cue # checks and approving — it composes the policy layers
       pkgs.less # review only — its v key is what takes a note
-      attest # review's [a]sk only — it runs the checks and signs them
+      attest # approving only — it runs the checks and signs them
       valley-status # status only — it is the whole of that verb
     ];
     text = builtins.readFile ../bin/valley;

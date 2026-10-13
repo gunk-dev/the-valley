@@ -242,11 +242,11 @@ done
 # descend from the first, and withdraws it. In between, a
 # principal without the grant can neither replace nor
 # withdraw what the holder filed.
-git commit --quiet --allow-empty -m "first ask"
+git commit --quiet --allow-empty -m "first request"
 as requester git push --quiet guarded "HEAD:$request"
 filed="$(git rev-parse HEAD)"
 git reset --quiet --hard HEAD~1
-git commit --quiet --allow-empty -m "second ask"
+git commit --quiet --allow-empty -m "second request"
 refused replaced.err "a principal without the grant replaced a request" \
   as contributor git push --quiet --force guarded "HEAD:$request"
 grep -q 'request grant' replaced.err

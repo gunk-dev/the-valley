@@ -145,8 +145,8 @@ attest_change() {
     --push origin --branch "$branch" "$@"
 }
 
-# request <change> <target> <commit> — the contributor asks for integration
-# by pushing one ref. That ref is the whole of the request.
+# request <change> <target> <commit> — the contributor files an integration
+# request by pushing one ref. That ref is the whole of the request.
 request() {
   git push --quiet origin "$3:refs/the-valley/integration-requests/$2/$1"
 }
@@ -965,7 +965,7 @@ holds "the floor and the change were read as landed and as pushed, past both rep
 # ----------------------------------------------------------------------
 say "18. a request resubmitted while its previous head lands stands for the next pass"
 
-# The asker's resubmission is leased against the request it read, and
+# A resubmission is leased against the request it read, and
 # nothing stops it reading the head this pass is about to land. So the
 # request can move between the pass reading it and the pass consuming it.
 # The landing is still the old head's, and the request that moved is a new
@@ -973,8 +973,8 @@ say "18. a request resubmitted while its previous head lands stands for the next
 git checkout --quiet main
 git pull --quiet --ff-only origin main
 git checkout --quiet -b c18
-echo "a readme asked for once" > docs/readme.md
-git commit --quiet -am "the first ask"
+echo "a readme requested once" > docs/readme.md
+git commit --quiet -am "the first request"
 attest_change c18 "" "" --check prose-format
 request c18 main "$(git rev-parse c18)"
 # main moves under the request, outside anything the check reads. The pass
@@ -986,16 +986,16 @@ git commit --quiet -am "a note landed in between"
 git push --quiet origin main
 git checkout --quiet c18
 git checkout --quiet -b c18-again
-echo "a readme asked for again" > docs/readme.md
-git commit --quiet -am "the second ask"
+echo "a readme requested again" > docs/readme.md
+git commit --quiet -am "the second request"
 git push --quiet origin c18-again
 again="$(git rev-parse c18-again)"
 moving="refs/the-valley/integration-requests/main/c18"
 before="$(tip)"
 VALLEY_E2E_DURING_PASS="git -C '$origin' update-ref '$moving' '$again'" integrate
 grep -q "^c18 -> refs/heads/main .*: land$" "$work/last.out" \
-  || die "the first ask did not land: $(cat "$work/last.out")"
-[ "$(tip)" != "$before" ] || die "main did not move for the first ask"
+  || die "the first request did not land: $(cat "$work/last.out")"
+[ "$(tip)" != "$before" ] || die "main did not move for the first request"
 [ "$(git -C "$origin" rev-parse --verify --quiet "$moving")" = "$again" ] \
   || die "the resubmitted request was consumed with the landing of the one before it: $(git -C "$origin" for-each-ref refs/the-valley/integration-requests) $(cat "$work/last.out")"
 grep -q "request  $moving moved to .* while .* landed; it stands for the next pass" "$work/last.out" \

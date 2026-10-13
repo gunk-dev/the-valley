@@ -166,7 +166,7 @@ package verification
 	//
 	// The cost is a declared property. `valley checks` groups the owed
 	// checks by it and can filter them by it. The integrator does not
-	// read it: [a]sk runs every owed check, and the integrator requires
+	// read it: approving runs every owed check, and the integrator requires
 	// evidence for every owed check, whatever its cost.
 	cost: *"quick" | "slow"
 }

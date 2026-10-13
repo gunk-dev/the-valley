@@ -13,7 +13,7 @@
 #     $XDG_STATE_HOME/valley/notes.);
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
-#     by checks, which needs the cue CLI, again by review's [a]sk, which
+#     by checks, which needs the cue CLI, again by review's [a]pprove, which
 #     needs the attest helper, and again by status, which is a Go program
 #     (status/) this script runs —
 #     graduation is now owed; recording the decision node is part of taking it.);
@@ -57,7 +57,7 @@ usage: valley <verb> [args]
                    ahead N | diffstat
   review <branch>  page through the branch's log and diff vs origin/main,
                    then choose:
-                     [a]sk        file an integration request. runs the
+                     [a]pprove    file an integration request. runs the
                                   checks the composed policy requires of
                                   this change over a throwaway worktree of
                                   the branch, signs each result as an
@@ -73,20 +73,19 @@ usage: valley <verb> [args]
                                   can be on any branch. a change the policy
                                   requires no check of is filed too, as a
                                   request with no evidence, and says so.
-                                  asking again about a change already
-                                  requested is how it is resubmitted. at a
-                                  head rebased onto a moved main it
-                                  replaces the request ref under a lease
-                                  and names the head it replaced; at the
-                                  same head it leaves the ref alone and
-                                  publishes only the new evidence, which
-                                  the create-only attestation namespace
-                                  refuses when this signer has already
-                                  attested that tree (bd-7b7d58f). every
-                                  write of the request ref is leased,
-                                  filing included, so a resubmission that
-                                  lost a race is refused rather than
-                                  clobbering the one that won.
+                                  approving a change already requested is
+                                  how it is resubmitted. at a head rebased
+                                  onto a moved main it replaces the request
+                                  ref under a lease and names the head it
+                                  replaced; at the same head it leaves the
+                                  ref alone and publishes only the new
+                                  evidence, which the create-only
+                                  attestation namespace refuses when this
+                                  signer has already attested that tree
+                                  (bd-7b7d58f). every write of the request
+                                  ref is leased, filing included, so a
+                                  resubmission that lost a race is refused
+                                  rather than clobbering the one that won.
                                   needs the attest helper and
                                   VALLEY_ATTEST_KEY, the ed25519 key this
                                   host signs with, whenever a check is
@@ -94,7 +93,9 @@ usage: valley <verb> [args]
                                   signs under, defaulting to this host's.
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
-                   [a]sk is the only way a change reaches main from here.
+                   [a]pprove is the only way a change reaches main from
+                   here, and approve below is the same act without the
+                   pager.
                    Nothing in this script writes the protected ref: the
                    integrator does, having judged the request.
                    a stale branch (won't fast-forward from main) is first
@@ -102,7 +103,7 @@ usage: valley <verb> [args]
                      [b]ase       rebase it onto origin/main in a throwaway
                                   worktree, push --force-with-lease, then
                                   re-review the diff that would actually land
-                   [a]sk is offered there too: a stale branch is nothing
+                   [a]pprove is offered there too: a stale branch is nothing
                    the integrator cannot apply, so it need not be rebased
                    first.
                    while paging, press v: less opens the diff in $EDITOR.
@@ -113,6 +114,16 @@ usage: valley <verb> [args]
                    ~/.local/state) and printed after the verdict. notes
                    survive [b]ase. lines you change or delete instead of
                    inserting are ignored, with a warning.
+  approve <change> do what review's [a]pprove does for the change, without
+                   paging it: the same checks, the same refusals, the same
+                   leased request write and the same output. exits non-zero
+                   when it refuses. a change is named by its branch, with
+                   or without origin/.
+  rebase <change>  do what review's [b]ase does for the change: rebase it
+                   onto origin/main in a throwaway worktree and push it
+                   with --force-with-lease, then print its new head. it
+                   does not re-review the result. a change that already
+                   fast-forwards from main is left as it is.
   status [--json] <branch>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
@@ -159,7 +170,7 @@ usage: valley <verb> [args]
                    after the report, two lines group the owed checks by
                    the cost the policy declares, `quick` or `slow`. a slow
                    check takes minutes or needs special hardware. the cost
-                   changes nothing owed: [a]sk runs every owed check
+                   changes nothing owed: approving runs every owed check
                    whatever its cost, and the integrator requires evidence
                    for every one.
                      --names          print only the owed check names,
@@ -177,11 +188,12 @@ usage: valley <verb> [args]
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
-which also needs the cue CLI, review's notes, which need less,
-review's [a]sk, which needs both the cue CLI and the attest helper, and
-status, which needs the valley-status helper. nix run .#valley bundles
-all of them. Deriving a policy fetches the owning valley's repository,
-so checks and [a]sk also need whatever reaching it takes.
+which also needs the cue CLI, review's notes, which need less, approve
+and review's [a]pprove, which need both the cue CLI and the attest
+helper, and status, which needs the valley-status helper. nix run
+.#valley bundles all of them. Deriving a policy fetches the owning
+valley's repository, so checks and approving also need whatever reaching
+it takes.
 No config, no batch mode, and no state but the notes file — the judgment
 stays with the human.
 EOF
@@ -479,14 +491,14 @@ cleanup_rebase_wt() {
   REBASE_WT=""
 }
 
-# Everything review leaves outside the repository: the two throwaway
-# worktrees, the paged buffer, the two policy layers read out of their
-# tips, and the scratch the policy deriver writes into. One handler,
-# installed once by cmd_review, so that no path through the verb — and no
-# ctrl-C in the pager — leaves any of them behind.
-cleanup_review() {
+# Everything review, approve and rebase leave outside the repository: the
+# two throwaway worktrees, the paged buffer, the two policy layers read out
+# of their tips, and the scratch the policy deriver writes into. One
+# handler, installed once by each of those verbs, so that no path through
+# them — and no ctrl-C in the pager — leaves any of them behind.
+cleanup_scratch() {
   cleanup_rebase_wt
-  cleanup_ask_wt
+  cleanup_approve_wt
   cleanup_policy_tmp
   cleanup_instance_tmp
   cleanup_project_tmp
@@ -496,15 +508,17 @@ cleanup_review() {
 # Rebase origin/<branch> onto origin/main in an isolated worktree — the
 # user's checkout is never touched — and push with a lease so a concurrently
 # updated branch is never clobbered. Mechanics only; the judgment on the
-# rebased diff stays with the human, back at the review prompt.
+# rebased diff stays with the human, back at the review prompt or in
+# whatever front end ran the rebase verb.
 rebase_onto_main() {
-  local branch="$1"
+  local branch="$1" rebased
   REBASE_WT="$(mktemp -d)"
   git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch"
   if ! git -C "$REBASE_WT" rebase --quiet refs/remotes/origin/main; then
     cleanup_rebase_wt
     die "$branch conflicts with main — resolve by hand; nothing changed"
   fi
+  rebased="$(git -C "$REBASE_WT" rev-parse HEAD)"
   if ! git -C "$REBASE_WT" push --quiet --force-with-lease \
     origin "HEAD:refs/heads/$branch"; then
     cleanup_rebase_wt
@@ -512,10 +526,11 @@ rebase_onto_main() {
   fi
   cleanup_rebase_wt
   echo "rebased $branch onto origin/main, pushed with --force-with-lease"
+  printf '  head     %s\n' "$rebased"
 }
 
 # ----------------------------------------------------------------------
-# ask — file an integration request for the branch under review.
+# approve — file an integration request for the branch under review.
 #
 # This is the one way a change reaches main from here: the checks the
 # policy requires are run over the branch's tree and signed, the evidence
@@ -531,7 +546,7 @@ rebase_onto_main() {
 # the branch and the attestation refs in one atomic push and knows nothing
 # about a request ref, so filing a request by hand is two beats: the
 # evidence, then the request after it. In between, evidence stands
-# published for a change nobody has asked to land. So this verb does not
+# published for a change nobody has approved. So this verb does not
 # use --push at all. `attest run` without it stores each note at its ref in
 # the repository and stops, and one `git push --atomic` then carries the
 # evidence and the request together — all of it or none of it. Nothing in
@@ -545,18 +560,19 @@ rebase_onto_main() {
 # [b]ase uses, so that what is checked is the branch's tree and not the
 # operator's working copy. A global, so the traps clean it up whatever
 # happens.
-ASK_WT=""
-cleanup_ask_wt() {
-  [ -n "$ASK_WT" ] || return 0
-  git worktree remove --force "$ASK_WT" > /dev/null 2>&1 || true
-  rm -rf "$ASK_WT"
-  ASK_WT=""
+APPROVE_WT=""
+cleanup_approve_wt() {
+  [ -n "$APPROVE_WT" ] || return 0
+  git worktree remove --force "$APPROVE_WT" > /dev/null 2>&1 || true
+  rm -rf "$APPROVE_WT"
+  APPROVE_WT=""
 }
 
 # Report and fail, without leaving the review. A refusal here is not a
 # reason to end the session: the branch is still under review and the
 # operator can still answer. die() is for the verbs that have nothing left
-# to offer.
+# to offer. The approve verb has nothing left to offer either, and turns a
+# refusal into its exit status itself.
 refuse() {
   printf 'valley: %s\n' "$*" >&2
   return 1
@@ -610,7 +626,7 @@ report_local_evidence() {
 
 # Whether origin already holds one of these attestation refs at a value
 # other than the one being pushed. The namespace admits creations only, so
-# that is the one refusal asking again will never clear: it is what a
+# that is the one refusal approving again will never clear: it is what a
 # re-observation of a tree this signer has already attested runs into
 # (bd-7b7d58f).
 attestation_stands_elsewhere() {
@@ -643,7 +659,7 @@ diagnose_request_push() {
   if [ "$now" = "$pending" ]; then
     refuse "origin refused the push; nothing was published there and main is untouched"
   elif [ -z "$now" ]; then
-    refuse "the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands. The lease on $ref refused and nothing was published; fetch and review the branch again before asking a second time"
+    refuse "the pending request was consumed while this one was being prepared, which is what the integrator does when a change lands. The lease on $ref refused and nothing was published; fetch and review the branch again before approving it a second time"
   elif [ -z "$pending" ]; then
     refuse "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$now") ($(subject_of "$now")); the lease on $ref refused and nothing was published"
   else
@@ -651,10 +667,11 @@ diagnose_request_push() {
   fi
 }
 
-# File the request. Called from the review prompt in a condition, which
-# suspends `set -e` for the whole call — so every step below is checked by
-# hand, and the failures say what was published before they happened.
-ask() {
+# File the request. Called in a condition, from the review prompt and from
+# the approve verb alike, which suspends `set -e` for the whole call — so
+# every step below is checked by hand, and the failures say what was
+# published before they happened.
+approve() {
   local branch="$1" target=main tip change head base digest root ref check spec
   local key
   local -a signer=() owed=() run=() evidence=()
@@ -692,8 +709,8 @@ ask() {
     return 1
   }
 
-  # A change the policy asks nothing of is still a change, and asking is
-  # how one reaches main. The integrator already lands a request owing no
+  # A change the policy asks nothing of is still a change, and approving
+  # is how one reaches main. The integrator already lands a request owing no
   # check and records the landing as one that required nothing
   # (archive/design/integration.md), so refusing to file it here would strand
   # exactly the changes the policy requires nothing of. Nothing is owed, so
@@ -727,30 +744,30 @@ ask() {
       esac
     done
 
-    cleanup_ask_wt
-    ASK_WT="$(mktemp -d)" || {
+    cleanup_approve_wt
+    APPROVE_WT="$(mktemp -d)" || {
       refuse "no scratch directory to check $branch in; nothing published"
       return 1
     }
-    git worktree add --quiet --detach "$ASK_WT" "$head" || {
-      cleanup_ask_wt
+    git worktree add --quiet --detach "$APPROVE_WT" "$head" || {
+      cleanup_approve_wt
       refuse "could not check $branch out to run its checks; nothing published"
       return 1
     }
 
     printf '\nchecking %s at %s: %s\n' "$branch" "$(git rev-parse --short "$head")" \
       "$(printf '%s\n' "${owed[@]}" | join_lines)"
-    if ! attest run --repo "$ASK_WT" "${signer[@]}" "${run[@]}"; then
-      cleanup_ask_wt
+    if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${run[@]}"; then
+      cleanup_approve_wt
       refuse "the checks did not pass; nothing published, main untouched"
       return 1
     fi
-    digest="$(attest digest --repo "$ASK_WT")" || {
-      cleanup_ask_wt
+    digest="$(attest digest --repo "$APPROVE_WT")" || {
+      cleanup_approve_wt
       refuse "could not digest the tree that was checked; nothing published"
       return 1
     }
-    cleanup_ask_wt
+    cleanup_approve_wt
     digest="${digest#*:}"
 
     # Every attestation stored for this tree, whoever signed it: the
@@ -768,7 +785,7 @@ ask() {
   fi
 
   # What origin already holds for this request, read once and remembered.
-  # Asking twice for the same change is ordinary: evidence expires, and a
+  # Approving the same change twice is ordinary: evidence expires, and a
   # change whose input closure moved under it is told to re-attest. So the
   # request ref may already exist, and what to do about it depends on
   # where it points. A read that does not happen is not a read that found
@@ -792,7 +809,7 @@ ask() {
   # once would have the second silently fast-forward the first away.
   #
   # A pending request at this same head is a re-attestation of the tree
-  # already asked about. The evidence is new and the ref does not move, so
+  # already approved. The evidence is new and the ref does not move, so
   # the ref is left out of the refspec entirely — a push cannot carry a
   # compare-and-swap on a ref it is not changing, because git leaves an
   # up-to-date ref out of what it sends. Nothing this run does establishes
@@ -825,7 +842,7 @@ ask() {
     if ! git push --atomic --quiet ${lease[@]+"${lease[@]}"} origin "${push[@]}"; then
       if [ "${#lease[@]}" -eq 0 ] \
         && attestation_stands_elsewhere "$digest" ${evidence[@]+"${evidence[@]}"}; then
-        refuse "origin already holds an attestation for this tree from this signer, and that namespace admits creations only, so a second observation of the same tree has nowhere to go. That is bd-7b7d58f rather than anything asking again will clear. Nothing was published and main is untouched"
+        refuse "origin already holds an attestation for this tree from this signer, and that namespace admits creations only, so a second observation of the same tree has nowhere to go. That is bd-7b7d58f rather than anything approving again will clear. Nothing was published and main is untouched"
       else
         diagnose_request_push "$ref" "$pending"
       fi
@@ -850,7 +867,7 @@ ask() {
     # as the state it consumes the ref to avoid; replacing a request
     # another resubmission has just filed would clobber the winner; and
     # either would be a second push behind the one this verb promises. So
-    # what this does is say what is true and stop. Asking again is the
+    # what this does is say what is true and stop. Approving again is the
     # repair, and by then it takes the create or the replace path against
     # what is actually there.
     local after
@@ -860,12 +877,12 @@ ask() {
       return 1
     fi
     if [ -z "$after" ]; then
-      refuse "the request was consumed while this run was working, which is what the integrator does when a change lands. Nothing here re-filed it: a request for a change already in the stream is judged against an empty delta on every pass. Fetch and review $branch again, and ask once more if it has not landed"
+      refuse "the request was consumed while this run was working, which is what the integrator does when a change lands. Nothing here re-filed it: a request for a change already in the stream is judged against an empty delta on every pass. Fetch and review $branch again, and approve it once more if it has not landed"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
     if [ "$after" != "$head" ]; then
-      refuse "the request moved to $(git rev-parse --short "$after") ($(subject_of "$after")) while this run was working, so another resubmission filed it. Nothing here replaced it; ask again to replace it deliberately"
+      refuse "the request moved to $(git rev-parse --short "$after") ($(subject_of "$after")) while this run was working, so another resubmission filed it. Nothing here replaced it; approve again to replace it deliberately"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
@@ -906,22 +923,22 @@ cmd_status() {
 }
 
 # Page the branch and take the verdict. Split out of cmd_review so that
-# every way out of it — ask, reject, skip — is followed by the notes.
+# every way out of it — approve, reject, skip — is followed by the notes.
 read_and_decide() {
   local branch="$1" choice
   show_review "$branch"
   # A stale branch's pre-rebase diff is not what would land; offer to rebase it
-  # mechanically, then re-review what actually would. [a]sk is offered here as
-  # well, because the integrator applies a delta to the tip rather than
-  # fast-forwarding: a stale branch is a request it can judge, and rebasing
-  # first is a convenience rather than a precondition.
+  # mechanically, then re-review what actually would. [a]pprove is offered
+  # here as well, because the integrator applies a delta to the tip rather
+  # than fast-forwarding: a stale branch is a request it can judge, and
+  # rebasing first is a convenience rather than a precondition.
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
     "refs/remotes/origin/$branch"; do
-    printf '%s does not fast-forward from main: [a]sk, [b]ase onto main, [r]eject, [s]kip? ' \
+    printf '%s does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' \
       "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
-      a) ask "$branch" && return ;;
+      a) approve "$branch" && return ;;
       b)
         rebase_onto_main "$branch"
         fetch_origin
@@ -936,13 +953,13 @@ read_and_decide() {
     esac
   done
   while true; do
-    printf '%s: [a]sk, [r]eject, [s]kip? ' "$branch"
+    printf '%s: [a]pprove, [r]eject, [s]kip? ' "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
-      # A refusal from ask is not a verdict: it says what it did not do and
-      # the prompt comes back, so the branch can still be asked about again,
+      # A refusal from approve is not a verdict: it says what it did not do
+      # and the prompt comes back, so the branch can still be approved,
       # rejected or skipped.
-      a) ask "$branch" && return ;;
+      a) approve "$branch" && return ;;
       r) reject "$branch" && return ;;
       s)
         echo "skipped $branch; nothing done"
@@ -959,12 +976,48 @@ cmd_review() {
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
-  trap cleanup_review EXIT
+  trap cleanup_scratch EXIT
   trap 'exit 130' INT TERM
   read_and_decide "$branch"
   # The verdict disposes of the branch; the notes are what the human made of
   # it, so they are printed whatever the verdict was.
   print_notes "$branch"
+}
+
+# approve and rebase are review's [a]pprove and [b]ase without the pager,
+# for a front end that has shown the change its own way. Each runs the
+# function its key runs, so the verb and the key cannot drift apart. A
+# change is named by its branch.
+cmd_approve() {
+  [ $# -eq 1 ] || die "usage: valley approve <change>"
+  local branch="${1#origin/}"
+  fetch_origin
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || die "no such branch on origin: $branch"
+  trap cleanup_scratch EXIT
+  trap 'exit 130' INT TERM
+  # In a condition, as the review prompt calls it: approve checks each of
+  # its own steps, and has already said why when it refuses.
+  approve "$branch" || exit 1
+}
+
+cmd_rebase() {
+  [ $# -eq 1 ] || die "usage: valley rebase <change>"
+  local branch="${1#origin/}"
+  fetch_origin
+  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+    || die "no such branch on origin: $branch"
+  # review offers [b]ase only to a stale branch. One that fast-forwards
+  # already is left alone, rather than rewritten for nothing.
+  if git merge-base --is-ancestor refs/remotes/origin/main \
+    "refs/remotes/origin/$branch"; then
+    echo "$branch already fast-forwards from origin/main; nothing rebased"
+    printf '  head     %s\n' "$(git rev-parse "refs/remotes/origin/$branch")"
+    return
+  fi
+  trap cleanup_scratch EXIT
+  trap 'exit 130' INT TERM
+  rebase_onto_main "$branch"
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,
@@ -1073,7 +1126,7 @@ glob_ere() {
 # the policy says a check IS — its runner, and the attribute or command
 # line that runner takes — and a tool that groups the owed checks needs
 # their cost. `checks` reads only the cost, to group the owed checks by
-# it; review's [a]sk turns the rest into the arguments attest is given.
+# it; approve turns the rest into the arguments attest is given.
 render_cue() {
   cat <<'EOF'
 package verification
@@ -1137,7 +1190,7 @@ cleanup_policy_tmp() {
 # Neither layer is ever the worked example under examples/policy/ — a gate
 # derived from an example is a gate nobody wrote. `checks` takes an option
 # for each, so a reader can point it at the example or anywhere else on
-# purpose; review's [a]sk takes no such option, because a request is filed
+# purpose; approve takes no such option, because a request is filed
 # against the policy that governs the project and nowhere else.
 #
 # Neither layer is a path in this tree, so policy_defaults leaves both
@@ -1495,7 +1548,7 @@ target_ref() {
 # The derivation itself, and the globals it answers with. Everything a
 # caller could want from the policy comes out of one pass, because every
 # part of it is a function of the same composition: `checks` prints the
-# answer, review's [a]sk runs what it names.
+# answer, approve runs what it names.
 #
 # It reports and returns rather than dying, so that a caller inside the
 # review loop is refused rather than ended. Its callers are all in a
@@ -1734,8 +1787,8 @@ cmd_checks() {
   derive_owed "$schema" "$instance" "$project" "$base" "$head" || exit 1
 
   # The owed checks, sorted, and grouped by the cost the policy declares.
-  # The grouping changes nothing owed: [a]sk runs every owed check, and the
-  # integrator requires evidence for every one, whatever it costs.
+  # The grouping changes nothing owed: approve runs every owed check, and
+  # the integrator requires evidence for every one, whatever it costs.
   local check width=0
   local -a owed=() quick=() slow=() listed=()
   sort_into owed "${!DERIVED_OWED[@]}" \
@@ -1812,6 +1865,8 @@ main() {
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;
+    approve) cmd_approve "$@" ;;
+    rebase) cmd_rebase "$@" ;;
     status) cmd_status "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;

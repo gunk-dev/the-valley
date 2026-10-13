@@ -982,7 +982,7 @@ in
           (`refs/the-valley/integration-requests/*`) on a protected
           project. The pre-receive hook refuses every other write to that
           namespace, so a principal named neither here nor in the
-          registry cannot ask for anything to land.
+          registry cannot file an integration request.
 
           The grant rides on push. Only a key sshd admits reaches the hook,
           so a principal named here also needs a key, declared in

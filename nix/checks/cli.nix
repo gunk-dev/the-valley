@@ -79,17 +79,18 @@ in
     inherit failNth;
   } (builtins.readFile ./policy-deriver.sh);
 
-  # review's [a]sk, driven end to end over scratch repositories: a branch
-  # reviewed, the request filed, and what the receiving side then holds.
-  # The claim is about sequencing, so it is only observable from there —
-  # the bare repo logs every push it receives, and the check reads that
-  # log to see that ONE of them carried the evidence and the request
-  # together. Every check the scratch policy declares uses the command
-  # runner, for the reason attest-e2e gives: a nix build has no daemon.
-  # The packaged CLI carries its own schema, so the scratch projects that
-  # stand for projects other than the-valley carry no schema/. cliScript is
-  # bin/valley itself, for its other shipping mode: run straight from a
-  # the-valley checkout, it reads the schema there.
+  # review's [a]pprove and the approve and rebase verbs, driven end to end
+  # over scratch repositories: a branch reviewed, the request filed, and
+  # what the receiving side then holds. The claim is about sequencing, so
+  # it is only observable from there — the bare repo logs every push it
+  # receives, and the check reads that log to see that ONE of them carried
+  # the evidence and the request together. Every check the scratch policy
+  # declares uses the command runner, for the reason attest-e2e gives: a
+  # nix build has no daemon. The packaged CLI carries its own schema, so
+  # the scratch projects that stand for projects other than the-valley
+  # carry no schema/. cliScript is bin/valley itself, for its other
+  # shipping mode: run straight from a the-valley checkout, it reads the
+  # schema there.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git

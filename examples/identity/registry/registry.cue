@@ -20,7 +20,7 @@ boundaries: {
 
 	// The same host's pre-receive hook, deciding who may write an
 	// integration request. A key it does not find among the holders cannot
-	// ask for anything to land.
+	// file one.
 	"classic-laddie-request": kind: "request"
 }
 

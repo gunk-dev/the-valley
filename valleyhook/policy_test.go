@@ -42,6 +42,11 @@ func (f fakeRepository) symbolic(ref string) (bool, error) { return f.symrefs[re
 func (f fakeRepository) notes(string) (map[string][]byte, error) {
 	return nil, errors.New("holds no objects")
 }
+func (f fakeRepository) record(string) (recordCommit, error) {
+	return recordCommit{}, errors.New("holds no objects")
+}
+func (f fakeRepository) kind(string) (string, error) { return "", errors.New("holds no objects") }
+func (f fakeRepository) records() (int, error)       { return 0, nil }
 
 // Every rule that applies to a ref has to allow the write, and none of
 // them can be satisfied by another. Each case here is a declaration that

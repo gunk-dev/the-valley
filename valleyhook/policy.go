@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"the-valley/change"
 	"the-valley/note"
 )
 
@@ -57,6 +58,12 @@ type policy struct {
 	// repo answers what the decision needs to know about the repository:
 	// whether a ref is symbolic there, and what a pushed object holds.
 	repo repository
+
+	// recordCreates is how many change records the push creates, and
+	// existingRecords how many the repository held before it. preReceive
+	// counts both before any update is decided, and only when the push
+	// creates a record.
+	recordCreates, existingRecords int
 }
 
 // update is one line of what git hands a pre-receive hook.
@@ -73,13 +80,14 @@ type update struct {
 // checked in this order:
 //
 //  1. Some refs no push may write, whatever anything declares: replacement
-//     refs, notes, and the valley's own namespace apart from attestations
-//     and integration requests.
+//     refs, notes, and the valley's own namespace apart from attestations,
+//     integration requests and change records.
 //  2. A ref that is symbolic in the repository takes no push. git would
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
 //     Attestations are create-only and must be what their name says.
-//     Integration requests take the request grant. Every other ref, tags
+//     Integration requests take the request grant. A change record moves
+//     only by the transitions checkRecord allows. Every other ref, tags
 //     included, takes a named grant that opens it to the principal.
 //  4. A protected ref also takes a declared writer.
 //
@@ -100,8 +108,8 @@ func (p policy) decide(principal string, u update) string {
 		return refuse("write", "refs/replace/ is closed to every push: a replacement ref makes one object stand in for another wherever git looks it up, so it would change what every reader of the repository sees")
 	case strings.HasPrefix(u.ref, notesPrefix):
 		return refuse("write", "refs/notes/ is closed to every push: a note attaches text to an object that every reader's git shows beside it")
-	case strings.HasPrefix(u.ref, valleyPrefix) &&
-		!strings.HasPrefix(u.ref, attestationPrefix) && !strings.HasPrefix(u.ref, requestPrefix):
+	case strings.HasPrefix(u.ref, valleyPrefix) && !strings.HasPrefix(u.ref, attestationPrefix) &&
+		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix):
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
 
@@ -131,6 +139,11 @@ func (p policy) decide(principal string, u update) string {
 				holder = "a key that names no principal holds no grant"
 			}
 			return refuse("write", fmt.Sprintf("%s takes writes only from a principal holding the %s grant, and %s", requestPrefix, grantRequest, holder))
+		}
+
+	case strings.HasPrefix(u.ref, change.RefPrefix):
+		if verb, why := p.checkRecord(principal, u); why != "" {
+			return refuse(verb, why)
 		}
 
 	default:

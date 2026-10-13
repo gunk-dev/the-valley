@@ -18,6 +18,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"the-valley/change"
 )
 
 const usage = `usage: valleyhook pre-receive [flags] < ref updates
@@ -33,7 +35,7 @@ pre-receive hook answers for the push and not for each ref.
 
 A write is allowed only if every rule that applies to its ref allows it:
 
-  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the two
+  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the three
   namespaces below
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
@@ -50,6 +52,17 @@ A write is allowed only if every rule that applies to its ref allows it:
   refs/the-valley/integration-requests/*
                     principals holding the request grant. They may file,
                     replace and withdraw a request.
+  refs/the-valley/changes/main/<change ID>
+                    a change record: a commit whose tree holds one file,
+                    record.json. Any named principal may create one, and
+                    owns it; its first version's head is the commit's one
+                    parent. The owner or a holder of the request grant may
+                    add a version, whose head is the commit's second parent
+                    after the record it replaces, or withdraw the change,
+                    with that record as the one parent. Only a holder of
+                    the request grant may delete one. Every other write is
+                    refused. A push may update at most 32 records, and a
+                    repository may hold at most 2000.
   anything else     principals a named grant of the project opens the ref
                     to. Tags open only this way.
   a protected ref   also a declared writer of the project. Protection adds
@@ -150,7 +163,7 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	if err != nil {
 		return failClosed(stderr, err)
 	}
-	refused := false
+	var updates []update
 	lines := bufio.NewScanner(bytes.NewReader(input))
 	for lines.Scan() {
 		if strings.TrimSpace(lines.Text()) == "" {
@@ -160,14 +173,39 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		if len(fields) != 3 {
 			return failClosed(stderr, fmt.Errorf("git sent %q, which is not an old id, a new id and a refname", lines.Text()))
 		}
-		u := update{old: fields[0], new: fields[1], ref: fields[2]}
+		updates = append(updates, update{old: fields[0], new: fields[1], ref: fields[2]})
+	}
+	if err := lines.Err(); err != nil {
+		return failClosed(stderr, err)
+	}
+
+	// The bounds on change records that are about the push as a whole are
+	// checked before any record is read.
+	records := 0
+	for _, u := range updates {
+		if strings.HasPrefix(u.ref, change.RefPrefix) {
+			records++
+			if isZero(u.old) && !isZero(u.new) {
+				p.recordCreates++
+			}
+		}
+	}
+	if records > maxRecordUpdates {
+		fmt.Fprintf(stderr, "valley: the push is refused: it updates %d change records, and a push may update at most %d\n", records, maxRecordUpdates)
+		return 1
+	}
+	if p.recordCreates > 0 {
+		if p.existingRecords, err = repo.records(); err != nil {
+			return failClosed(stderr, err)
+		}
+	}
+
+	refused := false
+	for _, u := range updates {
 		if refusal := p.decide(*principal, u); refusal != "" {
 			fmt.Fprintln(stderr, refusal)
 			refused = true
 		}
-	}
-	if err := lines.Err(); err != nil {
-		return failClosed(stderr, err)
 	}
 	if refused {
 		return 1

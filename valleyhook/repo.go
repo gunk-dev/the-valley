@@ -27,6 +27,15 @@ type repository interface {
 	// notes returns every blob under the tree id names, keyed by path,
 	// or an error saying why id is not such a tree.
 	notes(id string) (map[string][]byte, error)
+	// record reads the change record commit id names (record.go): its
+	// parents, and the record.json its tree holds, or an error saying why
+	// id is not such a commit.
+	record(id string) (recordCommit, error)
+	// kind is the type of the object id names.
+	kind(id string) (string, error)
+	// records counts the change records the repository holds now, with
+	// one for-each-ref.
+	records() (int, error)
 }
 
 // The bounds on reading an attestation ref. attest writes a tree holding
@@ -171,6 +180,10 @@ type objectStream struct {
 	out      *bufio.Reader
 	spent    int
 	requests []string
+
+	// subject is what the objects make up, as a refusal names it: an
+	// attestation, unless the reader says otherwise.
+	subject string
 }
 
 func openObjects() (*objectStream, error) {
@@ -187,7 +200,7 @@ func openObjects() (*objectStream, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096)}, nil
+	return &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), subject: "an attestation"}, nil
 }
 
 // ask sends one command and reads the header line git answers it with:
@@ -225,11 +238,11 @@ func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
 	case err != nil:
 		return nil, err
 	case got != kind:
-		return nil, fmt.Errorf("points at a %s, where an attestation holds a %s", got, kind)
+		return nil, fmt.Errorf("points at a %s, where %s holds a %s", got, s.subject, kind)
 	case size > max:
-		return nil, fmt.Errorf("is a %s of %d bytes, more than the %d an attestation's may be", kind, size, max)
+		return nil, fmt.Errorf("is a %s of %d bytes, more than the %d %s's may be", kind, size, max, s.subject)
 	case s.spent+size > maxBytes:
-		return nil, fmt.Errorf("would take the walk past the %d bytes an attestation may hold", maxBytes)
+		return nil, fmt.Errorf("would take the walk past the %d bytes %s may hold", maxBytes, s.subject)
 	}
 	again, confirmed, err := s.ask("contents", id)
 	if err != nil {

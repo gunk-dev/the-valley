@@ -26,7 +26,8 @@
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
-#                    valley-request, valley-status — bin/valley
+#                    valley-request, valley-status, valley-darwin-eval
+#                    — bin/valley, and its package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push

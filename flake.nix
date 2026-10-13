@@ -14,8 +14,14 @@
       # Raspberry Pis verify their releases with it. Its checks need no
       # import-from-derivation, so they are defined there too, and an
       # aarch64 builder (or binfmt emulation) runs them. Nothing else here
-      # is offered on aarch64, because nothing else is tested there.
+      # is offered on aarch64-linux, because nothing else is tested there.
       sigverifySystems = [ "aarch64-linux" ];
+      # The valley CLI is also offered for aarch64-darwin, so it can be
+      # installed on a Mac. It is evaluated here but not built or tested
+      # here, because no Darwin machine runs this flake's checks. The
+      # valley-darwin-eval check evaluates it from x86_64-linux without
+      # building anything for Darwin. Nothing else is offered on Darwin.
+      cliSystems = [ "aarch64-darwin" ];
 
       pkgsFor = system: nixpkgs.legacyPackages.${system};
 
@@ -123,6 +129,9 @@
         )
         // lib.genAttrs sigverifySystems (system: {
           inherit (packagesFor system) sigverify;
+        })
+        // lib.genAttrs cliSystems (system: {
+          inherit (packagesFor system) valley;
         });
 
       checks =

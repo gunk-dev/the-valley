@@ -350,6 +350,14 @@ printf 's\n' | valley review pppp > "$w/out" 2> "$w/err" || fail 'review of a ha
 grep -q '^change pppp v1 at' "$w/out" || fail 'review did not say which version it shows'
 grep -q ' honest$' "$w/out" || fail 'review did not show the recorded head'
 if grep -q 'substituted' "$w/out"; then fail 'review showed the branch tip, not the recorded head'; fi
+# Rejecting it there deletes nothing while the branch is elsewhere: the
+# refusal names both commits, and the next answer goes to the prompt.
+printf 'r\nyes\ns\n' | as requester valley review pppp > "$w/out" 2> "$w/err" \
+  || fail 'review of a handle failed'
+grep -qF "records the head $honest, and origin/victim is at $substituted; nothing deleted" "$w/err" \
+  || fail 'reject did not refuse a branch whose tip is not the recorded head'
+[ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] \
+  || fail 'reject deleted a branch whose tip is not the recorded head'
 
 # With the branch at the recorded head, approve files exactly that head.
 as contributor git push --quiet --force origin "$honest:refs/heads/victim"
@@ -369,6 +377,14 @@ r2="$(write_record "$v2" "$r1" "$elsewhere")"
 as contributor git push --quiet origin "$r2:refs/the-valley/changes/main/$target_id"
 refused "records the head $elsewhere, and origin/victim is at $honest" as requester valley approve pppp
 [ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'a redirected version moved the request'
+# With the branch at the recorded head, rejecting it in review deletes it.
+as contributor git push --quiet --force origin "$elsewhere:refs/heads/victim"
+printf 'r\nyes\n' | as requester valley review pppp > "$w/out" 2> "$w/err" \
+  || fail 'rejecting a handle at its recorded head failed'
+grep -qF 'rejected victim: deleted from origin' "$w/out" || fail 'reject did not say it deleted the branch'
+if git -C "$origin" rev-parse --verify --quiet refs/heads/victim > /dev/null; then
+  fail 'reject kept a branch at the recorded head'
+fi
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

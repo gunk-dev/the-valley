@@ -445,11 +445,12 @@ its branch, as it was before records existed. Every verb that takes a change tak
 `review`, `approve` and `rebase` act on a change named by ID or handle at the head its active
 version records. They never act on the branch's tip. A record's branch is only where its head is
 expected to be, and anyone who can push the branch can move it, even in the same push as the record.
-`review` shows the recorded head. `approve` files the request at exactly that head. `approve` and
-`rebase` refuse when the branch's tip on origin is another commit, and the refusal names both
-commits. A rebased head is a commit no version records, so the change is readied again before its
-handle names it. `valley-go resolve` gives these verbs the change's ID, handle, active version,
-recorded head and branch on one line.
+`review` shows the recorded head. `approve` files the request at exactly that head. `approve`,
+`rebase` and `review`'s `[r]eject` refuse when the branch's tip on origin is another commit, and the
+refusal names both commits. `[r]eject` deletes the branch under a lease on the recorded head. A
+rebased head is a commit no version records, so the change is readied again before its handle names
+it. `valley-go resolve` gives these verbs the change's ID, handle, active version, recorded head and
+branch on one line.
 
 `valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
 moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in

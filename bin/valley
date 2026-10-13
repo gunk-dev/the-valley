@@ -229,8 +229,9 @@ origin shares — or by its branch. A name written origin/<branch> is always
 a branch. A handle that is also a branch on origin is refused unless the
 change is on that branch. Named by id or handle, a change is reviewed,
 approved and rebased at the head its active version records, never at
-its branch's tip: review shows that head, and approve and rebase refuse,
-naming both, when the branch's tip on origin is another commit. Naming a
+its branch's tip: review shows that head, and approve, rebase and review's
+[r]eject refuse, naming both, when the branch's tip on origin is another
+commit. [r]eject deletes the branch under a lease on the recorded head. Naming a
 change by id or handle needs the valley-go helper, and without it every
 name is a branch.
 
@@ -334,13 +335,29 @@ cmd_pending() {
   [ "$found" -eq 1 ] || echo "nothing pending"
 }
 
+# For a change named by ID or handle, what is rejected is the head its
+# record names. So the branch is deleted only while its tip is that head,
+# and the delete is leased on it. When the tip is another commit, reject
+# refuses and names both, and deletes nothing. A branch named as a branch
+# is deleted as before.
+#
+# reject runs inside a condition, where bash suspends `set -e`, so the push
+# is checked by hand.
 reject() {
   local branch="$1" answer
+  local -a lease=()
+  if [ -n "$CHANGE_HEAD" ]; then
+    check_recorded_tip "$branch" "nothing deleted" || return 1
+    lease=("--force-with-lease=refs/heads/$branch:$CHANGE_HEAD")
+  fi
   printf 'really delete origin/%s? [y/N] ' "$branch"
   read -r answer || answer=""
   case "$answer" in
     y | Y | yes)
-      git push --quiet origin --delete "$branch"
+      if ! git push --quiet "${lease[@]}" origin --delete "$branch"; then
+        refuse "origin did not delete $branch, which may have moved since the fetch; nothing deleted"
+        return 1
+      fi
       echo "rejected $branch: deleted from origin"
       ;;
     *) echo "kept $branch" ;;

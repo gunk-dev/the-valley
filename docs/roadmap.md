@@ -89,8 +89,8 @@ a touch.
 
 - The pipeline moves out of the dashboard into a daemon with persistent state, and with budgets per
   pull request, per session and for every backend.
-- A valley backend: agents submit through `valley request` with `Change-Id` and `Klaus-Run`
-  trailers, and paused runs checkpoint to valley refs.
+- A valley backend: agents file integration requests through `valley request` with `Change-Id` and
+  `Klaus-Run` trailers, and paused runs checkpoint to valley refs.
 - Instrumentation: head SHAs on events, a dispatch reason, check start and end, and repo-qualified
   keys.
 

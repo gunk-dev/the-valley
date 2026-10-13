@@ -63,7 +63,7 @@ usage: valley <verb> [args]
                                   the branch, signs each result as an
                                   attestation, and publishes the evidence
                                   and the request ref to origin in ONE
-                                  atomic push. this submits the request;
+                                  atomic push. this files the request;
                                   it does not wait for integration or
                                   update your local checkout. use status
                                   to read the result. the policy comes
@@ -74,7 +74,7 @@ usage: valley <verb> [args]
                                   requires no check of is filed too, as a
                                   request with no evidence, and says so.
                                   approving a change already requested is
-                                  how it is resubmitted. at a head rebased
+                                  how it is filed again. at a head rebased
                                   onto a moved main it replaces the request
                                   ref under a lease and names the head it
                                   replaced; at the same head it leaves the
@@ -130,7 +130,7 @@ usage: valley <verb> [args]
                    attention, and a change integrated into origin/main.
                    after integration, show how to update the local checkout.
                    fetches objects without moving local branches or files;
-                   no checks run and no request is submitted.
+                   no checks run and no request is filed.
                      --json       print the status as one JSON object,
                                   valley-status/v1, for front ends to read
                                   (docs/architecture.md). an error prints
@@ -895,7 +895,7 @@ approve() {
     standing+=("replaced the pending request, which stood at $(git rev-parse --short "$pending") ($(subject_of "$pending"))")
   fi
 
-  printf '\nSubmitted %s (%s) for integration into origin/%s.\n' \
+  printf '\nApproved %s (%s): its integration request for origin/%s is filed.\n' \
     "$branch" "$(git rev-parse --short "$head")" "$target"
   printf 'The integrator will decide whether this change can land.\n'
   printf 'Your local checkout has not changed.\n\n'

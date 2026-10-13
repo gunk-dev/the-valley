@@ -180,7 +180,7 @@ valley review topic/one < "$w/answers" > "$w/approve.out" 2> "$w/approve.err"
 
 grep -q '^checking topic/one at .*: tree-ok$' "$w/approve.out"
 grep -qE '^check   tree-ok +command  passed$' "$w/approve.out"
-grep -qx "Submitted topic/one ($(git rev-parse --short topic/one)) for integration into origin/main." "$w/approve.out"
+grep -qx "Approved topic/one ($(git rev-parse --short topic/one)): its integration request for origin/main is filed." "$w/approve.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-one -> $(git rev-parse --short topic/one)" "$w/approve.out"
 grep -qx "  evidence refs/the-valley/attestations/$digest/$keyhash" "$w/approve.out"
 grep -qx '  checks   tree-ok' "$w/approve.out"
@@ -327,7 +327,7 @@ env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
 
 grep -q 'owes no check under .* + policy/project@origin/main .*; filing the request with no evidence' "$w/quiet.out"
 grep -qF "$valley policy/instance@refs/heads/main" "$w/quiet.out"
-grep -q '^Submitted topic/quiet .* for integration into origin/main\.$' "$w/quiet.out"
+grep -q '^Approved topic/quiet .*: its integration request for origin/main is filed\.$' "$w/quiet.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet.out"
 grep -qx '  evidence none — nothing was owed, so nothing was signed' "$w/quiet.out"
 grep -qx '  checks   none — the policy requires no check of this change' "$w/quiet.out"
@@ -410,7 +410,7 @@ fi
 printf 'a\n' > "$w/answers"
 valley review topic/nolayer < "$w/answers" \
   > "$w/nolayer.review.out" 2> "$w/nolayer.review.err"
-grep -q '^Submitted topic/nolayer .* for integration into origin/main\.$' "$w/nolayer.review.out"
+grep -q '^Approved topic/nolayer .*: its integration request for origin/main is filed\.$' "$w/nolayer.review.out"
 
 # ----------------------------------------------------------------------
 # 8. The reviewer's checkout contributes nothing. This is the case that
@@ -444,7 +444,7 @@ git checkout --quiet topic/nolayer
 printf 'a\n' > "$w/answers"
 valley review topic/four < "$w/answers" > "$w/stale.out" 2> "$w/stale.err"
 grep -q '^checking topic/four at .*: tree-ok$' "$w/stale.out"
-grep -q '^Submitted topic/four .* for integration into origin/main\.$' "$w/stale.out"
+grep -q '^Approved topic/four .*: its integration request for origin/main is filed\.$' "$w/stale.out"
 grep -qx '  checks   tree-ok' "$w/stale.out"
 
 # ----------------------------------------------------------------------
@@ -484,7 +484,7 @@ git checkout --quiet main
 # 10. Resubmission after main moved. This is the case that wedged in live
 #     use. A request goes stale with reason=evidence when main lands
 #     inside a required check's input closure: no attestation over the
-#     submitted tree can transfer again, so the cure is a new head rebased
+#     requested tree can transfer again, so the cure is a new head rebased
 #     onto the moved main. That head is not a descendant of the one the
 #     request ref holds, which makes writing it a non-fast-forward
 #     replacement — and a push without a lease is refused by git's own
@@ -532,7 +532,7 @@ fi
 printf 'a\n' > "$w/answers"
 valley review topic/five < "$w/answers" > "$w/five-again.out" 2> "$w/five-again.err"
 
-grep -q '^Submitted topic/five .* for integration into origin/main\.$' "$w/five-again.out"
+grep -q '^Approved topic/five .*: its integration request for origin/main is filed\.$' "$w/five-again.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$newhead")" "$w/five-again.out"
 # Replacing a pending request is said out loud, and the sentence names the
 # head that was replaced.
@@ -540,7 +540,7 @@ grep -qx "  replaced the pending request, which stood at $(git rev-parse --short
 
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-five)" \
   != "$newhead" ]; then
-  echo "valley-request: the resubmitted request does not name the rebased head" >&2
+  echo "valley-request: the request filed again does not name the rebased head" >&2
   exit 1
 fi
 
@@ -594,7 +594,7 @@ sixfiled="$(git rev-parse topic/six)"
 
 printf 'a\n' > "$w/answers"
 valley review topic/six < "$w/answers" > "$w/six-first.out" 2> "$w/six-first.err"
-grep -q '^Submitted topic/six .* for integration into origin/main\.$' "$w/six-first.out"
+grep -q '^Approved topic/six .*: its integration request for origin/main is filed\.$' "$w/six-first.out"
 
 git checkout --quiet main
 echo "a third note" > docs/third.md
@@ -680,7 +680,7 @@ git push --quiet origin \
 printf 'a\n' > "$w/answers"
 valley review topic/seven < "$w/answers" > "$w/seven.out" 2> "$w/seven.err"
 
-grep -q '^Submitted topic/seven .* for integration into origin/main\.$' "$w/seven.out"
+grep -q '^Approved topic/seven .*: its integration request for origin/main is filed\.$' "$w/seven.out"
 grep -qx '  the request already stood at this head; the evidence is what was published' "$w/seven.out"
 # The evidence went; the request ref was not in the refspec at all.
 grep -q "refs/the-valley/attestations/$sevendigest/$keyhash" "$pushlog"
@@ -774,7 +774,7 @@ git push --quiet origin topic/nine
 
 printf 'a\n' > "$w/answers"
 valley review topic/nine < "$w/answers" > "$w/nine-first.out" 2> "$w/nine-first.err"
-grep -q '^Submitted topic/nine .* for integration into origin/main\.$' "$w/nine-first.out"
+grep -q '^Approved topic/nine .*: its integration request for origin/main is filed\.$' "$w/nine-first.out"
 
 git checkout --quiet main
 echo "a fourth note" > docs/fourth.md
@@ -911,7 +911,7 @@ if grep -q 'no policy schema' "$w/config.err"; then
   exit 1
 fi
 grep -q '^checking topic/config at .*: tree-ok$' "$w/config.out"
-grep -qx "Submitted topic/config ($(git rev-parse --short topic/config)) for integration into origin/main." "$w/config.out"
+grep -qx "Approved topic/config ($(git rev-parse --short topic/config)): its integration request for origin/main is filed." "$w/config.out"
 git -C "$cfgorigin" rev-parse --verify --quiet \
   "refs/the-valley/attestations/$cfgdigest/$keyhash" > /dev/null || {
   echo "valley-request: [a]pprove in a project without schema/ published no evidence" >&2
@@ -1069,7 +1069,7 @@ git checkout --quiet main
 : > "$pushlog"
 valley approve origin/topic/verb < /dev/null > "$w/verb.out" 2> "$w/verb.err"
 grep -q '^checking topic/verb at .*: tree-ok$' "$w/verb.out"
-grep -qx "Submitted topic/verb ($(git rev-parse --short "$verbhead")) for integration into origin/main." "$w/verb.out"
+grep -qx "Approved topic/verb ($(git rev-parse --short "$verbhead")): its integration request for origin/main is filed." "$w/verb.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-verb -> $(git rev-parse --short "$verbhead")" "$w/verb.out"
 grep -qx "  evidence refs/the-valley/attestations/$verbdigest/$keyhash" "$w/verb.out"
 grep -qx '  checks   tree-ok' "$w/verb.out"

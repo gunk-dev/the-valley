@@ -25,7 +25,7 @@ func writeHuman(g git, s *status, w io.Writer) int {
 		p("%s (%s): the integrator recorded it integrated into origin/main.\n", s.branch, short(s.head))
 		return writeCheckout(g, s.tip, w)
 	case "outdated-request":
-		p("%s (%s): latest commit not submitted.\n", s.branch, short(s.head))
+		p("%s (%s): latest commit not approved.\n", s.branch, short(s.head))
 		p("An older request for %s is still pending at %s.\n", short(s.request), s.requestRef)
 		p("Review the latest commit: valley review %s\n", shellQuote(s.branch))
 		return 0
@@ -34,11 +34,11 @@ func writeHuman(g git, s *status, w io.Writer) int {
 		p("Ask the instance operator to inspect %s.\n", s.outcomeRef)
 		return 0
 	case "not-requested":
-		p("%s: not submitted; no pending request for this commit.\n", s.branch)
+		p("%s: not approved; no pending request for this commit.\n", s.branch)
 		if s.memo.decision != "" {
 			p("Last recorded decision: %s for %s.\n", s.memo.decision, short(s.memo.head))
 		}
-		p("Submit it through review: valley review %s\n", shellQuote(s.branch))
+		p("Approve it through review: valley review %s\n", shellQuote(s.branch))
 		return 0
 	}
 

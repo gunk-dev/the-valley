@@ -144,8 +144,8 @@ json_refused() {
 # No request is different from a request waiting to be judged.
 reset_remote
 status
-contains 'not submitted' 'an unsubmitted branch was not identified'
-lacks 'integrated into origin/main' 'an unsubmitted branch was reported integrated'
+contains 'not approved' 'an unapproved branch was not identified'
+lacks 'integrated into origin/main' 'an unapproved branch was reported integrated'
 json not-requested ".head == \"$head\"" '.request == null' '.outcome == null'
 git -C "$origin" update-ref "$request" "$head"
 status
@@ -206,7 +206,7 @@ json awaiting-decision ".head == \"$head\"" ".outcome.head == \"$base\"" \
 git -C "$origin" update-ref -d "$request"
 record_outcome "$base" "$base" land
 status
-contains 'not submitted' 'an old landing was applied to a newer branch head'
+contains 'not approved' 'an old landing was applied to a newer branch head'
 lacks 'integrated into origin/main' 'the newer branch inherited an old landing'
 json not-requested ".head == \"$head\"" '.request == null' \
   ".outcome.head == \"$base\"" '.outcome.decision == "land"'
@@ -229,7 +229,8 @@ contains 'integrated into origin/main' 'a consumed request hid a direct landing'
 json integrated ".head == \"$head\"" '.request == null' '.outcome.decision == "land"'
 
 # Reparenting changes the landed commit id. The matching durable outcome
-# still identifies the submitted change, including after topic cleanup.
+# still identifies the change that was approved, including after topic
+# cleanup.
 reset_remote
 topic_tree="$(git -C "$origin" rev-parse "$head^{tree}")"
 landed="$(printf 'reparented landing\n' | git -C "$origin" commit-tree "$topic_tree" -p "$advanced")"
@@ -304,7 +305,7 @@ git -C "$repo" branch --force main "$head" >/dev/null
 reset_remote
 git -C "$origin" update-ref "$request" "$base"
 status
-contains 'latest commit not submitted' 'a newer topic inherited an older request'
+contains 'latest commit not approved' 'a newer topic inherited an older request'
 contains 'older request' 'an outstanding older request was hidden'
 json outdated-request ".head == \"$head\"" ".request.commit == \"$base\""
 
@@ -342,7 +343,7 @@ git -C "$repo" remote set-url origin "$w/missing.git"
 (cd "$repo" && valley status topic) > "$w/status.out" 2>&1 || true
 matches 'origin|remote|fetch|repository' 'an unavailable origin had no useful diagnostic'
 lacks 'integrated into origin/main' 'a failed fetch reported cached success'
-lacks 'not submitted' 'a failed fetch was mistaken for an absent request'
+lacks 'not approved' 'a failed fetch was mistaken for an absent request'
 json_refused
 grep -q 'could not read origin' "$w/status.err" || fail 'an unreadable origin was not named as such'
 git -C "$repo" remote remove origin

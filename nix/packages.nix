@@ -1,6 +1,7 @@
-# Everything this flake builds: the CLI, the formatter, the attestation
-# helper, the integrator, the identity compiler, the pre-receive hook's
-# policy, the security-key signature verifier. The flake wires these into packages, apps, and the checks that
+# Everything this flake builds: the CLI and its status reader, the
+# formatter, the attestation helper, the integrator, the identity
+# compiler, the pre-receive hook's policy, the security-key signature
+# verifier. The flake wires these into packages, apps, and the checks that
 # drive them; nothing here knows about any of those outputs.
 { pkgs, lib }:
 rec {
@@ -42,6 +43,7 @@ rec {
       pkgs.cue # checks and review's [a]sk — it composes the policy layers
       pkgs.less # review only — its v key is what takes a note
       attest # review's [a]sk only — it runs the checks and signs them
+      valley-status # status only — it is the whole of that verb
     ];
     text = builtins.readFile ../bin/valley;
   };
@@ -72,6 +74,22 @@ rec {
       installShellCompletion --bash --name valley ${../completions/valley.bash}
       installShellCompletion --zsh --name _valley ${../completions/_valley}
     '';
+  };
+
+  # The status verb of the CLI (status/): it reads one change's request
+  # and outcome record from origin, and prints them as sentences or as
+  # the valley-status/v1 JSON object front ends read. Go, standard library
+  # only — hence vendorHash = null and no module fetch. It runs whatever
+  # git is on PATH, which inside the CLI's package is the CLI's own. Its
+  # unit tests hold its shell quoting to the bash it replaced, so they
+  # need bash.
+  valley-status = pkgs.buildGoModule {
+    pname = "valley-status";
+    version = "0";
+    src = ../status;
+    vendorHash = null;
+    nativeCheckInputs = [ pkgs.bash ];
+    meta.mainProgram = "valley-status";
   };
 
   # `nix run .#fmt` — rewrap every tracked *.md in the repo to 100 columns.

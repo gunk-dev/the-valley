@@ -292,16 +292,17 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 
 ## The valley command
 
-`bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`).
+`bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`
+verb is a Go program, `valley-status` (`status/`), which the package puts on the script's `PATH`.
 
-| Command               | What it does                                                                                      |
-| --------------------- | ------------------------------------------------------------------------------------------------- |
-| `valley pending`      | Lists branches not merged into `main`, each with its head commit's subject.                       |
-| `valley review <b>`   | Shows a branch and offers `[a]sk`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
-| `valley checks`       | Reports the checks a change owes, grouped by declared cost. It runs nothing.                      |
-| `valley status <b>`   | Reads the request and outcome record for a branch.                                                |
-| `valley tail [subj]`  | Subscribes to bus events.                                                                         |
-| `valley replay [dir]` | Publishes one `ref-updated` event per current ref.                                                |
+| Command                      | What it does                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject.                       |
+| `valley review <b>`          | Shows a branch and offers `[a]sk`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
+| `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                      |
+| `valley status [--json] <b>` | Reads the request and outcome record for a branch. `--json` prints the `valley-status/v1` object. |
+| `valley tail [subj]`         | Subscribes to bus events.                                                                         |
+| `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                |
 
 `[a]sk` runs the owed checks with `attest` in a worktree of the branch head. Then one atomic push
 carries the evidence refs and the request ref, with a lease on the request. When the request already
@@ -309,6 +310,59 @@ names this head, the push leaves the request ref out. When nothing is owed as we
 push. `[b]ase` rebases the branch in a temporary worktree and pushes it with a lease. `[r]eject`
 deletes the remote branch after a prompt. Checked by `valley-cli`, `valley-request`, `valley-status`
 and `review-notes`.
+
+`valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
+moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in
+`origin/main` is integrated, even if recording the outcome failed. An outcome record it does not
+recognise is `unknown`, never a success.
+
+### The status object
+
+`valley status --json <b>` prints one JSON object on one line. Front ends read it, klaus among them,
+so it is a contract with a version. A change to the name or meaning of any field is a new version.
+
+```json
+{
+  "schema": "valley-status/v1",
+  "change": "topic/one",
+  "request_name": "topic-one",
+  "target": "main",
+  "target_tip": "<sha>",
+  "head": "<sha>",
+  "request": { "ref": "refs/the-valley/integration-requests/main/topic-one", "commit": "<sha>" },
+  "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>", "failed_at": null },
+  "state": "stale"
+}
+```
+
+- `change` is the branch as given, without `origin/`. `request_name` names its integration request:
+  the branch with each `/` replaced by `-`.
+- `target_tip` is `main` on origin. `head` is the branch head on origin. When the branch is gone,
+  `head` is the request's commit, or else the outcome's head, or else `null`.
+- `request` is `null` when origin holds no integration request for the change. `outcome` is `null`
+  when origin holds no outcome record.
+- `outcome.decision` is `land`, `stale`, `reject`, `failed` or `unknown`. A record that does not
+  parse is `unknown`. `outcome.head` and `outcome.tip` are `null` unless they are object ids, and
+  `failed_at` is `null` unless the decision is `failed`.
+- `state` is one of these:
+
+| `state`                 | What it means                                                                         |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| `integrated`            | The head is in `origin/main`.                                                         |
+| `integrated-recorded`   | A `land` outcome names this head. The change landed as a different commit.            |
+| `outdated-request`      | The request names an older commit than the branch head.                               |
+| `outcome-unreadable`    | The outcome record does not parse.                                                    |
+| `not-requested`         | No request stands for the change. An outcome from an earlier head may remain.         |
+| `awaiting-decision`     | A request stands for this head, and no outcome names it.                              |
+| `awaiting-new-decision` | The outcome names this head, but `main` or the evidence has moved since it was made.  |
+| `stale`                 | The integrator reported the change stale against the current `main` and evidence.     |
+| `rejected`              | The integrator rejected the evidence.                                                 |
+| `failed`                | The integrator failed while processing the request. The change may still have landed. |
+
+An error prints no object. The message goes to stderr and the exit status is non-zero. The errors
+are an unreadable origin, an origin without `main`, nothing on origin for the change, and a change
+name that is not UTF-8, which JSON cannot carry exactly. Checked by `valley-status`, and by the Go
+tests in `status/` for the outcome record's parser.
 
 ## The life of a change
 

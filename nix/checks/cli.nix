@@ -105,9 +105,12 @@ in
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.
+  # Each state is read again through --json, and jq holds the object to
+  # the valley-status/v1 contract.
   valley-status = pkgs.runCommand "valley-status" {
     nativeBuildInputs = [
       pkgs.git
+      pkgs.jq
       packages.valley-script
     ];
   } (builtins.readFile ./valley-status.sh);

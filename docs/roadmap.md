@@ -119,7 +119,8 @@ where agent wall-clock time goes.
     crashes, and interruption tests prove it.
   - The reconciliation memo includes the instance policy and registry snapshot.
   - Workers produce missing check results, and the integrator only referees.
-  - Path classes for Go, Nix and CUE, so the integrator's own code is gated by real checks.
+  - Path classes for Go, Nix and CUE, so the integrator's own code is gated by real checks (done:
+    `policy/project/policy.cue`).
   - The review flow inverts: `valley request` produces the evidence before human review.
   - Effectful validity windows and the closure-transfer machinery are dropped.
   - `bin/valley`, `integrator/`, `identity/` and `attest/` become one Go binary, and SSHSIG with

@@ -1,11 +1,13 @@
 # bin/valley: that it stays a lint-clean script, what its review verb
-# anchors a note to, what its deriver makes of a policy and a diff, what
+# anchors a note to, what its deriver makes of a policy and a diff, that
+# the-valley's own policy composes and names only checks that exist, what
 # its review verb publishes when it files an integration request, what its
 # status helper's unit tests hold, and that its package evaluates for
 # aarch64-darwin.
 {
   pkgs,
   self,
+  system,
   packages,
   ...
 }:
@@ -85,6 +87,27 @@ in
     cliScript = ../../bin/valley;
     inherit failNth;
   } (builtins.readFile ./policy-deriver.sh);
+
+  # the-valley's own project layer (policy/project), which is what gates
+  # every change to this repository. A layer that stopped composing would
+  # stop every derivation once it landed, the derivation of its own fix
+  # included, so it is held here before it lands. The floor it is composed
+  # with is the example one: the owning valley's is not in this tree. The
+  # check also holds every check the layer names to being an attribute of
+  # this flake's checks, and holds a docs-only change to owing
+  # prose-format alone.
+  own-policy = pkgs.runCommand "valley-own-policy" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.cue
+      packages.valley-script
+    ];
+    schema = ../../schema/verification.cue;
+    project = ../../policy/project;
+    floor = ../../examples/policy/instance/floor-format.cue;
+    template = ../../examples/policy/instance/template-docs.cue;
+    checkNames = builtins.attrNames self.checks.${system};
+  } (builtins.readFile ./own-policy.sh);
 
   # review's [a]pprove and the approve and rebase verbs, driven end to end
   # over scratch repositories: a branch reviewed, the request filed, and

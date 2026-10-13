@@ -66,4 +66,10 @@ while IFS=$'\t' read -r name names; do
     exit 1
   fi
 done < "$rejectedCases"
+
+# The worked policy example: its instance floor and templates composed with
+# its project layer, as schema/verification.cue's header shows. The
+# deriver's own fixtures are policy-deriver's.
+cue vet -c "$verificationSchema" "$policies"/instance/*.cue \
+  "$policies"/project/*.cue
 touch "$out"

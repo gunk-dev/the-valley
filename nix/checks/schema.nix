@@ -8,7 +8,8 @@
   # A host declaration: the pilot's own, the compatibility case, the
   # protection block the installer renders a hook from, and the twelve
   # declarations the schema must refuse. The event payloads live here too —
-  # the publisher hook's vocabulary is a schema like any other.
+  # the publisher hook's vocabulary is a schema like any other — and so
+  # does the worked verification policy under examples/policy/.
   cue-vet = pkgs.runCommand "valley-cue-vet" {
     nativeBuildInputs = [ pkgs.cue ];
     schema = ../../schema/valley.cue;
@@ -17,6 +18,8 @@
     eventSchema = ../../schema/events.cue;
     events = ../../examples/events;
     rejectedCases = ./cue-vet-rejected.txt;
+    verificationSchema = ../../schema/verification.cue;
+    policies = ../../examples/policy;
   } (builtins.readFile ./cue-vet.sh);
 
   # The attestation statement schema (dcr-0de694f). A statement the

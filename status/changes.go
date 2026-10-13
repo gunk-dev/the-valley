@@ -150,34 +150,66 @@ func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
 	return n, true, nil
 }
 
-// resolveBranch is the branch a change is on: the branch its active
-// version names, when the name is a change's, and otherwise the name
-// itself, as a branch name. A name with no handle's shape is a branch name
-// without origin being read.
-func resolveBranch(g git, name string) (string, error) {
+// resolution is what the name of a change stands for. A name that is a
+// branch's sets branch alone. A name that is a change's sets every field
+// from the change's record on origin: the active version, the head that
+// version names, and the branch it names.
+type resolution struct {
+	id, handle, head, branch string
+	version                  int
+}
+
+// resolve reads a change's name, as every verb that takes a change does.
+// A name with no handle's shape is a branch name without origin being
+// read. A change whose active version names no branch is refused, since
+// every verb that resolves a name acts on a branch too.
+func resolve(g git, name string) (resolution, error) {
 	if strings.HasPrefix(name, "origin/") || !change.LooksLikeHandle(name) {
-		return strings.TrimPrefix(name, "origin/"), nil
+		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
 	}
 	o, err := listOrigin(g, append([]string{"refs/heads/" + name}, recordPatterns...)...)
 	if err != nil {
-		return "", err
+		return resolution{}, err
 	}
 	n, found, err := lookup(g, o, name)
 	switch {
 	case err != nil:
-		return "", err
+		return resolution{}, err
 	case !found:
-		return name, nil
+		return resolution{branch: name}, nil
 	}
 	v := n.record.ActiveVersion()
-	if v.Branch == "" {
-		return "", failure(fmt.Sprintf("the change %s names no branch at v%d, so there is no branch to act on", o.handle(n.id), v.N))
+	r := resolution{
+		id: n.id, handle: o.handle(n.id), version: v.N,
+		head: strings.TrimPrefix(v.Head, change.HeadPrefix), branch: v.Branch,
 	}
-	return v.Branch, nil
+	if r.branch == "" {
+		return resolution{}, failure(fmt.Sprintf("the change %s names no branch at v%d, so there is no branch to act on", r.handle, v.N))
+	}
+	return r, nil
 }
 
-// runResolve prints the branch a change is on, for the verbs bin/valley
-// runs itself.
+// resolveBranch is the branch a change is on: the branch its active
+// version names, when the name is a change's, and otherwise the name
+// itself, as a branch name.
+func resolveBranch(g git, name string) (string, error) {
+	r, err := resolve(g, name)
+	return r.branch, err
+}
+
+// runResolve prints what a change's name stands for, for the verbs
+// bin/valley runs itself, as one line of fields separated by tabs. For a
+// change it is
+//
+//	change <ID> <handle> <version> <head> <branch>
+//
+// with the head as a full object ID. For a branch it is
+//
+//	branch <branch>
+//
+// A branch name holds no tab, since git refuses control characters in a
+// ref name. The record commit, which has the head as a parent, has been
+// fetched, so the head is in this checkout's objects.
 func runResolve(g git, args []string, w io.Writer) error {
 	if len(args) != 1 {
 		return failure("usage: valley-go resolve <change>")
@@ -185,11 +217,15 @@ func runResolve(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	branch, err := resolveBranch(g, args[0])
+	r, err := resolve(g, args[0])
 	if err != nil {
 		return err
 	}
-	_, err = fmt.Fprintln(w, branch)
+	if r.id == "" {
+		_, err = fmt.Fprintf(w, "branch\t%s\n", r.branch)
+		return err
+	}
+	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch)
 	return err
 }
 

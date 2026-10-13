@@ -227,9 +227,12 @@ A change is named by its full change id, by its handle — the shortest
 prefix of the id, four letters at least, that no other change recorded on
 origin shares — or by its branch. A name written origin/<branch> is always
 a branch. A handle that is also a branch on origin is refused unless the
-change is on that branch. review, approve and rebase act on the branch the
-change's active version names; naming a change by id or handle needs the
-valley-go helper, and without it every name is a branch.
+change is on that branch. Named by id or handle, a change is reviewed,
+approved and rebased at the head its active version records, never at
+its branch's tip: review shows that head, and approve and rebase refuse,
+naming both, when the branch's tip on origin is another commit. Naming a
+change by id or handle needs the valley-go helper, and without it every
+name is a branch.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -510,14 +513,20 @@ print_notes() {
 }
 
 show_review() {
-  local branch="$1" sha
-  sha="$(git rev-parse --short "refs/remotes/origin/$branch")"
+  local branch="$1" head sha
+  head="$(change_head "$branch")"
+  sha="$(git rev-parse --short "$head")"
   REVIEW_TMP="$(mktemp -d)"
   {
-    printf 'branch %s, log against origin/main:\n\n' "$branch"
-    git --no-pager log --oneline "origin/main..origin/$branch"
+    if [ -n "$CHANGE_HEAD" ]; then
+      printf 'change %s v%s at %s, on branch %s, log against origin/main:\n\n' \
+        "$CHANGE_HANDLE" "$CHANGE_VERSION" "$sha" "$branch"
+    else
+      printf 'branch %s, log against origin/main:\n\n' "$branch"
+    fi
+    git --no-pager log --oneline "origin/main..$head"
     printf '\n'
-    git --no-pager diff "origin/main...origin/$branch"
+    git --no-pager diff "origin/main...$head"
   } > "$REVIEW_TMP/review.diff"
   cp "$REVIEW_TMP/review.diff" "$REVIEW_TMP/review.orig"
   page_file "$REVIEW_TMP/review.diff" || true # quitting the pager early is not an error
@@ -730,6 +739,12 @@ approve() {
     refuse "no such branch on origin: $branch; nothing published"
     return 1
   }
+  # A change named by ID or handle is filed at the head its record names,
+  # and only while its branch is there too.
+  if [ -n "$CHANGE_HEAD" ]; then
+    check_recorded_tip "$branch" "nothing published" || return 1
+    head="$CHANGE_HEAD"
+  fi
   base="$(git merge-base "$tip" "$head")" || {
     refuse "$branch and main share no history; nothing published"
     return 1
@@ -969,15 +984,76 @@ cmd_go() {
   exec valley-go "$@"
 }
 
-# A change is named by its full change ID, its handle, or its branch. The
-# helper turns an ID or a handle into the branch its active version is on,
-# and hands a branch name back as it was given. Without the helper a name
-# is a branch name, as every name was before changes had records.
+# A change is named by its full change ID, its handle, or its branch.
+# resolve_change reads the name with the helper and sets CHANGE_BRANCH, the
+# branch to act on. For a change named by ID or handle it also sets the
+# change's ID, handle and active version, and CHANGE_HEAD, the head that
+# version records. Without the helper a name is a branch name, as every
+# name was before changes had records.
+#
+# A change named by ID or handle is acted on at CHANGE_HEAD, and never at
+# the branch's tip. The branch a record names is only where its head is
+# expected to be, and anyone who can push the branch can move it, in the
+# same push as the record if they like.
+CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH=""
 resolve_change() {
-  if command -v valley-go > /dev/null 2>&1; then
-    valley-go resolve "$1"
+  local line kind
+  if ! command -v valley-go > /dev/null 2>&1; then
+    CHANGE_BRANCH="${1#origin/}"
+    return 0
+  fi
+  line="$(valley-go resolve "$1")" || return 1
+  IFS=$'\t' read -r kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH <<< "$line"
+  case "$kind" in
+    branch)
+      CHANGE_BRANCH="$CHANGE_ID"
+      CHANGE_ID=""
+      ;;
+    change)
+      [[ "$CHANGE_HEAD" =~ ^[0-9a-f]{40}$ ]] \
+        || die "valley-go resolve named the head $CHANGE_HEAD, which is no object ID"
+      ;;
+    *) die "valley-go resolve answered $line, which this script does not read" ;;
+  esac
+}
+
+# The commit review, approve and rebase act on: the recorded head for a
+# change named by ID or handle, and otherwise the branch's head on origin.
+change_head() {
+  if [ -n "$CHANGE_HEAD" ]; then
+    printf '%s\n' "$CHANGE_HEAD"
   else
-    printf '%s\n' "${1#origin/}"
+    git rev-parse "refs/remotes/origin/$1"
+  fi
+}
+
+# For a change named by ID or handle, refuse unless the branch's tip on
+# origin is the recorded head, and name both. Acting on the branch would
+# act on a commit no version records; acting on the recorded head while the
+# branch is elsewhere would file or rebase something the branch no longer
+# says. The second argument is what the refusal leaves undone.
+check_recorded_tip() {
+  local branch="$1" undone="$2" tip
+  [ -n "$CHANGE_HEAD" ] || return 0
+  tip="$(git rev-parse "refs/remotes/origin/$branch")" || {
+    refuse "no such branch on origin: $branch; $undone"
+    return 1
+  }
+  [ "$tip" = "$CHANGE_HEAD" ] && return 0
+  refuse "change $CHANGE_HANDLE v$CHANGE_VERSION records the head $CHANGE_HEAD, and origin/$branch is at $tip; $undone. Ready the branch's head as a new version of $CHANGE_HANDLE, or name the branch as origin/$branch to act on its tip"
+}
+
+# rebase for a change named by ID or handle rebases the recorded head
+# alone, so the branch must still be at it. The rebased head is a commit no
+# version records, so the change is readied again before its handle names
+# it.
+rebase_change() {
+  local branch="$1"
+  check_recorded_tip "$branch" "nothing rebased" || return 1
+  rebase_onto_main "$branch"
+  if [ -n "$CHANGE_HEAD" ]; then
+    printf 'No version of %s records the rebased head yet. Record it: valley ready --change %s %q\n' \
+      "$CHANGE_HANDLE" "$CHANGE_ID" "$branch"
   fi
 }
 
@@ -992,16 +1068,22 @@ read_and_decide() {
   # than fast-forwarding: a stale branch is a request it can judge, and
   # rebasing first is a convenience rather than a precondition.
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
-    "refs/remotes/origin/$branch"; do
+    "$(change_head "$branch")"; do
     printf '%s does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' \
       "$branch"
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
       a) approve "$branch" && return ;;
       b)
-        rebase_onto_main "$branch"
-        fetch_origin
-        show_review "$branch"
+        # The rebased head of a change named by its handle is no version
+        # of it yet, so there is nothing more to review by that handle.
+        if [ -n "$CHANGE_HEAD" ]; then
+          rebase_change "$branch" && return
+        else
+          rebase_onto_main "$branch"
+          fetch_origin
+          show_review "$branch"
+        fi
         ;;
       r) reject "$branch" && return ;;
       s)
@@ -1031,8 +1113,8 @@ read_and_decide() {
 
 cmd_review() {
   [ $# -eq 1 ] || die "usage: valley review <change>"
-  local branch
-  branch="$(resolve_change "$1")" || exit 1
+  resolve_change "$1" || exit 1
+  local branch="$CHANGE_BRANCH"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
@@ -1047,11 +1129,11 @@ cmd_review() {
 # approve and rebase are review's [a]pprove and [b]ase without the pager,
 # for a front end that has shown the change its own way. Each runs the
 # function its key runs, so the verb and the key cannot drift apart. A
-# change is named as resolve_change reads it, and acted on by its branch.
+# change is named as resolve_change reads it.
 cmd_approve() {
   [ $# -eq 1 ] || die "usage: valley approve <change>"
-  local branch
-  branch="$(resolve_change "$1")" || exit 1
+  resolve_change "$1" || exit 1
+  local branch="$CHANGE_BRANCH"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
@@ -1064,11 +1146,12 @@ cmd_approve() {
 
 cmd_rebase() {
   [ $# -eq 1 ] || die "usage: valley rebase <change>"
-  local branch
-  branch="$(resolve_change "$1")" || exit 1
+  resolve_change "$1" || exit 1
+  local branch="$CHANGE_BRANCH"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
+  check_recorded_tip "$branch" "nothing rebased" || exit 1
   # review offers [b]ase only to a stale branch. One that fast-forwards
   # already is left alone, rather than rewritten for nothing.
   if git merge-base --is-ancestor refs/remotes/origin/main \
@@ -1079,7 +1162,7 @@ cmd_rebase() {
   fi
   trap cleanup_scratch EXIT
   trap 'exit 130' INT TERM
-  rebase_onto_main "$branch"
+  rebase_change "$branch" || exit 1
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,

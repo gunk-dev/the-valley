@@ -276,5 +276,99 @@ unchanged "$stamped_id" refused 'has a record on origin already' \
 [ "$(git -C "$origin" rev-parse refs/heads/stamped)" != "$restamped" ] \
   || fail '--stamp pushed for a change with a record'
 
+# ----------------------------------------------------------------------
+# A change named by its handle is approved, reviewed and rebased at the
+# head its record names, never at its branch's tip. The record's branch is
+# only where that head is expected to be, and whoever can push the branch
+# can move it, in the same push as the record if they like.
+#
+# approve derives what the change owes from the owning valley's floor,
+# named at policy/valley on main. This floor owes nothing, so approving
+# files a request with no evidence, and no signing key is needed.
+valley="$w/valley.git"
+git init --quiet --bare "$valley"
+git init --quiet "$w/valley-work"
+mkdir -p "$w/valley-work/policy/instance"
+cat > "$w/valley-work/policy/instance/floor.cue" << 'CUE'
+package verification
+
+floor: {
+	checks: {}
+	classes: {}
+	unclassified: {}
+}
+CUE
+git -C "$w/valley-work" add -A
+git -C "$w/valley-work" commit --quiet -m floor
+git -C "$w/valley-work" push --quiet "$valley" HEAD:main
+git checkout --quiet main
+mkdir -p policy
+echo "$valley" > policy/valley
+git add policy/valley
+git commit --quiet -m 'name the owning valley'
+env -u VALLEY_PRINCIPAL git push --quiet origin main
+
+# write_record <json> <parent…>: a record commit holding the JSON, written
+# by hand, the way anyone holding a key could write one.
+write_record() {
+  local json="$1" blob tree parent
+  local -a parents=()
+  shift
+  for parent in "$@"; do parents+=(-p "$parent"); done
+  blob="$(printf '%s\n' "$json" | git hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\trecord.json\n' "$blob" | git mktree)"
+  git commit-tree "$tree" "${parents[@]}" -m 'a change record'
+}
+request=refs/the-valley/integration-requests/main/victim
+no_request() {
+  if git -C "$origin" rev-parse --verify --quiet "$request" > /dev/null; then
+    fail "$1"
+  fi
+}
+
+# The record names H on victim, and the same push puts B on victim.
+target_id=ppppqqqqrrrrssssttttuuuuvvvvwwww
+git checkout --quiet -b victim main
+commit honest
+honest="$(git rev-parse HEAD)"
+commit substituted
+substituted="$(git rev-parse HEAD)"
+v1="$(jq -cn --arg id "$target_id" --arg head "git-sha1:$honest" '{schema: "valley-change-record/v1",
+  change_id: $id, target: "main", owner: "contributor", state: "ready", seq: 1,
+  versions: [{n: 1, head: $head, title: "honest", branch: "victim", uploader: "contributor"}], active: 1}')"
+r1="$(write_record "$v1" "$honest")"
+as contributor git push --quiet origin "$r1:refs/the-valley/changes/main/$target_id" \
+  "$substituted:refs/heads/victim"
+[ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] || fail 'the branch did not move with the record'
+
+refused "records the head $honest, and origin/victim is at $substituted" as requester valley approve pppp
+no_request 'approve filed a request for a branch tip no version records'
+refused "origin/victim is at $substituted; nothing rebased" as requester valley rebase pppp
+[ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] || fail 'rebase moved the branch'
+# review shows the recorded head, and none of what the branch added.
+printf 's\n' | valley review pppp > "$w/out" 2> "$w/err" || fail 'review of a handle failed'
+grep -q '^change pppp v1 at' "$w/out" || fail 'review did not say which version it shows'
+grep -q ' honest$' "$w/out" || fail 'review did not show the recorded head'
+if grep -q 'substituted' "$w/out"; then fail 'review showed the branch tip, not the recorded head'; fi
+
+# With the branch at the recorded head, approve files exactly that head.
+as contributor git push --quiet --force origin "$honest:refs/heads/victim"
+ok as requester valley approve pppp
+[ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'approve did not file the recorded head'
+
+# A second agent acting as the same principal adds v2 at a head that is
+# not on victim, while its record says victim. approve refuses, and the
+# request stays where it was.
+git checkout --quiet -b elsewhere main
+commit elsewhere
+elsewhere="$(git rev-parse HEAD)"
+as contributor git push --quiet origin elsewhere
+v2="$(jq -c --arg head "git-sha1:$elsewhere" '.versions += [{n: 2, head: $head, title: "elsewhere",
+  branch: "victim", uploader: "contributor"}] | .active = 2 | .seq = 2' <<< "$v1")"
+r2="$(write_record "$v2" "$r1" "$elsewhere")"
+as contributor git push --quiet origin "$r2:refs/the-valley/changes/main/$target_id"
+refused "records the head $elsewhere, and origin/victim is at $honest" as requester valley approve pppp
+[ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'a redirected version moved the request'
+
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

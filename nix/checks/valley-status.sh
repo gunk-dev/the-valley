@@ -308,12 +308,13 @@ contains 'latest commit not submitted' 'a newer topic inherited an older request
 contains 'older request' 'an outstanding older request was hidden'
 json outdated-request ".head == \"$head\"" ".request.commit == \"$base\""
 
-# A change name is carried exactly. A branch name may hold quotes and the
-# characters a shell reads specially: JSON escapes them, the request name
-# maps only the slash, and the command the sentences suggest reads back,
-# in a shell, as the same name.
-odd='odd/"quoted"&<name>;$(x)'
-oddrequest='odd-"quoted"&<name>;$(x)'
+# A change name is carried exactly. A branch name may hold quotes, the
+# characters a shell reads specially, and any space but ASCII's — here a
+# no-break space: JSON escapes them, the request name maps only the slash,
+# and the command the sentences suggest reads back, in a shell, as the
+# same name.
+odd='odd/"quoted"&<name>;$(x)'$'\302\240''nbsp'
+oddrequest='odd-"quoted"&<name>;$(x)'$'\302\240''nbsp'
 git -C "$origin" update-ref "refs/heads/$odd" "$head"
 git -C "$origin" update-ref "refs/the-valley/integration-requests/main/$oddrequest" "$head"
 status "$odd"

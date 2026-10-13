@@ -64,15 +64,16 @@ func read(g git, branch string) (*status, error) {
 		return nil, failure("could not read origin; integration status is unknown. Try valley status " +
 			shellQuote(branch) + " again")
 	}
-	// ls-remote matches a pattern against the tail of a ref name, so every
-	// ref is compared whole here.
+	// ls-remote prints "<oid>\t<ref>", and a ref name may hold any space
+	// but ASCII's, so the line is split at the tab alone. ls-remote matches
+	// a pattern against the tail of a ref name, so every ref is compared
+	// whole here.
 	var attestations []string
 	for _, line := range strings.Split(snapshot, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+		oid, ref, ok := strings.Cut(line, "\t")
+		if !ok || ref == "" {
 			continue
 		}
-		oid, ref := fields[0], fields[1]
 		if ref == "refs/heads/"+target {
 			s.tip = oid
 		}

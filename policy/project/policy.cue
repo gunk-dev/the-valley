@@ -38,6 +38,7 @@ project: {
 		"sigverify-unit",
 		"sigverify-e2e",
 		"valley-go-unit",
+		"valley-status-unit", // temporary alias of valley-go-unit while the rename lands
 		"valley-cli",
 		"review-notes",
 		"valley-request",

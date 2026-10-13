@@ -145,6 +145,10 @@ in
   # shell quoting held to the bash it replaced. valley-status and
   # valley-ready drive the verbs through the CLI over real repositories.
   valley-go-unit = packages.valley-go;
+  # The name main's policy still owes for status/**, so a change can be
+  # approved while the rename lands; a later change drops it once the
+  # renamed policy is on main.
+  valley-status-unit = packages.valley-go;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.

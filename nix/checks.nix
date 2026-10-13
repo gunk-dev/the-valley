@@ -12,22 +12,25 @@
 #                    must reject
 #   knowledge.nix    knowledge-lint and its consumer and rejection forms,
 #                    prose-format — the graph and the prose
-#   attest.nix       attest-conformance, attest-e2e — the written form as a
-#                    fixed contract, and the helper driven end to end
+#   attest.nix       attest-unit, attest-conformance, attest-e2e — the
+#                    helper's unit tests, the written form as a fixed
+#                    contract, and the helper driven end to end
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
 #   hooks.nix        valleyhook-unit, mirror-e2e, bus-e2e, protect-e2e,
 #                    init-e2e — the hooks the module renders, run against
 #                    real git, and the init script that wires them
-#   identity.nix     identity-e2e — the registry compiler over a real
+#   identity.nix     identity-unit, identity-e2e — the compiler's unit
+#                    tests, and the registry compiler over a real
 #                    instance repository, against the hand-written
 #                    artifacts it replaces, and the hook reading its grants
 #   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
-#                    valley-request, valley-status, valley-darwin-eval
-#                    — bin/valley, and its package evaluated for Darwin
+#                    valley-request, valley-status-unit, valley-status,
+#                    valley-darwin-eval — bin/valley, its status helper,
+#                    and its package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push

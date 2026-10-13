@@ -1,7 +1,8 @@
 # bin/valley: that it stays a lint-clean script, what its review verb
 # anchors a note to, what its deriver makes of a policy and a diff, what
-# its review verb publishes when it files an integration request, and that
-# its package evaluates for aarch64-darwin.
+# its review verb publishes when it files an integration request, what its
+# status helper's unit tests hold, and that its package evaluates for
+# aarch64-darwin.
 {
   pkgs,
   self,
@@ -109,6 +110,13 @@ in
     cliScript = ../../bin/valley;
     inherit failNth;
   } (builtins.readFile ./valley-request.sh);
+
+  # The status helper's Go tests (status/), run in the package's
+  # checkPhase: the outcome records it accepts, the names its JSON
+  # refuses, and its shell quoting held to the bash it replaced.
+  # valley-status below drives the verb through the CLI over real
+  # repositories.
+  valley-status-unit = packages.valley-status;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.

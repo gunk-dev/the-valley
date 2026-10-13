@@ -14,6 +14,11 @@
   ...
 }:
 {
+  # The compiler's Go tests, run in the package's checkPhase: the key
+  # hash pinned against the reference vector attest is held to, expiry,
+  # and the renders it must refuse.
+  identity-unit = packages.identity-unwrapped;
+
   identity-e2e = pkgs.runCommand "valley-identity-e2e" {
     nativeBuildInputs = [
       pkgs.git

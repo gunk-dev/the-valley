@@ -1,7 +1,13 @@
-# The attestation helper: the written form as a fixed contract, and the
-# helper driven end to end over scratch repositories.
+# The attestation helper: its unit tests, the written form as a fixed
+# contract, and the helper driven end to end over scratch repositories.
 { pkgs, packages, ... }:
 {
+  # The helper's Go tests, run in the package's checkPhase against real
+  # git and ssh-keygen: the written form, the note's key hash and
+  # signatures, and the tree digest and input manifest. The unwrapped
+  # package, because its checkPhase is where the tests run.
+  attest-unit = packages.attest-unwrapped;
+
   # The written form and the note envelope, held to fixed vectors.
   # These bytes are an interop contract rather than an
   # implementation detail: a regenerated or independently written

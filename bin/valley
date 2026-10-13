@@ -564,15 +564,30 @@ cleanup_scratch() {
 # updated branch is never clobbered. Mechanics only; the judgment on the
 # rebased diff stays with the human, back at the review prompt or in
 # whatever front end ran the rebase verb.
+#
+# Every step is checked by hand rather than left to `set -e`, because
+# rebase_change runs this inside a condition, where bash suspends `set -e`
+# for the whole call. An unchecked step that failed there would leave
+# REBASE_WT empty, and `git -C ""` would rebase and push the user's own
+# checkout.
 rebase_onto_main() {
   local branch="$1" rebased
-  REBASE_WT="$(mktemp -d)"
-  git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch"
+  REBASE_WT="$(mktemp -d)" && [ -d "$REBASE_WT" ] || {
+    REBASE_WT=""
+    die "could not make a directory for the rebase; nothing changed"
+  }
+  git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch" || {
+    cleanup_rebase_wt
+    die "could not check out origin/$branch for the rebase; nothing changed"
+  }
   if ! git -C "$REBASE_WT" rebase --quiet refs/remotes/origin/main; then
     cleanup_rebase_wt
     die "$branch conflicts with main — resolve by hand; nothing changed"
   fi
-  rebased="$(git -C "$REBASE_WT" rev-parse HEAD)"
+  rebased="$(git -C "$REBASE_WT" rev-parse HEAD)" || {
+    cleanup_rebase_wt
+    die "could not read the rebased head of $branch; nothing pushed"
+  }
   if ! git -C "$REBASE_WT" push --quiet --force-with-lease \
     origin "HEAD:refs/heads/$branch"; then
     cleanup_rebase_wt

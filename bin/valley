@@ -587,13 +587,22 @@ cleanup_scratch() {
 # for the whole call. An unchecked step that failed there would leave
 # REBASE_WT empty, and `git -C ""` would rebase and push the user's own
 # checkout.
+#
+# The commit rebased is the second argument when given, the head a change's
+# record names, and otherwise origin/<branch> as the fetch left it. It is
+# read once, and the push is leased on exactly that commit, so a fetch that
+# moves origin/<branch> meanwhile changes neither.
 rebase_onto_main() {
-  local branch="$1" rebased
+  local branch="$1" from="${2:-}" rebased
+  if [ -z "$from" ]; then
+    from="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")" \
+      || die "no such branch on origin: $branch; nothing changed"
+  fi
   REBASE_WT="$(mktemp -d)" && [ -d "$REBASE_WT" ] || {
     REBASE_WT=""
     die "could not make a directory for the rebase; nothing changed"
   }
-  git worktree add --quiet --detach "$REBASE_WT" "refs/remotes/origin/$branch" || {
+  git worktree add --quiet --detach "$REBASE_WT" "$from" || {
     cleanup_rebase_wt
     die "could not check out origin/$branch for the rebase; nothing changed"
   }
@@ -605,7 +614,7 @@ rebase_onto_main() {
     cleanup_rebase_wt
     die "could not read the rebased head of $branch; nothing pushed"
   }
-  if ! git -C "$REBASE_WT" push --quiet --force-with-lease \
+  if ! git -C "$REBASE_WT" push --quiet "--force-with-lease=refs/heads/$branch:$from" \
     origin "HEAD:refs/heads/$branch"; then
     cleanup_rebase_wt
     die "lease on origin/$branch failed (it moved since the fetch); nothing pushed"
@@ -1082,7 +1091,7 @@ check_recorded_tip() {
 rebase_change() {
   local branch="$1"
   check_recorded_tip "$branch" "nothing rebased" || return 1
-  rebase_onto_main "$branch"
+  rebase_onto_main "$branch" "$CHANGE_HEAD"
   if [ -n "$CHANGE_HEAD" ]; then
     printf 'No version of %s records the rebased head yet. Record it: valley ready --change %s %q\n' \
       "$CHANGE_HANDLE" "$CHANGE_ID" "$branch"

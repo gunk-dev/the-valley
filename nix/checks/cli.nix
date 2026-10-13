@@ -140,12 +140,11 @@ in
     inherit failNth;
   } (builtins.readFile ./valley-request.sh);
 
-  # The status helper's Go tests (status/), run in the package's
-  # checkPhase: the outcome records it accepts, the names its JSON
-  # refuses, and its shell quoting held to the bash it replaced.
-  # valley-status below drives the verb through the CLI over real
-  # repositories.
-  valley-status-unit = packages.valley-go;
+  # The Go verbs' tests (status/), run in valley-go's checkPhase: the
+  # outcome records status accepts, the names its JSON refuses, and its
+  # shell quoting held to the bash it replaced. valley-status and
+  # valley-ready drive the verbs through the CLI over real repositories.
+  valley-go-unit = packages.valley-go;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.

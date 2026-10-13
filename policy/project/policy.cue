@@ -27,6 +27,7 @@ project: {
 		"valleyhook-unit",
 		"protect-e2e",
 		"note-unit",
+		"change-unit",
 		"attest-unit",
 		"attest-conformance",
 		"attest-e2e",
@@ -36,11 +37,12 @@ project: {
 		"integrator-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
-		"valley-status-unit",
+		"valley-go-unit",
 		"valley-cli",
 		"review-notes",
 		"valley-request",
 		"valley-status",
+		"valley-ready",
 		"valley-darwin-eval",
 		"policy-deriver",
 		"own-policy",
@@ -75,11 +77,25 @@ project: {
 	// package, whose checkPhase runs `go test`.
 
 	// The pre-receive hook and the git user's login shell. protect-e2e
-	// pushes to bare repositories wired with the hook a host renders.
+	// pushes to bare repositories wired with the hook a host renders, and
+	// valley-ready pushes change records through that hook.
 	classes: valleyhook: {
 		paths: "valleyhook/**":      true
 		requires: "valleyhook-unit": true
 		requires: "protect-e2e":     true
+		requires: "valley-ready":    true
+	}
+
+	// The change record, which the hook guards and the CLI's Go verbs write.
+	// Both read a record through it, so a change to it owes their tests as
+	// well as its own.
+	classes: change: {
+		paths: "change/**":          true
+		requires: "change-unit":     true
+		requires: "valleyhook-unit": true
+		requires: "protect-e2e":     true
+		requires: "valley-go-unit":  true
+		requires: "valley-ready":    true
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so
@@ -124,17 +140,20 @@ project: {
 		requires: "sigverify-e2e":  true
 	}
 
-	// The valley CLI: the script, its status helper, and its completions.
+	// The valley CLI: the script, its Go verbs (status/), and its
+	// completions. valley-ready drives ready, withdraw and the verbs that
+	// take a change's handle.
 	classes: cli: {
-		paths: "bin/valley":            true
-		paths: "status/**":             true
-		paths: "completions/**":        true
-		requires: "valley-status-unit": true
-		requires: "valley-cli":         true
-		requires: "review-notes":       true
-		requires: "valley-request":     true
-		requires: "valley-status":      true
-		requires: "policy-deriver":     true
+		paths: "bin/valley":        true
+		paths: "status/**":         true
+		paths: "completions/**":    true
+		requires: "valley-go-unit": true
+		requires: "valley-cli":     true
+		requires: "review-notes":   true
+		requires: "valley-request": true
+		requires: "valley-status":  true
+		requires: "valley-ready":   true
+		requires: "policy-deriver": true
 	}
 
 	// The verification policy: this layer, the pointer to the owning
@@ -233,7 +252,7 @@ project: {
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint", "knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
-		"hooks.nix": ["valleyhook-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
+		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
 		"host-module.nix": ["module-eval"]
 		"fail-nth.sh": ["policy-deriver", "valley-request"]
 		"review-notes-editor.sh": ["review-notes"]

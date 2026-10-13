@@ -29,7 +29,7 @@
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
-#                    own-policy, valley-request, valley-status-unit,
+#                    own-policy, valley-request, valley-go-unit,
 #                    valley-status, valley-ready, valley-darwin-eval —
 #                    bin/valley, its Go verbs, the-valley's own policy, and
 #                    the CLI's package evaluated for Darwin

@@ -156,9 +156,10 @@ usage: valley <verb> [args]
                      --stamp      amend the head of your local branch to
                                   carry the id as a Change-Id: trailer and
                                   push the branch, leased, before marking it
-                                  ready. refused for a head already on
-                                  origin, unless the change's record names
-                                  you as its owner.
+                                  ready. it only starts a new change: it
+                                  is refused for a change that has a
+                                  record on origin already, and for a head
+                                  already on origin.
                    the record names the principal your key pushes as, read
                    from git config valley.principal; the host refuses one
                    naming anyone else. the record ref is pushed leased on

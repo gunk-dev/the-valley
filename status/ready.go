@@ -154,8 +154,15 @@ func runReady(g git, args []string, w io.Writer) error {
 	handle := o.handle(id)
 
 	if a.stamp {
-		own := before != nil && before.Owner == principal
-		if head, err = stamp(g, a.branch, head, remote, tip, id, own); err != nil {
+		// Who owns a change is the host's to say, from the key a push
+		// authenticates with, and valley.principal is only what this
+		// checkout claims. So --stamp, which rewrites a branch before the
+		// record is pushed, starts new changes alone and never asks whose
+		// an existing one is.
+		if before != nil {
+			return failure(fmt.Sprintf("--stamp marks only a new change's first version, and %s has a record on origin already; ready this head with --change %s instead, without --stamp", handle, id))
+		}
+		if head, err = stamp(g, a.branch, head, remote, tip, id); err != nil {
 			return err
 		}
 	}
@@ -391,11 +398,11 @@ func headIDs(g git, head string) (header, trailer string, err error) {
 // carries the trailer already.
 //
 // Amending rewrites a commit, which is harmless only while nobody else can
-// have it. So stamp refuses a head that is on origin already, unless the
-// change is the user's own: its record names the user as owner. It refuses
-// a local branch that is behind origin's or has diverged from it too,
-// since pushing the amended head would drop commits origin holds.
-func stamp(g git, branch, head, remote, tip, id string, own bool) (string, error) {
+// have it. So stamp refuses a head that is on origin already. It refuses a
+// local branch that is behind origin's or has diverged from it too, since
+// pushing the amended head would drop commits origin holds. Its caller
+// refuses a change that has a record already.
+func stamp(g git, branch, head, remote, tip, id string) (string, error) {
 	_, trailer, err := headIDs(g, head)
 	if err != nil {
 		return "", err
@@ -413,8 +420,8 @@ func stamp(g git, branch, head, remote, tip, id string, own bool) (string, error
 		return "", failure(fmt.Sprintf("origin's %s is ahead of yours; bring yours up to date before stamping its head", branch))
 	case remote != "" && !onBranch && !g.succeeds(true, "merge-base", "--is-ancestor", remote, head):
 		return "", failure(fmt.Sprintf("your %s and origin's have diverged; --stamp would drop what origin holds", branch))
-	case (onBranch || inTarget) && !own:
-		return "", failure(fmt.Sprintf("%s is on origin already, and the change is not yours, so --stamp will not rewrite it; ready it with --change %s instead", short(head), id))
+	case onBranch || inTarget:
+		return "", failure(fmt.Sprintf("%s is on origin already, so --stamp will not rewrite it; ready it with --change %s instead", short(head), id))
 	}
 
 	raw, err := g.output(true, "cat-file", "commit", head)

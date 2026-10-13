@@ -432,8 +432,10 @@ ready takes the change ID from the first of these that has one:
 A header and a trailer that disagree are refused, and so are malformed values. IDs on other commits
 of the change are not read. ready also refuses a change whose commits, from the merge base with
 `main` to the head, include a merge, or that has more than one merge base. `--stamp` amends the
-local branch's head to carry the ID as a trailer, and pushes the branch with a lease. It refuses a
-head that is already on origin, unless the change's record names the user as owner.
+local branch's head to carry the ID as a trailer, and pushes the branch with a lease. It only starts
+a new change. It refuses a change that already has a record, so it never decides whose a change is
+from `valley.principal`, which is only what the checkout claims. It also refuses a head that is
+already on origin.
 
 A change is named by its full ID or by its handle. The handle is the shortest prefix of the ID, at
 least four letters, that no other change recorded on origin shares. A change can also be named by

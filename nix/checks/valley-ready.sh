@@ -264,6 +264,17 @@ git checkout --quiet -b pushed main
 commit pushed
 as contributor git push --quiet origin pushed
 refused 'will not rewrite it' as integrator valley ready --stamp
+# A change that has a record already is never stamped, whoever
+# valley.principal says is asking: neither the local branch nor origin's
+# moves.
+git checkout --quiet stamped
+commit restamped
+restamped="$(git rev-parse HEAD)"
+unchanged "$stamped_id" refused 'has a record on origin already' \
+  as contributor valley ready --stamp --change "$stamped_id"
+[ "$(git rev-parse HEAD)" = "$restamped" ] || fail '--stamp rewrote the head of a change with a record'
+[ "$(git -C "$origin" rev-parse refs/heads/stamped)" != "$restamped" ] \
+  || fail '--stamp pushed for a change with a record'
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

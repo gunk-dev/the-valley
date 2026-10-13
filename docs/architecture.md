@@ -73,8 +73,8 @@ touches it.
 Every repository's `pre-receive` hook runs `valleyhook pre-receive` (`valleyhook/main.go`,
 `valleyhook/policy.go`). The hook is default-deny. If any one ref update is refused, the whole push
 is refused. A push may update at most 1000 refs, and the hook refuses one that updates more before
-it decides any ref. It finds the symbolic refs among the pushed refs with one read for the whole
-push. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`.
+it decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic, so it reads a
+symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`.
 
 | Ref namespace                                       | Who may push                                                                                     | Rule                                                                                                                                                                    |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

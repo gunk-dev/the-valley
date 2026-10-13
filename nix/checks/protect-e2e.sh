@@ -171,6 +171,23 @@ for who in contributor integrator; do
 done
 git -C "$TMPDIR/guarded.git" symbolic-ref --delete refs/heads/alias
 
+# git also reads a loose ref holding "ref:" followed by a tab, or by
+# nothing, as a symbolic ref, and a filesystem symlink too. Each is refused
+# the same way, to main's own writer, who could otherwise write main
+# through it.
+heads="$TMPDIR/guarded.git/refs/heads"
+mkdir -p "$heads"
+printf 'ref:\trefs/heads/main\n' > "$heads/tabbed"
+printf 'ref:refs/heads/main\n' > "$heads/tight"
+ln -s refs/heads/main "$heads/linked"
+for alias in tabbed tight linked; do
+  refused symref.err "integrator wrote through the symbolic ref $alias" \
+    as integrator git push --quiet --force guarded "HEAD:refs/heads/$alias"
+  grep -q 'symbolic ref' symref.err
+  [ "$(git -C "$TMPDIR/guarded.git" rev-parse main)" = "$second" ]
+done
+rm "$heads/tabbed" "$heads/tight" "$heads/linked"
+
 # ----------------------------------------------------------------------
 # Namespaces no push may write, on a protected project and an
 # unprotected one, by the protected ref's own writer.

@@ -7,16 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
-
-	"the-valley/change"
 )
 
 // gitProgram is the git this program runs. The package sets it at build
@@ -68,36 +63,18 @@ const (
 // readable here before any ref points at them.
 type gitRepository struct{}
 
-// symbolic finds the symbolic refs among refs with one git call, whatever
-// the number of refs. That call asks where the refs live and how they are
-// stored. Under the files backend, which is git's default and the one a
-// valley host's repositories use, a symbolic ref is always a loose file
-// holding "ref: <target>", because packed-refs holds object IDs alone. So
-// each ref is read as a file. That finds a dangling symbolic ref too, one
-// naming a ref that does not exist. for-each-ref skips a dangling one, and
-// a push through it would create the ref it names, which could be a
-// protected main a project does not have yet.
-//
-// Under any other ref storage each ref is asked about with git
-// symbolic-ref, one at a time. preReceive bounds how many there are.
+// symbolic asks git, with git symbolic-ref, whether each of refs is a
+// symbolic ref. It is git's own reading, so it agrees with git on every
+// form git accepts: "ref:" followed by any white space, a filesystem
+// symlink in the files backend, any other ref storage, and a dangling
+// symbolic ref that names a ref which does not exist. for-each-ref skips a
+// dangling one, and a push through it would create the ref it names,
+// which could be a protected main a project does not have yet. That is one
+// git call per ref, and preReceive bounds a push at maxUpdates refs.
 func (gitRepository) symbolic(refs []string) (map[string]bool, error) {
-	out, err := run(nil, "rev-parse", "--path-format=absolute", "--git-common-dir", "--show-ref-format")
-	if err != nil {
-		return nil, err
-	}
-	answer := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(answer) != 2 {
-		return nil, fmt.Errorf("git rev-parse answered %q", out)
-	}
-	dir, format := answer[0], answer[1]
 	found := map[string]bool{}
 	for _, ref := range refs {
-		var symbolic bool
-		if format == "files" {
-			symbolic, err = looseSymbolic(dir, ref)
-		} else {
-			symbolic, err = symbolicRef(ref)
-		}
+		symbolic, err := symbolicRef(ref)
 		if err != nil {
 			return nil, fmt.Errorf("whether %s is a symbolic ref could not be read: %w", ref, err)
 		}
@@ -106,31 +83,8 @@ func (gitRepository) symbolic(refs []string) (map[string]bool, error) {
 	return found, nil
 }
 
-// looseSymbolic reports whether the loose ref file for ref holds a
-// symbolic ref. A name git would refuse as a refname is never read as a
-// path: receive-pack refuses it itself, after this hook.
-func looseSymbolic(dir, ref string) (bool, error) {
-	rest, ok := strings.CutPrefix(ref, "refs/")
-	if !ok || !change.ValidBranch(rest) {
-		return false, nil
-	}
-	f, err := os.Open(filepath.Join(dir, filepath.FromSlash(ref)))
-	switch {
-	case errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR):
-		return false, nil
-	case err != nil:
-		return false, err
-	}
-	defer f.Close()
-	// A directory reads as an error, and a short file reads short: neither
-	// is a symbolic ref.
-	head := make([]byte, len("ref: "))
-	n, _ := io.ReadFull(f, head)
-	return string(head[:n]) == "ref: ", nil
-}
-
 func symbolicRef(ref string) (bool, error) {
-	_, err := run(nil, "symbolic-ref", "--quiet", ref)
+	_, err := run(nil, "symbolic-ref", "--quiet", "--end-of-options", ref)
 	var exit *exec.ExitError
 	switch {
 	case err == nil:

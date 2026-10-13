@@ -17,9 +17,10 @@
 #                    contract, and the helper driven end to end
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
-#   hooks.nix        valleyhook-unit, mirror-e2e, bus-e2e, protect-e2e,
-#                    init-e2e — the hooks the module renders, run against
-#                    real git, and the init script that wires them
+#   hooks.nix        valleyhook-unit, note-unit, change-unit, mirror-e2e,
+#                    bus-e2e, protect-e2e, init-e2e — the hooks the module
+#                    renders, run against real git, the formats they read,
+#                    and the init script that wires them
 #   identity.nix     identity-unit, identity-e2e — the compiler's unit
 #                    tests, and the registry compiler over a real
 #                    instance repository, against the hand-written
@@ -29,9 +30,9 @@
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, valley-status-unit,
-#                    valley-status, valley-darwin-eval — bin/valley, its
-#                    status helper, the-valley's own policy, and the CLI's
-#                    package evaluated for Darwin
+#                    valley-status, valley-ready, valley-darwin-eval —
+#                    bin/valley, its Go verbs, the-valley's own policy, and
+#                    the CLI's package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push

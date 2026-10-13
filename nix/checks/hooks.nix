@@ -33,13 +33,18 @@
   } (builtins.readFile ./mirror-e2e.sh);
 
   # The pre-receive hook's policy, rule by rule where a rule is
-  # subtle: the glob matching of a declared pattern, and the order in
-  # which the rules are tried. What the hook does to a real push is
-  # protect-e2e's.
+  # subtle: the glob matching of a declared pattern, the order in which
+  # the rules are tried, and every transition of a change record, each
+  # refusal against real git objects. What the hook does to a real push
+  # is protect-e2e's, and valley-ready's for change records.
   valleyhook-unit = packages.valleyhook;
 
   # The note envelope every reader of an attestation shares (note/).
   note-unit = packages.note;
+
+  # The change record the hook guards and the CLI writes (change/): its
+  # strict reading, and the fuzz target's seed corpus.
+  change-unit = packages.change;
 
   # The one structural invariant, driven for real: bare repos wired
   # with the rendered pre-receive hook, pushed to as each principal.

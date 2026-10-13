@@ -2,13 +2,15 @@
 # anchors a note to, what its deriver makes of a policy and a diff, that
 # the-valley's own policy composes and names only checks that exist, what
 # its review verb publishes when it files an integration request, what its
-# status helper's unit tests hold, and that its package evaluates for
-# aarch64-darwin.
+# Go verbs' unit tests hold, what its ready and withdraw verbs write to a
+# change's record through the real push hook, and that its package
+# evaluates for aarch64-darwin.
 {
   pkgs,
   self,
   system,
   packages,
+  hosts,
   ...
 }:
 let
@@ -143,7 +145,7 @@ in
   # refuses, and its shell quoting held to the bash it replaced.
   # valley-status below drives the verb through the CLI over real
   # repositories.
-  valley-status-unit = packages.valley-status;
+  valley-status-unit = packages.valley-go;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.
@@ -156,6 +158,26 @@ in
       packages.valley-script
     ];
   } (builtins.readFile ./valley-status.sh);
+
+  # ready and withdraw, through real pushes to a bare repo wired with the
+  # rendered pre-receive hook, as each principal: a change created at v1,
+  # a second version, the same head refused, a withdrawal and the new
+  # version that revives it, a principal that neither owns the change nor
+  # holds the request grant refused by the hook, and the operator, who
+  # holds it, let through. Then each source of a change's ID — the jj
+  # header, the Change-Id trailer, a generated ID, --stamp — a header and a
+  # trailer that disagree, and a change whose commits hold a merge. The
+  # hook is followed from the protected host's rendered init script, so the
+  # rules the record meets are the ones a host applies.
+  valley-ready = pkgs.runCommand "valley-ready" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.jq
+      packages.valley-script
+    ];
+    initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "initScript" ];
+  } (builtins.readFile ./valley-ready.sh);
 
   # The CLI is offered for aarch64-darwin, which nothing here builds or
   # tests (flake.nix). This check holds that offer to evaluating: an input

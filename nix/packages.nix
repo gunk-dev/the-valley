@@ -1,23 +1,24 @@
-# Everything this flake builds: the CLI and its status reader, the
+# Everything this flake builds: the CLI and its Go verbs, the
 # formatter, the attestation helper, the integrator, the identity
 # compiler, the pre-receive hook's policy, the security-key signature
 # verifier. The flake wires these into packages, apps, and the checks that
 # drive them; nothing here knows about any of those outputs.
 { pkgs, lib }:
 rec {
-  # The source of a Go program that reads signed notes: its own directory
-  # and the note module (../note), which its go.mod replaces with that local
-  # directory. One reading of the envelope is shared by the programs that
-  # write, verify and admit attestations, and none of them fetches it.
-  withNote =
-    dir:
+  # The source of a Go program that uses modules of this repository: its own
+  # directory and those modules, which its go.mod replaces with their local
+  # directories. Nothing shared this way is fetched.
+  withLocal =
+    dir: modules:
     lib.fileset.toSource {
       root = ../.;
-      fileset = lib.fileset.unions [
-        dir
-        ../note
-      ];
+      fileset = lib.fileset.unions ([ dir ] ++ modules);
     };
+
+  # A program that reads signed notes takes the note module (../note). One
+  # reading of the envelope is shared by the programs that write, verify and
+  # admit attestations.
+  withNote = dir: withLocal dir [ ../note ];
 
   # vendorHash = null builds in vendor mode, which has no reading of a local
   # replace. The replaced module is a directory beside the program and
@@ -43,7 +44,7 @@ rec {
       pkgs.cue # checks and approving — it composes the policy layers
       pkgs.less # review only — its v key is what takes a note
       attest # approving only — it runs the checks and signs them
-      valley-status # status only — it is the whole of that verb
+      valley-go # status, ready and withdraw, and naming a change by its ID
     ];
     text = builtins.readFile ../bin/valley;
   };
@@ -76,20 +77,23 @@ rec {
     '';
   };
 
-  # The status verb of the CLI (status/): it reads one change's request
-  # and outcome record from origin, and prints them as sentences or as
-  # the valley-status/v1 JSON object front ends read. Go, standard library
-  # only — hence vendorHash = null and no module fetch. It runs whatever
-  # git is on PATH, which inside the CLI's package is the CLI's own. Its
-  # unit tests hold its shell quoting to the bash it replaced, so they
-  # need bash.
-  valley-status = pkgs.buildGoModule {
-    pname = "valley-status";
+  # The verbs of the CLI written in Go (status/). status reads one change's
+  # request and outcome record from origin, and prints them as sentences or
+  # as the valley-status/v1 JSON object front ends read. ready and withdraw
+  # write a change's record, with the one reading of a record the push hook
+  # shares (../change). Go, standard library only — hence vendorHash = null
+  # and no module fetch. It runs whatever git is on PATH, which inside the
+  # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
+  # the bash it replaced, so they need bash.
+  valley-go = pkgs.buildGoModule {
+    pname = "valley-go";
     version = "0";
-    src = ../status;
+    src = withLocal ../status [ ../change ];
+    modRoot = "status";
     vendorHash = null;
+    preBuild = readsGoMod;
     nativeCheckInputs = [ pkgs.bash ];
-    meta.mainProgram = "valley-status";
+    meta.mainProgram = "valley-go";
   };
 
   # `nix run .#fmt` — rewrap every tracked *.md in the repo to 100 columns.
@@ -222,12 +226,16 @@ rec {
   valleyhook = pkgs.buildGoModule {
     pname = "valley-valleyhook";
     version = "0";
-    src = withNote ../valleyhook;
+    src = withLocal ../valleyhook [
+      ../note
+      ../change
+    ];
     modRoot = "valleyhook";
     vendorHash = null;
     preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
-    # The walk's tests build hostile trees with real git.
+    # The walk's and the change records' tests build hostile objects with
+    # real git.
     nativeCheckInputs = [ pkgs.git ];
     meta.mainProgram = "valleyhook";
   };
@@ -239,6 +247,17 @@ rec {
     version = "0";
     src = ../note;
     vendorHash = null;
+  };
+
+  # The change record's own tests: its strict reading, its fuzz target's
+  # seed corpus, and its branch-name rule, which they hold to real git's
+  # check-ref-format.
+  change = pkgs.buildGoModule {
+    pname = "valley-change";
+    version = "0";
+    src = ../change;
+    vendorHash = null;
+    nativeCheckInputs = [ pkgs.git ];
   };
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

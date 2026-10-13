@@ -259,7 +259,7 @@ grep -q "check    code-build .*input closure changed" "$work/last.out" \
 grep -q '"event":"request-stale"' "$work/last.out" || die "no request-stale event"
 grep -q '"checks":\["code-build"\]' "$work/last.out" || die "the event does not name exactly code-build"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c2 > /dev/null \
-  || die "the request ref was dropped; there is nothing to resubmit"
+  || die "the request ref was dropped; there is nothing to approve again"
 holds "one request-stale naming exactly code-build; prose-format reported transferred"
 forget c2
 
@@ -963,9 +963,9 @@ forget c17
 holds "the floor and the change were read as landed and as pushed, past both replacements"
 
 # ----------------------------------------------------------------------
-say "18. a request resubmitted while its previous head lands stands for the next pass"
+say "18. a request approved again while its previous head lands stands for the next pass"
 
-# A resubmission is leased against the request it read, and
+# A second approval is leased against the request it read, and
 # nothing stops it reading the head this pass is about to land. So the
 # request can move between the pass reading it and the pass consuming it.
 # The landing is still the old head's, and the request that moved is a new
@@ -979,7 +979,7 @@ attest_change c18 "" "" --check prose-format
 request c18 main "$(git rev-parse c18)"
 # main moves under the request, outside anything the check reads. The pass
 # then recomputes the check's closure over the landed tree, and that
-# evaluation is where the resubmission happens.
+# evaluation is where the second approval happens.
 git checkout --quiet main
 echo "a note landed in between" > notes.txt
 git commit --quiet -am "a note landed in between"
@@ -997,7 +997,7 @@ grep -q "^c18 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "the first request did not land: $(cat "$work/last.out")"
 [ "$(tip)" != "$before" ] || die "main did not move for the first request"
 [ "$(git -C "$origin" rev-parse --verify --quiet "$moving")" = "$again" ] \
-  || die "the resubmitted request was consumed with the landing of the one before it: $(git -C "$origin" for-each-ref refs/the-valley/integration-requests) $(cat "$work/last.out")"
+  || die "the request approved again was consumed with the landing of the one before it: $(git -C "$origin" for-each-ref refs/the-valley/integration-requests) $(cat "$work/last.out")"
 grep -q "request  $moving moved to .* while .* landed; it stands for the next pass" "$work/last.out" \
   || die "the moved request was not reported: $(cat "$work/last.out")"
 forget c18

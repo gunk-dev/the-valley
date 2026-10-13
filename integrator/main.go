@@ -40,7 +40,7 @@ check transfers while no intervening landing has touched its requiring
 class's paths and its observation is inside the validity window the policy
 declares. Anything left standing lands; anything invalidated surfaces as
 one request-stale event naming exactly those checks, and the request stays
-for resubmission.
+for approving again.
 
 flags:
   --repo DIR          the served repository (default: here)

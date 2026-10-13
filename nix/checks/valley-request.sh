@@ -481,7 +481,7 @@ cd "$repo" || exit 1
 git checkout --quiet main
 
 # ----------------------------------------------------------------------
-# 10. Resubmission after main moved. This is the case that wedged in live
+# 10. Approving again after main moved. This is the case that wedged in live
 #     use. A request goes stale with reason=evidence when main lands
 #     inside a required check's input closure: no attestation over the
 #     requested tree can transfer again, so the cure is a new head rebased
@@ -503,7 +503,7 @@ valley review topic/five < "$w/answers" > "$w/five-first.out" 2> "$w/five-first.
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-five -> $(git rev-parse --short "$stalehead")" "$w/five-first.out"
 
 # main moves, and the change is rebased onto it — the operator's half of
-# a resubmission, which [a]pprove does not do and does not need to.
+# approving again, which [a]pprove does not do and does not need to.
 git checkout --quiet main
 echo "a second note" > docs/second.md
 git add -A
@@ -546,11 +546,11 @@ fi
 
 # Both attestations stand. The old one is about a tree that will never
 # land, but the namespace is create-only and a record that can be dropped
-# is not one; the resubmission publishes beside it, never over it.
+# is not one; the second approval publishes beside it, never over it.
 for stands in "refs/the-valley/attestations/$staledigest/$keyhash" \
   "refs/the-valley/attestations/$newdigest/$keyhash"; do
   git -C "$origin" rev-parse --verify --quiet "$stands" > /dev/null || {
-    echo "valley-request: $stands is not on origin after the resubmission" >&2
+    echo "valley-request: $stands is not on origin after the second approval" >&2
     exit 1
   }
 done
@@ -558,27 +558,27 @@ done
 # One push again, and the request ref moved off the old head inside it.
 pushes="$(grep -c '^--- push' "$pushlog" || true)"
 if [ "$pushes" != 1 ]; then
-  echo "valley-request: the resubmission took $pushes pushes, not 1" >&2
+  echo "valley-request: the second approval took $pushes pushes, not 1" >&2
   cat "$pushlog" >&2
   exit 1
 fi
 grep -qx "$stalehead $newhead refs/the-valley/integration-requests/main/topic-five" "$pushlog"
 # And every attestation ref in that push is a creation: an all-zero old id
-# is what the create-only namespace admits, and a resubmission that
+# is what the create-only namespace admits, and an approval that
 # updated one would be refused by the real hook.
 if grep '^[0-9a-f]* [0-9a-f]* refs/the-valley/attestations/' "$pushlog" \
   | grep -qv '^0* '; then
-  echo "valley-request: the resubmission updated an attestation ref" >&2
+  echo "valley-request: the second approval updated an attestation ref" >&2
   cat "$pushlog" >&2
   exit 1
 fi
 if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$(git rev-parse main)" ]; then
-  echo "valley-request: the resubmission moved main" >&2
+  echo "valley-request: the second approval moved main" >&2
   exit 1
 fi
 
 # ----------------------------------------------------------------------
-# 11. Two resubmissions of one change race for one ref, and the loser
+# 11. Two approvals of one change race for one ref, and the loser
 #     loses visibly. The request ref's value is read before the push and
 #     the push is leased against exactly that value, so the second one to
 #     arrive is refused rather than allowed to overwrite the first. The
@@ -587,8 +587,8 @@ fi
 #     what another operator getting there first looks like from here.
 git checkout --quiet main
 git checkout --quiet -b topic/six origin/main
-echo "a readme two resubmissions both rebased" > docs/readme.md
-git commit --quiet -am "a readme two resubmissions both rebased"
+echo "a readme two approvals both rebased" > docs/readme.md
+git commit --quiet -am "a readme two approvals both rebased"
 git push --quiet origin topic/six
 sixfiled="$(git rev-parse topic/six)"
 
@@ -607,11 +607,11 @@ git push --quiet --force-with-lease origin topic/six
 sixhead="$(git rev-parse topic/six)"
 sixdigest="$(attest digest --rev topic/six | cut -d: -f2)"
 
-# The other resubmission's head, built where origin can already reach
+# The other approval's head, built where origin can already reach
 # every object in it: the same tree, parented on the same tip, so it is
 # the commit a second operator rebasing this change would have produced.
 racer="$(git -C "$origin" commit-tree "$(git rev-parse 'topic/six^{tree}')" \
-  -p "$(git rev-parse origin/main)" -m "the other resubmission")"
+  -p "$(git rev-parse origin/main)" -m "the other approval")"
 
 arm_race "git -C '$origin' update-ref refs/the-valley/integration-requests/main/topic-six '$racer'"
 
@@ -630,16 +630,16 @@ grep -q 'skipped topic/six; nothing done' "$w/race.out"
 # refuses before any command is sent, which is what --atomic is worth.
 if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-six)" \
   != "$racer" ]; then
-  echo "valley-request: the lease did not hold; the other resubmission was clobbered" >&2
+  echo "valley-request: the lease did not hold; the other approval was clobbered" >&2
   exit 1
 fi
 if git -C "$origin" rev-parse --verify --quiet \
   "refs/the-valley/attestations/$sixdigest/$keyhash" > /dev/null; then
-  echo "valley-request: a refused resubmission published its evidence" >&2
+  echo "valley-request: an approval that was refused published its evidence" >&2
   exit 1
 fi
 if [ -s "$pushlog" ]; then
-  echo "valley-request: a refused resubmission reached origin's hook" >&2
+  echo "valley-request: an approval that was refused reached origin's hook" >&2
   cat "$pushlog" >&2
   exit 1
 fi
@@ -648,7 +648,7 @@ fi
 # in the operator's own repository, and the refusal says where.
 git rev-parse --verify --quiet "refs/the-valley/attestations/$sixdigest/$keyhash" \
   > /dev/null || {
-  echo "valley-request: the refused resubmission kept no evidence locally" >&2
+  echo "valley-request: the refused approval kept no evidence locally" >&2
   exit 1
 }
 grep -qx 'valley: the evidence is stored locally at:' "$w/race.err"
@@ -760,16 +760,16 @@ fi
 
 # ----------------------------------------------------------------------
 # 14. A lease that refuses because the ref is gone, not because it moved.
-#     The integrator consumes the request ref when the change lands, so a
-#     resubmission prepared just before that lands into a lease against a
+#     The integrator consumes the request ref when the change lands, so an
+#     approval prepared just before that lands into a lease against a
 #     ref that no longer exists. Git reports it as stale info either way,
 #     and only reading the ref again tells the two apart — so the two are
 #     told apart, and the operator is pointed at the landing rather than
 #     at a race that did not happen.
 git checkout --quiet main
 git checkout --quiet -b topic/nine origin/main
-echo "a readme that lands mid-resubmission" > docs/readme.md
-git commit --quiet -am "a readme that lands mid-resubmission"
+echo "a readme that lands mid-approval" > docs/readme.md
+git commit --quiet -am "a readme that lands mid-approval"
 git push --quiet origin topic/nine
 
 printf 'a\n' > "$w/answers"
@@ -803,16 +803,16 @@ fi
 grep -q 'skipped topic/nine; nothing done' "$w/consumed.out"
 if git -C "$origin" rev-parse --verify --quiet \
   refs/the-valley/integration-requests/main/topic-nine > /dev/null; then
-  echo "valley-request: a refused resubmission re-created the consumed request" >&2
+  echo "valley-request: an approval that was refused re-created the consumed request" >&2
   exit 1
 fi
 if git -C "$origin" rev-parse --verify --quiet \
   "refs/the-valley/attestations/$ninedigest/$keyhash" > /dev/null; then
-  echo "valley-request: a refused resubmission published its evidence" >&2
+  echo "valley-request: an approval that was refused published its evidence" >&2
   exit 1
 fi
 if [ -s "$pushlog" ]; then
-  echo "valley-request: a refused resubmission reached origin's hook" >&2
+  echo "valley-request: an approval that was refused reached origin's hook" >&2
   cat "$pushlog" >&2
   exit 1
 fi

@@ -64,7 +64,7 @@ package valley
 // tip: either its delta no longer applies, or evidence for at least one
 // required check no longer transfers (dcr-439b771). It is published once
 // per judgement, on the subject valley.git.<repo>.request-stale, and the
-// request ref stays where it is so the change can be resubmitted.
+// request ref stays where it is so the change can be approved again.
 //
 // Staleness is the unified failure mode: there is no rejection event here,
 // because a change whose evidence has moved is not wrong, it is behind.

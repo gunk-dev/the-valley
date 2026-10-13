@@ -419,7 +419,7 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
 	// The request is consumed only if it still names the head that landed.
-	// A resubmission can replace it while this pass works — the asker's
+	// A second approval can replace it while this pass works — the asker's
 	// write is leased against what it read, and nothing stops it reading
 	// the request this pass is about to land — and a delete that did not
 	// compare would take the new request with the old one. A request that

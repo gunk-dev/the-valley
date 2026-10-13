@@ -337,7 +337,7 @@ func TestNothingRequiredIsALandingWithNoCheckVerdicts(t *testing.T) {
 }
 
 func TestAChangeAlreadyInTheTargetSaysThatRatherThanNothing(t *testing.T) {
-	// A resubmitted request whose head is already in the stream derives an
+	// A request approved again whose head is already in the stream derives an
 	// empty delta, so the policy requires nothing of it — for a reason that
 	// has nothing to do with the policy. The base is the merge base with
 	// the tip, so base equal to head is exactly that case, and a reader of

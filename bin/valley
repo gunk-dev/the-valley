@@ -83,8 +83,8 @@ usage: valley <verb> [args]
                                   attestation namespace refuses when this
                                   signer has already attested that tree
                                   (bd-7b7d58f). every write of the request
-                                  ref is leased, filing included, so a
-                                  resubmission that lost a race is refused
+                                  ref is leased, filing included, so an
+                                  approval that lost a race is refused
                                   rather than clobbering the one that won.
                                   needs the attest helper and
                                   VALLEY_ATTEST_KEY, the ed25519 key this
@@ -663,7 +663,7 @@ diagnose_request_push() {
   elif [ -z "$pending" ]; then
     refuse "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$now") ($(subject_of "$now")); the lease on $ref refused and nothing was published"
   else
-    refuse "the pending request moved from $(git rev-parse --short "$pending") to $(git rev-parse --short "$now") while this one was being prepared; the lease on $ref refused, nothing was published, and the request stands where the other resubmission put it"
+    refuse "the pending request moved from $(git rev-parse --short "$pending") to $(git rev-parse --short "$now") while this one was being prepared; the lease on $ref refused, nothing was published, and the request stands where the other approval put it"
   fi
 }
 
@@ -859,13 +859,13 @@ approve() {
     # The request ref was not in that push, so where it stands now is not
     # something this run established. Read it again rather than repeat
     # what was read before it: in between, the integrator may have landed
-    # the change and consumed the ref, or another resubmission may have
+    # the change and consumed the ref, or another approval may have
     # replaced it.
     #
     # Nothing here writes it back. Re-creating a consumed request would
     # file a change already in the stream, which the commit rule calls out
     # as the state it consumes the ref to avoid; replacing a request
-    # another resubmission has just filed would clobber the winner; and
+    # another approval has just filed would clobber the winner; and
     # either would be a second push behind the one this verb promises. So
     # what this does is say what is true and stop. Approving again is the
     # repair, and by then it takes the create or the replace path against
@@ -882,7 +882,7 @@ approve() {
       return 1
     fi
     if [ "$after" != "$head" ]; then
-      refuse "the request moved to $(git rev-parse --short "$after") ($(subject_of "$after")) while this run was working, so another resubmission filed it. Nothing here replaced it; approve again to replace it deliberately"
+      refuse "the request moved to $(git rev-parse --short "$after") ($(subject_of "$after")) while this run was working, so another approval filed it. Nothing here replaced it; approve again to replace it deliberately"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi

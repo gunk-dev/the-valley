@@ -14,8 +14,8 @@
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
 #     by checks, which needs the cue CLI, again by review's [a]pprove, which
-#     needs the attest helper, and again by status, which is a Go program
-#     (status/) this script runs —
+#     needs the attest helper, and again by status, ready and withdraw,
+#     which are a Go program (status/) this script runs —
 #     graduation is now owed; recording the decision node is part of taking it.);
 #   - its behavior gets subtle enough to need real tests
 #     (CROSSED by checks: glob matching is pinned by the policy-deriver
@@ -55,8 +55,8 @@ usage: valley <verb> [args]
   pending          list branches on origin not merged into origin/main,
                    one line each: branch | head subject | age | author |
                    ahead N | diffstat
-  review <branch>  page through the branch's log and diff vs origin/main,
-                   then choose:
+  review <change>  page through the change's branch: its log and diff vs
+                   origin/main. then choose:
                      [a]pprove    file an integration request. runs the
                                   checks the composed policy requires of
                                   this change over a throwaway worktree of
@@ -117,14 +117,13 @@ usage: valley <verb> [args]
   approve <change> do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
                    leased request write and the same output. exits non-zero
-                   when it refuses. a change is named by its branch, with
-                   or without origin/.
+                   when it refuses.
   rebase <change>  do what review's [b]ase does for the change: rebase it
                    onto origin/main in a throwaway worktree and push it
                    with --force-with-lease, then print its new head. it
                    does not re-review the result. a change that already
                    fast-forwards from main is left as it is.
-  status [--json] <branch>
+  status [--json] <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
                    attention, and a change integrated into origin/main.
@@ -136,7 +135,44 @@ usage: valley <verb> [args]
                                   (docs/architecture.md). an error prints
                                   no object: it goes to stderr and the exit
                                   status is non-zero.
-                   needs the valley-status helper.
+                   needs the valley-go helper.
+  ready [--head <sha>] [--change <id>] [--stamp] [<branch>]
+                   mark a head of the branch ready, as a new version of its
+                   change, in the change's record on origin:
+                   refs/the-valley/changes/main/<change id>. the branch
+                   defaults to the current one. the head is --head, or else
+                   origin/<branch>, and it must be on origin already. the
+                   first ready of a change makes v1; each later one adds
+                   the next version, at a head other than the active
+                   version's. a withdrawn change comes back this way, at a
+                   new head. prints the handle and version, e.g.
+                   `cosmo nxvp v2 ready`.
+                   the change id is --change, else the head commit's jj
+                   change-id header, else a Change-Id: trailer in its
+                   message, else a new one, which is printed. a header and
+                   a trailer that disagree are refused. so is a change
+                   whose commits from its merge base with origin/main hold
+                   a merge, or that has more than one merge base.
+                     --stamp      amend the head of your local branch to
+                                  carry the id as a Change-Id: trailer and
+                                  push the branch, leased, before marking it
+                                  ready. refused for a head already on
+                                  origin, unless the change's record names
+                                  you as its owner.
+                   the record names the principal your key pushes as, read
+                   from git config valley.principal; the host refuses one
+                   naming anyone else. the record ref is pushed leased on
+                   the value read. a new change is owned by the principal
+                   that readies it, and a later version may come from its
+                   owner or the operator, who holds the request grant.
+                   records are observational: nothing reads them for
+                   authority, and approve is still the only way to main.
+                   needs the valley-go helper.
+  withdraw <change>
+                   mark a ready change withdrawn in its record on origin,
+                   as its owner or the operator. it comes back only by a
+                   new version: ready at a new head. prints e.g.
+                   `cosmo nxvp v2 withdrawn`. needs the valley-go helper.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and
@@ -186,16 +222,24 @@ usage: valley <verb> [args]
                    projection, e.g. after nats stream purge valley
   help             show this help
 
+A change is named by its full change id, by its handle — the shortest
+prefix of the id, four letters at least, that no other change recorded on
+origin shares — or by its branch. A name written origin/<branch> is always
+a branch. A handle that is also a branch on origin is refused unless the
+change is on that branch. review, approve and rebase act on the branch the
+change's active version names; naming a change by id or handle needs the
+valley-go helper, and without it every name is a branch.
+
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
-helper, and status, which needs the valley-status helper. nix run
-.#valley bundles all of them. Deriving a policy fetches the owning
+helper, and status, ready and withdraw, which need the valley-go helper.
+nix run .#valley bundles all of them. Deriving a policy fetches the owning
 valley's repository, so checks and approving also need whatever reaching
 it takes.
-No config, no batch mode, and no state but the notes file — the judgment
-stays with the human.
+No config but valley.principal, which ready reads; no batch mode; and no
+state but the notes file — the judgment stays with the human.
 EOF
 }
 
@@ -911,15 +955,29 @@ approve() {
   fi
 }
 
-# status reads a change's request and outcome from origin. It is a Go
-# program (status/), because what front ends read from it is a JSON
-# contract, and because the read is subtle enough to want a real parser:
-# an outcome record it does not recognise must read as unknown, never as
-# success. It writes nothing and moves no local branch.
-cmd_status() {
-  command -v valley-status > /dev/null 2>&1 \
-    || die "status needs the valley-status helper; nix run .#valley bundles it"
-  exec valley-status "$@"
+# status, ready and withdraw are a Go program, valley-go (status/). status
+# reads a change's request and outcome from origin, because what front ends
+# read from it is a JSON contract, and because the read is subtle enough to
+# want a real parser: an outcome record it does not recognise must read as
+# unknown, never as success. It writes nothing and moves no local branch.
+# ready and withdraw write a change's record, in the one format the push
+# hook reads it in (change/).
+cmd_go() {
+  command -v valley-go > /dev/null 2>&1 \
+    || die "$1 needs the valley-go helper; nix run .#valley bundles it"
+  exec valley-go "$@"
+}
+
+# A change is named by its full change ID, its handle, or its branch. The
+# helper turns an ID or a handle into the branch its active version is on,
+# and hands a branch name back as it was given. Without the helper a name
+# is a branch name, as every name was before changes had records.
+resolve_change() {
+  if command -v valley-go > /dev/null 2>&1; then
+    valley-go resolve "$1"
+  else
+    printf '%s\n' "${1#origin/}"
+  fi
 }
 
 # Page the branch and take the verdict. Split out of cmd_review so that
@@ -971,8 +1029,9 @@ read_and_decide() {
 }
 
 cmd_review() {
-  [ $# -eq 1 ] || die "usage: valley review <branch>"
-  local branch="${1#origin/}"
+  [ $# -eq 1 ] || die "usage: valley review <change>"
+  local branch
+  branch="$(resolve_change "$1")" || exit 1
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
@@ -987,10 +1046,11 @@ cmd_review() {
 # approve and rebase are review's [a]pprove and [b]ase without the pager,
 # for a front end that has shown the change its own way. Each runs the
 # function its key runs, so the verb and the key cannot drift apart. A
-# change is named by its branch.
+# change is named as resolve_change reads it, and acted on by its branch.
 cmd_approve() {
   [ $# -eq 1 ] || die "usage: valley approve <change>"
-  local branch="${1#origin/}"
+  local branch
+  branch="$(resolve_change "$1")" || exit 1
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
@@ -1003,7 +1063,8 @@ cmd_approve() {
 
 cmd_rebase() {
   [ $# -eq 1 ] || die "usage: valley rebase <change>"
-  local branch="${1#origin/}"
+  local branch
+  branch="$(resolve_change "$1")" || exit 1
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
@@ -1867,7 +1928,7 @@ main() {
     review) cmd_review "$@" ;;
     approve) cmd_approve "$@" ;;
     rebase) cmd_rebase "$@" ;;
-    status) cmd_status "$@" ;;
+    status | ready | withdraw) cmd_go "$verb" "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;

@@ -13,7 +13,9 @@ _valley() {
       'review:page through a branch, then approve, reject, or skip'
       'approve:approve a change without paging it, filing its integration request'
       'rebase:rebase a change onto origin/main and push it with a lease'
-      'status:read the integration result for a branch from origin'
+      'status:read the integration result for a change from origin'
+      'ready:mark a head of a branch ready as a new version of its change'
+      'withdraw:mark a ready change withdrawn'
       'checks:print the checks a change owes under the composed policy'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
@@ -33,12 +35,21 @@ _valley() {
       '--cost:with --names, only the quick or the slow checks'
     )
     _describe -t options 'valley checks option' opts
+  elif [[ ${words[2]} == ready && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--head:the head to mark ready, already on origin'
+      '--change:the change ID to record the version under'
+      '--stamp:carry the change ID in the head as a Change-Id trailer'
+    )
+    _describe -t options 'valley ready option' opts
+  elif [[ ${words[2]} == ready && ${words[CURRENT-1]} == --(head|change) ]]; then
+    return
   elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
     local -a opts=('--json:print the status as one valley-status/v1 JSON object')
     _describe -t options 'valley status option' opts
-  elif [[ ${words[2]} == (review|approve|rebase|status) ]] \
-    && { (( CURRENT == 3 )) || [[ ${words[2]} == status ]]; }; then
-    # Cached topic branches on origin. Review, approve and rebase filter
+  elif [[ ${words[2]} == (review|approve|rebase|status|ready) ]] \
+    && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|ready) ]]; }; then
+    # Cached topic branches on origin. Review, approve, rebase and ready filter
     # out merged branches; status needs those too. Silent outside a git
     # repo — no errors mid-typing.
     local -a branches selection

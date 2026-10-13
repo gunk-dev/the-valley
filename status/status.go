@@ -1,11 +1,70 @@
+// status reads one change's integration status from origin: the change's
+// branch head, its integration request, and the integrator's last recorded
+// outcome for it. It is `valley status`.
+//
+// It writes nothing. The objects it reads are fetched without writing
+// FETCH_HEAD or moving a branch, so a status read leaves the checkout and
+// its working tree exactly as it found them. No check runs and no request
+// is filed.
+//
+// Without flags it prints the sentences an operator reads. With --json it
+// prints one object, valley-status/v1, which is a contract front ends
+// read; docs/architecture.md documents it. Both are rendered from one
+// decision (decide), so the two forms cannot disagree about a change.
+
 package main
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
+	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
+
+const statusUsage = "usage: valley status [--json] <change>"
+
+func runStatus(g git, args []string, stdout, stderr io.Writer) int {
+	asJSON, name, err := parseStatusArgs(args)
+	if err == nil && asJSON && !utf8.ValidString(name) {
+		err = failure(name + ": not UTF-8, so JSON cannot carry the change name")
+	}
+	var branch string
+	if err == nil {
+		branch, err = resolveBranch(g, name)
+	}
+	var s *status
+	if err == nil {
+		s, err = read(g, branch)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s\n", err)
+		return 1
+	}
+	if asJSON {
+		return writeJSON(s, stdout, stderr)
+	}
+	return writeHuman(g, s, stdout)
+}
+
+// parseStatusArgs takes one change and an optional --json, in either
+// order. The change is named the way every verb names one (changes.go).
+func parseStatusArgs(args []string) (asJSON bool, name string, err error) {
+	var rest []string
+	for _, a := range args {
+		if a == "--json" {
+			asJSON = true
+			continue
+		}
+		rest = append(rest, a)
+	}
+	if len(rest) != 1 {
+		return false, "", failure(statusUsage)
+	}
+	return asJSON, rest[0], nil
+}
 
 const (
 	target          = "main"

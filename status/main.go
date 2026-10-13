@@ -1,16 +1,18 @@
-// valley-status reads one change's integration status from origin: the
-// change's branch head, its integration request, and the integrator's
-// last recorded outcome for it. It is `valley status`; bin/valley runs it.
+// valley-go is the part of the valley command written in Go: the verbs
+// that read a change's state from origin, and the verbs that write its
+// change record there. bin/valley runs it for status, ready and withdraw,
+// and for resolve, which turns the name of a change into its branch for
+// the verbs bin/valley runs itself.
 //
-// It writes nothing. The objects it reads are fetched without writing
-// FETCH_HEAD or moving a branch, so a status read leaves the checkout and
-// its working tree exactly as it found them. No check runs and no request
-// is filed.
+// status reads one change's integration status (status.go). ready and
+// withdraw write the change's record, refs/the-valley/changes/main/<change
+// ID> (ready.go), in the format the change module defines and the push
+// hook guards. Records are observational for now: nothing reads them for
+// authority, and the integration request stays the only way to main.
 //
-// Without flags it prints the sentences an operator reads. With --json it
-// prints one object, valley-status/v1, which is a contract front ends
-// read; docs/architecture.md documents it. Both are rendered from one
-// decision (decide), so the two forms cannot disagree about a change.
+// A change is named by its full change ID, by its handle (the shortest
+// prefix of the ID, four letters at least, that no other change on origin
+// shares), or by its branch (changes.go).
 package main
 
 import (
@@ -20,57 +22,49 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"unicode/utf8"
 )
 
-const usage = "usage: valley status [--json] <branch>"
+const usage = `usage: valley-go status [--json] <change>
+       valley-go ready [--head <sha>] [--change <id>] [--stamp] [<branch>]
+       valley-go withdraw <change>
+       valley-go resolve <change>`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// failure is a read that ends without a status: a message for stderr and
-// nothing on stdout. Exit status 1, as bin/valley's die gives.
+// failure is a verb that ends without doing what it was asked: a message
+// for stderr and nothing on stdout. Exit status 1, as bin/valley's die
+// gives.
 type failure string
 
 func (f failure) Error() string { return string(f) }
 
 func run(args []string, stdout, stderr io.Writer) int {
 	g := git{env: gitEnvironment(os.Environ()), stderr: stderr}
-	asJSON, branch, err := parseArgs(args)
-	if err == nil && asJSON && !utf8.ValidString(branch) {
-		err = failure(branch + ": not UTF-8, so JSON cannot carry the change name")
+	verb := ""
+	if len(args) > 0 {
+		verb, args = args[0], args[1:]
 	}
-	var s *status
-	if err == nil {
-		s, err = read(g, branch)
+	var err error
+	switch verb {
+	case "status":
+		return runStatus(g, args, stdout, stderr)
+	case "ready":
+		err = runReady(g, args, stdout)
+	case "withdraw":
+		err = runWithdraw(g, args, stdout)
+	case "resolve":
+		err = runResolve(g, args, stdout)
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
 		return 1
 	}
-	if asJSON {
-		return writeJSON(s, stdout, stderr)
-	}
-	return writeHuman(g, s, stdout)
-}
-
-// parseArgs takes one change and an optional --json, in either order. The
-// change is the branch name, and an origin/ prefix is dropped once, the
-// way a remote-tracking name would be written.
-func parseArgs(args []string) (asJSON bool, branch string, err error) {
-	var rest []string
-	for _, a := range args {
-		if a == "--json" {
-			asJSON = true
-			continue
-		}
-		rest = append(rest, a)
-	}
-	if len(rest) != 1 {
-		return false, "", failure(usage)
-	}
-	return asJSON, strings.TrimPrefix(rest[0], "origin/"), nil
+	return 0
 }
 
 // git runs git in the current directory, in the environment bin/valley
@@ -106,8 +100,14 @@ func gitEnvironment(inherited []string) []string {
 // a shell's command substitution reads it. A quiet run discards git's
 // diagnostics; any other passes them on.
 func (g git) output(quiet bool, args ...string) (string, error) {
+	return g.input(quiet, nil, args...)
+}
+
+// input is output with stdin.
+func (g git) input(quiet bool, stdin io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Env = g.env
+	cmd.Stdin = stdin
 	if !quiet {
 		cmd.Stderr = g.stderr
 	}

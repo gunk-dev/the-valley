@@ -111,7 +111,7 @@ func bashQuote(t *testing.T, locale string, words []string) []string {
 // read, so the JSON form never prints an object naming some other change.
 func TestJSONRefusesANameThatIsNotUTF8(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"--json", "topic/\xff"}, &stdout, &stderr); code == 0 {
+	if code := run([]string{"status", "--json", "topic/\xff"}, &stdout, &stderr); code == 0 {
 		t.Fatal("a change name that is not UTF-8 was accepted")
 	}
 	if stdout.Len() != 0 {

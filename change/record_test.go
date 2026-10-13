@@ -271,6 +271,11 @@ func TestEncodeRefusesWhatParseWould(t *testing.T) {
 		t.Errorf("Encode of a record with a gap: %v", err)
 	}
 	r.Versions[1].N = 2
+	r.Versions[1].Branch = "to\xffpic"
+	if _, err := Encode(r); err == nil || !strings.Contains(err.Error(), "not a branch name in UTF-8") {
+		t.Errorf("Encode of a branch that is not UTF-8: %v", err)
+	}
+	r.Versions[1].Branch = ""
 	r.Versions[1].Title = "<&>"
 	out, err := Encode(r)
 	if err != nil || !bytes.Contains(out, []byte(`"<&>"`)) {

@@ -166,15 +166,17 @@ func Parse(data []byte) (*Record, error) {
 
 // Check holds a record to everything the schema says beyond the types of
 // its fields: the formats of its strings, the ranges of its integers, and
-// versions numbered 1, 2, 3 with no gap.
+// versions numbered 1, 2, 3 with no gap. Every string is UTF-8. git
+// accepts a branch name that is not, and encoding/json would write such a
+// name as another one, so Encode refuses it.
 func (r *Record) Check() error {
 	switch {
 	case r.Schema != Schema:
 		return fmt.Errorf("its schema is %q, where %q is expected", r.Schema, Schema)
 	case !ValidID(r.ChangeID):
 		return fmt.Errorf("its change_id %q is not a change ID: 32 letters from k to z", r.ChangeID)
-	case !ValidBranch(r.Target):
-		return fmt.Errorf("its target %q is not a branch name", r.Target)
+	case !ValidBranch(r.Target) || !utf8.ValidString(r.Target):
+		return fmt.Errorf("its target %q is not a branch name in UTF-8", r.Target)
 	case !ValidPrincipal(r.Owner):
 		return fmt.Errorf("its owner %q is not a principal name", r.Owner)
 	case r.State != Ready && r.State != Withdrawn:
@@ -197,8 +199,8 @@ func (r *Record) Check() error {
 			return fmt.Errorf("its %s.head %q is not %s and 40 lowercase hex digits", where, v.Head, HeadPrefix)
 		case !ValidTitle(v.Title):
 			return fmt.Errorf("its %s.title is not 1 to %d bytes free of control characters", where, MaxTitle)
-		case v.Branch != "" && !ValidBranch(v.Branch):
-			return fmt.Errorf("its %s.branch %q is not a branch name", where, v.Branch)
+		case v.Branch != "" && (!ValidBranch(v.Branch) || !utf8.ValidString(v.Branch)):
+			return fmt.Errorf("its %s.branch %q is not a branch name in UTF-8", where, v.Branch)
 		case !ValidPrincipal(v.Uploader):
 			return fmt.Errorf("its %s.uploader %q is not a principal name", where, v.Uploader)
 		}

@@ -53,9 +53,13 @@ done < attributes.txt
 repo="$TMPDIR/tree"
 git init --quiet "$repo"
 cd "$repo" || exit 1
-mkdir -p docs valleyhook
+mkdir -p docs valleyhook nix/checks
 echo seed > docs/architecture.md
 echo seed > valleyhook/main.go
+echo seed > nix/packages.nix
+for f in $checkFiles; do
+  echo seed > "nix/checks/$f"
+done
 git add -A
 git commit --quiet -m base
 base="$(git rev-parse HEAD)"
@@ -89,5 +93,39 @@ if grep -qx prose-format <<<"$got"; then
   echo "own-policy: a hook-only change fell to the unclassified rule" >&2
   exit 1
 fi
+
+# A check's own files owe that check. Every file under nix/checks/ named
+# after a flake check owes that check, and every other script there owes
+# some check the nix class does not. A script that matched the nix class
+# alone could be changed without its check being owed. Other files that
+# are not named after a check are definitions or data shared by several
+# checks, which the policy may leave to the nix class.
+git checkout --quiet -B shared "$base"
+echo edit > nix/packages.nix
+git commit --quiet -am shared
+shared="$(owed | LC_ALL=C sort)"
+failed=0
+for f in $checkFiles; do
+  name="${f%.*}"
+  case " $checkNames " in
+    *" $name "*) named=1 ;;
+    *) named=0 ;;
+  esac
+  [ "$named" -eq 1 ] || [ "${f##*.}" = sh ] || continue
+  git checkout --quiet -B file "$base"
+  echo edit > "nix/checks/$f"
+  git commit --quiet -am "$f"
+  got="$(owed | LC_ALL=C sort)"
+  if [ "$named" -eq 1 ]; then
+    grep -qx -- "$name" <<<"$got" && continue
+    echo "own-policy: a change to nix/checks/$f must owe $name, got:" >&2
+  else
+    [ -n "$(LC_ALL=C comm -23 <(echo "$got") <(echo "$shared"))" ] && continue
+    echo "own-policy: a change to nix/checks/$f owes no check of its own, got:" >&2
+  fi
+  echo "$got" >&2
+  failed=1
+done
+[ "$failed" -eq 0 ] || exit 1
 
 touch "$out"

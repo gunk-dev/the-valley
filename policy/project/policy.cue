@@ -4,6 +4,11 @@
 // layer (dcr-f41f718).
 package verification
 
+import (
+	"list"
+	"strings"
+)
+
 project: {
 	// the-valley keeps a knowledge graph, so it takes the lint the docs
 	// template offers rather than declining it.
@@ -18,7 +23,7 @@ project: {
 	// nix/checks.nix, built for the runner's own system. own-policy holds
 	// this list to that: a name here that the flake does not define fails
 	// it.
-	for n in [
+	let ownChecks = [
 		"valleyhook-unit",
 		"protect-e2e",
 		"note-unit",
@@ -45,16 +50,25 @@ project: {
 		"identity-schema",
 		"knowledge-lint-consumer",
 		"knowledge-lint-rejects",
-	] {
+		"init-e2e",
+		"mirror-e2e",
+		"bus-e2e",
+		"ssh-e2e",
+		"publish-e2e",
+	]
+	for n in ownChecks {
 		checks: (n): {
 			runner:    "nix"
 			attribute: n
 		}
 	}
 
-	// The integrator's scenarios take about a minute, where every other
-	// check here takes seconds once its packages are built.
+	// The integrator's scenarios take about a minute, and ssh-e2e and
+	// publish-e2e boot NixOS machines. Every other check here takes seconds
+	// once its packages are built.
 	checks: "integrator-e2e": cost: "slow"
+	checks: "ssh-e2e": cost:        "slow"
+	checks: "publish-e2e": cost:    "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
 	// A path in two classes owes both sets. A Go module's unit check is its
@@ -138,7 +152,9 @@ project: {
 	// The flake, the NixOS module, the packages and the check definitions,
 	// and the host declarations the module checks are evaluated over.
 	// own-policy is here because renaming or removing a flake check would
-	// leave this layer naming a check that no longer exists.
+	// leave this layer naming a check that no longer exists. A change to
+	// flake.nix or flake.lock owes these alone, so a nixpkgs bump boots no
+	// machine.
 	classes: nix: {
 		paths: "nix/**":                true
 		paths: "flake.nix":             true
@@ -172,6 +188,64 @@ project: {
 		requires: "knowledge-lint":          true
 		requires: "knowledge-lint-consumer": true
 		requires: "knowledge-lint-rejects":  true
+	}
+
+	// The NixOS module and what its end-to-end checks run. The hook checks
+	// follow the scripts out of the hosts in nix/checks/hosts.nix, which
+	// are made of the three declarations named here; ssh-e2e and
+	// publish-e2e run the module in NixOS machines.
+	classes: "host-module": {
+		paths: "nix/valley-host.nix":          true
+		paths: "nix/checks/hosts.nix":         true
+		paths: "examples/hosts/protected.cue": true
+		paths: "examples/hosts/bus.cue":       true
+		paths: "examples/hosts/mirrors.cue":   true
+		requires: "init-e2e":                  true
+		requires: "mirror-e2e":                true
+		requires: "bus-e2e":                   true
+		requires: "protect-e2e":               true
+		requires: "identity-e2e":              true
+		requires: "ssh-e2e":                   true
+		requires: "publish-e2e":               true
+	}
+
+	// A check's own files owe that check: its script,
+	// nix/checks/<name>.sh, and its definition, nix/checks/<name>.nix,
+	// where it has a file of its own. One class per check, named
+	// check-<name>. prose-format is the floor's check, but its script is
+	// here. own-policy fails if a script under nix/checks/ owes no check.
+	for n in list.Concat([ownChecks, ["prose-format"]]) {
+		classes: ("check-\(n)"): {
+			paths: ("nix/checks/\(n).sh"):  true
+			paths: ("nix/checks/\(n).nix"): true
+			requires: (n):                  true
+		}
+	}
+
+	// The other files under nix/checks/, and the checks that read each: the
+	// definitions of a subject's checks, and the helpers and rejection lists
+	// a check is given. cli.nix, which defines every check of bin/valley,
+	// is left to the nix class, as is nix/checks.nix, which wires them all.
+	let checkFiles = {
+		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
+		"identity.nix": ["identity-unit", "identity-e2e"]
+		"integrator.nix": ["integrator-unit", "integrator-e2e"]
+		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
+		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
+		"knowledge.nix": ["knowledge-lint", "knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
+		"hooks.nix": ["valleyhook-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
+		"host-module.nix": ["module-eval"]
+		"fail-nth.sh": ["policy-deriver", "valley-request"]
+		"review-notes-editor.sh": ["review-notes"]
+		"cue-vet-rejected.txt": ["cue-vet"]
+		"identity-rejected.txt": ["identity-schema"]
+		"knowledge-lint-rejected.txt": ["knowledge-lint-rejects"]
+	}
+	for f, ns in checkFiles {
+		classes: ("check-file-\(strings.Replace(f, ".", "-", -1))"): {
+			paths: ("nix/checks/\(f)"): true
+			requires: {for n in ns {(n): true}}
+		}
 	}
 }
 

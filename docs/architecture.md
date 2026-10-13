@@ -208,11 +208,15 @@ changes neither which checks a change owes nor what the integrator accepts. Chec
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
 a class that owes the checks reading that part. A Go module owes its unit tests, and its end-to-end
 check where it has one. The CLI owes its script and status checks. The Nix, the schemas and the
-policy owe their evaluations and vets. A change to documentation alone owes the floor's
-`prose-format` and nothing else. A project layer that stopped composing would stop every derivation
-once it landed, including the derivation of its own fix. So the `own-policy` check composes the
-layer with the example floor before it lands. It fails if the layer names a check this flake does
-not define, or if a docs-only change would owe more than `prose-format`.
+policy owe their evaluations and vets. The NixOS module also owes the end-to-end checks that run
+what it renders, and two of those boot NixOS machines. A change to `flake.nix` or `flake.lock` does
+not owe them, so a nixpkgs bump boots no machine. A check's own files, such as its script under
+`nix/checks/`, owe that check. A change to documentation alone owes the floor's `prose-format` and
+nothing else. A project layer that stopped composing would stop every derivation once it landed,
+including the derivation of its own fix. So the `own-policy` check composes the layer with the
+example floor before it lands. It fails if the layer names a check this flake does not define, if a
+script under `nix/checks/` owes no check of its own, or if a docs-only change would owe more than
+`prose-format`.
 
 The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 [dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and

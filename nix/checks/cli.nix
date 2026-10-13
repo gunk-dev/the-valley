@@ -95,7 +95,10 @@ in
   # with is the example one: the owning valley's is not in this tree. The
   # check also holds every check the layer names to being an attribute of
   # this flake's checks, and holds a docs-only change to owing
-  # prose-format alone.
+  # prose-format alone. And it holds a check's own files to owing that
+  # check: every file in this directory named after a check, and every
+  # other script here, read from the directory itself so a new one is
+  # held as soon as it is added.
   own-policy = pkgs.runCommand "valley-own-policy" {
     nativeBuildInputs = [
       pkgs.git
@@ -107,6 +110,7 @@ in
     floor = ../../examples/policy/instance/floor-format.cue;
     template = ../../examples/policy/instance/template-docs.cue;
     checkNames = builtins.attrNames self.checks.${system};
+    checkFiles = builtins.attrNames (builtins.readDir ./.);
   } (builtins.readFile ./own-policy.sh);
 
   # review's [a]pprove and the approve and rebase verbs, driven end to end

@@ -74,20 +74,89 @@ Every repository's `pre-receive` hook runs `valleyhook pre-receive` (`valleyhook
 `valleyhook/policy.go`). The hook is default-deny. If any one ref update is refused, the whole push
 is refused. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`.
 
-| Ref namespace                                       | Who may push                                                                                | Rule                                                                                                                                                                    |
-| --------------------------------------------------- | ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refs/heads/*` (topic branches)                     | Any key                                                                                     | Create, update and delete.                                                                                                                                              |
-| Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                          | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
-| `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                     | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
-| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                         | Create, update and delete.                                                                                                                                              |
-| Every other `refs/the-valley/*`                     | Nobody                                                                                      | This covers the integrator's outcome records.                                                                                                                           |
-| `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                      | A replace ref would let git show other content under a watched name.                                                                                                    |
-| Symbolic refs                                       | Nobody                                                                                      |                                                                                                                                                                         |
-| Tags and every other ref                            | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`) | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
+| Ref namespace                                       | Who may push                                                                                     | Rule                                                                                                                                                                    |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refs/heads/*` (topic branches)                     | Any key                                                                                          | Create, update and delete.                                                                                                                                              |
+| Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
+| `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
+| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete.                                                                                                                                              |
+| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`).                                                    |
+| Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records.                                                                                                                           |
+| `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
+| Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
+| Tags and every other ref                            | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
 
 The `request` grant comes from two places: the host's declared `services.valley.grants.request` and
 the identity compiler's `grants` file. Why replace refs are closed is recorded in
 [bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
+
+### Change records
+
+A change is one piece of work aimed at `main`. Its ID is stable across rebases, in jj's form: 32
+letters from `k` to `z`. Each time a head of the change is marked ready, the change gains a version.
+The change's record lists the versions, and the hook guards every write to it. Records are
+observational: nothing reads them for authority. The integration request is still the only way a
+change reaches `main`, and the integrator does not read records.
+
+The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
+holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
+one strict parser that the hook and the CLI share (`change/record.go`):
+
+```json
+{
+  "schema": "valley-change-record/v1",
+  "change_id": "<32 letters from k to z>",
+  "target": "main",
+  "owner": "<principal>",
+  "state": "ready",
+  "seq": 3,
+  "versions": [
+    {
+      "n": 1,
+      "head": "git-sha1:<40 lowercase hex>",
+      "title": "<the head's subject>",
+      "branch": "<branch, or empty>",
+      "uploader": "<principal>"
+    }
+  ],
+  "active": 1
+}
+```
+
+The parser refuses anything that is not valid UTF-8. It also refuses a duplicate key at any depth,
+an unknown field, and data after the object. Every field must have the type shown. `seq` runs from 1
+to 100000, and `n` and `active` from 1 to 1000. Versions are numbered 1, 2, 3 with no gap. A title
+is 1 to 200 bytes with no control characters. `state` is `ready` or `withdrawn`.
+
+The record commit's parents tie it to what it records. In the table, `P` is the record commit's
+parents, `old` is the ref's value before the push, and `h` is the head of the version being added.
+
+| Transition  | Who                             | `P`        | What the record must say                                                                                                                                                                            |
+| ----------- | ------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create      | Any named principal             | `[h]`      | One version: `n` 1, `head` `h`, and the pusher as `uploader`. The pusher as `owner`, `seq` 1, `active` 1, `state` `ready`. `target` and `change_id` are the ref's.                                  |
+| New version | The owner or a `request` holder | `[old, h]` | `old`'s versions unchanged, plus one with the next `n`, `head` `h` other than the active head, and the pusher as `uploader`. `active` is the new `n`, `state` `ready`, `seq` one more than `old`'s. |
+| Withdraw    | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                                   |
+| Ready again | The owner or a `request` holder | `[old, h]` | As for a new version. A withdrawn change comes back only at a new head.                                                                                                                             |
+| Delete      | A `request` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
+
+The hook refuses every other write. That includes a key that names no principal, extra parents,
+parents in another order, a head that is not a commit, a tree of another shape, and `ready` to
+`ready` without a new version. The owner, the target and the change ID never change.
+
+Each record commit is at most 4 KiB, its tree at most 1 KiB, and its `record.json` at most 64 KiB. A
+push may update at most 32 records, and a repository may hold at most 2000, counted with one
+`for-each-ref`. The hook checks each bound before it reads anything past it.
+
+The writer numbers versions, and the hook holds them to append-only and gap-free. When the
+integrator starts reading records, it takes this numbering as it is. For now, a change is owned by
+the principal whose key pushed its first record, so `klaus-env` owns every agent change.
+
+A record keeps every head it names reachable, because each head is a parent of a record commit. So
+records retain source objects the way topic branches do, and the hook restricts them no further.
+
+Checked by `valleyhook-unit`, with a case for each rule of each transition against real git objects,
+by `change-unit`, which runs the parser's tests and its fuzz target's seed corpus, and by
+`valley-ready`, which drives the transitions through real pushes.
 
 ## After a push: events and mirrors
 
@@ -305,8 +374,9 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 
 ## The valley command
 
-`bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`
-verb is a Go program, `valley-status` (`status/`), which the package puts on the script's `PATH`.
+`bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
+`ready` and `withdraw` verbs are a Go program, `valley-go` (`status/`), which the package puts on
+the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -315,7 +385,9 @@ verb is a Go program, `valley-status` (`status/`), which the package puts on the
 | `valley approve <change>`    | Does what `[a]pprove` does, without showing the branch.                                               |
 | `valley rebase <change>`     | Does what `[b]ase` does, without showing the branch, and prints the new head.                         |
 | `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                          |
-| `valley status [--json] <b>` | Reads the request and outcome record for a branch. `--json` prints the `valley-status/v1` object.     |
+| `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
+| `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
+| `valley withdraw <change>`   | Marks a ready change withdrawn, as its owner or the operator.                                         |
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
@@ -328,9 +400,38 @@ prompt.
 
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
 change their own way. Each runs the same function as its key, so the output and the refusals are the
-same. A change is named by its branch for now. `approve` exits non-zero when it refuses. `rebase`
-does not re-review the result, and it leaves a branch that already fast-forwards from `main` alone.
-Checked by `valley-cli`, `valley-request`, `valley-status` and `review-notes`.
+same. `approve` exits non-zero when it refuses. `rebase` does not re-review the result, and it
+leaves a branch that already fast-forwards from `main` alone. Checked by `valley-cli`,
+`valley-request`, `valley-status`, `valley-ready` and `review-notes`.
+
+`valley ready [--head <sha>] [--change <id>] [--stamp] [<branch>]` writes a change's record
+(`status/ready.go`). The branch is the current one unless named. The head is `--head` when given,
+and otherwise the branch's head on origin. Either way the head must already be on origin. klaus
+passes `--head` with the head it pushed, so the version names exactly that head. ready reads the
+existing record, if there is one, and adds a version. It refuses a head equal to the active
+version's. It pushes the record ref with a lease on the value it read, and prints the handle and
+version, such as `cosmo nxvp v2 ready`. The record names the principal from
+`git config valley.principal`. The host derives the pushing principal from the key, and the client
+cannot ask it, so the hook refuses a record that names anyone else.
+
+ready takes the change ID from the first of these that has one:
+
+1. `--change <id>`;
+2. the head commit's `change-id` header, as jj writes it, read from the commit object itself;
+3. a `Change-Id:` trailer in the head's message;
+4. a new ID, which it prints.
+
+A header and a trailer that disagree are refused, and so are malformed values. IDs on other commits
+of the change are not read. ready also refuses a change whose commits, from the merge base with
+`main` to the head, include a merge, or that has more than one merge base. `--stamp` amends the
+local branch's head to carry the ID as a trailer, and pushes the branch with a lease. It refuses a
+head that is already on origin, unless the change's record names the user as owner.
+
+A change is named by its full ID or by its handle. The handle is the shortest prefix of the ID, at
+least four letters, that no other change recorded on origin shares. A change can also be named by
+its branch, as it was before records existed. Every verb that takes a change takes all three
+(`status/changes.go`). `review`, `approve` and `rebase` act on the branch that the change's active
+version names.
 
 `valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
 moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in

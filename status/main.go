@@ -11,8 +11,9 @@
 // unready and withdraw write the change's record,
 // refs/the-valley/changes/main/<change ID> (ready.go), in the format the
 // change module defines and the push hook guards. The integrator reads
-// records only to refuse: it lands no request whose head is a version of
-// a change that is not ready. The integration request stays the only way
+// records only to refuse: it lands no request that would bring a version
+// of a change that is not ready, and it voids a withdrawn change's
+// requests. The integration request stays the only way
 // to main. versions lists a change's versions, for approve.
 //
 // A change is named by its full change ID, by its handle (the shortest

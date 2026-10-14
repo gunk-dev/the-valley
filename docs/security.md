@@ -44,10 +44,10 @@ cosmo `modules/klaus-env/` and `hosts/classic-laddie/klaus-env.nix`.
   accepts an attestation ref only when every note in it verifies under a known signer
   (`valleyhook/policy.go`, `valleyhook/attestation.go`). It can also create change records, which
   makes it the owner of every agent change, and add versions to them (`valleyhook/record.go`). A
-  record never makes anything land. The integrator reads records only to refuse: it lands no request
-  whose head is a version of a change that is not `ready` (`integrator/records.go`). So any
-  principal that may create a record can hold back a head, by recording it in a change it then
-  unreadies. Only a `request` holder may delete that record, and deleting it releases the head.
+  record never makes anything land. The integrator reads records only to refuse a request, and to
+  void a withdrawn change's requests (`integrator/records.go`). So any principal that may create a
+  record can hold back a head, by recording it in a change it then unreadies. Only a `request`
+  holder may delete that record, and deleting it releases the head.
 - **Caps.** The VM has 8 vCPUs and 10 GiB of memory. Its systemd slice caps CPU at 900% and memory
   at 12 GiB, and gives it a low I/O weight. The source notes the I/O weighting is advisory on ZFS.
   No check exercises the caps.
@@ -74,6 +74,17 @@ Who holds the grant on the live host is a deployment record. The ref-policy depl
 2026-10-04 (plan Status) shows the compiled grants file naming only the operator's principal. Every
 key of that principal holds the grant. The cutover record reports that, from the guest, a request
 push and a `refs/replace` push are refused and a topic push is accepted.
+
+The security invariant is the operator's approval: only content the operator approved lands. The
+request names the exact head that was approved, and the integrator lands only what a request names
+(`integrator/refs.go`). Checks: `integrator-e2e` and `valley-ready`.
+
+Readiness is different. A change record's state is the author's workflow signal, and the integrator
+enforces it as closely as refs allow. It does not enforce it atomically. A record written between
+the integrator's last read of the records and its move of the target can be missed. That can land a
+head the operator approved and the author has since paused. It can never land content the operator
+did not approve. The race-free form binds each approval to the record's withdraw generation, in the
+signed approval statements of M1-C.
 
 ### 3. Filing takes a touch (queued)
 
@@ -195,6 +206,8 @@ themselves when to deploy.
   depends on qinling's private policy.
 - **Two hosts update unsigned.** johnny-walker and makers-nix run `system.autoUpgrade` from GitHub
   (cosmo `modules/common/system.nix`).
+- **Readiness is not enforced atomically.** A change paused in the moment before the integrator
+  moves the target can still land, at the head the operator approved (step 2).
 - **The bus has no authentication.** Any local process on classic-laddie can publish events. Nothing
   treats an event as authoritative.
 - **`integrator` is a named writer of `main`.** cosmo lists it in `protection.writers` for both

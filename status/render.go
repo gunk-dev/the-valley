@@ -66,7 +66,7 @@ func writeHuman(g git, s *status, w io.Writer) int {
 		p(noReason)
 	case "refused-not-ready":
 		p("the integrator refused to land it, because a record of its head did not say ready.\n")
-		p("A request lands only while every change its head is a version of is ready. The request stands, and the integrator judges it again on every pass, so it lands once the change is readied again.\n")
+		p("A request lands only while every change whose version it would bring is ready. The request stands, and the integrator judges it again on every pass, so it lands once the change is readied again.\n")
 	case "refused-merge":
 		p("the integrator refused to land it, because its commits from the merge base with main include a merge.\n")
 		p("A change is a line of commits. Make one without the merge, and approve that head.\n")

@@ -106,8 +106,8 @@ A change is one piece of work aimed at `main`. Its ID is stable across rebases, 
 letters from `k` to `z`. Each time a head of the change is marked ready, the change gains a version.
 The change's record lists the versions, and the hook guards every write to it. A record grants
 nothing: the integration request is still the only way a change reaches `main`. The integrator reads
-records only to refuse. It lands no request whose head is a version of a change that is not `ready`
-(see [The integrator](#the-integrator)).
+records only to refuse. It lands no request that would bring a version of a change that is not
+`ready` (see [The integrator](#the-integrator)).
 
 A change is in one of three states:
 
@@ -118,15 +118,18 @@ A change is in one of three states:
   integration requests, and the approvals and reviews of every version. A change brought back from
   withdrawn always needs fresh approvals.
 
-The integrator enforces the pause. It refuses a request whose head is a version of a draft or a
+The integrator enforces the pause. It refuses a request that would bring a version of a draft or a
 withdrawn change, so a request filed before the change was paused or withdrawn stays where it is and
 does not land. A draft's request lands once the change is ready again, which is what a pause means.
-Nothing yet enforces what withdrawing voids: a request filed before a withdrawal lands too once the
-change is ready again. So `valley withdraw` warns when origin holds a request for the change, and
-`valley unready` notes one. The request is looked for under `c-<change-id>`, and under the name a
-branch's request has, for the branch of each of the change's versions. Only a `request` holder may
-touch a request ref, so the warning says the operator must drop it. Approvals are not records yet
-either; they become records with M1-C.
+
+The integrator also voids a withdrawn change's requests. On each pass it deletes the request named
+`c-<change-id>`, and every request whose head is one of the change's version heads. So readying the
+change again needs a fresh approval. A withdrawal followed by a ready within one pass is not seen,
+and can leave an old request in place. So `valley withdraw` warns when origin holds a request for
+the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
+under the name a branch's request has, for the branch of each of the change's versions. Only a
+`request` holder may touch a request ref, so the warning says the operator must drop it if the
+change is readied first. Approvals are not records yet either; they become records with M1-C.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -185,7 +188,10 @@ A repository may hold at most 2000 records, counted with one `for-each-ref`. Thi
 pre-receive hook runs before git installs any ref, and nothing serializes two pushes' hooks. So
 pushes that run at the same time can each count the same records and each create more. The count can
 then pass 2000 by at most the record updates those pushes had in flight, which is 32 per push. Once
-the count is past 2000, every later create is refused.
+the count is past 2000, every later create is refused. The integrator reads at most 4000 records,
+twice this bound. A repository that holds more lands nothing until records are deleted, because the
+integrator could not tell which heads are versions of changes that are not `ready`. Each project has
+its own integrator, so no other repository is held up.
 
 The writer numbers versions, and the hook holds them to append-only and gap-free. The integrator
 takes this numbering as it is. For now, a change is owned by the principal whose key pushed its
@@ -259,15 +265,22 @@ requests in order, then sleeps 15 seconds and starts again (`integrator/main.go`
    that points at the change's head commit. A change with a record is requested as `c-<change-id>`.
    Every name of that form is reserved for the change with that ID. Any other name is a branch's:
    the branch with each `/` replaced by `-`.
-2. **Skip what is decided.** The outcome record
+2. **Void what a withdrawal voids.** The records are read once per pass (see below). A request named
+   for a withdrawn change, or whose head is one of a withdrawn change's version heads, is deleted
+   with the outcome `voided-withdrawn`. The record is read again just before each deletion, and the
+   request is deleted only while the change is still withdrawn. The deletion is leased on the head
+   the pass found, so a request filed again since stands.
+3. **Skip what is decided.** The outcome record
    `refs/the-valley/integration-outcomes/<target>/<change>` holds the head, the target tip, a hash
    of all attestation refs, and the outcome. If the first three still match, the request is skipped.
-   A `failed` outcome is retried after 10 minutes. A refusal from step 3 is never skipped this way.
-3. **Refuse what the records refuse.** The records are read once per pass (see below). A request is
-   refused with the outcome `refused-not-ready` when either of these holds:
+   A `failed` outcome is retried after 10 minutes. A refusal from step 4 is never skipped this way.
+4. **Refuse what the records refuse.** A request is refused with the outcome `refused-not-ready`
+   when either of these holds:
    - it is named `c-<change-id>`, and the record `refs/the-valley/changes/<target>/<change-id>` is
      missing, is not `ready`, or does not list the request's head as one of its version heads;
-   - whatever its name, its head is a version head of a record that is not `ready`.
+   - whatever its name, a commit it would bring to the target, from the merge base to the head, is a
+     version head of a record that is not `ready`. The outcome names that change. So a child of a
+     draft's head, approved under another name, does not land the draft.
 
    A request whose commits from the merge base with the target to the head include a merge is
    refused with the outcome `refused-merge`. A merge could make other work look landed by ancestry.
@@ -275,40 +288,52 @@ requests in order, then sleeps 15 seconds and starts again (`integrator/main.go`
    every pass, and reported only when it is new, so a draft readied again is judged on the next
    pass.
 
-4. **Build the candidate.** The base is `git merge-base` of the tip and the head. If the base is the
+5. **Build the candidate.** The base is `git merge-base` of the tip and the head. If the base is the
    tip, the candidate is the head. Otherwise `git merge-tree --write-tree` builds the tree, and the
    integrator commits it with the tip as the only parent. The commit keeps the head's author. Its
    committer is the integrator at `integrator@the-valley.invalid`. A conflict makes the request
    stale.
-5. **Derive the required checks** (see Policy below).
-6. **Judge the evidence** (see Evidence below). The outcome is `land`, `stale` or `reject`. A stale
+6. **Derive the required checks** (see Policy below).
+7. **Judge the evidence** (see Evidence below). The outcome is `land`, `stale` or `reject`. A stale
    request publishes `request-stale`.
-7. **Land.** The integrator reads the records step 3 read for the head once more, since judging can
-   take minutes, and refuses as step 3 does if one of them is no longer `ready`. It signs a transfer
-   statement that records the policy digest and the checks it relied on. Then it moves the target
-   with compare-and-swap (`git update-ref <target> <new> <tip>`). That is the commit point. Then it
-   queues the landing for the publisher, stores its countersigned evidence, deletes the request with
-   compare-and-swap, publishes `integration-succeeded`, and writes the outcome record.
+8. **Land.** The integrator signs a transfer statement that records the policy digest and the checks
+   it relied on. Then, as the last thing before the commit point, it reads every record again into a
+   fresh index and applies step 4 once more, since judging and signing can take minutes. Then it
+   moves the target with compare-and-swap (`git update-ref <target> <new> <tip>`). That is the
+   commit point. Then it queues the landing for the publisher, stores its countersigned evidence,
+   deletes the request with compare-and-swap, publishes `integration-succeeded`, and writes the
+   outcome record.
 
 Each step is a separate `git update-ref` call. A crash between steps can leave a landing without its
 evidence or outcome record. Checked by `integrator-e2e` (scenarios for fast-forward, merge,
 conflict, stale evidence, tampered notes, retries, a moved target, requests named for changes,
-drafts under either kind of name, and merges) and `integrator-unit`.
+drafts under either kind of name, a child of a draft's head, merges, and a request voided by a
+withdrawal) and `integrator-unit`.
 
-The integrator lands the commit the request names, and nothing else. So an approval binds the head
-it approved: a record that moves after the request is filed cannot change what lands.
+The security invariant is the operator's approval: only content the operator approved lands. The
+request names the exact head that was approved, and the integrator lands only what a request names.
+So a record that moves after the request is filed cannot change what lands.
+
+Readiness is the author's workflow signal, and the integrator enforces it as closely as refs allow.
+It does not enforce it atomically. The integrator reads the records last just before it moves the
+target, and a record written between that read and the move is not seen. So a head the operator
+approved can still land after its author has paused it. Content the operator did not approve can
+never land this way. The race-free form binds each approval to the record's withdraw generation, in
+the signed approval statements of M1-C.
 
 The records are read with the parser the hook and the CLI share (`change/`), under the bounds the
 hook admits them under (`integrator/records.go`). Each pass reads every ref under
-`refs/the-valley/changes/` once, into an index by version head, with one `for-each-ref` and two
-batched `cat-file` reads. A record that does not read names no head, so it refuses nothing, and the
-pass reports it. A `c-<change-id>` request's own record is read fresh each time. A repository that
-holds more than 4000 records, twice the hook's soft bound, is refused whole: the pass judges no
-request until records are deleted.
+`refs/the-valley/changes/` into an index by version head, with one `for-each-ref` and two batched
+`cat-file` reads, and step 8 reads them all again. A `c-<change-id>` request's own record is read
+fresh each time. A repository that holds more than 4000 records lands nothing, as
+[Change records](#change-records) describes.
 
-The records are where a change's owner says whether it is ready, and the owner cannot touch request
-refs. Reading them is what lets `valley unready` and `valley withdraw` stop a request that is
-already filed. That includes an approval filed in the moment after its client last read the record.
+A stored record that does not read is isolated. It names no head the integrator can see, so it
+refuses nothing, and a head it names can land. Every pass that reads records reports it with a
+`WARNING` line. The pass also warns with each request that brings a commit the record may name: one
+its record commit reaches, since a record names its version heads as parents of its record commits.
+`valley status` warns the same way for the change's request. The hook refuses a record that does not
+read, so corrupt storage is the only way to get one.
 
 ## Policy
 
@@ -593,9 +618,10 @@ there.
 stop one already under way there. An approval reads the record one last time just before it files
 the request, and a change unreadied or withdrawn after that read is filed all the same. No client
 can close this window. git compares only the refs a push changes, and the record ref is not one of
-them, so a push cannot be made conditional on the record. The integrator closes it: it refuses to
-land any request whose head is a version of a change that is not `ready`, whatever the request is
-named.
+them, so a push cannot be made conditional on the record. The integrator narrows it: it refuses to
+land any request that would bring a version of a change that is not `ready`, whatever the request is
+named. It reads the records last just before it moves the target, so only a record written in the
+moment between that read and the move is missed (see [The integrator](#the-integrator)).
 
 `valley status` reads a name as `approve` does. A change with a record is read at its active
 version's head, under its request name `c-<change-id>`. A branch no record is on is read at its head
@@ -637,16 +663,17 @@ so it is a contract with a version. A change to the name or meaning of any field
   commit, or else the outcome's head, or else `null`.
 - `request` is `null` when origin holds no integration request for the change. `outcome` is `null`
   when origin holds no outcome record.
-- `outcome.decision` is `land`, `stale`, `reject`, `refused-not-ready`, `refused-merge`, `failed` or
-  `unknown`. A record that does not parse is `unknown`. `outcome.head` and `outcome.tip` are `null`
-  unless they are object ids, and `failed_at` is `null` unless the decision is `failed`.
+- `outcome.decision` is `land`, `stale`, `reject`, `refused-not-ready`, `refused-merge`,
+  `voided-withdrawn`, `failed` or `unknown`. A record that does not parse is `unknown`.
+  `outcome.head` and `outcome.tip` are `null` unless they are object ids, and `failed_at` is `null`
+  unless the decision is `failed`.
 - `change_id`, `handle`, `version`, `title`, `owner` and `landing` were added to `valley-status/v1`.
   Each is `null` for a branch no record is on. For a change with a record they are its ID, its
   handle, its active version's number and title, its owner, and the active version's landing
   evidence as [Listing changes](#listing-changes) decides it.
-- `refused-not-ready` and `refused-merge` were added to `valley-status/v1` as decisions and as
-  states. A reader that meets a decision or a state it does not know should treat the status as
-  unknown.
+- `refused-not-ready`, `refused-merge` and `voided-withdrawn` were added to `valley-status/v1` as
+  decisions and as states. A reader that meets a decision or a state it does not know should treat
+  the status as unknown.
 - `state` is one of these:
 
 | `state`                 | What it means                                                                         |
@@ -662,6 +689,7 @@ so it is a contract with a version. A change to the name or meaning of any field
 | `rejected`              | The integrator rejected the evidence.                                                 |
 | `refused-not-ready`     | The integrator refused it: a record of its head is not `ready`. The request stands.   |
 | `refused-merge`         | The integrator refused it: its commits from the merge base include a merge.           |
+| `voided-withdrawn`      | The integrator deleted its request because the change was withdrawn.                  |
 | `failed`                | The integrator failed while processing the request. The change may still have landed. |
 
 An error prints no object. The message goes to stderr and the exit status is non-zero. The errors
@@ -840,10 +868,12 @@ Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs 
    and one push files the evidence and the integration request
    `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The hook verifies each
    note and the `request` grant.
-4. On its next pass the integrator reads the records. It refuses a request whose head is a version
-   of a change that is not `ready`, and one whose commits hold a merge. Otherwise it builds the
-   candidate, derives the policy, judges the evidence, and lands or refuses. If the author unreadies
-   or withdraws the change before it lands, the request stays and does not land.
+4. On its next pass the integrator reads the records. It refuses a request that would bring a
+   version of a change that is not `ready`, and one whose commits hold a merge. Otherwise it builds
+   the candidate, derives the policy, judges the evidence, and lands or refuses. If the author
+   unreadies or withdraws the change before it lands, the request stays and does not land; a
+   withdrawal also deletes it. Only a record written in the moment before the target moves is
+   missed.
 5. On a landing, the publisher sends `ref-updated` to the bus and pushes `main` and tags to the
    mirrors. `valley status <handle>` shows the outcome, and the version's landing evidence.
 

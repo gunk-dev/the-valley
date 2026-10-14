@@ -377,8 +377,11 @@ branch is read again before approve files or rebase pushes, and if it
 names a change by then, the change must be ready at the head the verb
 began with. An approval already past that last check can still file if
 the change is unreadied or withdrawn in the moment before its push; the
-integrator refuses to land it, since it lands no request whose head is a
-version of a change that is not ready, whatever the request is named.
+integrator refuses to land it, since it lands no request that would bring
+a version of a change that is not ready, whatever the request is named.
+The integrator reads the records last just before it moves main, so a
+change paused in that moment can still land at the head the operator
+approved, and never at any other.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -1110,10 +1113,11 @@ approve() {
   # below. A change unreadied or withdrawn in that window is filed all the
   # same. git compares only the refs a push changes, and the record ref is
   # not one of them, so no client can make the filing conditional on the
-  # record. The integrator closes the window: it lands no request whose
-  # head is a version of a change that is not ready, whatever the request
-  # is named, so a request filed in the window stays until the change is
-  # ready again.
+  # record. The integrator narrows the window: it lands no request that
+  # would bring a version of a change that is not ready, whatever the
+  # request is named, so a request filed in the window stays until the
+  # change is ready again. It reads the records last just before it moves
+  # the target, so only a record written in that moment is missed.
   if ! check_record "nothing published" "$head" "$APPROVE_HEAD"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1

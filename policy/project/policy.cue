@@ -43,6 +43,7 @@ project: {
 		"valley-request",
 		"valley-status",
 		"valley-ready",
+		"valley-changes",
 		"valley-darwin-eval",
 		"policy-deriver",
 		"own-policy",
@@ -96,6 +97,7 @@ project: {
 		requires: "protect-e2e":     true
 		requires: "valley-go-unit":  true
 		requires: "valley-ready":    true
+		requires: "valley-changes":  true
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so
@@ -142,7 +144,7 @@ project: {
 
 	// The valley CLI: the script, its Go verbs (status/), and its
 	// completions. valley-ready drives ready, withdraw and the verbs that
-	// take a change's handle.
+	// take a change's handle, and valley-changes drives changes and pending.
 	classes: cli: {
 		paths: "bin/valley":        true
 		paths: "status/**":         true
@@ -153,6 +155,7 @@ project: {
 		requires: "valley-request": true
 		requires: "valley-status":  true
 		requires: "valley-ready":   true
+		requires: "valley-changes": true
 		requires: "policy-deriver": true
 	}
 
@@ -226,6 +229,7 @@ project: {
 		requires: "identity-e2e":              true
 		requires: "ssh-e2e":                   true
 		requires: "publish-e2e":               true
+		requires: "valley-changes":            true
 	}
 
 	// A check's own files owe that check: its script,

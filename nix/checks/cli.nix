@@ -190,6 +190,31 @@ in
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./valley-ready.sh);
 
+  # valley changes and valley pending over the projects of one test host,
+  # made by the integrator host's rendered valley-init, so discovery reads
+  # the project list a host publishes and every record goes through the
+  # hook it installs. Two repositories with ready, draft and withdrawn
+  # records; handles unique across them; one listed repository that cannot
+  # be read; --repo; a version landed by fast-forward, one landed as a new
+  # commit with a transfer statement the integrator signed, one consumed
+  # with no evidence, and one whose statement another key signed; includes
+  # as the nearest ancestor only; pending's human shape and --owes; and a
+  # branch name read as a branch again once its change has landed.
+  valley-changes = pkgs.runCommand "valley-changes" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.jq
+      pkgs.openssh
+      packages.valley-script
+      packages.valley-go
+      packages.attest
+    ];
+    initScript = hosts.integratorHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "initScript" ];
+    # The floor --owes derives under.
+    floor = ../../examples/policy/instance;
+  } (builtins.readFile ./valley-changes.sh);
+
   # The CLI is offered for aarch64-darwin, which nothing here builds or
   # tests (flake.nix). This check holds that offer to evaluating: an input
   # with no Darwin build fails here rather than on a Mac. The package's

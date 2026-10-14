@@ -443,6 +443,32 @@ if git -C "$origin" rev-parse --verify --quiet refs/heads/victim > /dev/null; th
   fail 'reject kept a branch at the recorded head'
 fi
 
+# A version may record no branch: the record allows one, though valley
+# ready always names a branch. The change's record line then has an empty
+# field in its middle, and approve, review and rebase must still read the
+# state after it. approve files the head alone. review and rebase act on a
+# branch, so they refuse plainly, and a draft's refusal names no branch in
+# the ready line it suggests.
+bare_id=qqqqkkkkllllmmmmnnnnooooppppqqqq
+bare_request="refs/the-valley/integration-requests/main/c-$bare_id"
+git checkout --quiet -b branchless main
+commit branchless
+branchless="$(git rev-parse HEAD)"
+b1="$(jq -cn --arg id "$bare_id" --arg head "git-sha1:$branchless" '{schema: "valley-change-record/v1",
+  change_id: $id, target: "main", owner: "contributor", state: "ready", seq: 1,
+  versions: [{n: 1, head: $head, title: "branchless", branch: "", uploader: "contributor"}], active: 1}')"
+as contributor git push --quiet origin "$(write_record "$b1" "$branchless"):refs/the-valley/changes/main/$bare_id"
+ok as requester valley approve --head "$branchless" qqqq
+[ "$(git -C "$origin" rev-parse "$bare_request")" = "$branchless" ] || fail 'approve did not file a change with no branch'
+grep -q '^Approved qqqq v1 ' "$w/out" || fail 'approve did not say which version of a change with no branch it approved'
+for verb in review rebase; do
+  refused "change qqqq v1 records no branch, and $verb acts on a change's branch" valley "$verb" qqqq
+done
+ok as contributor valley unready qqqq
+refused "change qqqq v1 is draft, not ready; nothing published. Ready it first: valley ready --change $bare_id" \
+  as requester valley approve --head "$branchless" qqqq
+if grep -qF "''" "$w/err"; then fail "approve suggested readying a change with no branch on the branch ''"; fi
+
 # ----------------------------------------------------------------------
 # A draft is a change paused. unready makes a ready change a draft, and
 # ready brings it back: at the head of its active version it is ready

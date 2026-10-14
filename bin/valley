@@ -190,6 +190,9 @@ usage: valley <verb> [args]
                    ~/.local/state) and printed after the verdict. notes
                    survive [b]ase. lines you change or delete instead of
                    inserting are ignored, with a warning.
+                   a change whose active version names no branch is
+                   refused, since notes and [r]eject act on a branch;
+                   approve files its head without one.
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -1031,7 +1034,7 @@ approve() {
 
     cleanup_approve_wt
     APPROVE_WT="$(mktemp -d)" || {
-      refuse "no scratch directory to check $branch in; nothing published"
+      refuse "no scratch directory to check $what in; nothing published"
       return 1
     }
     git worktree add --quiet --detach "$APPROVE_WT" "$head" || {
@@ -1245,13 +1248,32 @@ cmd_go() {
 # head is expected to be, and anyone who can push the branch can move it,
 # in the same push as the record if they like.
 CHANGE_NAME="" CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
+
+# read_resolved <line> <name…>: read a line of valley-go resolve into the
+# variables named, one field each. A version's branch may be empty, and
+# read runs consecutive tabs together, since a tab is whitespace to it: an
+# empty branch would shift the state into the branch. So each tab is made
+# a unit separator first, which read keeps apart.
+read_resolved() {
+  local resolved="$1"
+  shift
+  IFS=$'\x1f' read -r "$@" <<< "${resolved//$'\t'/$'\x1f'}"
+}
+
+# ready_hint <change ID> <branch>: the valley ready line that readies the
+# change again, naming the branch unless its version records none.
+ready_hint() {
+  printf 'valley ready --change %s' "$1"
+  [ -z "$2" ] || printf ' %q' "$2"
+}
+
 resolve_change() {
   local line kind
   CHANGE_NAME="$1"
   command -v valley-go > /dev/null 2>&1 \
     || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   line="$(valley-go resolve "$1")" || return 1
-  IFS=$'\t' read -r kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE <<< "$line"
+  read_resolved "$line" kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE
   case "$kind" in
     branch)
       CHANGE_BRANCH="$CHANGE_ID"
@@ -1267,6 +1289,16 @@ resolve_change() {
       ;;
     *) die "valley-go resolve answered $line, which this script does not read" ;;
   esac
+}
+
+# need_branch <verb>: refuse a change whose active version records no
+# branch. review and rebase act on the change's branch: review files its
+# notes under it and its [r]eject deletes it, and rebase pushes it.
+# approve files the head alone, so it approves such a change.
+need_branch() {
+  if [ -n "$CHANGE_ID" ] && [ -z "$CHANGE_BRANCH" ]; then
+    die "change $CHANGE_HANDLE v$CHANGE_VERSION records no branch, and $1 acts on a change's branch. Approve its head alone: valley approve --head $CHANGE_HEAD $CHANGE_HANDLE"
+  fi
 }
 
 # The commit review, approve and rebase act on: the recorded head for a
@@ -1329,10 +1361,10 @@ check_record() {
       refuse "could not read $CHANGE_NAME again against origin's records; $undone"
       return 1
     fi
-    IFS=$'\t' read -r kind id handle version head branch state <<< "$line"
+    read_resolved "$line" kind id handle version head branch state
     [ "$kind" = change ] || return 0
     if [ "$state" != ready ]; then
-      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone. Ready it first: valley ready --change $id $(printf '%q' "$branch")"
+      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone. Ready it first: $(ready_hint "$id" "$branch")"
       return 1
     fi
     if [ "$head" != "$acting" ]; then
@@ -1345,13 +1377,13 @@ check_record() {
     refuse "could not read the record of change $CHANGE_HANDLE again; $undone"
     return 1
   fi
-  IFS=$'\t' read -r kind id handle version head branch state <<< "$line"
+  read_resolved "$line" kind id handle version head branch state
   if [ "$kind" != change ] || [ "$id" != "$CHANGE_ID" ]; then
     refuse "origin no longer holds a record of change $CHANGE_HANDLE; $undone"
     return 1
   fi
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$branch")"
+    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone. Ready it first: $(ready_hint "$CHANGE_ID" "$branch")"
     return 1
   fi
   if [ -n "$bound" ]; then
@@ -1389,7 +1421,7 @@ check_version() {
     fi
   done <<< "$out"
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE is $state, not ready; $undone. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+    refuse "change $CHANGE_HANDLE is $state, not ready; $undone. Ready it first: $(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH")"
     return 1
   fi
   if [ -z "$APPROVE_VERSION" ]; then
@@ -1411,7 +1443,7 @@ bind_head() {
   local want="$1" sha answer
   APPROVE_HEAD=""
   if [ "$CHANGE_STATE" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published. Ready it first: $(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH")"
     return 1
   fi
   if [ -n "$want" ]; then
@@ -1576,6 +1608,7 @@ read_and_decide() {
 cmd_review() {
   [ $# -eq 1 ] || die "usage: valley review <change>"
   resolve_change "$1" || exit 1
+  need_branch review
   local branch="$CHANGE_BRANCH"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
@@ -1643,6 +1676,7 @@ cmd_approve() {
 cmd_rebase() {
   [ $# -eq 1 ] || die "usage: valley rebase <change>"
   resolve_change "$1" || exit 1
+  need_branch rebase
   local branch="$CHANGE_BRANCH"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \

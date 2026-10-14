@@ -213,8 +213,9 @@ type resolution struct {
 
 // resolveRecorded reads a change's name for the verbs that act on a
 // change: review, approve and rebase, through runResolve. It is
-// lookupRecorded's reading, and a change whose active version names no
-// branch is refused, since each of those verbs acts on a branch too.
+// lookupRecorded's reading. A change whose active version names no branch
+// resolves with an empty branch: approve files the head alone, and
+// bin/valley refuses it for review and rebase, which act on a branch.
 func resolveRecorded(g git, name string) (resolution, error) {
 	o, n, found, err := lookupRecorded(g, name)
 	switch {
@@ -223,7 +224,7 @@ func resolveRecorded(g git, name string) (resolution, error) {
 	case !found:
 		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
 	}
-	return o.resolution(n)
+	return o.resolution(n), nil
 }
 
 // lookupRecorded reads a change's name and returns the record it names,
@@ -271,16 +272,12 @@ func lookupRecorded(g git, name string) (origin, recorded, bool, error) {
 // resolution is what a change's record says its name stands for: the
 // active version, the head that version names, the branch it names, and
 // the change's state.
-func (o origin) resolution(n recorded) (resolution, error) {
+func (o origin) resolution(n recorded) resolution {
 	v := n.record.ActiveVersion()
-	r := resolution{
+	return resolution{
 		id: n.id, handle: o.handle(n.id), version: v.N,
 		head: strings.TrimPrefix(v.Head, change.HeadPrefix), branch: v.Branch, state: n.record.State,
 	}
-	if r.branch == "" {
-		return resolution{}, failure(fmt.Sprintf("the change %s names no branch at v%d, so there is no branch to act on", r.handle, v.N))
-	}
-	return r, nil
 }
 
 // unlandedOn is every change origin holds a record of whose active
@@ -338,7 +335,8 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 //
 //	branch <branch>
 //
-// A branch name holds no tab, since git refuses control characters in a
+// A version may name no branch, and then the branch field is empty. A
+// branch name holds no tab, since git refuses control characters in a
 // ref name. The record commit, which has the head as a parent, has been
 // fetched, so the head is in this checkout's objects.
 func runResolve(g git, args []string, w io.Writer) error {

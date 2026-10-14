@@ -522,6 +522,8 @@ An approval of a change with a record binds one head, and the request names exac
 - Without `--head`, `approve` prints the active version's head and title and asks for confirmation.
   It does this only on a terminal, and refuses when it is not on one.
 - `valley review <change>` shows the active version's head, and `[a]pprove` approves that head.
+- A version may name no branch. `approve --head` files its head all the same, since the request
+  names the head. `review` refuses such a change, because its notes and `[r]eject` act on a branch.
 
 A branch no record is on is approved at its tip on origin. `--head`, when given, must be that tip.
 

@@ -169,7 +169,9 @@ in
   # change named by its handle is approved, reviewed and rebased at the head
   # its record names: a record pushed with its branch moved elsewhere in the
   # same push is refused, the branch at the recorded head is filed at that
-  # head, and a later version whose branch is elsewhere is refused. Then a
+  # head, and a later version whose branch is elsewhere is refused. A
+  # version that names no branch is approved at its head, and refused by
+  # review and rebase, which act on a branch. Then a
   # draft: unready, ready again at the same head and at a new one, listed
   # apart by pending, refused by approve, rebase and review's [a]pprove
   # whether it is named by its handle or its branch, and a request pending

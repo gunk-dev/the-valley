@@ -166,6 +166,17 @@ record_outcome "$head" "$base" reject
 status
 contains 'rejected' 'a current rejection was not reported'
 json rejected '.outcome.decision == "reject"' ".request.commit == \"$head\""
+# The integrator's refusals: a head that is a version of a change that is
+# not ready, and commits that hold a merge. The request stands for both.
+record_outcome "$head" "$base" refused-not-ready
+status
+contains 'did not say ready' 'a refusal for a record that is not ready was not reported'
+json refused-not-ready '.outcome.decision == "refused-not-ready"' ".request.commit == \"$head\"" \
+  '.change_id == null and .handle == null and .landing == null'
+record_outcome "$head" "$base" refused-merge
+status
+contains 'include a merge' 'a refusal for a merge was not reported'
+json refused-merge '.outcome.decision == "refused-merge"'
 record_outcome "$head" "$base" 'failed 2026-09-21T12:00:00Z'
 status
 contains 'failed' 'a controller failure was not reported'

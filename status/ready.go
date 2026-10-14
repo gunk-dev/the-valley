@@ -249,8 +249,8 @@ func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) e
 		return failure("not a git repository")
 	}
 	name := args[0]
-	o, err := listOrigin(g, append([]string{"refs/heads/" + strings.TrimPrefix(name, "origin/"), requestPrefix + "*"},
-		recordPatterns...)...)
+	o, err := listOrigin(g, append([]string{"refs/heads/" + strings.TrimPrefix(name, "origin/")},
+		inventoryPatterns...)...)
 	if err != nil {
 		return err
 	}
@@ -323,14 +323,14 @@ func warnPending(w io.Writer, o origin, n recorded, handle string) {
 	}
 }
 
-// onBranch is the change whose active version is on branch, for a change
-// named by its branch. Every record on origin is read to find it.
+// onBranch is the change whose active version is on branch, and has not
+// landed, for a change named by its branch. Every record on origin is
+// read to find it. o must list inventoryPatterns.
 func onBranch(g git, o origin, branch string) (recorded, error) {
-	all, err := readAll(g, o)
+	found, err := unlandedOn(g, o, branch)
 	if err != nil {
 		return recorded{}, err
 	}
-	found := activeOn(all, branch)
 	switch len(found) {
 	case 0:
 		return recorded{}, failure(fmt.Sprintf("no change on origin is named %s or has its active version on that branch", branch))

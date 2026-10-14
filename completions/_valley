@@ -9,7 +9,8 @@
 _valley() {
   if (( CURRENT == 2 )); then
     local -a verbs=(
-      'pending:list branches on origin not merged into origin/main'
+      'pending:list the changes not yet landed, the unrecorded branches, and the drafts'
+      'changes:print every change, across the host, as valley-changes/v1 JSON'
       'review:page through a branch, then approve, reject, or skip'
       'approve:approve a change without paging it, filing its integration request'
       'rebase:rebase a change onto origin/main and push it with a lease'
@@ -45,6 +46,21 @@ _valley() {
     _describe -t options 'valley ready option' opts
   elif [[ ${words[2]} == ready && ${words[CURRENT-1]} == --(head|change) ]]; then
     return
+  elif [[ ${words[2]} == pending && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--all:every project the serving host publishes'
+      '--repo:that one project'
+      '--owes:the checks each change owes, by cost'
+      '--json:print valley-pending/v1 JSON'
+    )
+    _describe -t options 'valley pending option' opts
+  elif [[ ${words[2]} == changes && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--json:print valley-changes/v1 JSON'
+      '--all:every project the serving host publishes'
+      '--repo:that one project'
+    )
+    _describe -t options 'valley changes option' opts
   elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
     local -a opts=('--json:print the status as one valley-status/v1 JSON object')
     _describe -t options 'valley status option' opts

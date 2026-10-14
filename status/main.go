@@ -1,11 +1,13 @@
 // valley-go is the part of the valley command written in Go: the verbs
 // that read a change's state from origin, and the verbs that write its
 // change record there. bin/valley runs it for status, ready, unready and
-// withdraw, for resolve, which turns the name of a change into its branch
-// for the verbs bin/valley runs itself, and for drafts, which lists the
-// changes pending shows apart.
+// withdraw, for changes and pending, which list every change across the
+// repositories a host serves, and for resolve, which turns the name of a
+// change into its branch for the verbs bin/valley runs itself.
 //
-// status reads one change's integration status (status.go). ready,
+// status reads one change's integration status (status.go). changes and
+// pending read every record and how far each version has landed
+// (inventory.go, pending.go). ready,
 // unready and withdraw write the change's record,
 // refs/the-valley/changes/main/<change ID> (ready.go), in the format the
 // change module defines and the push hook guards. Records are
@@ -31,7 +33,8 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go unready <change>
        valley-go withdraw <change>
        valley-go resolve <change>
-       valley-go drafts`
+       valley-go changes --json [--all] [--repo <name>]
+       valley-go pending [--json] [--all] [--repo <name>] [--owes]`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -62,8 +65,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runWithdraw(g, args, stdout, stderr)
 	case "resolve":
 		err = runResolve(g, args, stdout)
-	case "drafts":
-		err = runDrafts(g, args, stdout)
+	case "changes":
+		err = runChanges(g, args, stdout, stderr)
+	case "pending":
+		err = runPending(g, args, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -75,11 +80,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// git runs git in the current directory, in the environment bin/valley
-// gives every git it runs.
+// git runs git in a repository, in the environment bin/valley gives every
+// git it runs.
 type git struct {
 	env    []string
 	stderr io.Writer // where git's own diagnostics go, unless quiet
+	dir    string    // the repository's directory; "" for the current one
 }
 
 // gitEnvironment is the caller's environment with replacement refs off.
@@ -115,6 +121,7 @@ func (g git) output(quiet bool, args ...string) (string, error) {
 func (g git) input(quiet bool, stdin io.Reader, args ...string) (string, error) {
 	cmd := exec.Command("git", args...)
 	cmd.Env = g.env
+	cmd.Dir = g.dir
 	cmd.Stdin = stdin
 	if !quiet {
 		cmd.Stderr = g.stderr

@@ -17,7 +17,9 @@
 // The verbs that act on a change read a branch name further: the branch is
 // the change whose active version is on it, when exactly one is
 // (resolveRecorded). So how a change is named never decides whether its
-// record is read.
+// record is read. A change whose active version has landed, by the first
+// two landing rules (inventory.go), is not on any branch for this, so a
+// branch name can be used again once its change has landed.
 
 package main
 
@@ -80,11 +82,27 @@ func (o origin) handle(id string) string {
 }
 
 // fetch brings the objects named into this checkout's object store,
-// without writing FETCH_HEAD, moving a ref or fetching tags.
+// without writing FETCH_HEAD, moving a ref or fetching tags. An object
+// already here is not asked for: a fetch brings an object with everything
+// it reaches, so one that is here has what it reaches here too.
 func fetch(g git, oids ...string) error {
-	var stdin bytes.Buffer
+	var query bytes.Buffer
 	for _, oid := range oids {
 		if oid != "" {
+			fmt.Fprintln(&query, oid)
+		}
+	}
+	if query.Len() == 0 {
+		return nil
+	}
+	present, _ := g.input(true, &query, "cat-file", "--batch-check=%(objectname)")
+	here := map[string]bool{}
+	for _, line := range strings.Split(present, "\n") {
+		here[line] = true
+	}
+	var stdin bytes.Buffer
+	for _, oid := range oids {
+		if oid != "" && !here[oid] {
 			fmt.Fprintln(&stdin, oid)
 		}
 	}
@@ -196,7 +214,7 @@ func resolve(g git, name string) (resolution, error) {
 // is refused, since acting on the branch would act on any of them.
 func resolveRecorded(g git, name string) (resolution, error) {
 	branch := strings.TrimPrefix(name, "origin/")
-	o, err := listOrigin(g, append([]string{"refs/heads/" + branch}, recordPatterns...)...)
+	o, err := listOrigin(g, append([]string{"refs/heads/" + branch}, inventoryPatterns...)...)
 	if err != nil {
 		return resolution{}, err
 	}
@@ -209,11 +227,10 @@ func resolveRecorded(g git, name string) (resolution, error) {
 			return o.resolution(n)
 		}
 	}
-	all, err := readAll(g, o)
+	found, err := unlandedOn(g, o, branch)
 	if err != nil {
 		return resolution{}, err
 	}
-	found := activeOn(all, branch)
 	switch len(found) {
 	case 0:
 		return resolution{branch: branch}, nil
@@ -243,15 +260,41 @@ func (o origin) resolution(n recorded) (resolution, error) {
 	return r, nil
 }
 
-// activeOn is every change among all whose active version names branch.
-func activeOn(all []recorded, branch string) []recorded {
-	var found []recorded
+// unlandedOn is every change origin holds a record of whose active
+// version names branch and has not landed. o must list inventoryPatterns.
+// Landing is read only for a change on the branch, so a name no record is
+// on costs no more than reading the records.
+func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
+	all, err := readAll(g, o)
+	if err != nil {
+		return nil, err
+	}
+	var on []recorded
 	for _, n := range all {
 		if n.record.ActiveVersion().Branch == branch {
+			on = append(on, n)
+		}
+	}
+	if len(on) == 0 {
+		return nil, nil
+	}
+	var want []string
+	for ref, oid := range o.refs {
+		if ref == "refs/heads/"+recordTarget || strings.HasPrefix(ref, outcomePrefix) {
+			want = append(want, oid)
+		}
+	}
+	if err := fetch(g, want...); err != nil {
+		return nil, err
+	}
+	s := newSnapshot(g, o, all, verifierFromEnv())
+	var found []recorded
+	for _, n := range on {
+		if !s.isLanded(n.id, n.record.ActiveVersion()) {
 			found = append(found, n)
 		}
 	}
-	return found
+	return found, nil
 }
 
 // resolveBranch is the branch a change is on: the branch its active
@@ -293,43 +336,6 @@ func runResolve(g git, args []string, w io.Writer) error {
 	}
 	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch, r.state)
 	return err
-}
-
-// runDrafts lists every change origin holds a record of that is a draft,
-// for pending, which shows drafts apart. Each is one line of fields
-// separated by tabs:
-//
-//	<handle> <version> <head> <branch>
-//
-// for the active version, with the head as a full object ID. The branch
-// is last, since it may be empty. Every record commit is fetched, and has
-// its heads as parents, so each head is in this checkout's objects.
-func runDrafts(g git, args []string, w io.Writer) error {
-	if len(args) != 0 {
-		return failure("usage: valley-go drafts")
-	}
-	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
-	}
-	o, err := listOrigin(g, recordPatterns...)
-	if err != nil {
-		return err
-	}
-	all, err := readAll(g, o)
-	if err != nil {
-		return err
-	}
-	for _, n := range all {
-		if n.record.State != change.Draft {
-			continue
-		}
-		v := n.record.ActiveVersion()
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", o.handle(n.id), v.N,
-			strings.TrimPrefix(v.Head, change.HeadPrefix), v.Branch); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // readAll reads every record origin holds, in the order of their IDs.

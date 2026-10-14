@@ -18,16 +18,15 @@ import (
 // it adds, if it adds one. So a record ref holds on to every head the
 // change was ever ready at, as a topic branch holds on to its commits.
 //
-// The bounds on reading one. A record commit names a tree, at most two
-// parents, an author, a committer and a short message. Its tree names one
-// file. The bounds are far above what the valley command writes, and they
-// are checked before any object is read past them.
+// The bounds on reading one, which the change module defines for every
+// reader of a record. They are far above what the valley command writes,
+// and they are checked before any object is read past them.
 const (
-	maxRecordCommit  = 4 << 10  // bytes in a record commit
-	maxRecordTree    = 1 << 10  // bytes in its tree
-	maxRecordBlob    = 64 << 10 // bytes in its record.json
-	maxRecordUpdates = 32       // change record updates in one push
-	maxRecords       = 2000     // change records a repository holds; a soft bound, below
+	maxRecordCommit  = change.MaxRecordCommit  // bytes in a record commit
+	maxRecordTree    = change.MaxRecordTree    // bytes in its tree
+	maxRecordBlob    = change.MaxRecordBlob    // bytes in its record.json
+	maxRecordUpdates = change.MaxRecordUpdates // change record updates in one push
+	maxRecords       = change.MaxRecords       // change records a repository holds; a soft bound, below
 
 	// recordTarget is the one target a change may name for now.
 	recordTarget = "main"

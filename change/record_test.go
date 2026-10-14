@@ -288,3 +288,28 @@ func TestEncodeRefusesWhatParseWould(t *testing.T) {
 		t.Errorf("Encode escaped a title it need not: %s, %v", out, err)
 	}
 }
+
+// A request name of the form c-<change ID> is reserved for the change with
+// that ID, and nothing else is: the integrator reads a request so named as
+// that change's, and a name one letter off is a branch's.
+func TestOnlyCAndAChangeIDIsAChangesRequestName(t *testing.T) {
+	if got := RequestName(id1); got != "c-"+id1 {
+		t.Fatalf("RequestName = %q", got)
+	}
+	if id, ok := RequestID(RequestName(id1)); !ok || id != id1 {
+		t.Fatalf("RequestID(RequestName) = %q, %v", id, ok)
+	}
+	for _, name := range []string{
+		id1,                  // no prefix
+		"c-" + id1[:31],      // 31 letters
+		"c-" + id1 + "k",     // 33 letters
+		"c-" + "a" + id1[1:], // a letter before k
+		"C-" + id1,           // another prefix
+		"c-" + strings.ToUpper(id1),
+		"topic-c-" + id1,
+	} {
+		if _, ok := RequestID(name); ok {
+			t.Errorf("RequestID(%q) reads a change ID", name)
+		}
+	}
+}

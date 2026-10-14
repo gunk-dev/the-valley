@@ -447,7 +447,7 @@ func writeRecord(g git, r *change.Record, message string, parents ...string) (st
 
 // maxRecordBlob is the most bytes a record.json may hold, as the hook
 // bounds it.
-const maxRecordBlob = 64 << 10
+const maxRecordBlob = change.MaxRecordBlob
 
 // pushRecord moves the change's record ref on origin from old to commit,
 // leased on old: the push is refused if the ref has moved since it was

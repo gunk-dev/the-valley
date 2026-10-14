@@ -68,6 +68,23 @@ const (
 	MaxTitle    = 200    // bytes in a version's title
 )
 
+// The bounds on the objects that hold records. A record commit names a
+// tree, at most two parents, an author, a committer and a short message,
+// and its tree names one file. Every reader holds a record to these before
+// it reads anything past them: the hook as it admits a record, and the
+// integrator and the valley command as they read one back.
+const (
+	MaxRecordCommit  = 4 << 10  // bytes in a record commit
+	MaxRecordTree    = 1 << 10  // bytes in its tree
+	MaxRecordBlob    = 64 << 10 // bytes in its record.json
+	MaxRecordUpdates = 32       // record updates in one push
+
+	// MaxRecords is how many records a repository may hold. The hook
+	// refuses a create past it, but the bound is soft: pushes that run at
+	// once can each count the same records, and each create more.
+	MaxRecords = 2000
+)
+
 // HeadPrefix opens a version's head: the head is named by its hash
 // function and then its object ID.
 const HeadPrefix = "git-sha1:"

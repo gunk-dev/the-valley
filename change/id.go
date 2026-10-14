@@ -19,6 +19,28 @@ func Ref(target, id string) string {
 	return RefPrefix + target + "/" + id
 }
 
+// RequestPrefix opens the name of a recorded change's integration request.
+const RequestPrefix = "c-"
+
+// RequestName is the name a change's integration request is filed under,
+// and its outcome record kept under: c-<change ID>, as in
+// refs/the-valley/integration-requests/<target>/c-<change ID>.
+func RequestName(id string) string {
+	return RequestPrefix + id
+}
+
+// RequestID is the change ID a request name stands for. Every name of the
+// form c-<change ID> is reserved for the change with that ID, so ok is
+// true exactly when name is RequestName of a change ID. A request filed
+// under a branch's name never takes one of these names.
+func RequestID(name string) (id string, ok bool) {
+	id, found := strings.CutPrefix(name, RequestPrefix)
+	if !found || !ValidID(id) {
+		return "", false
+	}
+	return id, true
+}
+
 // ParseRef splits a record's ref into its target and change ID. It
 // reports false for a ref that is not refs/the-valley/changes/<target>/<ID>
 // with a branch name as the target and a change ID as the ID.

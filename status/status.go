@@ -1,6 +1,12 @@
 // status reads one change's integration status from origin: the change's
-// branch head, its integration request, and the integrator's last recorded
+// head, its integration request, and the integrator's last recorded
 // outcome for it. It is `valley status`.
+//
+// A change with a record is read at the head its active version records,
+// under the request name approve files it under, c-<change ID>, and its
+// status carries what its record says and how far its active version has
+// landed. Any other name is a branch, read at its head on origin under the
+// request name approve gives a branch.
 //
 // It writes nothing. The objects it reads are fetched without writing
 // FETCH_HEAD or moving a branch, so a status read leaves the checkout and
@@ -22,6 +28,8 @@ import (
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"the-valley/change"
 )
 
 const statusUsage = "usage: valley status [--json] <change>"
@@ -31,13 +39,9 @@ func runStatus(g git, args []string, stdout, stderr io.Writer) int {
 	if err == nil && asJSON && !utf8.ValidString(name) {
 		err = failure(name + ": not UTF-8, so JSON cannot carry the change name")
 	}
-	var branch string
-	if err == nil {
-		branch, err = resolveBranch(g, name)
-	}
 	var s *status
 	if err == nil {
-		s, err = read(g, branch)
+		s, err = readNamed(g, name, stderr)
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "valley: %s\n", err)
@@ -76,10 +80,14 @@ const (
 // status is what one read of origin found for a change, and the state
 // decide made of it.
 type status struct {
-	branch     string // the change as given, without origin/
-	change     string // the request's name for it (changeName)
+	branch     string // the change's branch: as given, without origin/, or as its record names it
+	change     string // the request's name for it (changeName, or c-<change ID>)
 	requestRef string
 	outcomeRef string
+
+	// recorded is what the change's record says, for a change with one,
+	// and nil for a branch.
+	recorded *statusRecord
 
 	tip     string // origin's main
 	head    string // the change's head as this read knows it; "" for none
@@ -88,6 +96,60 @@ type status struct {
 	memo    memo   // the outcome record, read; meaningful when outcome is set
 
 	state string
+}
+
+// statusRecord is what a change's record says about its active version,
+// and how far that version has landed (inventory.go).
+type statusRecord struct {
+	id, handle, title, owner, landing string
+	version                           int
+}
+
+// name is how the status names the change in the commands it suggests:
+// its handle when it has a record, and otherwise its branch.
+func (s *status) name() string {
+	if s.recorded != nil {
+		return s.recorded.handle
+	}
+	return s.branch
+}
+
+// label is how the status names the change in its sentences: its handle
+// and version when it has a record, and otherwise its branch.
+func (s *status) label() string {
+	if s.recorded != nil {
+		return fmt.Sprintf("%s v%d", s.recorded.handle, s.recorded.version)
+	}
+	return s.branch
+}
+
+// readNamed reads the status of a change by any of its names, as review
+// and approve read one (resolveRecorded): a change's ID or handle, or a
+// branch that exactly one record's active version is on. Any other name
+// is a branch.
+func readNamed(g git, name string, stderr io.Writer) (*status, error) {
+	if !g.succeeds(true, "rev-parse", "--git-dir") {
+		return nil, failure("not a git repository")
+	}
+	o, n, found, err := lookupRecorded(g, name)
+	switch {
+	case err != nil:
+		return nil, err
+	case !found:
+		return read(g, strings.TrimPrefix(name, "origin/"))
+	}
+	return readRecorded(g, o, n, stderr)
+}
+
+// reservedName refuses a branch whose request name is c-<change ID>.
+// Every such name is reserved for the change with that ID, so a branch
+// mapping to one is never filed or read under it.
+func reservedName(branch string) error {
+	name := changeName(branch)
+	if id, ok := change.RequestID(name); ok {
+		return failure(fmt.Sprintf("the branch %s would be requested as %s, and that name is reserved for the change with the ID %s; rename the branch, or name the change by its ID", branch, name, id))
+	}
+	return nil
 }
 
 // changeName is the change segment of a request ref. The integrator reads
@@ -112,6 +174,9 @@ func read(g git, branch string) (*status, error) {
 	if !g.succeeds(true, "check-ref-format", "refs/heads/"+branch) {
 		return nil, failure("not a branch name: " + branch)
 	}
+	if err := reservedName(branch); err != nil {
+		return nil, err
+	}
 	s := &status{branch: branch, change: changeName(branch)}
 	s.requestRef = requestPrefix + s.change
 	s.outcomeRef = outcomePrefix + s.change
@@ -126,20 +191,67 @@ func read(g git, branch string) (*status, error) {
 	// ls-remote prints "<oid>\t<ref>", and a ref name may hold any space
 	// but ASCII's, so the line is split at the tab alone. ls-remote matches
 	// a pattern against the tail of a ref name, so every ref is compared
-	// whole here.
-	var attestations []string
+	// whole by settle.
+	refs := map[string]string{}
 	for _, line := range strings.Split(snapshot, "\n") {
-		oid, ref, ok := strings.Cut(line, "\t")
-		if !ok || ref == "" {
-			continue
+		if oid, ref, ok := strings.Cut(line, "\t"); ok && ref != "" {
+			refs[ref] = oid
 		}
-		if ref == "refs/heads/"+target {
-			s.tip = oid
+	}
+	s.head = refs["refs/heads/"+branch]
+	if err := s.settle(g, refs); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// readRecorded reads a change with a record from the snapshot o its name
+// was resolved in. The change is read at the head its active version
+// records, under its request name, c-<change ID>.
+func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error) {
+	v := n.record.ActiveVersion()
+	name := change.RequestName(n.id)
+	s := &status{
+		branch: v.Branch, change: name, requestRef: requestPrefix + name, outcomeRef: outcomePrefix + name,
+		head: headOf(v),
+		recorded: &statusRecord{
+			id: n.id, handle: o.handle(n.id), version: v.N, title: v.Title, owner: n.record.Owner,
+		},
+	}
+	if s.branch == "" {
+		s.branch = s.recorded.handle
+	}
+	if err := s.settle(g, o.refs); err != nil {
+		return nil, err
+	}
+	// How far the active version has landed, by the rules changes uses.
+	var want []string
+	for ref, oid := range o.refs {
+		if strings.HasPrefix(ref, outcomePrefix) {
+			want = append(want, oid)
 		}
-		if ref == "refs/heads/"+branch {
-			s.head = oid
-		}
+	}
+	if err := fetch(g, want...); err != nil {
+		return nil, err
+	}
+	snap := newSnapshot(g, o, nil, verifierFromEnv())
+	s.recorded.landing, _ = snap.landing(n.id, v)
+	if snap.unverified {
+		fmt.Fprintf(stderr, "valley: a transfer statement could not be verified, so %s may have landed though its landing does not say so. %s\n", s.recorded.handle, verifierHint)
+	}
+	return s, nil
+}
+
+// settle reads the request, the outcome record and the evidence from
+// refs, a snapshot of origin, fetches what they name, and decides the
+// change's state. s.head is the change's head as the snapshot knows it,
+// or "" for none.
+func (s *status) settle(g git, refs map[string]string) error {
+	var attestations []string
+	for ref, oid := range refs {
 		switch {
+		case ref == "refs/heads/"+target:
+			s.tip = oid
 		case ref == s.requestRef:
 			s.request = oid
 		case ref == s.outcomeRef:
@@ -149,10 +261,10 @@ func read(g git, branch string) (*status, error) {
 		}
 	}
 	if s.tip == "" {
-		return nil, failure("origin has no main branch; integration status is unknown")
+		return failure("origin has no main branch; integration status is unknown")
 	}
 	if s.head == "" && s.request == "" && s.outcome == "" {
-		return nil, failure(branch + ": no remote branch or recorded integration request on origin")
+		return failure(s.branch + ": no remote branch or recorded integration request on origin")
 	}
 	fetch := []string{"fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin", s.tip}
 	for _, oid := range []string{s.head, s.request, s.outcome} {
@@ -161,8 +273,8 @@ func read(g git, branch string) (*status, error) {
 		}
 	}
 	if _, err := g.output(false, fetch...); err != nil {
-		return nil, failure("could not fetch the status objects; origin may have changed. Try valley status " +
-			shellQuote(branch) + " again")
+		return failure("could not fetch the status objects; origin may have changed. Try valley status " +
+			shellQuote(s.name()) + " again")
 	}
 
 	if s.outcome != "" {
@@ -182,7 +294,7 @@ func read(g git, branch string) (*status, error) {
 		s.head = s.memo.head
 	}
 	s.state = decide(g, s, evidenceFingerprint(attestations))
-	return s, nil
+	return nil
 }
 
 // memo is the integrator's outcome record for a request, one line: the
@@ -192,7 +304,7 @@ func read(g git, branch string) (*status, error) {
 // what the integrator compares to decide whether to judge a request again.
 type memo struct {
 	head, tip, evidence string
-	decision            string // land, stale, reject, failed, or unknown
+	decision            string // land, stale, reject, refused-not-ready, refused-merge, failed, or unknown
 	failedAt            string // set for failed alone
 }
 
@@ -217,7 +329,7 @@ func parseMemo(record string) memo {
 		m.decision = "unknown"
 	}
 	switch m.decision {
-	case "land", "stale", "reject":
+	case "land", "stale", "reject", "refused-not-ready", "refused-merge":
 		if m.failedAt != "" {
 			m.decision = "unknown"
 		}
@@ -298,6 +410,8 @@ func decide(g git, s *status, evidence string) string {
 		return "stale"
 	case "reject":
 		return "rejected"
+	case "refused-not-ready", "refused-merge":
+		return decision
 	case "failed":
 		return "failed"
 	}

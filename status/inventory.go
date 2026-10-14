@@ -80,6 +80,10 @@ type verifier struct {
 	keys, signer, attest string
 }
 
+// verifierHint says what a transfer statement is verified with, for a
+// command that could not verify one.
+const verifierHint = "Set VALLEY_KNOWN_SIGNERS to the known-signers file and VALLEY_INTEGRATOR_SIGNER to the integrator's signing name, with attest on PATH"
+
 func verifierFromEnv() verifier {
 	return verifier{
 		keys:   os.Getenv("VALLEY_KNOWN_SIGNERS"),

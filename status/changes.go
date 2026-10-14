@@ -17,14 +17,12 @@
 // of a branch on origin is refused unless the change is on that branch,
 // because the two could be different changes.
 //
-// The verbs that act on a change read a branch name further: the branch is
-// the change whose active version is on it, when exactly one is
-// (resolveRecorded). So how a change is named never decides whether its
+// The verbs that act on a change, and status, read a branch name further:
+// the branch is the change whose active version is on it, when exactly one
+// is (resolveRecorded). So how a change is named never decides whether its
 // record is read. A change whose active version has landed, by the first
-// two landing rules (inventory.go), is not on its branch for this while
-// the branch is still at that version's head, so a branch name can be
-// used again once its change has landed. A branch that has moved since
-// names the change as before.
+// two landing rules (inventory.go), is on no branch for this, so a branch
+// name can be used again once its change has landed.
 
 package main
 
@@ -213,70 +211,60 @@ type resolution struct {
 	version                         int
 }
 
-// resolve reads a change's name, as status does. A name with no handle's
-// shape is a branch name without origin being read. A change whose active
-// version names no branch is refused, since every verb that resolves a
-// name acts on a branch too.
-func resolve(g git, name string) (resolution, error) {
-	handle, _, err := handlePart(g, name)
-	if err != nil {
-		return resolution{}, err
-	}
-	if strings.HasPrefix(name, "origin/") || handle == "" {
-		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
-	}
-	o, err := listOrigin(g, append([]string{"refs/heads/" + name}, recordPatterns...)...)
-	if err != nil {
-		return resolution{}, err
-	}
-	n, found, err := lookup(g, o, name)
+// resolveRecorded reads a change's name for the verbs that act on a
+// change: review, approve and rebase, through runResolve. It is
+// lookupRecorded's reading, and a change whose active version names no
+// branch is refused, since each of those verbs acts on a branch too.
+func resolveRecorded(g git, name string) (resolution, error) {
+	o, n, found, err := lookupRecorded(g, name)
 	switch {
 	case err != nil:
 		return resolution{}, err
 	case !found:
-		return resolution{branch: name}, nil
+		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
 	}
 	return o.resolution(n)
 }
 
-// resolveRecorded reads a change's name for the verbs that act on a
-// change: review, approve and rebase, through runResolve. A name that is a
-// change's ID or handle is that change, as resolve reads it. A branch name,
-// written as <branch> or origin/<branch>, is read against the branch each
-// record's active version names. No record on the branch leaves the name a
-// branch, as it was before changes had records. One record makes the name
-// that record's change, exactly as if its ID had been given. More than one
-// is refused, since acting on the branch would act on any of them.
-func resolveRecorded(g git, name string) (resolution, error) {
+// lookupRecorded reads a change's name and returns the record it names,
+// if it names one, with the snapshot of origin it was read in. That
+// snapshot lists inventoryPatterns. A name that is a change's ID or handle
+// is that change, as lookup reads it. A branch name, written as <branch>
+// or origin/<branch>, is read against the branch each record's active
+// version names. No record on the branch leaves the name a branch, as it
+// was before changes had records. One record makes the name that record's
+// change, exactly as if its ID had been given. More than one is refused,
+// since acting on the branch would act on any of them.
+func lookupRecorded(g git, name string) (origin, recorded, bool, error) {
 	branch := strings.TrimPrefix(name, "origin/")
 	o, err := listOrigin(g, append([]string{"refs/heads/" + branch}, inventoryPatterns...)...)
 	if err != nil {
-		return resolution{}, err
+		return origin{}, recorded{}, false, err
 	}
 	if !strings.HasPrefix(name, "origin/") {
 		n, found, err := lookup(g, o, name)
 		switch {
 		case err != nil:
-			return resolution{}, err
+			return o, recorded{}, false, err
 		case found:
-			return o.resolution(n)
+			return o, n, true, nil
 		}
 	}
 	found, err := unlandedOn(g, o, branch)
 	if err != nil {
-		return resolution{}, err
+		return o, recorded{}, false, err
 	}
 	switch len(found) {
 	case 0:
-		return resolution{branch: branch}, nil
+		return o, recorded{}, false, nil
 	case 1:
-		return o.resolution(found[0])
+		return o, found[0], true, nil
 	}
 	var ids []string
 	for _, n := range found {
 		ids = append(ids, n.id)
 	}
-	return resolution{}, failure(fmt.Sprintf("the changes %s all have their active version on %s; name one by its change ID",
+	return o, recorded{}, false, failure(fmt.Sprintf("the changes %s all have their active version on %s; name one by its change ID",
 		strings.Join(ids, ", "), branch))
 }
 
@@ -296,11 +284,16 @@ func (o origin) resolution(n recorded) (resolution, error) {
 }
 
 // unlandedOn is every change origin holds a record of whose active
-// version names branch, less each whose active version has landed while
-// the branch's tip on origin is still that version's head. o must list
-// inventoryPatterns.
-// Landing is read only for a change on the branch, so a name no record is
-// on costs no more than reading the records.
+// version names branch, less each whose active version has landed. o must
+// list inventoryPatterns. Landing is read only for a change on the
+// branch, so a name no record is on costs no more than reading the
+// records.
+//
+// A landed change is left out wherever the branch has moved since. The
+// branch then holds new work, and the name is free for it. A landing read
+// wrongly could make a draft's branch read as a plain branch, but nothing
+// lands from that: the integrator refuses any request whose head is a
+// version of a change that is not ready, whatever the request is named.
 func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 	all, err := readAll(g, o)
 	if err != nil {
@@ -326,22 +319,12 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 	}
 	s := newSnapshot(g, o, all, verifierFromEnv())
 	var found []recorded
-	tip := o.refs["refs/heads/"+branch]
 	for _, n := range on {
-		v := n.record.ActiveVersion()
-		if tip != headOf(v) || !s.isLanded(n.id, v) {
+		if !s.isLanded(n.id, n.record.ActiveVersion()) {
 			found = append(found, n)
 		}
 	}
 	return found, nil
-}
-
-// resolveBranch is the branch a change is on: the branch its active
-// version names, when the name is a change's, and otherwise the name
-// itself, as a branch name.
-func resolveBranch(g git, name string) (string, error) {
-	r, err := resolve(g, name)
-	return r.branch, err
 }
 
 // runResolve prints what a change's name stands for, for the verbs
@@ -374,6 +357,48 @@ func runResolve(g git, args []string, w io.Writer) error {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch, r.state)
+	return err
+}
+
+// runVersions prints every version of a change, for bin/valley's approve,
+// which approves exactly one head of a change and refuses a head no
+// version records. One line each, in order, of fields separated by tabs:
+//
+//	<n> <head> <state> <title>
+//
+// with the head as a full object ID and the change's state as its record
+// says it, on every line. The title is last, since it may hold spaces; it
+// holds no tab, which is a control character. It fails when origin holds
+// no record of the change.
+func runVersions(g git, args []string, w io.Writer) error {
+	if len(args) != 1 || !change.ValidID(args[0]) {
+		return failure("usage: valley-go versions <change ID>")
+	}
+	id := args[0]
+	if !g.succeeds(true, "rev-parse", "--git-dir") {
+		return failure("not a git repository")
+	}
+	ref := change.Ref(recordTarget, id)
+	o, err := listOrigin(g, ref)
+	if err != nil {
+		return err
+	}
+	commit := o.refs[ref]
+	if commit == "" {
+		return failure("origin holds no record of change " + id)
+	}
+	if err := fetch(g, commit); err != nil {
+		return err
+	}
+	r, err := readRecord(g, commit)
+	if err != nil {
+		return err
+	}
+	var b strings.Builder
+	for _, v := range r.Versions {
+		fmt.Fprintf(&b, "%d\t%s\t%s\t%s\n", v.N, headOf(v), r.State, v.Title)
+	}
+	_, err = io.WriteString(w, b.String())
 	return err
 }
 

@@ -259,7 +259,9 @@ refused 'include the merge' as contributor valley ready
 # reads the branch its active version names, and withdraw takes a branch
 # name too.
 ok valley status kkkk
-grep -q '^from-trailer: not approved' "$w/out" || fail 'status did not read the change by its handle'
+grep -q '^kkkk v1: not approved' "$w/out" || fail 'status did not read the change by its handle'
+grep -q '^Change kkkk v1 on from-trailer, owned by contributor: trailer$' "$w/out" \
+  || fail 'status did not say what the record says'
 ok as contributor valley withdraw from-trailer
 grep -qx 'project kkkk v1 withdrawn' "$w/out" || fail 'withdraw did not take a branch name'
 
@@ -479,9 +481,9 @@ printf 'a\n' | as requester valley review drafts/paused > "$w/out" 2> "$w/err" |
 grep -q "^change $ph v1 at " "$w/out" || fail 'review of a branch did not read its change'
 grep -q '^Approved drafts/paused' "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
 ok as contributor valley unready "$ph"
-grep -qF "valley: warning: the integration request $request_ref for $ph is pending on origin" "$w/err" \
-  || fail 'unready did not warn of the pending request'
-grep -qF 'so the operator must drop it' "$w/err" || fail 'the warning did not say who must drop the request'
+grep -qF "valley: note: the integration request $request_ref for $ph is pending on origin" "$w/err" \
+  || fail 'unready did not say a request is pending'
+grep -qF 'lands once the change is ready again' "$w/err" || fail 'the note did not say when the request lands'
 [ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'unready touched the request'
 
 # unready, then ready at a new head, is v2.
@@ -499,6 +501,7 @@ ok as contributor valley withdraw "$ph"
 grep -qx "project $ph v2 withdrawn" "$w/out" || fail 'withdraw did not say what it withdrew'
 grep -qF "valley: warning: the integration request $request_ref for $ph is pending on origin" "$w/err" \
   || fail 'withdraw did not warn of the pending request'
+grep -qF 'so the operator must drop it' "$w/err" || fail 'the warning did not say who must drop the request'
 record "$pid" '.state == "withdrawn"' '.seq == 6' '.active == 2'
 unchanged "$pid" refused 'never made a draft' as contributor valley unready "$ph"
 ok as contributor valley ready --change "$pid"

@@ -10,9 +10,10 @@
 // (inventory.go, pending.go). ready,
 // unready and withdraw write the change's record,
 // refs/the-valley/changes/main/<change ID> (ready.go), in the format the
-// change module defines and the push hook guards. Records are
-// observational for now: nothing reads them for authority, and the
-// integration request stays the only way to main.
+// change module defines and the push hook guards. The integrator reads
+// records only to refuse: it lands no request whose head is a version of
+// a change that is not ready. The integration request stays the only way
+// to main. versions lists a change's versions, for approve.
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -29,10 +30,11 @@ import (
 )
 
 const usage = `usage: valley-go status [--json] <change>
-       valley-go ready [--head <sha>] [--change <id>] [--stamp] [<branch>]
+       valley-go ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
        valley-go unready <change>
        valley-go withdraw <change>
        valley-go resolve <change>
+       valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--owes]`
 
@@ -65,6 +67,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runWithdraw(g, args, stdout, stderr)
 	case "resolve":
 		err = runResolve(g, args, stdout)
+	case "versions":
+		err = runVersions(g, args, stdout)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":

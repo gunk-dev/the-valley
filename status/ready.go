@@ -10,12 +10,19 @@
 // head of its active version, is ready again at that version, and gains no
 // new one.
 //
+// --if-active <sha> adds the version only while the change is ready at an
+// active version whose head is <sha>. The record ref is pushed leased on
+// the record that was read, so nothing can unready the change or ready
+// another version between that check and the write. rebase readies the
+// head it rebased this way.
+//
 // `valley unready <change>` makes a ready change a draft: a pause, which
 // voids nothing. `valley withdraw <change>` withdraws a ready change or a
 // draft, which voids everything outstanding on it. Either is undone by
-// readying the change again. Until the integrator reads records, neither
-// stops a pending integration request from landing the change, so both
-// warn when one is pending.
+// readying the change again. The integrator lands no request at a head of
+// a change that is not ready, so either stops a pending request. Each says
+// when one is pending, and withdraw warns, since the request it voids
+// would land once the change is readied again.
 //
 // The record names the principal that pushes it as the uploader of the
 // version it adds, and as the owner of a change it creates. The host
@@ -34,11 +41,11 @@ import (
 	"the-valley/change"
 )
 
-const readyUsage = "usage: valley ready [--head <sha>] [--change <id>] [--stamp] [<branch>]"
+const readyUsage = "usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]"
 
 type readyArgs struct {
-	head, id, branch string
-	stamp            bool
+	head, id, branch, ifActive string
+	stamp                      bool
 }
 
 func parseReadyArgs(args []string) (readyArgs, error) {
@@ -62,6 +69,8 @@ func parseReadyArgs(args []string) (readyArgs, error) {
 			a.head, err = value("--head")
 		case arg == "--change" || strings.HasPrefix(arg, "--change="):
 			a.id, err = value("--change")
+		case arg == "--if-active" || strings.HasPrefix(arg, "--if-active="):
+			a.ifActive, err = value("--if-active")
 		case arg == "--stamp":
 			a.stamp = true
 		case strings.HasPrefix(arg, "-"):
@@ -104,6 +113,12 @@ func runReady(g git, args []string, w io.Writer) error {
 	}
 	if a.stamp && a.head != "" {
 		return failure("--stamp amends the branch's own head, so it takes no --head")
+	}
+	if a.ifActive != "" && !isObjectID(a.ifActive) {
+		return failure("--if-active takes the full object ID of a version's head, and " + a.ifActive + " is not one")
+	}
+	if a.ifActive != "" && a.stamp {
+		return failure("--stamp starts a new change, so it takes no --if-active")
 	}
 
 	o, err := listOrigin(g, append([]string{"refs/heads/" + recordTarget, "refs/heads/" + a.branch}, recordPatterns...)...)
@@ -158,6 +173,16 @@ func runReady(g git, args []string, w io.Writer) error {
 		}
 	}
 	handle := o.handle(id)
+	if a.ifActive != "" {
+		switch {
+		case before == nil:
+			return failure(fmt.Sprintf("--if-active %s: origin holds no record of %s, so no version is added", short(a.ifActive), handle))
+		case before.State != change.Ready:
+			return failure(fmt.Sprintf("%s is %s, not ready, so no version is added: --if-active adds one only while the change is ready", handle, before.State))
+		case headOf(before.ActiveVersion()) != a.ifActive:
+			return failure(fmt.Sprintf("%s v%d is at %s, not %s, so no version is added", handle, before.Active, short(headOf(before.ActiveVersion())), short(a.ifActive)))
+		}
+	}
 
 	if a.stamp {
 		// Who owns a change is the host's to say, from the key a push
@@ -285,18 +310,22 @@ func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) e
 		return err
 	}
 	fmt.Fprintf(stdout, "%s %s v%d %s\n", project(g), handle, after.Active, to)
-	warnPending(stderr, o, n, handle)
+	warnPending(stderr, o, n, handle, to)
 	return nil
 }
 
-// warnPending warns of an integration request for the change that origin
-// held when the verb read it. The integrator does not read records yet, so
-// a draft or a withdrawn change still lands by a request filed before it
-// was one. The request is named either way approve names a change's: by a
-// branch, the way approve names one today, or as c-<change ID>. A request
-// filed for an earlier version is named by that version's branch, so the
-// branch of every version is looked for, each once.
-func warnPending(w io.Writer, o origin, n recorded, handle string) {
+// warnPending says so when origin held an integration request for the
+// change as the verb read it. The integrator lands no request at a head of
+// a change that is not ready, so the request is held back while the change
+// is a draft or withdrawn, and stands for when it is ready again. That is
+// what a draft means. A withdrawal voids the request, so withdraw warns
+// that it would land once the change is ready again, and that only the
+// operator can drop it. The request is named either way approve has named
+// a change's: as c-<change ID>, or by a branch, the way approve named one
+// before it named a change by its ID. A request filed for an earlier
+// version is named by that version's branch, so the branch of every
+// version is looked for, each once.
+func warnPending(w io.Writer, o origin, n recorded, handle string, to string) {
 	var refs []string
 	seen := map[string]bool{}
 	add := func(ref string) {
@@ -311,15 +340,23 @@ func warnPending(w io.Writer, o origin, n recorded, handle string) {
 		}
 	}
 	add(requestPrefix + "c-" + n.id)
-	warned := false
+	kind := "note"
+	if to == change.Withdrawn {
+		kind = "warning"
+	}
+	pending := false
 	for _, ref := range refs {
 		if oid := o.refs[ref]; oid != "" {
-			fmt.Fprintf(w, "valley: warning: the integration request %s for %s is pending on origin, at %s\n", ref, handle, short(oid))
-			warned = true
+			fmt.Fprintf(w, "valley: %s: the integration request %s for %s is pending on origin, at %s\n", kind, ref, handle, short(oid))
+			pending = true
 		}
 	}
-	if warned {
-		fmt.Fprintln(w, "valley: the integrator does not read change records yet, so a pending request can still land the change. Only a holder of the request grant may touch a request ref, so the operator must drop it")
+	switch {
+	case !pending:
+	case to == change.Withdrawn:
+		fmt.Fprintln(w, "valley: the integrator lands nothing for a withdrawn change. Withdrawing voids the request, but the integrator would land it once the change is ready again. Only a holder of the request grant may touch a request ref, so the operator must drop it")
+	default:
+		fmt.Fprintln(w, "valley: the integrator lands nothing for a draft. The request stands, and lands once the change is ready again")
 	}
 }
 

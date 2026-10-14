@@ -205,7 +205,7 @@ in
   # policy/valley git would read as an option or
   # as ext::; includes as the nearest ancestor only; pending's human shape,
   # its drafts array and --owes; and a branch name read as a branch again
-  # once its change has landed, until the branch moves.
+  # once its change has landed, before the branch moves and after.
   valley-changes = pkgs.runCommand "valley-changes" {
     nativeBuildInputs = [
       pkgs.git

@@ -14,35 +14,39 @@ const noReason = "The stored outcome has no detailed reason. Ask the instance op
 // to act on it.
 func writeHuman(g git, s *status, w io.Writer) int {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
+	if r := s.recorded; r != nil {
+		p("Change %s v%d on %s, owned by %s: %s\n", r.handle, r.version, s.branch, r.owner, r.title)
+		p("Its landing: %s.\n", r.landing)
+	}
 	switch s.state {
 	case "integrated":
-		p("%s (%s): integrated into origin/main.\n", s.branch, short(s.head))
+		p("%s (%s): integrated into origin/main.\n", s.label(), short(s.head))
 		if s.request != "" {
 			p("The request for %s is still present at %s.\n", short(s.request), s.requestRef)
 		}
 		return writeCheckout(g, s.tip, w)
 	case "integrated-recorded":
-		p("%s (%s): the integrator recorded it integrated into origin/main.\n", s.branch, short(s.head))
+		p("%s (%s): the integrator recorded it integrated into origin/main.\n", s.label(), short(s.head))
 		return writeCheckout(g, s.tip, w)
 	case "outdated-request":
-		p("%s (%s): latest commit not approved.\n", s.branch, short(s.head))
+		p("%s (%s): latest commit not approved.\n", s.label(), short(s.head))
 		p("An older request for %s is still pending at %s.\n", short(s.request), s.requestRef)
-		p("Review the latest commit: valley review %s\n", shellQuote(s.branch))
+		p("Review the latest commit: valley review %s\n", shellQuote(s.name()))
 		return 0
 	case "outcome-unreadable":
-		p("%s: the stored outcome is unreadable; status is unknown.\n", s.branch)
+		p("%s: the stored outcome is unreadable; status is unknown.\n", s.label())
 		p("Ask the instance operator to inspect %s.\n", s.outcomeRef)
 		return 0
 	case "not-requested":
-		p("%s: not approved; no pending request for this commit.\n", s.branch)
+		p("%s: not approved; no pending request for this commit.\n", s.label())
 		if s.memo.decision != "" {
 			p("Last recorded decision: %s for %s.\n", s.memo.decision, short(s.memo.head))
 		}
-		p("Approve it through review: valley review %s\n", shellQuote(s.branch))
+		p("Approve it through review: valley review %s\n", shellQuote(s.name()))
 		return 0
 	}
 
-	p("%s (%s): ", s.branch, short(s.head))
+	p("%s (%s): ", s.label(), short(s.head))
 	switch s.state {
 	case "awaiting-decision":
 		p("awaiting an integrator decision.\n")
@@ -56,13 +60,19 @@ func writeHuman(g git, s *status, w io.Writer) int {
 	case "rejected":
 		p("the integrator rejected the evidence.\n")
 		p(noReason)
+	case "refused-not-ready":
+		p("the integrator refused to land it, because a record of its head did not say ready.\n")
+		p("A request lands only while every change its head is a version of is ready. The request stands, and the integrator judges it again on every pass, so it lands once the change is readied again.\n")
+	case "refused-merge":
+		p("the integrator refused to land it, because its commits from the merge base with main include a merge.\n")
+		p("A change is a line of commits. Make one without the merge, and approve that head.\n")
 	case "failed":
 		p("the integrator failed while processing the request (%s).\n", s.memo.failedAt)
 		p("This does not prove that nothing landed; recording can fail after main advances.\n")
 		p(noReason)
 	}
 	p("Request: %s\n", s.requestRef)
-	p("Check again: valley status %s\n", shellQuote(s.branch))
+	p("Check again: valley status %s\n", shellQuote(s.name()))
 	return 0
 }
 
@@ -114,7 +124,9 @@ func short(oid string) string {
 }
 
 // The valley-status/v1 object. docs/architecture.md documents it, and a
-// change to any field's name or meaning is a new schema version.
+// change to any field's name or meaning is a new schema version. The
+// fields from change_id on were added to it, and are null for a branch no
+// record names.
 type jsonStatus struct {
 	Schema      string       `json:"schema"`
 	Change      string       `json:"change"`
@@ -125,6 +137,12 @@ type jsonStatus struct {
 	Request     *jsonRequest `json:"request"`
 	Outcome     *jsonOutcome `json:"outcome"`
 	State       string       `json:"state"`
+	ChangeID    *string      `json:"change_id"`
+	Handle      *string      `json:"handle"`
+	Version     *int         `json:"version"`
+	Title       *string      `json:"title"`
+	Owner       *string      `json:"owner"`
+	Landing     *string      `json:"landing"`
 }
 
 type jsonRequest struct {
@@ -157,6 +175,10 @@ func writeJSON(s *status, w, stderr io.Writer) int {
 	}
 	if s.request != "" {
 		out.Request = &jsonRequest{Ref: s.requestRef, Commit: s.request}
+	}
+	if r := s.recorded; r != nil {
+		out.ChangeID, out.Handle, out.Version = &r.id, &r.handle, &r.version
+		out.Title, out.Owner, out.Landing = &r.title, &r.owner, &r.landing
 	}
 	if s.outcome != "" {
 		o := &jsonOutcome{Decision: s.memo.decision, FailedAt: optional(s.memo.failedAt)}

@@ -652,7 +652,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 func warnUnverified(repos []listed, stderr io.Writer) {
 	for _, r := range repos {
 		if r.snap != nil && r.snap.unverified {
-			fmt.Fprintf(stderr, "valley: %s: a transfer statement could not be verified, so a change may have landed that is not listed so. Set VALLEY_KNOWN_SIGNERS to the known-signers file and VALLEY_INTEGRATOR_SIGNER to the integrator's signing name, with attest on PATH\n", r.name)
+			fmt.Fprintf(stderr, "valley: %s: a transfer statement could not be verified, so a change may have landed that is not listed so. %s\n", r.name, verifierHint)
 		}
 	}
 }

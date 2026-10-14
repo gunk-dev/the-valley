@@ -515,15 +515,15 @@ line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft$
 if valley approve ffrec > "$w/out" 2> "$w/err"; then fail "approve took the branch of a replayed landing"; fi
 grep -q "change lmlm v2 is draft, not ready" "$w/err" || fail "approve did not refuse J' for its state"
 
-# A landed change stops naming its branch only while the branch is still
-# at the landed head. Once ff moves, it names F again.
+# A landed change names its branch no more once the branch moves on to new
+# work: ff is a branch, free for that work.
 git checkout --quiet -b ff-again ff
 echo more > more.txt
 git add more.txt
 git commit --quiet -m more
 git push --quiet origin ff-again:ff
 ok valley-go resolve ff
-line "^change"$'\t'"$F"$'\t'
+line "^branch"$'\t'"ff$"
 
 # valley help names the verbs klaus looks for.
 valley help > "$w/out"

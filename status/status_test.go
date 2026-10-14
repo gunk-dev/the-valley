@@ -26,6 +26,8 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 		{sha1a + " " + sha1b + " " + fp + " stale", "stale", ""},
 		{sha1a + " " + sha1b + " " + fp + " reject\n\n\n", "reject", ""},
 		{sha1a + " " + sha1b + " " + fp + " failed 2026-09-21T12:00:00Z\n", "failed", "2026-09-21T12:00:00Z"},
+		{sha1a + " " + sha1b + " " + fp + " refused-not-ready\n", "refused-not-ready", ""},
+		{sha1a + " " + sha1b + " " + fp + " refused-merge\n", "refused-merge", ""},
 		{sha256a + " " + sha256a + " " + fp + " land\n", "land", ""},
 		{"  " + sha1a + "\t" + sha1b + "  " + fp + "\tland  \n", "land", ""},
 
@@ -34,6 +36,8 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 		{sha1a + " " + sha1b + " " + fp + "\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " merged\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " land 2026-09-21T12:00:00Z\n", "unknown", ""},
+		{sha1a + " " + sha1b + " " + fp + " refused-not-ready 2026-09-21T12:00:00Z\n", "unknown", ""},
+		{sha1a + " " + sha1b + " " + fp + " refused\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " failed\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " failed 2026-09-21T12:00:00Z extra\n", "unknown", ""},
 		{sha1a + " " + sha1b + " " + fp + " land\n" + sha1a + "\n", "unknown", ""},

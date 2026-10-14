@@ -582,6 +582,27 @@ if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; the
 fi
 
 # ----------------------------------------------------------------------
+# A request filed for an earlier version is named by that version's
+# branch. withdraw warns of it, though the active version is on another.
+git checkout --quiet -b moved/old main
+commit old
+as contributor git push --quiet origin moved/old
+ok as contributor valley ready
+old_id="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+old_handle="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+ok as requester valley approve "$old_handle"
+old_request=refs/the-valley/integration-requests/main/moved-old
+git -C "$origin" rev-parse --verify --quiet "$old_request" > /dev/null || fail 'approve filed no request for moved/old'
+git checkout --quiet -b moved/new
+commit new
+as contributor git push --quiet origin moved/new
+ok as contributor valley ready --change "$old_id"
+grep -qx "project $old_handle v2 ready" "$w/out" || fail 'the version on moved/new was not v2'
+ok as contributor valley withdraw "$old_handle"
+grep -qF "valley: warning: the integration request $old_request for $old_handle is pending on origin" "$w/err" \
+  || fail "withdraw did not warn of the request filed for v1's branch"
+
+# ----------------------------------------------------------------------
 # A branch no record's active version is on is a branch, as before
 # records: review shows its tip, and approve files it under its own name.
 printf 's\n' | valley review pushed > "$w/out" 2> "$w/err" || fail 'review of a branch with no record failed'

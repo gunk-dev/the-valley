@@ -292,15 +292,25 @@ func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) e
 // warnPending warns of an integration request for the change that origin
 // held when the verb read it. The integrator does not read records yet, so
 // a draft or a withdrawn change still lands by a request filed before it
-// was one. The request is named either way approve names a change's: by
-// its active version's branch, the way approve names one today, or as
-// c-<change ID>.
+// was one. The request is named either way approve names a change's: by a
+// branch, the way approve names one today, or as c-<change ID>. A request
+// filed for an earlier version is named by that version's branch, so the
+// branch of every version is looked for, each once.
 func warnPending(w io.Writer, o origin, n recorded, handle string) {
 	var refs []string
-	if branch := n.record.ActiveVersion().Branch; branch != "" {
-		refs = append(refs, requestPrefix+changeName(branch))
+	seen := map[string]bool{}
+	add := func(ref string) {
+		if !seen[ref] {
+			seen[ref] = true
+			refs = append(refs, ref)
+		}
 	}
-	refs = append(refs, requestPrefix+"c-"+n.id)
+	for _, v := range n.record.Versions {
+		if v.Branch != "" {
+			add(requestPrefix + changeName(v.Branch))
+		}
+	}
+	add(requestPrefix + "c-" + n.id)
 	warned := false
 	for _, ref := range refs {
 		if oid := o.refs[ref]; oid != "" {

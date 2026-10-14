@@ -171,10 +171,15 @@ in
   # same push is refused, the branch at the recorded head is filed at that
   # head, and a later version whose branch is elsewhere is refused. Then a
   # draft: unready, ready again at the same head and at a new one, listed
-  # apart by pending, refused by approve, rebase and review's [a]pprove,
-  # and a request pending under either name warned of by unready and
-  # withdraw. The hook is followed from the protected host's rendered init
-  # script, so the rules the record meets are the ones a host applies.
+  # apart by pending, refused by approve, rebase and review's [a]pprove
+  # whether it is named by its handle or its branch, and a request pending
+  # under either name warned of by unready and withdraw, a request for an
+  # earlier version's branch too. A review left open while another
+  # principal unreadies the change, or readies a new version, refuses to
+  # act on it. A branch no record is on is acted on as a branch, and one
+  # two records are on is refused. The hook is followed from the protected
+  # host's rendered init script, so the rules the record meets are the
+  # ones a host applies.
   valley-ready = pkgs.runCommand "valley-ready" {
     nativeBuildInputs = [
       pkgs.git

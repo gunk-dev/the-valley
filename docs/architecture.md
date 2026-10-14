@@ -112,10 +112,10 @@ A change is in one of three states:
 Nothing enforces what withdrawing voids yet. The integrator does not read records, so a request
 filed before a change was paused or withdrawn can still land it. Until it does read them,
 `valley unready` and `valley withdraw` warn when origin holds a request for the change. The request
-is looked for under the name `approve` gives it, derived from the active version's branch, and under
-`c-<change-id>`. Only a `request` holder may touch a request ref, so the warning says the operator
-must drop it. Approvals are not records yet either; they become records with M1-C. Until then,
-voiding an approval means the integrator refuses it, once the integrator reads records.
+is looked for under the name `approve` gives it, derived from the branch of each of the change's
+versions, and under `c-<change-id>`. Only a `request` holder may touch a request ref, so the warning
+says the operator must drop it. Approvals are not records yet either; they become records with M1-C.
+Until then, voiding an approval means the integrator refuses it, once the integrator reads records.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by

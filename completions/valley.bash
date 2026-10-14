@@ -24,7 +24,7 @@ _valley() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
   if [ "$COMP_CWORD" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'pending review approve rebase status ready withdraw checks tail replay help' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending review approve rebase status ready unready withdraw checks tail replay help' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --cost ]; then
     mapfile -t COMPREPLY < <(compgen -W 'quick slow' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${cur:0:1}" = - ]; then

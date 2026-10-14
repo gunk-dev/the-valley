@@ -162,20 +162,23 @@ in
     ];
   } (builtins.readFile ./valley-status.sh);
 
-  # ready and withdraw, through real pushes to a bare repo wired with the
-  # rendered pre-receive hook, as each principal: a change created at v1,
-  # a second version, the same head refused, a withdrawal and the new
-  # version that revives it, a principal that neither owns the change nor
-  # holds the request grant refused by the hook, and the operator, who
-  # holds it, let through. Then each source of a change's ID — the jj
+  # ready, unready and withdraw, through real pushes to a bare repo wired
+  # with the rendered pre-receive hook, as each principal: a change created
+  # at v1, a second version, the same head refused, a withdrawal, revived
+  # at the same version and then at a new one, a principal that neither
+  # owns the change nor holds the request grant refused by the hook, and
+  # the operator, who holds it, let through. Then each source of a change's ID — the jj
   # header, the Change-Id trailer, a generated ID, --stamp — a header and a
   # trailer that disagree, and a change whose commits hold a merge. Last, a
   # change named by its handle is approved, reviewed and rebased at the head
   # its record names: a record pushed with its branch moved elsewhere in the
   # same push is refused, the branch at the recorded head is filed at that
-  # head, and a later version whose branch is elsewhere is refused. The hook
-  # is followed from the protected host's rendered init script, so the rules
-  # the record meets are the ones a host applies.
+  # head, and a later version whose branch is elsewhere is refused. Then a
+  # draft: unready, ready again at the same head and at a new one, listed
+  # apart by pending, refused by approve, rebase and review's [a]pprove,
+  # and a request pending under either name warned of by unready and
+  # withdraw. The hook is followed from the protected host's rendered init
+  # script, so the rules the record meets are the ones a host applies.
   valley-ready = pkgs.runCommand "valley-ready" {
     nativeBuildInputs = [
       pkgs.git

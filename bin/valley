@@ -14,8 +14,8 @@
 #   - it needs dependencies beyond git + coreutils
 #     (CROSSED by Phase 1's tail/replay, which need the nats CLI, and again
 #     by checks, which needs the cue CLI, again by review's [a]pprove, which
-#     needs the attest helper, and again by status, ready and withdraw,
-#     which are a Go program (status/) this script runs —
+#     needs the attest helper, and again by status, ready, unready and
+#     withdraw, which are a Go program (status/) this script runs —
 #     graduation is now owed; recording the decision node is part of taking it.);
 #   - its behavior gets subtle enough to need real tests
 #     (CROSSED by checks: glob matching is pinned by the policy-deriver
@@ -54,7 +54,12 @@ usage: valley <verb> [args]
 
   pending          list branches on origin not merged into origin/main,
                    one line each: branch | head subject | age | author |
-                   ahead N | diffstat
+                   ahead N | diffstat. then, under drafts, the changes
+                   whose record says they are drafts, one line each, the
+                   same way, for the head of the active version: handle
+                   and version, and the branch the version names. a branch
+                   at a draft's head is listed only there. drafts need the
+                   valley-go helper.
   review <change>  page through the change's branch: its log and diff vs
                    origin/main. then choose:
                      [a]pprove    file an integration request. runs the
@@ -144,8 +149,10 @@ usage: valley <verb> [args]
                    origin/<branch>, and it must be on origin already. the
                    first ready of a change makes v1; each later one adds
                    the next version, at a head other than the active
-                   version's. a withdrawn change comes back this way, at a
-                   new head. prints the handle and version, e.g.
+                   version's. a draft or a withdrawn change comes back this
+                   way: at the active version's head, it is ready again at
+                   that version, and at another head it gains the next
+                   version. prints the handle and version, e.g.
                    `cosmo nxvp v2 ready`.
                    the change id is --change, else the head commit's jj
                    change-id header, else a Change-Id: trailer in its
@@ -169,11 +176,27 @@ usage: valley <verb> [args]
                    records are observational: nothing reads them for
                    authority, and approve is still the only way to main.
                    needs the valley-go helper.
+  unready <change>
+                   make a ready change a draft in its record on origin, as
+                   its owner or the operator. a draft is a pause: it voids
+                   nothing, and approvals of its active version stand when
+                   it is readied again. ready brings it back. prints e.g.
+                   `cosmo nxvp v2 draft`. needs the valley-go helper.
   withdraw <change>
-                   mark a ready change withdrawn in its record on origin,
-                   as its owner or the operator. it comes back only by a
-                   new version: ready at a new head. prints e.g.
-                   `cosmo nxvp v2 withdrawn`. needs the valley-go helper.
+                   mark a ready change or a draft withdrawn in its record
+                   on origin, as its owner or the operator. withdrawing
+                   voids everything outstanding on the change: its
+                   integration requests, and the approvals and reviews of
+                   every version, so a change brought back needs fresh
+                   approvals. ready brings it back, at the same version
+                   or a new one. prints e.g. `cosmo nxvp v2 withdrawn`.
+                   needs the valley-go helper.
+                   the integrator does not read records yet, so neither
+                   unready nor withdraw stops a pending integration
+                   request from landing the change. each warns when origin
+                   holds one, under the branch-derived name or c-<change
+                   id>: only a holder of the request grant may touch a
+                   request ref, so the operator must drop it.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and
@@ -231,15 +254,17 @@ change is on that branch. Named by id or handle, a change is reviewed,
 approved and rebased at the head its active version records, never at
 its branch's tip: review shows that head, and approve, rebase and review's
 [r]eject refuse, naming both, when the branch's tip on origin is another
-commit. [r]eject deletes the branch under a lease on the recorded head. Naming a
-change by id or handle needs the valley-go helper, and without it every
-name is a branch.
+commit. [r]eject deletes the branch under a lease on the recorded head.
+approve, rebase, and review's [a]pprove and [b]ase refuse a change whose
+record is not ready, naming its state. Naming a change by id or handle
+needs the valley-go helper, and without it every name is a branch.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
-helper, and status, ready and withdraw, which need the valley-go helper.
+helper, and status, ready, unready and withdraw, which need the valley-go
+helper, as pending does for drafts.
 nix run .#valley bundles all of them. Deriving a policy fetches the owning
 valley's repository, so checks and approving also need whatever reaching
 it takes.
@@ -307,8 +332,10 @@ page_file() {
   LESSOPEN="|$pager < %s" env -u LESSCLOSE less -R -- "$file"
 }
 
+# One line of pending: the label, then the subject, age, author, distance
+# from main and diffstat of the commit named.
 pending_line() {
-  local ref="$1" subject age author ahead stat
+  local label="$1" ref="$2" subject age author ahead stat
   subject="$(git log -1 --format='%s' "$ref")"
   [ "${#subject}" -le 60 ] || subject="${subject:0:57}..."
   age="$(git log -1 --format='%cr' "$ref")"
@@ -317,22 +344,47 @@ pending_line() {
   stat="$(git diff --shortstat "origin/main...$ref")"
   stat="${stat# }"
   printf '%s | %s | %s | %s | ahead %s | %s\n' \
-    "${ref#origin/}" "$subject" "$age" "$author" "$ahead" "${stat:-no file changes}"
+    "$label" "$subject" "$age" "$author" "$ahead" "${stat:-no file changes}"
 }
 
+# pending lists the branches on origin not merged into main. With the
+# helper, it also lists the changes whose record says they are drafts, in
+# a section of their own, each at the head of its active version. A branch
+# whose tip is a draft's head is that draft, and is listed with it rather
+# than among the branches.
 cmd_pending() {
   [ $# -eq 0 ] || die "pending takes no arguments"
   fetch_origin
-  local ref found=0
+  local ref line handle version head branch found=0
+  local -a drafts=()
+  local -A drafted=()
+  if command -v valley-go > /dev/null 2>&1; then
+    line="$(valley-go drafts)" || exit 1
+    [ -z "$line" ] || mapfile -t drafts <<< "$line"
+  fi
+  for line in ${drafts[@]+"${drafts[@]}"}; do
+    IFS=$'\t' read -r handle version head branch <<< "$line"
+    if [ -n "$branch" ] \
+      && [ "$(git rev-parse --verify --quiet "refs/remotes/origin/$branch")" = "$head" ]; then
+      drafted["origin/$branch"]=1
+    fi
+  done
   while IFS= read -r ref; do
     case "$ref" in
       origin/HEAD | origin/main) continue ;;
     esac
+    [ -z "${drafted[$ref]:-}" ] || continue
     found=1
-    pending_line "$ref"
+    pending_line "${ref#origin/}" "$ref"
   done < <(git for-each-ref --format='%(refname:short)' \
     --no-merged=origin/main refs/remotes/origin)
   [ "$found" -eq 1 ] || echo "nothing pending"
+  [ "${#drafts[@]}" -gt 0 ] || return 0
+  printf '\ndrafts\n'
+  for line in "${drafts[@]}"; do
+    IFS=$'\t' read -r handle version head branch <<< "$line"
+    pending_line "$handle v$version${branch:+ on $branch}" "$head"
+  done
 }
 
 # For a change named by ID or handle, what is rejected is the head its
@@ -780,9 +832,11 @@ approve() {
     refuse "no such branch on origin: $branch; nothing published"
     return 1
   }
-  # A change named by ID or handle is filed at the head its record names,
-  # and only while its branch is there too.
+  # A change named by ID or handle is filed only while its record says it
+  # is ready, at the head its record names, and only while its branch is
+  # there too.
   if [ -n "$CHANGE_HEAD" ]; then
+    check_ready "nothing published" || return 1
     check_recorded_tip "$branch" "nothing published" || return 1
     head="$CHANGE_HEAD"
   fi
@@ -1012,13 +1066,13 @@ approve() {
   fi
 }
 
-# status, ready and withdraw are a Go program, valley-go (status/). status
-# reads a change's request and outcome from origin, because what front ends
-# read from it is a JSON contract, and because the read is subtle enough to
-# want a real parser: an outcome record it does not recognise must read as
-# unknown, never as success. It writes nothing and moves no local branch.
-# ready and withdraw write a change's record, in the one format the push
-# hook reads it in (change/).
+# status, ready, unready and withdraw are a Go program, valley-go
+# (status/). status reads a change's request and outcome from origin,
+# because what front ends read from it is a JSON contract, and because the
+# read is subtle enough to want a real parser: an outcome record it does
+# not recognise must read as unknown, never as success. It writes nothing
+# and moves no local branch. ready, unready and withdraw write a change's
+# record, in the one format the push hook reads it in (change/).
 cmd_go() {
   command -v valley-go > /dev/null 2>&1 \
     || die "$1 needs the valley-go helper; nix run .#valley bundles it"
@@ -1088,12 +1142,23 @@ check_recorded_tip() {
   refuse "change $CHANGE_HANDLE v$CHANGE_VERSION records the head $CHANGE_HEAD, and origin/$branch is at $tip; $undone. Ready the branch's head as a new version of $CHANGE_HANDLE, or name the branch as origin/$branch to act on its tip"
 }
 
+# For a change named by ID or handle, refuse unless its record says it is
+# ready, and name the state it is in. A draft is paused and a withdrawn
+# change given up, and neither is approved or rebased until it is readied
+# again. The argument is what the refusal leaves undone.
+check_ready() {
+  [ -n "$CHANGE_ID" ] || return 0
+  [ "$CHANGE_STATE" = ready ] && return 0
+  refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; $1. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+}
+
 # rebase for a change named by ID or handle rebases the recorded head
 # alone, so the branch must still be at it. The rebased head is a commit no
 # version records, so the change is readied again before its handle names
 # it.
 rebase_change() {
   local branch="$1"
+  check_ready "nothing rebased" || return 1
   check_recorded_tip "$branch" "nothing rebased" || return 1
   rebase_onto_main "$branch" "$CHANGE_HEAD"
   if [ -n "$CHANGE_HEAD" ]; then
@@ -1196,6 +1261,7 @@ cmd_rebase() {
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
+  check_ready "nothing rebased" || exit 1
   check_recorded_tip "$branch" "nothing rebased" || exit 1
   # review offers [b]ase only to a stale branch. One that fast-forwards
   # already is left alone, rather than rewritten for nothing.
@@ -2057,7 +2123,7 @@ main() {
     review) cmd_review "$@" ;;
     approve) cmd_approve "$@" ;;
     rebase) cmd_rebase "$@" ;;
-    status | ready | withdraw) cmd_go "$verb" "$@" ;;
+    status | ready | unready | withdraw) cmd_go "$verb" "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;

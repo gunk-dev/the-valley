@@ -97,6 +97,13 @@ unchanged() {
     || fail "the record of $id moved"
 }
 
+# one_parent <id>: origin's record commit of the change has one parent,
+# the record before it, so it added no version.
+one_parent() {
+  [ "$(git -C "$origin" rev-list --parents -n 1 "refs/the-valley/changes/main/$1" | wc -w)" = 2 ] \
+    || fail "the record of $1 added a version"
+}
+
 no_records() {
   [ -z "$(git -C "$origin" for-each-ref refs/the-valley/changes)" ] || fail "$1"
 }
@@ -156,18 +163,26 @@ record "$id" '.seq == 2' '.active == 2' '.state == "ready"' '.versions | length 
 # The same head again is no new version.
 unchanged "$id" refused 'a new version needs a new head' as contributor valley ready --change "$id"
 
-# Withdrawn, the change comes back only by a new version.
+# Withdrawn, the change comes back by ready. At the head it was withdrawn
+# at, it is ready again at the version it had: the record commit's one
+# parent is the record before it. It is never made a draft.
 ok as contributor valley withdraw "$handle"
 grep -qx "project $handle v2 withdrawn" "$w/out" || fail 'withdraw did not say what it withdrew'
 record "$id" '.state == "withdrawn"' '.seq == 3' '.active == 2' '.versions | length == 2'
 unchanged "$id" refused 'withdrawn already' as contributor valley withdraw "$handle"
-unchanged "$id" refused 'a new version needs a new head' as contributor valley ready --change "$id"
+unchanged "$id" refused 'never made a draft' as contributor valley unready "$handle"
+ok as contributor valley ready --change "$id"
+grep -qx "project $handle v2 ready" "$w/out" || fail 'the change readied at the head it was withdrawn at was not v2'
+record "$id" '.state == "ready"' '.seq == 4' '.active == 2' '.versions | length == 2'
+one_parent "$id"
+# Withdrawn again, it comes back by a new version at a new head too.
+ok as contributor valley withdraw "$handle"
 commit three
 third="$(git rev-parse HEAD)"
 as contributor git push --quiet origin topic
 ok as contributor valley ready --change "$id"
 grep -qx "project $handle v3 ready" "$w/out" || fail 'the revived change was not v3'
-record "$id" '.state == "ready"' '.seq == 4' '.active == 3' ".versions[2].head == \"git-sha1:$third\""
+record "$id" '.state == "ready"' '.seq == 6' '.active == 3' ".versions[2].head == \"git-sha1:$third\""
 
 # ----------------------------------------------------------------------
 # Who may write the record. A principal that neither owns the change nor
@@ -178,15 +193,16 @@ fourth="$(git rev-parse HEAD)"
 as contributor git push --quiet origin topic
 unchanged "$id" refused "only the change's owner, contributor" as integrator valley ready --change "$id"
 unchanged "$id" refused "only the change's owner, contributor" as integrator valley withdraw "$handle"
+unchanged "$id" refused "only the change's owner, contributor" as integrator valley unready "$handle"
 unchanged "$id" refused 'a key that names no principal' env -u VALLEY_PRINCIPAL valley withdraw "$handle"
 refused 'git config valley.principal names none' as anonymous valley ready --change "$id"
 # The operator, who holds the request grant, may add a version and
 # withdraw, and the owner stays the owner.
 ok as requester valley ready --head "$fourth" --change "$id"
 grep -qx "project $handle v4 ready" "$w/out" || fail "the operator's version was not v4"
-record "$id" '.owner == "contributor"' '.versions[3].uploader == "requester"' '.seq == 5'
+record "$id" '.owner == "contributor"' '.versions[3].uploader == "requester"' '.seq == 7'
 ok as requester valley withdraw "$id"
-record "$id" '.state == "withdrawn"' '.seq == 6' '.owner == "contributor"'
+record "$id" '.state == "withdrawn"' '.seq == 8' '.owner == "contributor"'
 
 # --head marks exactly the head given, which must be on origin. An older
 # head of the branch is on origin, and a commit nobody pushed is not.
@@ -385,6 +401,102 @@ grep -qF 'rejected victim: deleted from origin' "$w/out" || fail 'reject did not
 if git -C "$origin" rev-parse --verify --quiet refs/heads/victim > /dev/null; then
   fail 'reject kept a branch at the recorded head'
 fi
+
+# ----------------------------------------------------------------------
+# A draft is a change paused. unready makes a ready change a draft, and
+# ready brings it back: at the head of its active version it is ready
+# again at that version, and at a new head it gains the next one. pending
+# lists a draft apart from the branches, and approve and rebase refuse it,
+# naming its state. Until the integrator reads records, a request filed
+# before a change was paused or withdrawn can still land it, so unready and
+# withdraw warn when one is pending, and leave it for the operator.
+git checkout --quiet -b drafts/paused main
+commit paused
+paused="$(git rev-parse HEAD)"
+as contributor git push --quiet origin drafts/paused
+ok as contributor valley ready
+pid="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+ph="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+if [ "${#pid}" != 32 ] || [ -z "$ph" ]; then fail 'ready did not name the new change'; fi
+
+ok as contributor valley unready "$ph"
+grep -qx "project $ph v1 draft" "$w/out" || fail 'unready did not say it made a draft'
+record "$pid" '.state == "draft"' '.seq == 2' '.active == 1' '.versions | length == 1'
+one_parent "$pid"
+if grep -q 'warning' "$w/err"; then fail 'unready warned with no request pending'; fi
+unchanged "$pid" refused 'is a draft already' as contributor valley unready "$ph"
+
+# pending lists the draft under drafts, and not among the branches, since
+# its branch is at the draft's head.
+ok valley pending
+grep -qx 'drafts' "$w/out" || fail 'pending listed no drafts'
+grep -q "^$ph v1 on drafts/paused | paused | " "$w/out" || fail 'pending did not list the draft'
+if grep -q '^drafts/paused | ' "$w/out"; then fail 'pending listed a draft among the branches'; fi
+grep -q '^topic | ' "$w/out" || fail 'pending no longer lists the branches'
+
+# A draft is not approved or rebased. Refused in review, approving is no
+# check failure, so the prompt still offers [a]pprove.
+request_ref=refs/the-valley/integration-requests/main/drafts-paused
+unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing published" as requester valley approve "$ph"
+if git -C "$origin" rev-parse --verify --quiet "$request_ref" > /dev/null; then
+  fail 'approve filed a request for a draft'
+fi
+unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as requester valley rebase "$ph"
+printf 'a\ns\n' | as requester valley review "$ph" > "$w/out" 2> "$w/err" || fail 'review of a draft failed'
+grep -qF "change $ph v1 is draft, not ready; nothing published" "$w/err" \
+  || fail "review's [a]pprove did not refuse a draft"
+[ "$(grep -oF 'drafts/paused: [a]pprove, [r]eject, [s]kip? ' "$w/out" | wc -l)" = 2 ] \
+  || fail "review's prompt changed after a refusal that was no check failure"
+
+# ready at the same head is v1 again, and a draft once more after it.
+ok as contributor valley ready --change "$pid"
+grep -qx "project $ph v1 ready" "$w/out" || fail 'a draft readied at its head was not v1 again'
+record "$pid" '.state == "ready"' '.seq == 3' '.active == 1' '.versions | length == 1'
+one_parent "$pid"
+
+# Approved now, the change has a request under its branch-derived name.
+# unready voids nothing, so the request stays. It warns, because the
+# integrator does not read records yet.
+ok as requester valley approve "$ph"
+[ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'approve did not file the ready change'
+ok as contributor valley unready "$ph"
+grep -qF "valley: warning: the integration request $request_ref for $ph is pending on origin" "$w/err" \
+  || fail 'unready did not warn of the pending request'
+grep -qF 'so the operator must drop it' "$w/err" || fail 'the warning did not say who must drop the request'
+[ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'unready touched the request'
+
+# unready, then ready at a new head, is v2.
+commit paused-again
+paused_again="$(git rev-parse HEAD)"
+as contributor git push --quiet origin drafts/paused
+ok as contributor valley ready --change "$pid"
+grep -qx "project $ph v2 ready" "$w/out" || fail 'a draft readied at a new head was not v2'
+record "$pid" '.state == "ready"' '.seq == 5' '.active == 2' '.versions | length == 2' \
+  ".versions[1].head == \"git-sha1:$paused_again\""
+
+# withdraw warns of the same request, and the change, withdrawn, is never
+# made a draft. ready at the same head brings it back at v2.
+ok as contributor valley withdraw "$ph"
+grep -qx "project $ph v2 withdrawn" "$w/out" || fail 'withdraw did not say what it withdrew'
+grep -qF "valley: warning: the integration request $request_ref for $ph is pending on origin" "$w/err" \
+  || fail 'withdraw did not warn of the pending request'
+record "$pid" '.state == "withdrawn"' '.seq == 6' '.active == 2'
+unchanged "$pid" refused 'never made a draft' as contributor valley unready "$ph"
+ok as contributor valley ready --change "$pid"
+grep -qx "project $ph v2 ready" "$w/out" || fail 'a withdrawn change readied at its head was not v2 again'
+record "$pid" '.state == "ready"' '.seq == 7' '.active == 2' '.versions | length == 2'
+one_parent "$pid"
+
+# A request named c-<change ID> is warned of too. withdraw takes a draft.
+as requester git push --quiet origin --delete "$request_ref"
+as requester git push --quiet origin "$paused_again:refs/the-valley/integration-requests/main/c-$pid"
+ok as contributor valley unready "$ph"
+grep -qF "the integration request refs/the-valley/integration-requests/main/c-$pid for $ph is pending" "$w/err" \
+  || fail 'unready did not warn of a request named by the change ID'
+if grep -qF "$request_ref " "$w/err"; then fail 'unready warned of a request that was dropped'; fi
+ok as contributor valley withdraw "$ph"
+record "$pid" '.state == "withdrawn"' '.seq == 9' '.active == 2'
+grep -qF "main/c-$pid for $ph is pending" "$w/err" || fail 'withdraw did not warn of a request named by the change ID'
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

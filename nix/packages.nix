@@ -44,7 +44,7 @@ rec {
       pkgs.cue # checks and approving — it composes the policy layers
       pkgs.less # review only — its v key is what takes a note
       attest # approving only — it runs the checks and signs them
-      valley-go # status, ready and withdraw, and naming a change by its ID
+      valley-go # status, ready, unready and withdraw, naming a change by its ID, and pending's drafts
     ];
     text = builtins.readFile ../bin/valley;
   };
@@ -79,9 +79,9 @@ rec {
 
   # The verbs of the CLI written in Go (status/). status reads one change's
   # request and outcome record from origin, and prints them as sentences or
-  # as the valley-status/v1 JSON object front ends read. ready and withdraw
-  # write a change's record, with the one reading of a record the push hook
-  # shares (../change). Go, standard library only — hence vendorHash = null
+  # as the valley-status/v1 JSON object front ends read. ready, unready and
+  # withdraw write a change's record, with the one reading of a record the
+  # push hook shares (../change). Go, standard library only — hence vendorHash = null
   # and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
   # the bash it replaced, so they need bash.

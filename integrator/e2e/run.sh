@@ -1107,4 +1107,141 @@ grep -q "bus      integration-succeeded not published: cue vet against #Integrat
 [ "$elapsed" -lt 60 ] || die "the pass took ${elapsed}s behind a cue that never answers"
 holds "c20 landed, queued and consumed its request, and each hung vet gave up after 10s and skipped its publish (${elapsed}s in all)"
 
+# ----------------------------------------------------------------------
+say "21. a request named for a change that is ready lands"
+
+# A change with a record is requested as c-<change ID>. The records are
+# written by the valley command itself, as its owner would write them; this
+# repository is served without the hook that guards them on a host. The
+# integrator reads them only to refuse.
+git config valley.principal contributor
+# ready_change <branch>: the branch's head on origin readied as a new
+# change, whose ID is left in $readied.
+ready_change() {
+  valley ready "$1" > "$work/ready.out" || die "valley ready $1 failed"
+  readied="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$work/ready.out")"
+  [ "${#readied}" = 32 ] || die "valley ready $1 made no change ID: $(cat "$work/ready.out")"
+}
+outcome_of() { git -C "$origin" cat-file blob "refs/the-valley/integration-outcomes/main/$1" | cut -d' ' -f4; }
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c21
+echo "a change with a record" > docs/c21.md
+git add -A
+git commit --quiet -m "a change with a record"
+attest_change c21 "" "" --check prose-format
+ready_change c21
+id21="$readied"
+request "c-$id21" main "$(git rev-parse c21)"
+integrate
+grep -q "^c-$id21 -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id21 did not land"
+[ "$(tip)" = "$(git rev-parse c21)" ] || die "main is not at c21's head"
+landed="refs/the-valley/attestations/$(attest digest --repo "$repo" --rev c21 | cut -d: -f2)/$ihash"
+git -C "$origin" cat-file blob "$landed:transfer.note" | grep -qx "predicate.change c-$id21" \
+  || die "the transfer statement does not name the request c-$id21"
+holds "a ready change's request, named for its ID, landed, and its transfer statement names it so"
+
+# ----------------------------------------------------------------------
+say "22. a change unreadied after its request was filed is refused, and lands once it is ready again"
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c22
+echo "a change paused after it was approved" > docs/c22.md
+git add -A
+git commit --quiet -m "a change paused after it was approved"
+attest_change c22 "" "" --check prose-format
+ready_change c22
+id22="$readied"
+request "c-$id22" main "$(git rev-parse c22)"
+valley unready "$id22" > /dev/null 2>&1 || die "valley unready failed"
+before="$(tip)"
+integrate
+grep -q "^c-$id22 -> refs/heads/main .*: refused-not-ready$" "$work/last.out" \
+  || die "a draft's request was not refused: $(cat "$work/last.out")"
+grep -q "change $id22 is draft, not ready" "$work/last.out" || die "the refusal did not say the change is a draft"
+[ "$(tip)" = "$before" ] || die "a draft's request moved main"
+git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c-$id22" > /dev/null \
+  || die "the refused request was dropped"
+[ "$(outcome_of "c-$id22")" = refused-not-ready ] || die "the outcome record does not say refused-not-ready"
+
+# The refusal is decided again on every pass, and said once.
+timeout 4 integrator watch --interval 1s \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$instance_repo" \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  > "$work/repeat.out" 2>&1 || true
+[ "$(grep -c "c-$id22 .*refused-not-ready" "$work/repeat.out" || true)" -eq 0 ] \
+  || die "a standing refusal was reported again: $(cat "$work/repeat.out")"
+[ "$(tip)" = "$before" ] || die "a draft's request moved main under watch"
+
+# Readied again at the same head, the same request lands on the next pass.
+valley ready --change "$id22" c22 > /dev/null 2>&1 || die "valley ready --change $id22 failed"
+integrate
+grep -q "^c-$id22 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "the change readied again did not land: $(cat "$work/last.out")"
+[ "$(tip)" = "$(git rev-parse c22)" ] || die "main is not at c22's head"
+holds "unready stopped a filed request, the refusal was said once, and ready let the same request land"
+
+# ----------------------------------------------------------------------
+say "23. a request named for a branch, at a draft's head, is refused"
+
+# Whatever a request is named, a head that is a version of a change that
+# is not ready does not land.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c23
+echo "a draft requested under its branch's name" > docs/c23.md
+git add -A
+git commit --quiet -m "a draft requested under its branch's name"
+attest_change c23 "" "" --check prose-format
+ready_change c23
+id23="$readied"
+valley unready "$id23" > /dev/null 2>&1 || die "valley unready failed"
+request c23 main "$(git rev-parse c23)"
+before="$(tip)"
+integrate
+grep -q "^c23 -> refs/heads/main .*: refused-not-ready$" "$work/last.out" \
+  || die "a branch-named request at a draft's head was not refused: $(cat "$work/last.out")"
+grep -q "is v1 of change $id23, which is draft, not ready" "$work/last.out" \
+  || die "the refusal did not name the draft"
+[ "$(tip)" = "$before" ] || die "a draft's head landed under its branch's name"
+[ "$(outcome_of c23)" = refused-not-ready ] || die "the outcome record does not say refused-not-ready"
+forget c23
+holds "a draft's head was refused under a branch's name too"
+
+# ----------------------------------------------------------------------
+say "24. a request whose commits hold a merge is refused"
+
+# A merge can make other work look landed by ancestry, so the integrator
+# lands a line of commits and nothing else.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c24-side
+echo "a side line" > docs/c24-side.md
+git add -A
+git commit --quiet -m "a side line"
+git checkout --quiet main
+git checkout --quiet -b c24
+echo "a line with a merge in it" > docs/c24.md
+git add -A
+git commit --quiet -m "a line with a merge in it"
+git merge --quiet --no-ff --no-edit c24-side
+git push --quiet origin c24
+request c24 main "$(git rev-parse c24)"
+before="$(tip)"
+integrate
+grep -q "^c24 -> refs/heads/main .*: refused-merge$" "$work/last.out" \
+  || die "a request holding a merge was not refused: $(cat "$work/last.out")"
+grep -q "include the merge $(git rev-parse c24 | cut -c1-12)" "$work/last.out" || die "the refusal did not name the merge"
+[ "$(tip)" = "$before" ] || die "a request holding a merge moved main"
+[ "$(outcome_of c24)" = refused-merge ] || die "the outcome record does not say refused-merge"
+forget c24
+holds "a request holding a merge was refused, and main did not move"
+
 printf '\nintegrator-e2e: every scenario held\n'

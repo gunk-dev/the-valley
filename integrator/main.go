@@ -46,12 +46,17 @@ Before the commit rule, the change records can refuse a request. A request
 named c-<change ID> is that change's, and lands only while the record at
 refs/the-valley/changes/<target>/<change ID> says ready and lists the
 request's head as one of its versions'. A request of any name does not land
-while its head is a version of a change whose record is not ready. Both
-refuse with refused-not-ready. A request whose commits from the merge base
-to the head include a merge is refused-merge. A refused request stays where
-it is, and is decided again on every pass, so a change readied again is
-judged on the next one. Records are read just before the target moves as
-well, and a record never makes a request land.
+while any commit it brings is a version of a change whose record is not
+ready. Both refuse with refused-not-ready. A request whose commits from the
+merge base to the head include a merge is refused-merge. A refused request
+stays where it is, and is decided again on every pass, so a change readied
+again is judged on the next one. Every record is read again just before
+the target moves, and a record never makes a request land.
+
+A withdrawn change voids its requests: each pass deletes the requests named
+for it or at one of its version heads, as voided-withdrawn, so readying it
+again needs a fresh approval. A record that does not read refuses nothing,
+and is reported with a WARNING on every pass that reads records.
 
 flags:
   --repo DIR          the served repository (default: here)

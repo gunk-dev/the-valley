@@ -1244,4 +1244,86 @@ grep -q "include the merge $(git rev-parse c24 | cut -c1-12)" "$work/last.out" |
 forget c24
 holds "a request holding a merge was refused, and main did not move"
 
+# ----------------------------------------------------------------------
+say "25. a line of commits above a draft's head is refused, naming the draft"
+
+# A request brings every commit from its merge base to its head. So a child
+# of a draft's head, approved under another name, would land the draft too.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c25-draft
+echo "a draft below another change" > docs/c25-draft.md
+git add -A
+git commit --quiet -m "a draft below another change"
+git push --quiet origin c25-draft
+ready_change c25-draft
+id25="$readied"
+valley unready "$id25" > /dev/null 2>&1 || die "valley unready failed"
+git checkout --quiet -b c25
+echo "a change above a draft" > docs/c25.md
+git add -A
+git commit --quiet -m "a change above a draft"
+git push --quiet origin c25
+request c25 main "$(git rev-parse c25)"
+before="$(tip)"
+integrate
+grep -q "^c25 -> refs/heads/main .*: refused-not-ready$" "$work/last.out" \
+  || die "a child of a draft's head was not refused: $(cat "$work/last.out")"
+grep -q "the commit $(git rev-parse c25-draft | cut -c1-12) it brings is v1 of change $id25, which is draft, not ready" \
+  "$work/last.out" || die "the refusal did not name the draft"
+[ "$(tip)" = "$before" ] || die "a child of a draft's head moved main"
+forget c25
+holds "a line above a draft's head was refused, and the refusal named the draft"
+
+# ----------------------------------------------------------------------
+say "26. withdrawing a change voids its request, and readying it again needs a fresh approval"
+
+# integrate_quiet: a pass that may have nothing to say.
+integrate_quiet() {
+  integrator reconcile \
+    --repo "$origin" \
+    --key "$work/integrator" --name "$integrator_name" \
+    --known-signers "$work/known_signers" \
+    --instance-repo "$instance_repo" \
+    --schema "$SCHEMA_VERIFICATION" \
+    --attest-schema "$SCHEMA_ATTESTATION" \
+    --event-schema "$SCHEMA_EVENTS" \
+    2>&1 | tee "$work/last.out"
+}
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c26
+echo "a change withdrawn after it was approved" > docs/c26.md
+git add -A
+git commit --quiet -m "a change withdrawn after it was approved"
+attest_change c26 "" "" --check prose-format
+ready_change c26
+id26="$readied"
+request "c-$id26" main "$(git rev-parse c26)"
+valley withdraw "$id26" > /dev/null 2>&1 || die "valley withdraw failed"
+before="$(tip)"
+integrate
+grep -q "^c-$id26 -> refs/heads/main .*: voided-withdrawn$" "$work/last.out" \
+  || die "a withdrawn change's request was not voided: $(cat "$work/last.out")"
+git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c-$id26" > /dev/null \
+  && die "the voided request is still there"
+[ "$(outcome_of "c-$id26")" = voided-withdrawn ] || die "the outcome record does not say voided-withdrawn"
+[ "$(tip)" = "$before" ] || die "a withdrawn change moved main"
+
+# Readied again at the same head, the change has no request: the old
+# approval is gone, and nothing lands.
+valley ready --change "$id26" c26 > /dev/null 2>&1 || die "valley ready --change $id26 failed"
+integrate_quiet
+git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c-$id26" > /dev/null \
+  && die "the old request came back"
+[ "$(tip)" = "$before" ] || die "a change readied again landed with no fresh approval"
+
+# A fresh approval at the same head lands.
+request "c-$id26" main "$(git rev-parse c26)"
+integrate
+grep -q "^c-$id26 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "the fresh approval did not land: $(cat "$work/last.out")"
+[ "$(tip)" = "$(git rev-parse c26)" ] || die "main is not at c26's head"
+holds "withdraw voided the request on the next pass; readied again, the change landed only on a fresh approval"
+
 printf '\nintegrator-e2e: every scenario held\n'

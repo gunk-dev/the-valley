@@ -93,7 +93,9 @@ func (in *integrator) requests() ([]request, []string, error) {
 //
 // The change records are read once, before any request is judged. A pass
 // that cannot read them judges nothing: which heads are versions of
-// changes that are not ready is what keeps those heads from landing.
+// changes that are not ready is what keeps those heads from landing. The
+// requests a withdrawn change voids are deleted before the rest are
+// judged.
 func (in *integrator) reconcile() error {
 	requests, malformed, err := in.requests()
 	if err != nil {
@@ -109,9 +111,10 @@ func (in *integrator) reconcile() error {
 	if err != nil {
 		return err
 	}
-	for _, why := range idx.unreadable {
-		fmt.Fprintf(in.out, "%s. It refuses nothing.\n", why)
+	for _, u := range idx.unreadable {
+		fmt.Fprintf(in.out, "WARNING: %s is a change record that does not read: %s. Requests are judged as though it did not exist, so a head it names is not held back by it. The hook refuses such a record, so the repository's storage is corrupt; restore the record or delete it.\n", u.ref, u.why)
 	}
+	requests = in.voidWithdrawn(requests, idx)
 	for _, r := range requests {
 		if err := in.handle(r, idx); err != nil {
 			// One bad request must not stop the pass: the integrator is a
@@ -152,7 +155,7 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	// what keeps the next tick from asking the identical question.
 	outcome, err := in.refuse(r, idx, tip, last, memo)
 	if err == nil && outcome == "" {
-		outcome, err = in.act(r, idx, tip)
+		outcome, err = in.act(r, tip)
 	}
 	if err != nil {
 		if memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339)); memoErr != nil {
@@ -171,15 +174,23 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 // a refusal is decided again on every pass, and saying the same one every
 // tick would bury it.
 func (in *integrator) refuse(r request, idx *recordIndex, tip, last, memo string) (verdict.Outcome, error) {
-	outcome, why, err := in.recordRefusal(r, idx, false)
+	outcome, why, err := in.recordRefusal(r, idx, tip)
 	if err == nil && outcome == "" {
 		outcome, why, err = in.mergeRefusal(r, tip)
 	}
-	if err != nil || outcome == "" {
+	if err != nil {
 		return "", err
 	}
-	if last != memo+" "+string(outcome) {
+	if outcome != "" && last != memo+" "+string(outcome) {
 		in.reportRefusal(r, tip, outcome, why)
+	}
+	// A record that does not read may name a commit this request brings,
+	// and whether it holds that commit back cannot be told. That is said
+	// with the request, whatever is decided about it.
+	if outcome == "" || last != memo+" "+string(outcome) {
+		for _, u := range in.uncheckable(r, idx, tip) {
+			fmt.Fprintf(in.out, "WARNING: %s may name a commit %s brings, and does not read, so whether it holds that commit back cannot be checked\n", u.ref, r.change)
+		}
 	}
 	return outcome, nil
 }
@@ -212,14 +223,15 @@ const (
 // additionally expires, so a transient one is retried without being
 // retried at tick rate. A refusal never stands: what refused it can change
 // while the three stay where they are, as when a draft is readied again,
-// so it is decided again on every pass.
+// so it is decided again on every pass. Nor does a voiding: a request
+// filed again at the same head is a fresh approval.
 func (in *integrator) answered(last, memo string) bool {
 	rest, ok := strings.CutPrefix(last, memo+" ")
 	if !ok {
 		return false
 	}
 	switch verdict.Outcome(rest) {
-	case refusedNotReady, refusedMerge:
+	case refusedNotReady, refusedMerge, voidedWithdrawn:
 		return false
 	}
 	when, failed := strings.CutPrefix(rest, failedMemo+" ")
@@ -235,7 +247,7 @@ func (in *integrator) answered(last, memo string) bool {
 
 // act judges one request and does what the verdict says, returning the
 // outcome so the memo can record it.
-func (in *integrator) act(r request, idx *recordIndex, tip string) (verdict.Outcome, error) {
+func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 	ch, snap, landed, err := in.materialize(r, tip)
 	if err != nil {
 		return "", err
@@ -248,18 +260,12 @@ func (in *integrator) act(r request, idx *recordIndex, tip string) (verdict.Outc
 
 	switch v.Outcome {
 	case verdict.Land:
-		// Judging can take minutes, and a change can be unreadied or
-		// withdrawn meanwhile. So the records are read once more just
-		// before the commit point, and a change no longer ready lands
-		// nothing.
-		if outcome, why, err := in.recordRefusal(r, idx, true); err != nil || outcome != "" {
-			if outcome != "" {
-				in.reportRefusal(r, tip, outcome, why)
+		outcome, err := in.land(ch, v, r, tip, landed)
+		if outcome != "" || err != nil {
+			if outcome == "" {
+				outcome = v.Outcome
 			}
 			return outcome, err
-		}
-		if err := in.land(ch, v, r, tip, landed); err != nil {
-			return v.Outcome, err
 		}
 	case verdict.Stale:
 		in.publishStale(ch, v, tip)
@@ -456,19 +462,33 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 // already in the stream is re-judged against an empty delta on every pass,
 // forever. So each step runs, each failure is reported, and the landing is
 // reported as having happened, because it did.
-func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing) error {
+func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing) (verdict.Outcome, error) {
 	transfer, err := in.composeTransfer(ch, v, l.digest, l.commit, tip, l.policy)
 	if err != nil {
-		return err
+		return "", err
 	}
 	evidence, err := in.countersign(ch, v, l, transfer)
 	if err != nil {
-		return err
+		return "", err
+	}
+
+	// Judging and signing can take minutes, and a change can be unreadied
+	// or withdrawn meanwhile, or a record can come to name a commit this
+	// request brings. So every record is read again here, as the last
+	// thing before the commit point, and a refusal lands nothing. A record
+	// written between this read and the ref write is still missed: refs
+	// offer no way to make the two one step. What lands then is still the
+	// head the operator approved.
+	if outcome, why, err := in.finalRefusal(r, tip); err != nil || outcome != "" {
+		if outcome != "" {
+			in.reportRefusal(r, tip, outcome, why)
+		}
+		return outcome, err
 	}
 
 	// The commit point.
 	if _, err := git(in.repo, "update-ref", ch.Target, l.commit, tip); err != nil {
-		return fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
+		return "", fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
 	}
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
 	in.queueRefUpdate(ch.Target, tip, l.commit)
@@ -501,10 +521,10 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)
 	if len(unrecorded) > 0 {
-		return fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",
+		return "", fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",
 			ch.ID, verdict.Short(l.commit), strings.Join(unrecorded, "; "))
 	}
-	return nil
+	return "", nil
 }
 
 // report prints the verdict, per check, in the order it was judged.

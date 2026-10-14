@@ -16,10 +16,22 @@ package main
 //     the change's record exists, says ready, and lists the request's head
 //     as one of its versions' heads. This reads the one record, fresh,
 //     each time the rule is applied.
-//   - A request of any name is refused when its head is a version head of
-//     any record that is not ready. The integrator finds those records by
-//     head, through an index it builds once per pass from every ref under
-//     refs/the-valley/changes/.
+//   - A request of any name is refused when any commit it would bring to
+//     the target, its head or one below it, is a version head of a record
+//     that is not ready. The integrator finds those records by head,
+//     through an index it builds from every ref under
+//     refs/the-valley/changes/: once per pass, and again just before it
+//     moves the target.
+//
+// A withdrawn change's requests are voided. Each pass deletes every
+// request named for a withdrawn change, and every request whose head is
+// one of its version heads, so readying the change again needs a fresh
+// approval.
+//
+// None of this is atomic with landing. A record written after the
+// integrator's last read and before it moves the target is not seen, so
+// an approved head its author has just paused can still land. What lands
+// is always a head the operator approved: the request names it exactly.
 //
 // A third rule reads the request's commits rather than records. A request
 // is refused when the commits from its merge base with the target to its
@@ -50,14 +62,19 @@ import (
 const (
 	refusedNotReady verdict.Outcome = "refused-not-ready"
 	refusedMerge    verdict.Outcome = "refused-merge"
+
+	// voidedWithdrawn is the outcome of a request deleted because its
+	// change was withdrawn.
+	voidedWithdrawn verdict.Outcome = "voided-withdrawn"
 )
 
 // recordLimit is the most records the index reads. The hook refuses to
 // create a record past change.MaxRecords, and pushes that run at once can
 // pass that bound only by the records each had in flight. A repository
-// holding more than twice the bound is refused whole: the index could not
-// say which heads are versions of changes that are not ready, so no
-// request lands until records are deleted.
+// holding more than twice the bound lands nothing: the index could not say
+// which heads are versions of changes that are not ready, so no request in
+// it lands until records are deleted. Each repository has its own
+// controller, so the others are not held up.
 const recordLimit = 2 * change.MaxRecords
 
 // indexed is one record the index read, and the ref it was read from.
@@ -67,14 +84,22 @@ type indexed struct {
 }
 
 // recordIndex is every record the served repository holds, by the heads
-// its versions name. It is read once per pass.
+// its versions name and by ref.
 type recordIndex struct {
 	byHead map[string][]indexed
+	byRef  map[string]*change.Record
 
 	// unreadable is each ref under the namespace that holds no record the
-	// shared parser accepts, with why. A record that does not read names
-	// no head the integrator can see, so it refuses nothing.
-	unreadable []string
+	// shared parser accepts. A record that does not read names no head the
+	// integrator can see, so it refuses nothing, and a head it names can
+	// land. The hook refuses such a record, so only corrupt storage holds
+	// one, and the pass reports it wherever it may matter.
+	unreadable []unreadable
+}
+
+// unreadable is a ref under the namespace whose record does not read.
+type unreadable struct {
+	ref, commit, why string
 }
 
 // readRecords builds the index from every ref under
@@ -99,12 +124,13 @@ func (in *integrator) readRecords() (*recordIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	idx := &recordIndex{byHead: map[string][]indexed{}}
+	idx := &recordIndex{byHead: map[string][]indexed{}, byRef: map[string]*change.Record{}}
 	for i, ref := range refs {
 		if errs[i] != nil {
-			idx.unreadable = append(idx.unreadable, fmt.Sprintf("%s: %v", ref, errs[i]))
+			idx.unreadable = append(idx.unreadable, unreadable{ref: ref, commit: commits[i], why: errs[i].Error()})
 			continue
 		}
+		idx.byRef[ref] = records[i]
 		for _, v := range records[i].Versions {
 			head := strings.TrimPrefix(v.Head, change.HeadPrefix)
 			idx.byHead[head] = append(idx.byHead[head], indexed{ref: ref, record: records[i]})
@@ -254,11 +280,10 @@ func (in *integrator) blobs(oids []string) ([][]byte, error) {
 }
 
 // recordRefusal applies the two rules that read records, and returns the
-// refusal and why, or "" when neither refuses. reread reads every record
-// the index found for the head again, as well as the change's own; the
-// pass does that just before it lands, since the checks that come between
-// can take minutes.
-func (in *integrator) recordRefusal(r request, idx *recordIndex, reread bool) (verdict.Outcome, string, error) {
+// refusal and why, or "" when neither refuses. The request's own record,
+// for a request named c-<change ID>, is read fresh; every other record is
+// read from idx.
+func (in *integrator) recordRefusal(r request, idx *recordIndex, tip string) (verdict.Outcome, string, error) {
 	target := strings.TrimPrefix(r.target, "refs/heads/")
 	if id, ok := change.RequestID(r.change); ok {
 		ref := change.Ref(target, id)
@@ -275,22 +300,145 @@ func (in *integrator) recordRefusal(r request, idx *recordIndex, reread bool) (v
 			return refusedNotReady, fmt.Sprintf("its head %s is no version of change %s", verdict.Short(r.head), id), nil
 		}
 	}
-	for _, n := range idx.byHead[r.head] {
-		rec := n.record
-		if reread {
-			var err error
-			if rec, err = in.readRecord(n.ref); errors.Is(err, errNoRecord) {
+	commits, err := in.introduced(r, tip)
+	if err != nil {
+		return "", "", err
+	}
+	for _, c := range commits {
+		for _, n := range idx.byHead[c] {
+			v, found := versionAt(n.record, c)
+			if !found || n.record.State == change.Ready {
 				continue
-			} else if err != nil {
-				return refusedNotReady, fmt.Sprintf("the record %s, which named its head, does not read now: %v", n.ref, err), nil
 			}
-		}
-		v, found := versionAt(rec, r.head)
-		if found && rec.State != change.Ready {
-			return refusedNotReady, fmt.Sprintf("its head %s is v%d of change %s, which is %s, not ready", verdict.Short(r.head), v.N, rec.ChangeID, rec.State), nil
+			what := "the commit " + verdict.Short(c) + " it brings"
+			if c == r.head {
+				what = "its head " + verdict.Short(c)
+			}
+			return refusedNotReady, fmt.Sprintf("%s is v%d of change %s, which is %s, not ready", what, v.N, n.record.ChangeID, n.record.State), nil
 		}
 	}
 	return "", "", nil
+}
+
+// introduced is every commit a request would bring to the target, newest
+// first: those reachable from its head and not from the tip, and the head
+// itself whatever the tip holds.
+func (in *integrator) introduced(r request, tip string) ([]string, error) {
+	out, err := gitLine(in.repo, "rev-list", r.head, "^"+tip)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read the commits from %s to %s: %w", r.target, verdict.Short(r.head), err)
+	}
+	commits := strings.Fields(out)
+	if len(commits) == 0 || commits[0] != r.head {
+		commits = append([]string{r.head}, commits...)
+	}
+	return commits, nil
+}
+
+// finalRefusal applies the record rules once more, immediately before the
+// target moves, with every record read again into a fresh index. A record
+// that came to name one of the request's commits since the pass began is
+// seen here. Only a record written after this read and before the target
+// moves is missed.
+func (in *integrator) finalRefusal(r request, tip string) (verdict.Outcome, string, error) {
+	idx, err := in.readRecords()
+	if err != nil {
+		return "", "", err
+	}
+	return in.recordRefusal(r, idx, tip)
+}
+
+// uncheckable is each record that does not read and may name one of the
+// commits the request brings. A record names its version heads as parents
+// of its record commits, so it can name only a commit its record commit
+// reaches. That is true of some commit the request brings exactly when a
+// merge base of the record commit and the head is not on the tip. A record
+// git cannot compare at all may name anything.
+func (in *integrator) uncheckable(r request, idx *recordIndex, tip string) []unreadable {
+	var found []unreadable
+	for _, u := range idx.unreadable {
+		out, ok := gitTry(in.repo, "merge-base", "--all", u.commit, r.head)
+		may := !ok && out != ""
+		for _, base := range strings.Fields(out) {
+			if !ok {
+				break
+			}
+			if _, onTip := gitTry(in.repo, "merge-base", "--is-ancestor", base, tip); !onTip {
+				may = true
+			}
+		}
+		if may {
+			found = append(found, u)
+		}
+	}
+	return found
+}
+
+// voidWithdrawn deletes the requests a withdrawn change voids, and returns
+// the requests left to judge. A request is voided when it is named for a
+// withdrawn change, or when its head is a version head of one. Before each
+// deletion the record is read again, and the request is deleted only if
+// the change is still withdrawn. The deletion is leased on the head the
+// pass found the request at, so an approval filed since stands. A
+// withdrawal followed by a ready within one pass is not seen, and leaves
+// the request in place.
+func (in *integrator) voidWithdrawn(requests []request, idx *recordIndex) []request {
+	var kept []request
+	for _, r := range requests {
+		if ref := withdrawnFor(r, idx); ref == "" || !in.void(r, ref) {
+			kept = append(kept, r)
+		}
+	}
+	return kept
+}
+
+// withdrawnFor is the ref of a withdrawn change's record that voids the
+// request, as idx read it, or "".
+func withdrawnFor(r request, idx *recordIndex) string {
+	if id, ok := change.RequestID(r.change); ok {
+		ref := change.Ref(strings.TrimPrefix(r.target, "refs/heads/"), id)
+		if rec := idx.byRef[ref]; rec != nil && rec.State == change.Withdrawn {
+			return ref
+		}
+	}
+	for _, n := range idx.byHead[r.head] {
+		if n.record.State == change.Withdrawn {
+			return n.ref
+		}
+	}
+	return ""
+}
+
+// void deletes one request a withdrawn change voids, if the change is
+// still withdrawn and the request still at the head the pass found, and
+// records the outcome voided-withdrawn. It reports whether it deleted it.
+func (in *integrator) void(r request, ref string) bool {
+	rec, err := in.readRecord(ref)
+	if err != nil || rec.State != change.Withdrawn {
+		return false
+	}
+	if id, named := change.RequestID(r.change); !(named && id == rec.ChangeID) {
+		if _, found := versionAt(rec, r.head); !found {
+			return false
+		}
+	}
+	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
+	if err != nil {
+		return false
+	}
+	evidence, err := in.evidenceState()
+	if err != nil {
+		return false
+	}
+	if _, err := git(in.repo, "update-ref", "-d", r.ref, r.head); err != nil {
+		return false
+	}
+	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, verdict.Short(tip), voidedWithdrawn)
+	fmt.Fprintf(in.out, "  change %s is withdrawn, which voids its requests; the request is deleted, and the change needs a fresh approval once it is ready again\n", rec.ChangeID)
+	if err := in.writeMemo(r, fmt.Sprintf("%s %s %s %s", r.head, tip, evidence, voidedWithdrawn)); err != nil {
+		fmt.Fprintf(in.out, "  the outcome was not recorded: %v\n", err)
+	}
+	return true
 }
 
 // versionAt is the version of a record whose head is oid.

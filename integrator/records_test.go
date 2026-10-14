@@ -8,6 +8,7 @@ package main
 // could write one where no hook guards the repository.
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -102,6 +103,7 @@ func TestTheRecordsRefuseARequestForAChangeThatIsNotReady(t *testing.T) {
 	v1 := s.commit("v1", base)
 	v2 := s.commit("v2", base)
 	drafted := s.commit("drafted", base)
+	child := s.commit("child of drafted", drafted)
 	loose := s.commit("loose", base)
 	s.record(readyID, change.Ready, v1, v2)
 	s.record(draftID, change.Draft, drafted)
@@ -138,34 +140,140 @@ func TestTheRecordsRefuseARequestForAChangeThatIsNotReady(t *testing.T) {
 		{"a branch's request at a ready change's head", "topic", v1, false, ""},
 		{"a branch's request no record knows", "loose", loose, false, ""},
 		{"a branch named like a request but not one", "c-" + readyID[:31], drafted, true, "which is draft"},
+		// A line of commits above a draft's head brings the draft with it.
+		{"another name's request for a child of a draft's head", "other", child, true,
+			"the commit " + drafted[:12] + " it brings is v1 of change " + draftID + ", which is draft, not ready"},
 	} {
 		r := request{ref: requestPrefix + "/main/" + c.change, change: c.change, target: "refs/heads/main", head: c.head}
-		for _, reread := range []bool{false, true} {
-			outcome, why, err := in.recordRefusal(r, idx, reread)
-			if err != nil {
-				t.Fatalf("%s: %v", c.name, err)
-			}
-			if refused := outcome != ""; refused != c.refused || (refused && outcome != refusedNotReady) {
-				t.Errorf("%s (reread %v): refused %q (%s), want refused %v", c.name, reread, outcome, why, c.refused)
-			}
-			if !strings.Contains(why, c.says) {
-				t.Errorf("%s (reread %v): refused saying %q, without %q", c.name, reread, why, c.says)
-			}
+		outcome, why, err := in.recordRefusal(r, idx, base)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		if refused := outcome != ""; refused != c.refused || (refused && outcome != refusedNotReady) {
+			t.Errorf("%s: refused %q (%s), want refused %v", c.name, outcome, why, c.refused)
+		}
+		if !strings.Contains(why, c.says) {
+			t.Errorf("%s: refused saying %q, without %q", c.name, why, c.says)
 		}
 	}
+	// Once the draft has landed, its head is on the tip and brings nothing.
+	r := request{change: "other", target: "refs/heads/main", head: child}
+	if outcome, why, _ := in.recordRefusal(r, idx, drafted); outcome != "" {
+		t.Errorf("a draft's head already on the tip still refuses its child: %s", why)
+	}
 
-	// Read again, a record that changed since the index was read is read
-	// as it is now: the draft readied lets its head through, and the ready
-	// change unreadied holds its heads back.
+	// The final check reads every record again: the draft readied lets its
+	// head through, the ready change unreadied holds its heads back, and a
+	// record that newly names a head the pass's index did not know holds
+	// that head back too.
 	s.record(draftID, change.Ready, drafted)
 	s.record(readyID, change.Draft, v1, v2)
-	r := request{change: "topic", target: "refs/heads/main", head: drafted}
-	if outcome, why, _ := in.recordRefusal(r, idx, true); outcome != "" {
-		t.Errorf("a draft readied since the index was read still refuses: %s", why)
+	newID := "lllllllllllllllllllllllllllllllk"
+	s.record(newID, change.Draft, loose)
+	for _, c := range []struct {
+		head    string
+		refused bool
+	}{{drafted, false}, {v1, true}, {loose, true}} {
+		r := request{change: "topic", target: "refs/heads/main", head: c.head}
+		outcome, why, err := in.finalRefusal(r, base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (outcome == refusedNotReady) != c.refused {
+			t.Errorf("the final check of %s: refused %q (%s), want refused %v", c.head[:12], outcome, why, c.refused)
+		}
 	}
-	r = request{change: "topic", target: "refs/heads/main", head: v1}
-	if outcome, _, _ := in.recordRefusal(r, idx, true); outcome != refusedNotReady {
-		t.Errorf("a change unreadied since the index was read refuses nothing")
+}
+
+// A record that does not read may name only commits its record commit
+// reaches, so a request is flagged when a commit it brings is one of
+// those, and not otherwise.
+func TestARecordThatDoesNotReadIsReportedWhereItMayMatter(t *testing.T) {
+	s := newScratchRepo(t)
+	base := s.git("rev-parse", "HEAD")
+	named := s.commit("named", base)
+	above := s.commit("above", named)
+	elsewhere := s.commit("elsewhere", base)
+	s.recordText(change.Ref("main", draftID), "{}\n", named)
+	in := &integrator{repo: s.repo}
+	idx, err := in.readRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, head, tip string
+		flagged         bool
+	}{
+		{"its own head", named, base, true},
+		{"a child of its head", above, base, true},
+		{"a head it cannot reach", elsewhere, base, false},
+		{"a child of its head, once its head is on the tip", above, named, false},
+	} {
+		r := request{change: "topic", target: "refs/heads/main", head: c.head}
+		if got := len(in.uncheckable(r, idx, c.tip)) == 1; got != c.flagged {
+			t.Errorf("%s: flagged %v, want %v", c.name, got, c.flagged)
+		}
+		if outcome, _, _ := in.recordRefusal(r, idx, c.tip); outcome != "" {
+			t.Errorf("%s: a record that does not read refused it", c.name)
+		}
+	}
+}
+
+// A withdrawn change's requests are deleted, named for it or at one of its
+// version heads, each only while the change is still withdrawn and the
+// request still where the pass found it.
+func TestAWithdrawnChangeVoidsItsRequests(t *testing.T) {
+	s := newScratchRepo(t)
+	base := s.git("rev-parse", "HEAD")
+	h := s.commit("withdrawn", base)
+	other := s.commit("other", base)
+	readied := s.commit("readied", base)
+	s.record(draftID, change.Withdrawn, h)
+	s.record(readyID, change.Withdrawn, readied)
+	ref := func(name string) string { return requestPrefix + "/main/" + name }
+	for name, head := range map[string]string{
+		change.RequestName(draftID): h, "topic": h, "unrelated": other, "moved": h, "readied": readied,
+	} {
+		s.git("update-ref", ref(name), head)
+	}
+	in := &integrator{repo: s.repo, out: devNull(t)}
+	idx, err := in.readRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Between the index and the voiding, one request is approved again at
+	// another head, and one change is readied again.
+	s.git("update-ref", ref("moved"), other)
+	s.record(readyID, change.Ready, readied)
+	var requests []request
+	for _, name := range []string{change.RequestName(draftID), "topic", "unrelated", "moved", "readied"} {
+		head := h
+		switch name {
+		case "unrelated":
+			head = other
+		case "readied":
+			head = readied
+		}
+		requests = append(requests, request{ref: ref(name), change: name, target: "refs/heads/main", head: head})
+	}
+	kept := in.voidWithdrawn(requests, idx)
+	var names []string
+	for _, r := range kept {
+		names = append(names, r.change)
+	}
+	if strings.Join(names, " ") != "unrelated moved readied" {
+		t.Fatalf("kept %v, want the unrelated request, the one approved again, and the readied change's", names)
+	}
+	for name, gone := range map[string]bool{
+		change.RequestName(draftID): true, "topic": true, "unrelated": false, "moved": false, "readied": false,
+	} {
+		if _, there := gitTry(s.repo, "rev-parse", "--verify", "--quiet", ref(name)); there == gone {
+			t.Errorf("the request %s: deleted %v, want %v", name, !there, gone)
+		}
+	}
+	memo, _ := gitTry(s.repo, "cat-file", "blob", outcomePrefix+"/main/topic")
+	if fields := strings.Fields(memo); len(fields) != 4 || fields[3] != string(voidedWithdrawn) {
+		t.Errorf("the voided request's outcome record is %q", memo)
 	}
 }
 
@@ -192,7 +300,7 @@ func TestARecordPastItsBoundsIsNotRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(idx.byHead[head]) != 0 || len(idx.unreadable) != 1 || !strings.Contains(idx.unreadable[0], "more than the 65536") {
+	if len(idx.byHead[head]) != 0 || len(idx.unreadable) != 1 || !strings.Contains(idx.unreadable[0].why, "more than the 65536") {
 		t.Fatalf("an oversized record read as %v, unreadable %q", idx.byHead, idx.unreadable)
 	}
 }
@@ -246,4 +354,13 @@ func TestARefusalIsNeverTheStandingAnswer(t *testing.T) {
 	if in.answered("other t e land", memo) {
 		t.Errorf("a memo about another head stands")
 	}
+}
+
+func devNull(t *testing.T) *os.File {
+	f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { f.Close() })
+	return f
 }

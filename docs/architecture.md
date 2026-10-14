@@ -593,11 +593,18 @@ like the status object. `valley pending` is the view a person reads (`status/pen
 Both read one snapshot of origin for each repository they list. For each version of each change,
 they decide its landing evidence (`status/inventory.go`). The first rule that applies is the answer:
 
-1. `landed`: the version's head is an ancestor of `main`.
-2. `landed-recorded`: a commit on `main` carries a transfer statement whose `change` is the
-   version's request name, whose `base` is the `valley-tree-v1` digest of the version's tree, and
-   whose signature verifies as the integrator's. The request name is the version's branch with each
-   `/` replaced by `-`, or `c-<change id>`.
+1. `landed`: the version's head is on `main`'s first-parent history, as
+   `git rev-list --first-parent` lists it. The integrator never writes a merge, and a fast-forward
+   puts every commit of a change on that history. Ancestry alone is not enough: a merge whose tree
+   drops a change's content still makes the change's head an ancestor of `main`.
+2. `landed-recorded`: a commit `L` on `main`'s first-parent history carries a transfer statement
+   whose `change` is the version's request name, whose `base` is the `valley-tree-v1` digest of the
+   version's tree, and whose signature verifies as the integrator's. The request name is the
+   version's branch with each `/` replaced by `-`, or `c-<change id>`. The client also recomputes
+   the integrator's merge of the version's head onto `L`'s first parent, as `integrator/git.go`
+   makes it (`git merge-tree --write-tree --merge-base=<merge base> L^1 <head>`). The result must be
+   `L`'s tree. A head with the same tree on another parent is another delta, and the statement says
+   nothing about it.
 3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`. The
    integrator moves `main` before it stores its evidence, so a landing can exist without its
    evidence. A request is consumed when its outcome record says `land` for this head and the request
@@ -620,6 +627,14 @@ instance's URL with its last path segment replaced, so the transport, user and h
 repository other than the current one is read through a clone under `$XDG_CACHE_HOME/valley/repos`.
 When discovery is unavailable, `--all` says so and lists the current repository alone.
 `--repo <name>` limits either command to one project.
+
+`policy/valley` is data that anyone who can land on `main` controls, so the client is careful with
+the URL it names. It refuses a URL that starts with `-`, which git would read as an option. It
+refuses git's `<transport>::<address>` form, such as `ext::`, which runs a command. It refuses any
+scheme other than `ssh://`, `git://`, `https://` and `file://`. A scp-like URL and a local path are
+allowed. Every git call that takes such a URL passes `--end-of-options` first, and runs with
+`GIT_ALLOW_PROTOCOL=ssh:git:https:file`, which overrides any `protocol.*.allow` in the caller's own
+configuration.
 
 ```json
 {
@@ -669,7 +684,10 @@ When discovery is unavailable, `--all` says so and lists the current repository 
 - Changes are keyed by repository, target and change ID, in the order of their IDs. `state` is
   `ready`, `draft` or `withdrawn`. `record` is the record commit.
 - A handle is unique among every change listed, in every repository. Every record of a listed
-  repository counts, so a handle also names its change within that repository alone.
+  repository counts, so a handle also names its change within that repository alone. When one change
+  ID is recorded in more than one listed repository, each of those entries has the qualified handle
+  `<repo>/<prefix>`, such as `cosmo/nxvp`. Every verb that takes a handle accepts the qualified
+  form, in the repository it names.
 - `landed_commit` is the commit on `main` the version landed as: its own head when `landed`, the
   transfer statement's commit when `landed-recorded`, and otherwise `null`.
 - `request` is the request filed at the version's head under either of its request names, or `null`.
@@ -684,9 +702,12 @@ When discovery is unavailable, `--all` says so and lists the current repository 
 `landed-recorded`, one line each: the handle and version, the title, `includes <handle>` when the
 change includes another that has not landed, and `uncertain` when that applies. `--owes` adds the
 checks each change owes, by cost, as `valley checks` derives them. Then come the branches no change
-is on, and the drafts. With `--all`, each repository is headed by its name. `valley pending --json`
-prints `valley-pending/v1`, the same object holding what the human view lists. Its `includes` counts
-only changes that have not landed.
+is on, and the drafts. With `--all`, each repository is headed by its name.
+
+`valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
+the human view's sections. `changes` holds only the ready changes that have not landed. Each
+repository has a `drafts` array as well, holding the drafts, with the same entry shape. `branches`
+is the same as in `valley-changes/v1`. Its `includes` counts only changes that have not landed.
 
 ```text
 mmmm v1 | stack-b | includes nxvp
@@ -701,8 +722,9 @@ qqqq v1 on paused | paused | 6 seconds ago | klaus-env | ahead 1 | 1 file change
 ```
 
 `review`, `approve`, `rebase`, `unready` and `withdraw` read a branch name as the change whose
-active version is on it. A change whose active version is `landed` or `landed-recorded` is on no
-branch for this, so a branch name can be used again once its change has landed. Checked by
+active version is on it. A change whose active version is `landed` or `landed-recorded` is skipped
+while the branch's tip is still that version's head, so a branch name can be used again once its
+change has landed. A branch that has moved since names the change as before. Checked by
 `valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
 
 ## The life of a change

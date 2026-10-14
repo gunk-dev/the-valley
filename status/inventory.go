@@ -7,19 +7,22 @@
 // version of each change, the landing evidence it has. The first rule
 // that applies is the answer:
 //
-//  1. landed: the version's head is on main's first-parent history. The
-//     integrator never writes a merge, and a fast-forward puts every
-//     commit of a change on that history. A head that main reaches only
-//     through a merge's other parent may have had its content dropped by
-//     the merge, so it has not landed by this rule.
-//  2. landed-recorded: a commit L on main's first-parent history carries a
-//     transfer statement, signed by the integrator, whose change is the
-//     version's request name and whose base is the valley-tree-v1 digest
-//     of the version's tree. The integrator writes one when it lands a
-//     change as a new commit (integrator/transfer.go). And the
-//     integrator's own merge of the version's head onto L's parent must
-//     give L's tree: a head with the same tree on another parent is
-//     another delta, which the statement says nothing about.
+//  1. landed: the version's head is on main's first-parent history, and
+//     no commit on that history between the head and main's tip is a
+//     merge. The integrator never writes a merge, and a fast-forward puts
+//     every commit of a change on that history. A merge above the head
+//     could have dropped the head's content, whichever parent the head is
+//     reached through, so it leaves the head not landed by this rule.
+//  2. landed-recorded: a commit L on main's first-parent history, with one
+//     parent, carries a transfer statement, signed by the integrator,
+//     whose change is a request name of the version and whose base is
+//     the valley-tree-v1 digest of the version's tree. The integrator
+//     writes one when it lands a change (integrator/transfer.go). The
+//     integrator's outcome record for that request name says land, at
+//     this version's head: only the integrator writes outcome records,
+//     and the record names the exact head it landed, which a statement
+//     about trees does not. And the integrator's own merge of the head
+//     onto L's parent gives L's tree.
 //  3. uncertain: a request for the version was consumed, or the outcome
 //     record says the integrator failed on it, and neither of the above
 //     holds. The integrator moves main before it stores its evidence
@@ -27,7 +30,8 @@
 //  4. not-landed: otherwise.
 //
 // The outcome record alone is never proof of a landing, because a later
-// pass can overwrite it.
+// pass can overwrite it. A record a later pass overwrote leaves a landing
+// uncertain, never landed-recorded.
 
 package main
 
@@ -104,7 +108,7 @@ type snapshot struct {
 
 	outcomes    map[string]memo      // outcome ref → the record it holds
 	landings    map[string][2]string // "<change ID> <n>" → landing and commit
-	firstParent map[string]bool      // main's first-parent history; nil until read
+	firstParent map[string]bool      // main's first-parent history, down to its first merge; nil until read
 	reachesOf   map[string]bool
 	reachOf     map[string]map[string]bool
 	digestOf    map[string]string
@@ -166,18 +170,29 @@ func headOf(v change.Version) string {
 	return strings.TrimPrefix(v.Head, change.HeadPrefix)
 }
 
-// onMain reports whether a commit is on main's first-parent history:
-// main itself, its first parent, that commit's first parent, and so on.
-// This is where a landing puts a change.
+// onMain reports whether a commit is on main's first-parent history (main
+// itself, its first parent, that commit's first parent, and so on) with no
+// merge between it and main's tip: whether
+// `git rev-list --first-parent --merges <oid>..main` would list nothing.
+// This is where a landing puts a change. The history is read down to its
+// first merge, which is itself the last commit counted, since no merge is
+// above it.
 func (s *snapshot) onMain(oid string) bool {
 	if s.tip == "" || oid == "" {
 		return false
 	}
 	if s.firstParent == nil {
 		s.firstParent = map[string]bool{}
-		if out, err := s.g.output(true, "rev-list", "--first-parent", s.tip); err == nil {
-			for _, c := range strings.Fields(out) {
-				s.firstParent[c] = true
+		if out, err := s.g.output(true, "rev-list", "--first-parent", "--parents", s.tip); err == nil {
+			for _, line := range strings.Split(out, "\n") {
+				fields := strings.Fields(line)
+				if len(fields) == 0 {
+					continue
+				}
+				s.firstParent[fields[0]] = true
+				if len(fields) > 2 {
+					break
+				}
 			}
 		}
 	}
@@ -273,8 +288,12 @@ func (s *snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 	for _, n := range requestNames(id, v) {
 		names[n] = true
 	}
+	head := headOf(v)
 	for _, t := range s.transferStatements() {
-		if !names[t.change] || !isObjectID(t.landed) || !s.onMain(t.landed) {
+		if !names[t.change] || !isObjectID(t.landed) || !s.onMain(t.landed) || !s.singleParent(t.landed) {
+			continue
+		}
+		if m, ok := s.outcomes[outcomePrefix+t.change]; !ok || m.decision != "land" || m.head != head {
 			continue
 		}
 		digest, ok := s.digest(headOf(v))
@@ -290,6 +309,13 @@ func (s *snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// singleParent reports whether a commit has exactly one parent, as every
+// commit the integrator lands as does.
+func (s *snapshot) singleParent(oid string) bool {
+	out, err := s.g.output(true, "rev-list", "--parents", "-n", "1", oid)
+	return err == nil && len(strings.Fields(out)) == 2
 }
 
 // mergesTo reports whether the integrator's merge of head onto landed's

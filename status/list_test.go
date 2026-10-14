@@ -130,12 +130,12 @@ func TestHandlesQualifiedAcrossRepos(t *testing.T) {
 	shared := "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz"
 	repos := []listed{
 		{source: source{name: "cosmo"}, snap: &snapshot{all: recordsOf([]string{shared, "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"})}},
-		{source: source{name: "valley"}, snap: &snapshot{all: recordsOf([]string{shared})}},
+		{source: source{name: "origin"}, snap: &snapshot{all: recordsOf([]string{shared})}},
 	}
 	h := handles(repos)
 	want := handleMap{
-		{"cosmo", "main", shared}:                             "cosmo/nxvp",
-		{"valley", "main", shared}:                            "valley/nxvp",
+		{"cosmo", "main", shared}:                             "cosmo:nxvp",
+		{"origin", "main", shared}:                            "origin:nxvp",
 		{"cosmo", "main", "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"}: "xunx",
 	}
 	if len(h) != len(want) {

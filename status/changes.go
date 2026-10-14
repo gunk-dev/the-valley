@@ -6,7 +6,7 @@
 //   - its full change ID, 32 letters from k to z;
 //   - its handle: the shortest prefix of its ID, four letters at least,
 //     that no other change recorded on origin shares;
-//   - its handle qualified by this repository's name, <repo>/<handle>,
+//   - its handle qualified by this repository's name, <repo>:<handle>,
 //     the way changes and pending write the handle of a change ID that
 //     several repositories record;
 //   - its branch, the way changes were named before they had records.
@@ -148,13 +148,18 @@ type recorded struct {
 // written as origin/<branch>, it has no handle's shape, or it matches no
 // record. A name that matches more than one record is refused.
 func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
-	handle, ok := handlePart(g, name)
-	if strings.HasPrefix(name, "origin/") || !ok {
+	handle, qualified, err := handlePart(g, name)
+	switch {
+	case err != nil:
+		return recorded{}, false, err
+	case handle == "" || strings.HasPrefix(name, "origin/"):
 		return recorded{}, false, nil
 	}
 	ids := o.changes()
 	matches := change.Matching(handle, ids)
 	switch {
+	case len(matches) == 0 && qualified:
+		return recorded{}, false, failure(fmt.Sprintf("no change on origin has the handle %s", name))
 	case len(matches) == 0:
 		return recorded{}, false, nil
 	case len(matches) > 1:
@@ -180,20 +185,23 @@ func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
 }
 
 // handlePart is the handle a name gives, when it has a handle's shape: the
-// name itself, or what follows the slash in a name written
-// <repo>/<handle>, when <repo> is this repository's name. changes and
-// pending qualify a handle that way when one change ID is recorded in
-// several repositories they list. A qualified name that matches no record
-// is a branch name, like any other handle.
-func handlePart(g git, name string) (string, bool) {
+// name itself, or what follows the colon in a name written
+// <repo>:<handle>. changes and pending qualify a handle that way when one
+// change ID is recorded in several repositories they list. git refuses a
+// colon in a ref name, so a qualified name is never a branch's. It must
+// name this repository, and qualified reports that it was written so.
+func handlePart(g git, name string) (handle string, qualified bool, err error) {
 	if change.LooksLikeHandle(name) {
-		return name, true
+		return name, false, nil
 	}
-	repo, handle, ok := strings.Cut(name, "/")
-	if ok && repo != "origin" && change.LooksLikeHandle(handle) && repo == project(g) {
-		return handle, true
+	repo, handle, ok := strings.Cut(name, ":")
+	if !ok || !change.LooksLikeHandle(handle) {
+		return "", false, nil
 	}
-	return "", false
+	if here := project(g); repo != here {
+		return "", false, failure(fmt.Sprintf("%s names a change in %s, and this repository is %s", name, repo, here))
+	}
+	return handle, true, nil
 }
 
 // resolution is what the name of a change stands for. A name that is a
@@ -210,7 +218,11 @@ type resolution struct {
 // version names no branch is refused, since every verb that resolves a
 // name acts on a branch too.
 func resolve(g git, name string) (resolution, error) {
-	if _, ok := handlePart(g, name); strings.HasPrefix(name, "origin/") || !ok {
+	handle, _, err := handlePart(g, name)
+	if err != nil {
+		return resolution{}, err
+	}
+	if strings.HasPrefix(name, "origin/") || handle == "" {
 		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
 	}
 	o, err := listOrigin(g, append([]string{"refs/heads/" + name}, recordPatterns...)...)

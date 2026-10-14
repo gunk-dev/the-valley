@@ -463,8 +463,9 @@ type handleMap map[handleKey]string
 // in every repository, so no two share one. Every record of a repository
 // is counted, listed or not, so a handle also names its change in that
 // repository alone. A change ID recorded in more than one repository
-// listed gets the handle <repo>/<prefix> in each, which every verb that
-// takes a handle reads in that repository.
+// listed gets the handle <repo>:<prefix> in each, which every verb that
+// takes a handle reads in that repository. git refuses a colon in a ref
+// name, so a qualified handle is never also a branch's name.
 func handles(repos []listed) handleMap {
 	var ids []string
 	in := map[string]map[string]bool{} // change ID → the repositories recording it
@@ -489,7 +490,7 @@ func handles(repos []listed) handleMap {
 		for _, n := range r.snap.all {
 			handle := change.Handle(n.id, ids)
 			if len(in[n.id]) > 1 {
-				handle = r.name + "/" + handle
+				handle = r.name + ":" + handle
 			}
 			h[handleKey{r.name, n.record.Target, n.id}] = handle
 		}

@@ -30,7 +30,7 @@
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, valley-go-unit,
-#                    valley-status-unit (temporary alias), valley-status, valley-ready, valley-darwin-eval —
+#                    valley-status, valley-ready, valley-darwin-eval —
 #                    bin/valley, its Go verbs, the-valley's own policy, and
 #                    the CLI's package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a

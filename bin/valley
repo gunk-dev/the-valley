@@ -1028,15 +1028,15 @@ cmd_go() {
 # A change is named by its full change ID, its handle, or its branch.
 # resolve_change reads the name with the helper and sets CHANGE_BRANCH, the
 # branch to act on. For a change named by ID or handle it also sets the
-# change's ID, handle and active version, and CHANGE_HEAD, the head that
-# version records. Without the helper a name is a branch name, as every
-# name was before changes had records.
+# change's ID, handle, active version and state, and CHANGE_HEAD, the head
+# that version records. Without the helper a name is a branch name, as
+# every name was before changes had records.
 #
 # A change named by ID or handle is acted on at CHANGE_HEAD, and never at
 # the branch's tip. The branch a record names is only where its head is
 # expected to be, and anyone who can push the branch can move it, in the
 # same push as the record if they like.
-CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH=""
+CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
 resolve_change() {
   local line kind
   if ! command -v valley-go > /dev/null 2>&1; then
@@ -1044,7 +1044,7 @@ resolve_change() {
     return 0
   fi
   line="$(valley-go resolve "$1")" || return 1
-  IFS=$'\t' read -r kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH <<< "$line"
+  IFS=$'\t' read -r kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE <<< "$line"
   case "$kind" in
     branch)
       CHANGE_BRANCH="$CHANGE_ID"
@@ -1053,6 +1053,10 @@ resolve_change() {
     change)
       [[ "$CHANGE_HEAD" =~ ^[0-9a-f]{40}$ ]] \
         || die "valley-go resolve named the head $CHANGE_HEAD, which is no object ID"
+      case "$CHANGE_STATE" in
+        ready | draft | withdrawn) ;;
+        *) die "valley-go resolve named the state $CHANGE_STATE, which this script does not read" ;;
+      esac
       ;;
     *) die "valley-go resolve answered $line, which this script does not read" ;;
   esac

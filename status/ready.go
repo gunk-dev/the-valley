@@ -1,4 +1,4 @@
-// ready and withdraw write a change's record on origin.
+// ready, unready and withdraw write a change's record on origin.
 //
 // `valley ready [--head <sha>] [--change <id>] [--stamp] [<branch>]` marks
 // a head of a branch ready, as a new version of its change. The branch is
@@ -6,10 +6,16 @@
 // otherwise the branch's head on origin; either way it must be on origin
 // already. ready creates the change's record at v1, or adds the next
 // version to the record there, and pushes the record ref with a lease on
-// the value it read.
+// the value it read. A change that is a draft or withdrawn, readied at the
+// head of its active version, is ready again at that version, and gains no
+// new one.
 //
-// `valley withdraw <change>` marks a ready change withdrawn. It comes back
-// only by a new version, at a new head.
+// `valley unready <change>` makes a ready change a draft: a pause, which
+// voids nothing. `valley withdraw <change>` withdraws a ready change or a
+// draft, which voids everything outstanding on it. Either is undone by
+// readying the change again. Until the integrator reads records, neither
+// stops a pending integration request from landing the change, so both
+// warn when one is pending.
 //
 // The record names the principal that pushes it as the uploader of the
 // version it adds, and as the owner of a change it creates. The host
@@ -185,19 +191,29 @@ func runReady(g git, args []string, w io.Writer) error {
 		parents = []string{head}
 	} else {
 		active := before.ActiveVersion()
+		same := active.Head == version.Head
 		switch {
-		case active.Head == version.Head:
+		case same && before.State == change.Ready:
 			return failure(fmt.Sprintf("%s v%d is at %s already; a new version needs a new head", handle, active.N, short(head)))
-		case len(before.Versions) >= change.MaxVersions:
+		case !same && len(before.Versions) >= change.MaxVersions:
 			return failure(fmt.Sprintf("%s has %d versions, the most a change may have", handle, len(before.Versions)))
 		case before.Seq >= change.MaxSeq:
 			return failure(fmt.Sprintf("%s's record has been updated %d times, the most a record may be", handle, before.Seq))
 		}
-		version.N = before.Last().N + 1
 		after = *before
-		after.Versions = append(append([]change.Version(nil), before.Versions...), version)
-		after.Active, after.State, after.Seq = version.N, change.Ready, before.Seq+1
-		parents = []string{old, head}
+		if same {
+			// A draft or a withdrawn change readied at its active head is
+			// ready again at the version it had, and the record changes
+			// nothing else.
+			version = active
+			parents = []string{old}
+		} else {
+			version.N = before.Last().N + 1
+			after.Versions = append(append([]change.Version(nil), before.Versions...), version)
+			after.Active = version.N
+			parents = []string{old, head}
+		}
+		after.State, after.Seq = change.Ready, before.Seq+1
 	}
 	message := fmt.Sprintf("valley ready: %s v%d\n\nChange %s, version %d, at %s.", handle, version.N, id, version.N, head)
 	commit, err := writeRecord(g, &after, message, parents...)
@@ -214,15 +230,27 @@ func runReady(g git, args []string, w io.Writer) error {
 	return nil
 }
 
-func runWithdraw(g git, args []string, w io.Writer) error {
+func runUnready(g git, args []string, stdout, stderr io.Writer) error {
+	return setState(g, args, stdout, stderr, "unready", change.Draft)
+}
+
+func runWithdraw(g git, args []string, stdout, stderr io.Writer) error {
+	return setState(g, args, stdout, stderr, "withdraw", change.Withdrawn)
+}
+
+// setState writes a record that moves a change to the state to, and
+// changes nothing else but the seq. unready moves a ready change to draft,
+// and withdraw moves a ready change or a draft to withdrawn.
+func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) error {
 	if len(args) != 1 {
-		return failure("usage: valley withdraw <change>")
+		return failure("usage: valley " + verb + " <change>")
 	}
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
 	name := args[0]
-	o, err := listOrigin(g, append([]string{"refs/heads/" + strings.TrimPrefix(name, "origin/")}, recordPatterns...)...)
+	o, err := listOrigin(g, append([]string{"refs/heads/" + strings.TrimPrefix(name, "origin/"), requestPrefix + "*"},
+		recordPatterns...)...)
 	if err != nil {
 		return err
 	}
@@ -236,15 +264,19 @@ func runWithdraw(g git, args []string, w io.Writer) error {
 		}
 	}
 	handle := o.handle(n.id)
-	if n.record.State != change.Ready {
-		return failure(fmt.Sprintf("%s is withdrawn already; ready a new version to bring it back", handle))
-	}
-	if n.record.Seq >= change.MaxSeq {
+	switch from := n.record.State; {
+	case from == change.Withdrawn && to == change.Withdrawn:
+		return failure(fmt.Sprintf("%s is withdrawn already; ready it to bring it back", handle))
+	case from == change.Withdrawn:
+		return failure(fmt.Sprintf("%s is withdrawn, and a withdrawn change is never made a draft; ready it to bring it back", handle))
+	case from == change.Draft && to == change.Draft:
+		return failure(fmt.Sprintf("%s is a draft already; ready it to resume it", handle))
+	case n.record.Seq >= change.MaxSeq:
 		return failure(fmt.Sprintf("%s's record has been updated %d times, the most a record may be", handle, n.record.Seq))
 	}
 	after := *n.record
-	after.State, after.Seq = change.Withdrawn, n.record.Seq+1
-	message := fmt.Sprintf("valley withdraw: %s\n\nChange %s, withdrawn at version %d.", handle, n.id, after.Active)
+	after.State, after.Seq = to, n.record.Seq+1
+	message := fmt.Sprintf("valley %s: %s\n\nChange %s, %s at version %d.", verb, handle, n.id, to, after.Active)
 	commit, err := writeRecord(g, &after, message, n.commit)
 	if err != nil {
 		return err
@@ -252,29 +284,46 @@ func runWithdraw(g git, args []string, w io.Writer) error {
 	if err := pushRecord(g, n.id, n.commit, commit); err != nil {
 		return err
 	}
-	fmt.Fprintf(w, "%s %s v%d withdrawn\n", project(g), handle, after.Active)
+	fmt.Fprintf(stdout, "%s %s v%d %s\n", project(g), handle, after.Active, to)
+	warnPending(stderr, o, n, handle)
 	return nil
+}
+
+// warnPending warns of an integration request for the change that origin
+// held when the verb read it. The integrator does not read records yet, so
+// a draft or a withdrawn change still lands by a request filed before it
+// was one. The request is named either way approve names a change's: by
+// its active version's branch, the way approve names one today, or as
+// c-<change ID>.
+func warnPending(w io.Writer, o origin, n recorded, handle string) {
+	var refs []string
+	if branch := n.record.ActiveVersion().Branch; branch != "" {
+		refs = append(refs, requestPrefix+changeName(branch))
+	}
+	refs = append(refs, requestPrefix+"c-"+n.id)
+	warned := false
+	for _, ref := range refs {
+		if oid := o.refs[ref]; oid != "" {
+			fmt.Fprintf(w, "valley: warning: the integration request %s for %s is pending on origin, at %s\n", ref, handle, short(oid))
+			warned = true
+		}
+	}
+	if warned {
+		fmt.Fprintln(w, "valley: the integrator does not read change records yet, so a pending request can still land the change. Only a holder of the request grant may touch a request ref, so the operator must drop it")
+	}
 }
 
 // onBranch is the change whose active version is on branch, for a change
 // named by its branch. Every record on origin is read to find it.
 func onBranch(g git, o origin, branch string) (recorded, error) {
-	ids := o.changes()
-	var commits []string
-	for _, id := range ids {
-		commits = append(commits, o.refs[change.Ref(recordTarget, id)])
-	}
-	if err := fetch(g, commits...); err != nil {
+	all, err := readAll(g, o)
+	if err != nil {
 		return recorded{}, err
 	}
 	var found []recorded
-	for i, id := range ids {
-		r, err := readRecord(g, commits[i])
-		if err != nil {
-			return recorded{}, err
-		}
-		if r.ActiveVersion().Branch == branch {
-			found = append(found, recorded{id: id, commit: commits[i], record: r})
+	for _, n := range all {
+		if n.record.ActiveVersion().Branch == branch {
+			found = append(found, n)
 		}
 	}
 	switch len(found) {
@@ -285,7 +334,7 @@ func onBranch(g git, o origin, branch string) (recorded, error) {
 	}
 	var handles []string
 	for _, n := range found {
-		handles = append(handles, change.Handle(n.id, ids))
+		handles = append(handles, o.handle(n.id))
 	}
 	return recorded{}, failure(fmt.Sprintf("the changes %s all have their active version on %s; name one by its handle",
 		strings.Join(handles, ", "), branch))

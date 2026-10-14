@@ -153,10 +153,10 @@ func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
 // resolution is what the name of a change stands for. A name that is a
 // branch's sets branch alone. A name that is a change's sets every field
 // from the change's record on origin: the active version, the head that
-// version names, and the branch it names.
+// version names, the branch it names, and the change's state.
 type resolution struct {
-	id, handle, head, branch string
-	version                  int
+	id, handle, head, branch, state string
+	version                         int
 }
 
 // resolve reads a change's name, as every verb that takes a change does.
@@ -181,7 +181,7 @@ func resolve(g git, name string) (resolution, error) {
 	v := n.record.ActiveVersion()
 	r := resolution{
 		id: n.id, handle: o.handle(n.id), version: v.N,
-		head: strings.TrimPrefix(v.Head, change.HeadPrefix), branch: v.Branch,
+		head: strings.TrimPrefix(v.Head, change.HeadPrefix), branch: v.Branch, state: n.record.State,
 	}
 	if r.branch == "" {
 		return resolution{}, failure(fmt.Sprintf("the change %s names no branch at v%d, so there is no branch to act on", r.handle, v.N))
@@ -201,9 +201,10 @@ func resolveBranch(g git, name string) (string, error) {
 // bin/valley runs itself, as one line of fields separated by tabs. For a
 // change it is
 //
-//	change <ID> <handle> <version> <head> <branch>
+//	change <ID> <handle> <version> <head> <branch> <state>
 //
-// with the head as a full object ID. For a branch it is
+// with the head as a full object ID, and the state as the record says it:
+// ready, draft or withdrawn. For a branch it is
 //
 //	branch <branch>
 //
@@ -225,8 +226,66 @@ func runResolve(g git, args []string, w io.Writer) error {
 		_, err = fmt.Fprintf(w, "branch\t%s\n", r.branch)
 		return err
 	}
-	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch)
+	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch, r.state)
 	return err
+}
+
+// runDrafts lists every change origin holds a record of that is a draft,
+// for pending, which shows drafts apart. Each is one line of fields
+// separated by tabs:
+//
+//	<handle> <version> <head> <branch>
+//
+// for the active version, with the head as a full object ID. The branch
+// is last, since it may be empty. Every record commit is fetched, and has
+// its heads as parents, so each head is in this checkout's objects.
+func runDrafts(g git, args []string, w io.Writer) error {
+	if len(args) != 0 {
+		return failure("usage: valley-go drafts")
+	}
+	if !g.succeeds(true, "rev-parse", "--git-dir") {
+		return failure("not a git repository")
+	}
+	o, err := listOrigin(g, recordPatterns...)
+	if err != nil {
+		return err
+	}
+	all, err := readAll(g, o)
+	if err != nil {
+		return err
+	}
+	for _, n := range all {
+		if n.record.State != change.Draft {
+			continue
+		}
+		v := n.record.ActiveVersion()
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\n", o.handle(n.id), v.N,
+			strings.TrimPrefix(v.Head, change.HeadPrefix), v.Branch); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readAll reads every record origin holds, in the order of their IDs.
+func readAll(g git, o origin) ([]recorded, error) {
+	ids := o.changes()
+	var commits []string
+	for _, id := range ids {
+		commits = append(commits, o.refs[change.Ref(recordTarget, id)])
+	}
+	if err := fetch(g, commits...); err != nil {
+		return nil, err
+	}
+	var all []recorded
+	for i, id := range ids {
+		r, err := readRecord(g, commits[i])
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, recorded{id: id, commit: commits[i], record: r})
+	}
+	return all, nil
 }
 
 // project is the name a change's handle is printed under: origin's

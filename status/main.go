@@ -1,14 +1,16 @@
 // valley-go is the part of the valley command written in Go: the verbs
 // that read a change's state from origin, and the verbs that write its
-// change record there. bin/valley runs it for status, ready and withdraw,
-// and for resolve, which turns the name of a change into its branch for
-// the verbs bin/valley runs itself.
+// change record there. bin/valley runs it for status, ready, unready and
+// withdraw, for resolve, which turns the name of a change into its branch
+// for the verbs bin/valley runs itself, and for drafts, which lists the
+// changes pending shows apart.
 //
-// status reads one change's integration status (status.go). ready and
-// withdraw write the change's record, refs/the-valley/changes/main/<change
-// ID> (ready.go), in the format the change module defines and the push
-// hook guards. Records are observational for now: nothing reads them for
-// authority, and the integration request stays the only way to main.
+// status reads one change's integration status (status.go). ready,
+// unready and withdraw write the change's record,
+// refs/the-valley/changes/main/<change ID> (ready.go), in the format the
+// change module defines and the push hook guards. Records are
+// observational for now: nothing reads them for authority, and the
+// integration request stays the only way to main.
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -26,8 +28,10 @@ import (
 
 const usage = `usage: valley-go status [--json] <change>
        valley-go ready [--head <sha>] [--change <id>] [--stamp] [<branch>]
+       valley-go unready <change>
        valley-go withdraw <change>
-       valley-go resolve <change>`
+       valley-go resolve <change>
+       valley-go drafts`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -52,10 +56,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runStatus(g, args, stdout, stderr)
 	case "ready":
 		err = runReady(g, args, stdout)
+	case "unready":
+		err = runUnready(g, args, stdout, stderr)
 	case "withdraw":
-		err = runWithdraw(g, args, stdout)
+		err = runWithdraw(g, args, stdout, stderr)
 	case "resolve":
 		err = runResolve(g, args, stdout)
+	case "drafts":
+		err = runDrafts(g, args, stdout)
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2

@@ -173,6 +173,12 @@ VALLEY_PRINCIPAL=integrator git -C work push --quiet origin main
 [ "$(git -C "$data/guarded.git" rev-parse main)" = "$(git -C work rev-parse HEAD)" ] ||
   fail "a declared writer could not write a protected ref"
 
+# A host without an instance repository publishes no project list.
+for name in sealed guarded released open; do
+  [ ! -e "$data/$name.git" ] || [ -z "$(git -C "$data/$name.git" for-each-ref refs/the-valley/projects)" ] ||
+    fail "$name carries a project list, on a host with no instance repository"
+done
+
 # The same declaration with the controllers switched on. A controller
 # writes the worktree metadata git keeps under $GIT_DIR/worktrees, and git
 # creates that directory on the first `worktree add` as whichever user got
@@ -193,6 +199,21 @@ for name in guarded released; do
 done
 [ ! -e "$data/open.git/worktrees" ] ||
   fail "a project no controller serves was given a worktrees root"
+
+# With an instance repository, init publishes the host's project list in
+# it: a blob at refs/the-valley/projects naming exactly the enabled git
+# projects, sorted, one per line. valley changes --all discovers the
+# host's projects by it.
+[ "$(git -C "$data/sealed.git" cat-file -t refs/the-valley/projects)" = blob ] ||
+  fail "the instance repository publishes no project list blob"
+printf '%s\n' guarded open released sealed > projects.want
+git -C "$data/sealed.git" cat-file blob refs/the-valley/projects > projects.got
+cmp -s projects.want projects.got ||
+  fail "the project list is not exactly the enabled git projects: $(cat projects.got)"
+for name in guarded released open; do
+  [ -z "$(git -C "$data/$name.git" for-each-ref refs/the-valley/projects)" ] ||
+    fail "$name carries a project list, and only the instance repository may"
+done
 
 # A share the git user is not allowed to apply must warn and leave init
 # standing. Every valley unit requires valley-init, so a failure here costs

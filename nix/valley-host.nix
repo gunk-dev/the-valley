@@ -64,6 +64,9 @@ let
   gitProjects = lib.filterAttrs (_: p: p.git.enable) host.projects;
   repoNames = lib.attrNames gitProjects;
 
+  # Where valley-init publishes repoNames in the instance repository.
+  projectsRef = "refs/the-valley/projects";
+
   # The declared durability policy, if any. `backup` is optional in the
   # schema: a declaration without it (or with enable = false) renders zero
   # backup machinery, exactly as before the field existed.
@@ -564,6 +567,24 @@ let
 
     # The ref-updated publisher hook, on every repo when the bus is on.
     ${busHookCommands}
+
+    # The project list, published in the instance repository for clients to
+    # discover this host's projects by (valley changes --all): a blob at
+    # ${projectsRef} naming every enabled git project, one per line,
+    # sorted, and nothing else. A host without an instance repository
+    # publishes nothing. The name of every project is disclosed to whoever
+    # can read the instance repository. No push may write the ref, since
+    # the hook refuses every refs/the-valley/* it does not name, so init is
+    # its only writer. It is written before the share sweep below, which
+    # then gives the new object the group's permissions. A list that cannot
+    # be written costs discovery and not the host, so it warns.
+    ${lib.optionalString (instanceRepo != null) ''
+      {
+        projects="$(printf '%s\n' ${lib.escapeShellArgs (lib.sort lib.lessThan repoNames)} |
+          git -C ${instanceRepo} hash-object -w --stdin)" &&
+          git -C ${instanceRepo} update-ref ${projectsRef} "$projects"
+      } || echo "valley-init: could not publish the project list at ${projectsRef} in ${instanceRepo}; clients cannot discover this host's projects until it is" >&2
+    ''}
 
     # Group-shared repositories, on what the integrator serves.
     ${lib.optionalString cfg.integrator.enable integratorShareCommands}

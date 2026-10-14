@@ -144,11 +144,15 @@ func (gitRepository) records() (int, error) {
 //
 //	create       any named principal     P = [h]
 //	new version  owner or request holder P = [old, h]
-//	withdraw     owner or request holder P = [old]
+//	unready      owner or request holder P = [old]   ready → draft
+//	re-ready     owner or request holder P = [old]   draft or withdrawn → ready
+//	withdraw     owner or request holder P = [old]   ready or draft → withdrawn
 //	delete       request holder          —
 //
-// A change that was withdrawn comes back by a new version, never as it
-// was. Every other combination is refused.
+// A new version always leaves the change ready, from whatever state it
+// was in. A record whose one parent is old changes the state and the seq
+// alone. A withdrawn change comes back ready, at the same version or a new
+// one, and never as a draft. Every other combination is refused.
 func (p policy) checkRecord(principal string, u update) (verb, why string) {
 	target, id, ok := change.ParseRef(u.ref)
 	if !ok || target != recordTarget {
@@ -213,9 +217,9 @@ func (p policy) checkCreate(principal, target, id, commit string) string {
 	return ""
 }
 
-// checkUpdate holds an update of a change's record to the new version and
-// withdraw rows. Which row applies is read from the record commit's
-// parents, and the record has to say what that row says.
+// checkUpdate holds an update of a change's record to the rows after
+// create. Which row applies is read from the record commit's parents, and
+// the record has to say what that row says.
 func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	prev, err := p.repo.record(old)
 	if err != nil {
@@ -241,7 +245,7 @@ func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	}
 	switch {
 	case len(rc.parents) == 1 && rc.parents[0] == old:
-		return checkWithdraw(before, after)
+		return checkStateChange(before, after)
 	case len(rc.parents) == 2 && rc.parents[0] == old:
 		h := rc.parents[1]
 		if why := p.isCommit(h); why != "" {
@@ -253,22 +257,24 @@ func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	}
 }
 
-// checkWithdraw holds a withdrawal to changing the state from ready to
-// withdrawn and the seq by one, and nothing else.
-func checkWithdraw(before, after *change.Record) string {
+// checkStateChange holds a record whose one parent is the record it
+// replaces to the unready, re-ready and withdraw rows: the state changes,
+// by one of those rows, and the seq goes up by one. Nothing else changes,
+// and so the active version stays.
+func checkStateChange(before, after *change.Record) string {
 	switch {
-	case before.State != change.Ready:
-		return "the change is withdrawn already, and only a new version brings it back"
-	case after.State != change.Withdrawn:
-		return fmt.Sprintf("a record whose one parent is the record it replaces withdraws the change, and this one's state is %s", after.State)
+	case after.State == before.State:
+		return fmt.Sprintf("the change is %s already, and a record whose one parent is the record it replaces changes the state", before.State)
+	case before.State == change.Withdrawn && after.State == change.Draft:
+		return "the change is withdrawn, and a withdrawn change comes back ready, never as a draft"
 	case after.Seq != before.Seq+1:
 		return fmt.Sprintf("its seq is %d, and an update's is the seq before it plus one, %d", after.Seq, before.Seq+1)
 	case after.Owner != before.Owner:
 		return fmt.Sprintf("it changes the owner from %s to %s, and no update does", before.Owner, after.Owner)
 	case after.Active != before.Active:
-		return fmt.Sprintf("it changes active from %d to %d, and a withdrawal keeps the active version", before.Active, after.Active)
+		return fmt.Sprintf("it changes active from %d to %d, and a change of state keeps the active version", before.Active, after.Active)
 	case !reflect.DeepEqual(after.Versions, before.Versions):
-		return "it changes the versions, and a withdrawal changes only the state and the seq"
+		return "it changes the versions, and a change of state changes only the state and the seq"
 	}
 	return ""
 }

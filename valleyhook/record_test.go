@@ -107,7 +107,13 @@ func next(rec change.Record, who, h string) change.Record {
 
 // withdrawn is rec, withdrawn.
 func withdrawn(rec change.Record) change.Record {
-	rec.State = change.Withdrawn
+	return moved(rec, change.Withdrawn)
+}
+
+// moved is rec moved to the state given and nothing more, as a record
+// whose one parent is the record it replaces moves it.
+func moved(rec change.Record, state string) change.Record {
+	rec.State = state
 	rec.Seq++
 	return rec
 }
@@ -309,7 +315,7 @@ func TestWithdrawingAndComingBack(t *testing.T) {
 	withdraw("the old record as a second parent", "alice", good, "a new version adds one version", ready, ready)
 	withdraw("no parent", "alice", good, "first parent")
 	withdraw("ready to ready without a new version", "alice", mutate(func(c *change.Record) { c.State = change.Ready }),
-		"withdraws the change, and this one's state is ready", ready)
+		"the change is ready already", ready)
 	withdraw("seq not incremented", "alice", mutate(func(c *change.Record) { c.Seq = 1 }), "seq is 1", ready)
 	withdraw("the owner changed", "alice", mutate(func(c *change.Record) { c.Owner = "bob" }), "changes the owner", ready)
 	withdraw("a version changed", "alice", mutate(func(c *change.Record) { c.Versions[0].Title = "x" }),
@@ -317,23 +323,102 @@ func TestWithdrawingAndComingBack(t *testing.T) {
 	withdraw("the target changed", "alice", mutate(func(c *change.Record) { c.Target = "release" }),
 		"names the target release", ready)
 
-	// From withdrawn, the change comes back only with a new version.
+	// From withdrawn, the change comes back ready: at the version it was
+	// withdrawn at, or with a new one. It never comes back as a draft.
 	gone := withdrawn(v1)
 	old := r.write(encode(t, gone), ready)
 	again := func(what, who, text, says string, parents ...string) {
 		t.Helper()
 		r.expect(what, who, recordRef, old, r.write(text, parents...), says)
 	}
-	again("the re-ready row", "alice", encode(t, next(gone, "alice", h2)), "", old, h2)
-	again("the re-ready row, by the operator", "operator", encode(t, next(gone, "operator", h2)), "", old, h2)
-	again("back as it was", "alice", encode(t, func() change.Record { c := gone; c.State = change.Ready; c.Seq++; return c }()),
-		"only a new version brings it back", old)
-	again("back at the same head", "alice", encode(t, next(gone, "alice", h1)), "needs a new head", old, h1)
+	again("the re-ready row, at a new version", "alice", encode(t, next(gone, "alice", h2)), "", old, h2)
+	again("the re-ready row, at a new version, by the operator", "operator", encode(t, next(gone, "operator", h2)), "", old, h2)
+	again("the re-ready row, at the same version", "alice", encode(t, moved(gone, change.Ready)), "", old)
+	again("the re-ready row, at the same version, by the operator", "operator", encode(t, moved(gone, change.Ready)), "", old)
+	again("a new version at the same head", "alice", encode(t, next(gone, "alice", h1)), "needs a new head", old, h1)
 	again("withdrawn twice", "alice", encode(t, withdrawn(gone)), "withdrawn already", old)
+	again("withdrawn to draft", "alice", encode(t, moved(gone, change.Draft)), "never as a draft", old)
+	again("withdrawn to draft by the operator", "operator", encode(t, moved(gone, change.Draft)), "never as a draft", old)
 	again("a new version left withdrawn", "alice",
 		encode(t, func() change.Record { c := next(gone, "alice", h2); c.State = change.Withdrawn; return c }()),
 		"state is withdrawn", old, h2)
+	again("a new version left a draft", "alice",
+		encode(t, func() change.Record { c := next(gone, "alice", h2); c.State = change.Draft; return c }()),
+		"state is draft", old, h2)
 	again("re-ready by another principal", "mallory", encode(t, next(gone, "mallory", h2)), "only the change's owner", old, h2)
+	again("re-ready at the same version by another principal", "mallory", encode(t, moved(gone, change.Ready)),
+		"only the change's owner", old)
+	again("re-ready at the same version with seq not incremented", "alice",
+		encode(t, func() change.Record { c := moved(gone, change.Ready); c.Seq--; return c }()), "seq is 2", old)
+}
+
+func TestUnreadyingAndReadyingAgain(t *testing.T) {
+	r := newRecords(t)
+	h1, h2, h3 := r.source("one"), r.source("two"), r.source("three")
+	v2 := next(first("alice", h1), "alice", h2)
+	ready := r.write(encode(t, v2), r.write(encode(t, first("alice", h1)), h1), h2)
+	unready := func(what, who, text, says string, parents ...string) {
+		t.Helper()
+		r.expect(what, who, recordRef, ready, r.write(text, parents...), says)
+	}
+	mutate := func(rec change.Record, f func(*change.Record)) string {
+		f(&rec)
+		return encode(t, rec)
+	}
+	good := encode(t, moved(v2, change.Draft))
+
+	// Ready to draft changes the state and the seq, and nothing else.
+	unready("the unready row", "alice", good, "", ready)
+	unready("the unready row, by the operator", "operator", good, "", ready)
+	unready("unready by another principal", "mallory", good, "only the change's owner", ready)
+	unready("unready by an untagged key", "", good, "a key that names no principal", ready)
+	unready("unready to an earlier version", "alice", mutate(moved(v2, change.Draft), func(c *change.Record) { c.Active = 1 }),
+		"changes active from 2 to 1", ready)
+	unready("unready with seq not incremented", "alice", mutate(moved(v2, change.Draft), func(c *change.Record) { c.Seq-- }),
+		"seq is 2", ready)
+	unready("unready with a version changed", "alice",
+		mutate(moved(v2, change.Draft), func(c *change.Record) {
+			c.Versions = append([]change.Version(nil), c.Versions...)
+			c.Versions[1].Title = "x"
+		}),
+		"changes the versions", ready)
+	unready("unready with the owner changed", "alice", mutate(moved(v2, change.Draft), func(c *change.Record) { c.Owner = "bob" }),
+		"changes the owner", ready)
+	unready("unready with a new version", "alice", encode(t, func() change.Record { c := next(v2, "alice", h3); c.State = change.Draft; return c }()),
+		"state is draft", ready, h3)
+
+	// From draft, the change is readied again at the same version or a new
+	// one, or withdrawn.
+	draft := moved(v2, change.Draft)
+	old := r.write(good, ready)
+	again := func(what, who, text, says string, parents ...string) {
+		t.Helper()
+		r.expect(what, who, recordRef, old, r.write(text, parents...), says)
+	}
+	again("the re-ready row, at the same version", "alice", encode(t, moved(draft, change.Ready)), "", old)
+	again("the re-ready row, at the same version, by the operator", "operator", encode(t, moved(draft, change.Ready)), "", old)
+	again("the re-ready row, at a new version", "alice", encode(t, next(draft, "alice", h3)), "", old, h3)
+	again("the re-ready row, at a new version, by the operator", "operator", encode(t, next(draft, "operator", h3)), "", old, h3)
+	again("the withdraw row, from a draft", "alice", encode(t, withdrawn(draft)), "", old)
+	again("the withdraw row, from a draft, by the operator", "operator", encode(t, withdrawn(draft)), "", old)
+	again("re-ready by another principal", "mallory", encode(t, moved(draft, change.Ready)), "only the change's owner", old)
+	again("a new version by another principal", "mallory", encode(t, next(draft, "mallory", h3)), "only the change's owner", old, h3)
+	again("withdraw by another principal", "mallory", encode(t, withdrawn(draft)), "only the change's owner", old)
+	again("draft to draft", "alice", encode(t, moved(draft, change.Draft)), "the change is draft already", old)
+	again("a new version at the active head", "alice", encode(t, next(draft, "alice", h2)), "needs a new head", old, h2)
+	again("a new version left a draft", "alice",
+		encode(t, func() change.Record { c := next(draft, "alice", h3); c.State = change.Draft; return c }()),
+		"state is draft", old, h3)
+	again("re-ready at another version", "alice", mutate(moved(draft, change.Ready), func(c *change.Record) { c.Active = 1 }),
+		"changes active from 2 to 1", old)
+	again("re-ready with seq incremented twice", "alice", mutate(moved(draft, change.Ready), func(c *change.Record) { c.Seq++ }),
+		"seq is 5", old)
+	again("re-ready with a version changed", "alice",
+		mutate(moved(draft, change.Ready), func(c *change.Record) {
+			c.Versions = append([]change.Version(nil), c.Versions...)
+			c.Versions[0].Head = change.HeadPrefix + h3
+		}),
+		"changes the versions", old)
 }
 
 func TestOnlyTheOperatorDeletesARecord(t *testing.T) {

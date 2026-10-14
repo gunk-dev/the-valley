@@ -100,6 +100,23 @@ The change's record lists the versions, and the hook guards every write to it. R
 observational: nothing reads them for authority. The integration request is still the only way a
 change reaches `main`, and the integrator does not read records.
 
+A change is in one of three states:
+
+- `ready`: the change is offered for landing. A change is created ready.
+- `draft`: the change is paused, by `valley unready`. A draft voids nothing. When it is readied
+  again, the approvals of its active version still stand.
+- `withdrawn`: the change is given up. Withdrawing voids everything outstanding on the change: its
+  integration requests, and the approvals and reviews of every version. A change brought back from
+  withdrawn always needs fresh approvals.
+
+Nothing enforces what withdrawing voids yet. The integrator does not read records, so a request
+filed before a change was paused or withdrawn can still land it. Until it does read them,
+`valley unready` and `valley withdraw` warn when origin holds a request for the change. The request
+is looked for under the name `approve` gives it, derived from the active version's branch, and under
+`c-<change-id>`. Only a `request` holder may touch a request ref, so the warning says the operator
+must drop it. Approvals are not records yet either; they become records with M1-C. Until then,
+voiding an approval means the integrator refuses it, once the integrator reads records.
+
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
 one strict parser that the hook and the CLI share (`change/record.go`):
@@ -128,22 +145,26 @@ one strict parser that the hook and the CLI share (`change/record.go`):
 The parser refuses anything that is not valid UTF-8. It also refuses a duplicate key at any depth,
 an unknown field, and data after the object. Every field must have the type shown. `seq` runs from 1
 to 100000, and `n` and `active` from 1 to 1000. Versions are numbered 1, 2, 3 with no gap. A title
-is 1 to 200 bytes with no control characters. `state` is `ready` or `withdrawn`.
+is 1 to 200 bytes with no control characters. `state` is `ready`, `draft` or `withdrawn`.
 
 The record commit's parents tie it to what it records. In the table, `P` is the record commit's
 parents, `old` is the ref's value before the push, and `h` is the head of the version being added.
 
-| Transition  | Who                             | `P`        | What the record must say                                                                                                                                                                            |
-| ----------- | ------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create      | Any named principal             | `[h]`      | One version: `n` 1, `head` `h`, and the pusher as `uploader`. The pusher as `owner`, `seq` 1, `active` 1, `state` `ready`. `target` and `change_id` are the ref's.                                  |
-| New version | The owner or a `request` holder | `[old, h]` | `old`'s versions unchanged, plus one with the next `n`, `head` `h` other than the active head, and the pusher as `uploader`. `active` is the new `n`, `state` `ready`, `seq` one more than `old`'s. |
-| Withdraw    | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                                   |
-| Ready again | The owner or a `request` holder | `[old, h]` | As for a new version. A withdrawn change comes back only at a new head.                                                                                                                             |
-| Delete      | A `request` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
+| Transition                | Who                             | `P`        | What the record must say                                                                                                                                                                            |
+| ------------------------- | ------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create                    | Any named principal             | `[h]`      | One version: `n` 1, `head` `h`, and the pusher as `uploader`. The pusher as `owner`, `seq` 1, `active` 1, `state` `ready`. `target` and `change_id` are the ref's.                                  |
+| New version               | The owner or a `request` holder | `[old, h]` | `old`'s versions unchanged, plus one with the next `n`, `head` `h` other than the active head, and the pusher as `uploader`. `active` is the new `n`, `state` `ready`, `seq` one more than `old`'s. |
+| Unready                   | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` to `draft` and `seq` goes up by one. `active` stays.                                                                                       |
+| Withdraw                  | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` or `draft` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                        |
+| Ready again, same version | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `draft` or `withdrawn` to `ready` and `seq` goes up by one. `active` stays.                                                                        |
+| Ready again, new version  | The owner or a `request` holder | `[old, h]` | As for a new version, from `draft` or `withdrawn`.                                                                                                                                                  |
+| Delete                    | A `request` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
 
 The hook refuses every other write. That includes a key that names no principal, extra parents,
-parents in another order, a head that is not a commit, a tree of another shape, and `ready` to
-`ready` without a new version. The owner, the target and the change ID never change.
+parents in another order, a head that is not a commit, and a tree of another shape. It also includes
+a record with one parent that leaves the state as it was, such as `ready` to `ready` without a new
+version, and `withdrawn` to `draft`. A withdrawn change comes back ready, never as a draft. The
+owner, the target and the change ID never change.
 
 Each record commit is at most 4 KiB, its tree at most 1 KiB, and its `record.json` at most 64 KiB. A
 push may update at most 32 records. The hook checks each of these bounds before it reads anything
@@ -383,19 +404,20 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready` and `withdraw` verbs are a Go program, `valley-go` (`status/`), which the package puts on
-the script's `PATH`.
+`ready`, `unready` and `withdraw` verbs are a Go program, `valley-go` (`status/`), which the package
+puts on the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject.                           |
+| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject, and then drafts apart.    |
 | `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
 | `valley approve <change>`    | Does what `[a]pprove` does, without showing the branch.                                               |
 | `valley rebase <change>`     | Does what `[b]ase` does, without showing the branch, and prints the new head.                         |
 | `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                          |
 | `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
-| `valley withdraw <change>`   | Marks a ready change withdrawn, as its owner or the operator.                                         |
+| `valley unready <change>`    | Makes a ready change a draft, as its owner or the operator.                                           |
+| `valley withdraw <change>`   | Marks a ready change or a draft withdrawn, as its owner or the operator.                              |
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
@@ -405,6 +427,12 @@ request, with a lease on the request ref. When the request already names this he
 the request ref out. When nothing is owed as well, there is no push. `[b]ase` rebases the branch in
 a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
 prompt.
+
+When the checks fail under `[a]pprove`, approving the same head again can only fail again. So the
+prompt then says approving needs a new head. It offers only `[r]eject` and `[s]kip`, plus `[b]ase`
+where it is offered. `[a]pprove` comes back once the change is at another head, as it is after
+`[b]ase`. A refusal that is not a check failure, such as a lost lease race, keeps the prompt as it
+was.
 
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
 change their own way. Each runs the same function as its key, so the output and the refusals are the
@@ -416,11 +444,13 @@ leaves a branch that already fast-forwards from `main` alone. Checked by `valley
 (`status/ready.go`). The branch is the current one unless named. The head is `--head` when given,
 and otherwise the branch's head on origin. Either way the head must already be on origin. klaus
 passes `--head` with the head it pushed, so the version names exactly that head. ready reads the
-existing record, if there is one, and adds a version. It refuses a head equal to the active
-version's. It pushes the record ref with a lease on the value it read, and prints the handle and
-version, such as `cosmo nxvp v2 ready`. The record names the principal from
-`git config valley.principal`. The host derives the pushing principal from the key, and the client
-cannot ask it, so the hook refuses a record that names anyone else.
+existing record, if there is one, and adds a version. For a ready change, it refuses a head equal to
+the active version's. It pushes the record ref with a lease on the value it read, and prints the
+handle and version, such as `cosmo nxvp v2 ready`. A draft or a withdrawn change comes back by
+`ready` too. At the head of its active version, it is ready again at that version, and the record
+commit's one parent is the record before it. At another head, it gains the next version. The record
+names the principal from `git config valley.principal`. The host derives the pushing principal from
+the key, and the client cannot ask it, so the hook refuses a record that names anyone else.
 
 ready takes the change ID from the first of these that has one:
 
@@ -449,8 +479,16 @@ expected to be, and anyone who can push the branch can move it, even in the same
 `rebase` and `review`'s `[r]eject` refuse when the branch's tip on origin is another commit, and the
 refusal names both commits. `[r]eject` deletes the branch under a lease on the recorded head. A
 rebased head is a commit no version records, so the change is readied again before its handle names
-it. `valley-go resolve` gives these verbs the change's ID, handle, active version, recorded head and
-branch on one line.
+it. `approve`, `rebase`, and `review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not
+`ready`, and the refusal names its state. `valley-go resolve` gives these verbs the change's ID,
+handle, active version, recorded head, branch and state on one line.
+
+`valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
+(`status/ready.go`). They take a change by any of its names, and print the handle, the active
+version and the new state, such as `cosmo nxvp v2 draft`. Each warns when a request for the change
+is pending, as [Change records](#change-records) describes. `valley pending` lists the changes whose
+record says they are drafts in a section of their own, at the head of each active version. A branch
+whose tip is a draft's head is listed only there. `valley-go drafts` lists them for it.
 
 `valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
 moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in

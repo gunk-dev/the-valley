@@ -84,6 +84,6 @@ can instantiate the same check over its own tree from a flake input. The plan of
   integrator reads — so the answer is the same from any branch, however stale. It also groups the
   owed checks by their declared cost. `valley approve` and `valley rebase` do what review's keys do,
   for front ends that show a change their own way, and `valley status --json` gives them the
-  change's status as a versioned JSON object. `valley ready` and `valley withdraw` record a change's
-  versions, under a change ID that survives rebases, and every verb names a change by that ID, by
-  its short handle, or by its branch.
+  change's status as a versioned JSON object. `valley ready`, `valley unready` and `valley withdraw`
+  record a change's versions and whether it is ready, a draft or withdrawn, under a change ID that
+  survives rebases. Every verb names a change by that ID, by its short handle, or by its branch.

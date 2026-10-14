@@ -514,6 +514,14 @@ is pending, as [Change records](#change-records) describes. `valley pending` lis
 record says they are drafts in a section of their own, at the head of each active version. A branch
 whose tip is a draft's head is listed only there. `valley-go drafts` lists them for it.
 
+`unready` and `withdraw` stop an approval that begins after them. They do not always stop one that
+is already under way. An approval reads the record one last time just before it files the request,
+and a change unreadied or withdrawn after that read is filed all the same. No client can close this
+window. git compares only the refs a push changes, and the record ref is not one of them, so a push
+cannot be made conditional on the record. The authoritative check is planned in the integrator: it
+will refuse to land any request whose head is a version of a change that is not `ready`. That check
+at landing closes the window.
+
 `valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
 moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in
 `origin/main` is integrated, even if recording the outcome failed. An outcome record it does not

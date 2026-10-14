@@ -270,7 +270,9 @@ before approve files or rebase pushes, and refuses when the change is no
 longer ready or its active version has moved to another head since the
 verb began. A name that read as a plain branch is read again before
 approve files or rebase pushes, and if it names a change by then, the
-same rules hold.
+same rules hold. An approval already past that last check can still file
+if the change is unreadied or withdrawn in the moment before its push;
+the integrator's planned check at landing is what closes that.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -682,6 +684,14 @@ rebase_onto_main() {
   # A change with a record is read once more, just before the push, and a
   # name that read as a plain branch is read again in case it names a
   # change now.
+  #
+  # This is the last check, and a window remains between it and the push
+  # below. A change unreadied or withdrawn in that window is rebased all
+  # the same. git compares only the refs a push changes, and the record ref
+  # is not one of them, so no client can make the push conditional on the
+  # record. The rebased head is no version of the change until it is
+  # readied, and the integrator's planned check at landing refuses a
+  # request for a change that is not ready, so nothing lands from it.
   if ! check_record "nothing pushed" "$from"; then
     cleanup_rebase_wt
     exit 1
@@ -1015,6 +1025,16 @@ approve() {
   # The checks can take minutes, and the record may have moved meanwhile.
   # So it is read once more, just before anything is filed, and a name that
   # read as a plain branch is read again in case it names a change now.
+  #
+  # This is the last check, and a window remains between it and the push
+  # below. A change unreadied or withdrawn in that window is filed all the
+  # same. git compares only the refs a push changes, and the record ref is
+  # not one of them, so no client can make the filing conditional on the
+  # record. unready and withdraw stop an approval that begins after them;
+  # one already past this check can still file. The authoritative check is
+  # planned in the integrator, which will refuse to land any request whose
+  # head is a version of a change that is not ready. That check closes the
+  # window.
   if ! check_record "nothing published" "$head"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1

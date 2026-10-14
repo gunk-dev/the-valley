@@ -1238,6 +1238,43 @@ if [ "$(git -C "$origin" rev-parse refs/heads/topic/clash)" != "$clashhead" ]; t
 fi
 
 # ----------------------------------------------------------------------
+# 19. A change whose version names no branch is approved at its head like
+#     any other. The record allows a version with no branch, though valley
+#     ready always names one, so the record here is written by hand. The
+#     check it owes runs over the recorded head, and the evidence and the
+#     c-<change ID> request reach origin in one push.
+git checkout --quiet -b branchless main
+echo "a readme no branch carries" > docs/readme.md
+git commit --quiet -am "a readme no branch carries"
+barehead="$(git rev-parse HEAD)"
+baredigest="$(attest digest --rev "$barehead" | cut -d: -f2)"
+git checkout --quiet main
+bareid=rrrrssssttttuuuuvvvvwwwwxxxxyyyy
+blob="$(printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "contributor", "state": "ready", "seq": 1, "versions": [{"n": 1, "head": "git-sha1:%s", "title": "no branch", "branch": "", "uploader": "contributor"}], "active": 1}\n' \
+  "$bareid" "$barehead" | git hash-object -w --stdin)"
+record="$(git commit-tree "$(printf '100644 blob %s\trecord.json\n' "$blob" | git mktree)" \
+  -p "$barehead" -m 'a change record')"
+git push --quiet origin "$record:refs/the-valley/changes/main/$bareid"
+
+: > "$pushlog"
+valley approve --head "$barehead" rrrr < /dev/null > "$w/branchless.out" 2> "$w/branchless.err"
+grep -q '^checking rrrr v1 at .*: tree-ok$' "$w/branchless.out"
+grep -qx "  request  refs/the-valley/integration-requests/main/c-$bareid -> $(git rev-parse --short "$barehead")" "$w/branchless.out"
+grep -qx "  evidence refs/the-valley/attestations/$baredigest/$keyhash" "$w/branchless.out"
+if [ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/c-$bareid")" != "$barehead" ]; then
+  echo "valley-request: approve of a change with no branch did not file its head" >&2
+  exit 1
+fi
+pushes="$(grep -c '^--- push' "$pushlog" || true)"
+if [ "$pushes" != 1 ] \
+  || ! grep -q "refs/the-valley/attestations/$baredigest/$keyhash" "$pushlog" \
+  || ! grep -q "refs/the-valley/integration-requests/main/c-$bareid" "$pushlog"; then
+  echo "valley-request: the evidence and request for a change with no branch did not go in one push" >&2
+  cat "$pushlog" >&2
+  exit 1
+fi
+
+# ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]pprove, [b]ase,
 # [r]eject, [s]kip. Every stream this check captured is scanned at the end,

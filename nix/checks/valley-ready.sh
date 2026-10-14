@@ -469,6 +469,16 @@ refused "change qqqq v1 is draft, not ready; nothing published. Ready it first: 
   as requester valley approve --head "$branchless" qqqq
 if grep -qF "''" "$w/err"; then fail "approve suggested readying a change with no branch on the branch ''"; fi
 
+# A name no record is on is acted on as a branch only when it is a branch
+# name. resolve prints the name in a line of fields that bin/valley
+# splits, so a name holding a separator could otherwise read as main.
+before="$(git -C "$origin" for-each-ref refs/the-valley)"
+for verb in approve review; do
+  refused 'is not a branch name in UTF-8' as requester valley "$verb" $'main\x1fjunk'
+done
+[ "$(git -C "$origin" for-each-ref refs/the-valley)" = "$before" ] \
+  || fail 'a name holding a separator published something'
+
 # ----------------------------------------------------------------------
 # A draft is a change paused. unready makes a ready change a draft, and
 # ready brings it back: at the head of its active version it is ready

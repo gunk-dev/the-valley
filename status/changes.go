@@ -32,6 +32,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"the-valley/change"
 )
@@ -216,13 +217,22 @@ type resolution struct {
 // lookupRecorded's reading. A change whose active version names no branch
 // resolves with an empty branch: approve files the head alone, and
 // bin/valley refuses it for review and rebase, which act on a branch.
+//
+// A name no record is on is a branch, and is refused unless it is a valid
+// branch name in UTF-8. The name comes from the command line, and
+// runResolve prints it in a line of fields that bin/valley splits, so a
+// name holding a separator could read as some other branch.
 func resolveRecorded(g git, name string) (resolution, error) {
 	o, n, found, err := lookupRecorded(g, name)
 	switch {
 	case err != nil:
 		return resolution{}, err
 	case !found:
-		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
+		branch := strings.TrimPrefix(name, "origin/")
+		if !change.ValidBranch(branch) || !utf8.ValidString(branch) {
+			return resolution{}, failure(fmt.Sprintf("%q names no change on origin, and is not a branch name in UTF-8", name))
+		}
+		return resolution{branch: branch}, nil
 	}
 	return o.resolution(n), nil
 }

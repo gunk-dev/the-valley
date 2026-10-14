@@ -120,7 +120,8 @@ in
   # what the receiving side then holds. The claim is about sequencing, so
   # it is only observable from there — the bare repo logs every push it
   # receives, and the check reads that log to see that ONE of them carried
-  # the evidence and the request together. Every check the scratch policy
+  # the evidence and the request together. A change whose version names no
+  # branch is approved at its recorded head the same way. Every check the scratch policy
   # declares uses the command runner, for the reason attest-e2e gives: a
   # nix build has no daemon. The packaged CLI carries its own schema, so
   # the scratch projects that stand for projects other than the-valley
@@ -171,7 +172,8 @@ in
   # same push is refused, the branch at the recorded head is filed at that
   # head, and a later version whose branch is elsewhere is refused. A
   # version that names no branch is approved at its head, and refused by
-  # review and rebase, which act on a branch. Then a
+  # review and rebase, which act on a branch. A name no record is on that
+  # is no branch name is refused. Then a
   # draft: unready, ready again at the same head and at a new one, listed
   # apart by pending, refused by approve, rebase and review's [a]pprove
   # whether it is named by its handle or its branch, and a request pending

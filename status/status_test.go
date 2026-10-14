@@ -28,6 +28,7 @@ func TestMemoAcceptsOnlyTheRecordsTheIntegratorWrites(t *testing.T) {
 		{sha1a + " " + sha1b + " " + fp + " failed 2026-09-21T12:00:00Z\n", "failed", "2026-09-21T12:00:00Z"},
 		{sha1a + " " + sha1b + " " + fp + " refused-not-ready\n", "refused-not-ready", ""},
 		{sha1a + " " + sha1b + " " + fp + " refused-merge\n", "refused-merge", ""},
+		{sha1a + " " + sha1b + " " + fp + " voided-withdrawn\n", "voided-withdrawn", ""},
 		{sha256a + " " + sha256a + " " + fp + " land\n", "land", ""},
 		{"  " + sha1a + "\t" + sha1b + "  " + fp + "\tland  \n", "land", ""},
 

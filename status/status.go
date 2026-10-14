@@ -132,13 +132,42 @@ func readNamed(g git, name string, stderr io.Writer) (*status, error) {
 		return nil, failure("not a git repository")
 	}
 	o, n, found, err := lookupRecorded(g, name)
+	var s *status
 	switch {
 	case err != nil:
 		return nil, err
 	case !found:
-		return read(g, strings.TrimPrefix(name, "origin/"))
+		s, err = read(g, strings.TrimPrefix(name, "origin/"))
+	default:
+		s, err = readRecorded(g, o, n, stderr)
 	}
-	return readRecorded(g, o, n, stderr)
+	if err != nil {
+		return nil, err
+	}
+	if err := warnUnread(g, o, s, stderr); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// warnUnread warns of each record on origin that does not read and may
+// name a commit the change's request brings. The integrator lands such a
+// request as though the record did not exist, so whether the record holds
+// it back cannot be checked.
+func warnUnread(g git, o origin, s *status, stderr io.Writer) error {
+	if s.request == "" {
+		return nil
+	}
+	_, unread, err := readAll(g, o)
+	if err != nil {
+		return err
+	}
+	for _, u := range unread {
+		if mayName(g, u, s.request, s.tip) {
+			fmt.Fprintf(stderr, "valley: warning: the change record %s does not read: %s. It may name a commit the request %s brings, and the integrator lands that request as though the record did not exist. The hook refuses such a record, so origin's storage is corrupt\n", u.ref, u.why, s.requestRef)
+		}
+	}
+	return nil
 }
 
 // reservedName refuses a branch whose request name is c-<change ID>.
@@ -304,7 +333,7 @@ func (s *status) settle(g git, refs map[string]string) error {
 // what the integrator compares to decide whether to judge a request again.
 type memo struct {
 	head, tip, evidence string
-	decision            string // land, stale, reject, refused-not-ready, refused-merge, failed, or unknown
+	decision            string // land, stale, reject, refused-not-ready, refused-merge, voided-withdrawn, failed, or unknown
 	failedAt            string // set for failed alone
 }
 
@@ -329,7 +358,7 @@ func parseMemo(record string) memo {
 		m.decision = "unknown"
 	}
 	switch m.decision {
-	case "land", "stale", "reject", "refused-not-ready", "refused-merge":
+	case "land", "stale", "reject", "refused-not-ready", "refused-merge", "voided-withdrawn":
 		if m.failedAt != "" {
 			m.decision = "unknown"
 		}
@@ -398,6 +427,8 @@ func decide(g git, s *status, evidence string) string {
 		return "outdated-request"
 	case decision == "unknown":
 		return "outcome-unreadable"
+	case s.request == "" && decision == "voided-withdrawn" && s.memo.head == s.head:
+		return "voided-withdrawn"
 	case s.request == "":
 		return "not-requested"
 	case decision == "" || s.memo.head != s.head:
@@ -412,6 +443,10 @@ func decide(g git, s *status, evidence string) string {
 		return "rejected"
 	case "refused-not-ready", "refused-merge":
 		return decision
+	case "voided-withdrawn":
+		// The request the integrator voided is gone, so one that stands
+		// at the same head is a fresh approval.
+		return "awaiting-decision"
 	case "failed":
 		return "failed"
 	}

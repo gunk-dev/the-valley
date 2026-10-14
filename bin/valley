@@ -291,10 +291,12 @@ usage: valley <verb> [args]
                    pending integration request, under c-<change id> or a
                    branch's request name. each says so when origin holds
                    one. a draft's request stands and lands once the change
-                   is ready again. withdraw warns, since the request it
-                   voids would land too once the change is ready again:
-                   only a holder of the request grant may touch a request
-                   ref, so the operator must drop it.
+                   is ready again. withdrawing voids the request: the
+                   integrator deletes it on its next pass while the change
+                   is still withdrawn. withdraw warns, since a ready before
+                   then leaves the request standing: only a holder of the
+                   request grant may touch a request ref, so the operator
+                   must drop it then.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and

@@ -295,7 +295,7 @@ func (o origin) resolution(n recorded) (resolution, error) {
 // lands from that: the integrator refuses any request whose head is a
 // version of a change that is not ready, whatever the request is named.
 func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
-	all, err := readAll(g, o)
+	all, _, err := readAll(g, o)
 	if err != nil {
 		return nil, err
 	}
@@ -402,25 +402,53 @@ func runVersions(g git, args []string, w io.Writer) error {
 	return err
 }
 
-// readAll reads every record origin holds, in the order of their IDs.
-func readAll(g git, o origin) ([]recorded, error) {
+// readAll reads every record origin holds, in the order of their IDs. A
+// record that does not read is kept apart, in unread, and is no change for
+// any reader: the integrator treats it the same way. The hook refuses such
+// a record, so only corrupt storage holds one. err is for origin that
+// could not be read.
+func readAll(g git, o origin) (all []recorded, unread []unreadRecord, err error) {
 	ids := o.changes()
 	var commits []string
 	for _, id := range ids {
 		commits = append(commits, o.refs[change.Ref(recordTarget, id)])
 	}
 	if err := fetch(g, commits...); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var all []recorded
 	for i, id := range ids {
 		r, err := readRecord(g, commits[i])
 		if err != nil {
-			return nil, err
+			unread = append(unread, unreadRecord{ref: change.Ref(recordTarget, id), commit: commits[i], why: err.Error()})
+			continue
 		}
 		all = append(all, recorded{id: id, commit: commits[i], record: r})
 	}
-	return all, nil
+	return all, unread, nil
+}
+
+// unreadRecord is a record on origin that does not read.
+type unreadRecord struct {
+	ref, commit, why string
+}
+
+// mayName reports whether a record that does not read may name one of
+// the commits from tip to head as a version head. A record names its
+// version heads as parents of its record commits, so it can name only a
+// commit its record commit reaches. That holds for some commit from tip to
+// head exactly when a merge base of the record commit and head is not on
+// tip. A record git cannot compare at all may name anything.
+func mayName(g git, u unreadRecord, head, tip string) bool {
+	out, err := g.output(true, "merge-base", "--all", u.commit, head)
+	if err != nil {
+		return exitCode(err) != 1
+	}
+	for _, base := range strings.Fields(out) {
+		if !g.succeeds(true, "merge-base", "--is-ancestor", base, tip) {
+			return true
+		}
+	}
+	return false
 }
 
 // project is the name a change's handle is printed under: origin's

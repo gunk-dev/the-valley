@@ -37,6 +37,10 @@ func writeHuman(g git, s *status, w io.Writer) int {
 		p("%s: the stored outcome is unreadable; status is unknown.\n", s.label())
 		p("Ask the instance operator to inspect %s.\n", s.outcomeRef)
 		return 0
+	case "voided-withdrawn":
+		p("%s (%s): not approved; the integrator voided its request because the change was withdrawn.\n", s.label(), short(s.head))
+		p("Approve it again once it is ready: valley review %s\n", shellQuote(s.name()))
+		return 0
 	case "not-requested":
 		p("%s: not approved; no pending request for this commit.\n", s.label())
 		if s.memo.decision != "" {

@@ -177,6 +177,26 @@ record_outcome "$head" "$base" refused-merge
 status
 contains 'include a merge' 'a refusal for a merge was not reported'
 json refused-merge '.outcome.decision == "refused-merge"'
+# A request the integrator voided for a withdrawal is gone, and its outcome
+# says why. A request filed again at that head is a fresh approval.
+git -C "$origin" update-ref -d "$request"
+record_outcome "$head" "$base" voided-withdrawn
+status
+contains 'voided its request because the change was withdrawn' 'a voided request was not reported'
+json voided-withdrawn '.outcome.decision == "voided-withdrawn"' '.request == null'
+git -C "$origin" update-ref "$request" "$head"
+json awaiting-decision '.outcome.decision == "voided-withdrawn"'
+# A stored record that does not read, and that may name the request's
+# head, is warned of: the integrator cannot tell whether it holds the head
+# back. Only corrupt storage holds one, since the hook refuses it.
+broken="$(printf '{}\n' | git -C "$origin" hash-object -w --stdin)"
+broken="$(printf '100644 blob %s\trecord.json\n' "$broken" | git -C "$origin" mktree)"
+broken="$(git -C "$origin" commit-tree "$broken" -p "$head" -m 'a broken record')"
+git -C "$origin" update-ref refs/the-valley/changes/main/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk "$broken"
+status
+contains 'changes/main/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk does not read' 'a record that does not read was not warned of'
+contains 'awaiting' 'a record that does not read stopped the status read'
+git -C "$origin" update-ref -d refs/the-valley/changes/main/kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk
 record_outcome "$head" "$base" 'failed 2026-09-21T12:00:00Z'
 status
 contains 'failed' 'a controller failure was not reported'

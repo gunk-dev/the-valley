@@ -21,8 +21,9 @@
 // draft, which voids everything outstanding on it. Either is undone by
 // readying the change again. The integrator lands no request at a head of
 // a change that is not ready, so either stops a pending request. Each says
-// when one is pending, and withdraw warns, since the request it voids
-// would land once the change is readied again.
+// when one is pending. The integrator deletes a withdrawn change's
+// requests on its next pass, and withdraw warns that a ready before then
+// leaves the request standing.
 //
 // The record names the principal that pushes it as the uploader of the
 // version it adds, and as the owner of a change it creates. The host
@@ -318,9 +319,9 @@ func setState(g git, args []string, stdout, stderr io.Writer, verb, to string) e
 // change as the verb read it. The integrator lands no request at a head of
 // a change that is not ready, so the request is held back while the change
 // is a draft or withdrawn, and stands for when it is ready again. That is
-// what a draft means. A withdrawal voids the request, so withdraw warns
-// that it would land once the change is ready again, and that only the
-// operator can drop it. The request is named either way approve has named
+// what a draft means. A withdrawal voids the request, and the integrator
+// deletes it on its next pass. withdraw warns that a ready before then
+// leaves it standing, and that only the operator can drop it. The request is named either way approve has named
 // a change's: as c-<change ID>, or by a branch, the way approve named one
 // before it named a change by its ID. A request filed for an earlier
 // version is named by that version's branch, so the branch of every
@@ -354,7 +355,7 @@ func warnPending(w io.Writer, o origin, n recorded, handle string, to string) {
 	switch {
 	case !pending:
 	case to == change.Withdrawn:
-		fmt.Fprintln(w, "valley: the integrator lands nothing for a withdrawn change. Withdrawing voids the request, but the integrator would land it once the change is ready again. Only a holder of the request grant may touch a request ref, so the operator must drop it")
+		fmt.Fprintln(w, "valley: withdrawing voids the request, and the integrator deletes it on its next pass while the change is still withdrawn. If the change is readied again before then, the request stands and can land. Only a holder of the request grant may touch a request ref, so the operator must drop it then")
 	default:
 		fmt.Fprintln(w, "valley: the integrator lands nothing for a draft. The request stands, and lands once the change is ready again")
 	}

@@ -122,6 +122,9 @@ type snapshot struct {
 	// unverified is set when a transfer statement named a version and
 	// could not be checked, so its landing may be stronger than shown.
 	unverified bool
+
+	// unread is each record that does not read, which no listing shows.
+	unread []unreadRecord
 }
 
 // readSnapshot lists origin once and fetches every object the snapshot
@@ -142,11 +145,13 @@ func readSnapshot(g git, v verifier) (*snapshot, error) {
 	if err := fetch(g, want...); err != nil {
 		return nil, err
 	}
-	all, err := readAll(g, o)
+	all, unread, err := readAll(g, o)
 	if err != nil {
 		return nil, err
 	}
-	return newSnapshot(g, o, all, v), nil
+	s := newSnapshot(g, o, all, v)
+	s.unread = unread
+	return s, nil
 }
 
 // newSnapshot is a snapshot of what o lists, with every record in all

@@ -593,25 +593,37 @@ like the status object. `valley pending` is the view a person reads (`status/pen
 Both read one snapshot of origin for each repository they list. For each version of each change,
 they decide its landing evidence (`status/inventory.go`). The first rule that applies is the answer:
 
-1. `landed`: the version's head is on `main`'s first-parent history, as
-   `git rev-list --first-parent` lists it. The integrator never writes a merge, and a fast-forward
-   puts every commit of a change on that history. Ancestry alone is not enough: a merge whose tree
-   drops a change's content still makes the change's head an ancestor of `main`.
-2. `landed-recorded`: a commit `L` on `main`'s first-parent history carries a transfer statement
-   whose `change` is the version's request name, whose `base` is the `valley-tree-v1` digest of the
-   version's tree, and whose signature verifies as the integrator's. The request name is the
-   version's branch with each `/` replaced by `-`, or `c-<change id>`. The client also recomputes
-   the integrator's merge of the version's head onto `L`'s first parent, as `integrator/git.go`
-   makes it (`git merge-tree --write-tree --merge-base=<merge base> L^1 <head>`). The result must be
-   `L`'s tree. A head with the same tree on another parent is another delta, and the statement says
-   nothing about it.
+1. `landed`: the version's head is on `main`'s first-parent history, and no commit on that history
+   between the head and `main`'s tip is a merge. That is, `git rev-list --first-parent` from `main`
+   lists the head, and `git rev-list --first-parent --merges <head>..main` lists nothing. The
+   integrator never writes a merge, and a fast-forward puts every commit of a change on that
+   history. Ancestry alone is not enough: a merge can drop the content of either of its parents, so
+   a head below any merge has not landed by this rule.
+2. `landed-recorded`: every one of these holds.
+   - A commit `L` on `main`'s first-parent history, with no merge above it, carries a transfer
+     statement whose `change` is one of the version's request names. The request names are the
+     version's branch with each `/` replaced by `-`, and `c-<change id>`.
+   - `L` has exactly one parent, as every commit the integrator lands as does.
+   - The statement's `base` is the `valley-tree-v1` digest of the version's tree, and its signature
+     verifies as the integrator's.
+   - The integrator's outcome record for that request name says `land`, and its head is this
+     version's head. Only the integrator writes outcome records: the hook refuses a push to them.
+     The record names the exact head that landed, which a statement about trees cannot do.
+   - The integrator's merge of the version's head onto `L`'s parent gives `L`'s tree. The client
+     recomputes it as `integrator/git.go` makes it:
+     `git merge-tree --write-tree --merge-base=<merge base> L^1 <head>`.
+
+   A head with a landed tree on another parent is another delta. These rules keep it from borrowing
+   the landing's evidence.
+
 3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`. The
    integrator moves `main` before it stores its evidence, so a landing can exist without its
    evidence. A request is consumed when its outcome record says `land` for this head and the request
    ref no longer points at it.
 4. `not-landed`: otherwise.
 
-The outcome record alone is never proof of a landing, because a later pass can overwrite it.
+The outcome record alone is never proof of a landing, because a later pass can overwrite it. A
+landing whose outcome record a later pass overwrote reads `uncertain`, never `landed-recorded`.
 
 The client checks a transfer statement with `attest verify`. The signature must be by the name in
 `VALLEY_INTEGRATOR_SIGNER`, under a key in the file `VALLEY_KNOWN_SIGNERS` names, which is the
@@ -686,8 +698,10 @@ configuration.
 - A handle is unique among every change listed, in every repository. Every record of a listed
   repository counts, so a handle also names its change within that repository alone. When one change
   ID is recorded in more than one listed repository, each of those entries has the qualified handle
-  `<repo>/<prefix>`, such as `cosmo/nxvp`. Every verb that takes a handle accepts the qualified
-  form, in the repository it names.
+  `<repo>:<prefix>`, such as `cosmo:nxvp`. git refuses a colon in a ref name, so a qualified handle
+  is never also a branch, and never reads as `origin/<branch>`. Every verb that takes a handle
+  accepts the qualified form, in the repository it names, and refuses one that names another
+  repository.
 - `landed_commit` is the commit on `main` the version landed as: its own head when `landed`, the
   transfer statement's commit when `landed-recorded`, and otherwise `null`.
 - `request` is the request filed at the version's head under either of its request names, or `null`.

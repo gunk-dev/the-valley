@@ -88,7 +88,7 @@ usage: valley <verb> [args]
                    its pending request and its last outcome, and the
                    branches no change is on. handles are unique across
                    everything listed: a change id recorded in more than
-                   one repository listed has the handle <repo>/<prefix>
+                   one repository listed has the handle <repo>:<prefix>
                    in each. without --all it covers this
                    repository. --all covers every project the serving
                    host lists at refs/the-valley/projects in its instance
@@ -100,12 +100,14 @@ usage: valley <verb> [args]
                    as ext::, or has a scheme other than ssh, git, https or
                    file is refused. a repository that cannot be read is
                    listed with its error. --repo limits it to one
-                   project. landed means on main's first-parent history.
-                   a version that landed as a new commit is
-                   landed-recorded only when the integrator's transfer
-                   statement verifies and the integrator's merge of the
-                   version's head onto the landed commit's parent gives
-                   the landed tree:
+                   project. landed means on main's first-parent history
+                   with no merge above it. landed-recorded needs a landed
+                   commit with one parent and the integrator's transfer
+                   statement for the version's request name, verified;
+                   the integrator's outcome record for that name saying
+                   land at the version's head; and the integrator's merge
+                   of the head onto the landed commit's parent giving the
+                   landed tree. the statement is verified with these:
                    VALLEY_KNOWN_SIGNERS names the registry's known-signers
                    file and VALLEY_INTEGRATOR_SIGNER the integrator's
                    signing name, and attest checks the note.
@@ -302,7 +304,7 @@ usage: valley <verb> [args]
 
 A change is named by its full change id, by its handle — the shortest
 prefix of the id, four letters at least, that no other change recorded on
-origin shares, written <repo>/<handle> too, with this repository's name —
+origin shares, written <repo>:<handle> too, with this repository's name —
 or by its branch. A name written origin/<branch> is always
 a branch. A handle that is also a branch on origin is refused unless the
 change is on that branch. review, approve and rebase read a branch name,
@@ -310,9 +312,9 @@ written either way, against every record on origin: when exactly one
 record's active version is on the branch, the name is that change, as if
 its id were given, and when more than one's is, the verb refuses and lists
 their ids. A change whose active version has landed — its head is on
-main's first-parent history, or the integrator's verified transfer
-statement records it landed and the integrator's merge of the head gives
-the landed tree — is skipped while the branch is still at that head, so a
+main's first-parent history with no merge above it, or the integrator's
+outcome record and verified transfer statement record that exact head
+landing — is skipped while the branch is still at that head, so a
 branch can be used again once its change has landed; a branch that has
 moved names the change as before. unready and withdraw read a branch the
 same way. A

@@ -102,4 +102,120 @@ NO_COLOR=1 script -qec "stty cols 100; valley pending" /dev/null < /dev/null > t
 grep -q '^longsubject ' tty.log
 if grep -q $'\x1b' tty.log; then exit 1; fi
 
+# ----------------------------------------------------------------------
+# A stack: a branch, then two changes with records, each on the one
+# below, in a project whose floor requires nothing, so approving files a
+# request with no evidence. Its origin logs every push it receives, which
+# is how "publishes nothing" is read.
+stack="$TMPDIR/stack.git"
+pushlog="$TMPDIR/pushlog"
+git init --quiet --bare "$stack"
+cat > "$stack/hooks/pre-receive" << EOF
+#!/bin/sh
+echo '--- push' >> $pushlog
+cat >> $pushlog
+EOF
+chmod +x "$stack/hooks/pre-receive"
+git init --quiet "$TMPDIR/stackwork"
+cd "$TMPDIR/stackwork" || exit 1
+git remote add origin "$stack"
+git config valley.principal operator
+mkdir -p policy/instance
+cat > policy/instance/floor.cue << 'EOF'
+package verification
+
+floor: {
+	classes: everything: {
+		paths: "**": true
+		requires: {}
+	}
+	unclassified: {}
+}
+EOF
+git add -A
+git commit --quiet -m seed
+git push --quiet -u origin main
+from=main
+for layer in one two three; do
+  git checkout --quiet -b "$layer" "$from"
+  echo "layer $layer" > "$layer.md"
+  git add -A
+  git commit --quiet -m "layer $layer"
+  git push --quiet origin "$layer"
+  from="$layer"
+done
+two="$(git rev-parse two)" three="$(git rev-parse three)"
+q=qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq p=pppppppppppppppppppppppppppppppp
+valley ready --change "$q" two > /dev/null
+valley ready --change "$p" three > /dev/null
+git checkout --quiet main
+requests="refs/the-valley/integration-requests/main"
+
+# s at the first layer, on a terminal, with a note written in its diff:
+# the note is kept under the first layer's branch and printed at the end,
+# and nothing is published.
+cat > "$TMPDIR/stack-editor" << 'EOF'
+#!/bin/sh
+f="$1"
+case "$1" in +*) f="$2" ;; esac
+sed -i '/^+layer one$/a one wants a second line' "$f"
+EOF
+chmod +x "$TMPDIR/stack-editor"
+: > "$pushlog"
+{ printf 'v\nq'; sleep 2; printf 's\n'; sleep 1; } \
+  | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stack-tty.log 2>&1
+sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' stack-tty.log > stack-plain.log
+grep -q 'pppp is a stack of 3 changes; reviewing from the bottom, each against the one below it:$' stack-plain.log
+grep -q '| change 1 of 3: one on main$' stack-plain.log
+grep -q 'one: \[n\]ext, \[a\]pprove up to here, \[s\]kip?' stack-plain.log
+grep -q 'skipped pppp at change 1 of 3, one; nothing done' stack-plain.log
+if grep -q 'change 2 of 3' stack-plain.log; then exit 1; fi
+grep -qx 'one.md:1: one wants a second line' "$XDG_STATE_HOME/valley/notes/one.md"
+grep -q '1 note(s) on one, appended to .*/valley/notes/one.md:' stack-plain.log
+grep -q '^  one.md:1: one wants a second line$' stack-plain.log
+[ ! -e "$XDG_STATE_HOME/valley/notes/two.md" ]
+[ ! -s "$pushlog" ]
+
+# n, n, a: the layers are paged bottom up, each diff holds only its own
+# layer's file, and the top's request is filed at the top's head.
+: > "$pushlog"
+printf 'n\nn\na\n' | valley review pppp > stack.out 2> stack.err
+grep -q '^  1\. one (branch): layer one$' stack.out
+grep -q '^  2\. qqqq (ready): layer two$' stack.out
+grep -q '^  3\. pppp (ready): layer three$' stack.out
+# Piped, each page's first line follows the prompt before it.
+[ "$(grep -o 'change [0-9] of 3: [a-z]* on [a-z]*$' stack.out)" = "$(printf '%s\n' \
+  'change 1 of 3: one on main' 'change 2 of 3: qqqq on one' 'change 3 of 3: pppp on qqqq')" ]
+for n in 1 2 3; do
+  awk -v n="$n" '/change [0-9] of 3: /{ on = index($0, "change " n " of 3: ") > 0 } on' stack.out > "page$n"
+done
+[ "$(grep '^diff --git' page1)" = 'diff --git a/one.md b/one.md' ]
+[ "$(grep '^diff --git' page2)" = 'diff --git a/two.md b/two.md' ]
+[ "$(grep '^diff --git' page3)" = 'diff --git a/three.md b/three.md' ]
+grep -q '^three: \[a\]pprove, \[r\]eject, \[s\]kip?' stack.out
+[ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$three" ]
+if git -C "$stack" rev-parse --verify --quiet "$requests/c-$q" > /dev/null; then exit 1; fi
+git -C "$stack" update-ref -d "$requests/c-$p"
+
+# a at the second layer files the second layer's request at its head, and
+# nothing for the top.
+: > "$pushlog"
+printf 'n\na\n' | valley review pppp > stack-two.out 2> stack-two.err
+[ "$(git -C "$stack" rev-parse "$requests/c-$q")" = "$two" ]
+if git -C "$stack" rev-parse --verify --quiet "$requests/c-$p" > /dev/null; then exit 1; fi
+grep -q "c-$q" "$pushlog"
+if grep -q "c-$p" "$pushlog"; then exit 1; fi
+if grep -q 'change 3 of 3' stack-two.out; then exit 1; fi
+
+# A draft in the middle is named in the warning before anything is paged.
+valley unready qqqq > /dev/null 2>&1
+printf 's\n' | valley review pppp > stack-draft.out 2>&1
+grep -q '^warning: qqqq, change 2 of 3, is a draft\. The integrator refuses to land it or anything above it (refused-not-ready)\.$' stack-draft.out
+
+# A change with no stack under it pages and prompts as it always has.
+printf 's\n' | valley review one > stack-one.out 2>&1
+grep -q '^branch one, log against origin/main:$' stack-one.out
+grep -q '^one: \[a\]pprove, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
+if grep -q 'stack of\|change 1 of' stack-one.out; then exit 1; fi
+
 touch "$out"

@@ -146,6 +146,8 @@ type entry struct {
 	ref      string   // what the entry is typed as: its handle, or its branch
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
+	id       string   // a change's ID; "" for a branch (stack.go)
+	state    string   // a change's state, or - for a branch (stack.go)
 	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and checks
 

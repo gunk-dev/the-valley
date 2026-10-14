@@ -11,7 +11,7 @@ _valley() {
     local -a verbs=(
       'pending:list the changes not yet landed, the unrecorded branches, and the drafts'
       'changes:print every change, across the host, as valley-changes/v1 JSON'
-      'review:page through a branch, then approve, reject, or skip'
+      'review:page through a change, or a stack bottom-up, then approve, reject, or skip'
       'approve:approve a change without paging it, filing its integration request'
       'rebase:rebase a change onto origin/main and push it with a lease'
       'status:read the integration result for a change from origin'

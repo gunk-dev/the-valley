@@ -3,7 +3,8 @@
 // change record there. bin/valley runs it for status, ready, unready and
 // withdraw, for changes and pending, which list every change across the
 // repositories a host serves, and for resolve, which turns the name of a
-// change into its branch for the verbs bin/valley runs itself.
+// change into its branch for the verbs bin/valley runs itself, and for
+// stack, which lists the layers under a change for review (stack.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -35,6 +36,7 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go unready <change>
        valley-go withdraw <change>
        valley-go resolve <change>
+       valley-go stack <change>
        valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--checks]`
@@ -68,6 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runWithdraw(g, args, stdout, stderr)
 	case "resolve":
 		err = runResolve(g, args, stdout)
+	case "stack":
+		err = runStack(g, args, stdout)
 	case "versions":
 		err = runVersions(g, args, stdout)
 	case "changes":

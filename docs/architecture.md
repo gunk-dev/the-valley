@@ -508,6 +508,26 @@ where it is offered. `[a]pprove` comes back once the change is at another head, 
 `[b]ase`. A refusal that is not a check failure, such as a lost lease race, keeps the prompt as it
 was.
 
+A change with a stack under it is reviewed one layer at a time, bottom first, each against the layer
+below it. The layers are what `valley pending` lists under the change: the changes whose active
+version has not landed, and the branches no record is on, whose heads the change's head contains.
+`valley-go stack` lists them (`status/stack.go`). A withdrawn change under the change is a layer
+too.
+
+- `review` first lists the layers. It warns of each lower layer that is a draft or withdrawn, since
+  the integrator refuses to land it or anything above it. It says so when the bottom does not
+  fast-forward from `main`.
+- Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
+  and its diff from the layer below. Notes taken on it are kept under its own branch.
+- After each lower layer, `review` asks `[n]ext, [a]pprove up to here, [s]kip`.
+  `[a]pprove up to here` approves that layer at the head shown, exactly as reviewing it alone would.
+  That lands it and every layer under it. `[s]kip` stops, and nothing is done.
+- After the top, the prompt is the usual one. A stack is never offered `[b]ase`, because rebasing
+  one layer would break the layers above it. Only the top is offered `[r]eject`.
+- Every layer's notes are printed at the end, whatever the verdict.
+
+A change with nothing under it is reviewed against `main` as before.
+
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
 change their own way. Each runs the same function as its key, so the checks, the request write and
 the refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review the

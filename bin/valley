@@ -127,7 +127,8 @@ usage: valley <verb> [args]
                    signing name, and attest checks the note.
                    needs the valley-go helper.
   review <change>  page through the change's branch: its log and diff vs
-                   origin/main. then choose:
+                   origin/main, or a stack layer by layer (below). then
+                   choose:
                      [a]pprove    file an integration request for the
                                   head shown. runs the
                                   checks the composed policy requires of
@@ -193,6 +194,27 @@ usage: valley <verb> [args]
                    a change whose active version names no branch is
                    refused, since notes and [r]eject act on a branch;
                    approve files its head without one.
+                   a stack is reviewed one layer at a time, bottom first.
+                   its layers are what pending lists under the change: the
+                   changes not landed and the branches no record is on
+                   that its head contains (valley-go stack). review first
+                   lists them, warns of a lower layer that is a draft or
+                   withdrawn, since the integrator lands nothing above it,
+                   and says when the bottom does not fast-forward from
+                   main. it then pages each layer's log and diff against
+                   the layer below it, headed `change <k> of <n>: <name>
+                   on <below>`, with notes kept under that layer's
+                   branch. after each lower layer it asks:
+                     [n]ext       go on to the layer above
+                     [a]pprove up to here
+                                  approve that layer at the head shown,
+                                  as review of it would; this lands it
+                                  and every layer under it
+                     [s]kip       stop; nothing done
+                   after the top it asks as for any change. a stack is
+                   never offered [b]ase, since rebasing one layer would
+                   break the layers above it, and only the top is offered
+                   [r]eject. every layer's notes are printed at the end.
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -695,9 +717,15 @@ show_review() {
     printf '\n'
     git --no-pager diff "origin/main...$head"
   } > "$REVIEW_TMP/review.diff"
+  page_buffer "$branch" "$sha"
+}
+
+# page_buffer <branch> <sha>: page the buffer written to REVIEW_TMP, and
+# keep the notes taken in it under the branch, against the commit shown.
+page_buffer() {
   cp "$REVIEW_TMP/review.diff" "$REVIEW_TMP/review.orig"
   page_file "$REVIEW_TMP/review.diff" || true # quitting the pager early is not an error
-  collect_notes "$branch" "$sha"
+  collect_notes "$1" "$2"
   cleanup_review_tmp
 }
 
@@ -1574,6 +1602,13 @@ read_and_decide() {
       *) echo "answer $answers" ;;
     esac
   done
+  decide "$branch"
+}
+
+# The verdict on a change that fast-forwards from main, and on the top of
+# a stack, which is never offered [b]ase.
+decide() {
+  local branch="$1" choice failed answers
   while true; do
     if failed="$(approve_failed_at "$branch")"; then
       printf '%s: its checks failed at %s, so approving needs a new head: [r]eject, [s]kip? ' \
@@ -1606,21 +1641,240 @@ read_and_decide() {
   done
 }
 
+# ----------------------------------------------------------------------
+# A stack — a change with layers under it that have not landed — is
+# reviewed one layer at a time, bottom first, each against the layer below
+# it, the way it was built. Approving the top lands every layer under it,
+# so reading the top against main alone would ask the operator to judge
+# the whole stack as one diff.
+#
+# The layers are valley-go stack's (status/stack.go): one line each, bottom
+# first, the change itself last, read here into one array per field.
+# L_BRANCH is the branch a layer's notes are kept under: a branch's own
+# name, or the branch a change's active version names. L_NOTES holds the
+# notes taken on each layer, for the print after the verdict.
+L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
+L_ID=() L_VERSION=() L_BRANCH=() L_NOTES=()
+# The name review was given, which the top is read again by.
+TOP_NAME=""
+
+# read_stack: read the stack under the change review resolved. Each change
+# under the top is read again with resolve, for its ID, version and
+# branch, and must still be at the head the stack names. The top must be
+# what review resolved. Fails, having said why, when either does not hold
+# or the helper cannot read the stack. Called in a condition, so each step
+# is checked by hand.
+read_stack() {
+  local out line kind name base head state title k last
+  local rkind id handle version rhead branch rstate
+  L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
+  L_ID=() L_VERSION=() L_BRANCH=() L_NOTES=()
+  out="$(valley-go stack "${CHANGE_ID:-origin/$CHANGE_BRANCH}")" || return 1
+  while IFS= read -r line; do
+    read_resolved "$line" kind name base head state title
+    if ! [[ "$kind" =~ ^(change|branch)$ && "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]; then
+      refuse "valley-go stack answered $line, which this script does not read"
+      return 1
+    fi
+    L_KIND+=("$kind") L_NAME+=("$name") L_BASE+=("$base") L_HEAD+=("$head")
+    L_STATE+=("$state") L_TITLE+=("$title") L_NOTES+=("")
+    L_ID+=("") L_VERSION+=("") L_BRANCH+=("$name")
+  done <<< "$out"
+  last=$((${#L_NAME[@]} - 1))
+  if [ "${L_HEAD[last]}" != "$(change_head "$CHANGE_BRANCH")" ] \
+    || [ "${L_KIND[last]}" != "$([ -n "$CHANGE_ID" ] && echo change || echo branch)" ]; then
+    refuse "$TOP_NAME moved while its stack was read"
+    return 1
+  fi
+  L_ID[last]="$CHANGE_ID" L_VERSION[last]="$CHANGE_VERSION" L_BRANCH[last]="$CHANGE_BRANCH"
+  for ((k = 0; k < last; k++)); do
+    [ "${L_KIND[k]}" = change ] || continue
+    line="$(valley-go resolve "${L_NAME[k]}")" || return 1
+    read_resolved "$line" rkind id handle version rhead branch rstate
+    if [ "$rkind" != change ] || [ "$rhead" != "${L_HEAD[k]}" ]; then
+      refuse "change ${L_NAME[k]}, under $TOP_NAME, moved while the stack was read"
+      return 1
+    fi
+    L_ID[k]="$id" L_VERSION[k]="$version" L_BRANCH[k]="$branch" L_STATE[k]="$rstate"
+  done
+}
+
+# use_layer <k>: act on layer k as review acts on a change it was given,
+# binding [a]pprove to the head the stack shows. A branch under the top is
+# read again as origin/<branch>, which no handle can shadow.
+use_layer() {
+  local k="$1"
+  CHANGE_ID="${L_ID[k]}" CHANGE_VERSION="${L_VERSION[k]}" CHANGE_BRANCH="${L_BRANCH[k]}"
+  CHANGE_STATE="${L_STATE[k]}" CHANGE_HANDLE="" CHANGE_HEAD=""
+  CHANGE_NAME="origin/${L_NAME[k]}"
+  [ "$k" -lt $((${#L_NAME[@]} - 1)) ] || CHANGE_NAME="$TOP_NAME"
+  if [ -n "$CHANGE_ID" ]; then
+    CHANGE_NAME="${L_NAME[k]}" CHANGE_HANDLE="${L_NAME[k]}" CHANGE_HEAD="${L_HEAD[k]}"
+  fi
+  bind_review
+}
+
+# notes_key <k>: the branch layer k's notes are kept under. A change whose
+# active version names no branch keeps them under its handle.
+notes_key() {
+  printf '%s' "${L_BRANCH[$1]:-${L_NAME[$1]}}"
+}
+
+# layer_label <k>: how a layer is named in the list: its name, then
+# branch, or the change's state.
+layer_label() {
+  local k="$1"
+  if [ "${L_KIND[k]}" = branch ]; then
+    printf '%s (branch)' "${L_NAME[k]}"
+  else
+    printf '%s (%s)' "${L_NAME[k]}" "${L_STATE[k]}"
+  fi
+}
+
+# What is coming: the layers bottom first, the lower layers the integrator
+# would refuse, and whether the bottom fast-forwards from main.
+summarize_stack() {
+  local n="${#L_NAME[@]}" k
+  printf '%s is a stack of %d changes; reviewing from the bottom, each against the one below it:\n' \
+    "${L_NAME[n - 1]}" "$n"
+  for ((k = 0; k < n; k++)); do
+    printf '  %d. %s: %s\n' "$((k + 1))" "$(layer_label "$k")" "${L_TITLE[k]}"
+  done
+  for ((k = 0; k < n - 1; k++)); do
+    case "${L_STATE[k]}" in
+      draft | withdrawn)
+        printf 'warning: %s, change %d of %d, is %s. The integrator refuses to land it or anything above it (refused-not-ready).\n' \
+          "${L_NAME[k]}" "$((k + 1))" "$n" "$([ "${L_STATE[k]}" = draft ] && echo 'a draft' || echo withdrawn)"
+        ;;
+    esac
+  done
+  # Rebasing one layer would leave the layers above it on the old one, so
+  # a stack is not offered [b]ase. A stale bottom is still approvable: the
+  # integrator applies the delta to main's tip.
+  if ! git merge-base --is-ancestor refs/remotes/origin/main "${L_HEAD[0]}"; then
+    printf '%s, at the bottom, does not fast-forward from main. A stack is not rebased here, since that would break the layers above it; approving still files the request, and the integrator applies the delta to main.\n' \
+      "${L_NAME[0]}"
+  fi
+  printf '\n'
+}
+
+# page_layer <k>: page layer k against the layer below it, and keep the
+# notes taken in it under its own branch.
+page_layer() {
+  local k="$1" n="${#L_NAME[@]}" below=main head base sha on
+  [ "$k" -eq 0 ] || below="${L_NAME[k - 1]}"
+  head="${L_HEAD[k]}" base="${L_BASE[k]}"
+  sha="$(git rev-parse --short "$head")"
+  on="$below at $(git rev-parse --short "$base")"
+  NOTES=()
+  REVIEW_TMP="$(mktemp -d)"
+  {
+    printf 'change %d of %d: %s on %s\n' "$((k + 1))" "$n" "${L_NAME[k]}" "$below"
+    if [ "${L_KIND[k]}" = branch ]; then
+      printf 'branch %s, log against %s:\n\n' "${L_NAME[k]}" "$on"
+    elif [ -n "${L_BRANCH[k]}" ]; then
+      printf 'change %s v%s at %s, on branch %s, log against %s:\n\n' \
+        "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "${L_BRANCH[k]}" "$on"
+    else
+      printf 'change %s v%s at %s, log against %s:\n\n' "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "$on"
+    fi
+    git --no-pager log --oneline "$base..$head"
+    printf '\n'
+    git --no-pager diff "$base...$head"
+  } > "$REVIEW_TMP/review.diff"
+  page_buffer "$(notes_key "$k")" "$sha"
+  [ "${#NOTES[@]}" -eq 0 ] || L_NOTES[k]="$(printf '%s\n' "${NOTES[@]}")"
+}
+
+# Page each layer under the top and ask after each: [n]ext goes on to the
+# layer above, [a]pprove up to here approves that layer at the head shown,
+# which lands it and every layer under it, and [s]kip ends the review.
+# [r]eject is not offered under the top: deleting a lower layer's branch
+# would leave the layers above still holding it. After the top, its verdict
+# is taken as for any change.
+review_stack() {
+  local n="${#L_NAME[@]}" top k choice answers failed
+  top=$((n - 1))
+  summarize_stack
+  for ((k = 0; k < top; k++)); do
+    page_layer "$k"
+    while true; do
+      failed=""
+      [ "$CHECKS_FAILED_AT" != "${L_HEAD[k]}" ] || failed="$(git rev-parse --short "${L_HEAD[k]}")"
+      if [ -n "$failed" ]; then
+        printf '%s: its checks failed at %s, so approving needs a new head: [n]ext, [s]kip? ' \
+          "${L_NAME[k]}" "$failed"
+        answers="n or s"
+      else
+        printf '%s: [n]ext, [a]pprove up to here, [s]kip? ' "${L_NAME[k]}"
+        answers="n, a, or s"
+      fi
+      read -r choice || die "stdin closed before an answer; nothing done"
+      case "$choice" in
+        n) break ;;
+        a)
+          if [ -n "$failed" ]; then
+            echo "answer $answers"
+            continue
+          fi
+          use_layer "$k"
+          if [ "${L_KIND[k]}" = branch ] \
+            && [ "$(git rev-parse "refs/remotes/origin/${L_NAME[k]}")" != "${L_HEAD[k]}" ]; then
+            refuse "origin/${L_NAME[k]} is no longer at ${L_HEAD[k]}, the head shown; nothing published"
+          elif approve "$CHANGE_BRANCH"; then
+            return
+          fi
+          use_layer "$top"
+          ;;
+        s)
+          echo "skipped ${L_NAME[top]} at change $((k + 1)) of $n, ${L_NAME[k]}; nothing done"
+          return
+          ;;
+        *) echo "answer $answers" ;;
+      esac
+    done
+  done
+  page_layer "$top"
+  decide "${L_BRANCH[top]}"
+}
+
+# The notes taken on every layer, each under its own branch.
+print_stack_notes() {
+  local k
+  for ((k = 0; k < ${#L_NAME[@]}; k++)); do
+    [ -n "${L_NOTES[k]}" ] || continue
+    mapfile -t NOTES <<< "${L_NOTES[k]}"
+    print_notes "$(notes_key "$k")"
+  done
+}
+
 cmd_review() {
   [ $# -eq 1 ] || die "usage: valley review <change>"
   resolve_change "$1" || exit 1
   need_branch review
   local branch="$CHANGE_BRANCH"
+  TOP_NAME="$1"
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
   bind_review
   trap cleanup_scratch EXIT
   trap 'exit 130' INT TERM
-  read_and_decide "$branch"
-  # The verdict disposes of the branch; the notes are what the human made of
-  # it, so they are printed whatever the verdict was.
-  print_notes "$branch"
+  # The verdict disposes of the change; the notes are what the human made
+  # of it, so they are printed whatever the verdict was. A stack that
+  # cannot be read is reviewed whole against main, as a change with
+  # nothing under it is.
+  if ! read_stack; then
+    printf 'valley: warning: the stack under %s could not be read; reviewing it whole, against main\n' "$1" >&2
+    L_NAME=()
+  fi
+  if [ "${#L_NAME[@]}" -gt 1 ]; then
+    review_stack
+    print_stack_notes
+  else
+    read_and_decide "$branch"
+    print_notes "$branch"
+  fi
 }
 
 # approve and rebase are review's [a]pprove and [b]ase without the pager,

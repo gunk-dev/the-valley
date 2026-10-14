@@ -354,7 +354,17 @@ grep -q 'the change is draft already' redraft.err
 record_at "$drafted" "unready"
 
 # re-ready at the same version, by the operator, and unready once more.
+# It changes the state and the seq by one, and is the owner's or the
+# operator's to make.
 resumed="$(record_commit "$(record_json ready 3 1 "$h1")" "$drafted")"
+refused reready.err "a principal neither owner nor holder readied a draft" \
+  as integrator git push --quiet open "$resumed:$record_ref"
+grep -q "only the change's owner, contributor" reready.err
+stuck="$(record_commit "$(record_json ready 2 1 "$h1")" "$drafted")"
+refused reready-seq.err "a draft was readied with its seq left as it was" \
+  as contributor git push --quiet open "$stuck:$record_ref"
+grep -q 'its seq is 2' reready-seq.err
+record_at "$drafted" "unready"
 as requester git push --quiet open "$resumed:$record_ref"
 record_at "$resumed" "a re-ready at the same version"
 paused="$(record_commit "$(record_json draft 4 1 "$h1")" "$resumed")"
@@ -376,6 +386,10 @@ record_at "$versioned" "a re-ready at a new version"
 redrafted="$(record_commit "$(record_json draft 6 2 "$h1" "$h2")" "$versioned")"
 as contributor git push --quiet open "$redrafted:$record_ref"
 gone="$(record_commit "$(record_json withdrawn 7 2 "$h1" "$h2")" "$redrafted")"
+refused withdraw-draft.err "a principal neither owner nor holder withdrew a draft" \
+  as integrator git push --quiet open "$gone:$record_ref"
+grep -q "only the change's owner, contributor" withdraw-draft.err
+record_at "$redrafted" "an unready of the new version"
 as contributor git push --quiet open "$gone:$record_ref"
 record_at "$gone" "a withdrawal from a draft"
 back="$(record_commit "$(record_json draft 8 2 "$h1" "$h2")" "$gone")"
@@ -386,7 +400,13 @@ for who in contributor requester; do
   record_at "$gone" "a withdrawal from a draft"
 done
 
-# re-ready a withdrawn change at the version it was withdrawn at.
+# re-ready a withdrawn change at the version it was withdrawn at, which
+# keeps the active version.
+earlier="$(record_commit "$(record_json ready 8 1 "$h1" "$h2")" "$gone")"
+refused revive-active.err "a withdrawn change was readied at another version" \
+  as contributor git push --quiet open "$earlier:$record_ref"
+grep -q 'changes active from 2 to 1' revive-active.err
+record_at "$gone" "a withdrawal from a draft"
 revived="$(record_commit "$(record_json ready 8 2 "$h1" "$h2")" "$gone")"
 as contributor git push --quiet open "$revived:$record_ref"
 record_at "$revived" "a re-ready from withdrawn at the same version"

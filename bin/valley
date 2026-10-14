@@ -254,21 +254,25 @@ A change is named by its full change id, by its handle — the shortest
 prefix of the id, four letters at least, that no other change recorded on
 origin shares — or by its branch. A name written origin/<branch> is always
 a branch. A handle that is also a branch on origin is refused unless the
-change is on that branch. Named by id or handle, a change is reviewed,
-approved and rebased at the head its active version records, never at
-its branch's tip: review shows that head, and approve, rebase and review's
-[r]eject refuse, naming both, when the branch's tip on origin is another
-commit. [r]eject deletes the branch under a lease on the recorded head.
-approve, rebase, and review's [a]pprove and [b]ase refuse a change whose
-record is not ready, naming its state. Naming a change by id or handle
-needs the valley-go helper, and without it every name is a branch.
+change is on that branch. review, approve and rebase read a branch name,
+written either way, against every record on origin: when exactly one
+record's active version is on the branch, the name is that change, as if
+its id were given, and when more than one's is, the verb refuses and lists
+their ids. A branch no record's active version is on is acted on as a
+branch. A change with a record is reviewed, approved and rebased at the
+head its active version records, never at its branch's tip: review shows
+that head, and approve, rebase and review's [r]eject refuse, naming both,
+when the branch's tip on origin is another commit. [r]eject deletes the
+branch under a lease on the recorded head. approve, rebase, and review's
+[a]pprove and [b]ase refuse a change whose record is not ready, naming
+its state.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
-helper, and status, ready, unready and withdraw, which need the valley-go
-helper, as pending does for drafts.
+helper, and status, ready, unready, withdraw, review, approve and rebase,
+which need the valley-go helper, as pending does for drafts.
 nix run .#valley bundles all of them. Deriving a policy fetches the owning
 valley's repository, so checks and approving also need whatever reaching
 it takes.
@@ -391,11 +395,11 @@ cmd_pending() {
   done
 }
 
-# For a change named by ID or handle, what is rejected is the head its
-# record names. So the branch is deleted only while its tip is that head,
-# and the delete is leased on it. When the tip is another commit, reject
-# refuses and names both, and deletes nothing. A branch named as a branch
-# is deleted as before.
+# For a change with a record, what is rejected is the head its record
+# names. So the branch is deleted only while its tip is that head, and the
+# delete is leased on it. When the tip is another commit, reject refuses
+# and names both, and deletes nothing. A branch no record names is deleted
+# as before.
 #
 # reject runs inside a condition, where bash suspends `set -e`, so the push
 # is checked by hand.
@@ -839,9 +843,9 @@ approve() {
     refuse "no such branch on origin: $branch; nothing published"
     return 1
   }
-  # A change named by ID or handle is filed only while its record says it
-  # is ready, at the head its record names, and only while its branch is
-  # there too.
+  # A change with a record is filed only while its record says it is
+  # ready, at the head its record names, and only while its branch is there
+  # too.
   if [ -n "$CHANGE_HEAD" ]; then
     check_ready "nothing published" || return 1
     check_recorded_tip "$branch" "nothing published" || return 1
@@ -1089,22 +1093,22 @@ cmd_go() {
 
 # A change is named by its full change ID, its handle, or its branch.
 # resolve_change reads the name with the helper and sets CHANGE_BRANCH, the
-# branch to act on. For a change named by ID or handle it also sets the
-# change's ID, handle, active version and state, and CHANGE_HEAD, the head
-# that version records. Without the helper a name is a branch name, as
-# every name was before changes had records.
+# branch to act on. When the name is a change's, it also sets the change's
+# ID, handle, active version and state, and CHANGE_HEAD, the head that
+# version records. A branch name is a change's when exactly one record's
+# active version is on that branch, and is refused when more than one's is.
+# So whether a change's record is read never depends on how it is named,
+# and review, approve and rebase cannot run without the helper.
 #
-# A change named by ID or handle is acted on at CHANGE_HEAD, and never at
-# the branch's tip. The branch a record names is only where its head is
+# A change with a record is acted on at CHANGE_HEAD, and never at the
+# branch's tip. The branch a record names is only where its head is
 # expected to be, and anyone who can push the branch can move it, in the
 # same push as the record if they like.
 CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
 resolve_change() {
   local line kind
-  if ! command -v valley-go > /dev/null 2>&1; then
-    CHANGE_BRANCH="${1#origin/}"
-    return 0
-  fi
+  command -v valley-go > /dev/null 2>&1 \
+    || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   line="$(valley-go resolve "$1")" || return 1
   IFS=$'\t' read -r kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE <<< "$line"
   case "$kind" in
@@ -1125,7 +1129,7 @@ resolve_change() {
 }
 
 # The commit review, approve and rebase act on: the recorded head for a
-# change named by ID or handle, and otherwise the branch's head on origin.
+# change with a record, and otherwise the branch's head on origin.
 change_head() {
   if [ -n "$CHANGE_HEAD" ]; then
     printf '%s\n' "$CHANGE_HEAD"
@@ -1134,8 +1138,8 @@ change_head() {
   fi
 }
 
-# For a change named by ID or handle, refuse unless the branch's tip on
-# origin is the recorded head, and name both. Acting on the branch would
+# For a change with a record, refuse unless the branch's tip on origin is
+# the recorded head, and name both. Acting on the branch would
 # act on a commit no version records; acting on the recorded head while the
 # branch is elsewhere would file or rebase something the branch no longer
 # says. The second argument is what the refusal leaves undone.
@@ -1147,23 +1151,22 @@ check_recorded_tip() {
     return 1
   }
   [ "$tip" = "$CHANGE_HEAD" ] && return 0
-  refuse "change $CHANGE_HANDLE v$CHANGE_VERSION records the head $CHANGE_HEAD, and origin/$branch is at $tip; $undone. Ready the branch's head as a new version of $CHANGE_HANDLE, or name the branch as origin/$branch to act on its tip"
+  refuse "change $CHANGE_HANDLE v$CHANGE_VERSION records the head $CHANGE_HEAD, and origin/$branch is at $tip; $undone. Ready the branch's head as a new version of $CHANGE_HANDLE to act on it"
 }
 
-# For a change named by ID or handle, refuse unless its record says it is
-# ready, and name the state it is in. A draft is paused and a withdrawn
-# change given up, and neither is approved or rebased until it is readied
-# again. The argument is what the refusal leaves undone.
+# For a change with a record, refuse unless its record says it is ready,
+# and name the state it is in. A draft is paused and a withdrawn change
+# given up, and neither is approved or rebased until it is readied again.
+# The argument is what the refusal leaves undone.
 check_ready() {
   [ -n "$CHANGE_ID" ] || return 0
   [ "$CHANGE_STATE" = ready ] && return 0
   refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; $1. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
 }
 
-# rebase for a change named by ID or handle rebases the recorded head
-# alone, so the branch must still be at it. The rebased head is a commit no
-# version records, so the change is readied again before its handle names
-# it.
+# rebase for a change with a record rebases the recorded head alone, so
+# the branch must still be at it. The rebased head is a commit no version
+# records, so the change is readied again before its handle names it.
 rebase_change() {
   local branch="$1"
   check_ready "nothing rebased" || return 1

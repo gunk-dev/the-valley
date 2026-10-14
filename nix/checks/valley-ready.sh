@@ -447,6 +447,19 @@ grep -qF "change $ph v1 is draft, not ready; nothing published" "$w/err" \
   || fail "review's [a]pprove did not refuse a draft"
 [ "$(grep -oF 'drafts/paused: [a]pprove, [r]eject, [s]kip? ' "$w/out" | wc -l)" = 2 ] \
   || fail "review's prompt changed after a refusal that was no check failure"
+# Named by its branch, written either way, the draft is the same change,
+# since its active version is the one record on that branch. It is
+# refused the same way.
+for name in drafts/paused origin/drafts/paused; do
+  unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing published" as requester valley approve "$name"
+  unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as requester valley rebase "$name"
+  printf 'a\ns\n' | as requester valley review "$name" > "$w/out" 2> "$w/err" || fail "review of $name failed"
+  grep -qF "change $ph v1 is draft, not ready; nothing published" "$w/err" \
+    || fail "review's [a]pprove did not refuse a draft named $name"
+done
+if git -C "$origin" rev-parse --verify --quiet "$request_ref" > /dev/null; then
+  fail 'approve filed a request for a draft named by its branch'
+fi
 
 # ready at the same head is v1 again, and a draft once more after it.
 ok as contributor valley ready --change "$pid"
@@ -455,10 +468,16 @@ record "$pid" '.state == "ready"' '.seq == 3' '.active == 1' '.versions | length
 one_parent "$pid"
 
 # Approved now, the change has a request under its branch-derived name.
-# unready voids nothing, so the request stays. It warns, because the
-# integrator does not read records yet.
-ok as requester valley approve "$ph"
+# Ready and at its recorded head, it is approved by its branch, written
+# either way, and in review. unready voids nothing, so the request stays.
+# It warns, because the integrator does not read records yet.
+ok as requester valley approve drafts/paused
 [ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'approve did not file the ready change'
+ok as requester valley approve origin/drafts/paused
+grep -q '^Approved drafts/paused' "$w/out" || fail 'approve of origin/drafts/paused did not go ahead'
+printf 'a\n' | as requester valley review drafts/paused > "$w/out" 2> "$w/err" || fail 'review of drafts/paused failed'
+grep -q "^change $ph v1 at " "$w/out" || fail 'review of a branch did not read its change'
+grep -q '^Approved drafts/paused' "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
 ok as contributor valley unready "$ph"
 grep -qF "valley: warning: the integration request $request_ref for $ph is pending on origin" "$w/err" \
   || fail 'unready did not warn of the pending request'
@@ -497,6 +516,26 @@ if grep -qF "$request_ref " "$w/err"; then fail 'unready warned of a request tha
 ok as contributor valley withdraw "$ph"
 record "$pid" '.state == "withdrawn"' '.seq == 9' '.active == 2'
 grep -qF "main/c-$pid for $ph is pending" "$w/err" || fail 'withdraw did not warn of a request named by the change ID'
+
+# ----------------------------------------------------------------------
+# A branch no record's active version is on is a branch, as before
+# records: review shows its tip, and approve files it under its own name.
+printf 's\n' | valley review pushed > "$w/out" 2> "$w/err" || fail 'review of a branch with no record failed'
+grep -q '^branch pushed, log against origin/main' "$w/out" || fail 'review read a change for a branch with no record'
+ok as requester valley approve pushed
+[ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/pushed)" \
+  = "$(git -C "$origin" rev-parse refs/heads/pushed)" ] || fail 'approve did not file a branch with no record at its tip'
+
+# A branch two records' active versions are on names neither: the verbs
+# that act on a change refuse it, and list both IDs.
+twin=llllmmmmnnnnoooollllmmmmnnnnoooo
+ok as contributor valley ready --change "$twin" topic
+for verb in approve rebase; do
+  refused 'name one by its change ID' as requester valley "$verb" topic
+  grep -qF "$id" "$w/err" || fail "$verb of topic did not list $id"
+  grep -qF "$twin" "$w/err" || fail "$verb of topic did not list $twin"
+done
+refused 'name one by its change ID' as requester valley approve origin/topic
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

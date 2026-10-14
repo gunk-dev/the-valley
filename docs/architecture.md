@@ -472,14 +472,25 @@ least four letters, that no other change recorded on origin shares. A change can
 its branch, as it was before records existed. Every verb that takes a change takes all three
 (`status/changes.go`).
 
-`review`, `approve` and `rebase` act on a change named by ID or handle at the head its active
-version records. They never act on the branch's tip. A record's branch is only where its head is
-expected to be, and anyone who can push the branch can move it, even in the same push as the record.
-`review` shows the recorded head. `approve` files the request at exactly that head. `approve`,
-`rebase` and `review`'s `[r]eject` refuse when the branch's tip on origin is another commit, and the
-refusal names both commits. `[r]eject` deletes the branch under a lease on the recorded head. A
-rebased head is a commit no version records, so the change is readied again before its handle names
-it. `approve`, `rebase`, and `review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not
+`review`, `approve` and `rebase` read a branch name further, whether it is written as `<branch>` or
+`origin/<branch>`. They read every record on origin and look for the ones whose active version is on
+that branch:
+
+- If there are none, the name is a branch, as it was before records existed.
+- If there is exactly one, the name is that record's change, exactly as if its ID had been given.
+- If there is more than one, the verb refuses and lists their change IDs, so that one can be named.
+
+So whether a change's record is read never depends on how the change is named. These three verbs
+need the `valley-go` helper for that reason.
+
+`review`, `approve` and `rebase` act on a change with a record at the head its active version
+records. They never act on the branch's tip. A record's branch is only where its head is expected to
+be, and anyone who can push the branch can move it, even in the same push as the record. `review`
+shows the recorded head. `approve` files the request at exactly that head. `approve`, `rebase` and
+`review`'s `[r]eject` refuse when the branch's tip on origin is another commit, and the refusal
+names both commits. `[r]eject` deletes the branch under a lease on the recorded head. A rebased head
+is a commit no version records, so the change is readied again before its handle names it.
+`approve`, `rebase`, and `review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not
 `ready`, and the refusal names its state. `valley-go resolve` gives these verbs the change's ID,
 handle, active version, recorded head, branch and state on one line.
 

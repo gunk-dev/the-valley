@@ -13,6 +13,11 @@
 // origin/<branch> is always a branch name. A handle that is also the name
 // of a branch on origin is refused unless the change is on that branch,
 // because the two could be different changes.
+//
+// The verbs that act on a change read a branch name further: the branch is
+// the change whose active version is on it, when exactly one is
+// (resolveRecorded). So how a change is named never decides whether its
+// record is read.
 
 package main
 
@@ -159,10 +164,10 @@ type resolution struct {
 	version                         int
 }
 
-// resolve reads a change's name, as every verb that takes a change does.
-// A name with no handle's shape is a branch name without origin being
-// read. A change whose active version names no branch is refused, since
-// every verb that resolves a name acts on a branch too.
+// resolve reads a change's name, as status does. A name with no handle's
+// shape is a branch name without origin being read. A change whose active
+// version names no branch is refused, since every verb that resolves a
+// name acts on a branch too.
 func resolve(g git, name string) (resolution, error) {
 	if strings.HasPrefix(name, "origin/") || !change.LooksLikeHandle(name) {
 		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
@@ -178,6 +183,55 @@ func resolve(g git, name string) (resolution, error) {
 	case !found:
 		return resolution{branch: name}, nil
 	}
+	return o.resolution(n)
+}
+
+// resolveRecorded reads a change's name for the verbs that act on a
+// change: review, approve and rebase, through runResolve. A name that is a
+// change's ID or handle is that change, as resolve reads it. A branch name,
+// written as <branch> or origin/<branch>, is read against the branch each
+// record's active version names. No record on the branch leaves the name a
+// branch, as it was before changes had records. One record makes the name
+// that record's change, exactly as if its ID had been given. More than one
+// is refused, since acting on the branch would act on any of them.
+func resolveRecorded(g git, name string) (resolution, error) {
+	branch := strings.TrimPrefix(name, "origin/")
+	o, err := listOrigin(g, append([]string{"refs/heads/" + branch}, recordPatterns...)...)
+	if err != nil {
+		return resolution{}, err
+	}
+	if !strings.HasPrefix(name, "origin/") {
+		n, found, err := lookup(g, o, name)
+		switch {
+		case err != nil:
+			return resolution{}, err
+		case found:
+			return o.resolution(n)
+		}
+	}
+	all, err := readAll(g, o)
+	if err != nil {
+		return resolution{}, err
+	}
+	found := activeOn(all, branch)
+	switch len(found) {
+	case 0:
+		return resolution{branch: branch}, nil
+	case 1:
+		return o.resolution(found[0])
+	}
+	var ids []string
+	for _, n := range found {
+		ids = append(ids, n.id)
+	}
+	return resolution{}, failure(fmt.Sprintf("the changes %s all have their active version on %s; name one by its change ID",
+		strings.Join(ids, ", "), branch))
+}
+
+// resolution is what a change's record says its name stands for: the
+// active version, the head that version names, the branch it names, and
+// the change's state.
+func (o origin) resolution(n recorded) (resolution, error) {
 	v := n.record.ActiveVersion()
 	r := resolution{
 		id: n.id, handle: o.handle(n.id), version: v.N,
@@ -189,6 +243,17 @@ func resolve(g git, name string) (resolution, error) {
 	return r, nil
 }
 
+// activeOn is every change among all whose active version names branch.
+func activeOn(all []recorded, branch string) []recorded {
+	var found []recorded
+	for _, n := range all {
+		if n.record.ActiveVersion().Branch == branch {
+			found = append(found, n)
+		}
+	}
+	return found
+}
+
 // resolveBranch is the branch a change is on: the branch its active
 // version names, when the name is a change's, and otherwise the name
 // itself, as a branch name.
@@ -198,8 +263,8 @@ func resolveBranch(g git, name string) (string, error) {
 }
 
 // runResolve prints what a change's name stands for, for the verbs
-// bin/valley runs itself, as one line of fields separated by tabs. For a
-// change it is
+// bin/valley runs itself, as resolveRecorded reads it: one line of fields
+// separated by tabs. For a change it is
 //
 //	change <ID> <handle> <version> <head> <branch> <state>
 //
@@ -218,7 +283,7 @@ func runResolve(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	r, err := resolve(g, args[0])
+	r, err := resolveRecorded(g, args[0])
 	if err != nil {
 		return err
 	}

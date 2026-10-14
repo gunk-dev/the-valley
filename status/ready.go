@@ -320,12 +320,7 @@ func onBranch(g git, o origin, branch string) (recorded, error) {
 	if err != nil {
 		return recorded{}, err
 	}
-	var found []recorded
-	for _, n := range all {
-		if n.record.ActiveVersion().Branch == branch {
-			found = append(found, n)
-		}
-	}
+	found := activeOn(all, branch)
 	switch len(found) {
 	case 0:
 		return recorded{}, failure(fmt.Sprintf("no change on origin is named %s or has its active version on that branch", branch))

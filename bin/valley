@@ -268,7 +268,9 @@ branch under a lease on the recorded head. approve, rebase, and review's
 its state. Each reads the record again just before it acts, and again
 before approve files or rebase pushes, and refuses when the change is no
 longer ready or its active version has moved to another head since the
-verb began.
+verb began. A name that read as a plain branch is read again before
+approve files or rebase pushes, and if it names a change by then, the
+same rules hold.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -677,8 +679,10 @@ rebase_onto_main() {
     cleanup_rebase_wt
     die "could not read the rebased head of $branch; nothing pushed"
   }
-  # A change with a record is read once more, just before the push.
-  if ! check_record "nothing pushed"; then
+  # A change with a record is read once more, just before the push, and a
+  # name that read as a plain branch is read again in case it names a
+  # change now.
+  if ! check_record "nothing pushed" "$from"; then
     cleanup_rebase_wt
     exit 1
   fi
@@ -1009,8 +1013,9 @@ approve() {
   fi
 
   # The checks can take minutes, and the record may have moved meanwhile.
-  # So it is read once more, just before anything is filed.
-  if ! check_record "nothing published"; then
+  # So it is read once more, just before anything is filed, and a name that
+  # read as a plain branch is read again in case it names a change now.
+  if ! check_record "nothing published" "$head"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -1119,9 +1124,10 @@ cmd_go() {
 # branch's tip. The branch a record names is only where its head is
 # expected to be, and anyone who can push the branch can move it, in the
 # same push as the record if they like.
-CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
+CHANGE_NAME="" CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
 resolve_change() {
   local line kind
+  CHANGE_NAME="$1"
   command -v valley-go > /dev/null 2>&1 \
     || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   line="$(valley-go resolve "$1")" || return 1
@@ -1177,26 +1183,51 @@ check_recorded_tip() {
 # withdraw or ready a new version of the change while a review is open or
 # the checks run. So approve reads it again before it runs the checks and
 # before it files, and rebase before it starts and before it pushes. Until
-# the integrator reads records, nothing on origin makes this check. The
-# argument is what the refusal leaves undone.
+# the integrator reads records, nothing on origin makes this check.
+#
+# A name that read as a plain branch can come to name a change meanwhile:
+# someone readies the branch, and perhaps unreadies it, while the review
+# is open. So the last check before approve files and before rebase
+# pushes reads the original name again too. Those two callers pass the
+# head they are about to act on as the second argument. When the name now
+# names a change, the same rules hold: the change must be ready, and its
+# recorded head must be that head. The first argument is what the refusal
+# leaves undone.
 check_record() {
-  [ -n "$CHANGE_ID" ] || return 0
-  local line kind id handle version head branch state
+  local undone="$1" acting="${2:-}" line kind id handle version head branch state
+  if [ -z "$CHANGE_ID" ]; then
+    [ -n "$acting" ] || return 0
+    if ! line="$(valley-go resolve "$CHANGE_NAME")"; then
+      refuse "could not read $CHANGE_NAME again against origin's records; $undone"
+      return 1
+    fi
+    IFS=$'\t' read -r kind id handle version head branch state <<< "$line"
+    [ "$kind" = change ] || return 0
+    if [ "$state" != ready ]; then
+      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone. Ready it first: valley ready --change $id $(printf '%q' "$branch")"
+      return 1
+    fi
+    if [ "$head" != "$acting" ]; then
+      refuse "$CHANGE_NAME is now change $handle v$version, which records the head $head, and this run began at $acting; $undone. Review it again by its handle"
+      return 1
+    fi
+    return 0
+  fi
   if ! line="$(valley-go resolve "$CHANGE_ID")"; then
-    refuse "could not read the record of change $CHANGE_HANDLE again; $1"
+    refuse "could not read the record of change $CHANGE_HANDLE again; $undone"
     return 1
   fi
   IFS=$'\t' read -r kind id handle version head branch state <<< "$line"
   if [ "$kind" != change ] || [ "$id" != "$CHANGE_ID" ]; then
-    refuse "origin no longer holds a record of change $CHANGE_HANDLE; $1"
+    refuse "origin no longer holds a record of change $CHANGE_HANDLE; $undone"
     return 1
   fi
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $1. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$branch")"
+    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$branch")"
     return 1
   fi
   if [ "$head" != "$CHANGE_HEAD" ]; then
-    refuse "change $CHANGE_HANDLE is at v$version, $head, and this run began at v$CHANGE_VERSION, $CHANGE_HEAD; $1. Review it again at its new head"
+    refuse "change $CHANGE_HANDLE is at v$version, $head, and this run began at v$CHANGE_VERSION, $CHANGE_HEAD; $undone. Review it again at its new head"
     return 1
   fi
 }

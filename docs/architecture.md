@@ -501,6 +501,12 @@ again before it starts, and again before it pushes. Each refuses when the change
 `ready`, or when its active version is at another head than the one the verb began with. Nothing on
 origin makes this check until the integrator reads records.
 
+A name that read as a plain branch can come to name a change while the verb runs. For example,
+someone readies the branch, and then unreadies it, while a review of it is open. So before `approve`
+files and before `rebase` pushes, the verb reads the original name again. If it names a change by
+then, the same rules hold: the change must be `ready`, and its recorded head must be the head the
+verb began with.
+
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
 (`status/ready.go`). They take a change by any of its names, and print the handle, the active
 version and the new state, such as `cosmo nxvp v2 draft`. Each warns when a request for the change

@@ -581,6 +581,30 @@ if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; the
   fail 'review filed a request for a change that gained a version while it was open'
 fi
 
+# A name that read as a plain branch is read again before approve files.
+# A review of a branch no record is on is left open while a second
+# principal readies the branch and then unreadies it. [a]pprove then
+# refuses, naming the change the branch has become and its state.
+git checkout --quiet -b drafts/plain main
+commit plain
+as contributor git push --quiet origin drafts/plain
+ready_then_unready() {
+  as contributor valley ready drafts/plain > "$w/ready.out" || return 1
+  plain_id="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/ready.out")"
+  plain_handle="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/ready.out")"
+  [ "${#plain_id}" = 32 ] && [ -n "$plain_handle" ] || return 1
+  as contributor valley unready "$plain_id"
+}
+review_while drafts/plain 'a\ns\n' ready_then_unready
+grep -q '^branch drafts/plain, log against origin/main' "$w/review.out" \
+  || fail 'the review did not begin on a branch with no record'
+record "$plain_id" '.state == "draft"'
+grep -qF "drafts/plain is now change $plain_handle v1, which is draft, not ready; nothing published" "$w/review.err" \
+  || fail "review's [a]pprove went ahead for a branch readied and unreadied while the review was open"
+if git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/drafts-plain > /dev/null; then
+  fail 'review filed a request for a branch that became a draft while it was open'
+fi
+
 # ----------------------------------------------------------------------
 # A request filed for an earlier version is named by that version's
 # branch. withdraw warns of it, though the active version is on another.

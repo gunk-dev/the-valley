@@ -87,3 +87,5 @@ can instantiate the same check over its own tree from a flake input. The plan of
   change's status as a versioned JSON object. `valley ready`, `valley unready` and `valley withdraw`
   record a change's versions and whether it is ready, a draft or withdrawn, under a change ID that
   survives rebases. Every verb names a change by that ID, by its short handle, or by its branch.
+  `valley approve --head` approves exactly the head a front end showed, and the integrator lands
+  nothing for a change that is not ready.

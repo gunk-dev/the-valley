@@ -88,10 +88,10 @@ symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valle
 | `refs/heads/*` (topic branches)                     | Any key                                                                                          | Create, update and delete.                                                                                                                                              |
 | Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
-| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete.                                                                                                                                              |
-| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`).                                                    |
+| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
+| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
-| Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records.                                                                                                                           |
+| Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`.                                                                      |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
 | Tags and every other ref                            | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
@@ -104,9 +104,10 @@ the identity compiler's `grants` file. Why replace refs are closed is recorded i
 
 A change is one piece of work aimed at `main`. Its ID is stable across rebases, in jj's form: 32
 letters from `k` to `z`. Each time a head of the change is marked ready, the change gains a version.
-The change's record lists the versions, and the hook guards every write to it. Records are
-observational: nothing reads them for authority. The integration request is still the only way a
-change reaches `main`, and the integrator does not read records.
+The change's record lists the versions, and the hook guards every write to it. A record grants
+nothing: the integration request is still the only way a change reaches `main`. The integrator reads
+records only to refuse. It lands no request whose head is a version of a change that is not `ready`
+(see [The integrator](#the-integrator)).
 
 A change is in one of three states:
 
@@ -117,13 +118,15 @@ A change is in one of three states:
   integration requests, and the approvals and reviews of every version. A change brought back from
   withdrawn always needs fresh approvals.
 
-Nothing enforces what withdrawing voids yet. The integrator does not read records, so a request
-filed before a change was paused or withdrawn can still land it. Until it does read them,
-`valley unready` and `valley withdraw` warn when origin holds a request for the change. The request
-is looked for under the name `approve` gives it, derived from the branch of each of the change's
-versions, and under `c-<change-id>`. Only a `request` holder may touch a request ref, so the warning
-says the operator must drop it. Approvals are not records yet either; they become records with M1-C.
-Until then, voiding an approval means the integrator refuses it, once the integrator reads records.
+The integrator enforces the pause. It refuses a request whose head is a version of a draft or a
+withdrawn change, so a request filed before the change was paused or withdrawn stays where it is and
+does not land. A draft's request lands once the change is ready again, which is what a pause means.
+Nothing yet enforces what withdrawing voids: a request filed before a withdrawal lands too once the
+change is ready again. So `valley withdraw` warns when origin holds a request for the change, and
+`valley unready` notes one. The request is looked for under `c-<change-id>`, and under the name a
+branch's request has, for the branch of each of the change's versions. Only a `request` holder may
+touch a request ref, so the warning says the operator must drop it. Approvals are not records yet
+either; they become records with M1-C.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -176,7 +179,7 @@ owner, the target and the change ID never change.
 
 Each record commit is at most 4 KiB, its tree at most 1 KiB, and its `record.json` at most 64 KiB. A
 push may update at most 32 records. The hook checks each of these bounds before it reads anything
-past it.
+past it, and the integrator reads records under the same bounds (`change/record.go`).
 
 A repository may hold at most 2000 records, counted with one `for-each-ref`. This bound is soft. A
 pre-receive hook runs before git installs any ref, and nothing serializes two pushes' hooks. So
@@ -184,9 +187,9 @@ pushes that run at the same time can each count the same records and each create
 then pass 2000 by at most the record updates those pushes had in flight, which is 32 per push. Once
 the count is past 2000, every later create is refused.
 
-The writer numbers versions, and the hook holds them to append-only and gap-free. When the
-integrator starts reading records, it takes this numbering as it is. For now, a change is owned by
-the principal whose key pushed its first record, so `klaus-env` owns every agent change.
+The writer numbers versions, and the hook holds them to append-only and gap-free. The integrator
+takes this numbering as it is. For now, a change is owned by the principal whose key pushed its
+first record, so `klaus-env` owns every agent change.
 
 A record keeps every head it names reachable, because each head is a parent of a record commit. So
 records retain source objects the way topic branches do, and the hook restricts them no further.
@@ -253,28 +256,59 @@ requests in order, then sleeps 15 seconds and starts again (`integrator/main.go`
 `integrator/refs.go`). No bound on how long a request waits is checked.
 
 1. **Find requests.** A request is a ref `refs/the-valley/integration-requests/<target>/<change>`
-   that points at the change's head commit.
+   that points at the change's head commit. A change with a record is requested as `c-<change-id>`.
+   Every name of that form is reserved for the change with that ID. Any other name is a branch's:
+   the branch with each `/` replaced by `-`.
 2. **Skip what is decided.** The outcome record
    `refs/the-valley/integration-outcomes/<target>/<change>` holds the head, the target tip, a hash
    of all attestation refs, and the outcome. If the first three still match, the request is skipped.
-   A `failed` outcome is retried after 10 minutes.
-3. **Build the candidate.** The base is `git merge-base` of the tip and the head. If the base is the
+   A `failed` outcome is retried after 10 minutes. A refusal from step 3 is never skipped this way.
+3. **Refuse what the records refuse.** The records are read once per pass (see below). A request is
+   refused with the outcome `refused-not-ready` when either of these holds:
+   - it is named `c-<change-id>`, and the record `refs/the-valley/changes/<target>/<change-id>` is
+     missing, is not `ready`, or does not list the request's head as one of its version heads;
+   - whatever its name, its head is a version head of a record that is not `ready`.
+
+   A request whose commits from the merge base with the target to the head include a merge is
+   refused with the outcome `refused-merge`. A merge could make other work look landed by ancestry.
+   A refused request stays where it is, and no event is published. A refusal is decided again on
+   every pass, and reported only when it is new, so a draft readied again is judged on the next
+   pass.
+
+4. **Build the candidate.** The base is `git merge-base` of the tip and the head. If the base is the
    tip, the candidate is the head. Otherwise `git merge-tree --write-tree` builds the tree, and the
    integrator commits it with the tip as the only parent. The commit keeps the head's author. Its
    committer is the integrator at `integrator@the-valley.invalid`. A conflict makes the request
    stale.
-4. **Derive the required checks** (see Policy below).
-5. **Judge the evidence** (see Evidence below). The outcome is `land`, `stale` or `reject`. A stale
+5. **Derive the required checks** (see Policy below).
+6. **Judge the evidence** (see Evidence below). The outcome is `land`, `stale` or `reject`. A stale
    request publishes `request-stale`.
-6. **Land.** The integrator signs a transfer statement that records the policy digest and the checks
-   it relied on. Then it moves the target with compare-and-swap
-   (`git update-ref <target> <new> <tip>`). That is the commit point. Then it queues the landing for
-   the publisher, stores its countersigned evidence, deletes the request with compare-and-swap,
-   publishes `integration-succeeded`, and writes the outcome record.
+7. **Land.** The integrator reads the records step 3 read for the head once more, since judging can
+   take minutes, and refuses as step 3 does if one of them is no longer `ready`. It signs a transfer
+   statement that records the policy digest and the checks it relied on. Then it moves the target
+   with compare-and-swap (`git update-ref <target> <new> <tip>`). That is the commit point. Then it
+   queues the landing for the publisher, stores its countersigned evidence, deletes the request with
+   compare-and-swap, publishes `integration-succeeded`, and writes the outcome record.
 
 Each step is a separate `git update-ref` call. A crash between steps can leave a landing without its
 evidence or outcome record. Checked by `integrator-e2e` (scenarios for fast-forward, merge,
-conflict, stale evidence, tampered notes, retries and a moved target) and `integrator-unit`.
+conflict, stale evidence, tampered notes, retries, a moved target, requests named for changes,
+drafts under either kind of name, and merges) and `integrator-unit`.
+
+The integrator lands the commit the request names, and nothing else. So an approval binds the head
+it approved: a record that moves after the request is filed cannot change what lands.
+
+The records are read with the parser the hook and the CLI share (`change/`), under the bounds the
+hook admits them under (`integrator/records.go`). Each pass reads every ref under
+`refs/the-valley/changes/` once, into an index by version head, with one `for-each-ref` and two
+batched `cat-file` reads. A record that does not read names no head, so it refuses nothing, and the
+pass reports it. A `c-<change-id>` request's own record is read fresh each time. A repository that
+holds more than 4000 records, twice the hook's soft bound, is refused whole: the pass judges no
+request until records are deleted.
+
+The records are where a change's owner says whether it is ready, and the owner cannot touch request
+refs. Reading them is what lets `valley unready` and `valley withdraw` stop a request that is
+already filed. That includes an approval filed in the moment after its client last read the record.
 
 ## Policy
 
@@ -420,8 +454,8 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
 | `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
-| `valley approve <change>`    | Does what `[a]pprove` does, without showing the branch.                                               |
-| `valley rebase <change>`     | Does what `[b]ase` does, without showing the branch, and prints the new head.                         |
+| `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
+| `valley rebase <change>`     | Does what `[b]ase` does, and adds the rebased head to the change's record as a new version.           |
 | `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                          |
 | `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
@@ -431,11 +465,16 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
 `[a]pprove` is the operator's approval of a change. It runs the owed checks with `attest` in a
-worktree of the branch head. Then one atomic push carries the evidence refs and the integration
+worktree of the head it approves. Then one atomic push carries the evidence refs and the integration
 request, with a lease on the request ref. When the request already names this head, the push leaves
 the request ref out. When nothing is owed as well, there is no push. `[b]ase` rebases the branch in
 a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
 prompt.
+
+A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
+branch no record is on is requested under its name with each `/` replaced by `-`, as before records
+existed. A branch whose name maps to `c-<change-id>` is refused, by `approve` and by `status`: that
+name is the change's.
 
 When the checks fail under `[a]pprove`, approving the same head again can only fail again. So the
 prompt then says approving needs a new head. It offers only `[r]eject` and `[s]kip`, plus `[b]ase`
@@ -444,22 +483,44 @@ where it is offered. `[a]pprove` comes back once the change is at another head, 
 was.
 
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
-change their own way. Each runs the same function as its key, so the output and the refusals are the
-same. `approve` exits non-zero when it refuses. `rebase` does not re-review the result, and it
-leaves a branch that already fast-forwards from `main` alone. Checked by `valley-cli`,
-`valley-request`, `valley-status`, `valley-ready` and `review-notes`.
+change their own way. Each runs the same function as its key, so the checks, the request write and
+the refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review the
+result, and it leaves a branch that already fast-forwards from `main` alone. Checked by
+`valley-cli`, `valley-request`, `valley-status`, `valley-ready`, `valley-changes` and
+`review-notes`.
 
-`valley ready [--head <sha>] [--change <id>] [--stamp] [<branch>]` writes a change's record
-(`status/ready.go`). The branch is the current one unless named. The head is `--head` when given,
-and otherwise the branch's head on origin. Either way the head must already be on origin. klaus
-passes `--head` with the head it pushed, so the version names exactly that head. ready reads the
-existing record, if there is one, and adds a version. For a ready change, it refuses a head equal to
-the active version's. It pushes the record ref with a lease on the value it read, and prints the
-handle and version, such as `cosmo nxvp v2 ready`. A draft or a withdrawn change comes back by
-`ready` too. At the head of its active version, it is ready again at that version, and the record
-commit's one parent is the record before it. At another head, it gains the next version. The record
-names the principal from `git config valley.principal`. The host derives the pushing principal from
-the key, and the client cannot ask it, so the hook refuses a record that names anyone else.
+An approval of a change with a record binds one head, and the request names exactly that head:
+
+- `valley approve <change> --head <sha>` approves `<sha>`. It refuses unless `<sha>` is one of the
+  record's version heads, active or not. The dashboard passes the head it showed (klaus's
+  `approve_command`), so what is approved is what was seen.
+- Without `--head`, `approve` prints the active version's head and title and asks for confirmation.
+  It does this only on a terminal, and refuses when it is not on one.
+- `valley review <change>` shows the active version's head, and `[a]pprove` approves that head.
+
+A branch no record is on is approved at its tip on origin. `--head`, when given, must be that tip.
+
+`valley rebase <change>`, and `[b]ase` in a review, rebase a change with a record at its active
+version's head. They push the branch that version names, with a lease, and then add the rebased head
+as a new version, as the principal `valley.principal` names. They add it with
+`valley ready --if-active <head>`, which writes the version only while the change is still `ready`
+at the head the rebase began with. The record ref is leased on the record that check read, so a
+change unreadied in the meantime stays a draft at its old head. `rebase` refuses a version that
+names no branch. After `[b]ase`, the review goes on at the new version.
+
+`valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
+change's record (`status/ready.go`). The branch is the current one unless named. The head is
+`--head` when given, and otherwise the branch's head on origin. Either way the head must already be
+on origin. klaus passes `--head` with the head it pushed, so the version names exactly that head.
+ready reads the existing record, if there is one, and adds a version. For a ready change, it refuses
+a head equal to the active version's. It pushes the record ref with a lease on the value it read,
+and prints the handle and version, such as `cosmo nxvp v2 ready`. A draft or a withdrawn change
+comes back by `ready` too. At the head of its active version, it is ready again at that version, and
+the record commit's one parent is the record before it. At another head, it gains the next version.
+The record names the principal from `git config valley.principal`. The host derives the pushing
+principal from the key, and the client cannot ask it, so the hook refuses a record that names anyone
+else. `--if-active <sha>` adds the version only while the change is `ready` at an active version
+whose head is `<sha>`.
 
 ready takes the change ID from the first of these that has one:
 
@@ -492,49 +553,56 @@ that branch:
 So whether a change's record is read never depends on how the change is named. These three verbs
 need the `valley-go` helper for that reason.
 
-`review`, `approve` and `rebase` act on a change with a record at the head its active version
-records. They never act on the branch's tip. A record's branch is only where its head is expected to
-be, and anyone who can push the branch can move it, even in the same push as the record. `review`
-shows the recorded head. `approve` files the request at exactly that head. `approve`, `rebase` and
-`review`'s `[r]eject` refuse when the branch's tip on origin is another commit, and the refusal
-names both commits. `[r]eject` deletes the branch under a lease on the recorded head. A rebased head
-is a commit no version records, so the change is readied again before its handle names it.
-`approve`, `rebase`, and `review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not
-`ready`, and the refusal names its state. `valley-go resolve` gives these verbs the change's ID,
-handle, active version, recorded head, branch and state on one line.
+`review`, `approve` and `rebase` act on a change with a record at a head its record names. They
+never act on the branch's tip. A record's branch is only where its head is expected to be, and
+anyone who can push the branch can move it, even in the same push as the record. `review` shows the
+active version's head. `approve` files the request at exactly the head bound to it, wherever the
+branch is. `rebase` and `review`'s `[r]eject` act on the branch itself, so they refuse when the
+branch's tip on origin is another commit than the active version's head, and the refusal names both
+commits. `[r]eject` deletes the branch under a lease on the recorded head. `approve`, `rebase`, and
+`review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not `ready`, and the refusal
+names its state. `valley-go resolve` gives these verbs the change's ID, handle, active version,
+recorded head, branch and state on one line, and `valley-go versions` lists every version, for
+`approve`.
 
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the
-record again before it runs the checks, and again before it files the request. `rebase` reads it
-again before it starts, and again before it pushes. Each refuses when the change is no longer
-`ready`, or when its active version is at another head than the one the verb began with. Nothing on
-origin makes this check until the integrator reads records.
+record again before it runs the checks, and again before it files the request. It refuses when the
+change is no longer `ready`, or when the head it approves is no longer a version head. A new version
+does not stop it, since the request names the head that was approved. `rebase` reads the record
+again before it starts, and again before it pushes. It refuses when the change is no longer `ready`,
+or when its active version is at another head than the one the rebase began with. These client
+checks save a run that would come to nothing. The integrator makes the same check on origin.
 
 A name that read as a plain branch can come to name a change while the verb runs. For example,
 someone readies the branch, and then unreadies it, while a review of it is open. So before `approve`
 files and before `rebase` pushes, the verb reads the original name again. If it names a change by
-then, the same rules hold: the change must be `ready`, and its recorded head must be the head the
-verb began with.
+then, the change must be `ready`, and its active version's head must be the head the verb began
+with.
 
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
-(`status/ready.go`). They take a change by any of its names, and print the handle, the active
-version and the new state, such as `cosmo nxvp v2 draft`. Each warns when a request for the change
-is pending, as [Change records](#change-records) describes. `valley pending` lists the changes whose
-record says they are drafts in a section of their own, at the head of each active version. A branch
-whose tip is a draft's head is listed only there.
+(`status/ready.go`). Either may be run by the change's owner or by the operator, who holds the
+`request` grant; the hook refuses anyone else. They take a change by any of its names, and print the
+handle, the active version and the new state, such as `cosmo nxvp v2 draft`. Each says when a
+request for the change is pending, and `withdraw` warns, as [Change records](#change-records)
+describes. `valley pending` lists the changes whose record says they are drafts in a section of
+their own, at the head of each active version. A branch whose tip is a draft's head is listed only
+there.
 
-`unready` and `withdraw` stop an approval that begins after them. They do not always stop one that
-is already under way. An approval reads the record one last time just before it files the request,
-and a change unreadied or withdrawn after that read is filed all the same. No client can close this
-window. git compares only the refs a push changes, and the record ref is not one of them, so a push
-cannot be made conditional on the record. The authoritative check is planned in the integrator: it
-will refuse to land any request whose head is a version of a change that is not `ready`. That check
-at landing closes the window.
+`unready` and `withdraw` stop an approval that begins after them, on the client. They do not always
+stop one already under way there. An approval reads the record one last time just before it files
+the request, and a change unreadied or withdrawn after that read is filed all the same. No client
+can close this window. git compares only the refs a push changes, and the record ref is not one of
+them, so a push cannot be made conditional on the record. The integrator closes it: it refuses to
+land any request whose head is a version of a change that is not `ready`, whatever the request is
+named.
 
-`valley status` takes one `ls-remote` snapshot of origin and fetches the objects it names, without
-moving a local branch or writing `FETCH_HEAD`. It reads ancestry first: a head already in
-`origin/main` is integrated, even if recording the outcome failed. An outcome record it does not
-recognise is `unknown`, never a success.
+`valley status` reads a name as `approve` does. A change with a record is read at its active
+version's head, under its request name `c-<change-id>`. A branch no record is on is read at its head
+on origin, under the branch's request name. It takes one `ls-remote` snapshot of origin for the
+decision, and fetches the objects it names, without moving a local branch or writing `FETCH_HEAD`.
+It reads ancestry first: a head already in `origin/main` is integrated, even if recording the
+outcome failed. An outcome record it does not recognise is `unknown`, never a success.
 
 ### The status object
 
@@ -551,19 +619,34 @@ so it is a contract with a version. A change to the name or meaning of any field
   "head": "<sha>",
   "request": { "ref": "refs/the-valley/integration-requests/main/topic-one", "commit": "<sha>" },
   "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>", "failed_at": null },
-  "state": "stale"
+  "state": "stale",
+  "change_id": null,
+  "handle": null,
+  "version": null,
+  "title": null,
+  "owner": null,
+  "landing": null
 }
 ```
 
 - `change` is the branch as given, without `origin/`. `request_name` names its integration request:
-  the branch with each `/` replaced by `-`.
-- `target_tip` is `main` on origin. `head` is the branch head on origin. When the branch is gone,
-  `head` is the request's commit, or else the outcome's head, or else `null`.
+  the branch with each `/` replaced by `-`. For a change with a record, `change` is the branch its
+  active version names, or its handle when that names none, and `request_name` is `c-<change-id>`.
+- `target_tip` is `main` on origin. `head` is the branch head on origin, or for a change with a
+  record, the head its active version records. When the branch is gone, `head` is the request's
+  commit, or else the outcome's head, or else `null`.
 - `request` is `null` when origin holds no integration request for the change. `outcome` is `null`
   when origin holds no outcome record.
-- `outcome.decision` is `land`, `stale`, `reject`, `failed` or `unknown`. A record that does not
-  parse is `unknown`. `outcome.head` and `outcome.tip` are `null` unless they are object ids, and
-  `failed_at` is `null` unless the decision is `failed`.
+- `outcome.decision` is `land`, `stale`, `reject`, `refused-not-ready`, `refused-merge`, `failed` or
+  `unknown`. A record that does not parse is `unknown`. `outcome.head` and `outcome.tip` are `null`
+  unless they are object ids, and `failed_at` is `null` unless the decision is `failed`.
+- `change_id`, `handle`, `version`, `title`, `owner` and `landing` were added to `valley-status/v1`.
+  Each is `null` for a branch no record is on. For a change with a record they are its ID, its
+  handle, its active version's number and title, its owner, and the active version's landing
+  evidence as [Listing changes](#listing-changes) decides it.
+- `refused-not-ready` and `refused-merge` were added to `valley-status/v1` as decisions and as
+  states. A reader that meets a decision or a state it does not know should treat the status as
+  unknown.
 - `state` is one of these:
 
 | `state`                 | What it means                                                                         |
@@ -577,6 +660,8 @@ so it is a contract with a version. A change to the name or meaning of any field
 | `awaiting-new-decision` | The outcome names this head, but `main` or the evidence has moved since it was made.  |
 | `stale`                 | The integrator reported the change stale against the current `main` and evidence.     |
 | `rejected`              | The integrator rejected the evidence.                                                 |
+| `refused-not-ready`     | The integrator refused it: a record of its head is not `ready`. The request stands.   |
+| `refused-merge`         | The integrator refused it: its commits from the merge base include a merge.           |
 | `failed`                | The integrator failed while processing the request. The change may still have landed. |
 
 An error prints no object. The message goes to stderr and the exit status is non-zero. The errors
@@ -706,7 +791,8 @@ configuration.
   transfer statement's commit when `landed-recorded`, and otherwise `null`.
 - `request` is the request filed at the version's head under either of its request names, or `null`.
   `outcome` is the outcome record about the version's head, or `null`; its `tip` is `null` unless it
-  is an object ID.
+  is an object ID. Its `decision` takes the values `valley-status/v1` gives it, the refusals
+  included.
 - `includes` lists the changes whose active head is a strict ancestor of this one's, nearest only.
   It is ancestry alone: approving this change lands their content too.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
@@ -735,23 +821,33 @@ drafts
 qqqq v1 on paused | paused | 6 seconds ago | klaus-env | ahead 1 | 1 file changed, 1 insertion(+)
 ```
 
-`review`, `approve`, `rebase`, `unready` and `withdraw` read a branch name as the change whose
-active version is on it. A change whose active version is `landed` or `landed-recorded` is skipped
-while the branch's tip is still that version's head, so a branch name can be used again once its
-change has landed. A branch that has moved since names the change as before. Checked by
-`valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
+`review`, `approve`, `rebase`, `status`, `unready` and `withdraw` read a branch name as the change
+whose active version is on it. A change whose active version is `landed` or `landed-recorded` is
+skipped, so a branch name can be used again once its change has landed, whether or not the branch
+has moved since. A landing read wrongly could make a draft's branch read as a plain branch. Nothing
+lands from that: the integrator refuses a request at a draft's version head whatever it is named.
+Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
 
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, the bus gets `ref-updated`, and the mirrors
    prune it.
-2. The operator approves the change, with `[a]pprove` in `valley review <branch>` or with
-   `valley approve <branch>`. The owed checks run, and one push files the evidence and the
-   integration request. The hook verifies each note and the `request` grant.
-3. On its next pass the integrator builds the candidate, derives the policy, judges the evidence,
-   and lands or refuses.
-4. On a landing, the publisher sends `ref-updated` to the bus and pushes `main` and tags to the
-   mirrors. `valley status <branch>` shows the outcome.
+2. The author marks the branch's head ready with `valley ready`. That writes the change's record at
+   `refs/the-valley/changes/main/<change-id>`, with the head as a version. `valley pending` and
+   `valley changes --json` list the change by its handle.
+3. The operator approves one head of the change: with `[a]pprove` in `valley review <handle>`, or
+   with `valley approve <handle> --head <sha>` from a front end. The owed checks run over that head,
+   and one push files the evidence and the integration request
+   `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The hook verifies each
+   note and the `request` grant.
+4. On its next pass the integrator reads the records. It refuses a request whose head is a version
+   of a change that is not `ready`, and one whose commits hold a merge. Otherwise it builds the
+   candidate, derives the policy, judges the evidence, and lands or refuses. If the author unreadies
+   or withdraws the change before it lands, the request stays and does not land.
+5. On a landing, the publisher sends `ref-updated` to the bus and pushes `main` and tags to the
+   mirrors. `valley status <handle>` shows the outcome, and the version's landing evidence.
+
+A branch no record is on is approved by its name and requested under it, as before records existed.
 
 ## How cosmo deploys it
 

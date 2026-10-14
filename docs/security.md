@@ -43,8 +43,11 @@ cosmo `modules/klaus-env/` and `hosts/classic-laddie/klaus-env.nix`.
   grant. Like any admitted key, it can push topic branches and create attestation refs. The hook
   accepts an attestation ref only when every note in it verifies under a known signer
   (`valleyhook/policy.go`, `valleyhook/attestation.go`). It can also create change records, which
-  makes it the owner of every agent change, and add versions to them. Nothing reads a record for
-  authority (`valleyhook/record.go`).
+  makes it the owner of every agent change, and add versions to them (`valleyhook/record.go`). A
+  record never makes anything land. The integrator reads records only to refuse: it lands no request
+  whose head is a version of a change that is not `ready` (`integrator/records.go`). So any
+  principal that may create a record can hold back a head, by recording it in a change it then
+  unreadies. Only a `request` holder may delete that record, and deleting it releases the head.
 - **Caps.** The VM has 8 vCPUs and 10 GiB of memory. Its systemd slice caps CPU at 900% and memory
   at 12 GiB, and gives it a low I/O weight. The source notes the I/O weighting is advisory on ZFS.
   No check exercises the caps.

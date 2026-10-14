@@ -277,6 +277,21 @@ holds '[.repos[].repo] == ["guarded", "open", "released", "sealed"]' \
   '[.repos[].changes[].handle] | length == (unique | length)' \
   "[.repos[].changes[] | select(.change_id == \"$A\" or .change_id == \"$R\") | .handle] == [\"nxvpwlkz\", \"nxvpwlkm\"]" \
   '.repos[] | select(.repo == "guarded") | [.changes[].state] == ["ready", "draft", "withdrawn"]'
+# ls-remote matches a ref's tail, so refs whose names end like the
+# refs discovery reads must not stand in for them: one in open whose
+# policy/valley names another instance, and one in the instance listing
+# another project.
+git checkout --quiet -b decoy "$base"
+printf '%s\n' "$w/elsewhere.git" > policy/valley
+git commit --quiet -am decoy
+git push --quiet origin decoy:refs/heads/a/refs/heads/main
+decoy_list="$(printf 'decoy\n' | git -C "$instance" hash-object -w --stdin)"
+git -C "$instance" update-ref refs/tags/a/refs/the-valley/projects "$decoy_list"
+git checkout --quiet landing
+ok valley changes --json --all
+holds '[.repos[].repo] == ["guarded", "open", "released", "sealed"]'
+git push --quiet origin :refs/heads/a/refs/heads/main
+git -C "$instance" update-ref -d refs/tags/a/refs/the-valley/projects
 # --repo limits the listing to one repository, read through its clone.
 ok valley changes --json --repo guarded
 holds '[.repos[].repo] == ["guarded"]' "[.repos[0].changes[].change_id] == [\"$R\", \"$D2\", \"$E2\"]" \

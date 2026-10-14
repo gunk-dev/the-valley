@@ -191,11 +191,10 @@ func contains(list []string, s string) bool {
 // policy/instance is its own instance. On an error the instance is still
 // returned when it was found, with names nil.
 func discover(g git) (instance string, names []string, err error) {
-	tip, err := g.output(false, "ls-remote", "origin", "refs/heads/"+recordTarget)
+	tip, err := remoteRef(g, "origin", "refs/heads/"+recordTarget)
 	if err != nil {
 		return "", nil, errors.New("could not read origin")
 	}
-	tip, _, _ = strings.Cut(tip, "\t")
 	if tip == "" {
 		return "", nil, errors.New("origin has no main branch to read policy/valley from")
 	}
@@ -212,12 +211,11 @@ func discover(g git) (instance string, names []string, err error) {
 	} else {
 		return "", nil, fmt.Errorf("main on origin names no owning valley at %s", valleyPointer)
 	}
-	line, err := g.output(false, "ls-remote", instance, projectsRef)
+	oid, err := remoteRef(g, instance, projectsRef)
 	if err != nil {
 		return instance, nil, fmt.Errorf("could not read the instance repository %s", instance)
 	}
-	oid, ref, _ := strings.Cut(line, "\t")
-	if ref != projectsRef {
+	if oid == "" {
 		return instance, nil, fmt.Errorf("the instance repository %s publishes no %s", instance, projectsRef)
 	}
 	if !g.succeeds(true, "cat-file", "-e", oid) {
@@ -240,6 +238,23 @@ func discover(g git) (instance string, names []string, err error) {
 	}
 	sort.Strings(names)
 	return instance, names, nil
+}
+
+// remoteRef is the object a remote's ref names, or "" when it has no such
+// ref. ls-remote matches a pattern against the tail of a ref name, so a
+// pushed refs/heads/x/refs/heads/main would match refs/heads/main too.
+// Each ref listed is compared whole.
+func remoteRef(g git, remote, ref string) (string, error) {
+	out, err := g.output(false, "ls-remote", remote, ref)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if oid, name, ok := strings.Cut(line, "\t"); ok && name == ref {
+			return oid, nil
+		}
+	}
+	return "", nil
 }
 
 // pointerURL is the first line of policy/valley that is neither blank nor

@@ -337,7 +337,6 @@ write_record() {
   tree="$(printf '100644 blob %s\trecord.json\n' "$blob" | git mktree)"
   git commit-tree "$tree" "${parents[@]}" -m 'a change record'
 }
-request=refs/the-valley/integration-requests/main/victim
 no_request() {
   if git -C "$origin" rev-parse --verify --quiet "$request" > /dev/null; then
     fail "$1"
@@ -346,6 +345,7 @@ no_request() {
 
 # The record names H on victim, and the same push puts B on victim.
 target_id=ppppqqqqrrrrssssttttuuuuvvvvwwww
+request="refs/the-valley/integration-requests/main/c-$target_id"
 git checkout --quiet -b victim main
 commit honest
 honest="$(git rev-parse HEAD)"
@@ -359,7 +359,11 @@ as contributor git push --quiet origin "$r1:refs/the-valley/changes/main/$target
   "$substituted:refs/heads/victim"
 [ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] || fail 'the branch did not move with the record'
 
-refused "records the head $honest, and origin/victim is at $substituted" as requester valley approve pppp
+# approve binds the head it approves. Off a terminal it needs --head, and
+# a head no version records is refused.
+refused 'off a terminal, pass it with --head' as requester valley approve pppp
+no_request 'approve filed a request with no head bound to it'
+refused "$substituted is no version of change pppp" as requester valley approve --head "$substituted" pppp
 no_request 'approve filed a request for a branch tip no version records'
 refused "origin/victim is at $substituted; nothing rebased" as requester valley rebase pppp
 [ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] || fail 'rebase moved the branch'
@@ -377,10 +381,18 @@ grep -qF "records the head $honest, and origin/victim is at $substituted; nothin
 [ "$(git -C "$origin" rev-parse refs/heads/victim)" = "$substituted" ] \
   || fail 'reject deleted a branch whose tip is not the recorded head'
 
-# With the branch at the recorded head, approve files exactly that head.
-as contributor git push --quiet --force origin "$honest:refs/heads/victim"
-ok as requester valley approve pppp
+# The dashboard's approve names the head it showed, and approve files
+# exactly that head under the change's request name, wherever the branch
+# is: here the branch is still at the substituted commit.
+ok as requester valley approve pppp --head "$honest"
 [ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'approve did not file the recorded head'
+grep -q "^Approved pppp v1 " "$w/out" || fail 'approve did not say which version it approved'
+grep -qx "  request  $request -> $(git rev-parse --short "$honest")" "$w/out" \
+  || fail 'approve did not file the request as c-<change ID>'
+if git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/victim > /dev/null; then
+  fail 'approve filed a change with a record under its branch name'
+fi
+as contributor git push --quiet --force origin "$honest:refs/heads/victim"
 
 # A second agent acting as the same principal adds v2 at a head that is
 # not on victim, while its record says victim. approve refuses, and the
@@ -393,8 +405,35 @@ v2="$(jq -c --arg head "git-sha1:$elsewhere" '.versions += [{n: 2, head: $head, 
   branch: "victim", uploader: "contributor"}] | .active = 2 | .seq = 2' <<< "$v1")"
 r2="$(write_record "$v2" "$r1" "$elsewhere")"
 as contributor git push --quiet origin "$r2:refs/the-valley/changes/main/$target_id"
-refused "records the head $elsewhere, and origin/victim is at $honest" as requester valley approve pppp
-[ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'a redirected version moved the request'
+# approve takes the head of any version, active or not, since the request
+# names the head: a version is a head its owner marked ready. On a
+# terminal, approve with no --head shows the active version and asks.
+printf 'n\n' | script -qec "VALLEY_PRINCIPAL=requester valley approve pppp" /dev/null > "$w/out" 2>&1 \
+  && fail 'approve went ahead when its confirmation was refused'
+grep -qF "approve change pppp v2 at $elsewhere, elsewhere? [y/N]" "$w/out" \
+  || fail 'approve did not show the active head and title to confirm'
+[ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'a refused confirmation moved the request'
+printf 'y\n' | script -qec "VALLEY_PRINCIPAL=requester valley approve pppp" /dev/null > "$w/out" 2>&1 \
+  || fail 'approve on a terminal failed once confirmed'
+[ "$(git -C "$origin" rev-parse "$request")" = "$elsewhere" ] || fail 'a confirmed approval did not file the active head'
+ok as requester valley approve --head "$honest" pppp
+[ "$(git -C "$origin" rev-parse "$request")" = "$honest" ] || fail 'approve did not file an older version head'
+ok as requester valley approve --head "$elsewhere" pppp
+[ "$(git -C "$origin" rev-parse "$request")" = "$elsewhere" ] || fail 'approve did not file the active head'
+
+# status reads the change at its active head, under c-<change ID>, and
+# says what its record says.
+ok valley status --json pppp
+jq -e --arg id "$target_id" --arg head "$elsewhere" --arg ref "$request" '
+  .change == "victim" and .request_name == ("c-" + $id) and .head == $head
+  and .request == {ref: $ref, commit: $head} and .state == "awaiting-decision"
+  and .change_id == $id and .handle == "pppp" and .version == 2 and .title == "elsewhere"
+  and .owner == "contributor" and .landing == "not-landed"' "$w/out" > /dev/null \
+  || fail "status --json pppp: $(cat "$w/out")"
+ok valley status --json pushed
+jq -e '.change_id == null and .handle == null and .version == null and .title == null
+  and .owner == null and .landing == null' "$w/out" > /dev/null \
+  || fail "status --json of a branch with no record: $(cat "$w/out")"
 # With the branch at the recorded head, rejecting it in review deletes it.
 as contributor git push --quiet --force origin "$elsewhere:refs/heads/victim"
 printf 'r\nyes\n' | as requester valley review pppp > "$w/out" 2> "$w/err" \
@@ -438,7 +477,7 @@ grep -qE '^[k-z]{4,32} v[0-9]+ \| ' "$w/out" || fail 'pending no longer lists th
 
 # A draft is not approved or rebased. Refused in review, approving is no
 # check failure, so the prompt still offers [a]pprove.
-request_ref=refs/the-valley/integration-requests/main/drafts-paused
+request_ref="refs/the-valley/integration-requests/main/c-$pid"
 unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing published" as requester valley approve "$ph"
 if git -C "$origin" rev-parse --verify --quiet "$request_ref" > /dev/null; then
   fail 'approve filed a request for a draft'
@@ -469,17 +508,17 @@ grep -qx "project $ph v1 ready" "$w/out" || fail 'a draft readied at its head wa
 record "$pid" '.state == "ready"' '.seq == 3' '.active == 1' '.versions | length == 1'
 one_parent "$pid"
 
-# Approved now, the change has a request under its branch-derived name.
-# Ready and at its recorded head, it is approved by its branch, written
-# either way, and in review. unready voids nothing, so the request stays.
-# It warns, because the integrator does not read records yet.
-ok as requester valley approve drafts/paused
+# Approved now, the change has a request under its own name, c-<change
+# ID>. Ready and at its recorded head, it is approved by its branch,
+# written either way, and in review. unready voids nothing, so the request
+# stays, and the integrator holds it back until the change is ready again.
+ok as requester valley approve --head "$paused" drafts/paused
 [ "$(git -C "$origin" rev-parse "$request_ref")" = "$paused" ] || fail 'approve did not file the ready change'
-ok as requester valley approve origin/drafts/paused
-grep -q '^Approved drafts/paused' "$w/out" || fail 'approve of origin/drafts/paused did not go ahead'
+ok as requester valley approve --head "$paused" origin/drafts/paused
+grep -q "^Approved $ph v1 " "$w/out" || fail 'approve of origin/drafts/paused did not go ahead'
 printf 'a\n' | as requester valley review drafts/paused > "$w/out" 2> "$w/err" || fail 'review of drafts/paused failed'
 grep -q "^change $ph v1 at " "$w/out" || fail 'review of a branch did not read its change'
-grep -q '^Approved drafts/paused' "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
+grep -q "^Approved $ph v1 " "$w/out" || fail "review's [a]pprove of drafts/paused did not go ahead"
 ok as contributor valley unready "$ph"
 grep -qF "valley: note: the integration request $request_ref for $ph is pending on origin" "$w/err" \
   || fail 'unready did not say a request is pending'
@@ -509,16 +548,17 @@ grep -qx "project $ph v2 ready" "$w/out" || fail 'a withdrawn change readied at 
 record "$pid" '.state == "ready"' '.seq == 7' '.active == 2' '.versions | length == 2'
 one_parent "$pid"
 
-# A request named c-<change ID> is warned of too. withdraw takes a draft.
+# A request named for the change's branch, as approve named one before it
+# named a change by its ID, is warned of too. withdraw takes a draft.
 as requester git push --quiet origin --delete "$request_ref"
-as requester git push --quiet origin "$paused_again:refs/the-valley/integration-requests/main/c-$pid"
+as requester git push --quiet origin "$paused_again:refs/the-valley/integration-requests/main/drafts-paused"
 ok as contributor valley unready "$ph"
-grep -qF "the integration request refs/the-valley/integration-requests/main/c-$pid for $ph is pending" "$w/err" \
-  || fail 'unready did not warn of a request named by the change ID'
+grep -qF "the integration request refs/the-valley/integration-requests/main/drafts-paused for $ph is pending" "$w/err" \
+  || fail 'unready did not say a request named for the branch is pending'
 if grep -qF "$request_ref " "$w/err"; then fail 'unready warned of a request that was dropped'; fi
 ok as contributor valley withdraw "$ph"
 record "$pid" '.state == "withdrawn"' '.seq == 9' '.active == 2'
-grep -qF "main/c-$pid for $ph is pending" "$w/err" || fail 'withdraw did not warn of a request named by the change ID'
+grep -qF "main/drafts-paused for $ph is pending" "$w/err" || fail 'withdraw did not warn of a request named for the branch'
 
 # ----------------------------------------------------------------------
 # review, approve and rebase read the record again just before they act.
@@ -558,7 +598,7 @@ ok as contributor valley ready
 rid="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
 rh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
 if [ "${#rid}" != 32 ] || [ -z "$rh" ]; then fail 'ready did not name the new change'; fi
-raced_request=refs/the-valley/integration-requests/main/drafts-raced
+raced_request="refs/the-valley/integration-requests/main/c-$rid"
 
 review_while "$rh" 'a\nb\ns\n' as contributor valley unready "$rh"
 grep -qF "change $rh v1 is draft, not ready; nothing published" "$w/review.err" \
@@ -577,12 +617,26 @@ raced_again="$(git rev-parse HEAD)"
 new_version() {
   as contributor git push --quiet origin drafts/raced && as contributor valley ready --change "$rid"
 }
+# A version added while the review is open changes nothing [a]pprove
+# files: it approves the head the review showed, which is still a version.
 review_while "$rh" 'a\ns\n' new_version
-grep -qF "change $rh is at v2, $raced_again, and this run began at v1, $raced; nothing published" "$w/review.err" \
-  || fail "review's [a]pprove went ahead for a change that gained a version while the review was open"
-if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
-  fail 'review filed a request for a change that gained a version while it was open'
-fi
+grep -q "^Approved $rh v1 " "$w/review.out" \
+  || fail "review's [a]pprove did not approve the head it showed: $(cat "$w/review.err")"
+[ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced" ] \
+  || fail 'review filed another head than the one it showed'
+
+# rebase rebases the active version's head, pushes the branch, and adds
+# the rebased head as a new version, as the operator. ready --if-active,
+# which it does that with, adds nothing unless the change is ready at that
+# active head.
+unchanged "$rid" refused "$rh v2 is at" as contributor valley ready --if-active "$raced" --change "$rid"
+ok as requester valley rebase "$rh"
+rebased="$(git -C "$origin" rev-parse refs/heads/drafts/raced)"
+[ "$rebased" != "$raced_again" ] || fail 'rebase did not move the branch'
+grep -qx "project $rh v3 ready" "$w/out" || fail 'rebase did not add the rebased head as v3'
+record "$rid" '.state == "ready"' '.active == 3' '.versions | length == 3' \
+  ".versions[2].head == \"git-sha1:$rebased\"" '.versions[2].uploader == "requester"' \
+  '.versions[2].branch == "drafts/raced"' '.owner == "contributor"'
 
 # A name that read as a plain branch is read again before approve files.
 # A review of a branch no record is on is left open while a second
@@ -617,9 +671,8 @@ as contributor git push --quiet origin moved/old
 ok as contributor valley ready
 old_id="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
 old_handle="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
-ok as requester valley approve "$old_handle"
 old_request=refs/the-valley/integration-requests/main/moved-old
-git -C "$origin" rev-parse --verify --quiet "$old_request" > /dev/null || fail 'approve filed no request for moved/old'
+as requester git push --quiet origin "$(git rev-parse HEAD):$old_request"
 git checkout --quiet -b moved/new
 commit new
 as contributor git push --quiet origin moved/new
@@ -648,6 +701,19 @@ for verb in approve rebase; do
   grep -qF "$twin" "$w/err" || fail "$verb of topic did not list $twin"
 done
 refused 'name one by its change ID' as requester valley approve origin/topic
+
+# c-<change ID> is the request name of the change with that ID, so a
+# branch whose request name would be one is neither approved nor read by
+# that name.
+reserved=c-kkkkllllmmmmnnnnooooppppqqqqrrrr
+git checkout --quiet -b "$reserved" main
+commit reserved
+as contributor git push --quiet origin "$reserved"
+refused 'that name is reserved for the change with the ID' as requester valley approve "$reserved"
+if git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/$reserved" > /dev/null; then
+  fail "approve filed a branch under a change's request name"
+fi
+refused 'that name is reserved for the change with the ID' valley status "$reserved"
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

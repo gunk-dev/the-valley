@@ -41,10 +41,16 @@ _valley() {
     local -a opts=(
       '--head:the head to mark ready, already on origin'
       '--change:the change ID to record the version under'
+      '--if-active:add the version only while the change is ready at this active head'
       '--stamp:carry the change ID in the head as a Change-Id trailer'
     )
     _describe -t options 'valley ready option' opts
-  elif [[ ${words[2]} == ready && ${words[CURRENT-1]} == --(head|change) ]]; then
+  elif [[ ${words[2]} == ready && ${words[CURRENT-1]} == --(head|change|if-active) ]]; then
+    return
+  elif [[ ${words[2]} == approve && ${words[CURRENT]} == -* ]]; then
+    local -a opts=('--head:the exact head to approve, one of the change'"'"'s version heads')
+    _describe -t options 'valley approve option' opts
+  elif [[ ${words[2]} == approve && ${words[CURRENT-1]} == --head ]]; then
     return
   elif [[ ${words[2]} == pending && ${words[CURRENT]} == -* ]]; then
     local -a opts=(
@@ -65,7 +71,7 @@ _valley() {
     local -a opts=('--json:print the status as one valley-status/v1 JSON object')
     _describe -t options 'valley status option' opts
   elif [[ ${words[2]} == (review|approve|rebase|status|ready) ]] \
-    && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|ready) ]]; }; then
+    && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|ready|approve) ]]; }; then
     # Cached topic branches on origin. Review, approve, rebase and ready filter
     # out merged branches; status needs those too. Silent outside a git
     # repo — no errors mid-typing.

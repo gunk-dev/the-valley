@@ -114,10 +114,11 @@ usage: valley <verb> [args]
                    needs the valley-go helper.
   review <change>  page through the change's branch: its log and diff vs
                    origin/main. then choose:
-                     [a]pprove    file an integration request. runs the
+                     [a]pprove    file an integration request for the
+                                  head shown. runs the
                                   checks the composed policy requires of
                                   this change over a throwaway worktree of
-                                  the branch, signs each result as an
+                                  that head, signs each result as an
                                   attestation, and publishes the evidence
                                   and the request ref to origin in ONE
                                   atomic push. this files the request;
@@ -175,19 +176,48 @@ usage: valley <verb> [args]
                    ~/.local/state) and printed after the verdict. notes
                    survive [b]ase. lines you change or delete instead of
                    inserting are ignored, with a warning.
-  approve <change> do what review's [a]pprove does for the change, without
+  approve [--head <sha>] <change>
+                   do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
                    leased request write and the same output. exits non-zero
-                   when it refuses.
+                   when it refuses. a change with a record is approved at
+                   exactly one head, and its request is filed as
+                   refs/the-valley/integration-requests/main/c-<change id>,
+                   at that head:
+                     --head SHA   approve exactly this head, which must be
+                                  one of the record's version heads,
+                                  active or not. a front end passes the
+                                  head it showed, so a record that moves
+                                  after review cannot change what lands.
+                   without --head, approve shows the active version's head
+                   and title and asks to confirm them, on a terminal; off
+                   one it refuses. a branch no record is on is approved at
+                   its tip on origin, which --head must name if it is
+                   given, under the branch's request name: the branch with
+                   each / replaced by -. a branch whose request name would
+                   be c-<change id> is refused, since that name is the
+                   change's.
   rebase <change>  do what review's [b]ase does for the change: rebase it
                    onto origin/main in a throwaway worktree and push it
-                   with --force-with-lease, then print its new head. it
-                   does not re-review the result. a change that already
-                   fast-forwards from main is left as it is.
+                   with --force-with-lease, then print its new head. for a
+                   change with a record, it rebases the active version's
+                   head, pushes the branch that version names, and then
+                   adds the rebased head as a new version, as
+                   valley.principal names, the way ready --if-active does:
+                   only while the change is still ready at the head the
+                   rebase began with. a version that names no branch is
+                   refused. it does not re-review the result. a change
+                   that already fast-forwards from main is left as it is.
   status [--json] <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
                    attention, and a change integrated into origin/main.
+                   a change with a record is read at its active version's
+                   head, under c-<change id>, and the status says the
+                   version, its title, the owner, and how far the version
+                   has landed, as changes reads it. a refusal for a record
+                   that is not ready, or for a merge in the change's
+                   commits, is a state of its own.
                    after integration, show how to update the local checkout.
                    fetches objects without moving local branches or files;
                    no checks run and no request is filed.
@@ -197,7 +227,7 @@ usage: valley <verb> [args]
                                   no object: it goes to stderr and the exit
                                   status is non-zero.
                    needs the valley-go helper.
-  ready [--head <sha>] [--change <id>] [--stamp] [<branch>]
+  ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
                    mark a head of the branch ready, as a new version of its
                    change, in the change's record on origin:
                    refs/the-valley/changes/main/<change id>. the branch
@@ -216,6 +246,13 @@ usage: valley <verb> [args]
                    a trailer that disagree are refused. so is a change
                    whose commits from its merge base with origin/main hold
                    a merge, or that has more than one merge base.
+                     --if-active SHA
+                                  add the version only while the change
+                                  is ready at an active version whose head
+                                  is SHA. the record ref is leased on the
+                                  record read, so nothing comes between
+                                  that check and the write. rebase readies
+                                  the head it rebased this way.
                      --stamp      amend the head of your local branch to
                                   carry the id as a Change-Id: trailer and
                                   push the branch, leased, before marking it
@@ -229,8 +266,10 @@ usage: valley <verb> [args]
                    the value read. a new change is owned by the principal
                    that readies it, and a later version may come from its
                    owner or the operator, who holds the request grant.
-                   records are observational: nothing reads them for
-                   authority, and approve is still the only way to main.
+                   a record never makes anything land, and approve is
+                   still the only way to main. the integrator reads
+                   records only to refuse: it lands no request whose head
+                   is a version of a change that is not ready.
                    needs the valley-go helper.
   unready <change>
                    make a ready change a draft in its record on origin, as
@@ -247,12 +286,15 @@ usage: valley <verb> [args]
                    approvals. ready brings it back, at the same version
                    or a new one. prints e.g. `cosmo nxvp v2 withdrawn`.
                    needs the valley-go helper.
-                   the integrator does not read records yet, so neither
-                   unready nor withdraw stops a pending integration
-                   request from landing the change. each warns when origin
-                   holds one, under the branch-derived name or c-<change
-                   id>: only a holder of the request grant may touch a
-                   request ref, so the operator must drop it.
+                   the integrator lands no request at a head of a change
+                   that is not ready, so unready and withdraw both stop a
+                   pending integration request, under c-<change id> or a
+                   branch's request name. each says so when origin holds
+                   one. a draft's request stands and lands once the change
+                   is ready again. withdraw warns, since the request it
+                   voids would land too once the change is ready again:
+                   only a holder of the request grant may touch a request
+                   ref, so the operator must drop it.
   checks [<base> [<head>]]
                    print the check names the change between two commits owes
                    under the composed verification policy (dcr-f41f718), and
@@ -314,25 +356,27 @@ its id were given, and when more than one's is, the verb refuses and lists
 their ids. A change whose active version has landed — its head is on
 main's first-parent history with no merge above it, or the integrator's
 outcome record and verified transfer statement record that exact head
-landing — is skipped while the branch is still at that head, so a
-branch can be used again once its change has landed; a branch that has
-moved names the change as before. unready and withdraw read a branch the
-same way. A
+landing — is skipped, so a branch can be used again once its change has
+landed. unready, withdraw and status read a branch the same way. A
 branch no record's active version is on is acted on as a branch. A
 change with a record is reviewed, approved and rebased at the
 head its active version records, never at its branch's tip: review shows
-that head, and approve, rebase and review's [r]eject refuse, naming both,
-when the branch's tip on origin is another commit. [r]eject deletes the
-branch under a lease on the recorded head. approve, rebase, and review's
-[a]pprove and [b]ase refuse a change whose record is not ready, naming
-its state. Each reads the record again just before it acts, and again
-before approve files or rebase pushes, and refuses when the change is no
-longer ready or its active version has moved to another head since the
-verb began. A name that read as a plain branch is read again before
-approve files or rebase pushes, and if it names a change by then, the
-same rules hold. An approval already past that last check can still file
-if the change is unreadied or withdrawn in the moment before its push;
-the integrator's planned check at landing is what closes that.
+that head and its [a]pprove approves it, and rebase and review's
+[r]eject refuse, naming both, when the branch's tip on origin is another
+commit. approve approves the head bound to it, wherever the branch is.
+[r]eject deletes the branch under a lease on the recorded head. approve,
+rebase, and review's [a]pprove and [b]ase refuse a change whose record is
+not ready, naming its state. Each reads the record again just before it
+acts, and again before approve files or rebase pushes, and refuses when
+the change is no longer ready. rebase also refuses when the active
+version has moved to another head since it began, and approve when the
+head it approves is no longer a version's. A name that read as a plain
+branch is read again before approve files or rebase pushes, and if it
+names a change by then, the change must be ready at the head the verb
+began with. An approval already past that last check can still file if
+the change is unreadied or withdrawn in the moment before its push; the
+integrator refuses to land it, since it lands no request whose head is a
+version of a change that is not ready, whatever the request is named.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -674,7 +718,9 @@ cleanup_scratch() {
 # The commit rebased is the second argument when given, the head a change's
 # record names, and otherwise origin/<branch> as the fetch left it. It is
 # read once, and the push is leased on exactly that commit, so a fetch that
-# moves origin/<branch> meanwhile changes neither.
+# moves origin/<branch> meanwhile changes neither. The rebased head is left
+# in REBASED_HEAD.
+REBASED_HEAD=""
 rebase_onto_main() {
   local branch="$1" from="${2:-}" rebased
   if [ -z "$from" ]; then
@@ -705,9 +751,10 @@ rebase_onto_main() {
   # below. A change unreadied or withdrawn in that window is rebased all
   # the same. git compares only the refs a push changes, and the record ref
   # is not one of them, so no client can make the push conditional on the
-  # record. The rebased head is no version of the change until it is
-  # readied, and the integrator's planned check at landing refuses a
-  # request for a change that is not ready, so nothing lands from it.
+  # record. rebase_change then adds the rebased head as a version only
+  # while the change is still ready at the head it began with, under a
+  # lease on the record, so a change unreadied in that window stays a draft
+  # at its old head, and the integrator lands nothing for it.
   if ! check_record "nothing pushed" "$from"; then
     cleanup_rebase_wt
     exit 1
@@ -718,6 +765,7 @@ rebase_onto_main() {
     die "lease on origin/$branch failed (it moved since the fetch); nothing pushed"
   fi
   cleanup_rebase_wt
+  REBASED_HEAD="$rebased"
   echo "rebased $branch onto origin/main, pushed with --force-with-lease"
   printf '  head     %s\n' "$rebased"
 }
@@ -868,7 +916,7 @@ diagnose_request_push() {
 # every step below is checked by hand, and the failures say what was
 # published before they happened.
 approve() {
-  local branch="$1" target=main tip change head base digest root ref check spec
+  local branch="$1" target=main tip change head base digest root ref check spec what
   local key
   local -a signer=() owed=() run=() evidence=()
 
@@ -877,23 +925,37 @@ approve() {
     return 1
   }
   tip=refs/remotes/origin/main
-  head="$(git rev-parse "refs/remotes/origin/$branch")" || {
-    refuse "no such branch on origin: $branch; nothing published"
-    return 1
-  }
-  # A change with a record is filed only while its record says it is
-  # ready, at the head its record names, and only while its branch is there
-  # too.
-  if [ -n "$CHANGE_HEAD" ]; then
-    check_record "nothing published" || return 1
-    check_recorded_tip "$branch" "nothing published" || return 1
-    head="$CHANGE_HEAD"
+  # A change with a record is filed at exactly the head bound to this
+  # approval, under its own request name, c-<change ID>, and only while its
+  # record says it is ready and lists that head as a version's. Where its
+  # branch is does not matter: the request names the head.
+  if [ -n "$CHANGE_ID" ]; then
+    head="$APPROVE_HEAD"
+    [ -n "$head" ] || {
+      refuse "no head of change $CHANGE_HANDLE is bound to this approval; nothing published"
+      return 1
+    }
+    check_record "nothing published" "" "$head" || return 1
+    change="c-$CHANGE_ID"
+    what="$CHANGE_HANDLE v$APPROVE_VERSION"
+  else
+    head="$(git rev-parse "refs/remotes/origin/$branch")" || {
+      refuse "no such branch on origin: $branch; nothing published"
+      return 1
+    }
+    change="$(change_name "$branch")"
+    what="$branch"
+    # c-<change ID> is the request name of the change with that ID, so a
+    # branch is never filed under one.
+    if [[ "$change" =~ ^c-[k-z]{32}$ ]]; then
+      refuse "the branch $branch would be requested as $change, and that name is reserved for the change with the ID ${change#c-}; rename the branch, or name the change by its ID. Nothing published"
+      return 1
+    fi
   fi
   base="$(git merge-base "$tip" "$head")" || {
-    refuse "$branch and main share no history; nothing published"
+    refuse "$what and main share no history; nothing published"
     return 1
   }
-  change="$(change_name "$branch")"
   ref="refs/the-valley/integration-requests/$target/$change"
 
   # What the change owes, read out of exactly the sources the integrator
@@ -955,11 +1017,11 @@ approve() {
     }
     git worktree add --quiet --detach "$APPROVE_WT" "$head" || {
       cleanup_approve_wt
-      refuse "could not check $branch out to run its checks; nothing published"
+      refuse "could not check $what out to run its checks; nothing published"
       return 1
     }
 
-    printf '\nchecking %s at %s: %s\n' "$branch" "$(git rev-parse --short "$head")" \
+    printf '\nchecking %s at %s: %s\n' "$what" "$(git rev-parse --short "$head")" \
       "$(printf '%s\n' "${owed[@]}" | join_lines)"
     if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${run[@]}"; then
       cleanup_approve_wt
@@ -986,7 +1048,7 @@ approve() {
     }
   else
     printf '\n%s owes no check under %s + %s; filing the request with no evidence\n' \
-      "$branch" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
+      "$what" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
   fi
 
   # What origin already holds for this request, read once and remembered.
@@ -1046,12 +1108,11 @@ approve() {
   # below. A change unreadied or withdrawn in that window is filed all the
   # same. git compares only the refs a push changes, and the record ref is
   # not one of them, so no client can make the filing conditional on the
-  # record. unready and withdraw stop an approval that begins after them;
-  # one already past this check can still file. The authoritative check is
-  # planned in the integrator, which will refuse to land any request whose
-  # head is a version of a change that is not ready. That check closes the
-  # window.
-  if ! check_record "nothing published" "$head"; then
+  # record. The integrator closes the window: it lands no request whose
+  # head is a version of a change that is not ready, whatever the request
+  # is named, so a request filed in the window stays until the change is
+  # ready again.
+  if ! check_record "nothing published" "$head" "$APPROVE_HEAD"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -1100,7 +1161,7 @@ approve() {
       return 1
     fi
     if [ -z "$after" ]; then
-      refuse "the request was consumed while this run was working, which is what the integrator does when a change lands. Nothing here re-filed it: a request for a change already in the stream is judged against an empty delta on every pass. Fetch and review $branch again, and approve it once more if it has not landed"
+      refuse "the request was consumed while this run was working, which is what the integrator does when a change lands. Nothing here re-filed it: a request for a change already in the stream is judged against an empty delta on every pass. Fetch and review $what again, and approve it once more if it has not landed"
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
@@ -1119,10 +1180,12 @@ approve() {
   fi
 
   printf '\nApproved %s (%s): its integration request for origin/%s is filed.\n' \
-    "$branch" "$(git rev-parse --short "$head")" "$target"
+    "$what" "$(git rev-parse --short "$head")" "$target"
   printf 'The integrator will decide whether this change can land.\n'
   printf 'Your local checkout has not changed.\n\n'
-  printf 'Check the result: valley status %q\n\n' "$branch"
+  local named="$branch"
+  [ -z "$CHANGE_ID" ] || named="$CHANGE_HANDLE"
+  printf 'Check the result: valley status %q\n\n' "$named"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
   [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
   if [ "${#evidence[@]}" -eq 0 ]; then
@@ -1156,10 +1219,11 @@ cmd_go() {
 # So whether a change's record is read never depends on how it is named,
 # and review, approve and rebase cannot run without the helper.
 #
-# A change with a record is acted on at CHANGE_HEAD, and never at the
-# branch's tip. The branch a record names is only where its head is
-# expected to be, and anyone who can push the branch can move it, in the
-# same push as the record if they like.
+# A change with a record is acted on at a head its record names, and never
+# at the branch's tip: review and rebase at CHANGE_HEAD, and approve at the
+# head bound to it (bind_head). The branch a record names is only where its
+# head is expected to be, and anyone who can push the branch can move it,
+# in the same push as the record if they like.
 CHANGE_NAME="" CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
 resolve_change() {
   local line kind
@@ -1196,10 +1260,11 @@ change_head() {
 }
 
 # For a change with a record, refuse unless the branch's tip on origin is
-# the recorded head, and name both. Acting on the branch would
-# act on a commit no version records; acting on the recorded head while the
-# branch is elsewhere would file or rebase something the branch no longer
-# says. The second argument is what the refusal leaves undone.
+# the recorded head, and name both. rebase and review's [r]eject act on
+# the branch itself: rebasing or deleting it while it is elsewhere would
+# rebase or delete a commit no version records. approve does not ask this,
+# since the request it files names the head it approves and not the
+# branch. The second argument is what the refusal leaves undone.
 check_recorded_tip() {
   local branch="$1" undone="$2" tip
   [ -n "$CHANGE_HEAD" ] || return 0
@@ -1218,8 +1283,9 @@ check_recorded_tip() {
 # review, approve or rebase began, and another principal may unready,
 # withdraw or ready a new version of the change while a review is open or
 # the checks run. So approve reads it again before it runs the checks and
-# before it files, and rebase before it starts and before it pushes. Until
-# the integrator reads records, nothing on origin makes this check.
+# before it files, and rebase before it starts and before it pushes. These
+# checks save a run that would come to nothing: the integrator makes the
+# same one on origin, and lands no request for a change that is not ready.
 #
 # A name that read as a plain branch can come to name a change meanwhile:
 # someone readies the branch, and perhaps unreadies it, while the review
@@ -1229,8 +1295,14 @@ check_recorded_tip() {
 # names a change, the same rules hold: the change must be ready, and its
 # recorded head must be that head. The first argument is what the refusal
 # leaves undone.
+#
+# approve binds the head it approves (APPROVE_HEAD), and passes it as the
+# third argument. For approve the change must be ready, and that head must
+# be one of its version heads, whichever version is active by then: a
+# record that moves after review cannot change what lands, since the
+# request names the head approved.
 check_record() {
-  local undone="$1" acting="${2:-}" line kind id handle version head branch state
+  local undone="$1" acting="${2:-}" bound="${3:-}" line kind id handle version head branch state
   if [ -z "$CHANGE_ID" ]; then
     [ -n "$acting" ] || return 0
     if ! line="$(valley-go resolve "$CHANGE_NAME")"; then
@@ -1262,23 +1334,123 @@ check_record() {
     refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$branch")"
     return 1
   fi
+  if [ -n "$bound" ]; then
+    check_version "$undone" "$bound"
+    return
+  fi
   if [ "$head" != "$CHANGE_HEAD" ]; then
     refuse "change $CHANGE_HANDLE is at v$version, $head, and this run began at v$CHANGE_VERSION, $CHANGE_HEAD; $undone. Review it again at its new head"
     return 1
   fi
 }
 
-# rebase for a change with a record rebases the recorded head alone, so
-# the branch must still be at it. The rebased head is a commit no version
-# records, so the change is readied again before its handle names it.
+# For a change with a record, read its versions from origin again, and
+# refuse unless the change is ready and the head given is one of its
+# versions' heads. Sets APPROVE_VERSION and APPROVE_TITLE to that
+# version's number and title. The first argument is what the refusal
+# leaves undone.
+APPROVE_VERSION="" APPROVE_TITLE=""
+check_version() {
+  local undone="$1" head="$2" out n vhead vstate title state=""
+  local -a known=()
+  APPROVE_VERSION="" APPROVE_TITLE=""
+  if ! out="$(valley-go versions "$CHANGE_ID")"; then
+    refuse "could not read the versions of change $CHANGE_HANDLE; $undone"
+    return 1
+  fi
+  # read empties its variables at the end of its input, so the state is
+  # kept apart from them.
+  while IFS=$'\t' read -r n vhead vstate title; do
+    state="$vstate"
+    known+=("v$n at $vhead")
+    if [ "$vhead" = "$head" ]; then
+      APPROVE_VERSION="$n"
+      APPROVE_TITLE="$title"
+    fi
+  done <<< "$out"
+  if [ "$state" != ready ]; then
+    refuse "change $CHANGE_HANDLE is $state, not ready; $undone. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+    return 1
+  fi
+  if [ -z "$APPROVE_VERSION" ]; then
+    refuse "$head is no version of change $CHANGE_HANDLE, whose versions are $(printf '%s\n' "${known[@]}" | join_lines); $undone"
+    return 1
+  fi
+}
+
+# The head approve approves for a change with a record, in APPROVE_HEAD.
+# With --head, it is exactly that head, which must be one of the record's
+# version heads. A front end that shows the change its own way passes the
+# head it showed, so what is approved is what was seen, whichever version
+# the record makes active by then. Without --head, the operator is shown
+# the active version's head and title and asked to confirm them, which
+# needs a terminal; off one, approve refuses. The first argument is
+# --head's value, or empty.
+APPROVE_HEAD=""
+bind_head() {
+  local want="$1" sha answer
+  APPROVE_HEAD=""
+  if [ "$CHANGE_STATE" != ready ]; then
+    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+    return 1
+  fi
+  if [ -n "$want" ]; then
+    if ! [[ "$want" =~ ^[0-9a-f]{4,64}$ ]] \
+      || ! sha="$(git rev-parse --verify --quiet "$want^{commit}")"; then
+      refuse "--head takes the object ID of one of change $CHANGE_HANDLE's version heads, and $want is none here; nothing published"
+      return 1
+    fi
+    check_version "nothing published" "$sha" || return 1
+    APPROVE_HEAD="$sha"
+    return 0
+  fi
+  check_version "nothing published" "$CHANGE_HEAD" || return 1
+  if [ ! -t 0 ]; then
+    refuse "approving change $CHANGE_HANDLE names the head it approves: off a terminal, pass it with --head. Its active version is v$APPROVE_VERSION at $CHANGE_HEAD, $APPROVE_TITLE: valley approve --head $CHANGE_HEAD $CHANGE_HANDLE. Nothing published"
+    return 1
+  fi
+  printf 'approve change %s v%s at %s, %s? [y/N] ' \
+    "$CHANGE_HANDLE" "$APPROVE_VERSION" "$CHANGE_HEAD" "$APPROVE_TITLE"
+  read -r answer || answer=""
+  case "$answer" in
+    y | Y | yes) APPROVE_HEAD="$CHANGE_HEAD" ;;
+    *)
+      refuse "not approved; nothing published"
+      return 1
+      ;;
+  esac
+}
+
+# review shows a change with a record at its active version's head, and
+# its [a]pprove approves exactly that head.
+bind_review() {
+  APPROVE_HEAD="" APPROVE_VERSION=""
+  if [ -n "$CHANGE_ID" ]; then
+    APPROVE_HEAD="$CHANGE_HEAD"
+    APPROVE_VERSION="$CHANGE_VERSION"
+  fi
+}
+
+# rebase for a change with a record rebases the active version's head
+# alone, so the branch must still be at it. It pushes the branch with a
+# lease, and then adds the rebased head to the record as a new version, as
+# the principal git config valley.principal names: the operator, who holds
+# the request grant, or the change's owner. The version is added only
+# while the change is still ready at the head the rebase began with, under
+# a lease on the record (ready --if-active).
 rebase_change() {
   local branch="$1"
   check_record "nothing rebased" || return 1
   check_recorded_tip "$branch" "nothing rebased" || return 1
+  if [ -n "$CHANGE_ID" ] && [ -z "$(git config valley.principal 2>/dev/null)" ]; then
+    refuse "rebasing change $CHANGE_HANDLE adds the rebased head to its record as the principal your key pushes as, and git config valley.principal names none; nothing rebased"
+    return 1
+  fi
   rebase_onto_main "$branch" "$CHANGE_HEAD"
-  if [ -n "$CHANGE_HEAD" ]; then
-    printf 'No version of %s records the rebased head yet. Record it: valley ready --change %s %q\n' \
-      "$CHANGE_HANDLE" "$CHANGE_ID" "$branch"
+  [ -n "$CHANGE_ID" ] || return 0
+  if ! valley-go ready --head "$REBASED_HEAD" --change "$CHANGE_ID" --if-active "$CHANGE_HEAD" "$branch"; then
+    refuse "origin/$branch is rebased to $REBASED_HEAD, and no version of $CHANGE_HANDLE records it. Ready it once the change is ready: valley ready --head $REBASED_HEAD --change $CHANGE_ID $(printf '%q' "$branch")"
+    return 1
   fi
 }
 
@@ -1325,10 +1497,16 @@ read_and_decide() {
         fi
         ;;
       b)
-        # The rebased head of a change named by its handle is no version
-        # of it yet, so there is nothing more to review by that handle.
-        if [ -n "$CHANGE_HEAD" ]; then
-          rebase_change "$branch" && return
+        # A change with a record gains the rebased head as a new version,
+        # so the review goes on at that version, as it does at the rebased
+        # tip of a plain branch.
+        if [ -n "$CHANGE_ID" ]; then
+          if rebase_change "$branch"; then
+            resolve_change "$CHANGE_ID" || die "could not read change $CHANGE_HANDLE again after the rebase"
+            bind_review
+            fetch_origin
+            show_review "$branch"
+          fi
         else
           rebase_onto_main "$branch"
           fetch_origin
@@ -1382,6 +1560,7 @@ cmd_review() {
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
+  bind_review
   trap cleanup_scratch EXIT
   trap 'exit 130' INT TERM
   read_and_decide "$branch"
@@ -1394,15 +1573,48 @@ cmd_review() {
 # for a front end that has shown the change its own way. Each runs the
 # function its key runs, so the verb and the key cannot drift apart. A
 # change is named as resolve_change reads it.
+#
+# approve of a change with a record approves exactly one head (bind_head):
+# --head's, or the active version's once the operator confirms it on a
+# terminal. A plain branch is approved at its tip on origin, and --head,
+# when given, must be that tip.
 cmd_approve() {
-  [ $# -eq 1 ] || die "usage: valley approve <change>"
-  resolve_change "$1" || exit 1
-  local branch="$CHANGE_BRANCH"
+  local name="" want=""
+  local usage="usage: valley approve [--head <sha>] <change>"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --head)
+        [ $# -ge 2 ] || die "$usage"
+        want="$2"
+        shift 2
+        ;;
+      --head=*)
+        want="${1#--head=}"
+        shift
+        ;;
+      -*) die "$usage" ;;
+      *)
+        [ -z "$name" ] || die "$usage"
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "$usage"
+  resolve_change "$name" || exit 1
+  local branch="$CHANGE_BRANCH" tip
   fetch_origin
-  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
-    || die "no such branch on origin: $branch"
   trap cleanup_scratch EXIT
   trap 'exit 130' INT TERM
+  if [ -n "$CHANGE_ID" ]; then
+    bind_head "$want" || exit 1
+  else
+    tip="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch")" \
+      || die "no such branch on origin: $branch"
+    if [ -n "$want" ] && [ "$(git rev-parse --verify --quiet "$want^{commit}" || true)" != "$tip" ]; then
+      die "origin/$branch is at $tip, not $want; nothing published"
+    fi
+  fi
   # In a condition, as the review prompt calls it: approve checks each of
   # its own steps, and has already said why when it refuses.
   approve "$branch" || exit 1

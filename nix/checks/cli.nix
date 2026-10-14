@@ -184,6 +184,7 @@ in
     nativeBuildInputs = [
       pkgs.git
       pkgs.jq
+      pkgs.util-linux # script(1), for approve's confirmation on a terminal
       packages.valley-script
     ];
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;

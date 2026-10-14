@@ -170,6 +170,9 @@ usage: valley <verb> [args]
                    needs a new head and stops offering [a]pprove until the
                    change has one. any other refusal keeps the prompt as
                    it was.
+                   [a]pprove files the head shown, for a branch no record
+                   is on too: it refuses, naming both heads, when the
+                   branch on origin has moved off that head since.
                    [a]pprove is the only way a change reaches main from
                    here, and approve below is the same act without the
                    pager.
@@ -232,7 +235,9 @@ usage: valley <verb> [args]
                    and title and asks to confirm them, on a terminal; off
                    one it refuses. a branch no record is on is approved at
                    its tip on origin, which --head must name if it is
-                   given, under the branch's request name: the branch with
+                   given (review's [a]pprove files the head it showed, and
+                   refuses once the branch on origin has moved off it), under
+                   the branch's request name: the branch with
                    each / replaced by -. a branch whose request name would
                    be c-<change id> is refused, since that name is the
                    change's.
@@ -705,6 +710,8 @@ show_review() {
   local branch="$1" head sha
   head="$(change_head "$branch")"
   sha="$(git rev-parse --short "$head")"
+  # [a]pprove approves exactly the head paged here (bind_review).
+  [ -n "$CHANGE_ID" ] || APPROVE_HEAD="$head"
   REVIEW_TMP="$(mktemp -d)"
   {
     if [ -n "$CHANGE_HEAD" ]; then
@@ -989,6 +996,13 @@ approve() {
     check_record "nothing published" "" "$head" || return 1
     change="c-$CHANGE_ID"
     what="$CHANGE_HANDLE v$APPROVE_VERSION"
+  elif [ -n "$APPROVE_HEAD" ]; then
+    # A plain branch that review showed is filed at the head shown. The
+    # last check before the push refuses if the branch on origin has moved
+    # off it since.
+    head="$APPROVE_HEAD"
+    change="$(change_name "$branch")"
+    what="$branch"
   else
     head="$(git rev-parse "refs/remotes/origin/$branch")" || {
       refuse "no such branch on origin: $branch; nothing published"
@@ -996,12 +1010,12 @@ approve() {
     }
     change="$(change_name "$branch")"
     what="$branch"
-    # c-<change ID> is the request name of the change with that ID, so a
-    # branch is never filed under one.
-    if [[ "$change" =~ ^c-[k-z]{32}$ ]]; then
-      refuse "the branch $branch would be requested as $change, and that name is reserved for the change with the ID ${change#c-}; rename the branch, or name the change by its ID. Nothing published"
-      return 1
-    fi
+  fi
+  # c-<change ID> is the request name of the change with that ID, so a
+  # branch is never filed under one.
+  if [ -z "$CHANGE_ID" ] && [[ "$change" =~ ^c-[k-z]{32}$ ]]; then
+    refuse "the branch $branch would be requested as $change, and that name is reserved for the change with the ID ${change#c-}; rename the branch, or name the change by its ID. Nothing published"
+    return 1
   fi
   base="$(git merge-base "$tip" "$head")" || {
     refuse "$what and main share no history; nothing published"
@@ -1165,6 +1179,14 @@ approve() {
   # change is ready again. It reads the records last just before it moves
   # the target, so only a record written in that moment is missed.
   if ! check_record "nothing published" "$head" "$APPROVE_HEAD"; then
+    report_local_evidence ${evidence[@]+"${evidence[@]}"}
+    return 1
+  fi
+  # A plain branch is filed at the head review showed only while the
+  # branch on origin is still there. The operator reviewed a branch, and a
+  # branch that moved holds commits nobody has read. A change with a
+  # record is filed at its head wherever its branch is.
+  if [ -z "$CHANGE_ID" ] && [ -n "$APPROVE_HEAD" ] && ! branch_at_shown "$branch"; then
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -1503,13 +1525,36 @@ bind_head() {
 }
 
 # review shows a change with a record at its active version's head, and
-# its [a]pprove approves exactly that head.
+# its [a]pprove approves exactly that head. A plain branch is bound to the
+# head review pages, when it pages it (show_review, use_layer), and approve
+# files that head. approve with no review binds nothing, and files the
+# branch's tip on origin as the fetch left it.
 bind_review() {
   APPROVE_HEAD="" APPROVE_VERSION=""
   if [ -n "$CHANGE_ID" ]; then
     APPROVE_HEAD="$CHANGE_HEAD"
     APPROVE_VERSION="$CHANGE_VERSION"
   fi
+}
+
+# branch_at_shown <branch>: refuse unless the branch on origin is still at
+# the head bound to this approval, and name both. origin itself is read,
+# not the tracking ref: a push from another checkout moves the branch
+# without moving this clone's ref. ls-remote matches a pattern against the
+# tail of a ref name, so each ref it lists is compared whole.
+branch_at_shown() {
+  local out now
+  out="$(git ls-remote origin "refs/heads/$1")" || {
+    refuse "could not read $1 on origin to check that it is still at $APPROVE_HEAD, the head shown; nothing published"
+    return 1
+  }
+  now="$(printf '%s\n' "$out" | awk -v r="refs/heads/$1" '$2 == r { print $1 }')"
+  if [ -z "$now" ]; then
+    refuse "origin/$1 is gone, and is no longer at $APPROVE_HEAD, the head shown; nothing published"
+    return 1
+  fi
+  [ "$now" = "$APPROVE_HEAD" ] && return 0
+  refuse "origin/$1 is at $now, and is no longer at $APPROVE_HEAD, the head shown; nothing published"
 }
 
 # rebase for a change with a record rebases the active version's head
@@ -1712,6 +1757,7 @@ use_layer() {
     CHANGE_NAME="${L_NAME[k]}" CHANGE_HANDLE="${L_NAME[k]}" CHANGE_HEAD="${L_HEAD[k]}"
   fi
   bind_review
+  [ -n "$CHANGE_ID" ] || APPROVE_HEAD="${L_HEAD[k]}"
 }
 
 # notes_key <k>: the branch layer k's notes are kept under. A change whose
@@ -1818,10 +1864,7 @@ review_stack() {
             continue
           fi
           use_layer "$k"
-          if [ "${L_KIND[k]}" = branch ] \
-            && [ "$(git rev-parse "refs/remotes/origin/${L_NAME[k]}")" != "${L_HEAD[k]}" ]; then
-            refuse "origin/${L_NAME[k]} is no longer at ${L_HEAD[k]}, the head shown; nothing published"
-          elif approve "$CHANGE_BRANCH"; then
+          if approve "$CHANGE_BRANCH"; then
             return
           fi
           use_layer "$top"
@@ -1835,6 +1878,7 @@ review_stack() {
     done
   done
   page_layer "$top"
+  use_layer "$top"
   decide "${L_BRANCH[top]}"
 }
 
@@ -1884,8 +1928,8 @@ cmd_review() {
 #
 # approve of a change with a record approves exactly one head (bind_head):
 # --head's, or the active version's once the operator confirms it on a
-# terminal. A plain branch is approved at its tip on origin, and --head,
-# when given, must be that tip.
+# terminal. A plain branch is approved at its tip on origin, as the fetch
+# left it, and --head, when given, must be that tip.
 cmd_approve() {
   local name="" want=""
   local usage="usage: valley approve [--head <sha>] <change>"

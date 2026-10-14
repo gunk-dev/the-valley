@@ -218,4 +218,78 @@ grep -q '^branch one, log against origin/main:$' stack-one.out
 grep -q '^one: \[a\]pprove, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
 if grep -q 'stack of\|change 1 of' stack-one.out; then exit 1; fi
 
+# answer_after <log> <prompt> <command> <answers>: wait until the review
+# writing to <log> has asked <prompt>, run <command>, then answer. A page
+# is shown before its prompt, so the command runs after the page is shown
+# and before the answer.
+answer_after() {
+  local i=0
+  until grep -q -- "$2" "$1" 2> /dev/null || [ "$i" -ge 600 ]; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  eval "$3"
+  printf '%b' "$4"
+}
+seed="$(git rev-parse main)" onehead="$(git rev-parse one)"
+
+# [a]pprove up to here on a plain branch under the top files that
+# branch's head under its own request name, and nothing for the top.
+: > "$pushlog"
+printf 'a\n' | valley review pppp > stack-a-one.out 2>&1
+[ "$(git -C "$stack" rev-parse "$requests/one")" = "$onehead" ]
+grep -q "$requests/one" "$pushlog"
+if grep -q "c-$p" "$pushlog"; then exit 1; fi
+
+# Once a page is shown, the head approved is the head shown. When the
+# branch moves on origin, and is fetched, after the page is shown and
+# before the answer, approving refuses, names both heads, and publishes
+# nothing: for a plain branch under the top, for a plain branch at the top
+# of a stack, and for a plain branch alone. The request each would file is
+# absent first, so a filing would push.
+git -C "$stack" update-ref -d "$requests/one"
+: > "$pushlog"
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+answer_after moved-one.out 'one: \[n\]ext' "git -C '$stack' update-ref refs/heads/one $seed; git fetch -q origin" 'a\ns\n' \
+  | valley review pppp > moved-one.out 2>&1
+grep -q "origin/one is at $seed, and is no longer at $onehead, the head shown; nothing published" moved-one.out
+[ ! -s "$pushlog" ]
+if git -C "$stack" rev-parse --verify --quiet "$requests/one" > /dev/null; then exit 1; fi
+git -C "$stack" update-ref refs/heads/one "$onehead"
+git fetch -q origin
+
+git checkout --quiet -b four three
+echo "layer four" > four.md
+git add four.md
+git commit --quiet -m "layer four"
+git push --quiet origin four
+fourhead="$(git rev-parse four)"
+git checkout --quiet -b solo main
+echo "solo" > solo.md
+git add solo.md
+git commit --quiet -m "solo"
+git push --quiet origin solo
+solohead="$(git rev-parse solo)"
+git checkout --quiet main
+
+: > "$pushlog"
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  printf 'n\nn\nn\n'
+  answer_after moved-four.out 'four: \[a\]pprove' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
+} | valley review four > moved-four.out 2>&1
+grep -q '^four is a stack of 4 changes' moved-four.out
+grep -q "origin/four is at $seed, and is no longer at $fourhead, the head shown; nothing published" moved-four.out
+[ ! -s "$pushlog" ]
+if git -C "$stack" rev-parse --verify --quiet "$requests/four" > /dev/null; then exit 1; fi
+
+: > "$pushlog"
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+answer_after moved-solo.out 'solo: \[a\]pprove' "git -C '$stack' update-ref refs/heads/solo $seed; git fetch -q origin" 'a\ns\n' \
+  | valley review solo > moved-solo.out 2>&1
+grep -q '^branch solo, log against origin/main:$' moved-solo.out
+grep -q "origin/solo is at $seed, and is no longer at $solohead, the head shown; nothing published" moved-solo.out
+[ ! -s "$pushlog" ]
+if git -C "$stack" rev-parse --verify --quiet "$requests/solo" > /dev/null; then exit 1; fi
+
 touch "$out"

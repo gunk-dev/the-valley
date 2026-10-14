@@ -1,0 +1,4 @@
+# What go build and go test -c leave in status/: the binary, named for
+# its module, and test binaries. integrator/ ignores its own.
+/status/valley-go
+/status/*.test

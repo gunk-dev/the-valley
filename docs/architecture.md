@@ -546,7 +546,11 @@ An approval of a change with a record binds one head, and the request names exac
 - A version may name no branch. `approve --head` files its head all the same, since the request
   names the head. `review` refuses such a change, because its notes and `[r]eject` act on a branch.
 
-A branch no record is on is approved at its tip on origin. `--head`, when given, must be that tip.
+`valley approve` approves a branch no record is on at its tip on origin, as the fetch left it.
+`--head`, when given, must be that tip. `valley review` approves such a branch at the head it
+showed. Just before it publishes, it reads the branch on origin, and refuses when it has moved off
+that head, naming both heads. The operator reviewed the branch, and the commits it has moved to have
+not been read.
 
 `valley rebase <change>`, and `[b]ase` in a review, rebase a change with a record at its active
 version's head. They push the branch that version names, with a lease, and then add the rebased head

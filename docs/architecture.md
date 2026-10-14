@@ -65,6 +65,13 @@ characters of a SHA-256 of the init script. So pushes resume only when every rep
 `pre-receive` hook is this configuration's. A hand-written `post-receive` hook is left in place and
 is not a conflict. Checked by `init-e2e` and `ssh-e2e`.
 
+A host with an instance repository also publishes its project list there. `valley-init` writes a
+blob at `refs/the-valley/projects` that names every enabled git project, one per line, sorted, and
+nothing else. Clients read it to find the host's projects (`valley changes --all`). It discloses
+every project name to whoever can read the instance repository. A host without an instance
+repository publishes nothing. A list that cannot be written is a warning, not a conflict. Checked by
+`init-e2e` and `valley-changes`.
+
 The hold file belongs to the operator, who creates it to pause all pushes. `valley-init` never
 touches it.
 
@@ -83,6 +90,7 @@ symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valle
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
 | `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete.                                                                                                                                              |
 | `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`).                                                    |
+| `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
 | Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records.                                                                                                                           |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
@@ -404,12 +412,13 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready` and `withdraw` verbs are a Go program, `valley-go` (`status/`), which the package
-puts on the script's `PATH`.
+`ready`, `unready`, `withdraw`, `changes` and `pending` verbs are a Go program, `valley-go`
+(`status/`), which the package puts on the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `valley pending`             | Lists branches not merged into `main`, each with its head commit's subject, and then drafts apart.    |
+| `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
+| `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
 | `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
 | `valley approve <change>`    | Does what `[a]pprove` does, without showing the branch.                                               |
 | `valley rebase <change>`     | Does what `[b]ase` does, without showing the branch, and prints the new head.                         |
@@ -512,7 +521,7 @@ verb began with.
 version and the new state, such as `cosmo nxvp v2 draft`. Each warns when a request for the change
 is pending, as [Change records](#change-records) describes. `valley pending` lists the changes whose
 record says they are drafts in a section of their own, at the head of each active version. A branch
-whose tip is a draft's head is listed only there. `valley-go drafts` lists them for it.
+whose tip is a draft's head is listed only there.
 
 `unready` and `withdraw` stop an approval that begins after them. They do not always stop one that
 is already under way. An approval reads the record one last time just before it files the request,
@@ -574,6 +583,127 @@ An error prints no object. The message goes to stderr and the exit status is non
 are an unreadable origin, an origin without `main`, nothing on origin for the change, and a change
 name that is not UTF-8, which JSON cannot carry exactly. Checked by `valley-status`, and by the Go
 tests in `status/` for the outcome record's parser.
+
+### Listing changes
+
+`valley changes --json` prints every change a repository holds a record of, in every state, as the
+`valley-changes/v1` object (`status/list.go`). klaus reads it, so it is a contract with a version,
+like the status object. `valley pending` is the view a person reads (`status/pending.go`).
+
+Both read one snapshot of origin for each repository they list. For each version of each change,
+they decide its landing evidence (`status/inventory.go`). The first rule that applies is the answer:
+
+1. `landed`: the version's head is an ancestor of `main`.
+2. `landed-recorded`: a commit on `main` carries a transfer statement whose `change` is the
+   version's request name, whose `base` is the `valley-tree-v1` digest of the version's tree, and
+   whose signature verifies as the integrator's. The request name is the version's branch with each
+   `/` replaced by `-`, or `c-<change id>`.
+3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`. The
+   integrator moves `main` before it stores its evidence, so a landing can exist without its
+   evidence. A request is consumed when its outcome record says `land` for this head and the request
+   ref no longer points at it.
+4. `not-landed`: otherwise.
+
+The outcome record alone is never proof of a landing, because a later pass can overwrite it.
+
+The client checks a transfer statement with `attest verify`. The signature must be by the name in
+`VALLEY_INTEGRATOR_SIGNER`, under a key in the file `VALLEY_KNOWN_SIGNERS` names, which is the
+identity registry's compiled known-signers file. Without both, no transfer statement is believed: a
+version that only a statement could show landed reads as `uncertain` or `not-landed`, and the
+command says so on stderr.
+
+Without `--all`, the commands list the current repository. With `--all`, they list every project the
+serving host publishes at `refs/the-valley/projects`. The client reads the instance repository's URL
+from `policy/valley` at `main`'s tip on origin, never from a checked-out or pushed tree. A
+repository whose `main` carries `policy/instance` is its own instance. Each project's URL is the
+instance's URL with its last path segment replaced, so the transport, user and host are kept. A
+repository other than the current one is read through a clone under `$XDG_CACHE_HOME/valley/repos`.
+When discovery is unavailable, `--all` says so and lists the current repository alone.
+`--repo <name>` limits either command to one project.
+
+```json
+{
+  "schema": "valley-changes/v1",
+  "host": "classic-laddie",
+  "repos": [
+    {
+      "repo": "cosmo",
+      "url": "git@classic-laddie:cosmo.git",
+      "error": null,
+      "changes": [
+        {
+          "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
+          "handle": "nxvp",
+          "target": "main",
+          "owner": "klaus-env",
+          "state": "ready",
+          "record": "<record commit>",
+          "seq": 3,
+          "active": 2,
+          "versions": [
+            {
+              "n": 1,
+              "head": "<sha>",
+              "title": "the head's subject",
+              "branch": "topic",
+              "uploader": "klaus-env",
+              "landing": "not-landed",
+              "landed_commit": null,
+              "request": { "ref": "refs/the-valley/integration-requests/main/topic", "commit": "<sha>" },
+              "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>" }
+            }
+          ],
+          "includes": ["<change id>"]
+        }
+      ],
+      "branches": [{ "branch": "loose", "head": "<sha>" }]
+    }
+  ]
+}
+```
+
+- The object is one line. `host` is the host the instance's URL reaches, or origin's without
+  `--all`, with its port and without its user. A local path reaches `localhost`.
+- A repository that cannot be read has its message in `error`, and empty `changes` and `branches`.
+  The others are listed all the same.
+- Changes are keyed by repository, target and change ID, in the order of their IDs. `state` is
+  `ready`, `draft` or `withdrawn`. `record` is the record commit.
+- A handle is unique among every change listed, in every repository. Every record of a listed
+  repository counts, so a handle also names its change within that repository alone.
+- `landed_commit` is the commit on `main` the version landed as: its own head when `landed`, the
+  transfer statement's commit when `landed-recorded`, and otherwise `null`.
+- `request` is the request filed at the version's head under either of its request names, or `null`.
+  `outcome` is the outcome record about the version's head, or `null`; its `tip` is `null` unless it
+  is an object ID.
+- `includes` lists the changes whose active head is a strict ancestor of this one's, nearest only.
+  It is ancestry alone: approving this change lands their content too.
+- `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
+  no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
+
+`valley pending` lists the ready changes whose active version is neither `landed` nor
+`landed-recorded`, one line each: the handle and version, the title, `includes <handle>` when the
+change includes another that has not landed, and `uncertain` when that applies. `--owes` adds the
+checks each change owes, by cost, as `valley checks` derives them. Then come the branches no change
+is on, and the drafts. With `--all`, each repository is headed by its name. `valley pending --json`
+prints `valley-pending/v1`, the same object holding what the human view lists. Its `includes` counts
+only changes that have not landed.
+
+```text
+mmmm v1 | stack-b | includes nxvp
+nxvp v1 | stack-a
+vvvv v1 | lost | uncertain
+
+branches
+loose | loose | 6 seconds ago | klaus-env | ahead 1 | 1 file changed, 1 insertion(+)
+
+drafts
+qqqq v1 on paused | paused | 6 seconds ago | klaus-env | ahead 1 | 1 file changed, 1 insertion(+)
+```
+
+`review`, `approve`, `rebase`, `unready` and `withdraw` read a branch name as the change whose
+active version is on it. A change whose active version is `landed` or `landed-recorded` is on no
+branch for this, so a branch name can be used again once its change has landed. Checked by
+`valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
 
 ## The life of a change
 

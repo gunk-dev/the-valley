@@ -36,7 +36,7 @@
   # subtle: the glob matching of a declared pattern, the order in which
   # the rules are tried, and every transition of a change record, each
   # refusal against real git objects. What the hook does to a real push
-  # is protect-e2e's, and valley-ready's for change records.
+  # is protect-e2e's, and valley-ready's for the records the CLI writes.
   valleyhook-unit = packages.valleyhook;
 
   # The note envelope every reader of an attestation shares (note/).
@@ -52,9 +52,9 @@
   # pushes set in the environment directly — that rendering is pinned
   # by module-eval, and everything the hook decides after it is what
   # this check exercises: protected refs, attestations and the names
-  # they may take, integration requests and the request grant, named
-  # grants, symbolic refs, a composed hook, and the namespaces every push
-  # is refused. Projects with and without protection are both served.
+  # they may take, integration requests and the request grant, the
+  # changes of a change record's state, named grants, symbolic refs, a
+  # composed hook, and the namespaces every push is refused. Projects with and without protection are both served.
   protect-e2e = pkgs.runCommand "valley-protect-e2e" {
     nativeBuildInputs = [
       pkgs.git

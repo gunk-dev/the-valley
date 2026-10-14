@@ -297,6 +297,101 @@ as requester git push --quiet open "idea/one:$request"
 has_ref open "$request"
 
 # ----------------------------------------------------------------------
+# A change record moves only by the rows of the hook's table
+# (valleyhook/record.go), here the rows that change its state. Each is
+# pushed as the change's owner or the holder of the request grant, and
+# each refusal leaves the record where it was. A principal that is
+# neither may not move it at all.
+change_id=nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
+record_ref="refs/the-valley/changes/main/$change_id"
+# record_json <state> <seq> <active> <head…>: the record of the change,
+# owned by contributor, with one version per head.
+record_json() {
+  local state="$1" seq="$2" active="$3" head n=0 versions=""
+  shift 3
+  for head in "$@"; do
+    n=$((n + 1))
+    [ -z "$versions" ] || versions="$versions, "
+    versions="$versions{\"n\": $n, \"head\": \"git-sha1:$head\", \"title\": \"v$n\", \"branch\": \"topic\", \"uploader\": \"contributor\"}"
+  done
+  printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "contributor", "state": "%s", "seq": %s, "versions": [%s], "active": %s}\n' \
+    "$change_id" "$state" "$seq" "$versions" "$active"
+}
+# record_commit <json> <parent…>: a record commit holding the JSON.
+record_commit() {
+  local json="$1" blob tree parent
+  local -a parents=()
+  shift
+  for parent in "$@"; do parents+=(-p "$parent"); done
+  blob="$(printf '%s' "$json" | git hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\trecord.json\n' "$blob" | git mktree)"
+  git commit-tree "$tree" "${parents[@]}" -m 'a change record'
+}
+record_at() {
+  if [ "$(git -C "$TMPDIR/open.git" rev-parse "$record_ref")" != "$1" ]; then
+    echo "protect-e2e: the change record is not where $2 left it" >&2
+    exit 1
+  fi
+}
+h1="$(git commit-tree "HEAD^{tree}" -p HEAD -m 'the change, v1')"
+h2="$(git commit-tree "HEAD^{tree}" -p HEAD -m 'the change, v2')"
+
+created="$(record_commit "$(record_json ready 1 1 "$h1")" "$h1")"
+as contributor git push --quiet open "$created:$record_ref"
+record_at "$created" "the create"
+
+# unready: ready to draft. A draft is not made a draft again.
+drafted="$(record_commit "$(record_json draft 2 1 "$h1")" "$created")"
+refused unready.err "a principal neither owner nor holder unreadied a change" \
+  as integrator git push --quiet open "$drafted:$record_ref"
+grep -q "only the change's owner, contributor" unready.err
+as contributor git push --quiet open "$drafted:$record_ref"
+record_at "$drafted" "unready"
+again="$(record_commit "$(record_json draft 3 1 "$h1")" "$drafted")"
+refused redraft.err "a draft was made a draft again" \
+  as contributor git push --quiet open "$again:$record_ref"
+grep -q 'the change is draft already' redraft.err
+record_at "$drafted" "unready"
+
+# re-ready at the same version, by the operator, and unready once more.
+resumed="$(record_commit "$(record_json ready 3 1 "$h1")" "$drafted")"
+as requester git push --quiet open "$resumed:$record_ref"
+record_at "$resumed" "a re-ready at the same version"
+paused="$(record_commit "$(record_json draft 4 1 "$h1")" "$resumed")"
+as requester git push --quiet open "$paused:$record_ref"
+record_at "$paused" "the operator's unready"
+
+# re-ready at a new version, which needs a new head.
+same="$(record_commit "$(record_json ready 5 2 "$h1" "$h1")" "$paused" "$h1")"
+refused samehead.err "a draft was readied at a new version at its active head" \
+  as contributor git push --quiet open "$same:$record_ref"
+grep -q 'a new version needs a new head' samehead.err
+record_at "$paused" "the operator's unready"
+versioned="$(record_commit "$(record_json ready 5 2 "$h1" "$h2")" "$paused" "$h2")"
+as contributor git push --quiet open "$versioned:$record_ref"
+record_at "$versioned" "a re-ready at a new version"
+
+# withdraw, from a draft. A withdrawn change never comes back as a draft,
+# by its owner or by the operator.
+redrafted="$(record_commit "$(record_json draft 6 2 "$h1" "$h2")" "$versioned")"
+as contributor git push --quiet open "$redrafted:$record_ref"
+gone="$(record_commit "$(record_json withdrawn 7 2 "$h1" "$h2")" "$redrafted")"
+as contributor git push --quiet open "$gone:$record_ref"
+record_at "$gone" "a withdrawal from a draft"
+back="$(record_commit "$(record_json draft 8 2 "$h1" "$h2")" "$gone")"
+for who in contributor requester; do
+  refused withdrawn-draft.err "$who made a withdrawn change a draft" \
+    as "$who" git push --quiet open "$back:$record_ref"
+  grep -q 'never as a draft' withdrawn-draft.err
+  record_at "$gone" "a withdrawal from a draft"
+done
+
+# re-ready a withdrawn change at the version it was withdrawn at.
+revived="$(record_commit "$(record_json ready 8 2 "$h1" "$h2")" "$gone")"
+as contributor git push --quiet open "$revived:$record_ref"
+record_at "$revived" "a re-ready from withdrawn at the same version"
+
+# ----------------------------------------------------------------------
 # Attestation refs: anyone may create one, if it is what its
 # name says, and it opens under the keys this host accepts.
 attest run --key "$TMPDIR/signer" --name signer.valley.invalid/attestations \

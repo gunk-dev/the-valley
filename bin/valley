@@ -98,6 +98,10 @@ usage: valley <verb> [args]
                                   signs under, defaulting to this host's.
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
+                   when [a]pprove's checks fail, the prompt says approving
+                   needs a new head and stops offering [a]pprove until the
+                   change has one. any other refusal keeps the prompt as
+                   it was.
                    [a]pprove is the only way a change reaches main from
                    here, and approve below is the same act without the
                    pager.
@@ -708,6 +712,9 @@ rebase_onto_main() {
 # operator's working copy. A global, so the traps clean it up whatever
 # happens.
 APPROVE_WT=""
+# The head approve last ran the checks over and saw them fail, for the
+# review prompt: see approve_failed_at.
+CHECKS_FAILED_AT=""
 cleanup_approve_wt() {
   [ -n "$APPROVE_WT" ] || return 0
   git worktree remove --force "$APPROVE_WT" > /dev/null 2>&1 || true
@@ -914,6 +921,7 @@ approve() {
       "$(printf '%s\n' "${owed[@]}" | join_lines)"
     if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${run[@]}"; then
       cleanup_approve_wt
+      CHECKS_FAILED_AT="$head"
       refuse "the checks did not pass; nothing published, main untouched"
       return 1
     fi
@@ -1167,10 +1175,22 @@ rebase_change() {
   fi
 }
 
+# The head the checks failed at in this review, short, while the change is
+# still at it. Approving that head again would run the same checks over
+# the same tree and fail the same way, so the prompt stops offering
+# [a]pprove until the change has a new head. Fails when the checks have
+# not failed at the head the change is at.
+approve_failed_at() {
+  if [ -z "$CHECKS_FAILED_AT" ] || [ "$CHECKS_FAILED_AT" != "$(change_head "$1")" ]; then
+    return 1
+  fi
+  git rev-parse --short "$CHECKS_FAILED_AT"
+}
+
 # Page the branch and take the verdict. Split out of cmd_review so that
 # every way out of it — approve, reject, skip — is followed by the notes.
 read_and_decide() {
-  local branch="$1" choice
+  local branch="$1" choice failed answers
   show_review "$branch"
   # A stale branch's pre-rebase diff is not what would land; offer to rebase it
   # mechanically, then re-review what actually would. [a]pprove is offered
@@ -1179,11 +1199,24 @@ read_and_decide() {
   # rebasing first is a convenience rather than a precondition.
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
     "$(change_head "$branch")"; do
-    printf '%s does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' \
-      "$branch"
+    if failed="$(approve_failed_at "$branch")"; then
+      printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [b]ase onto main, [r]eject, [s]kip? ' \
+        "$branch" "$failed"
+      answers="b, r, or s"
+    else
+      printf '%s does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' \
+        "$branch"
+      answers="a, b, r, or s"
+    fi
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
-      a) approve "$branch" && return ;;
+      a)
+        if [ -n "$failed" ]; then
+          echo "answer $answers"
+        elif approve "$branch"; then
+          return
+        fi
+        ;;
       b)
         # The rebased head of a change named by its handle is no version
         # of it yet, so there is nothing more to review by that handle.
@@ -1200,23 +1233,37 @@ read_and_decide() {
         echo "skipped $branch; nothing done"
         return
         ;;
-      *) echo "answer a, b, r, or s" ;;
+      *) echo "answer $answers" ;;
     esac
   done
   while true; do
-    printf '%s: [a]pprove, [r]eject, [s]kip? ' "$branch"
+    if failed="$(approve_failed_at "$branch")"; then
+      printf '%s: its checks failed at %s, so approving needs a new head: [r]eject, [s]kip? ' \
+        "$branch" "$failed"
+      answers="r or s"
+    else
+      printf '%s: [a]pprove, [r]eject, [s]kip? ' "$branch"
+      answers="a, r, or s"
+    fi
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
       # A refusal from approve is not a verdict: it says what it did not do
-      # and the prompt comes back, so the branch can still be approved,
-      # rejected or skipped.
-      a) approve "$branch" && return ;;
+      # and the prompt comes back, so the branch can still be rejected or
+      # skipped. When the checks failed, approving the same head again is
+      # no longer offered.
+      a)
+        if [ -n "$failed" ]; then
+          echo "answer $answers"
+        elif approve "$branch"; then
+          return
+        fi
+        ;;
       r) reject "$branch" && return ;;
       s)
         echo "skipped $branch; nothing done"
         return
         ;;
-      *) echo "answer a, r, or s" ;;
+      *) echo "answer $answers" ;;
     esac
   done
 }

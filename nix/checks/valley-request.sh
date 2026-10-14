@@ -252,7 +252,10 @@ grep -qx 'policy: examples/policy/instance + examples/policy/project' "$w/exampl
 # 3. main moves on, so the next branch is stale. [a]pprove is offered there
 #    too — the integrator applies a delta to the tip rather than
 #    fast-forwarding — and a branch whose check fails publishes nothing
-#    and leaves the review loop usable.
+#    and leaves the review loop usable. Approving the same head again
+#    would only fail again, so after the failure the prompt says approving
+#    needs a new head and offers [b]ase, [r]eject and [s]kip alone, and an
+#    answer of a is not taken.
 git checkout --quiet main
 echo "a note" > docs/notes.md
 git add -A
@@ -266,7 +269,7 @@ git commit --quiet -m "a leak"
 git push --quiet origin topic/two
 
 : > "$pushlog"
-printf 'a\ns\n' > "$w/answers"
+printf 'a\na\ns\n' > "$w/answers"
 valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 
 # The prompt is the whole of what the operator is offered, so it is pinned
@@ -274,6 +277,16 @@ valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 # starts, is a change to the review loop and not an incidental one.
 grep -qF 'topic/two does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
 grep -q '^checking topic/two at .*: no-secrets$' "$w/fail.out"
+twohead="$(git rev-parse --short topic/two)"
+grep -qF "topic/two does not fast-forward from main. Its checks failed at $twohead, so approving needs a new head: [b]ase onto main, [r]eject, [s]kip? " "$w/fail.out"
+grep -qF 'answer b, r, or s' "$w/fail.out"
+offers="$(grep -oF '[a]pprove' "$w/fail.out" | wc -l)"
+checked="$(grep -c '^checking topic/two at ' "$w/fail.out" || true)"
+if [ "$offers" != 1 ] || [ "$checked" != 1 ]; then
+  echo "valley-request: after its checks failed, the prompt offered [a]pprove again ($offers offers, $checked runs)" >&2
+  cat "$w/fail.out" >&2
+  exit 1
+fi
 grep -qE '^check   no-secrets +command  failed$' "$w/fail.out"
 grep -q 'the checks did not pass; nothing published, main untouched' "$w/fail.err"
 # The prompt is printed without a newline, so what follows a refusal shares
@@ -291,6 +304,30 @@ if grep -q 'topic-two' "$w/after.txt"; then
   exit 1
 fi
 
+# The same for a branch that fast-forwards: after its checks fail, the
+# prompt offers [r]eject and [s]kip alone.
+git checkout --quiet -b topic/leak main
+mkdir -p src
+printf 'SECRET\n' > src/leak.txt
+git add -A
+git commit --quiet -m "another leak"
+git push --quiet origin topic/leak
+leakhead="$(git rev-parse --short topic/leak)"
+: > "$pushlog"
+printf 'a\na\ns\n' > "$w/answers"
+valley review topic/leak < "$w/answers" > "$w/leak.out" 2> "$w/leak.err"
+grep -qF 'topic/leak: [a]pprove, [r]eject, [s]kip? ' "$w/leak.out"
+grep -qF "topic/leak: its checks failed at $leakhead, so approving needs a new head: [r]eject, [s]kip? " "$w/leak.out"
+grep -qF 'answer r or s' "$w/leak.out"
+grep -q 'skipped topic/leak; nothing done' "$w/leak.out"
+offers="$(grep -oF '[a]pprove' "$w/leak.out" | wc -l)"
+checked="$(grep -c '^checking topic/leak at ' "$w/leak.out" || true)"
+if [ "$offers" != 1 ] || [ "$checked" != 1 ] || [ -s "$pushlog" ]; then
+  echo "valley-request: after its checks failed, a branch that fast-forwards was offered [a]pprove again ($offers offers, $checked runs)" >&2
+  cat "$w/leak.out" "$pushlog" >&2
+  exit 1
+fi
+
 # ----------------------------------------------------------------------
 # 4. No signing key, with a check owed: refused before any check is run,
 #    and the prompt still comes back. The host signs, and there is no
@@ -300,6 +337,14 @@ printf 'a\ns\n' > "$w/answers"
 env -u VALLEY_ATTEST_KEY valley review topic/two < "$w/answers" > "$w/nokey.out" 2> "$w/nokey.err"
 grep -q 'no signing key: set VALLEY_ATTEST_KEY' "$w/nokey.err"
 grep -q 'skipped topic/two; nothing done' "$w/nokey.out"
+# A refusal that is no check failure leaves the prompt as it was, [a]pprove
+# and all: a new session starts with no check failed.
+offers="$(grep -oF 'topic/two does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
+if [ "$offers" != 2 ]; then
+  echo "valley-request: a refusal that was no check failure changed the prompt" >&2
+  cat "$w/nokey.out" >&2
+  exit 1
+fi
 if [ -s "$pushlog" ]; then
   echo "valley-request: a run with no signing key pushed something" >&2
   exit 1

@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"the-valley/change"
 )
 
 // A project's URL keeps the instance's transport, user and host, and
@@ -76,11 +78,18 @@ func TestHandlesUniqueAndMinimal(t *testing.T) {
 		"qqqqkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 	}
 	repos := []listed{
-		{snap: &snapshot{all: recordsOf(cosmo)}},
-		{snap: &snapshot{all: recordsOf(valley)}},
-		{source: source{err: errUnread}},
+		{source: source{name: "cosmo"}, snap: &snapshot{all: recordsOf(cosmo)}},
+		{source: source{name: "valley"}, snap: &snapshot{all: recordsOf(valley)}},
+		{source: source{name: "ghost", err: errUnread}},
 	}
-	h := handles(repos)
+	got := handles(repos)
+	h := map[string]string{}
+	for _, id := range cosmo {
+		h[id] = got[handleKey{"cosmo", "main", id}]
+	}
+	for _, id := range valley {
+		h[id] = got[handleKey{"valley", "main", id}]
+	}
 	all := append(append([]string(nil), cosmo...), valley...)
 	seen := map[string]string{}
 	for _, id := range all {
@@ -115,12 +124,63 @@ func TestHandlesUniqueAndMinimal(t *testing.T) {
 	}
 }
 
+// One change ID recorded in two repositories has a handle qualified by
+// its repository in each, and the other changes keep theirs.
+func TestHandlesQualifiedAcrossRepos(t *testing.T) {
+	shared := "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz"
+	repos := []listed{
+		{source: source{name: "cosmo"}, snap: &snapshot{all: recordsOf([]string{shared, "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"})}},
+		{source: source{name: "valley"}, snap: &snapshot{all: recordsOf([]string{shared})}},
+	}
+	h := handles(repos)
+	want := handleMap{
+		{"cosmo", "main", shared}:                             "cosmo/nxvp",
+		{"valley", "main", shared}:                            "valley/nxvp",
+		{"cosmo", "main", "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"}: "xunx",
+	}
+	if len(h) != len(want) {
+		t.Fatalf("handles = %v, want %v", h, want)
+	}
+	for k, v := range want {
+		if h[k] != v {
+			t.Errorf("the handle of %v is %q, want %q", k, h[k], v)
+		}
+	}
+}
+
+// A URL from data that git would read as an option, or that names a
+// remote helper or another scheme, is refused. ssh, git, https, file,
+// scp-like and local URLs are read.
+func TestCheckURL(t *testing.T) {
+	for _, ok := range []string{
+		"git@classic-laddie:qinling.git", "classic-laddie:qinling", "ssh://git@classic-laddie:22/qinling.git",
+		"ssh://git@[::1]/qinling.git", "git://classic-laddie/qinling.git", "https://git.example/qinling",
+		"file:///srv/git/qinling.git", "/srv/git/qinling.git", "./qinling.git",
+	} {
+		if err := checkURL(ok); err != nil {
+			t.Errorf("checkURL(%q) = %v", ok, err)
+		}
+	}
+	for _, bad := range []string{
+		"", "--upload-pack=touch /tmp/pwned; git-upload-pack", "-oProxyCommand=sh:x",
+		"ext::sh -c touch% /tmp/pwned", "fd::0", "remote-x::address", "http://git.example/qinling",
+		"ftp://git.example/qinling", "ssh://-oProxyCommand=sh/qinling", "git@host:q\nqinling", "git@host:q\x1bqinling",
+	} {
+		if err := checkURL(bad); err == nil {
+			t.Errorf("checkURL(%q) let it through", bad)
+		}
+	}
+	if url, err := projectURL("ext::sh -c x/qinling", "cosmo"); err == nil {
+		t.Errorf("projectURL derived %q from a remote helper's URL", url)
+	}
+}
+
 var errUnread = failure("could not read")
 
 func recordsOf(ids []string) []recorded {
 	var all []recorded
 	for _, id := range ids {
-		all = append(all, recorded{id: id})
+		all = append(all, recorded{id: id, record: &change.Record{Target: "main"}})
 	}
 	return all
 }
@@ -140,6 +200,7 @@ func listingWith(title, branch string) jsonChanges {
 			}},
 			Includes: []string{},
 		}},
+		Drafts:   &[]jsonChange{{ChangeID: "qqqqkkkkkkkkkkkkkkkkkkkkkkkkkkkk", Handle: "qqqq", Target: "main", Owner: "klaus-env", State: "draft", Record: tip, Seq: 2, Active: 1, Versions: []jsonVersion{{N: 1, Head: tip, Title: title, Branch: branch, Uploader: "klaus-env", Landing: notLanded}}, Includes: []string{}}},
 		Branches: []jsonBranch{{Branch: branch, Head: tip}},
 	}}}
 }
@@ -188,7 +249,8 @@ func FuzzWriteDocument(f *testing.F) {
 			t.Fatalf("does not read back: %v: %q", err, out)
 		}
 		v := back.Repos[0].Changes[0].Versions[0]
-		if v.Title != title || v.Branch != branch || back.Repos[0].Branches[0].Branch != branch {
+		d := (*back.Repos[0].Drafts)[0].Versions[0]
+		if v.Title != title || v.Branch != branch || back.Repos[0].Branches[0].Branch != branch || d.Title != title || d.Branch != branch {
 			t.Fatalf("read back as %q, %q, where %q, %q was written", v.Title, v.Branch, title, branch)
 		}
 		if back.Schema != changesSchema || v.LandedCommit != nil || v.Request != nil || *v.Outcome.Tip != strings.Repeat("b", 40) {

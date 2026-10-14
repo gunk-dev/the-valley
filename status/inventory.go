@@ -7,12 +7,19 @@
 // version of each change, the landing evidence it has. The first rule
 // that applies is the answer:
 //
-//  1. landed: the version's head is an ancestor of main.
-//  2. landed-recorded: a commit on main carries a transfer statement,
-//     signed by the integrator, whose change is the version's request
-//     name and whose base is the valley-tree-v1 digest of the version's
-//     tree. The integrator writes one when it lands a change as a new
-//     commit (integrator/transfer.go).
+//  1. landed: the version's head is on main's first-parent history. The
+//     integrator never writes a merge, and a fast-forward puts every
+//     commit of a change on that history. A head that main reaches only
+//     through a merge's other parent may have had its content dropped by
+//     the merge, so it has not landed by this rule.
+//  2. landed-recorded: a commit L on main's first-parent history carries a
+//     transfer statement, signed by the integrator, whose change is the
+//     version's request name and whose base is the valley-tree-v1 digest
+//     of the version's tree. The integrator writes one when it lands a
+//     change as a new commit (integrator/transfer.go). And the
+//     integrator's own merge of the version's head onto L's parent must
+//     give L's tree: a head with the same tree on another parent is
+//     another delta, which the statement says nothing about.
 //  3. uncertain: a request for the version was consumed, or the outcome
 //     record says the integrator failed on it, and neither of the above
 //     holds. The integrator moves main before it stores its evidence
@@ -95,13 +102,14 @@ type snapshot struct {
 	all    []recorded
 	verify verifier
 
-	outcomes  map[string]memo      // outcome ref → the record it holds
-	landings  map[string][2]string // "<change ID> <n>" → landing and commit
-	onMainOf  map[string]bool
-	reachOf   map[string]map[string]bool
-	digestOf  map[string]string
-	transfers []transferStatement
-	read      bool // whether transfers has been read
+	outcomes    map[string]memo      // outcome ref → the record it holds
+	landings    map[string][2]string // "<change ID> <n>" → landing and commit
+	firstParent map[string]bool      // main's first-parent history; nil until read
+	reachesOf   map[string]bool
+	reachOf     map[string]map[string]bool
+	digestOf    map[string]string
+	transfers   []transferStatement
+	read        bool // whether transfers has been read
 
 	// unverified is set when a transfer statement named a version and
 	// could not be checked, so its landing may be stronger than shown.
@@ -138,8 +146,8 @@ func readSnapshot(g git, v verifier) (*snapshot, error) {
 func newSnapshot(g git, o origin, all []recorded, v verifier) *snapshot {
 	s := &snapshot{
 		g: g, o: o, tip: o.refs["refs/heads/"+recordTarget], all: all, verify: v,
-		outcomes: map[string]memo{}, landings: map[string][2]string{}, onMainOf: map[string]bool{},
-		reachOf: map[string]map[string]bool{}, digestOf: map[string]string{},
+		outcomes: map[string]memo{}, landings: map[string][2]string{},
+		reachesOf: map[string]bool{}, reachOf: map[string]map[string]bool{}, digestOf: map[string]string{},
 	}
 	for ref, oid := range o.refs {
 		if strings.HasPrefix(ref, outcomePrefix) {
@@ -158,17 +166,37 @@ func headOf(v change.Version) string {
 	return strings.TrimPrefix(v.Head, change.HeadPrefix)
 }
 
-// onMain reports whether a commit is an ancestor of main, or main itself.
+// onMain reports whether a commit is on main's first-parent history:
+// main itself, its first parent, that commit's first parent, and so on.
+// This is where a landing puts a change.
 func (s *snapshot) onMain(oid string) bool {
 	if s.tip == "" || oid == "" {
 		return false
 	}
-	on, seen := s.onMainOf[oid]
-	if !seen {
-		on = s.g.succeeds(true, "merge-base", "--is-ancestor", oid, s.tip)
-		s.onMainOf[oid] = on
+	if s.firstParent == nil {
+		s.firstParent = map[string]bool{}
+		if out, err := s.g.output(true, "rev-list", "--first-parent", s.tip); err == nil {
+			for _, c := range strings.Fields(out) {
+				s.firstParent[c] = true
+			}
+		}
 	}
-	return on
+	return s.firstParent[oid]
+}
+
+// reaches reports whether main reaches a commit by any path: whether the
+// commit is an ancestor of main, or main itself. That is ancestry, which
+// is not landing (onMain).
+func (s *snapshot) reaches(oid string) bool {
+	if s.tip == "" || oid == "" {
+		return false
+	}
+	r, seen := s.reachesOf[oid]
+	if !seen {
+		r = s.g.succeeds(true, "merge-base", "--is-ancestor", oid, s.tip)
+		s.reachesOf[oid] = r
+	}
+	return r
 }
 
 // requestNames are the names a request for a version is filed under: its
@@ -254,7 +282,7 @@ func (s *snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 			s.unverified = true
 			continue
 		}
-		if t.base != digest {
+		if t.base != digest || !s.mergesTo(headOf(v), t.landed) {
 			continue
 		}
 		if s.verified(t) {
@@ -262,6 +290,32 @@ func (s *snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// mergesTo reports whether the integrator's merge of head onto landed's
+// parent gives landed's tree. It is the merge integrator/git.go's
+// mergeDelta makes: merge-tree onto the tip, with the merge base of the
+// tip and the head as the base. A head that merges to another tree, or
+// not at all, is not what landed.
+func (s *snapshot) mergesTo(head, landed string) bool {
+	tip, err := s.g.output(true, "rev-parse", "--verify", "--quiet", landed+"^1^{commit}")
+	if err != nil {
+		return false
+	}
+	want, err := s.g.output(true, "rev-parse", "--verify", "--quiet", landed+"^{tree}")
+	if err != nil {
+		return false
+	}
+	base, err := s.g.output(true, "merge-base", tip, head)
+	if err != nil {
+		return false
+	}
+	out, err := s.g.output(true, "merge-tree", "--write-tree", "--merge-base="+base, tip, head)
+	if err != nil {
+		return false
+	}
+	tree, _, _ := strings.Cut(out, "\n")
+	return strings.TrimSpace(tree) == want
 }
 
 // transferStatements reads every transfer statement under origin's
@@ -422,14 +476,14 @@ func (s *snapshot) reach(oid string) map[string]bool {
 
 // strictAncestor reports whether a is an ancestor of b, and not b itself.
 // A commit main does not reach is an ancestor of b exactly when it is in
-// reach(b), so git is asked only about a commit on main.
+// reach(b), so git is asked only about a commit main reaches.
 func (s *snapshot) strictAncestor(a, b string) bool {
 	switch {
 	case a == b:
 		return false
 	case s.reach(b)[a]:
 		return true
-	case s.onMain(a):
+	case s.reaches(a):
 		return s.g.succeeds(true, "merge-base", "--is-ancestor", a, b)
 	}
 	return false
@@ -475,7 +529,7 @@ func (s *snapshot) unrecorded() []jsonBranch {
 	branches := []jsonBranch{}
 	for ref, oid := range s.o.refs {
 		name, ok := strings.CutPrefix(ref, "refs/heads/")
-		if !ok || name == recordTarget || active[oid] || s.onMain(oid) {
+		if !ok || name == recordTarget || active[oid] || s.reaches(oid) {
 			continue
 		}
 		branches = append(branches, jsonBranch{Branch: name, Head: oid})

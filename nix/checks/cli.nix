@@ -195,11 +195,15 @@ in
   # the project list a host publishes and every record goes through the
   # hook it installs. Two repositories with ready, draft and withdrawn
   # records; handles unique across them; one listed repository that cannot
-  # be read; --repo; a version landed by fast-forward, one landed as a new
-  # commit with a transfer statement the integrator signed, one consumed
-  # with no evidence, and one whose statement another key signed; includes
-  # as the nearest ancestor only; pending's human shape and --owes; and a
-  # branch name read as a branch again once its change has landed.
+  # be read; a change ID recorded in both, with qualified handles; --repo;
+  # a version landed by fast-forward, one landed as a new commit with a
+  # transfer statement the integrator signed, one consumed with no
+  # evidence, one whose statement another key signed, one with a landed
+  # version's tree on another parent, and one main reaches only through a
+  # merge that dropped it; a policy/valley git would read as an option or
+  # as ext::; includes as the nearest ancestor only; pending's human shape,
+  # its drafts array and --owes; and a branch name read as a branch again
+  # once its change has landed, until the branch moves.
   valley-changes = pkgs.runCommand "valley-changes" {
     nativeBuildInputs = [
       pkgs.git

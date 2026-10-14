@@ -74,6 +74,7 @@ done
 id() { printf '%s%s' "$1" "$(printf 'k%.0s' $(seq $((32 - ${#1}))))"; }
 A="$(id nxvpwlkm)" B="$(id mmmm)" C="$(id pppp)" D="$(id qqqq)" E="$(id rrrr)"
 W="$(id ssss)" F="$(id tttt)" G="$(id uuuu)" U="$(id vvvv)" H="$(id wwww)"
+X="$(id oooo)" I="$(id zzzz)"
 R="$(id nxvpwlkz)" D2="$(id xxxx)" E2="$(id yyyy)"
 
 # A checkout of a project, whose main names sealed as its owning valley.
@@ -209,6 +210,34 @@ transfer forged "$(git rev-parse forged)" "$(git rev-parse HEAD)" "$w/mallory.ke
 # A's request is pending.
 git -C "$data/open.git" update-ref refs/the-valley/integration-requests/main/stack-a "$(git rev-parse stack-a)"
 
+# X is ready, and a merge of it whose tree drops its changes lands on main
+# by fast-forward. main reaches X only through the merge's second parent,
+# which is no landing.
+branch dropped "$base" dropped
+ready "$X" dropped
+git checkout --quiet landing-h
+merge="$(git commit-tree "landing-h^{tree}" -p landing-h -p dropped -m 'merge, dropping X')"
+VALLEY_PRINCIPAL=integrator git push --quiet origin "$merge:refs/heads/main"
+
+# I lands as a new commit, L2, filed as c-<I>, and the integrator records
+# it. Then I's next version, H', has H's tree with L2 as its parent. Its
+# name and its tree digest match the transfer statement, but it is another
+# delta: merged onto L2's parent it does not give L2's tree. I is then made
+# a draft.
+branch again "$base" again
+ready "$I" again
+hhead="$(git rev-parse again)"
+git checkout --quiet -b landing-i "$merge"
+git cherry-pick again > /dev/null
+landed2="$(git rev-parse HEAD)"
+VALLEY_PRINCIPAL=integrator git push --quiet origin landing-i:main
+memo "c-$I" "$hhead" land
+transfer "c-$I" "$hhead" "$landed2" "$w/integrator.key" integrator
+hprime="$(git commit-tree "again^{tree}" -p "$landed2" -m again)"
+git push --quiet --force origin "$hprime:refs/heads/again"
+ready "$I" again
+ok valley unready "$I"
+
 # ----------------------------------------------------------------------
 # guarded: a ready change whose ID shares seven letters with A's, a draft
 # and a withdrawn change.
@@ -223,6 +252,9 @@ ok valley unready "$D2"
 branch g-gone "$gbase" g-gone
 ready "$E2" g-gone
 ok valley withdraw "$E2"
+# B's change ID, recorded here too.
+branch g-dup "$gbase" g-dup
+ready "$B" g-dup
 
 # released is listed and cannot be read.
 mv "$data/released.git" "$data/released.moved"
@@ -236,7 +268,7 @@ ok valley changes --json
 [ "$(wc -l < "$w/out")" = 1 ] || fail "changes printed more than one line"
 holds '.schema == "valley-changes/v1"' '.host == "localhost"' '(.repos | length) == 1' \
   '.repos[0].repo == "open"' ".repos[0].url == \"$data/open.git\"" '.repos[0].error == null' \
-  '(.repos[0].changes | length) == 10'
+  '(.repos[0].changes | length) == 12' '.repos[0] | has("drafts") | not'
 c() { printf '.repos[0].changes[] | select(.change_id == "%s")' "$1"; }
 holds "$(c "$A") | .handle == \"nxvp\" and .state == \"ready\" and .owner == \"klaus-env\" and .target == \"main\" and .active == 1 and .seq == 1" \
   "$(c "$A") | .record == \"$(git -C "$data/open.git" rev-parse "refs/the-valley/changes/main/$A")\"" \
@@ -252,7 +284,11 @@ holds "$(c "$F") | .versions[0] | .landing == \"landed\" and .landed_commit == \
   "$(c "$G") | .versions[0].outcome == {decision: \"land\", head: \"$(git rev-parse reparent)\", tip: \"$fhead\"}" \
   "$(c "$G") | .versions[0].request == null" \
   "$(c "$U") | .versions[0] | .landing == \"uncertain\" and .landed_commit == null" \
-  "$(c "$H") | .versions[0].landing == \"uncertain\""
+  "$(c "$H") | .versions[0].landing == \"uncertain\"" \
+  "$(c "$X") | .versions[0] | .landing == \"not-landed\" and .landed_commit == null" \
+  "$(c "$I") | .versions[0] | .landing == \"landed-recorded\" and .landed_commit == \"$landed2\"" \
+  "$(c "$I") | .versions[1] | .head == \"$hprime\" and .landing == \"not-landed\" and .landed_commit == null" \
+  "$(c "$I") | .state == \"draft\" and .active == 2"
 # includes is ancestry, nearest only.
 holds "$(c "$A") | .includes == []" "$(c "$B") | .includes == [\"$A\"]" \
   "$(c "$C") | .includes == [\"$B\"]" "$(c "$W") | .includes == [\"$E\"]"
@@ -276,7 +312,8 @@ holds '[.repos[].repo] == ["guarded", "open", "released", "sealed"]' \
   '.repos[] | select(.repo == "sealed") | .changes == []' \
   '[.repos[].changes[].handle] | length == (unique | length)' \
   "[.repos[].changes[] | select(.change_id == \"$A\" or .change_id == \"$R\") | .handle] == [\"nxvpwlkz\", \"nxvpwlkm\"]" \
-  '.repos[] | select(.repo == "guarded") | [.changes[].state] == ["ready", "draft", "withdrawn"]'
+  "[.repos[].changes[] | select(.change_id == \"$B\") | .handle] == [\"guarded/mmmm\", \"open/mmmm\"]" \
+  '.repos[] | select(.repo == "guarded") | [.changes[].state] == ["ready", "ready", "draft", "withdrawn"]'
 # ls-remote matches a ref's tail, so refs whose names end like the
 # refs discovery reads must not stand in for them: one in open whose
 # policy/valley names another instance, and one in the instance listing
@@ -294,11 +331,18 @@ git push --quiet origin :refs/heads/a/refs/heads/main
 git -C "$instance" update-ref -d refs/tags/a/refs/the-valley/projects
 # --repo limits the listing to one repository, read through its clone.
 ok valley changes --json --repo guarded
-holds '[.repos[].repo] == ["guarded"]' "[.repos[0].changes[].change_id] == [\"$R\", \"$D2\", \"$E2\"]" \
-  '.repos[0].changes[0].handle == "nxvp"'
+holds '[.repos[].repo] == ["guarded"]' "[.repos[0].changes[].change_id] == [\"$B\", \"$R\", \"$D2\", \"$E2\"]" \
+  '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "xxxx", "yyyy"]'
 cd "$w/guarded"
 ok valley changes --json
-holds '[.repos[].repo] == ["guarded"]' '.repos[0].changes[0].handle == "nxvp"'
+holds '[.repos[].repo] == ["guarded"]' '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "xxxx", "yyyy"]'
+# A qualified handle names the change in the repository it qualifies.
+ok valley-go resolve guarded/mmmm
+line "^change"$'\t'"$B"$'\t'"mmmm"$'\t'"1"$'\t'"$(git rev-parse g-dup)"$'\t'
+cd "$w/open"
+ok valley-go resolve open/mmmm
+line "^change"$'\t'"$B"$'\t'"mmmm"$'\t'"1"$'\t'"$(git rev-parse stack-b)"$'\t'
+cd "$w/guarded"
 if valley changes --json --repo nowhere > "$w/out" 2> "$w/err"; then fail "--repo took a project the host does not list"; fi
 grep -q 'lists no project nowhere' "$w/err" || fail "--repo nowhere was refused without saying why"
 cd "$w/open"
@@ -313,6 +357,29 @@ git -C "$w/solo" push --quiet origin main
 holds '[.repos[].repo] == ["solo"]'
 grep -q 'discovery is unavailable' "$w/err" || fail "changes --all did not say discovery is unavailable"
 
+# A policy/valley that git would read as an option, or that names a remote
+# helper, is refused before git sees it, and nothing it names runs, even
+# where the caller's own configuration allows ext::.
+for url in "--upload-pack=touch $w/pwned; git-upload-pack" "ext::sh -c touch% $w/pwned"; do
+  rm -rf "$w/evil.git" "$w/evil"
+  git init --quiet --bare "$w/evil.git"
+  git clone --quiet "$w/evil.git" "$w/evil" 2> /dev/null
+  mkdir -p "$w/evil/policy"
+  printf '%s\n' "$url" > "$w/evil/policy/valley"
+  git -C "$w/evil" add policy
+  git -C "$w/evil" commit --quiet -m evil
+  git -C "$w/evil" push --quiet origin main
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.ext.allow GIT_CONFIG_VALUE_0=always
+  (cd "$w/evil" && valley changes --json --all) > "$w/out" 2> "$w/err" || fail "changes --all failed over policy/valley $url"
+  holds '[.repos[].repo] == ["evil"]'
+  grep -q 'discovery is unavailable' "$w/err" || fail "policy/valley $url was not refused"
+  if (cd "$w/evil" && valley changes --json --repo other) > "$w/out" 2> "$w/err"; then
+    fail "--repo read through policy/valley $url"
+  fi
+  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+  [ ! -e "$w/pwned" ] || fail "policy/valley $url ran a command"
+done
+
 # ----------------------------------------------------------------------
 # pending: the ready changes that have not landed, by handle, version and
 # title, then the branches no record is on, then the drafts.
@@ -323,17 +390,22 @@ line '^pppp v1 \| stack-c \| includes mmmm$'
 line '^ssss v1 \| atop-gone \| includes rrrr$'
 line '^vvvv v1 \| lost \| uncertain$'
 line '^wwww v1 \| forged \| uncertain$'
+line '^oooo v1 \| dropped$'
 no_line '^(tttt|uuuu|rrrr|qqqq) v1 \|'
 line '^branches$'
 line '^loose \| loose \| .* \| ahead 1 \| 1 file changed'
 line '^drafts$'
 line '^qqqq v1 on paused \| paused \| .* \| ahead 1 \| '
+line '^zzzz v2 on again \| again \| '
 [ "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^drafts$' "$w/out" | cut -d: -f1)" ] ||
   fail "pending listed the drafts before the branches"
-# --json is the same listing in valley-changes/v1's shape.
+# --json is the same listing in valley-changes/v1's shape: the pending
+# changes alone in changes, and the drafts in drafts.
 ok valley pending --json
 holds '.schema == "valley-pending/v1"' \
-  '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "pppp", "qqqq", "ssss", "vvvv", "wwww"]' \
+  '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "oooo", "pppp", "ssss", "vvvv", "wwww"]' \
+  '[.repos[0].changes[].state] | unique == ["ready"]' \
+  '[.repos[0].drafts[] | [.handle, .state]] == [["qqqq", "draft"], ["zzzz", "draft"]]' \
   '.repos[0].branches == [{branch: "loose", head: "'"$(git rev-parse loose)"'"}]'
 # Across the host, each repository is headed by its name.
 ok valley pending --all
@@ -342,6 +414,9 @@ line '^nxvpwlkz v1 \| g-ready$'
 line '^guarded drafts$'
 line '^open$'
 line '^nxvpwlkm v1 \| stack-a$'
+line '^open/mmmm v1 \| stack-b \| includes nxvpwlkm$'
+line '^pppp v1 \| stack-c \| includes open/mmmm$'
+line '^guarded/mmmm v1 \| g-dup$'
 line '^released: could not read '
 
 # --owes ends each change's line with the checks it owes, by cost, as
@@ -357,7 +432,7 @@ git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
 ok valley pending --owes --all
 line '^nxvpwlkm v1 \| stack-a \| owes 1 quick, 0 slow$'
-line '^mmmm v1 \| stack-b \| includes nxvpwlkm \| owes 1 quick, 0 slow$'
+line '^open/mmmm v1 \| stack-b \| includes nxvpwlkm \| owes 1 quick, 0 slow$'
 line '^nxvpwlkz v1 \| g-ready \| owes 1 quick, 0 slow$'
 
 # ----------------------------------------------------------------------
@@ -371,6 +446,24 @@ env -u VALLEY_KNOWN_SIGNERS valley-go resolve reparent > "$w/out" 2> "$w/err" ||
 line "^change"$'\t'"$G"$'\t'
 ok valley-go resolve stack-a
 line "^change"$'\t'"$A"$'\t'
+
+# H' has not landed, so its branch still names I, which is a draft, and
+# approving the branch is refused for I's state rather than taken as a
+# plain branch.
+ok valley-go resolve again
+line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft$"
+if valley approve again > "$w/out" 2> "$w/err"; then fail "approve took the branch of a draft"; fi
+grep -q "change zzzz v2 is draft, not ready" "$w/err" || fail "approve did not refuse the draft for its state"
+
+# A landed change stops naming its branch only while the branch is still
+# at the landed head. Once ff moves, it names F again.
+git checkout --quiet -b ff-again ff
+echo more > more.txt
+git add more.txt
+git commit --quiet -m more
+git push --quiet origin ff-again:ff
+ok valley-go resolve ff
+line "^change"$'\t'"$F"$'\t'
 
 # valley help names the verbs klaus looks for.
 valley help > "$w/out"

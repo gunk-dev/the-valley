@@ -17,8 +17,9 @@
 // drafts lists the changes whose record says they are drafts, at the head
 // of each active version.
 //
-// With --json it prints valley-pending/v1: valley-changes/v1, holding the
-// same changes this lists, the drafts among them, and the same branches.
+// With --json it prints valley-pending/v1: valley-changes/v1's shape, with
+// the pending changes alone in changes, the drafts in an array of their
+// own, drafts, and the same branches.
 
 package main
 
@@ -44,10 +45,21 @@ func unlanded(s *snapshot, n recorded) bool {
 	return !s.isLanded(n.id, n.record.ActiveVersion())
 }
 
-// listedByPending is what pending lists: the pending changes and the
-// drafts.
-func listedByPending(s *snapshot, n recorded) bool {
-	return n.record.State == change.Draft || pendingChange(s, n)
+func isDraft(_ *snapshot, n recorded) bool {
+	return n.record.State == change.Draft
+}
+
+// pendingView is a repository as valley-pending/v1 writes it: the pending
+// changes in changes and the drafts in drafts, each with includes among
+// the changes that have not landed.
+func (l listed) pendingView(h handleMap) jsonRepo {
+	r := l.repoView(h, pendingChange, unlanded)
+	drafts := []jsonChange{}
+	if l.err == nil {
+		drafts = l.repoView(h, isDraft, unlanded).Changes
+	}
+	r.Drafts = &drafts
+	return r
 }
 
 func runPending(g git, args []string, stdout, stderr io.Writer) error {
@@ -65,7 +77,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	if l.asJSON {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}
 		for _, r := range repos {
-			view := r.repoView(h, listedByPending, unlanded)
+			view := r.pendingView(h)
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
 		}
@@ -85,7 +97,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 // writePending prints one repository's pending changes, then its
 // unrecorded branches and its drafts. Several repositories are each
 // headed by their name.
-func writePending(r listed, h map[string]string, l listing, w io.Writer, headed bool) error {
+func writePending(r listed, h handleMap, l listing, w io.Writer, headed bool) error {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	heading := func(section string) {
 		switch {
@@ -101,20 +113,15 @@ func writePending(r listed, h map[string]string, l listing, w io.Writer, headed 
 		p("%s: %v\n", r.name, r.err)
 		return nil
 	}
-	view := r.repoView(h, listedByPending, unlanded)
+	view := r.pendingView(h)
 	heading("")
-	shown := 0
 	for _, c := range view.Changes {
-		if c.State != change.Ready {
-			continue
-		}
-		shown++
 		v := c.Versions[c.Active-1]
 		p("%s v%d | %s", c.Handle, v.N, v.Title)
 		if len(c.Includes) > 0 {
 			var named []string
 			for _, id := range c.Includes {
-				named = append(named, h[id])
+				named = append(named, h[handleKey{r.name, c.Target, id}])
 			}
 			p(" | includes %s", strings.Join(named, ", "))
 		}
@@ -126,7 +133,7 @@ func writePending(r listed, h map[string]string, l listing, w io.Writer, headed 
 		}
 		p("\n")
 	}
-	if shown == 0 {
+	if len(view.Changes) == 0 {
 		p("no change pending\n")
 	}
 	if len(view.Branches) > 0 {
@@ -135,15 +142,10 @@ func writePending(r listed, h map[string]string, l listing, w io.Writer, headed 
 			p("%s\n", r.snap.pendingLine(b.Branch, b.Head))
 		}
 	}
-	drafted := false
-	for _, c := range view.Changes {
-		if c.State != change.Draft {
-			continue
-		}
-		if !drafted {
-			heading("drafts")
-			drafted = true
-		}
+	if len(*view.Drafts) > 0 {
+		heading("drafts")
+	}
+	for _, c := range *view.Drafts {
 		v := c.Versions[c.Active-1]
 		label := fmt.Sprintf("%s v%d", c.Handle, v.N)
 		if v.Branch != "" {

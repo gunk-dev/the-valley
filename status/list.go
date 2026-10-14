@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -48,11 +49,14 @@ type jsonChanges struct {
 }
 
 type jsonRepo struct {
-	Repo     string       `json:"repo"`
-	URL      string       `json:"url"`
-	Error    *string      `json:"error"`
-	Changes  []jsonChange `json:"changes"`
-	Branches []jsonBranch `json:"branches"`
+	Repo    string       `json:"repo"`
+	URL     string       `json:"url"`
+	Error   *string      `json:"error"`
+	Changes []jsonChange `json:"changes"`
+	// Drafts is valley-pending/v1's alone: valley-changes/v1 lists a draft
+	// among the changes, with its state.
+	Drafts   *[]jsonChange `json:"drafts,omitempty"`
+	Branches []jsonBranch  `json:"branches"`
 }
 
 type jsonChange struct {
@@ -211,6 +215,10 @@ func discover(g git) (instance string, names []string, err error) {
 	} else {
 		return "", nil, fmt.Errorf("main on origin names no owning valley at %s", valleyPointer)
 	}
+	if err := checkURL(instance); err != nil {
+		return "", nil, err
+	}
+	g = g.restricted()
 	oid, err := remoteRef(g, instance, projectsRef)
 	if err != nil {
 		return instance, nil, fmt.Errorf("could not read the instance repository %s", instance)
@@ -219,7 +227,7 @@ func discover(g git) (instance string, names []string, err error) {
 		return instance, nil, fmt.Errorf("the instance repository %s publishes no %s", instance, projectsRef)
 	}
 	if !g.succeeds(true, "cat-file", "-e", oid) {
-		if _, err := g.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", instance, oid); err != nil {
+		if _, err := g.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", instance, oid); err != nil {
 			return instance, nil, fmt.Errorf("could not fetch %s from %s", projectsRef, instance)
 		}
 	}
@@ -245,7 +253,7 @@ func discover(g git) (instance string, names []string, err error) {
 // pushed refs/heads/x/refs/heads/main would match refs/heads/main too.
 // Each ref listed is compared whole.
 func remoteRef(g git, remote, ref string) (string, error) {
-	out, err := g.output(false, "ls-remote", remote, ref)
+	out, err := g.output(false, "ls-remote", "--end-of-options", remote, ref)
 	if err != nil {
 		return "", err
 	}
@@ -256,6 +264,53 @@ func remoteRef(g git, remote, ref string) (string, error) {
 	}
 	return "", nil
 }
+
+// allowedProtocols are the transports git may use for a URL this command
+// derives from data: ssh, git, https, and file, which covers local paths.
+// GIT_ALLOW_PROTOCOL overrides any protocol.*.allow the caller's
+// configuration sets.
+const allowedProtocols = "ssh:git:https:file"
+
+// restricted is g with git held to allowedProtocols.
+func (g git) restricted() git {
+	g.env = append(append([]string(nil), g.env...), "GIT_ALLOW_PROTOCOL="+allowedProtocols)
+	return g
+}
+
+// checkURL refuses a URL that is unsafe to hand git when it comes from data
+// (policy/valley, or a name the host lists): one that opens with a dash,
+// which git would read as an option; a <transport>::<address> form, such
+// as ext::, which runs a remote helper or a command; and a URL with a
+// scheme other than ssh, git, https or file. A scp-like [user@]host:path
+// and a local path are allowed, but not with a host that opens with a
+// dash, which ssh would read as an option.
+func checkURL(u string) error {
+	switch {
+	case u == "":
+		return errors.New("no URL")
+	case strings.HasPrefix(u, "-"):
+		return fmt.Errorf("the URL %q opens with a dash, which git would read as an option", u)
+	case strings.ContainsFunc(u, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+		return fmt.Errorf("the URL %q holds a control character", u)
+	case strings.HasPrefix(hostOf(u), "-"):
+		return fmt.Errorf("the URL %q names a host that opens with a dash", u)
+	}
+	if helper, _, ok := strings.Cut(u, "::"); ok && transportName.MatchString(helper) {
+		return fmt.Errorf("the URL %q names the transport %s::, and only ssh, git, https, file, scp-like and local URLs are read", u, helper)
+	}
+	if scheme, _, ok := strings.Cut(u, "://"); ok {
+		switch scheme {
+		case "ssh", "git", "https", "file":
+		default:
+			return fmt.Errorf("the URL %q has the scheme %s, and only ssh, git, https, file, scp-like and local URLs are read", u, scheme)
+		}
+	}
+	return nil
+}
+
+// transportName is the shape of the transport in git's
+// <transport>::<address> form.
+var transportName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9+.-]*$`)
 
 // pointerURL is the first line of policy/valley that is neither blank nor
 // a comment, as bin/valley's pointer_url reads it.
@@ -294,7 +349,8 @@ func projectURL(instance, name string) (string, error) {
 	if strings.HasSuffix(segment, ".git") {
 		name += ".git"
 	}
-	return u[:cut] + name, nil
+	url := u[:cut] + name
+	return url, checkURL(url)
 }
 
 // hostOf is the host a URL reaches, with its port when one is given and
@@ -345,7 +401,7 @@ func cacheRepo(g git, url, name string) (git, error) {
 		if _, err := c.output(false, "init", "--quiet"); err != nil {
 			return git{}, fmt.Errorf("could not make the cache repository %s", dir)
 		}
-		if _, err := c.output(false, "remote", "add", "origin", url); err != nil {
+		if _, err := c.output(false, "remote", "add", "--end-of-options", "origin", url); err != nil {
 			return git{}, fmt.Errorf("could not set origin in %s", dir)
 		}
 	}
@@ -353,7 +409,8 @@ func cacheRepo(g git, url, name string) (git, error) {
 }
 
 // cacheEnvironment is env without the variables that would point git at
-// another repository than the cache's.
+// another repository than the cache's, and with git held to
+// allowedProtocols.
 func cacheEnvironment(env []string) []string {
 	var kept []string
 	for _, kv := range env {
@@ -364,7 +421,7 @@ func cacheEnvironment(env []string) []string {
 		}
 		kept = append(kept, kv)
 	}
-	return kept
+	return append(kept, "GIT_ALLOW_PROTOCOL="+allowedProtocols)
 }
 
 // listed is one repository as read: its snapshot, or the error that kept
@@ -395,23 +452,47 @@ func readSources(list []source, v verifier) []listed {
 	return out
 }
 
+// handleKey names one change listed: changes are keyed by repository,
+// target and change ID.
+type handleKey struct{ repo, target, id string }
+
+// handleMap is the handle of each change listed.
+type handleMap map[handleKey]string
+
 // handles gives each change listed its handle among every change listed,
 // in every repository, so no two share one. Every record of a repository
 // is counted, listed or not, so a handle also names its change in that
-// repository alone.
-func handles(repos []listed) map[string]string {
+// repository alone. A change ID recorded in more than one repository
+// listed gets the handle <repo>/<prefix> in each, which every verb that
+// takes a handle reads in that repository.
+func handles(repos []listed) handleMap {
 	var ids []string
+	in := map[string]map[string]bool{} // change ID → the repositories recording it
 	for _, r := range repos {
-		if r.snap != nil {
-			for _, n := range r.snap.all {
-				ids = append(ids, n.id)
+		if r.snap == nil {
+			continue
+		}
+		for _, n := range r.snap.all {
+			ids = append(ids, n.id)
+			if in[n.id] == nil {
+				in[n.id] = map[string]bool{}
 			}
+			in[n.id][r.name] = true
 		}
 	}
 	sort.Strings(ids)
-	h := map[string]string{}
-	for _, id := range ids {
-		h[id] = change.Handle(id, ids)
+	h := handleMap{}
+	for _, r := range repos {
+		if r.snap == nil {
+			continue
+		}
+		for _, n := range r.snap.all {
+			handle := change.Handle(n.id, ids)
+			if len(in[n.id]) > 1 {
+				handle = r.name + "/" + handle
+			}
+			h[handleKey{r.name, n.record.Target, n.id}] = handle
+		}
 	}
 	return h
 }
@@ -447,7 +528,7 @@ func (s *snapshot) changeView(n recorded, handle string, candidates []recorded) 
 
 // repoView is a repository as valley-changes/v1 writes it, holding the
 // changes keep chooses, each with includes among those include chooses.
-func (l listed) repoView(h map[string]string, keep, include func(*snapshot, recorded) bool) jsonRepo {
+func (l listed) repoView(h handleMap, keep, include func(*snapshot, recorded) bool) jsonRepo {
 	r := jsonRepo{Repo: l.name, URL: l.url, Changes: []jsonChange{}, Branches: []jsonBranch{}}
 	if l.err != nil {
 		msg := l.err.Error()
@@ -462,7 +543,7 @@ func (l listed) repoView(h map[string]string, keep, include func(*snapshot, reco
 	}
 	for _, n := range l.snap.all {
 		if keep(l.snap, n) {
-			r.Changes = append(r.Changes, l.snap.changeView(n, h[n.id], candidates))
+			r.Changes = append(r.Changes, l.snap.changeView(n, h[handleKey{l.name, n.record.Target, n.id}], candidates))
 		}
 	}
 	r.Branches = l.snap.unrecorded()
@@ -505,7 +586,11 @@ func walkStrings(doc any, f func(string)) {
 		if d.Error != nil {
 			f(*d.Error)
 		}
-		for _, c := range d.Changes {
+		all := d.Changes
+		if d.Drafts != nil {
+			all = append(append([]jsonChange(nil), all...), *d.Drafts...)
+		}
+		for _, c := range all {
 			f(c.ChangeID)
 			f(c.Handle)
 			f(c.Target)

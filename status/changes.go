@@ -6,6 +6,9 @@
 //   - its full change ID, 32 letters from k to z;
 //   - its handle: the shortest prefix of its ID, four letters at least,
 //     that no other change recorded on origin shares;
+//   - its handle qualified by this repository's name, <repo>/<handle>,
+//     the way changes and pending write the handle of a change ID that
+//     several repositories record;
 //   - its branch, the way changes were named before they had records.
 //
 // A name shaped like a handle is looked up among origin's records first.
@@ -18,8 +21,10 @@
 // the change whose active version is on it, when exactly one is
 // (resolveRecorded). So how a change is named never decides whether its
 // record is read. A change whose active version has landed, by the first
-// two landing rules (inventory.go), is not on any branch for this, so a
-// branch name can be used again once its change has landed.
+// two landing rules (inventory.go), is not on its branch for this while
+// the branch is still at that version's head, so a branch name can be
+// used again once its change has landed. A branch that has moved since
+// names the change as before.
 
 package main
 
@@ -143,11 +148,12 @@ type recorded struct {
 // written as origin/<branch>, it has no handle's shape, or it matches no
 // record. A name that matches more than one record is refused.
 func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
-	if strings.HasPrefix(name, "origin/") || !change.LooksLikeHandle(name) {
+	handle, ok := handlePart(g, name)
+	if strings.HasPrefix(name, "origin/") || !ok {
 		return recorded{}, false, nil
 	}
 	ids := o.changes()
-	matches := change.Matching(name, ids)
+	matches := change.Matching(handle, ids)
 	switch {
 	case len(matches) == 0:
 		return recorded{}, false, nil
@@ -173,6 +179,23 @@ func lookup(g git, o origin, name string) (n recorded, found bool, err error) {
 	return n, true, nil
 }
 
+// handlePart is the handle a name gives, when it has a handle's shape: the
+// name itself, or what follows the slash in a name written
+// <repo>/<handle>, when <repo> is this repository's name. changes and
+// pending qualify a handle that way when one change ID is recorded in
+// several repositories they list. A qualified name that matches no record
+// is a branch name, like any other handle.
+func handlePart(g git, name string) (string, bool) {
+	if change.LooksLikeHandle(name) {
+		return name, true
+	}
+	repo, handle, ok := strings.Cut(name, "/")
+	if ok && repo != "origin" && change.LooksLikeHandle(handle) && repo == project(g) {
+		return handle, true
+	}
+	return "", false
+}
+
 // resolution is what the name of a change stands for. A name that is a
 // branch's sets branch alone. A name that is a change's sets every field
 // from the change's record on origin: the active version, the head that
@@ -187,7 +210,7 @@ type resolution struct {
 // version names no branch is refused, since every verb that resolves a
 // name acts on a branch too.
 func resolve(g git, name string) (resolution, error) {
-	if strings.HasPrefix(name, "origin/") || !change.LooksLikeHandle(name) {
+	if _, ok := handlePart(g, name); strings.HasPrefix(name, "origin/") || !ok {
 		return resolution{branch: strings.TrimPrefix(name, "origin/")}, nil
 	}
 	o, err := listOrigin(g, append([]string{"refs/heads/" + name}, recordPatterns...)...)
@@ -261,7 +284,9 @@ func (o origin) resolution(n recorded) (resolution, error) {
 }
 
 // unlandedOn is every change origin holds a record of whose active
-// version names branch and has not landed. o must list inventoryPatterns.
+// version names branch, less each whose active version has landed while
+// the branch's tip on origin is still that version's head. o must list
+// inventoryPatterns.
 // Landing is read only for a change on the branch, so a name no record is
 // on costs no more than reading the records.
 func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
@@ -289,8 +314,10 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 	}
 	s := newSnapshot(g, o, all, verifierFromEnv())
 	var found []recorded
+	tip := o.refs["refs/heads/"+branch]
 	for _, n := range on {
-		if !s.isLanded(n.id, n.record.ActiveVersion()) {
+		v := n.record.ActiveVersion()
+		if tip != headOf(v) || !s.isLanded(n.id, v) {
 			found = append(found, n)
 		}
 	}

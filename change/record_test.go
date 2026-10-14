@@ -58,6 +58,12 @@ func TestAWellFormedRecordReadsWhole(t *testing.T) {
 	if err != nil || !reflect.DeepEqual(again, r) {
 		t.Errorf("an encoded record read back as %+v, %v", again, err)
 	}
+	for _, state := range []string{Draft, Withdrawn} {
+		r, err := Parse([]byte(strings.Replace(record(), `"state": "ready"`, `"state": "`+state+`"`, 1)))
+		if err != nil || r.State != state {
+			t.Errorf("a %s record read as %+v, %v", state, r, err)
+		}
+	}
 }
 
 // Each case changes one thing about a well-formed record, and each change

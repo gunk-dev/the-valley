@@ -4,8 +4,8 @@
 // A change is one piece of work aimed at a target branch, with a stable
 // ID that survives rebases. Each time its author marks a new head ready,
 // the change gains a version. The record lists every version in order,
-// says which one is active, and says whether the change is ready or
-// withdrawn.
+// says which one is active, and says whether the change is ready, a draft
+// or withdrawn.
 //
 // A record lives at refs/the-valley/changes/<target>/<change ID>. The ref
 // points at a record commit whose tree holds one file, record.json, in the
@@ -52,9 +52,12 @@ import (
 // Schema names the record format.
 const Schema = "valley-change-record/v1"
 
-// The states a change can be in.
+// The states a change can be in. A ready change is one its owner wants
+// landed. A draft is one paused, to be readied again. A withdrawn change is
+// one given up, until it is readied again.
 const (
 	Ready     = "ready"
+	Draft     = "draft"
 	Withdrawn = "withdrawn"
 )
 
@@ -179,8 +182,8 @@ func (r *Record) Check() error {
 		return fmt.Errorf("its target %q is not a branch name in UTF-8", r.Target)
 	case !ValidPrincipal(r.Owner):
 		return fmt.Errorf("its owner %q is not a principal name", r.Owner)
-	case r.State != Ready && r.State != Withdrawn:
-		return fmt.Errorf("its state is %q, where %q or %q is expected", r.State, Ready, Withdrawn)
+	case r.State != Ready && r.State != Draft && r.State != Withdrawn:
+		return fmt.Errorf("its state is %q, where %q, %q or %q is expected", r.State, Ready, Draft, Withdrawn)
 	case r.Seq < 1 || r.Seq > MaxSeq:
 		return fmt.Errorf("its seq is %d, outside 1 to %d", r.Seq, MaxSeq)
 	case len(r.Versions) == 0:

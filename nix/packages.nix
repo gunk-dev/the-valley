@@ -261,12 +261,16 @@ rec {
   };
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
-  # same trade as attest — hence vendorHash = null and no module fetch.
+  # same trade as attest — hence vendorHash = null and no module fetch. It
+  # reads change records with the one reading of a record the push hook
+  # shares (../change).
   integrator-unwrapped = pkgs.buildGoModule {
     pname = "valley-integrator";
     version = "0";
-    src = ../integrator;
+    src = withLocal ../integrator [ ../change ];
+    modRoot = "integrator";
     vendorHash = null;
+    preBuild = readsGoMod;
     # The policy bridge's tests check a deriver's report against real git.
     nativeCheckInputs = [ pkgs.git ];
     meta.mainProgram = "integrator";

@@ -42,6 +42,17 @@ declares. Anything left standing lands; anything invalidated surfaces as
 one request-stale event naming exactly those checks, and the request stays
 for approving again.
 
+Before the commit rule, the change records can refuse a request. A request
+named c-<change ID> is that change's, and lands only while the record at
+refs/the-valley/changes/<target>/<change ID> says ready and lists the
+request's head as one of its versions'. A request of any name does not land
+while its head is a version of a change whose record is not ready. Both
+refuse with refused-not-ready. A request whose commits from the merge base
+to the head include a merge is refused-merge. A refused request stays where
+it is, and is decided again on every pass, so a change readied again is
+judged on the next one. Records are read just before the target moves as
+well, and a record never makes a request land.
+
 flags:
   --repo DIR          the served repository (default: here)
   --project NAME      the project name events carry (default: the repo's)

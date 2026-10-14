@@ -87,9 +87,9 @@ project: {
 		requires: "valley-ready":    true
 	}
 
-	// The change record, which the hook guards and the CLI's Go verbs write.
-	// Both read a record through it, so a change to it owes their tests as
-	// well as its own.
+	// The change record, which the hook guards, the CLI's Go verbs write and
+	// the integrator reads. Each reads a record through it, so a change to
+	// it owes their tests as well as its own.
 	classes: change: {
 		paths: "change/**":          true
 		requires: "change-unit":     true
@@ -98,6 +98,8 @@ project: {
 		requires: "valley-go-unit":  true
 		requires: "valley-ready":    true
 		requires: "valley-changes":  true
+		requires: "integrator-unit": true
+		requires: "integrator-e2e":  true
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so

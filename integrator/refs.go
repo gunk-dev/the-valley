@@ -24,7 +24,10 @@ package main
 // commit is the change's head, its tree is what the attestations are over,
 // and the delta is the merge base with the target's tip to that head.
 // Nothing else is encoded: a change is a diff targeting a stream
-// (ida-93e4f91), and every part of that is already in git.
+// (ida-93e4f91), and every part of that is already in git. A request
+// whose last segment is c-<change ID> is the request of the change with a
+// record under that ID, and the records decide whether it may land at all
+// (records.go).
 
 import (
 	"the-valley/integrator/verdict"
@@ -87,6 +90,10 @@ func (in *integrator) requests() ([]request, []string, error) {
 
 // reconcile is one pass: judge every request against the current tip of its
 // target, and act where the answer has changed.
+//
+// The change records are read once, before any request is judged. A pass
+// that cannot read them judges nothing: which heads are versions of
+// changes that are not ready is what keeps those heads from landing.
 func (in *integrator) reconcile() error {
 	requests, malformed, err := in.requests()
 	if err != nil {
@@ -95,8 +102,18 @@ func (in *integrator) reconcile() error {
 	for _, ref := range malformed {
 		fmt.Fprintf(in.out, "%s: not a request ref; one is %s/<target>/<change>. Skipped.\n", ref, requestPrefix)
 	}
+	if len(requests) == 0 {
+		return nil
+	}
+	idx, err := in.readRecords()
+	if err != nil {
+		return err
+	}
+	for _, why := range idx.unreadable {
+		fmt.Fprintf(in.out, "%s. It refuses nothing.\n", why)
+	}
 	for _, r := range requests {
-		if err := in.handle(r); err != nil {
+		if err := in.handle(r, idx); err != nil {
 			// One bad request must not stop the pass: the integrator is a
 			// controller, and a request it cannot judge is one request's
 			// problem.
@@ -107,7 +124,7 @@ func (in *integrator) reconcile() error {
 }
 
 // handle judges one request and acts on the verdict.
-func (in *integrator) handle(r request) error {
+func (in *integrator) handle(r request, idx *recordIndex) error {
 	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
 	if err != nil {
 		return fmt.Errorf("no target %s to integrate onto", r.target)
@@ -123,22 +140,55 @@ func (in *integrator) handle(r request) error {
 		return err
 	}
 	memo := fmt.Sprintf("%s %s %s", r.head, tip, evidence)
-	if done, err := in.answered(r, memo); err != nil {
+	last, err := in.readMemo(r)
+	if err != nil {
 		return err
-	} else if done {
+	}
+	if in.answered(last, memo) {
 		return nil
 	}
 	// From here on the request has been taken up, so whatever happens is
 	// this pass's answer to it — including a failure. Recording that is
 	// what keeps the next tick from asking the identical question.
-	outcome, err := in.act(r, tip)
+	outcome, err := in.refuse(r, idx, tip, last, memo)
+	if err == nil && outcome == "" {
+		outcome, err = in.act(r, idx, tip)
+	}
 	if err != nil {
 		if memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339)); memoErr != nil {
 			return fmt.Errorf("%v (and the failure could not be recorded: %v)", err, memoErr)
 		}
 		return err
 	}
+	if last == memo+" "+string(outcome) {
+		return nil
+	}
 	return in.writeMemo(r, memo+" "+string(outcome))
+}
+
+// refuse applies the rules that refuse a request before it is judged
+// (records.go), and reports a refusal. It reports one only when it is new:
+// a refusal is decided again on every pass, and saying the same one every
+// tick would bury it.
+func (in *integrator) refuse(r request, idx *recordIndex, tip, last, memo string) (verdict.Outcome, error) {
+	outcome, why, err := in.recordRefusal(r, idx, false)
+	if err == nil && outcome == "" {
+		outcome, why, err = in.mergeRefusal(r, tip)
+	}
+	if err != nil || outcome == "" {
+		return "", err
+	}
+	if last != memo+" "+string(outcome) {
+		in.reportRefusal(r, tip, outcome, why)
+	}
+	return outcome, nil
+}
+
+// reportRefusal prints a refusal the way report prints a verdict.
+func (in *integrator) reportRefusal(r request, tip string, outcome verdict.Outcome, why string) {
+	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, verdict.Short(tip), outcome)
+	fmt.Fprintf(in.out, "  %s\n", why)
+	fmt.Fprintf(in.out, "  no event: a refusal is not staleness, and the request stays where it is\n")
 }
 
 // failedMemo marks a memo written for a pass that could not act on its own
@@ -156,33 +206,36 @@ const (
 	retryAfter = 10 * time.Minute
 )
 
-// answered says whether this pass already has this request's answer. An
-// outcome stands until the request, the tip, or the evidence moves; a
-// recorded failure stands the same way, and additionally expires, so a
-// transient one is retried without being retried at tick rate.
-func (in *integrator) answered(r request, memo string) (bool, error) {
-	last, err := in.readMemo(r)
-	if err != nil || last == "" {
-		return false, err
-	}
+// answered says whether this pass already has this request's answer, given
+// the last memo written for it. An outcome stands until the request, the
+// tip, or the evidence moves; a recorded failure stands the same way, and
+// additionally expires, so a transient one is retried without being
+// retried at tick rate. A refusal never stands: what refused it can change
+// while the three stay where they are, as when a draft is readied again,
+// so it is decided again on every pass.
+func (in *integrator) answered(last, memo string) bool {
 	rest, ok := strings.CutPrefix(last, memo+" ")
 	if !ok {
-		return false, nil
+		return false
+	}
+	switch verdict.Outcome(rest) {
+	case refusedNotReady, refusedMerge:
+		return false
 	}
 	when, failed := strings.CutPrefix(rest, failedMemo+" ")
 	if !failed {
-		return true, nil
+		return true
 	}
 	at, err := time.Parse(time.RFC3339, when)
 	if err != nil {
-		return false, nil
+		return false
 	}
-	return in.now().Sub(at) < retryAfter, nil
+	return in.now().Sub(at) < retryAfter
 }
 
 // act judges one request and does what the verdict says, returning the
 // outcome so the memo can record it.
-func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
+func (in *integrator) act(r request, idx *recordIndex, tip string) (verdict.Outcome, error) {
 	ch, snap, landed, err := in.materialize(r, tip)
 	if err != nil {
 		return "", err
@@ -195,6 +248,16 @@ func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 
 	switch v.Outcome {
 	case verdict.Land:
+		// Judging can take minutes, and a change can be unreadied or
+		// withdrawn meanwhile. So the records are read once more just
+		// before the commit point, and a change no longer ready lands
+		// nothing.
+		if outcome, why, err := in.recordRefusal(r, idx, true); err != nil || outcome != "" {
+			if outcome != "" {
+				in.reportRefusal(r, tip, outcome, why)
+			}
+			return outcome, err
+		}
 		if err := in.land(ch, v, r, tip, landed); err != nil {
 			return v.Outcome, err
 		}

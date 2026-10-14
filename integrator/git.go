@@ -24,6 +24,21 @@ func git(repo string, args ...string) (string, error) {
 	return out.String(), nil
 }
 
+// gitInput runs a git command with stdin, and returns its stdout whole,
+// for the batch reads that answer many questions in one process.
+func gitInput(repo string, stdin []byte, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repo
+	cmd.Stdin = bytes.NewReader(stdin)
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
+	}
+	return out.Bytes(), nil
+}
+
 func gitLine(repo string, args ...string) (string, error) {
 	out, err := git(repo, args...)
 	return strings.TrimSpace(out), err

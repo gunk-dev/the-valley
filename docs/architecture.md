@@ -494,6 +494,13 @@ is a commit no version records, so the change is readied again before its handle
 `ready`, and the refusal names its state. `valley-go resolve` gives these verbs the change's ID,
 handle, active version, recorded head, branch and state on one line.
 
+The record can change while one of these verbs runs. Another principal may unready or withdraw the
+change, or ready a new version, while a review is open or the checks run. So `approve` reads the
+record again before it runs the checks, and again before it files the request. `rebase` reads it
+again before it starts, and again before it pushes. Each refuses when the change is no longer
+`ready`, or when its active version is at another head than the one the verb began with. Nothing on
+origin makes this check until the integrator reads records.
+
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
 (`status/ready.go`). They take a change by any of its names, and print the handle, the active
 version and the new state, such as `cosmo nxvp v2 draft`. Each warns when a request for the change

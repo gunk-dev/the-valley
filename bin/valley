@@ -265,7 +265,10 @@ that head, and approve, rebase and review's [r]eject refuse, naming both,
 when the branch's tip on origin is another commit. [r]eject deletes the
 branch under a lease on the recorded head. approve, rebase, and review's
 [a]pprove and [b]ase refuse a change whose record is not ready, naming
-its state.
+its state. Each reads the record again just before it acts, and again
+before approve files or rebase pushes, and refuses when the change is no
+longer ready or its active version has moved to another head since the
+verb began.
 
 Runs from any checkout of the project; needs only git and coreutils,
 except tail and replay, which also need the nats CLI (natscli), checks,
@@ -674,6 +677,11 @@ rebase_onto_main() {
     cleanup_rebase_wt
     die "could not read the rebased head of $branch; nothing pushed"
   }
+  # A change with a record is read once more, just before the push.
+  if ! check_record "nothing pushed"; then
+    cleanup_rebase_wt
+    exit 1
+  fi
   if ! git -C "$REBASE_WT" push --quiet "--force-with-lease=refs/heads/$branch:$from" \
     origin "HEAD:refs/heads/$branch"; then
     cleanup_rebase_wt
@@ -847,7 +855,7 @@ approve() {
   # ready, at the head its record names, and only while its branch is there
   # too.
   if [ -n "$CHANGE_HEAD" ]; then
-    check_ready "nothing published" || return 1
+    check_record "nothing published" || return 1
     check_recorded_tip "$branch" "nothing published" || return 1
     head="$CHANGE_HEAD"
   fi
@@ -998,6 +1006,13 @@ approve() {
   if [ "$pending" != "$head" ]; then
     lease+=("--force-with-lease=$ref:$pending")
     push+=("$head:$ref")
+  fi
+
+  # The checks can take minutes, and the record may have moved meanwhile.
+  # So it is read once more, just before anything is filed.
+  if ! check_record "nothing published"; then
+    report_local_evidence ${evidence[@]+"${evidence[@]}"}
+    return 1
   fi
 
   # Nothing owed and the request already standing at this head leaves
@@ -1154,14 +1169,36 @@ check_recorded_tip() {
   refuse "change $CHANGE_HANDLE v$CHANGE_VERSION records the head $CHANGE_HEAD, and origin/$branch is at $tip; $undone. Ready the branch's head as a new version of $CHANGE_HANDLE to act on it"
 }
 
-# For a change with a record, refuse unless its record says it is ready,
-# and name the state it is in. A draft is paused and a withdrawn change
-# given up, and neither is approved or rebased until it is readied again.
-# The argument is what the refusal leaves undone.
-check_ready() {
+# For a change with a record, read the record again from origin, and
+# refuse unless the change is still ready at the head this run began with.
+# A draft is paused and a withdrawn change given up, and neither is
+# approved or rebased until it is readied again. The record was read when
+# review, approve or rebase began, and another principal may unready,
+# withdraw or ready a new version of the change while a review is open or
+# the checks run. So approve reads it again before it runs the checks and
+# before it files, and rebase before it starts and before it pushes. Until
+# the integrator reads records, nothing on origin makes this check. The
+# argument is what the refusal leaves undone.
+check_record() {
   [ -n "$CHANGE_ID" ] || return 0
-  [ "$CHANGE_STATE" = ready ] && return 0
-  refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; $1. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$CHANGE_BRANCH")"
+  local line kind id handle version head branch state
+  if ! line="$(valley-go resolve "$CHANGE_ID")"; then
+    refuse "could not read the record of change $CHANGE_HANDLE again; $1"
+    return 1
+  fi
+  IFS=$'\t' read -r kind id handle version head branch state <<< "$line"
+  if [ "$kind" != change ] || [ "$id" != "$CHANGE_ID" ]; then
+    refuse "origin no longer holds a record of change $CHANGE_HANDLE; $1"
+    return 1
+  fi
+  if [ "$state" != ready ]; then
+    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $1. Ready it first: valley ready --change $CHANGE_ID $(printf '%q' "$branch")"
+    return 1
+  fi
+  if [ "$head" != "$CHANGE_HEAD" ]; then
+    refuse "change $CHANGE_HANDLE is at v$version, $head, and this run began at v$CHANGE_VERSION, $CHANGE_HEAD; $1. Review it again at its new head"
+    return 1
+  fi
 }
 
 # rebase for a change with a record rebases the recorded head alone, so
@@ -1169,7 +1206,7 @@ check_ready() {
 # records, so the change is readied again before its handle names it.
 rebase_change() {
   local branch="$1"
-  check_ready "nothing rebased" || return 1
+  check_record "nothing rebased" || return 1
   check_recorded_tip "$branch" "nothing rebased" || return 1
   rebase_onto_main "$branch" "$CHANGE_HEAD"
   if [ -n "$CHANGE_HEAD" ]; then
@@ -1311,7 +1348,7 @@ cmd_rebase() {
   fetch_origin
   git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
-  check_ready "nothing rebased" || exit 1
+  check_record "nothing rebased" || exit 1
   check_recorded_tip "$branch" "nothing rebased" || exit 1
   # review offers [b]ase only to a stale branch. One that fast-forwards
   # already is left alone, rather than rewritten for nothing.

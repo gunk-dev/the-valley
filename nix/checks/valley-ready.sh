@@ -518,6 +518,70 @@ record "$pid" '.state == "withdrawn"' '.seq == 9' '.active == 2'
 grep -qF "main/c-$pid for $ph is pending" "$w/err" || fail 'withdraw did not warn of a request named by the change ID'
 
 # ----------------------------------------------------------------------
+# review, approve and rebase read the record again just before they act.
+# A review opened while the change is ready refuses to approve or rebase
+# it once another principal has unreadied it, and refuses to approve it
+# once it has a new version. Its branch starts behind main, so the review
+# offers [b]ase as well.
+#
+# review_while <change> <answers> <command…>: review the change as the
+# operator, run the command once the review waits at its prompt, then
+# give the answers.
+review_while() {
+  local name="$1" answers="$2" reviewer i
+  shift 2
+  # A review.out left from an earlier review would show a prompt this one
+  # has not reached.
+  rm -f "$w/fifo" "$w/review.out"
+  mkfifo "$w/fifo"
+  VALLEY_PRINCIPAL=requester valley review "$name" < "$w/fifo" > "$w/review.out" 2> "$w/review.err" &
+  reviewer=$!
+  exec 3> "$w/fifo"
+  for i in $(seq 600); do
+    if grep -qF '[s]kip? ' "$w/review.out" 2> /dev/null; then break; fi
+    sleep 0.1
+  done
+  grep -qF '[s]kip? ' "$w/review.out" || fail "review of $name never reached its prompt (after $i tries)"
+  "$@" > "$w/out" 2> "$w/err" || fail "$* failed while the review was open"
+  printf '%b' "$answers" >&3
+  exec 3>&-
+  wait "$reviewer" || fail "review of $name failed"
+}
+git checkout --quiet -b drafts/raced main~1
+commit raced
+raced="$(git rev-parse HEAD)"
+as contributor git push --quiet origin drafts/raced
+ok as contributor valley ready
+rid="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+rh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+if [ "${#rid}" != 32 ] || [ -z "$rh" ]; then fail 'ready did not name the new change'; fi
+raced_request=refs/the-valley/integration-requests/main/drafts-raced
+
+review_while "$rh" 'a\nb\ns\n' as contributor valley unready "$rh"
+grep -qF "change $rh v1 is draft, not ready; nothing published" "$w/review.err" \
+  || fail "review's [a]pprove went ahead for a change unreadied while the review was open"
+grep -qF "change $rh v1 is draft, not ready; nothing rebased" "$w/review.err" \
+  || fail "review's [b]ase went ahead for a change unreadied while the review was open"
+if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
+  fail 'review filed a request for a change unreadied while it was open'
+fi
+[ "$(git -C "$origin" rev-parse refs/heads/drafts/raced)" = "$raced" ] \
+  || fail 'review rebased a change unreadied while it was open'
+
+ok as contributor valley ready --change "$rid"
+commit raced-again
+raced_again="$(git rev-parse HEAD)"
+new_version() {
+  as contributor git push --quiet origin drafts/raced && as contributor valley ready --change "$rid"
+}
+review_while "$rh" 'a\ns\n' new_version
+grep -qF "change $rh is at v2, $raced_again, and this run began at v1, $raced; nothing published" "$w/review.err" \
+  || fail "review's [a]pprove went ahead for a change that gained a version while the review was open"
+if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
+  fail 'review filed a request for a change that gained a version while it was open'
+fi
+
+# ----------------------------------------------------------------------
 # A branch no record's active version is on is a branch, as before
 # records: review shows its tip, and approve files it under its own name.
 printf 's\n' | valley review pushed > "$w/out" 2> "$w/err" || fail 'review of a branch with no record failed'

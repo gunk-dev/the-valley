@@ -336,11 +336,11 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 		return ch, verdict.Snapshot{}, land, err
 	}
 	land.policy = policyDigest
-	owed, err := pol.derive(wt, base, r.head)
+	derived, err := pol.derive(wt, base, r.head)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
-	required, err := pol.required(owed, cat)
+	required, err := pol.required(derived, cat)
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}

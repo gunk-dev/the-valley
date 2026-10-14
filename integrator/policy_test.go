@@ -43,10 +43,11 @@ unclassified: 1 path(s) matched no class
 	}
 }
 
-// The deriver ends its report with what each owed check costs. Those lines
-// group the owed checks and owe nothing, so a report carrying them reads as
-// exactly the report without them — with an unclassified block between
-// the table and the summary, and with the summary straight after the table.
+// The deriver ends its report with what each required check costs. Those
+// lines group the required checks and require nothing more, so a report
+// carrying them reads as exactly the report without them — with an
+// unclassified block between the table and the summary, and with the
+// summary straight after the table.
 func TestTheCostSummaryChangesNothingRead(t *testing.T) {
 	table := `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
@@ -84,8 +85,8 @@ slow: vm-test
 }
 
 // A deriver that fails partway and still exits zero prints something that
-// is not a whole report. Read as one, each of these owes nothing, so each
-// is refused.
+// is not a whole report. Read as one, each of these requires nothing, so
+// each is refused.
 func TestAPartialReportIsRefused(t *testing.T) {
 	for _, c := range []struct{ name, out string }{
 		{"a required-checks heading with no checks under it", `abc1234..def5678: 2 changed path(s)
@@ -135,8 +136,8 @@ required checks:
 }
 
 // The report of a diff with nothing in it is still a whole report, and it
-// owes nothing.
-func TestAnEmptyDiffReadsAsOwingNothing(t *testing.T) {
+// requires nothing.
+func TestAnEmptyDiffReadsAsRequiringNothing(t *testing.T) {
 	d, err := parseDerived(`abc1234..abc1234: 0 changed path(s)
 policy: instance + policy
 classes matched: none

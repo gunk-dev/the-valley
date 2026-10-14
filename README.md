@@ -77,13 +77,13 @@ can instantiate the same check over its own tree from a flake input. The plan of
   node ids cited in code still resolve.
 - [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
   plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
-  derives the checks a change owes from the declared verification policy, and only reports them. The
-  policy it composes is this project's own layer at `policy/project` and the floor of the valley
+  derives the checks the declared verification policy requires of a change, and only reports them.
+  The policy it composes is this project's own layer at `policy/project` and the floor of the valley
   named at [`policy/valley`](./policy/valley), fetched from that valley's repository. Both are read
   from the tip of the branch the change targets, never from your checkout, which is what the
   integrator reads — so the answer is the same from any branch, however stale. It also groups the
-  owed checks by their declared cost. `valley approve` and `valley rebase` do what review's keys do,
-  for front ends that show a change their own way, and `valley status --json` gives them the
+  required checks by their declared cost. `valley approve` and `valley rebase` do what review's keys
+  do, for front ends that show a change their own way, and `valley status --json` gives them the
   change's status as a versioned JSON object. `valley ready`, `valley unready` and `valley withdraw`
   record a change's versions and whether it is ready, a draft or withdrawn, under a change ID that
   survives rebases. Every verb names a change by that ID, by its short handle, or by its branch.

@@ -300,8 +300,8 @@ unchanged "$stamped_id" refused 'has a record on origin already' \
 # only where that head is expected to be, and whoever can push the branch
 # can move it, in the same push as the record if they like.
 #
-# approve derives what the change owes from the owning valley's floor,
-# named at policy/valley on main. This floor owes nothing, so approving
+# approve derives what the change requires from the owning valley's floor,
+# named at policy/valley on main. This floor requires nothing, so approving
 # files a request with no evidence, and no signing key is needed.
 valley="$w/valley.git"
 git init --quiet --bare "$valley"

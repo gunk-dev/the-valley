@@ -131,15 +131,15 @@ converge, and cosmo's ROADMAP D11 carries them as the acceptance criteria of a G
 
 ## Threat model
 
-| Threat                             | Response today                                                                                                                                                  |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent acting as the operator    | Agents run in `klaus-env` with their own identities and no operator keys (step 1). The push hook scopes refs by principal (step 2).                             |
-| The interactive coordinator        | It runs in `klaus-env` with the other agents. Only a verified touch stops an agent that holds a grant, and that gate is queued (step 3).                        |
-| A compromised agent                | Assume arbitrary commands inside the VM. The VM has no production secrets and no signing sockets, and its egress is limited.                                    |
-| A broken but honest change         | A landing needs a signed statement that each owed check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness. |
-| A lost hardware key                | An offline backup YubiKey holds every role (plan Trust roots, 2026-10-04).                                                                                      |
-| classic-laddie compromised or down | Other hosts keep their current systems. Recovery that does not depend on classic-laddie arrives with M1-C.                                                      |
-| A bad network or DNS change        | A Pi's reboot waits for a peer resolver, with the exceptions in step 5. classic-laddie has a fallback resolver. unifi-sync has no automatic trigger.            |
+| Threat                             | Response today                                                                                                                                                      |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent acting as the operator    | Agents run in `klaus-env` with their own identities and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                 |
+| The interactive coordinator        | It runs in `klaus-env` with the other agents. Only a verified touch stops an agent that holds a grant, and that gate is queued (step 3).                            |
+| A compromised agent                | Assume arbitrary commands inside the VM. The VM has no production secrets and no signing sockets, and its egress is limited.                                        |
+| A broken but honest change         | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness. |
+| A lost hardware key                | An offline backup YubiKey holds every role (plan Trust roots, 2026-10-04).                                                                                          |
+| classic-laddie compromised or down | Other hosts keep their current systems. Recovery that does not depend on classic-laddie arrives with M1-C.                                                          |
+| A bad network or DNS change        | A Pi's reboot waits for a peer resolver, with the exceptions in step 5. classic-laddie has a fallback resolver. unifi-sync has no automatic trigger.                |
 
 ## Trust roots
 

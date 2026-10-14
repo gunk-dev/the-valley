@@ -87,8 +87,8 @@ floor: {
 		paths: "docs/**":    true
 		requires: "tree-ok": true
 	}
-	// A class that covers paths and asks nothing of them. Owing no check
-	// is an ordinary outcome, not a hole: the policy has read these paths
+	// A class that covers paths and asks nothing of them. Requiring no
+	// check is an ordinary outcome, not a hole: the policy has read these paths
 	// and has nothing to require of them.
 	classes: quiet: {
 		paths: "quiet/**": true
@@ -329,7 +329,7 @@ if [ "$offers" != 1 ] || [ "$checked" != 1 ] || [ -s "$pushlog" ]; then
 fi
 
 # ----------------------------------------------------------------------
-# 4. No signing key, with a check owed: refused before any check is run,
+# 4. No signing key, with a check required: refused before any check is run,
 #    and the prompt still comes back. The host signs, and there is no
 #    unsigned mode.
 : > "$pushlog"
@@ -354,8 +354,8 @@ fi
 # 5. A branch the policy requires no check of is filed as a request with
 #    no evidence. The integrator lands one and records it as a landing
 #    that required nothing, so refusing to file it here would strand
-#    exactly the changes a policy leaves unrequired. Nothing is owed, so
-#    nothing is signed: this runs with no signing key at all.
+#    exactly the changes a policy leaves unrequired. Nothing is required,
+#    so nothing is signed: this runs with no signing key at all.
 git checkout --quiet main
 git checkout --quiet -b topic/quiet
 mkdir -p quiet
@@ -370,11 +370,11 @@ printf 'a\n' > "$w/answers"
 env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
   > "$w/quiet.out" 2> "$w/quiet.err"
 
-grep -q 'owes no check under .* + policy/project@origin/main .*; filing the request with no evidence' "$w/quiet.out"
+grep -q 'requires no check under .* + policy/project@origin/main .*; filing the request with no evidence' "$w/quiet.out"
 grep -qF "$valley policy/instance@refs/heads/main" "$w/quiet.out"
 grep -q '^Approved topic/quiet .*: its integration request for origin/main is filed\.$' "$w/quiet.out"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet.out"
-grep -qx '  evidence none — nothing was owed, so nothing was signed' "$w/quiet.out"
+grep -qx '  evidence none — nothing was required, so nothing was signed' "$w/quiet.out"
 grep -qx '  checks   none — the policy requires no check of this change' "$w/quiet.out"
 
 # One push, carrying the request and nothing else.
@@ -385,7 +385,7 @@ if [ "$pushes" != 1 ]; then
   exit 1
 fi
 if grep -q 'refs/the-valley/attestations/' "$pushlog"; then
-  echo "valley-request: a request owing nothing published evidence" >&2
+  echo "valley-request: a request that requires nothing published evidence" >&2
   cat "$pushlog" >&2
   exit 1
 fi
@@ -740,7 +740,7 @@ if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/top
   exit 1
 fi
 
-# The same head with nothing owed: no evidence to publish and no ref to
+# The same head with nothing required: no evidence to publish and no ref to
 # write, so no push is made at all. topic/quiet's request has stood on
 # origin at this head since 5. A push assembled with an empty refspec
 # would fall back to origin's default one, and pushing whatever that
@@ -751,7 +751,7 @@ printf 'a\n' > "$w/answers"
 env -u VALLEY_ATTEST_KEY valley review topic/quiet < "$w/answers" \
   > "$w/quiet-again.out" 2> "$w/quiet-again.err"
 grep -qx "  request  refs/the-valley/integration-requests/main/topic-quiet -> $quiethead" "$w/quiet-again.out"
-grep -qx '  the request already stood at this head and nothing was owed, so nothing needed publishing' "$w/quiet-again.out"
+grep -qx '  the request already stood at this head and nothing was required, so nothing needed publishing' "$w/quiet-again.out"
 if [ -s "$pushlog" ]; then
   echo "valley-request: a re-approval with nothing to publish still pushed" >&2
   cat "$pushlog" >&2
@@ -925,8 +925,8 @@ git checkout --quiet main
 
 # ----------------------------------------------------------------------
 # 16. A project other than the-valley carries no schema/. The schema ships
-#     with the tool, so the packaged CLI derives what a change owes and
-#     files the request from a checkout that has none. This is the case
+#     with the tool, so the packaged CLI derives what a change requires
+#     and files the request from a checkout that has none. This is the case
 #     that failed in live use: [a]pprove in a valley's config repository, which
 #     carries its own floor at policy/instance, refused with "no policy
 #     schema" and published nothing.
@@ -1241,7 +1241,7 @@ fi
 # 19. A change whose version names no branch is approved at its head like
 #     any other. The record allows a version with no branch, though valley
 #     ready always names one, so the record here is written by hand. The
-#     check it owes runs over the recorded head, and the evidence and the
+#     check it requires runs over the recorded head, and the evidence and the
 #     c-<change ID> request reach origin in one push.
 git checkout --quiet -b branchless main
 echo "a readme no branch carries" > docs/readme.md

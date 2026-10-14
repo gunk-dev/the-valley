@@ -220,7 +220,7 @@ func (p policySource) derive(tip *worktree, from, to string) (derived, error) {
 		return derived{}, fmt.Errorf("deriving required checks for %s..%s: %w", verdict.Short(from), verdict.Short(to), err)
 	}
 	// A diff the deriver failed to read reads as no changed paths, and no
-	// changed paths owe nothing. So a report of none is believed only when
+	// changed paths require nothing. So a report of none is believed only when
 	// git agrees that the two trees are the same.
 	if d.paths == 0 {
 		if _, err := git(tip.dir, "diff-tree", "--quiet", from, to); err != nil {
@@ -240,7 +240,7 @@ var reportHeader = regexp.MustCompile(`^\S+\.\.\S+: ([0-9]+) changed path\(s\)$`
 // than assumed.
 //
 // Output that is not a whole report is refused rather than read as one
-// owing nothing: no header, no required-checks section, a required-checks
+// that requires nothing: no header, no required-checks section, a required-checks
 // heading with no checks under it, or classes that disagree with the
 // number of changed paths. The deriver never prints any of those, so each
 // is a deriver that failed partway and still exited zero.
@@ -294,7 +294,7 @@ func parseDerived(out string) (derived, error) {
 				return derived{}, fmt.Errorf("the deriver printed a required-checks heading with no checks under it")
 			}
 		case strings.HasPrefix(line, "required checks: none"):
-			// Nothing owed; the map stays empty.
+			// Nothing is required; the map stays empty.
 			required = true
 		}
 	}

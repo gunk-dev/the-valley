@@ -349,39 +349,40 @@ A project's required checks come from three CUE layers, unified as
 - **The project layer** is `policy/project/*.cue`, read at the tip of the target branch.
 
 Both layers are read from integrated tips, never from the change being judged
-(`integrator/policy.go`). A path class maps path globs to checks. A change owes the union of the
-checks of every class one of its paths matches. A path no class matches owes the `unclassified`
+(`integrator/policy.go`). A path class maps path globs to checks. A change requires the union of the
+checks of every class one of its paths matches. A path no class matches requires the `unclassified`
 checks. The integrator gets this answer by running `valley checks`, which diffs with renames counted
 on both sides. Checked by `policy-deriver` and `cue-vet`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
 policy makes `valley checks` exit non-zero and print no report. Without that, the failure would read
-as an empty list, and an empty list derives a change that owes nothing. The integrator also refuses
-output that is not a whole report: no header, no required-checks section, or a required-checks
-heading with no checks under it. It believes a report of no changed paths only when git agrees that
-the two trees are the same. Checked by `policy-deriver`, `valley-request` and `integrator-unit`.
+as an empty list, and an empty list derives a change that requires nothing. The integrator also
+refuses output that is not a whole report: no header, no required-checks section, or a
+required-checks heading with no checks under it. It believes a report of no changed paths only when
+git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request` and
+`integrator-unit`.
 
 A check also declares a `cost`, `quick` by default. A `slow` check takes minutes, or needs special
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
-report it prints two lines, `quick:` and `slow:`, each listing the owed checks of that cost.
-`valley checks --names` prints the owed check names alone, one per line, and `--cost quick` or
-`--cost slow` keeps one set. The integration gate does not read the cost. Approving runs every owed
-check, and the integrator requires evidence for every owed check, whatever its cost. The cost
-changes neither which checks a change owes nor what the integrator accepts. Checked by
+report it prints two lines, `quick:` and `slow:`, each listing the required checks of that cost.
+`valley checks --names` prints the required check names alone, one per line, and `--cost quick` or
+`--cost slow` keeps one set. The integration gate does not read the cost. Approving runs every
+required check, and the integrator requires evidence for every required check, whatever its cost.
+The cost changes neither which checks a change requires nor what the integrator accepts. Checked by
 `policy-deriver` and `integrator-unit`.
 
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
-a class that owes the checks reading that part. A Go module owes its unit tests, and its end-to-end
-check where it has one. The CLI owes its script and status checks. The Nix, the schemas and the
-policy owe their evaluations and vets. The NixOS module also owes the end-to-end checks that run
-what it renders, and two of those boot NixOS machines. A change to `flake.nix` or `flake.lock` does
-not owe them, so a nixpkgs bump boots no machine. A check's own files, such as its script under
-`nix/checks/`, owe that check. A change to documentation alone owes the floor's `prose-format` and
-nothing else. A project layer that stopped composing would stop every derivation once it landed,
-including the derivation of its own fix. So the `own-policy` check composes the layer with the
-example floor before it lands. It fails if the layer names a check this flake does not define, if a
-script under `nix/checks/` owes no check of its own, or if a docs-only change would owe more than
-`prose-format`.
+a class that requires the checks reading that part. A Go module requires its unit tests, and its
+end-to-end check where it has one. The CLI requires its script and status checks. The Nix, the
+schemas and the policy require their evaluations and vets. The NixOS module also requires the
+end-to-end checks that run what it renders, and two of those boot NixOS machines. A change to
+`flake.nix` or `flake.lock` does not require them, so a nixpkgs bump boots no machine. A check's own
+files, such as its script under `nix/checks/`, require that check. A change to documentation alone
+requires the floor's `prose-format` and nothing else. A project layer that stopped composing would
+stop every derivation once it landed, including the derivation of its own fix. So the `own-policy`
+check composes the layer with the example floor before it lands. It fails if the layer names a check
+this flake does not define, if a script under `nix/checks/` requires no check of its own, or if a
+docs-only change would require more than `prose-format`.
 
 The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 [dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and
@@ -481,7 +482,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
 | `valley rebase <change>`     | Does what `[b]ase` does, and adds the rebased head to the change's record as a new version.           |
-| `valley checks`              | Reports the checks a change owes, grouped by declared cost. It runs nothing.                          |
+| `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
 | `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
 | `valley unready <change>`    | Makes a ready change a draft, as its owner or the operator.                                           |
@@ -489,11 +490,11 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
-`[a]pprove` is the operator's approval of a change. It runs the owed checks with `attest` in a
+`[a]pprove` is the operator's approval of a change. It runs the required checks with `attest` in a
 worktree of the head it approves. Then one atomic push carries the evidence refs and the integration
 request, with a lease on the request ref. When the request already names this head, the push leaves
-the request ref out. When nothing is owed as well, there is no push. `[b]ase` rebases the branch in
-a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
+the request ref out. When nothing is required as well, there is no push. `[b]ase` rebases the branch
+in a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
 prompt.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
@@ -852,8 +853,8 @@ the other says `on <base>`. A stack is printed in the section of its top entry. 
 another section is marked with it, as `(ready)` marks a ready change inside a branch.
 
 A change also says `includes <handle>` for a change its head contains that is not an entry, such as
-a withdrawn one, and `uncertain` when that applies. `--owes` adds the checks each change owes, by
-cost, as `valley checks` derives them. Within a section, the stack with the latest commit comes
+a withdrawn one, and `uncertain` when that applies. `--checks` adds the checks each change requires,
+by cost, as `valley checks` derives them. Within a section, the stack with the latest commit comes
 first. Every line fits the terminal's width, or 80 columns when stdout is not a terminal. A title is
 cut short with `…`, and a handle or a branch never is. On a terminal, names are bold, unless
 `NO_COLOR` is set.
@@ -907,8 +908,8 @@ Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs 
    `refs/the-valley/changes/main/<change-id>`, with the head as a version. `valley pending` and
    `valley changes --json` list the change by its handle.
 3. The operator approves one head of the change: with `[a]pprove` in `valley review <handle>`, or
-   with `valley approve <handle> --head <sha>` from a front end. The owed checks run over that head,
-   and one push files the evidence and the integration request
+   with `valley approve <handle> --head <sha>` from a front end. The required checks run over that
+   head, and one push files the evidence and the integration request
    `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The hook verifies each
    note and the `request` grant.
 4. On its next pass the integrator reads the records. It refuses a request that would bring a

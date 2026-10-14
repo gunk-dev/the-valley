@@ -532,10 +532,10 @@ after '^origin$' '^(─)+$' '^nothing is ready on its own; 1 ready change is in 
 line '^released: could not read '
 after '^sealed$' '^(─)+$' '^nothing is ready$'
 
-# --owes adds a line to each change with the checks it owes, by cost, as
-# valley checks derives them, here and in a repository read through its
-# clone. The instance gets a floor for that, written to its main on disk
-# as the integrator would.
+# --checks adds a line to each change with the checks it requires, by
+# cost, as valley checks derives them, here and in a repository read
+# through its clone. The instance gets a floor for that, written to its
+# main on disk as the integrator would.
 git init --quiet "$w/floor"
 mkdir -p "$w/floor/policy/instance"
 cp "$floor"/*.cue "$w/floor/policy/instance/"
@@ -543,11 +543,11 @@ git -C "$w/floor" add policy
 git -C "$w/floor" commit --quiet -m floor
 git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
-ok valley pending --owes --all
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  owes 1 quick, 0 slow$' '^  approving it lands the 2 below too$' \
-  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   owes 1 quick, 0 slow$' '^  └ nxvpwlkm v1  ' \
-  '^      stack-a$' '^      1 commit · ' '^      owes 1 quick, 0 slow$'
-after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  owes 1 quick, 0 slow$'
+ok valley pending --checks --all
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  approving it lands the 2 below too$' \
+  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   requires 1 quick check, 0 slow$' '^  └ nxvpwlkm v1  ' \
+  '^      stack-a$' '^      1 commit · ' '^      requires 1 quick check, 0 slow$'
+after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$'
 
 # ----------------------------------------------------------------------
 # A branch name is used again once its change has landed: ff now names no

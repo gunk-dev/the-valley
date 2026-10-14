@@ -99,11 +99,11 @@ type jsonBranch struct {
 
 // listing is what changes and pending were asked for.
 type listing struct {
-	asJSON, all, owes bool
-	repo              string
+	asJSON, all, checks bool
+	repo                string
 }
 
-func parseListing(verb string, args []string, owes bool) (listing, error) {
+func parseListing(verb string, args []string, checks bool) (listing, error) {
 	var l listing
 	for i := 0; i < len(args); i++ {
 		switch a := args[i]; {
@@ -111,8 +111,8 @@ func parseListing(verb string, args []string, owes bool) (listing, error) {
 			l.asJSON = true
 		case a == "--all":
 			l.all = true
-		case a == "--owes" && owes:
-			l.owes = true
+		case a == "--checks" && checks:
+			l.checks = true
 		case a == "--repo" && i+1 < len(args):
 			i++
 			l.repo = args[i]

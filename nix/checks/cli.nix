@@ -70,12 +70,12 @@ in
   # the scratch policy in examples/policy/deriver/, whose floor is
   # one glob boundary per class. A check's cost is pinned the same way:
   # marking a check slow moves it between the summary lines and the
-  # --cost lists, and changes nothing owed.
+  # --cost lists, and changes nothing required.
   #
   # And the deriver fails closed: failNth stands in for git, sort and
   # cue, and fails each call the deriver makes in turn. Every failure
   # must end the derivation with nothing on stdout, because a failure
-  # read as an empty list is a change that owes nothing. cliScript is
+  # read as an empty list is a change that requires nothing. cliScript is
   # bin/valley itself, because the package's wrapper puts its own git
   # ahead of anything on PATH.
   policy-deriver = pkgs.runCommand "valley-policy-deriver" {
@@ -96,9 +96,9 @@ in
   # included, so it is held here before it lands. The floor it is composed
   # with is the example one: the owning valley's is not in this tree. The
   # check also holds every check the layer names to being an attribute of
-  # this flake's checks, and holds a docs-only change to owing
-  # prose-format alone. And it holds a check's own files to owing that
-  # check: every file in this directory named after a check, and every
+  # this flake's checks, and holds a docs-only change to requiring
+  # prose-format alone. And it holds a check's own files to requiring
+  # that check: every file in this directory named after a check, and every
   # other script here, read from the directory itself so a new one is
   # held as soon as it is added.
   own-policy = pkgs.runCommand "valley-own-policy" {
@@ -209,7 +209,7 @@ in
   # parent; a project named origin that shares a change ID; a
   # policy/valley git would read as an option or
   # as ext::; includes as the nearest ancestor only; pending's human shape,
-  # its drafts array and --owes; and a branch name read as a branch again
+  # its drafts array and --checks; and a branch name read as a branch again
   # once its change has landed, before the branch moves and after.
   valley-changes = pkgs.runCommand "valley-changes" {
     nativeBuildInputs = [
@@ -222,7 +222,7 @@ in
     ];
     initScript = hosts.integratorHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
-    # The floor --owes derives under.
+    # The floor --checks derives under.
     floor = ../../examples/policy/instance;
   } (builtins.readFile ./valley-changes.sh);
 

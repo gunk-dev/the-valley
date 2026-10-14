@@ -74,7 +74,7 @@ project: {
 	checks: "publish-e2e": cost:    "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
-	// A path in two classes owes both sets. A Go module's unit check is its
+	// A path in two classes requires both sets. A Go module's unit check is its
 	// package, whose checkPhase runs `go test`.
 
 	// The pre-receive hook and the git user's login shell. protect-e2e
@@ -89,7 +89,7 @@ project: {
 
 	// The change record, which the hook guards, the CLI's Go verbs write and
 	// the integrator reads. Each reads a record through it, so a change to
-	// it owes their tests as well as its own.
+	// it requires their tests as well as its own.
 	classes: change: {
 		paths: "change/**":          true
 		requires: "change-unit":     true
@@ -103,7 +103,7 @@ project: {
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so
-	// a change to it owes their tests as well as its own.
+	// a change to it requires their tests as well as its own.
 	classes: note: {
 		paths: "note/**":            true
 		requires: "note-unit":       true
@@ -177,7 +177,7 @@ project: {
 	// and the host declarations the module checks are evaluated over.
 	// own-policy is here because renaming or removing a flake check would
 	// leave this layer naming a check that no longer exists. A change to
-	// flake.nix or flake.lock owes these alone, so a nixpkgs bump boots no
+	// flake.nix or flake.lock requires these alone, so a nixpkgs bump boots no
 	// machine.
 	classes: nix: {
 		paths: "nix/**":                true
@@ -234,11 +234,12 @@ project: {
 		requires: "valley-changes":            true
 	}
 
-	// A check's own files owe that check: its script,
+	// A check's own files require that check: its script,
 	// nix/checks/<name>.sh, and its definition, nix/checks/<name>.nix,
 	// where it has a file of its own. One class per check, named
 	// check-<name>. prose-format is the floor's check, but its script is
-	// here. own-policy fails if a script under nix/checks/ owes no check.
+	// here. own-policy fails if a script under nix/checks/ requires no
+	// check.
 	for n in list.Concat([ownChecks, ["prose-format"]]) {
 		classes: ("check-\(n)"): {
 			paths: ("nix/checks/\(n).sh"):  true
@@ -275,6 +276,6 @@ project: {
 }
 
 // What no class above covers falls to the floor's `unclassified` rule and
-// owes prose-format alone. That is the research artefacts under research/,
+// requires prose-format alone. That is the research artefacts under research/,
 // the GitHub mirror's workflow under .github/, and editor settings: files
 // no program here reads.

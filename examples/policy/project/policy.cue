@@ -19,8 +19,8 @@ project: {
 	}
 
 	// A check that installs the scripts in a virtual machine boots a VM and
-	// takes minutes, so it is marked slow. It is owed exactly as a quick
-	// check is.
+	// takes minutes, so it is marked slow. It is required exactly as a
+	// quick check is.
 	checks: "install-vm": {
 		runner:    "nix"
 		attribute: "install-vm"

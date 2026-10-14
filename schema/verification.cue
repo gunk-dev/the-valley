@@ -12,8 +12,8 @@
 // overridable distinction; #Requires spells it out.
 //
 // Two tools read this file. `valley checks` composes the two layers with it
-// and prints the checks a change owes (dcr-f41f718); that deriver only
-// reports. The Phase 3 integrator asks the deriver the same question and
+// and prints the checks the policy requires of a change (dcr-f41f718);
+// that deriver only reports. The Phase 3 integrator asks the deriver the same question and
 // acts on the answer, which is the enforcement point (archive/design/integration.md).
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
@@ -164,10 +164,10 @@ package verification
 	// A "slow" check takes minutes, or needs special hardware such as
 	// virtualisation support.
 	//
-	// The cost is a declared property. `valley checks` groups the owed
+	// The cost is a declared property. `valley checks` groups the required
 	// checks by it and can filter them by it. The integrator does not
-	// read it: approving runs every owed check, and the integrator requires
-	// evidence for every owed check, whatever its cost.
+	// read it: approving runs every required check, and the integrator
+	// requires evidence for every required check, whatever its cost.
 	cost: *"quick" | "slow"
 }
 

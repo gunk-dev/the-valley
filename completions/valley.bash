@@ -38,7 +38,7 @@ _valley() {
   elif [ "$COMP_CWORD" -eq 2 ] && [[ "${COMP_WORDS[1]}" =~ ^(review|rebase)$ ]]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = pending ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--all --repo --owes --json' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--all --repo --checks --json' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = changes ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--json --all --repo' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = status ] && [ "${cur:0:1}" = - ]; then

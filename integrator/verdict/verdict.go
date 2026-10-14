@@ -321,10 +321,10 @@ func Decide(ch Change, s Snapshot) Verdict {
 		return v
 	}
 	switch {
-	// Nothing owed is an outcome, not a count of zero. Two ways to owe
-	// nothing, and a reader needs to know which: the diff was covered and
-	// asked nothing of, or there was no diff to ask anything of. The
-	// second is a change already in the target's history — its base is
+	// Nothing required is an outcome, not a count of zero. There are two
+	// ways to require nothing, and a reader needs to know which: the diff
+	// was covered and asked nothing of, or there was no diff to ask
+	// anything of. The second is a change already in the target's history — its base is
 	// its head, because the base is the merge base with the tip — and
 	// saying so is what keeps a request approved again from reading as a
 	// change that passed every check it had. A base nobody recorded is

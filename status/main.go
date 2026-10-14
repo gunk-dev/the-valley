@@ -37,7 +37,7 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go resolve <change>
        valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
-       valley-go pending [--json] [--all] [--repo <name>] [--owes]`
+       valley-go pending [--json] [--all] [--repo <name>] [--checks]`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))

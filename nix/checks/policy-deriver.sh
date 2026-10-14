@@ -104,9 +104,9 @@ expect "c-docs c-tmpl" "a deletion must count"
 grep -qE '^  c-docs +mandatory +docs$' <<<"$report"
 grep -qE '^  c-tmpl +default +docs$' <<<"$report"
 
-# A check's cost is a declared property and owes nothing. The same diff under a
-# project layer that marks c-docs slow owes the same checks, for the
-# same classes, with the same mandatory bits: every line above the
+# A check's cost is a declared property and changes nothing required. The
+# same diff under a project layer that marks c-docs slow requires the same
+# checks, for the same classes, with the same mandatory bits: every line above the
 # cost summary is the same. Only the summary moves c-docs.
 cp -R "$policy/project" "$policy/project-slow"
 cat > "$policy/project-slow/slow.cue" <<'EOF'
@@ -120,10 +120,10 @@ derive_slow() {
 }
 quick_report="$report"
 report="$(derive_slow)"
-expect "c-docs c-tmpl" "a slow check must be owed as a quick one is"
+expect "c-docs c-tmpl" "a slow check must be required as a quick one is"
 above_summary() { sed -e '/^quick:/,$d' -e '/^policy:/d' <<<"$1"; }
 [ "$(above_summary "$quick_report")" = "$(above_summary "$report")" ] || {
-  echo "policy-deriver: marking a check slow changed what is owed" >&2
+  echo "policy-deriver: marking a check slow changed what is required" >&2
   diff <(above_summary "$quick_report") <(above_summary "$report") >&2
   exit 1
 }
@@ -132,7 +132,7 @@ grep -qx 'slow: none' <<<"$quick_report"
 grep -qx 'quick: c-tmpl' <<<"$report"
 grep -qx 'slow: c-docs' <<<"$report"
 
-# The names alone are what an agent reads, so they are exactly the owed
+# The names alone are what an agent reads, so they are exactly the required
 # names, one per line, and --cost filters them.
 [ "$(derive_slow --names)" = "$(printf 'c-docs\nc-tmpl')" ]
 [ "$(derive_slow --names --cost quick)" = c-tmpl ]
@@ -148,12 +148,12 @@ if derive_slow --cost quick 2> /dev/null; then
   exit 1
 fi
 
-# A change that owes nothing prints no names and no cost summary.
+# A change that requires nothing prints no names and no cost summary.
 report="$(valley checks --schema "$schema" \
   --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")"
 grep -qx 'required checks: none' <<<"$report"
 if grep -q '^quick:' <<<"$report"; then
-  echo "policy-deriver: a change owing nothing printed a cost summary" >&2
+  echo "policy-deriver: a change that requires nothing printed a cost summary" >&2
   exit 1
 fi
 [ "$(valley checks --schema "$schema" --names \
@@ -161,7 +161,7 @@ fi
 
 # A schema that predates `cost` cannot render the composed policy. The
 # deriver refuses rather than reading the empty render as a policy that
-# owes nothing.
+# requires nothing.
 grep -v '^	cost: \*"quick" | "slow"$' "$schema" > "$TMPDIR/costless.cue"
 if cmp -s "$schema" "$TMPDIR/costless.cue"; then
   echo "policy-deriver: the costless schema still declares cost, so this case proves nothing" >&2
@@ -206,8 +206,8 @@ git update-ref -d "refs/replace/$(git rev-parse uncovered)"
 # are failed one at a time, one per run, by fail-nth standing in for the
 # tool first on PATH. A producer read through a process substitution
 # loses its status, and its failure then reads as an empty list — no
-# paths, no catalogue, no classes — which derives a change that owes
-# nothing. So every failure must end the run non-zero, say so, and print
+# paths, no catalogue, no classes — which derives a change that
+# requires nothing. So every failure must end the run non-zero, say so, and print
 # nothing on stdout: no report, and no names.
 #
 # This runs bin/valley itself, because the package's wrapper puts its own
@@ -239,8 +239,8 @@ shimmed() {
     "$@" "$base" HEAD
 }
 
-# The check names a run's stdout owes, sorted, on one line.
-owed_in() {
+# The check names a run's stdout requires, sorted, on one line.
+required_in() {
   if [ "$1" = names ]; then
     sort "$2" | paste -sd' ' -
   else
@@ -263,9 +263,9 @@ for tool in git sort cue; do
     opts=()
     [ "$mode" = report ] || opts=(--names)
     shimmed "$tool" 0 "${opts[@]}" > "$TMPDIR/shim.want"
-    want="$(owed_in "$mode" "$TMPDIR/shim.want")"
+    want="$(required_in "$mode" "$TMPDIR/shim.want")"
     [ "$want" = "c-deep c-docs c-flat c-tmpl c-uncovered" ] || {
-      echo "policy-deriver: the mixed case owes $want" >&2
+      echo "policy-deriver: the mixed case requires $want" >&2
       exit 1
     }
     calls="$(cat "$TMPDIR/shim-count")"
@@ -279,11 +279,11 @@ for tool in git sort cue; do
         # The one failure a run may survive is a cue probe after the
         # composition and the render: it asks whether a requirement is
         # mandatory, and a probe that fails reads as mandatory, the strict
-        # answer. What is owed must not move.
+        # answer. What is required must not move.
         [ "$tool" = cue ] && [ "$at" -gt 2 ] \
           || shim_fail "the $what failed and the deriver still answered"
-        [ "$(owed_in "$mode" "$TMPDIR/shim.out")" = "$want" ] \
-          || shim_fail "the $what failed and changed what is owed"
+        [ "$(required_in "$mode" "$TMPDIR/shim.out")" = "$want" ] \
+          || shim_fail "the $what failed and changed what is required"
         continue
       fi
       [ ! -s "$TMPDIR/shim.out" ] \

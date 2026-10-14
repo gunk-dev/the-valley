@@ -22,7 +22,7 @@ cue vet -c "$schema" "$policy"/instance/*.cue "$policy"/project/*.cue
 
 # Every check the composition names is a flake check this flake defines.
 # A policy naming a check nobody can build would be found only when a
-# change owing it is approved.
+# change that requires it is approved.
 cat > "$TMPDIR/attributes.cue" <<'EOF'
 package verification
 
@@ -47,8 +47,8 @@ while IFS= read -r a; do
 done < attributes.txt
 [ "$missing" -eq 0 ] || exit 1
 
-# A change to the docs owes the floor's prose-format alone, and a change to
-# the hook owes the hook's tests. Classes that matched too much or nothing
+# A change to the docs requires the floor's prose-format alone, and a
+# change to the hook requires the hook's tests. Classes that matched too much or nothing
 # at all would break one or the other.
 repo="$TMPDIR/tree"
 git init --quiet "$repo"
@@ -64,7 +64,7 @@ git add -A
 git commit --quiet -m base
 base="$(git rev-parse HEAD)"
 
-owed() {
+required() {
   valley checks --schema "$schema" \
     --instance "$policy/instance" --project "$policy/project" \
     --names "$base" HEAD
@@ -73,9 +73,9 @@ owed() {
 git checkout --quiet -B docs "$base"
 echo edit > docs/architecture.md
 git commit --quiet -am docs
-got="$(owed)"
+got="$(required)"
 [ "$got" = prose-format ] || {
-  echo "own-policy: a docs-only change must owe prose-format alone, got:" >&2
+  echo "own-policy: a docs-only change must require prose-format alone, got:" >&2
   echo "$got" >&2
   exit 1
 }
@@ -83,9 +83,9 @@ got="$(owed)"
 git checkout --quiet -B hook "$base"
 echo edit > valleyhook/main.go
 git commit --quiet -am hook
-got="$(owed)"
+got="$(required)"
 grep -qx valleyhook-unit <<<"$got" || {
-  echo "own-policy: a hook-only change must owe valleyhook-unit, got:" >&2
+  echo "own-policy: a hook-only change must require valleyhook-unit, got:" >&2
   echo "$got" >&2
   exit 1
 }
@@ -94,16 +94,16 @@ if grep -qx prose-format <<<"$got"; then
   exit 1
 fi
 
-# A check's own files owe that check. Every file under nix/checks/ named
-# after a flake check owes that check, and every other script there owes
-# some check the nix class does not. A script that matched the nix class
-# alone could be changed without its check being owed. Other files that
+# A check's own files require that check. Every file under nix/checks/
+# named after a flake check requires that check, and every other script
+# there requires some check the nix class does not. A script that matched
+# the nix class alone could be changed without its check being required. Other files that
 # are not named after a check are definitions or data shared by several
 # checks, which the policy may leave to the nix class.
 git checkout --quiet -B shared "$base"
 echo edit > nix/packages.nix
 git commit --quiet -am shared
-shared="$(owed | LC_ALL=C sort)"
+shared="$(required | LC_ALL=C sort)"
 failed=0
 for f in $checkFiles; do
   name="${f%.*}"
@@ -115,13 +115,13 @@ for f in $checkFiles; do
   git checkout --quiet -B file "$base"
   echo edit > "nix/checks/$f"
   git commit --quiet -am "$f"
-  got="$(owed | LC_ALL=C sort)"
+  got="$(required | LC_ALL=C sort)"
   if [ "$named" -eq 1 ]; then
     grep -qx -- "$name" <<<"$got" && continue
-    echo "own-policy: a change to nix/checks/$f must owe $name, got:" >&2
+    echo "own-policy: a change to nix/checks/$f must require $name, got:" >&2
   else
     [ -n "$(LC_ALL=C comm -23 <(echo "$got") <(echo "$shared"))" ] && continue
-    echo "own-policy: a change to nix/checks/$f owes no check of its own, got:" >&2
+    echo "own-policy: a change to nix/checks/$f requires no check of its own, got:" >&2
   fi
   echo "$got" >&2
   failed=1

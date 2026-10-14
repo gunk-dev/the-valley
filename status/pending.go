@@ -45,8 +45,8 @@
 // A change may say more, each on a line of its own. includes <handle>
 // names a change its head contains that is not an entry here, such as a
 // withdrawn one. uncertain says the active version may have landed without
-// its evidence being stored. With --owes, it says how many checks the
-// change owes, by cost.
+// its evidence being stored. With --checks, it says how many checks the
+// policy requires of the change, by cost.
 //
 // Within a section, the stack with the latest commit comes first, and
 // within a stack the entry with the latest commit does. Every line fits
@@ -147,7 +147,7 @@ type entry struct {
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
 	includes []string // what includes names that is no entry here
-	notes    []string // uncertain and owes
+	notes    []string // uncertain and checks
 
 	when        int64 // the head's commit time
 	age, author string
@@ -230,8 +230,8 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 		if v.Landing == uncertain {
 			e.notes = append(e.notes, "uncertain: it may have landed without its evidence being stored")
 		}
-		if l.owes {
-			e.notes = append(e.notes, s.owes(v.Head))
+		if l.checks {
+			e.notes = append(e.notes, s.checks(v.Head))
 		}
 		all = append(all, e)
 	}
@@ -564,25 +564,25 @@ func readable(s string) string {
 	}, strings.ToValidUTF8(s, "�"))
 }
 
-// owes says how many checks a head owes under the policy, by cost, as
+// checks says how many checks the policy requires of a head, by cost, as
 // valley checks derives them against the merge base with main. It runs
 // the valley command bin/valley names in VALLEY_COMMAND, inside the
 // repository the change is in.
-func (s *snapshot) owes(head string) string {
+func (s *snapshot) checks(head string) string {
 	valley := os.Getenv("VALLEY_COMMAND")
 	if valley == "" {
 		valley = "valley"
 	}
 	base, err := s.g.output(true, "merge-base", s.tip, head)
 	if err != nil {
-		return "owes ? (no merge base with main)"
+		return "requires ? (no merge base with main)"
 	}
 	cmd := exec.Command(valley, "checks", base, head)
 	cmd.Dir = s.g.dir
 	cmd.Env = s.g.env
 	out, err := cmd.Output()
 	if err != nil {
-		return "owes ? (the policy did not derive)"
+		return "requires ? (the policy did not derive)"
 	}
 	count := func(prefix string) int {
 		for _, line := range strings.Split(string(out), "\n") {
@@ -594,7 +594,11 @@ func (s *snapshot) owes(head string) string {
 	}
 	quick, slow := count("quick: "), count("slow: ")
 	if quick+slow == 0 {
-		return "owes nothing"
+		return "requires no checks"
 	}
-	return fmt.Sprintf("owes %d quick, %d slow", quick, slow)
+	noun := "checks"
+	if quick == 1 {
+		noun = "check"
+	}
+	return fmt.Sprintf("requires %d quick %s, %d slow", quick, noun, slow)
 }

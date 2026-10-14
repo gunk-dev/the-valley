@@ -18,7 +18,7 @@ _valley() {
       'ready:mark a head of a branch ready as a new version of its change'
       'unready:make a ready change a draft'
       'withdraw:mark a ready change or a draft withdrawn'
-      'checks:print the checks a change owes under the composed policy'
+      'checks:print the checks the composed policy requires of a change'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
       'help:show help'
@@ -33,7 +33,7 @@ _valley() {
       '--schema:the policy schema to compose against'
       '--instance:the instance policy layer directory'
       '--project:the project policy layer directory'
-      '--names:print only the owed check names, one per line'
+      '--names:print only the required check names, one per line'
       '--cost:with --names, only the quick or the slow checks'
     )
     _describe -t options 'valley checks option' opts
@@ -56,7 +56,7 @@ _valley() {
     local -a opts=(
       '--all:every project the serving host publishes'
       '--repo:that one project'
-      '--owes:the checks each change owes, by cost'
+      '--checks:the checks each change requires, by cost'
       '--json:print valley-pending/v1 JSON'
     )
     _describe -t options 'valley pending option' opts

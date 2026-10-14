@@ -745,7 +745,7 @@ say "13. a change the policy requires no check of lands, and says so"
 
 # Requiring nothing is an ordinary outcome, not an edge: this project's
 # classes cover docs/, src/ and deploy/, and its `unclassified` set is
-# empty, so a path outside all three is answered with nothing owed. The
+# empty, so a path outside all three is answered with nothing required. The
 # landing still writes a transfer statement — a commit point that records
 # nothing is a landing nothing attests to — and that statement says the
 # required set was empty rather than carrying a list with nothing in it,
@@ -837,7 +837,7 @@ git -C "$floor" commit --quiet -am "the floor requires prose-format of docs/"
 git -C "$floor" push --quiet "$instance_repo" main
 
 # The project stops carrying a layer. Nothing classifies policy/project
-# itself, so this lands with nothing owed — which is how a project could
+# itself, so this lands with nothing required — which is how a project could
 # have arrived without one in the first place.
 git checkout --quiet main
 git pull --quiet --ff-only origin main
@@ -873,7 +873,7 @@ say "16. a floor that requires nothing, written down, composes and judges"
 
 # Emptiness a floor states is not the same thing as a floor nobody wrote.
 # The document is there, somebody landed it, and what it composes to is a
-# policy that requires nothing — so a change under it lands owing nothing,
+# policy that requires nothing — so a change under it lands requiring nothing,
 # rather than being refused the way scenario 12's missing floor is.
 cat > "$floor/policy/instance/floor.cue" <<'EOF'
 package verification
@@ -902,13 +902,13 @@ grep -q 'the policy requires no check of the paths this change touches' "$work/l
 grep -qF "policy   no project layer at policy/project; the floor alone" "$work/last.out" \
   || die "the pass did not say it composed the floor alone"
 [ "$(tip)" = "$(git rev-parse c16)" ] || die "main is not at the change's head"
-holds "a floor that states it requires nothing composes, judges, and lands the change owing nothing"
+holds "a floor that states it requires nothing composes, judges, and lands the change requiring nothing"
 
 # ----------------------------------------------------------------------
 say "17. a planted replacement ref changes nothing the controller reads"
 
 # refs/replace/<id> makes git read another object wherever it looks <id> up.
-# Two are planted here, and each alone would land a change that owes
+# Two are planted here, and each alone would land a change that requires
 # evidence and carries none. One swaps the floor's blob in the instance
 # repository for a floor that requires nothing. The other swaps the change's
 # head in the served repository for a commit that touches no class. Neither
@@ -940,7 +940,7 @@ git commit --quiet -am "a decoy that touches no class"
 git checkout --quiet main
 git checkout --quiet -b c17
 echo "a readme no evidence covers" > docs/readme.md
-git commit --quiet -am "a change that owes prose-format and carries no evidence"
+git commit --quiet -am "a change that requires prose-format and carries no evidence"
 git push --quiet origin c17 c17-decoy
 git -C "$origin" update-ref "refs/replace/$(git rev-parse c17)" "$(git rev-parse c17-decoy)"
 git -C "$origin" diff --name-only main c17 | grep -x notes.txt > /dev/null \
@@ -956,7 +956,7 @@ grep -q "check    prose-format" "$work/last.out" \
   || die "the landed floor's requirement was not what the controller read"
 grep -q 'no attestation for this check accompanies the change' "$work/last.out" \
   || die "the missing evidence was not reported"
-[ "$(tip)" = "$before" ] || die "main moved under a change that owes evidence"
+[ "$(tip)" = "$before" ] || die "main moved under a change that requires evidence"
 git -C "$instance_repo" update-ref -d "refs/replace/$landed_floor"
 git -C "$origin" update-ref -d "refs/replace/$(git rev-parse c17)"
 forget c17

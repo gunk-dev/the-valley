@@ -829,7 +829,8 @@ configuration.
 `valley pending` prints three sections. `ready` holds the ready changes whose active version is
 neither `landed` nor `landed-recorded`. `branches` holds the branches no change is on. `drafts`
 holds the drafts. When no ready change is at the top of a stack, one line says so in place of
-`ready`. With `--all`, each repository is headed by its name.
+`ready`. That line also says where any ready change inside another section's stack is. With `--all`,
+each repository is headed by its name.
 
 Each entry is a block. Its first line is its name, with the age and author of its head: the handle
 and version for a change, the branch for a branch, and the handle and version on its branch for a
@@ -838,11 +839,15 @@ change's title is its record's, for the active version. A branch's title is the 
 own commit.
 
 An entry's base is the nearest other entry its head strictly contains, or `main` when there is none.
-That is the ancestry `includes` reads. Each entry is nested under the entry that contains it,
-outermost first, so approving the top of a stack lands everything nested under it. A stack is
-printed in the section of its top entry. A nested entry from another section is marked with it, as
-`(ready)` marks a ready change inside a branch. Past the third level a stack is drawn no deeper, and
-an entry whose base is not drawn right under it says `on <base>`.
+That is the ancestry `includes` reads. A stack is an entry no other entry contains, the top, then
+every entry the top contains. Those entries are listed under the top at one indentation, however
+deep the stack is. Each entry is listed before the entries it contains. Approving the top lands
+everything listed under it, and the top says how many entries that is.
+
+Each listed entry is on the entry listed right after it. Where it is not, it says `on <base>`. That
+happens at a fork, where two entries are on one base: the base is listed under only one of them, and
+the other says `on <base>`. A stack is printed in the section of its top entry. A listed entry from
+another section is marked with it, as `(ready)` marks a ready change inside a branch.
 
 A change also says `includes <handle>` for a change its head contains that is not an entry, such as
 a withdrawn one, and `uncertain` when that applies. `--owes` adds the checks each change owes, by
@@ -858,9 +863,13 @@ is the same as in `valley-changes/v1`. Its `includes` counts only changes that h
 
 ```text
 ready
-mmmm v1                                                2 minutes ago · klaus-env
-  stack-b: build on stack-a
-  1 commit · 1 file +12 −3
+pppp v1                                                 1 minute ago · klaus-env
+  stack-c: build on stack-b
+  1 commit · 1 file +5 −0
+  approving it lands the 2 below too
+  ├ mmmm v1                                            2 minutes ago · klaus-env
+  │   stack-b: build on stack-a
+  │   1 commit · 1 file +12 −3
   └ nxvp v1                                            3 minutes ago · klaus-env
       stack-a: the first layer
       2 commits · 4 files +80 −1

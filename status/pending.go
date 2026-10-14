@@ -5,7 +5,8 @@
 // (inventory.go). branches holds each branch on origin, other than main,
 // that main does not reach and that is no change's active head. drafts
 // holds the changes whose record says they are drafts. When no ready
-// change is at the top of a stack, one line says so in place of ready.
+// change is at the top of a stack, one line says so in place of ready,
+// and says where any ready change inside another section's stack is.
 //
 // Each entry is a block. Its first line is its name, with the age and
 // author of its head: the handle and version of a change, the name of a
@@ -16,9 +17,13 @@
 //	act-on-a-change-by-handle-key-its-1902807a          9 hours ago · patflynn-agent
 //	  change: share the record bounds and the c-<change ID> request name
 //	  10 commits · 31 files +2412 −404
-//	  └ find-changes-across-repos-valley-changes-1e788c4f  10 hours ago · patfly…
-//	      valley: changes --json and pending by handle, across a host's projects
-//	      9 commits · 17 files +2701 −137
+//	  approving it lands the 2 below too
+//	  ├ find-changes-across-repos-valley-changes-1e788c4f  10 hours ago · patfly…
+//	  │   valley: changes --json and pending by handle, across a host's projects
+//	  │   9 commits · 17 files +2701 −137
+//	  └ a-draft-state-valley-unready-and-what-56ed34ac  12 hours ago · patflynn…
+//	      change: read a draft as a third state
+//	      14 commits · 20 files +1207 −219
 //
 // A change's title is its record's, for the active version. A branch's
 // title is the subject of its first own commit: the oldest commit on its
@@ -26,12 +31,16 @@
 //
 // An entry's base is the nearest other entry its head strictly contains,
 // or main when there is none. That is the ancestry includes reads
-// (inventory.go). Each entry is nested under the nearest entry that
-// contains it, so approving the entry at the top of a stack lands every
-// entry nested under it. A stack is printed in the section of its top
-// entry, and a nested entry from another section says which it is in. Past
-// the third level the stack is drawn no deeper, and an entry whose base is
-// not drawn right under it says "on <base>".
+// (inventory.go). A stack is an entry that no other entry contains, the
+// top, then every entry the top contains, as one list at one indentation,
+// however deep the stack is. Each entry is listed before the entries it
+// contains. The top's block says how many entries approving it lands with
+// it. Each entry is on the entry listed right after it, and says
+// "on <base>" where it is not, as at a fork, where two entries are on one
+// base and the base is listed under only one of them. An entry the top
+// does not contain is never listed under it. A stack is printed in the
+// section of its top, and a listed entry from another section says which
+// it is in.
 //
 // A change may say more, each on a line of its own. includes <handle>
 // names a change its head contains that is not an entry here, such as a
@@ -129,9 +138,6 @@ var sections = []struct{ name, kind string }{
 	{"ready", "ready"}, {"branches", "branch"}, {"drafts", "draft"},
 }
 
-// maxDepth is the deepest level a stack is drawn at. The top is level 0.
-const maxDepth = 2
-
 // entry is one block of valley pending: a ready change, a branch no record
 // is on, or a draft.
 type entry struct {
@@ -140,17 +146,19 @@ type entry struct {
 	ref      string   // what the entry is typed as: its handle, or its branch
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
-	includes []string // what includes names that is not nested under it
+	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and owes
 
 	when        int64 // the head's commit time
 	age, author string
 	layer       string // the commits and the diff it adds to its base
 
-	parent *entry
-	kids   []*entry
-	base   *entry // nil for main
-	latest int64  // the latest commit time in the stack it tops
+	parent *entry   // the entry it is listed under, if any
+	kids   []*entry // the entries nested right under it
+	base   *entry   // nil for main
+	inside []*entry // every entry whose head strictly contains its own
+	below  []*entry // for the top of a stack, every entry listed under it
+	latest int64    // for the top of a stack, the latest commit time in it
 }
 
 // writePending prints one repository's entries, section by section.
@@ -175,15 +183,7 @@ func writePending(r listed, h handleMap, l listing, w io.Writer, headed bool, t 
 			}
 		}
 		if sec.name == "ready" && len(here) == 0 {
-			nested := false
-			for _, e := range all {
-				nested = nested || e.section == "ready"
-			}
-			if nested {
-				p("nothing is ready at the top of a stack\n")
-			} else {
-				p("nothing is ready\n")
-			}
+			p("%s\n", readyElsewhere(tops))
 			gap = true
 			continue
 		}
@@ -258,15 +258,18 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 // stack nests each entry under the nearest entry whose head strictly
 // contains its own, and gives each entry its base: the nearest entry its
 // own head strictly contains. Where two are equally near, the one with the
-// later commit is taken. It returns the entries nested under none, the
-// stack with the latest commit first, with every list of nested entries
-// ordered the same way.
+// later commit is taken. It returns the entries nested under none, each the
+// top of a stack, the stack with the latest commit first. Each top lists
+// every entry nested under it, at any depth, in its below.
 func (s *snapshot) stack(all []*entry) []*entry {
 	in := make([][]bool, len(all)) // in[i][j]: entry i's head strictly contains entry j's
 	for i := range all {
 		in[i] = make([]bool, len(all))
 		for j := range all {
 			in[i][j] = i != j && s.strictAncestor(all[j].head, all[i].head)
+			if in[i][j] {
+				all[j].inside = append(all[j].inside, all[i])
+			}
 		}
 	}
 	// nearest is the entries i contains, or that contain i, with none
@@ -315,20 +318,88 @@ func (s *snapshot) stack(all []*entry) []*entry {
 			tops = append(tops, e)
 		}
 	}
-	var latest func(e *entry) int64
-	latest = func(e *entry) int64 {
-		e.latest = e.when
-		for _, k := range e.kids {
-			e.latest = max(e.latest, latest(k))
-		}
-		byActivity(e.kids, func(e *entry) int64 { return e.latest })
-		return e.latest
-	}
-	for _, e := range tops {
-		latest(e)
+	for _, top := range tops {
+		top.list()
 	}
 	byActivity(tops, func(e *entry) int64 { return e.latest })
 	return tops
+}
+
+// list puts every entry nested under the top of a stack in its below, each
+// before the entries it contains. Where it can, it lists next the base of
+// the entry it listed last, so a chain is listed unbroken. Otherwise it
+// lists next the entry with the latest commit. It sets latest, the latest
+// commit time in the stack.
+func (top *entry) list() {
+	nested := map[*entry]bool{}
+	var walk func(e *entry)
+	walk = func(e *entry) {
+		for _, k := range e.kids {
+			nested[k] = true
+			walk(k)
+		}
+	}
+	walk(top)
+	top.latest = top.when
+	for last := top; len(nested) > 0; {
+		var free []*entry // those every entry containing them is listed before
+		for e := range nested {
+			listable := true
+			for _, c := range e.inside {
+				listable = listable && !nested[c]
+			}
+			if listable {
+				free = append(free, e)
+			}
+		}
+		byActivity(free, func(e *entry) int64 { return e.when })
+		next := free[0]
+		for _, e := range free {
+			if e == last.base {
+				next = e
+			}
+		}
+		delete(nested, next)
+		top.below = append(top.below, next)
+		top.latest = max(top.latest, next.when)
+		last = next
+	}
+}
+
+// readyElsewhere is what the ready section says when no ready change is at
+// the top of a stack: that nothing is ready, or where the ready changes in
+// other sections' stacks are.
+func readyElsewhere(tops []*entry) string {
+	n, stacks := 0, 0
+	var where []string
+	for _, sec := range sections {
+		found := false
+		for _, top := range tops {
+			held := 0
+			for _, e := range top.below {
+				if e.section == "ready" {
+					held++
+				}
+			}
+			if top.section == sec.name && held > 0 {
+				n, stacks, found = n+held, stacks+1, true
+			}
+		}
+		if found {
+			where = append(where, sec.name)
+		}
+	}
+	if n == 0 {
+		return "nothing is ready"
+	}
+	verb, in := "are", fmt.Sprintf("%d stacks", stacks)
+	if n == 1 {
+		verb = "is"
+	}
+	if stacks == 1 {
+		in = "a stack"
+	}
+	return fmt.Sprintf("nothing is ready on its own; %s %s in %s under %s", counted(n, "ready change"), verb, in, strings.Join(where, " and "))
 }
 
 // byActivity orders entries latest first, and then by name.
@@ -392,55 +463,25 @@ func counted(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-// drawStack is the lines of a stack: each entry's block, every nested
-// entry indented under the one that contains it, and joined to it by a
-// line drawn in the margin.
+// drawStack is the lines of a stack: the top entry's block, then the
+// block of each entry listed under it, at one indentation however deep the
+// stack is. Each listed entry is on the entry listed right after it, and
+// says "on <base>" where it is not.
 func (t terminal) drawStack(top *entry) []string {
-	type drawn struct {
-		e     *entry
-		depth int
-		last  bool // no later entry at its depth before one nearer the top
-	}
-	var list []drawn
-	var walk func(e *entry, depth int)
-	walk = func(e *entry, depth int) {
-		list = append(list, drawn{e: e, depth: min(depth, maxDepth)})
-		for _, k := range e.kids {
-			walk(k, depth+1)
-		}
-	}
-	walk(top, 0)
-	for i := range list {
-		list[i].last = true
-		for j := i + 1; j < len(list) && list[j].depth >= list[i].depth; j++ {
-			if list[j].depth == list[i].depth {
-				list[i].last = false
-				break
-			}
-		}
-	}
-	rail := func(more bool) string {
-		if more {
-			return "│   "
-		}
-		return "    "
-	}
+	list := append([]*entry{top}, top.below...)
 	var lines []string
-	more := make([]bool, maxDepth+1) // more[k]: the entry last drawn at depth k has more after it
-	for _, d := range list {
-		more[d.depth] = !d.last
-		first, rest := "", "  "
-		if d.depth > 0 {
-			lead := "  "
-			for k := 1; k < d.depth; k++ {
-				lead += rail(more[k])
-			}
-			first, rest = lead+"├ ", lead+rail(!d.last)
-			if d.last {
-				first = lead + "└ "
-			}
+	for i, e := range list {
+		var next *entry
+		if i+1 < len(list) {
+			next = list[i+1]
 		}
-		e := d.e
+		first, rest := "", "  "
+		switch {
+		case i > 0 && next != nil:
+			first, rest = "  ├ ", "  │   "
+		case i > 0:
+			first, rest = "  └ ", "      "
+		}
 		suffix := ""
 		if e.section != top.section {
 			for _, sec := range sections {
@@ -451,12 +492,23 @@ func (t terminal) drawStack(top *entry) []string {
 		}
 		lines = append(lines, t.nameLine(first, e.name, suffix, e, rest)...)
 		lines = append(lines, rest+t.fit(e.title, rest), rest+t.fit(e.layer, rest))
-		if e.base != nil && (e.base.parent != e || d.depth == maxDepth) {
+		switch {
+		case e.base == next:
+		case e.base != nil:
 			lines = append(lines, rest+"on "+e.base.ref)
+		default:
+			lines = append(lines, rest+"on "+recordTarget)
 		}
 		lines = append(lines, prefixed(rest, e.includes)...)
 		for _, note := range e.notes {
 			lines = append(lines, rest+t.fit(note, rest))
+		}
+		if i == 0 && len(top.below) > 0 {
+			lands := fmt.Sprintf("approving it lands the %d below too", len(top.below))
+			if len(top.below) == 1 {
+				lands = "approving it lands the one below too"
+			}
+			lines = append(lines, rest+t.fit(lands, rest))
 		}
 	}
 	return lines

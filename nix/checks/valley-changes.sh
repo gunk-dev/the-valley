@@ -56,7 +56,7 @@ no_line() {
 # first is followed, line by line, by lines matching the rest.
 after() {
   local n re
-  n="$(grep -nE -- "$1" "$w/out" | head -1 | cut -d: -f1)"
+  n="$(grep -nE -m 1 -- "$1" "$w/out" | cut -d: -f1 || true)"
   [ -n "$n" ] || fail "no line matches $1"
   for re in "${@:2}"; do
     n=$((n + 1))
@@ -443,31 +443,61 @@ for url in "--upload-pack=touch $w/pwned; git-upload-pack" "ext::sh -c touch% $w
 done
 
 # ----------------------------------------------------------------------
-# pending: a block per entry, in three sections. Each entry is nested
-# under the entry that contains it, and counted from the entry it
-# contains. atop-lost is a branch no record is on, holding U, a ready
-# change. a-parked is a branch last committed to eleven days ago.
+# pending: a block per entry, in three sections. A stack is its top
+# entry, then every entry the top contains, as one list, each counted from
+# the entry it contains. atop-lost is a branch no record is on, holding U,
+# a ready change. a-parked is a branch last committed to eleven days ago.
+# deep-4 tops a chain of four branches. fork-left and fork-right are two
+# branches on one base, fork-base. The chain and the fork were last
+# committed to twenty days ago.
 branch atop-lost lost atop-lost
 parked="@$(($(date +%s) - 11 * 86400))"
 GIT_AUTHOR_DATE="$parked" GIT_COMMITTER_DATE="$parked" branch a-parked "$base" a-parked
+old="@$(($(date +%s) - 20 * 86400))"
+export GIT_AUTHOR_DATE="$old" GIT_COMMITTER_DATE="$old"
+branch deep-1 "$base" deep-1
+branch deep-2 deep-1 deep-2
+branch deep-3 deep-2 deep-3
+branch deep-4 deep-3 deep-4
+branch fork-base "$base" fork-base
+branch fork-left fork-base fork-left
+branch fork-right fork-base fork-right
+unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 ok valley pending
 no_line $'\x1b'
 line '^ready$'
 # The stack of three, outermost first, each layer counted on its own.
 after '^pppp v1  +[0-9]+ [a-z]+ ago · valley-changes-check$' '^  stack-c$' '^  1 commit · 1 file \+1 −0$' \
-  '^  └ mmmm v1  +.* ago · valley-changes-check$' '^      stack-b$' '^      1 commit · 1 file \+1 −0$' \
-  '^      └ nxvp v1  +.* ago · valley-changes-check$' '^          stack-a$' '^          1 commit · 1 file \+1 −0$' '^$'
+  '^  approving it lands the 2 below too$' \
+  '^  ├ mmmm v1  +.* ago · valley-changes-check$' '^  │   stack-b$' '^  │   1 commit · 1 file \+1 −0$' \
+  '^  └ nxvp v1  +.* ago · valley-changes-check$' '^      stack-a$' '^      1 commit · 1 file \+1 −0$' '^$'
 # W includes E, which is withdrawn, so it is counted from main.
 after '^ssss v1  ' '^  atop-gone$' '^  2 commits · 2 files \+2 −0$' '^  includes rrrr \(withdrawn\)$' '^$'
 after '^wwww v1  ' '^  forged$' '^  1 commit · 1 file \+1 −0$' '^  uncertain: it may have landed without its evidence being stored$'
 no_line '(tttt|uuuu|rrrr) v1'
 no_line 'qqqq v1  '
-# The branches, latest first, and atop-lost with U nested in it, marked
-# as ready.
+# The branches, latest first, and atop-lost with U listed under it,
+# marked as ready.
 after '^branches$' '^atop-lost  +.* ago · valley-changes-check$' '^  atop-lost$' '^  1 commit · 1 file \+1 −0$' \
+  '^  approving it lands the one below too$' \
   '^  └ vvvv v1 \(ready\)  +.* ago · valley-changes-check$' '^      lost$' '^      1 commit · 1 file \+1 −0$' \
   '^      uncertain: ' '^$' '^loose  +.* ago · valley-changes-check$' '^  loose$' '^  1 commit · 1 file \+1 −0$' '^$' \
-  '^a-parked  +11 days ago · valley-changes-check$' '^  a-parked$' '^  1 commit · 1 file \+1 −0$' '^$' '^drafts$'
+  '^a-parked  +11 days ago · valley-changes-check$' '^  a-parked$' '^  1 commit · 1 file \+1 −0$' '^$' '^deep-4  '
+# A chain four deep is one flat list, with no on line: each entry is on
+# the one listed after it.
+after '^deep-4  +3 weeks ago · valley-changes-check$' '^  deep-4$' '^  1 commit · 1 file \+1 −0$' \
+  '^  approving it lands the 3 below too$' \
+  '^  ├ deep-3  +3 weeks ago · valley-changes-check$' '^  │   deep-3$' '^  │   1 commit · 1 file \+1 −0$' \
+  '^  ├ deep-2  +3 weeks ago · valley-changes-check$' '^  │   deep-2$' '^  │   1 commit · 1 file \+1 −0$' \
+  '^  └ deep-1  +3 weeks ago · valley-changes-check$' '^      deep-1$' '^      1 commit · 1 file \+1 −0$' '^$'
+no_line '^ *(│ *)?on deep-'
+# Of two branches on one base, one lists the base, and the other says it
+# is on it. The base is listed once.
+[ "$(grep -cE '(^|├ |└ )fork-base  ' "$w/out")" = 1 ] || fail "pending did not list fork-base exactly once"
+[ "$(grep -cx '  on fork-base' "$w/out")" = 1 ] || fail "not exactly one of the fork says it is on fork-base"
+after '^fork-left  ' '^  fork-left$' '^  1 commit · 1 file \+1 −0$' '^  approving it lands the one below too$' \
+  '^  └ fork-base  ' '^      fork-base$' '^      1 commit · 1 file \+1 −0$' '^$'
+after '^fork-right  ' '^  fork-right$' '^  1 commit · 1 file \+1 −0$' '^  on fork-base$' '^$' '^drafts$'
 after '^qqqq v1 on paused  +.* ago · valley-changes-check$' '^  paused$' '^  1 commit · 1 file \+1 −0$'
 after '^zzzz v2 on again  ' '^  again$' '^  1 commit · '
 after '^lmlm v2 on ffrec  ' '^  ffrec$' '^  1 commit · 1 file \+0 −1$'
@@ -480,20 +510,25 @@ holds '.schema == "valley-pending/v1"' \
   '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "pppp", "ssss", "vvvv", "wwww"]' \
   '[.repos[0].changes[].state] | unique == ["ready"]' \
   '[.repos[0].drafts[] | [.handle, .state]] == [["lmlm", "draft"], ["qqqq", "draft"], ["zzzz", "draft"]]' \
-  '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "loose"]'
+  '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "deep-1", "deep-2", "deep-3", "deep-4", "fork-base", "fork-left", "fork-right", "loose"]'
 # Across the host, each repository is headed by its name, and handles
-# are qualified where a change ID is recorded in more than one.
+# are qualified where a change ID is recorded in more than one. In origin,
+# a branch no record is on holds the one ready change, so the ready
+# section says where it is.
+(cd "$w/origin" && branch atop-dup o-dup atop-dup)
 ok valley pending --all
 after '^guarded$' '^(─)+$' '^ready$'
 after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · 1 file \+1 −0$'
 after '^guarded:mmmm v1  ' '^  g-dup$'
-after '^pqpq v1  ' '^  reversed$' '^  no commits · ' '^  └ oooo v1  ' '^      dropped$' '^      no commits · no file changes$'
+after '^pqpq v1  ' '^  reversed$' '^  no commits · ' '^  approving it lands the one below too$' '^  └ oooo v1  ' \
+  '^      dropped$' '^      no commits · no file changes$'
 line '^xxxx v1 on g-draft  '
 line '^open$'
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  └ open:mmmm v1  ' '^      stack-b$' '^      1 commit · ' \
-  '^      └ nxvpwlkm v1  ' '^          stack-a$'
-line '^origin$'
-line '^origin:mmmm v1  '
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  approving it lands the 2 below too$' '^  ├ open:mmmm v1  ' \
+  '^  │   stack-b$' '^  │   1 commit · ' '^  └ nxvpwlkm v1  ' '^      stack-a$'
+after '^origin$' '^(─)+$' '^nothing is ready on its own; 1 ready change is in a stack under branches$' '^$' \
+  '^branches$' '^atop-dup  ' '^  atop-dup$' '^  1 commit · ' '^  approving it lands the one below too$' \
+  '^  └ origin:mmmm v1 \(ready\)  ' '^      o-dup$'
 line '^released: could not read '
 after '^sealed$' '^(─)+$' '^nothing is ready$'
 
@@ -509,9 +544,9 @@ git -C "$w/floor" commit --quiet -m floor
 git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
 ok valley pending --owes --all
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  owes 1 quick, 0 slow$' '^  └ open:mmmm v1  ' '^      stack-b$' \
-  '^      1 commit · ' '^      owes 1 quick, 0 slow$' '^      └ nxvpwlkm v1  ' '^          stack-a$' '^          1 commit · ' \
-  '^          owes 1 quick, 0 slow$'
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  owes 1 quick, 0 slow$' '^  approving it lands the 2 below too$' \
+  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   owes 1 quick, 0 slow$' '^  └ nxvpwlkm v1  ' \
+  '^      stack-a$' '^      1 commit · ' '^      owes 1 quick, 0 slow$'
 after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  owes 1 quick, 0 slow$'
 
 # ----------------------------------------------------------------------

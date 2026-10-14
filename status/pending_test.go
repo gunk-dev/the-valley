@@ -10,8 +10,9 @@ import (
 
 // pending fits its text to 80 columns when stdout is no terminal: a long
 // title is cut short with …, and a branch or a handle is printed whole,
-// even where the line it is on cannot fit. Nothing it prints is an escape
-// code.
+// even where the line it is on cannot fit. A stack four deep is listed at
+// one indentation, so its deepest entry has the room its second has.
+// Nothing it prints is an escape code.
 func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
@@ -48,6 +49,13 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 	sh("checkout", "--quiet", "-b", "short", "main")
 	sh("commit", "--quiet", "--allow-empty", "-m", title)
 	sh("push", "--quiet", "origin", "short")
+	from := "main"
+	for _, layer := range []string{"1", "2", "3", "4"} {
+		sh("checkout", "--quiet", "-b", "layer-"+layer, from)
+		sh("commit", "--quiet", "--allow-empty", "-m", "layer "+layer+": "+title)
+		sh("push", "--quiet", "origin", "layer-"+layer)
+		from = "layer-" + layer
+	}
 
 	t.Chdir(work)
 	var stdout, stderr bytes.Buffer
@@ -85,6 +93,24 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 		if strings.HasPrefix(line, "qqqq v1") && !strings.HasSuffix(line, "…") {
 			t.Errorf("the author is not cut short to keep the line within 80 columns: %q", line)
 		}
+	}
+	lines := strings.Split(out, "\n")
+	for layer, lead := range map[string]string{"4": "  ", "3": "  │   ", "2": "  │   ", "1": "      "} {
+		listed := false
+		for _, line := range lines {
+			if strings.HasPrefix(line, lead+"layer "+layer+": ") {
+				listed = true
+				if columns(line) != 80 || !strings.HasSuffix(line, "…") {
+					t.Errorf("layer %s's title is not cut to 80 columns with …: %q", layer, line)
+				}
+			}
+		}
+		if !listed {
+			t.Errorf("layer %s's title is not at %q:\n%s", layer, lead, out)
+		}
+	}
+	if !strings.Contains(out, "\n  approving it lands the 3 below too\n") || strings.Contains(out, "on layer-") {
+		t.Errorf("the stack four deep is not one list, each layer on the next:\n%s", out)
 	}
 	if cut != 2 {
 		t.Errorf("%d titles were cut short, where the change's and the branch's should be:\n%s", cut, out)

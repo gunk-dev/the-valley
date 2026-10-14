@@ -471,9 +471,9 @@ unchanged "$pid" refused 'is a draft already' as contributor valley unready "$ph
 # its branch is at the draft's head.
 ok valley pending
 grep -qx 'drafts' "$w/out" || fail 'pending listed no drafts'
-grep -q "^$ph v1 on drafts/paused | paused | " "$w/out" || fail 'pending did not list the draft'
-if grep -q '^drafts/paused | ' "$w/out"; then fail 'pending listed a draft among the branches'; fi
-grep -qE '^[k-z]{4,32} v[0-9]+ \| ' "$w/out" || fail 'pending no longer lists the ready changes'
+grep -A1 "^$ph v1 on drafts/paused  .* ago · " "$w/out" | grep -qx '  paused' || fail 'pending did not list the draft'
+if grep -qE '(^|└ |├ )drafts/paused  ' "$w/out"; then fail 'pending listed a draft among the branches'; fi
+grep -qE '(^|└ |├ )[k-z]{4,32} v[0-9]+  ' "$w/out" || fail 'pending no longer lists the ready changes'
 
 # A draft is not approved or rebased. Refused in review, approving is no
 # check failure, so the prompt still offers [a]pprove.

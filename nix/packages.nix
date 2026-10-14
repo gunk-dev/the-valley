@@ -84,7 +84,8 @@ rec {
   # push hook shares (../change). Go, standard library only — hence vendorHash = null
   # and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
-  # the bash it replaced, so they need bash.
+  # the bash it replaced, so they need bash, and lay pending out over real
+  # repositories, so they need git.
   valley-go = pkgs.buildGoModule {
     pname = "valley-go";
     version = "0";
@@ -92,7 +93,10 @@ rec {
     modRoot = "status";
     vendorHash = null;
     preBuild = readsGoMod;
-    nativeCheckInputs = [ pkgs.bash ];
+    nativeCheckInputs = [
+      pkgs.bash
+      pkgs.git
+    ];
     meta.mainProgram = "valley-go";
   };
 

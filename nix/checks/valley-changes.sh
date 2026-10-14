@@ -52,6 +52,18 @@ no_line() {
   if grep -qE -- "$1" "$w/out"; then fail "a line matches $1"; fi
 }
 
+# after <ERE> <ERE…>: the first line of the last output that matches the
+# first is followed, line by line, by lines matching the rest.
+after() {
+  local n re
+  n="$(grep -nE -- "$1" "$w/out" | head -1 | cut -d: -f1)"
+  [ -n "$n" ] || fail "no line matches $1"
+  for re in "${@:2}"; do
+    n=$((n + 1))
+    sed -n "${n}p" "$w/out" | grep -qE -- "$re" || fail "line $n, after $1, does not match $re"
+  done
+}
+
 # The host: guarded, open, released and sealed, with sealed the instance
 # repository. valley-init creates them, wires their hooks, and publishes
 # the project list in sealed.
@@ -431,24 +443,36 @@ for url in "--upload-pack=touch $w/pwned; git-upload-pack" "ext::sh -c touch% $w
 done
 
 # ----------------------------------------------------------------------
-# pending: the ready changes that have not landed, by handle, version and
-# title, then the branches no record is on, then the drafts.
+# pending: a block per entry, in three sections. Each entry is nested
+# under the entry that contains it, and counted from the entry it
+# contains. atop-lost is a branch no record is on, holding U, a ready
+# change. a-parked is a branch last committed to eleven days ago.
+branch atop-lost lost atop-lost
+parked="@$(($(date +%s) - 11 * 86400))"
+GIT_AUTHOR_DATE="$parked" GIT_COMMITTER_DATE="$parked" branch a-parked "$base" a-parked
 ok valley pending
-line '^nxvp v1 \| stack-a$'
-line '^mmmm v1 \| stack-b \| includes nxvp$'
-line '^pppp v1 \| stack-c \| includes mmmm$'
-line '^ssss v1 \| atop-gone \| includes rrrr$'
-line '^vvvv v1 \| lost \| uncertain$'
-line '^wwww v1 \| forged \| uncertain$'
-no_line '^(tttt|uuuu|rrrr|qqqq) v1 \|'
-line '^branches$'
-line '^loose \| loose \| .* \| ahead 1 \| 1 file changed'
-line '^drafts$'
-line '^qqqq v1 on paused \| paused \| .* \| ahead 1 \| '
-line '^zzzz v2 on again \| again \| '
-line '^lmlm v2 on ffrec \| ffrec \| '
-[ "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^drafts$' "$w/out" | cut -d: -f1)" ] ||
-  fail "pending listed the drafts before the branches"
+no_line $'\x1b'
+line '^ready$'
+# The stack of three, outermost first, each layer counted on its own.
+after '^pppp v1  +[0-9]+ [a-z]+ ago · valley-changes-check$' '^  stack-c$' '^  1 commit · 1 file \+1 −0$' \
+  '^  └ mmmm v1  +.* ago · valley-changes-check$' '^      stack-b$' '^      1 commit · 1 file \+1 −0$' \
+  '^      └ nxvp v1  +.* ago · valley-changes-check$' '^          stack-a$' '^          1 commit · 1 file \+1 −0$' '^$'
+# W includes E, which is withdrawn, so it is counted from main.
+after '^ssss v1  ' '^  atop-gone$' '^  2 commits · 2 files \+2 −0$' '^  includes rrrr \(withdrawn\)$' '^$'
+after '^wwww v1  ' '^  forged$' '^  1 commit · 1 file \+1 −0$' '^  uncertain: it may have landed without its evidence being stored$'
+no_line '(tttt|uuuu|rrrr) v1'
+no_line 'qqqq v1  '
+# The branches, latest first, and atop-lost with U nested in it, marked
+# as ready.
+after '^branches$' '^atop-lost  +.* ago · valley-changes-check$' '^  atop-lost$' '^  1 commit · 1 file \+1 −0$' \
+  '^  └ vvvv v1 \(ready\)  +.* ago · valley-changes-check$' '^      lost$' '^      1 commit · 1 file \+1 −0$' \
+  '^      uncertain: ' '^$' '^loose  +.* ago · valley-changes-check$' '^  loose$' '^  1 commit · 1 file \+1 −0$' '^$' \
+  '^a-parked  +11 days ago · valley-changes-check$' '^  a-parked$' '^  1 commit · 1 file \+1 −0$' '^$' '^drafts$'
+after '^qqqq v1 on paused  +.* ago · valley-changes-check$' '^  paused$' '^  1 commit · 1 file \+1 −0$'
+after '^zzzz v2 on again  ' '^  again$' '^  1 commit · '
+after '^lmlm v2 on ffrec  ' '^  ffrec$' '^  1 commit · 1 file \+0 −1$'
+[ "$(grep -n '^ready$' "$w/out" | cut -d: -f1)" -lt "$(grep -n '^branches$' "$w/out" | cut -d: -f1)" ] ||
+  fail "pending listed the branches before the ready changes"
 # --json is the same listing in valley-changes/v1's shape: the pending
 # changes alone in changes, and the drafts in drafts.
 ok valley pending --json
@@ -456,24 +480,24 @@ holds '.schema == "valley-pending/v1"' \
   '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "pppp", "ssss", "vvvv", "wwww"]' \
   '[.repos[0].changes[].state] | unique == ["ready"]' \
   '[.repos[0].drafts[] | [.handle, .state]] == [["lmlm", "draft"], ["qqqq", "draft"], ["zzzz", "draft"]]' \
-  '.repos[0].branches == [{branch: "loose", head: "'"$(git rev-parse loose)"'"}]'
-# Across the host, each repository is headed by its name.
+  '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "loose"]'
+# Across the host, each repository is headed by its name, and handles
+# are qualified where a change ID is recorded in more than one.
 ok valley pending --all
-line '^guarded$'
-line '^nxvpwlkz v1 \| g-ready$'
-line '^guarded drafts$'
+after '^guarded$' '^(─)+$' '^ready$'
+after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · 1 file \+1 −0$'
+after '^guarded:mmmm v1  ' '^  g-dup$'
+after '^pqpq v1  ' '^  reversed$' '^  no commits · ' '^  └ oooo v1  ' '^      dropped$' '^      no commits · no file changes$'
+line '^xxxx v1 on g-draft  '
 line '^open$'
-line '^nxvpwlkm v1 \| stack-a$'
-line '^open:mmmm v1 \| stack-b \| includes nxvpwlkm$'
-line '^pppp v1 \| stack-c \| includes open:mmmm$'
-line '^guarded:mmmm v1 \| g-dup$'
-line '^oooo v1 \| dropped$'
-line '^pqpq v1 \| reversed \| includes oooo$'
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  └ open:mmmm v1  ' '^      stack-b$' '^      1 commit · ' \
+  '^      └ nxvpwlkm v1  ' '^          stack-a$'
 line '^origin$'
-line '^origin:mmmm v1 \| o-dup$'
+line '^origin:mmmm v1  '
 line '^released: could not read '
+after '^sealed$' '^(─)+$' '^nothing is ready$'
 
-# --owes ends each change's line with the checks it owes, by cost, as
+# --owes adds a line to each change with the checks it owes, by cost, as
 # valley checks derives them, here and in a repository read through its
 # clone. The instance gets a floor for that, written to its main on disk
 # as the integrator would.
@@ -485,9 +509,10 @@ git -C "$w/floor" commit --quiet -m floor
 git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
 ok valley pending --owes --all
-line '^nxvpwlkm v1 \| stack-a \| owes 1 quick, 0 slow$'
-line '^open:mmmm v1 \| stack-b \| includes nxvpwlkm \| owes 1 quick, 0 slow$'
-line '^nxvpwlkz v1 \| g-ready \| owes 1 quick, 0 slow$'
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  owes 1 quick, 0 slow$' '^  └ open:mmmm v1  ' '^      stack-b$' \
+  '^      1 commit · ' '^      owes 1 quick, 0 slow$' '^      └ nxvpwlkm v1  ' '^          stack-a$' '^          1 commit · ' \
+  '^          owes 1 quick, 0 slow$'
+after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  owes 1 quick, 0 slow$'
 
 # ----------------------------------------------------------------------
 # A branch name is used again once its change has landed: ff now names no

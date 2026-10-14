@@ -826,11 +826,30 @@ configuration.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
   no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
-`valley pending` lists the ready changes whose active version is neither `landed` nor
-`landed-recorded`, one line each: the handle and version, the title, `includes <handle>` when the
-change includes another that has not landed, and `uncertain` when that applies. `--owes` adds the
-checks each change owes, by cost, as `valley checks` derives them. Then come the branches no change
-is on, and the drafts. With `--all`, each repository is headed by its name.
+`valley pending` prints three sections. `ready` holds the ready changes whose active version is
+neither `landed` nor `landed-recorded`. `branches` holds the branches no change is on. `drafts`
+holds the drafts. When no ready change is at the top of a stack, one line says so in place of
+`ready`. With `--all`, each repository is headed by its name.
+
+Each entry is a block. Its first line is its name, with the age and author of its head: the handle
+and version for a change, the branch for a branch, and the handle and version on its branch for a
+draft. The lines under it give the title and what the entry adds to its base, in commits and diff. A
+change's title is its record's, for the active version. A branch's title is the subject of its first
+own commit.
+
+An entry's base is the nearest other entry its head strictly contains, or `main` when there is none.
+That is the ancestry `includes` reads. Each entry is nested under the entry that contains it,
+outermost first, so approving the top of a stack lands everything nested under it. A stack is
+printed in the section of its top entry. A nested entry from another section is marked with it, as
+`(ready)` marks a ready change inside a branch. Past the third level a stack is drawn no deeper, and
+an entry whose base is not drawn right under it says `on <base>`.
+
+A change also says `includes <handle>` for a change its head contains that is not an entry, such as
+a withdrawn one, and `uncertain` when that applies. `--owes` adds the checks each change owes, by
+cost, as `valley checks` derives them. Within a section, the stack with the latest commit comes
+first. Every line fits the terminal's width, or 80 columns when stdout is not a terminal. A title is
+cut short with `…`, and a handle or a branch never is. On a terminal, names are bold, unless
+`NO_COLOR` is set.
 
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
 the human view's sections. `changes` holds only the ready changes that have not landed. Each
@@ -838,15 +857,28 @@ repository has a `drafts` array as well, holding the drafts, with the same entry
 is the same as in `valley-changes/v1`. Its `includes` counts only changes that have not landed.
 
 ```text
-mmmm v1 | stack-b | includes nxvp
-nxvp v1 | stack-a
-vvvv v1 | lost | uncertain
+ready
+mmmm v1                                                2 minutes ago · klaus-env
+  stack-b: build on stack-a
+  1 commit · 1 file +12 −3
+  └ nxvp v1                                            3 minutes ago · klaus-env
+      stack-a: the first layer
+      2 commits · 4 files +80 −1
+
+vvvv v1                                                   1 hour ago · klaus-env
+  lost: a change whose request was consumed
+  1 commit · 1 file +1 −0
+  uncertain: it may have landed without its evidence being stored
 
 branches
-loose | loose | 6 seconds ago | klaus-env | ahead 1 | 1 file changed, 1 insertion(+)
+loose                                                  6 seconds ago · klaus-env
+  loose: work no record is on
+  1 commit · 1 file +1 −0
 
 drafts
-qqqq v1 on paused | paused | 6 seconds ago | klaus-env | ahead 1 | 1 file changed, 1 insertion(+)
+qqqq v1 on paused                                         3 days ago · klaus-env
+  paused: not ready yet
+  1 commit · 1 file +1 −0
 ```
 
 `review`, `approve`, `rebase`, `status`, `unready` and `withdraw` read a branch name as the change

@@ -42,7 +42,9 @@ func with(fs map[string]string, id, author, body string) map[string]string {
 // breaking a shared rule.
 func Fixtures() []Case {
 	milestone := mk("outcome", "Slice one lands")
-	decision := mk("decision", "One ref for the graph", func(k *knot.Knot) { k.Status = "decided" })
+	decision := mk("decision", "One ref for the graph", func(k *knot.Knot) {
+		k.Status, k.Changes = "decided", []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
+	})
 	bug := mk("bug", "The hook reads too much", func(k *knot.Knot) { k.Parent = milestone.ID })
 	idea := mk("idea", "Knots as cords", func(k *knot.Knot) {
 		k.Status, k.GraduatedInto, k.Parent = "graduated", decision.ID, milestone.ID
@@ -111,6 +113,9 @@ func Fixtures() []Case {
 		reject("blocked-by-on-an-idea", knot.RuleFieldOnType, edit(mk("idea", "Idea"), func(s string) string {
 			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nblocked_by: []\n", 1)
 		})),
+		reject("changes-on-an-idea", knot.RuleFieldOnType, files(set(mk("idea", "Idea"), func(k *knot.Knot) {
+			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
+		}))),
 		reject("claim-on-a-decision", knot.RuleFieldOnType, edit(undecided, func(s string) string {
 			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nclaimed_by: \"run\"\nclaimed_at: \"2026-10-15T00:58:00Z\"\n", 1)
 		})),

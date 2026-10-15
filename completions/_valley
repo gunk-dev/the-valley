@@ -57,7 +57,7 @@ _valley() {
       new) opts+=('--parent:the outcome it belongs to' '--blocked-by:a knot it waits on' '--owner:the principal it waits on' '--target:the project the work lands in' '--body:read the body from stdin (-)') ;;
       list) opts+=('--type:only this type' '--status:only this status, active or terminal' '--owner:only this owner' '--ready:only the ready knots') ;;
       set) opts+=('--if:require <field>=<value> first' '--force:set it even if another write changed it') ;;
-      link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work' '--if:require <field>=<value> first') ;;
+      link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work or records the decision' '--if:require <field>=<value> first') ;;
       edit) opts+=('--body:read the new body from stdin (-)' '--if:require <field>=<value> first') ;;
       comment) opts+=('-m:the comment' '--body:read the comment from stdin (-)') ;;
       claim) opts+=('--run:the run claiming it' '--if:require <field>=<value> first') ;;

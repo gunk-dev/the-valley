@@ -68,8 +68,14 @@ package knowledge
 	if type == "outcome" || type == "bug" {
 		claimed_by?: #PrincipalName
 		claimed_at?: #Timestamp
-		changes?: [...#ChangeLink]
 		target?: #PrincipalName | #QualifiedId
+	}
+
+	// A decision links changes too: the change that records it in the
+	// source once it is decided. An idea links none. It graduates into a
+	// decision, and the decision is what crosses into the source.
+	if type == "outcome" || type == "bug" || type == "decision" {
+		changes?: [...#ChangeLink]
 	}
 
 	if type == "outcome" {

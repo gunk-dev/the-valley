@@ -234,6 +234,23 @@ holds ".knots | map(.id) | index(\"$idea\") == null" ".knots | map(.id) | index(
 ok valley knot show "$idea" --json
 holds '.knot.ready == false'
 
+# A decided decision links the change that records it in the source, and
+# stays never ready. An idea links no change: it graduates into a
+# decision, and the decision crosses over.
+ok valley knot set "$choice" status=decided
+ok valley knot link "$choice" --change https://github.com/gunk-dev/the-valley/pull/7
+ok valley knot show "$choice" --json
+holds '.knot.changes == ["https://github.com/gunk-dev/the-valley/pull/7"]' '.knot.ready == false'
+ok valley knot show "$choice"
+line '^change: +https://github.com/gunk-dev/the-valley/pull/7$'
+ok valley knot list --type decision --json
+holds ".knots | map(select(.id == \"$choice\")) | .[0].changes == [\"https://github.com/gunk-dev/the-valley/pull/7\"]"
+before="$(git -C "$graph" rev-parse refs/the-valley/knots)"
+fails 1 'an idea does not carry changes' valley knot link "$idea" --change https://github.com/gunk-dev/the-valley/pull/7
+[ "$(git -C "$graph" rev-parse refs/the-valley/knots)" = "$before" ] || fail "a change linked to an idea was pushed"
+ok valley knot schema --json
+holds '.fields[] | select(.name == "changes") | .on == ["outcome","bug","decision"]'
+
 # Finishing a knot releases its claim, in the same commit.
 ok valley knot new outcome "Finish the claimed work" --json
 finished="$(jq -r .knot.id "$w/out")"

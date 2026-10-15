@@ -121,6 +121,11 @@ func graph(r *rand.Rand) []*knot.Knot {
 				k.Target = pick([]string{"klaus", "cosmo", "cosmo:bd-0123456"})
 			}
 		}
+		// A decided decision links the change that records it. This draws
+		// nothing, so the graphs a seed makes stay the same.
+		if k.Status == "decided" {
+			k.Changes = []string{"https://github.com/gunk-dev/klaus/pull/12"}
+		}
 		if r.IntN(2) == 0 {
 			k.Body = "A body for " + k.Title + ".\n"
 		}
@@ -176,10 +181,13 @@ func mutate(r *rand.Rand, knots []*knot.Knot) (map[string]string, knot.Rule) {
 		fs[other.Directory+"/"+k.ID+"-"+k.Slug+".md"] = string(knot.Render(k))
 		return fs, rule
 	case knot.RuleFieldOnType:
-		if t.Name == "outcome" || t.Name == "bug" {
+		switch t.Name {
+		case "outcome", "bug":
 			k.GraduatedInto = "dcr-0000000"
-		} else {
+		case "idea":
 			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
+		default:
+			k.Target = "klaus"
 		}
 	case knot.RuleFieldShape:
 		k.Owner = "an owner"

@@ -378,7 +378,10 @@ usage: valley <verb> [args]
                      unlink <id> (--blocked-by ID | --parent ID | --change X)...
                                   add or drop an edge. a change is
                                   valley:<project>/<change id> or a github
-                                  pull request url.
+                                  pull request url. outcomes and bugs link
+                                  the changes that do the work, and a
+                                  decision links the change that records
+                                  it in the source.
                      edit <id> --body -
                                   replace the body with stdin
                      comment <id> (-m TEXT | --body -)

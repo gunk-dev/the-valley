@@ -84,6 +84,13 @@ work="oc-$(printf '%s' write-the-hook-case | sha256sum | cut -c1-7)"
 as klaus-env valley knot claim "$work" --run 20261015-0058-feb0a926 > "$w/out" 2> "$w/err" || fail "klaus-env could not claim"
 as klaus-env valley knot set "$bug" status=closed > "$w/out" 2> "$w/err" || fail "klaus-env could not change patrick's knot"
 as klaus-env valley knot comment "$work" -m "Claimed." > "$w/out" 2> "$w/err" || fail "klaus-env could not comment"
+# A decision links the change that records it in the source.
+as klaus-env valley knot new decision "One ref for the graph" > "$w/out" 2> "$w/err" || fail "klaus-env could not add a decision"
+decision="dcr-$(printf '%s' one-ref-for-the-graph | sha256sum | cut -c1-7)"
+as klaus-env valley knot link "$decision" --change valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr > "$w/out" 2> "$w/err" \
+  || fail "klaus-env could not link a change to a decision"
+git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:decisions/$decision-one-ref-for-the-graph.md" \
+  | grep -qx 'changes: \["valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"\]' || fail "the decision's change did not land"
 [ "$(git -C "$w/guarded.git" log --format=%cn refs/the-valley/knots | sort -u | tr '\n' ' ')" = "klaus-env patrick " ] \
   || fail "the graph's commits are not both principals'"
 

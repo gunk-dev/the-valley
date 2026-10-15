@@ -72,8 +72,7 @@ source only as a change, under the source's rules. Nothing that decides a change
 
 **A settled decision crosses over.** While a decision is proposed, it lives in project storage as a
 knot. Once it is decided, its reasons enter the source's docs through a change, and the knot links
-that change. The knot schema gives the `changes` link only to outcomes and bugs, so a decision knot
-cannot carry it yet (`schema/node.cue`).
+that change.
 
 **Project storage shares the project's readers.** Whoever can read the source can read project
 storage, and the reverse. Data that needs different readers belongs to a different project.
@@ -1037,13 +1036,16 @@ knot, 16 KiB a comment, and 32 changed files a commit.
 
 The module holds a graph to its layout, its fields and its edges. `parent` names an outcome in the
 graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another project's knot as
-`<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle. A knot is never
-deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is only ever
-added. A new knot's `created_by`, and a new comment's `author`, name the principal that writes it.
-The module and the CUE schema with the knowledge lint are two validators of one documented schema,
-and `knot-agree` runs both over shared fixtures and generated graphs and fails on any disagreement
-about the rules they share. The canonical form, the layout, cycles and transitions are the module's
-alone, and `knot-unit` covers them.
+`<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle. `changes`, on
+outcomes, bugs and decisions, links changes, each as `valley:<project>/<change ID>` or as a GitHub
+pull request URL. On an outcome or a bug, they are the changes that do its work. On a decision, it
+is the change that records the decision in the source. An idea links none, because it graduates into
+a decision. A knot is never deleted, and its `id`, `type`, `created` and `created_by` never change.
+A comment is only ever added. A new knot's `created_by`, and a new comment's `author`, name the
+principal that writes it. The module and the CUE schema with the knowledge lint are two validators
+of one documented schema, and `knot-agree` runs both over shared fixtures and generated graphs and
+fails on any disagreement about the rules they share. The canonical form, the layout, cycles and
+transitions are the module's alone, and `knot-unit` covers them.
 
 `valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
 `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project

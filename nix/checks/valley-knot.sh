@@ -223,6 +223,42 @@ git -C "$srv/cosmo.git" rev-parse --verify --quiet refs/the-valley/knots > /dev/
   || fail "--project wrote no graph in cosmo"
 
 # ----------------------------------------------------------------------
+# Ready means an outcome or a bug: an idea and a proposed decision are not.
+ok valley knot new idea "A thought, not work" --json
+idea="$(jq -r .knot.id "$w/out")"
+ok valley knot new decision "A choice, not work" --json
+choice="$(jq -r .knot.id "$w/out")"
+ok valley knot list --ready --json
+holds ".knots | map(.id) | index(\"$idea\") == null" ".knots | map(.id) | index(\"$choice\") == null" \
+  ".knots | map(.id) | index(\"$bug\") != null"
+ok valley knot show "$idea" --json
+holds '.knot.ready == false'
+
+# Finishing a knot releases its claim, in the same commit.
+ok valley knot new outcome "Finish the claimed work" --json
+finished="$(jq -r .knot.id "$w/out")"
+ok valley knot claim "$finished" --run run-3
+ok valley knot set "$finished" status=done --json
+holds '.knot.status == "done"' '.knot | has("claimed_by") | not' '.knot | has("claimed_at") | not'
+ok valley knot show "$finished" --json
+holds '.knot | has("claim") | not' '.knot.ready == false'
+[ "$(git -C "$graph" show -s --format=%s refs/the-valley/knots)" = "knot set $finished: status=done" ] \
+  || fail "finishing was not one commit"
+
+# A reference to a project that cannot be read is shown as dangling, and
+# git's own errors stay off stderr.
+ok valley knot new outcome "Wait on nowhere" --blocked-by nowhere:oc-0123456 --json
+quiet="$(jq -r .knot.id "$w/out")"
+ok valley knot show "$quiet" --json
+holds '.knot.unresolved == ["nowhere:oc-0123456"]' '.knot.ready == false'
+[ ! -s "$w/err" ] || fail "show printed noise for an unreadable project: $(cat "$w/err")"
+ok valley knot show "$quiet"
+line 'dangling: its project could not be read'
+[ ! -s "$w/err" ] || fail "show printed noise for an unreadable project: $(cat "$w/err")"
+ok valley knot list
+[ ! -s "$w/err" ] || fail "list printed noise for an unreadable project: $(cat "$w/err")"
+
+# ----------------------------------------------------------------------
 # What happens when a push does not land the first time. A stand-in for
 # git runs first on PATH, and on its first push it does one thing given in
 # RACE before or after passing the push on, then fails or not as told.

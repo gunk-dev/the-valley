@@ -396,7 +396,7 @@ func (v *planView) progress() map[string]knot.Progress {
 // stateOf is the state a knot's glyph shows. A terminal knot is done, or
 // abandoned when it ended without finishing. An active one is blocked
 // while a blocker holds it, in progress while it is claimed or its status
-// says so, ready when it is an outcome or a bug the graph reads as ready,
+// says so, ready when the graph reads it as ready (an outcome or a bug),
 // and otherwise active, as an open idea or a proposed decision is.
 func stateOf(k *knot.Knot, view knot.View) string {
 	switch {
@@ -408,7 +408,7 @@ func stateOf(k *knot.Knot, view knot.View) string {
 		return "blocked"
 	case k.ClaimedBy != "" || k.Status == "in-progress":
 		return "in-progress"
-	case view.Ready && (k.Type == "outcome" || k.Type == "bug"):
+	case view.Ready:
 		return "ready"
 	}
 	return "active"

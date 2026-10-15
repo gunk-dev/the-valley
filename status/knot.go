@@ -548,6 +548,10 @@ func formOp(a knotArgs, body, principal string) (op, error) {
 			for _, a := range sets {
 				setField(k, a.field, a.value)
 			}
+			// Finishing a knot releases its claim in the same commit.
+			if !k.Active() {
+				k.ClaimedBy, k.ClaimedAt = "", ""
+			}
 			if string(knot.Render(k)) == before {
 				return nil, "", "", unchanged(fmt.Sprintf("%s already holds that; nothing to change", id))
 			}
@@ -1079,30 +1083,11 @@ func nonNil(list []string) []string {
 // foreign resolves references to other projects' knots, reading each
 // project's graph once.
 func (r remote) foreign(g git) knot.Foreign {
-	read := map[string]*knot.Graph{}
-	failed := map[string]error{}
-	return func(ref string) (*knot.Knot, bool, error) {
-		project, id, _ := strings.Cut(ref, ":")
-		if err := failed[project]; err != nil {
-			return nil, false, err
-		}
-		graph := read[project]
-		if graph == nil {
-			other, err := knotRemote(g, project)
-			var s knotState
-			if err == nil {
-				s, err = other.read()
-			}
-			if err != nil {
-				failed[project] = err
-				return nil, false, err
-			}
-			graph = s.graph
-			read[project] = graph
-		}
-		k, ok := graph.Knots[id]
-		return k, ok, nil
-	}
+	// Another project's git speaks only through its error, which the
+	// reference reports as dangling; its stderr stays quiet.
+	g.stderr = io.Discard
+	f := &foreignGraphs{g: g, graphs: map[string]*knot.Graph{}, failed: map[string]error{}}
+	return f.resolve
 }
 
 func knotShow(r remote, a knotArgs, w io.Writer) error {
@@ -1157,7 +1142,7 @@ func knotShow(r remote, a knotArgs, w io.Writer) error {
 		case slices.Contains(j.Dangling, ref):
 			mark = " (dangling: its project holds no such knot)"
 		case slices.Contains(j.Unresolved, ref):
-			mark = " (unresolved: its project could not be read)"
+			mark = " (dangling: its project could not be read)"
 		case slices.Contains(j.ClearedByEnding, ref):
 			mark = " (cleared by ending)"
 		}

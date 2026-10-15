@@ -89,8 +89,9 @@ type Foreign func(ref string) (k *Knot, found bool, err error)
 // it is ready to be worked on, what holds it up, and what it holds up.
 // None of it is stored; it is derived from the graph each time.
 type View struct {
-	// Ready is an active knot, unclaimed, every blocker of which is
-	// terminal.
+	// Ready is an outcome or a bug that is active, unclaimed, and every
+	// blocker of which is terminal. An idea or a decision is never ready:
+	// it is thought about, not picked up as work.
 	Ready bool `json:"ready"`
 	// WaitingOn are the blockers that are not terminal, or that could not
 	// be resolved.
@@ -189,7 +190,9 @@ func (g *Graph) View(id string, now time.Time, foreign Foreign) View {
 	if len(v.Children) > 0 {
 		v.Progress = &progress
 	}
-	if k.ClaimedBy != "" {
+	// A claim on a terminal knot is a leftover, and is ignored.
+	claimed := k.ClaimedBy != "" && k.Active()
+	if claimed {
 		c := &Claim{By: k.ClaimedBy, At: k.ClaimedAt}
 		if at, err := time.Parse(time.RFC3339, k.ClaimedAt); err == nil {
 			age := now.Sub(at)
@@ -198,7 +201,7 @@ func (g *Graph) View(id string, now time.Time, foreign Foreign) View {
 		}
 		v.Claim = c
 	}
-	v.Ready = k.Active() && k.ClaimedBy == "" && len(v.WaitingOn) == 0
+	v.Ready = (k.Type == "outcome" || k.Type == "bug") && k.Active() && !claimed && len(v.WaitingOn) == 0
 	return v
 }
 

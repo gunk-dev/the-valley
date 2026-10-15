@@ -26,6 +26,7 @@ in
   # must carry them at the auto-linked paths.
   valley-cli = pkgs.runCommand "valley-cli" {
     nativeBuildInputs = [
+      pkgs.git
       pkgs.shellcheck
       pkgs.zsh
       packages.valley

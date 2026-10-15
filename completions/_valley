@@ -3,8 +3,10 @@
 # bin/valley — update both together.
 #
 # NEVER fetch from here: completion runs on every <TAB> and must be instant.
-# Candidates come from the remote-tracking refs of the last fetch; valley's
-# own verbs fetch before acting, so stale candidates cost nothing.
+# Candidates come from the remote-tracking refs of the last fetch and from
+# the handle cache the last valley pending or valley changes wrote; valley's
+# own verbs resolve a name against origin before acting, so stale candidates
+# cost nothing.
 
 _valley() {
   if (( CURRENT == 2 )); then
@@ -70,21 +72,49 @@ _valley() {
   elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
     local -a opts=('--json:print the status as one valley-status/v1 JSON object')
     _describe -t options 'valley status option' opts
-  elif [[ ${words[2]} == (review|approve|rebase|status|ready) ]] \
-    && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|ready|approve) ]]; }; then
-    # Cached topic branches on origin. Review, approve, rebase and ready filter
-    # out merged branches; status needs those too. Silent outside a git
-    # repo — no errors mid-typing.
-    local -a branches selection
-    selection=()
-    [[ ${words[2]} != status ]] && selection=(--no-merged=origin/main)
-    branches=(${(f)"$(git for-each-ref refs/remotes/origin \
-      --format='%(refname)' "${selection[@]}" 2>/dev/null)"})
-    branches=(${branches:#refs/remotes/origin/HEAD})
-    branches=(${branches:#refs/remotes/origin/main})
-    branches=(${branches#refs/remotes/origin/})
-    (( ${#branches} )) && compadd -a branches
+  elif [[ ${words[2]} == (review|approve|rebase|status|unready|withdraw) ]] \
+    && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|approve) ]]; }; then
+    _valley_change_names ${words[2]}
+  elif [[ ${words[2]} == ready ]]; then
+    _valley_branch_names ready
   fi
+}
+
+# Cached topic branches on origin. Review, approve, rebase, unready, withdraw
+# and ready filter out merged branches; status needs those too. Silent
+# outside a git repo — no errors mid-typing.
+_valley_branch_names() {
+  local -a branches selection
+  selection=()
+  [[ $1 != status ]] && selection=(--no-merged=origin/main)
+  branches=(${(f)"$(git for-each-ref refs/remotes/origin \
+    --format='%(refname)' "${selection[@]}" 2>/dev/null)"})
+  branches=(${branches:#refs/remotes/origin/HEAD})
+  branches=(${branches:#refs/remotes/origin/main})
+  branches=(${branches#refs/remotes/origin/})
+  (( ${#branches} )) && compadd -a branches
+  return 0
+}
+
+# What a verb that takes a change offers: the handles in the cache valley
+# pending and valley changes write, each described by its title and ready
+# changes first, then the branches. Without the cache, the branches alone.
+# The cache is $(git rev-parse --git-common-dir)/valley/handles, one line
+# per change: handle, state, branch, title, tab-separated.
+_valley_change_names() {
+  local dir cache line
+  local -a fields described
+  dir=$(git rev-parse --git-common-dir 2>/dev/null)
+  cache=$dir/valley/handles
+  if [[ -n $dir && -r $cache ]]; then
+    while IFS= read -r line; do
+      fields=("${(@ps:\t:)line}")
+      [[ -n ${fields[1]} ]] || continue
+      described+=("${fields[1]//:/\\:}:${fields[4]}")
+    done < $cache
+    (( ${#described} )) && _describe -V -t handles 'change handle' described
+  fi
+  _valley_branch_names $1
 }
 
 _valley "$@"

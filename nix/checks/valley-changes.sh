@@ -465,6 +465,16 @@ branch fork-right fork-base fork-right
 unset GIT_AUTHOR_DATE GIT_COMMITTER_DATE
 ok valley pending
 no_line $'\x1b'
+# pending also writes the handle cache completion reads: one line for each
+# change not landed or withdrawn, ready changes first.
+cache="$(git rev-parse --git-common-dir)/valley/handles"
+[ -f "$cache" ] || fail "pending wrote no handle cache at $cache"
+cut -f1,2 "$cache" > "$w/out"
+[ "$(cat "$w/out")" = "$(printf '%s\t%s\n' mmmm ready nxvp ready pppp ready ssss ready vvvv ready wwww ready lmlm draft qqqq draft zzzz draft)" ] ||
+  fail "the handle cache lists other changes than the ready and the drafts"
+grep -qE "^pppp"$'\t'"ready"$'\t'"[^"$'\t'"]*"$'\t'"stack-c$" "$cache" || fail "the handle cache has no line for pppp with its title"
+grep -qE "^qqqq"$'\t'"draft"$'\t'"paused"$'\t' "$cache" || fail "the handle cache has no line for qqqq with its branch"
+ok valley pending
 line '^ready$'
 # The stack of three, outermost first, each layer counted on its own.
 after '^pppp v1  +[0-9]+ [a-z]+ ago · valley-changes-check$' '^  stack-c$' '^  1 commit · 1 file \+1 −0$' \

@@ -112,6 +112,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	}
 	repos := readSources(list, verifierFromEnv())
 	h := handles(repos)
+	writeHandleCache(g, repos, h)
 	defer warnUnverified(repos, stderr)
 	if l.asJSON {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}

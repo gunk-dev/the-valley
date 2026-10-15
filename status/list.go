@@ -227,8 +227,17 @@ func discover(g git) (instance string, names []string, err error) {
 		return instance, nil, fmt.Errorf("the instance repository %s publishes no %s", instance, projectsRef)
 	}
 	if !g.succeeds(true, "cat-file", "-e", oid) {
-		if _, err := g.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", instance, oid); err != nil {
-			return instance, nil, fmt.Errorf("could not fetch %s from %s", projectsRef, instance)
+		// The project and the instance share no history, so git warns
+		// "no common commits". The warning is kept for the error alone.
+		var diag bytes.Buffer
+		quiet := g
+		quiet.stderr = &diag
+		if _, err := quiet.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", instance, oid); err != nil {
+			msg := fmt.Sprintf("could not fetch %s from %s", projectsRef, instance)
+			if d := strings.TrimSpace(diag.String()); d != "" {
+				msg += ": " + d
+			}
+			return instance, nil, errors.New(msg)
 		}
 	}
 	list, err := g.output(true, "cat-file", "blob", oid)
@@ -637,6 +646,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	}
 	repos := readSources(list, verifierFromEnv())
 	h := handles(repos)
+	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, everyChange)

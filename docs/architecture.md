@@ -1027,12 +1027,12 @@ extended until it is shortened; knots of a few KiB never come near it. Reading t
 with `valley knot list` takes 0.4 s.
 
 `valley knot list --ready` and `show` derive what the graph does not store. A knot is ready when it
-is an outcome or a bug, is active and unclaimed, and every knot it is blocked by is terminal. An idea
-or a decision is never ready. A blocker that ended abandoned,
-discarded or superseded still clears, and the view marks it. A parent's progress is its terminal
-children that are not abandoned, out of its children that are not abandoned. A claim older than a
-day is flagged as stale. A write that moves a knot to a terminal status clears its claim in the same
-commit, and a claim left on a terminal knot is ignored. `show` escapes control characters and characters that reorder text before
+is an outcome or a bug, is active and unclaimed, and every knot it is blocked by is terminal. An
+idea or a decision is never ready. A blocker that ended abandoned, discarded or superseded still
+clears, and the view marks it. A parent's progress is its terminal children that are not abandoned,
+out of its children that are not abandoned. A claim older than a day is flagged as stale. A write
+that moves a knot to a terminal status clears its claim in the same commit, and a claim left on a
+terminal knot is ignored. `show` escapes control characters and characters that reorder text before
 printing, though the graph holds none.
 
 ### The plan view

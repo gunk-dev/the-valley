@@ -35,7 +35,7 @@ pre-receive hook answers for the push and not for each ref.
 
 A write is allowed only if every rule that applies to its ref allows it:
 
-  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the three
+  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the four
   namespaces below
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
@@ -65,6 +65,18 @@ A write is allowed only if every rule that applies to its ref allows it:
                     repository may hold at most 2000. That bound is soft:
                     pushes running at once can pass it by the records
                     they create.
+  refs/the-valley/knots
+                    the plan graph, that name exactly: any named
+                    principal. A create is one commit with no parent, and
+                    an update one commit whose only parent is the old
+                    tip, committed by the pusher, with a Valley-Op
+                    trailer. Its tree is read within fixed bounds, and
+                    must be exactly the graph's layout. No knot or
+                    comment is deleted, no comment changes, a knot keeps
+                    its id, type, created and created_by, a new knot's
+                    created_by and a new comment's author name the
+                    pusher, every edge resolves, and no edge forms a
+                    cycle. No push deletes the ref.
   anything else     principals a named grant of the project opens the ref
                     to. Tags open only this way.
   a protected ref   also a declared writer of the project. Protection adds

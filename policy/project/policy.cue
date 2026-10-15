@@ -26,6 +26,7 @@ project: {
 	let ownChecks = [
 		"valleyhook-unit",
 		"protect-e2e",
+		"knots-e2e",
 		"note-unit",
 		"change-unit",
 		"knot-unit",
@@ -81,13 +82,15 @@ project: {
 	// package, whose checkPhase runs `go test`.
 
 	// The pre-receive hook and the git user's login shell. protect-e2e
-	// pushes to bare repositories wired with the hook a host renders, and
-	// valley-ready pushes change records through that hook.
+	// pushes to bare repositories wired with the hook a host renders,
+	// valley-ready pushes change records through that hook, and knots-e2e
+	// pushes the plan graph through it.
 	classes: valleyhook: {
 		paths: "valleyhook/**":      true
 		requires: "valleyhook-unit": true
 		requires: "protect-e2e":     true
 		requires: "valley-ready":    true
+		requires: "knots-e2e":       true
 	}
 
 	// The change record, which the hook guards, the CLI's Go verbs write and
@@ -106,14 +109,17 @@ project: {
 	}
 
 	// The plan graph's module, which the CLI's Go verbs write the graph
-	// with. knot-agree holds its validator to the node schema and the
-	// knowledge lint, and valley-knot drives the verbs that use it.
+	// with and the hook validates it with. knot-agree holds its validator
+	// to the node schema and the knowledge lint, valley-knot drives the
+	// verbs that use it, and knots-e2e pushes through the hook.
 	classes: knot: {
-		paths: "knot/**":           true
-		requires: "knot-unit":      true
-		requires: "knot-agree":     true
-		requires: "valley-go-unit": true
-		requires: "valley-knot":    true
+		paths: "knot/**":            true
+		requires: "knot-unit":       true
+		requires: "knot-agree":      true
+		requires: "valley-go-unit":  true
+		requires: "valley-knot":     true
+		requires: "valleyhook-unit": true
+		requires: "knots-e2e":       true
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so
@@ -245,6 +251,7 @@ project: {
 		requires: "mirror-e2e":                true
 		requires: "bus-e2e":                   true
 		requires: "protect-e2e":               true
+		requires: "knots-e2e":                 true
 		requires: "identity-e2e":              true
 		requires: "ssh-e2e":                   true
 		requires: "publish-e2e":               true

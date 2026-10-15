@@ -20,9 +20,9 @@
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
 #   hooks.nix        valleyhook-unit, note-unit, change-unit, mirror-e2e,
-#                    bus-e2e, protect-e2e, init-e2e — the hooks the module
-#                    renders, run against real git, the formats they read,
-#                    and the init script that wires them
+#                    bus-e2e, protect-e2e, knots-e2e, init-e2e — the hooks
+#                    the module renders, run against real git, the formats
+#                    they read, and the init script that wires them
 #   identity.nix     identity-unit, identity-e2e — the compiler's unit
 #                    tests, and the registry compiler over a real
 #                    instance repository, against the hand-written

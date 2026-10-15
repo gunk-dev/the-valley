@@ -222,7 +222,8 @@ rec {
   };
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
-  # project a valley host serves. The same binary is the git user's login
+  # project a valley host serves. It validates a push to the plan graph
+  # with the one reading of a graph the CLI shares (../knot). The same binary is the git user's login
   # shell, which derives the pushing principal and pauses pushes until the
   # host has converged. Go, standard library only — hence
   # vendorHash = null and no module fetch. Its unit tests run in the
@@ -237,6 +238,7 @@ rec {
     src = withLocal ../valleyhook [
       ../note
       ../change
+      ../knot
     ];
     modRoot = "valleyhook";
     vendorHash = null;

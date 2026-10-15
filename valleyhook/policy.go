@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"the-valley/change"
+	"the-valley/knot"
 	"the-valley/note"
 )
 
@@ -86,14 +87,18 @@ type update struct {
 //
 //  1. Some refs no push may write, whatever anything declares: replacement
 //     refs, notes, and the valley's own namespace apart from attestations,
-//     integration requests and change records.
+//     integration requests, change records and the plan graph. The plan
+//     graph is one ref, refs/the-valley/knots, matched exactly: a ref that
+//     only begins with its name is in the closed namespace.
 //  2. A ref that is symbolic in the repository takes no push. git would
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
 //     Attestations are create-only and must be what their name says.
 //     Integration requests take the request grant. A change record moves
-//     only by the transitions checkRecord allows. Every other ref, tags
-//     included, takes a named grant that opens it to the principal.
+//     only by the transitions checkRecord allows. The plan graph takes a
+//     named principal, and moves only by the writes checkGraph allows.
+//     Every other ref, tags included, takes a named grant that opens it to
+//     the principal.
 //  4. A protected ref also takes a declared writer.
 //
 // Protection only ever adds a requirement. A writer of a pattern that
@@ -114,7 +119,7 @@ func (p policy) decide(principal string, u update) string {
 	case strings.HasPrefix(u.ref, notesPrefix):
 		return refuse("write", "refs/notes/ is closed to every push: a note attaches text to an object that every reader's git shows beside it")
 	case strings.HasPrefix(u.ref, valleyPrefix) && !strings.HasPrefix(u.ref, attestationPrefix) &&
-		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix):
+		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) && u.ref != knot.Ref:
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
 	}
 
@@ -145,6 +150,11 @@ func (p policy) decide(principal string, u update) string {
 
 	case strings.HasPrefix(u.ref, change.RefPrefix):
 		if verb, why := p.checkRecord(principal, u); why != "" {
+			return refuse(verb, why)
+		}
+
+	case u.ref == knot.Ref:
+		if verb, why := p.checkGraph(principal, u); why != "" {
 			return refuse(verb, why)
 		}
 

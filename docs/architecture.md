@@ -81,7 +81,8 @@ Every repository's `pre-receive` hook runs `valleyhook pre-receive` (`valleyhook
 `valleyhook/policy.go`). The hook is default-deny. If any one ref update is refused, the whole push
 is refused. A push may update at most 1000 refs, and the hook refuses one that updates more before
 it decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic, so it reads a
-symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`.
+symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`, and for
+the plan graph by `knots-e2e`.
 
 | Ref namespace                                       | Who may push                                                                                     | Rule                                                                                                                                                                    |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -90,6 +91,7 @@ symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valle
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
 | `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
 | `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
+| `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
 | Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`.                                                                      |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
@@ -952,13 +954,13 @@ previous tip as its one parent. Each commit is one operation, and its tree is th
 its type's prefix and the first 7 hex digits of the SHA-256 of its slug. When that ID is taken, the
 slug gains a suffix, `-2`, `-3` and on, until the ID is free.
 
-The knot module (`knot/`) is the one reading of the graph. A knot's frontmatter is a strict subset
-of YAML that the module owns, because Go has no YAML parser. Keys come in a fixed order, titles and
-other free text are JSON strings, and lists are sorted flow lists. The module refuses any file that
-does not read back byte for byte as it would write it, so there is one way to write each knot. The
-form is still YAML, so the knowledge lint reads it too. The module also fixes the graph's limits as
-named constants: 5,000 knots, 20,000 comments, 64 KiB a knot, 16 KiB a comment, and 32 changed files
-a commit.
+The knot module (`knot/`) is the one reading of the graph, shared by the CLI and the push hook. A
+knot's frontmatter is a strict subset of YAML that the module owns, because Go has no YAML parser.
+Keys come in a fixed order, titles and other free text are JSON strings, and lists are sorted flow
+lists. The module refuses any file that does not read back byte for byte as it would write it, so
+there is one way to write each knot. The form is still YAML, so the knowledge lint reads it too. The
+module also fixes the graph's limits as named constants: 5,000 knots, 20,000 comments, 64 KiB a
+knot, 16 KiB a comment, and 32 changed files a commit.
 
 The module holds a graph to its layout, its fields and its edges. `parent` names an outcome in the
 graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another project's knot as
@@ -974,15 +976,45 @@ alone, and `knot-unit` covers them.
 `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project
 on the same host. A write reads the tip with one `ls-remote`, one fetch and one batched read of the
 tree. It builds the new commit with git plumbing on a private index, never touching the worktree,
-and holds the result to every rule the module states. Then it pushes with
+and holds the result to the rules the hook applies. Then it pushes with
 `--force-with-lease=refs/the-valley/knots:<old tip>`. When the lease fails, the operation is formed
 again on the new tip, at most 5 tries in all, after a random pause. `set`, `edit`, `link --parent`
 and `claim` compare before they write: a field another write changed meanwhile, or a claim another
 run holds, is reported as a conflict, with exit status 3, and is never overwritten. `--if` adds a
 comparison of its own. Each operation carries a `Valley-Op` trailer whose ID it keeps across every
 try. After a push whose outcome it cannot tell, the CLI looks for that ID among the ref's latest 64
-commits before trying again, so no operation is recorded twice. Checked by `valley-knot`, against
-bare repositories with no hook.
+commits before trying again, so no operation is recorded twice. A push the hook refuses is not tried
+again, and the CLI prints what the hook said. Checked by `valley-knot`, against bare repositories
+with no hook, and by `knots-e2e` through the hook.
+
+The host decides every push to the ref in `valleyhook` (`valleyhook/knots.go`), with the knot
+module. It matches `refs/the-valley/knots` exactly, so a ref that only begins with that name stays
+in the closed namespace. Any named principal may write the graph, and an untagged key may not. Every
+writer can change every knot in every project's graph: with two principals, the operator's and
+`klaus-env`, that is intended, and a principal added later gets the same reach. A push that creates
+the ref brings one commit with no parent. An update brings one commit whose only parent is the old
+tip, so a push is one operation and the ref never rewinds. No push deletes the ref; a graph that
+must be recovered is recovered on the host, and its history stays the record. The commit's committer
+is the pushing principal, and its message ends with a `Valley-Op` trailer.
+
+The hook reads the old and new trees with the bounded walk attestations use, with the graph's own
+budget: trees 3 deep, 20,000 entries in one tree and 30,005 in all, a shared subtree counted each
+time a tree names it, 2 MiB a tree, 64 MiB read in all, and 5 seconds. It then holds the push to the
+module's rules. The layout is checked exhaustively: plain files of mode `100644` at the layout's
+paths and nowhere else, no empty directory, no repeated name, valid UTF-8 with no control character
+but newline and tab. Every knot and comment the commit adds or changes is read and checked, against
+the old tree for the transitions, as the pushing principal for `created_by` and `author`. Every tip
+the hook admitted was valid, so it reads only those files and the knots their edges reach, but it
+checks the counts from the listing on every push, and a cycle is looked for along the edges of every
+knot the push changes. A push that also carries an invalid change record, attestation or integration
+request is refused whole, like any push with one refused update.
+
+Measured at the limits, on the development VM: an update adding a comment to a graph of 5,000 knots
+and 19,999 comments takes the hook 0.32 s, and one changing the knot at the head of a 5,000-knot
+`blocked_by` chain, so the cycle walk reads every knot, 0.5 s. A typical update of a graph of 100
+knots takes 14 ms. The cycle walk counts against the 64 MiB budget, so a chain of more than about
+4,000 knots of 16 KiB each cannot be extended until it is shortened; knots of a few KiB never come
+near it. Reading the largest graph with `valley knot list` takes 0.4 s.
 
 `valley knot list --ready` and `show` derive what the graph does not store. A knot is ready when it
 is active, unclaimed, and every knot it is blocked by is terminal. A blocker that ended abandoned,

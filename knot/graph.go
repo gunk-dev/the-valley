@@ -48,7 +48,9 @@ type File struct {
 // named by the knot's ID, holding only comments named <stamp>-<op>.md.
 // Every file is a plain file, mode 100644: no symlink, executable or
 // submodule. No directory is empty, no name repeats, and no ID is used
-// twice. The counts are held to MaxKnots and MaxComments.
+// twice. The counts are held to MaxKnots and MaxComments. Whether each
+// directory of comments is on a knot the graph holds is the push's to
+// check, since a knot deleted is the clearer refusal.
 func Layout(entries []Entry) (*Index, error) {
 	idx, err := layout(entries)
 	if err != nil {
@@ -100,11 +102,6 @@ func layout(entries []Entry) (*Index, *Error) {
 	for _, d := range dirs {
 		if children[d] == 0 {
 			return nil, refuse(RuleLayout, d, "is an empty directory, which git does not write")
-		}
-	}
-	for _, c := range idx.Comments {
-		if _, ok := idx.Knots[c.ID]; !ok {
-			return nil, refuse(RuleEdgeResolves, path.Dir(c.Path), fmt.Sprintf("holds comments on %s, which is no knot in the graph", c.ID))
 		}
 	}
 	switch {
@@ -273,6 +270,11 @@ func (p Push) checkComment(g *graph, c File) *Error {
 		if _, ok := p.Old.Files[c.Path]; ok {
 			return refuse(RuleTransition, c.Path, "changes a comment, and a comment stays exactly as it was written")
 		}
+	}
+	// A comment the push leaves unchanged is on a knot the graph holds,
+	// since no knot is deleted. One it adds must be too.
+	if _, ok := p.New.Knots[c.ID]; !ok {
+		return refuse(RuleEdgeResolves, path.Dir(c.Path), fmt.Sprintf("holds comments on %s, which is no knot in the graph", c.ID))
 	}
 	data, err := g.read(c.OID, MaxCommentSize)
 	if err != nil {

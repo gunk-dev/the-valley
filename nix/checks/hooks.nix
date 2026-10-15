@@ -37,7 +37,8 @@
   # subtle: the glob matching of a declared pattern, the order in which
   # the rules are tried, and every transition of a change record, each
   # refusal against real git objects. What the hook does to a real push
-  # is protect-e2e's, and valley-ready's for the records the CLI writes.
+  # is protect-e2e's, valley-ready's for the records the CLI writes, and
+  # knots-e2e's for the plan graph.
   valleyhook-unit = packages.valleyhook;
 
   # The note envelope every reader of an attestation shares (note/).
@@ -67,6 +68,30 @@
     initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
     passAsFile = [ "initScript" ];
   } (builtins.readFile ./protect-e2e.sh);
+
+  # The plan graph, refs/the-valley/knots, through the hook the protected
+  # host renders. The real valley knot writes it as two principals, and
+  # every write lands; then crafted pushes break each rule the hook holds a
+  # push to the graph to, and each is refused with the ref left where it
+  # was: an untagged key, a non-fast-forward update, a merge, two commits,
+  # a parent that is not the old tip, a tag, another committer, a missing
+  # trailer, a deleted or changed comment, a deleted knot, a changed id,
+  # type or created_by, a forged author or creator, a symlink, an
+  # executable, a file or directory outside the layout, a non-canonical
+  # knot, an oversized one, a shared-subtree bomb, a dangling edge, a
+  # cycle, a deletion of the ref, and refs that only begin with its name.
+  # A create with a parent is refused and one without is admitted, and a
+  # valid graph update carries no invalid change record, attestation or
+  # integration request through with it.
+  knots-e2e = pkgs.runCommand "valley-knots-e2e" {
+    nativeBuildInputs = [
+      pkgs.git
+      packages.valley-go
+    ];
+    cliScript = ../../bin/valley;
+    initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "initScript" ];
+  } (builtins.readFile ./knots-e2e.sh);
 
   # valley-init itself, over repositories that already exist. The other
   # hook checks wire a bare repo by hand; this one runs the rendered init

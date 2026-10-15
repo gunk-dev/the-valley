@@ -220,7 +220,7 @@ func TestCreatingAChangeRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	objects.subject = "a change record"
+	objects.budget.subject = "a change record"
 	_, err = readRecord(objects, big)
 	objects.close()
 	if err == nil || strings.Join(objects.requests, "; ") != "info "+big {
@@ -534,6 +534,10 @@ func (u unreadable) record(string) (recordCommit, error) {
 func (u unreadable) kind(string) (string, error) {
 	u.t.Error("an object was read")
 	return "", errors.New("unread")
+}
+func (u unreadable) graph() (graphReader, error) {
+	u.t.Error("the plan graph was read")
+	return nil, errors.New("unread")
 }
 func (u unreadable) records() (int, error) {
 	u.t.Error("the records were counted")

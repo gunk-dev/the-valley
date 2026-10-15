@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // gitProgram is the git this program runs. The package sets it at build
@@ -37,17 +38,33 @@ type repository interface {
 	// records counts the change records the repository holds now, with
 	// one for-each-ref.
 	records() (int, error)
+	// graph opens a reading of the plan graph's objects (knots.go),
+	// within the graph's own bounds.
+	graph() (graphReader, error)
+}
+
+// budget is what one reading of pushed objects may cost: how deep its
+// trees nest, the root's counted as 1; the entries in any one tree and in
+// the whole walk; the bytes in any one tree and in any one file; the bytes
+// read in all; and, when it is not zero, how long the reading may take.
+// The bounds exist because what is read is a pushed object, and git trees
+// can share subtrees: a few dozen small trees, each naming the next many
+// times over, describe more paths than any machine can walk. A walk
+// counts every entry it visits, a shared subtree once per time it is
+// named, and stops at the first bound it would cross, before reading or
+// allocating anything past it. Each reader passes its own budget.
+type budget struct {
+	// subject is what the objects make up, as a refusal names it.
+	subject                       string
+	depth, entriesInTree, entries int
+	treeSize, fileSize, bytes     int
+	deadline                      time.Duration
 }
 
 // The bounds on reading an attestation ref. attest writes a tree holding
 // one subtree per check, each holding one note, and the integrator writes a
 // tree holding notes directly, so these are far above anything either
-// writes. They exist because the tree is a pushed object, and git trees can
-// share subtrees: a few dozen small trees, each naming the next many times
-// over, describe more paths than any machine can walk. The walk below
-// counts every entry it visits, a shared subtree once per time it is
-// named, and stops at the first bound it would cross, before reading or
-// allocating anything past it.
+// writes.
 const (
 	maxDepth         = 3        // trees from the ref's tree down, inclusive
 	maxEntriesInTree = 64       // entries in any one tree
@@ -56,6 +73,11 @@ const (
 	maxNoteSize      = 64 << 10 // bytes in any one note
 	maxBytes         = 1 << 20  // bytes read in the whole walk
 )
+
+var attestationBudget = budget{
+	subject: "an attestation", depth: maxDepth, entriesInTree: maxEntriesInTree, entries: maxEntries,
+	treeSize: maxTreeSize, fileSize: maxNoteSize, bytes: maxBytes,
+}
 
 // gitRepository reads the repository the hook runs in. receive-pack runs
 // the hook inside the repository, with the pushed objects in a quarantine
@@ -112,26 +134,43 @@ func (gitRepository) notes(id string) (map[string][]byte, error) {
 }
 
 func walkNotes(objects *objectStream, id string) (map[string][]byte, error) {
-	w := walk{objects: objects, hashSize: len(id) / 2, found: map[string][]byte{}}
+	found := map[string][]byte{}
+	w := walk{objects: objects, hashSize: len(id) / 2, visit: func(at, mode, child string) error {
+		switch mode {
+		case "40000":
+			return nil
+		case "100644":
+			note, err := objects.read(child, "blob", maxNoteSize)
+			if err != nil {
+				return fmt.Errorf("%s %v", at, err)
+			}
+			found[at] = note
+			return nil
+		}
+		return fmt.Errorf("%s has mode %s, and an attestation holds only notes, as plain files, and trees of them", at, mode)
+	}}
 	if err := w.tree(id, "", 1); err != nil {
 		return nil, err
 	}
-	if len(w.found) == 0 {
+	if len(found) == 0 {
 		return nil, errors.New("it points at a tree holding no note, and an attestation holds at least one")
 	}
-	return w.found, nil
+	return found, nil
 }
 
-// walk is one bounded walk of an attestation's tree.
+// walk is one bounded walk of a tree, within its stream's budget. It
+// hands visit every entry it finds, trees included, and walks each tree
+// after visit has seen it.
 type walk struct {
 	objects  *objectStream
 	hashSize int
 	entries  int
-	found    map[string][]byte
+	visit    func(at, mode, id string) error
 }
 
 func (w *walk) tree(id, path string, depth int) error {
-	body, err := w.objects.read(id, "tree", maxTreeSize)
+	b := w.objects.budget
+	body, err := w.objects.read(id, "tree", b.treeSize)
 	if err != nil {
 		if path == "" {
 			return fmt.Errorf("it %v", err)
@@ -143,10 +182,10 @@ func (w *walk) tree(id, path string, depth int) error {
 		inTree++
 		w.entries++
 		switch {
-		case inTree > maxEntriesInTree:
-			return fmt.Errorf("a tree in it holds more than %d entries, the most an attestation's tree may", maxEntriesInTree)
-		case w.entries > maxEntries:
-			return fmt.Errorf("its trees name more than %d entries in all, the most an attestation may", maxEntries)
+		case inTree > b.entriesInTree:
+			return fmt.Errorf("a tree in it holds more than %d entries, the most %s's tree may", b.entriesInTree, b.subject)
+		case w.entries > b.entries:
+			return fmt.Errorf("its trees name more than %d entries in all, the most %s may", b.entries, b.subject)
 		}
 		mode, name, child, rest, err := treeEntry(body, w.hashSize)
 		if err != nil {
@@ -157,22 +196,16 @@ func (w *walk) tree(id, path string, depth int) error {
 		if path != "" {
 			at = path + "/" + name
 		}
-		switch mode {
-		case "40000":
-			if depth+1 > maxDepth {
-				return fmt.Errorf("%s nests trees deeper than the %d an attestation may", at, maxDepth)
-			}
+		if mode == "40000" && depth+1 > b.depth {
+			return fmt.Errorf("%s nests trees deeper than the %d %s may", at, b.depth, b.subject)
+		}
+		if err := w.visit(at, mode, child); err != nil {
+			return err
+		}
+		if mode == "40000" {
 			if err := w.tree(child, at, depth+1); err != nil {
 				return err
 			}
-		case "100644":
-			note, err := w.objects.read(child, "blob", maxNoteSize)
-			if err != nil {
-				return fmt.Errorf("%s %v", at, err)
-			}
-			w.found[at] = note
-		default:
-			return fmt.Errorf("%s has mode %s, and an attestation holds only notes, as plain files, and trees of them", at, mode)
 		}
 	}
 	return nil
@@ -202,12 +235,19 @@ type objectStream struct {
 	spent    int
 	requests []string
 
-	// subject is what the objects make up, as a refusal names it: an
-	// attestation, unless the reader says otherwise.
-	subject string
+	// budget is what the reading may cost, and names what the objects
+	// make up in a refusal. until is when its deadline passes, if it has
+	// one.
+	budget budget
+	until  time.Time
 }
 
+// openObjects opens a stream within an attestation's budget.
 func openObjects() (*objectStream, error) {
+	return openObjectsWithin(attestationBudget)
+}
+
+func openObjectsWithin(b budget) (*objectStream, error) {
 	cmd := exec.Command(gitProgram, "--no-replace-objects", "cat-file", "--batch-command")
 	cmd.Env = gitEnvironment(os.Environ())
 	in, err := cmd.StdinPipe()
@@ -221,12 +261,19 @@ func openObjects() (*objectStream, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), subject: "an attestation"}, nil
+	s := &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), budget: b}
+	if b.deadline > 0 {
+		s.until = time.Now().Add(b.deadline)
+	}
+	return s, nil
 }
 
 // ask sends one command and reads the header line git answers it with:
 // the object's id, type and size.
 func (s *objectStream) ask(command, id string) (kind string, size int, err error) {
+	if !s.until.IsZero() && time.Now().After(s.until) {
+		return "", 0, fmt.Errorf("could not be read within the %s the hook spends reading %s", s.budget.deadline, s.budget.subject)
+	}
 	s.requests = append(s.requests, command+" "+id)
 	if _, err := fmt.Fprintf(s.in, "%s %s\n", command, id); err != nil {
 		return "", 0, err
@@ -259,11 +306,11 @@ func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
 	case err != nil:
 		return nil, err
 	case got != kind:
-		return nil, fmt.Errorf("points at a %s, where %s holds a %s", got, s.subject, kind)
+		return nil, fmt.Errorf("points at a %s, where %s holds a %s", got, s.budget.subject, kind)
 	case size > max:
-		return nil, fmt.Errorf("is a %s of %d bytes, more than the %d %s's may be", kind, size, max, s.subject)
-	case s.spent+size > maxBytes:
-		return nil, fmt.Errorf("would take the walk past the %d bytes %s may hold", maxBytes, s.subject)
+		return nil, fmt.Errorf("is a %s of %d bytes, more than the %d %s's may be", kind, size, max, s.budget.subject)
+	case s.spent+size > s.budget.bytes:
+		return nil, fmt.Errorf("would take the walk past the %d bytes %s may hold", s.budget.bytes, s.budget.subject)
 	}
 	again, confirmed, err := s.ask("contents", id)
 	if err != nil {

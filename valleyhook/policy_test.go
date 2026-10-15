@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"the-valley/knot"
 )
 
 // The patterns are documented as matching the full refname with `*`
@@ -47,6 +49,7 @@ func (f fakeRepository) record(string) (recordCommit, error) {
 }
 func (f fakeRepository) kind(string) (string, error) { return "", errors.New("holds no objects") }
 func (f fakeRepository) records() (int, error)       { return 0, nil }
+func (f fakeRepository) graph() (graphReader, error) { return nil, errors.New("holds no objects") }
 
 // Every rule that applies to a ref has to allow the write, and none of
 // them can be satisfied by another. Each case here is a declaration that
@@ -95,10 +98,26 @@ func TestNoRuleStandsInForAnother(t *testing.T) {
 		// An attestation named for a digest alone is refused before
 		// anything is read: it would block every ref beneath it.
 		{"writer", "refs/the-valley/attestations/" + strings.Repeat("a", 64), false, "<digest>/<key hash>"},
+		// The plan graph is one ref, matched exactly. A ref that only
+		// begins with its name is in the closed namespace, and the graph
+		// takes no write from a key that names no principal, before
+		// anything is read.
+		{"writer", knot.Ref + "-x", false, "written only by the machinery"},
+		{"writer", knot.Ref + "/x", false, "written only by the machinery"},
+		{"", knot.Ref, false, "takes writes only from a named principal"},
 	} {
 		got := p.decide(c.who, update{old: zero, new: some, ref: c.ref})
 		if (got == "") != c.allowed || !strings.Contains(got, c.says) {
 			t.Errorf("%s writing %s: got %q, want allowed=%v saying %q", c.who, c.ref, got, c.allowed, c.says)
 		}
+	}
+}
+
+// The plan graph is never deleted, by anyone, before anything is read.
+func TestNoPushDeletesThePlanGraph(t *testing.T) {
+	p := policy{project: "p", repo: fakeRepository{}}
+	got := p.decide("writer", update{old: "1111111111111111111111111111111111111111", new: "0000000000000000000000000000000000000000", ref: knot.Ref})
+	if !strings.Contains(got, "may not delete refs/the-valley/knots") || !strings.Contains(got, "never deleted") {
+		t.Errorf("a delete of the graph: %q", got)
 	}
 }

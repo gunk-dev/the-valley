@@ -90,7 +90,7 @@ package valley
 // rule that applies to its ref:
 //
 //   - replacement refs (refs/replace/*), notes (refs/notes/*) and the
-//     valley's own namespace (refs/the-valley/*, but for the two below)
+//     valley's own namespace (refs/the-valley/*, but for the four below)
 //     take no push at all;
 //   - a ref that is symbolic in the repository takes no push;
 //   - topic branches (refs/heads/*) are open;
@@ -99,6 +99,11 @@ package valley
 //     pointing at notes about that digest signed under that key hash;
 //   - integration requests (refs/the-valley/integration-requests/*) take
 //     writes only from a principal holding the request grant (dcr-e544f20);
+//   - change records (refs/the-valley/changes/main/<change ID>) move only
+//     by the transitions the hook allows;
+//   - the plan graph (refs/the-valley/knots, that name exactly) takes a
+//     named principal's write of one commit on its tip that leaves the
+//     graph valid, and is never deleted;
 //   - every other ref, tags included, takes a named grant of the project
 //     (#Project.grants) that opens it to the pusher;
 //   - a protected ref also takes a declared writer.

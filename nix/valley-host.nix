@@ -655,12 +655,15 @@ let
   # The pre-receive hook: the one structural git invariant
   # (archive/design/architecture.md, archive/design/contribute.md), which is what a push may
   # write. It is installed on every project the host serves. Replacement
-  # refs, notes and the valley's own namespace take no push; a symbolic
-  # ref takes none; topic branches are open; an attestation ref may only be
-  # created, and only holding what its name says; an integration request
-  # takes the request grant; every other ref, tags included, takes a named
-  # grant of the project; and a protected ref also takes a declared writer.
-  # All policy beyond this lives in the integrator.
+  # refs, notes and the valley's own namespace take no push, but for the
+  # four namespaces below; a symbolic ref takes none; topic branches are
+  # open; an attestation ref may only be created, and only holding what its
+  # name says; an integration request takes the request grant; a change
+  # record moves only by the transitions the hook allows; the plan graph,
+  # refs/the-valley/knots, takes any named principal's write of one commit
+  # on its tip that keeps the graph valid; every other ref, tags included,
+  # takes a named grant of the project; and a protected ref also takes a
+  # declared writer. All policy beyond this lives in the integrator.
   #
   # The rules are valleyhook's, in Go, and this script is only how git
   # reaches it. It hands over what the policy is a function of: the pushing

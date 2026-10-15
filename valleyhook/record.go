@@ -40,12 +40,13 @@ type recordCommit struct {
 }
 
 func (gitRepository) record(id string) (recordCommit, error) {
-	objects, err := openObjects()
+	b := attestationBudget
+	b.subject = "a change record"
+	objects, err := openObjectsWithin(b)
 	if err != nil {
 		return recordCommit{}, err
 	}
 	defer objects.close()
-	objects.subject = "a change record"
 	return readRecord(objects, id)
 }
 

@@ -1,11 +1,14 @@
 # Architecture as deployed
 
-This document describes what the-valley runs today, read from the code. It makes three kinds of
-statement. Behaviour is what the code does, cited to the files that do it. A deployment record
-reports an observation of a host, and names the record and its date. A guarantee names the flake
-check (`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement with no named check
-is unchecked. Security and rollouts are in [security.md](./security.md), planned work is in
-[roadmap.md](./roadmap.md), and purpose and principles are in [purpose.md](./purpose.md).
+This document describes what the-valley runs today, read from the code, and the architectural
+principles its design follows. It makes four kinds of statement. A principle is a rule the design
+follows, with the reason for it; the code that carries it out is cited like any other behaviour.
+Behaviour is what the code does, cited to the files that do it. A deployment record reports an
+observation of a host, and names the record and its date. A guarantee names the flake check
+(`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement of behaviour with no named
+check is unchecked. Security and rollouts are in [security.md](./security.md), planned work is in
+[roadmap.md](./roadmap.md), and the project's purpose and principles are in
+[purpose.md](./purpose.md).
 
 ## Overview
 
@@ -24,6 +27,71 @@ The parts are:
 - the identity compiler, which turns a registry into keys and grants (`identity/`);
 - the `valley` command line tool (`bin/valley`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
+
+## The source and project storage
+
+A project keeps its data in one of two places. The source is the project's tree: its code,
+configuration, policy, schemas and docs. Project storage sits beside the source, in the same store,
+and holds what is about the project rather than part of it. This section states which data belongs
+where. The principles hold for any store. How this deployment realises them in git comes last.
+
+**Data that is true of a version of the project belongs in the source.** Code, configuration,
+policy, schemas and docs are each true of the version that holds them. They fork when the source
+forks, so a release's docs describe that release. A change governs them. This is why the integrator
+reads a change's policy from the target's tip: policy is true of the version it governs
+(`integrator/policy.go`).
+
+**Data about the project, rather than of one version, belongs in project storage.** Any one of these
+reasons puts it there:
+
+- It needs one truth across every line of the source, as the plan does.
+- It describes a version, so it cannot live inside that version. An approval or a check's evidence
+  for a tree cannot be part of that tree. Change records, attestations, integration requests and
+  their outcomes are kept beside the source for this reason.
+- A write to it has no effect to gate, as with a knot's status.
+
+**Project storage shares the source's substrate, not its governance.** It uses the project's store,
+transport and backup, the one policy point at the host, and the project's principals. Each kind of
+data in it is held to rules that match what a write to it can do. This deployment shows the range:
+
+- An attestation can let a change land. So the hook admits one only when each of its notes verifies
+  under a known signer and is about the tree the ref names, and never lets it be rewritten
+  (`valleyhook/attestation.go`).
+- A change record can only refuse. So the hook allows only the transitions in
+  [Change records](#change-records), and the integrator reads records only to refuse
+  (`valleyhook/record.go`, `integrator/records.go`).
+- A knot informs and decides nothing. So any named principal may write one, and the hook checks the
+  graph's shape and its history: one commit on the old tip, and never a rewind
+  (`valleyhook/knots.go`).
+
+A change to the source has effects. So it lands only when it is approved and every check it requires
+has passed (see [The integrator](#the-integrator)).
+
+**Knots can direct work but never authorize it.** A knot can ask for work. That work reaches the
+source only as a change, under the source's rules. Nothing that decides a change reads a knot.
+
+**A settled decision crosses over.** While a decision is proposed, it lives in project storage as a
+knot. Once it is decided, its reasons enter the source's docs through a change, and the knot links
+that change. The knot schema gives the `changes` link only to outcomes and bugs, so a decision knot
+cannot carry it yet (`schema/node.cue`).
+
+**Project storage shares the project's readers.** Whoever can read the source can read project
+storage, and the reverse. Data that needs different readers belongs to a different project.
+
+The source says what is; its history, how it came to be; the knots, where it goes.
+
+In this deployment, project storage is the refs under `refs/the-valley/` in the project's git
+repository, beside the source's `refs/heads/`. [What a push may write](#what-a-push-may-write) says
+which namespace holds what and who may write it, and [The plan graph](#the-plan-graph) describes the
+knots. A plain `git clone` fetches branches and tags, so it carries the source and no project
+storage. The tools that read project storage fetch it by name: `valley knot` and `valley plan` list
+`refs/the-valley/knots` with `ls-remote` and fetch the commit it names, and `valley changes` and
+`valley status` read change records the same way (`status/knot.go`, `status/changes.go`). The
+mirrors receive `main` and tags only, so no project storage reaches a mirror
+(`nix/valley-host.nix`). The host's backup copies the whole data directory, `/srv/git` by default,
+so it holds project storage too. The readers follow from git. Anyone who can read a repository can
+fetch the objects of every ref in it, and git's own documentation says that even its namespaces are
+not effective for read access control (`gitnamespaces(7)`, SECURITY).
 
 ## The host module
 
@@ -97,6 +165,9 @@ the plan graph by `knots-e2e`.
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
 | Tags and every other ref                            | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
+
+Branches and tags hold the source. The namespaces under `refs/the-valley/` are project storage, as
+[The source and project storage](#the-source-and-project-storage) describes.
 
 The `request` grant comes from two places: the host's declared `services.valley.grants.request` and
 the identity compiler's `grants` file. Why replace refs are closed is recorded in
@@ -940,7 +1011,8 @@ Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs 
 
 ## The plan graph
 
-A project's plan is data kept with the project: a graph of knots at one ref,
+A project's plan is data kept with the project, in its
+[project storage](#the-source-and-project-storage): a graph of knots at one ref,
 `refs/the-valley/knots`, in the project's repository. A knot is an outcome, a bug, an idea or a
 decision, in the node format the archived knowledge graph uses (`schema/node.cue`). The ref is a
 cord and each knot is tied on it, as people "return to knotting cords and using them" in the Tao Te

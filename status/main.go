@@ -4,9 +4,10 @@
 // withdraw, for changes and pending, which list every change across the
 // repositories a host serves, and for resolve, which turns the name of a
 // change into its branch for the verbs bin/valley runs itself, for
-// stack, which lists the layers under a change for review (stack.go), and
-// for knot, the plan graph's API (knot.go), which reads and writes a
-// project's knots at refs/the-valley/knots.
+// stack, which lists the layers under a change for review (stack.go), for
+// knot, the plan graph's API (knot.go), which reads and writes a
+// project's knots at refs/the-valley/knots, and for plan, which shows that
+// graph as a view (plan.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -31,6 +32,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 const usage = `usage: valley-go status [--json] <change>
@@ -42,7 +44,8 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--checks]
-       valley-go knot <verb> [args]   (valley-go knot for its verbs)`
+       valley-go knot <verb> [args]   (valley-go knot for its verbs)
+       valley-go plan [--project <name> | --all] [--owner <name>] [--json]`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -81,8 +84,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
-	case "knot":
-		return runKnot(g, args, os.Stdin, stdout, stderr)
+	case "knot", "plan":
+		if _, err := clockSetting(); err != nil {
+			fmt.Fprintf(stderr, "valley: %s\n", err)
+			return 2
+		}
+		if verb == "knot" {
+			return runKnot(g, args, os.Stdin, stdout, stderr)
+		}
+		err = runPlan(g, args, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -149,6 +159,34 @@ func (g git) input(quiet bool, stdin io.Reader, args ...string) (string, error) 
 func (g git) succeeds(quiet bool, args ...string) bool {
 	_, err := g.output(quiet, args...)
 	return err == nil
+}
+
+// clock is the time the knot and plan verbs take as now: the time
+// VALLEY_NOW holds, when it is set, or else the system's clock. A knot's
+// created date, a claim's time and a comment's stamp are written at it,
+// and a claim's age is read against it. Checks set it, so the dates a
+// graph records and the ages a view shows are the same on every run. It
+// grants nothing: the push hook holds none of those times to its own
+// clock, so a writer could record any of them by writing the file.
+func clock() time.Time {
+	if t, err := clockSetting(); err == nil && !t.IsZero() {
+		return t
+	}
+	return time.Now().UTC()
+}
+
+// clockSetting is the time VALLEY_NOW holds, in UTC, or the zero time when
+// it is unset. A value that is no RFC 3339 time is refused.
+func clockSetting() (time.Time, error) {
+	v := os.Getenv("VALLEY_NOW")
+	if v == "" {
+		return time.Time{}, nil
+	}
+	t, err := time.Parse(time.RFC3339, v)
+	if err != nil {
+		return time.Time{}, failure(fmt.Sprintf("VALLEY_NOW is %q, and it takes an RFC 3339 time, such as 2026-10-15T09:30:00Z", v))
+	}
+	return t.UTC(), nil
 }
 
 // exitCode is the status a failed git exited with, for passing it on.

@@ -82,7 +82,8 @@ rec {
   # as the valley-status/v1 JSON object front ends read. ready, unready and
   # withdraw write a change's record, with the one reading of a record the
   # push hook shares (../change). knot reads and writes the plan graph,
-  # with the one reading of a graph the push hook shares (../knot). Go,
+  # with the one reading of a graph the push hook shares (../knot), and
+  # plan shows that graph as a view. Go,
   # standard library only — hence vendorHash = null and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
   # the bash it replaced, so they need bash, and lay pending out over real

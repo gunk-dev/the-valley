@@ -48,6 +48,7 @@ project: {
 		"valley-ready",
 		"valley-changes",
 		"valley-knot",
+		"valley-plan",
 		"valley-darwin-eval",
 		"policy-deriver",
 		"own-policy",
@@ -110,14 +111,16 @@ project: {
 
 	// The plan graph's module, which the CLI's Go verbs write the graph
 	// with and the hook validates it with. knot-agree holds its validator
-	// to the node schema and the knowledge lint, valley-knot drives the
-	// verbs that use it, and knots-e2e pushes through the hook.
+	// to the node schema and the knowledge lint, valley-knot and
+	// valley-plan drive the verbs that use it, and knots-e2e pushes
+	// through the hook.
 	classes: knot: {
 		paths: "knot/**":            true
 		requires: "knot-unit":       true
 		requires: "knot-agree":      true
 		requires: "valley-go-unit":  true
 		requires: "valley-knot":     true
+		requires: "valley-plan":     true
 		requires: "valleyhook-unit": true
 		requires: "knots-e2e":       true
 	}
@@ -166,7 +169,9 @@ project: {
 
 	// The valley CLI: the script, its Go verbs (status/), and its
 	// completions. valley-ready drives ready, withdraw and the verbs that
-	// take a change's handle, and valley-changes drives changes and pending.
+	// take a change's handle, valley-changes drives changes and pending,
+	// and valley-plan drives plan against the golden files under
+	// status/testdata/plan/.
 	classes: cli: {
 		paths: "bin/valley":        true
 		paths: "status/**":         true
@@ -179,6 +184,7 @@ project: {
 		requires: "valley-ready":   true
 		requires: "valley-changes": true
 		requires: "valley-knot":    true
+		requires: "valley-plan":    true
 		requires: "policy-deriver": true
 	}
 

@@ -21,6 +21,7 @@ _valley() {
       'unready:make a ready change a draft'
       'withdraw:mark a ready change or a draft withdrawn'
       'knot:read and write the plan graph at refs/the-valley/knots'
+      'plan:show the plan graph as a tree, and what waits on you'
       'checks:print the checks the composed policy requires of a change'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
@@ -63,6 +64,14 @@ _valley() {
       unclaim) opts+=('--if:require <field>=<value> first') ;;
     esac
     _describe -t options 'valley knot option' opts
+  elif [[ ${words[2]} == plan && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--project:another project on the same host'
+      '--all:every project the serving host publishes'
+      '--owner:read this principal as the operator'
+      '--json:print valley-plan/v1 JSON'
+    )
+    _describe -t options 'valley plan option' opts
   elif [[ ${words[2]} == checks && ${words[CURRENT-1]} == --cost ]]; then
     compadd quick slow
   elif [[ ${words[2]} == checks && ${words[CURRENT]} == -* ]]; then

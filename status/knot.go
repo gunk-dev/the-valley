@@ -456,7 +456,7 @@ func newOpID() string {
 // formOp turns a verb's arguments into the operation it writes.
 func formOp(a knotArgs, body, principal string) (op, error) {
 	o := op{id: newOpID()}
-	now := time.Now().UTC()
+	now := clock()
 	guards, err := parseAssignments(a.ifs, "--if")
 	if err != nil {
 		return o, err
@@ -1057,7 +1057,7 @@ func (r remote) jsonKnot(s knotState, k *knot.Knot, full bool, foreign knot.Fore
 		Created: k.Created, CreatedBy: k.CreatedBy, Source: k.Source, Parent: k.Parent, Owner: k.Owner,
 		BlockedBy: nonNil(k.BlockedBy), ClaimedBy: k.ClaimedBy, ClaimedAt: k.ClaimedAt,
 		Changes: nonNil(k.Changes), Target: k.Target, GraduatedInto: k.GraduatedInto, Path: k.Path(),
-		CommentCount: len(s.graph.Comments[k.ID]), View: s.graph.View(k.ID, time.Now().UTC(), foreign)}
+		CommentCount: len(s.graph.Comments[k.ID]), View: s.graph.View(k.ID, clock(), foreign)}
 	if full {
 		body := k.Body
 		j.Body = &body

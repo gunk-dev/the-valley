@@ -24,7 +24,7 @@ _valley() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
   if [ "$COMP_CWORD" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot checks tail replay help' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay help' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --cost ]; then
     mapfile -t COMPREPLY < <(compgen -W 'quick slow' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${cur:0:1}" = - ]; then
@@ -55,6 +55,8 @@ _valley() {
     mapfile -t COMPREPLY < <(compgen -W 'outcome bug idea decision' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = knot ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--project --json --parent --blocked-by --owner --target --body --type --status --ready --if --force --change -m --run' -- "$cur")
+  elif [ "${COMP_WORDS[1]}" = plan ] && [ "${cur:0:1}" = - ]; then
+    mapfile -t COMPREPLY < <(compgen -W '--project --all --owner --json' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = replay ]; then
     mapfile -t COMPREPLY < <(compgen -d -- "$cur")
   fi

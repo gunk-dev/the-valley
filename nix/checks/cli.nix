@@ -4,7 +4,8 @@
 # its review verb publishes when it files an integration request, what its
 # Go verbs' unit tests hold, what its ready and withdraw verbs write to a
 # change's record through the real push hook, what its knot verbs write to
-# the plan graph, and that its package evaluates for aarch64-darwin.
+# the plan graph, what its plan verb shows of that graph, and that its
+# package evaluates for aarch64-darwin.
 {
   pkgs,
   self,
@@ -246,6 +247,27 @@ in
     ];
     cliScript = ../../bin/valley;
   } (builtins.readFile ./valley-knot.sh);
+
+  # valley plan against local bare repositories that run no hook: a graph
+  # built with the real knot verbs, each at a time VALLEY_NOW fixes, so
+  # every date and age it shows is the same on every run. The text, off a
+  # terminal, and the valley-plan/v1 document are compared with golden
+  # files kept beside the code that prints them (status/testdata/plan/).
+  # Then a project with no graph, --all over the projects the instance
+  # publishes with one that cannot be read, and the operator named by
+  # --owner and by no one. cliScript is bin/valley itself, as for
+  # valley-knot.
+  valley-plan = pkgs.runCommand "valley-plan" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.jq
+      pkgs.gawk
+      pkgs.diffutils
+      packages.valley-go
+    ];
+    cliScript = ../../bin/valley;
+    golden = ../../status/testdata/plan;
+  } (builtins.readFile ./valley-plan.sh);
 
   # The CLI is offered for aarch64-darwin, which nothing here builds or
   # tests (flake.nix). This check holds that offer to evaluating: an input

@@ -484,8 +484,8 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `changes`, `pending` and `knot` verbs are a Go program, `valley-go`
-(`status/`), which the package puts on the script's `PATH`.
+`ready`, `unready`, `withdraw`, `changes`, `pending`, `knot` and `plan` verbs are a Go program,
+`valley-go` (`status/`), which the package puts on the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -500,6 +500,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley unready <change>`    | Makes a ready change a draft, as its owner or the operator.                                           |
 | `valley withdraw <change>`   | Marks a ready change or a draft withdrawn, as its owner or the operator.                              |
 | `valley knot <verb>`         | Reads and writes the project's plan graph (see [The plan graph](#the-plan-graph)).                    |
+| `valley plan`                | Shows the plan graph as a tree, and what waits on the operator (see [The plan view](#the-plan-view)). |
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
@@ -1031,6 +1032,212 @@ discarded or superseded still clears, and the view marks it. A parent's progress
 children that are not abandoned, out of its children that are not abandoned. A claim older than a
 day is flagged as stale. `show` escapes control characters and characters that reorder text before
 printing, though the graph holds none.
+
+### The plan view
+
+`valley plan` shows a project's plan graph as a tree (`status/plan.go`). It is the view the operator
+reads to see where things stand without asking anyone. It reads the graph as the knot verbs do: one
+`ls-remote`, one fetch and one batched read.
+
+The roots of the tree are the outcomes with no parent: the milestones. Under each root come the
+knots whose parent it is, indented, and their children under them, at every depth. Within a level,
+knots are in the order they were created, then by title, then by ID. Active knots with no parent
+that are not outcomes are listed after the roots, under `no milestone`.
+
+Each knot shows a glyph for its state, then its ID and its title. These are the states:
+
+| Glyph | State         | What it means                                                                         |
+| ----- | ------------- | ------------------------------------------------------------------------------------- |
+| ○     | `ready`       | An active outcome or bug, unclaimed, whose blockers are all terminal.                 |
+| ◐     | `in-progress` | An active knot that is claimed, or whose status is `in-progress`.                     |
+| ⊘     | `blocked`     | An active knot with a blocker that is not terminal, or that cannot be read.           |
+| ◇     | `active`      | Any other active knot, such as an open idea or a proposed decision.                   |
+| ✓     | `done`        | A terminal knot that finished: `done`, `closed`, `decided` or `graduated`.            |
+| ✗     | `abandoned`   | A terminal knot that ended without finishing: `abandoned`, `discarded`, `superseded`. |
+
+An active knot also shows its claim: the run and the claim's age, marked `stale` past a day. It
+shows its owner, and its blockers by ID. A finished blocker is left out. A blocker that ended
+abandoned, discarded or superseded no longer blocks, and is shown with how it ended. A reference to
+another project's knot, `<project>:<id>`, in `blocked_by` or `target`, is shown as written. It is
+marked `dangling` when that project's graph cannot be read or holds no such knot.
+
+A root shows its progress at the right margin, as a count and a bar. Progress counts every
+descendant, not only the children: those that are terminal and not abandoned, out of those that are
+not abandoned. A knot under an abandoned knot still counts. A root whose descendants are all
+terminal is shown as one line.
+
+Three sections follow the tree:
+
+1. `waiting on you` lists the active outcomes and bugs, and the proposed decisions, that the
+   operator owns. Then it lists the changes ready for approval, as `valley pending` selects them:
+   each one's handle, version, repository and title. The operator is the principal
+   `git config valley.principal` names, or the one `--owner` names. When neither names one, the
+   section says how to name one, and still lists the changes.
+2. `in flight` lists the active knots that are claimed, the oldest claim first.
+3. `open residuals` lists the open bugs. Bugs with no parent come first. The others are grouped
+   under their parent.
+
+Without a flag, `plan` shows the current repository's project. `--project` names another project on
+the same host. `--all` shows every project the host publishes at `refs/the-valley/projects`, found
+as `valley pending --all` finds them, each under its name. A project that cannot be read is reported
+in its own section, and the others are shown all the same. A project with no graph gets one line
+saying so, with the command that starts one: `valley knot new outcome "<title>"`. Lines fit the
+terminal as `valley pending`'s do. On a terminal each glyph has a colour and each root's title is
+bold, unless `NO_COLOR` is set.
+
+```text
+○ oc-65866d3  Slice one lands                                     2/2 ██████████
+
+○ oc-1b5d5fe  Slice two lands                                    2/10 ██░░░░░░░░
+  ✓ oc-7125815  Read the graph once
+  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ◇ ida-9c65fa3 Colour the glyphs · owner patrick
+  ○ oc-c9066f1  Document the schema · owner patrick
+                blocked by oc-23ebda7 (abandoned)
+                lands in cosmo:oc-7654321 (dangling)
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+    ⊘ oc-70947c5  Golden files · blocked by bd-6e27560
+    ✓ bd-b198e52  The tree misses a level
+    ○ bd-6e27560  Width is off by one
+  ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
+  ⊘ oc-f982ae7  Ship it · blocked by cosmo:oc-2172d43,
+                ghost:oc-0123456 (dangling), oc-70947c5
+  ✗ oc-23ebda7  Use a tree widget
+
+○ oc-24df5c7  A late milestone                                    0/0 ░░░░░░░░░░
+
+no milestone
+  ○ bd-bee76f4  A stray report
+  ◇ ida-162ff1b The graph as a web page
+
+waiting on you (patrick)
+  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ○ oc-c9066f1  Document the schema · owner patrick
+                blocked by oc-23ebda7 (abandoned)
+                lands in cosmo:oc-7654321 (dangling)
+  ready for approval
+    pqrs v1  the-valley  plan: the plan graph as a view
+
+in flight
+  ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+
+open residuals
+  ○ bd-bee76f4  A stray report
+  under oc-c23db6f  Draw the tree
+    ○ bd-6e27560  Width is off by one
+
+○ ready  ◐ in progress  ⊘ blocked  ◇ active  ✓ done  ✗ abandoned
+```
+
+`VALLEY_NOW` stands in for the clock of the knot verbs and of `plan`. It holds an RFC 3339 time. A
+knot's `created` date, a claim's `claimed_at` and a comment's stamp are written at that time, and a
+claim's age is read against it. The checks set it, so the dates and ages they compare are the same
+on every run. It lets a writer do nothing new: the hook holds none of those times to its own clock,
+so a writer could record any of them by writing the file.
+
+Checked by `valley-plan`, which builds a graph with the real knot verbs and compares the text and
+the JSON with golden files in `status/testdata/plan/`, and by the Go tests in `status/` for progress
+and ordering.
+
+`valley plan --json` prints `valley-plan/v1`, an indented JSON document. The web UI is to render it,
+so it is a contract with a version, like the status object. A change to the name or meaning of any
+field is a new version.
+
+```json
+{
+  "schema": "valley-plan/v1",
+  "now": "2026-10-15T09:00:00Z",
+  "operator": "patrick",
+  "projects": [
+    {
+      "project": "the-valley",
+      "error": null,
+      "tip": "<sha>",
+      "roots": ["oc-65866d3", "oc-1b5d5fe", "oc-24df5c7"],
+      "knots": [
+        {
+          "id": "oc-c23db6f",
+          "type": "outcome",
+          "status": "in-progress",
+          "active": true,
+          "title": "Draw the tree",
+          "created": "2026-10-02",
+          "created_by": "patrick",
+          "parent": "oc-1b5d5fe",
+          "owner": "klaus-env",
+          "blocked_by": [],
+          "claimed_by": "run-7",
+          "claimed_at": "2026-10-14T21:30:00Z",
+          "changes": [],
+          "path": "outcomes/oc-c23db6f-draw-the-tree.md",
+          "comment_count": 0,
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": ["oc-70947c5", "bd-b198e52", "bd-6e27560"],
+          "blocks": [],
+          "progress": { "done": 1, "of": 3 },
+          "claim": { "by": "run-7", "at": "2026-10-14T21:30:00Z", "age_seconds": 41400, "stale": false },
+          "state": "in-progress",
+          "edges": []
+        }
+      ],
+      "waiting_on_you": {
+        "knots": ["dcr-f10cc70", "oc-c9066f1"],
+        "changes": [
+          {
+            "repo": "the-valley",
+            "handle": "pqrs",
+            "change_id": "pqrstuvwxyzkpqrstuvwxyzkpqrstuvw",
+            "version": 1,
+            "title": "plan: the plan graph as a view",
+            "head": "<sha>"
+          }
+        ],
+        "changes_error": null
+      },
+      "in_flight": ["oc-a7dff99", "oc-c23db6f"],
+      "open_residuals": [
+        { "parent": null, "bugs": ["bd-bee76f4"] },
+        { "parent": "oc-c23db6f", "bugs": ["bd-6e27560"] }
+      ]
+    }
+  ]
+}
+```
+
+- `now` is the time the view was derived at: the clock, or `VALLEY_NOW`. `operator` is the principal
+  read as the operator, or `null` when none is named.
+- `projects` holds one entry for each project read: the current one, the one `--project` names, or
+  with `--all` every project the host publishes, in name order, with a graph or without one.
+- `error` says why a project's graph could not be read, and is otherwise `null`. `tip` is the commit
+  `refs/the-valley/knots` points at, or `""` when the project has no graph.
+- `roots` lists the IDs of the root outcomes, in tree order. `knots` lists every knot, in the order
+  the tree lists them, terminal knots included.
+- Each knot has the fields a knot has in `valley knot list --json`, with two differences. Its
+  `children` are in tree order. Its `progress` counts every descendant, where `valley knot`'s counts
+  only children, and it is set for every knot with children.
+- Each knot has two fields more. `state` is one of the six states above. `edges` lists the knot's
+  references to another project's knot, from `blocked_by` and from `target`.
+- An edge has the `field` it is in, the `ref` as written, and its `project` and `id`. Its `state` is
+  `resolved` when that project's graph holds the knot, and then `status` and `title` are the knot's.
+  It is `dangling` otherwise. `why` is then `missing` when the graph was read and holds no such
+  knot, and `unreadable` when the graph could not be read. `why`, `status` and `title` are `null`
+  where they do not apply.
+- `waiting_on_you.knots` lists the IDs of the knots that wait on the operator, in tree order, or is
+  `null` when no operator is named. `waiting_on_you.changes` lists the changes ready for approval.
+  It is `null` when they could not be read, and `changes_error` then says why.
+- `in_flight` lists the IDs of the claimed active knots, the oldest claim first. `open_residuals`
+  lists the open bugs in groups. The group whose `parent` is `null` holds the bugs with no parent
+  and comes first. Each other group's `parent` is the ID of the knot its bugs belong to.
+- `waiting_on_you`, `in_flight` and `open_residuals` are `null` for a project with no graph, or
+  whose graph could not be read.
+
+Without `--all`, a graph that cannot be read prints no document. The message goes to stderr and the
+exit status is 1.
 
 ## The life of a change
 

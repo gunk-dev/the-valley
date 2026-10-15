@@ -88,4 +88,6 @@ can instantiate the same check over its own tree from a flake input. The plan of
   record a change's versions and whether it is ready, a draft or withdrawn, under a change ID that
   survives rebases. Every verb names a change by that ID, by its short handle, or by its branch.
   `valley approve --head` approves exactly the head a front end showed, and the integrator lands
-  nothing for a change that is not ready.
+  nothing for a change that is not ready. `valley knot` keeps a project's plan as a graph of knots
+  at its own ref beside the code, and `valley plan` shows that graph as a tree, with what waits on
+  the operator.

@@ -395,6 +395,44 @@ usage: valley <verb> [args]
                                   a conflict.
                      schema [--json]
                                   print the model
+  plan [--project NAME | --all] [--owner P] [--json]
+                   show the project's plan graph as a tree, to see where
+                   things stand. the roots are the outcomes with no
+                   parent, the milestones, each with its progress: its
+                   descendants that are terminal and not abandoned, out
+                   of those not abandoned, as a count and a bar. under
+                   each come its children, indented, in the order they
+                   were created, then by title. each knot has a glyph for
+                   its state (○ ready, ◐ in progress, ⊘ blocked, ◇
+                   active, ✓ done, ✗ abandoned), its id and title, and,
+                   while active, its claim and the claim's age (marked
+                   stale past a day), its owner, and what blocks it. a
+                   blocker that ended abandoned, discarded or superseded
+                   no longer blocks, and is marked with how it ended. a
+                   reference to another project's knot,
+                   <project>:<id>, is marked dangling when that
+                   project's graph cannot be read or holds no such knot.
+                   a root whose descendants are all terminal is one
+                   line. three sections follow. waiting on you: the
+                   active outcomes and bugs and the proposed decisions
+                   the operator owns, then the changes ready for
+                   approval, as pending lists them. in flight: the
+                   claimed knots, oldest claim first. open residuals:
+                   the open bugs, under their parent. the operator is
+                   git config valley.principal, or --owner. lines fit
+                   the terminal as pending's do; glyphs are coloured on
+                   a terminal unless NO_COLOR is set.
+                     --project NAME  another project on the same host
+                     --all        every project the serving host
+                                  publishes, each under its name, as
+                                  pending --all reads them. a project
+                                  that cannot be read is reported in
+                                  its own section
+                     --owner P    read P as the operator
+                     --json       print valley-plan/v1: every knot with
+                                  what the graph derives of it, and the
+                                  three sections (docs/architecture.md)
+                   needs the valley-go helper.
   checks [<base> [<head>]]
                    print the check names the composed verification policy
                    (dcr-f41f718) requires of the change between two
@@ -487,11 +525,11 @@ except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
 helper, and status, ready, unready, withdraw, review, approve and rebase,
-which need the valley-go helper, as pending, changes and knot do.
+which need the valley-go helper, as pending, changes, knot and plan do.
 nix run .#valley bundles all of them. Deriving a policy fetches the owning
 valley's repository, so checks and approving also need whatever reaching
 it takes.
-No config but valley.principal, which ready and knot read; no batch mode; and no
+No config but valley.principal, which ready, knot and plan read; no batch mode; and no
 state but the notes file — the judgment stays with the human.
 EOF
 }
@@ -1333,7 +1371,8 @@ approve() {
 # and moves no local branch. ready, unready and withdraw write a change's
 # record, in the one format the push hook reads it in (change/). knot
 # reads and writes the plan graph at refs/the-valley/knots, in the one
-# form the push hook validates (knot/).
+# form the push hook validates (knot/), and plan shows that graph as a
+# view.
 cmd_go() {
   command -v valley-go > /dev/null 2>&1 \
     || die "$1 needs the valley-go helper; nix run .#valley bundles it"
@@ -2900,7 +2939,7 @@ main() {
     review) cmd_review "$@" ;;
     approve) cmd_approve "$@" ;;
     rebase) cmd_rebase "$@" ;;
-    status | ready | unready | withdraw | changes | knot) cmd_go "$verb" "$@" ;;
+    status | ready | unready | withdraw | changes | knot | plan) cmd_go "$verb" "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;

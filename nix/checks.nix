@@ -33,7 +33,7 @@
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, valley-go-unit,
 #                    valley-status, valley-ready, valley-changes,
-#                    valley-knot, valley-darwin-eval —
+#                    valley-knot, valley-plan, valley-darwin-eval —
 #                    bin/valley, its Go verbs, the-valley's own policy, and
 #                    the CLI's package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a

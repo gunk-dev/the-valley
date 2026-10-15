@@ -7,8 +7,9 @@ import (
 	"unicode"
 )
 
-// terminal is what valley pending's text is laid out for: a width in
-// columns, and whether names are set in bold.
+// terminal is what valley pending's and valley plan's text is laid out
+// for: a width in columns, and whether text is styled, with names in bold
+// and plan's glyphs in colour.
 type terminal struct {
 	width int
 	bold  bool
@@ -16,7 +17,7 @@ type terminal struct {
 
 // terminalOf is the terminal w writes to. Its width is the terminal's
 // own, or 80 columns when w is no terminal or the terminal does not know
-// its width. Names are bold on a terminal, unless NO_COLOR is set to
+// its width. Text is styled on a terminal, unless NO_COLOR is set to
 // anything but the empty string.
 func terminalOf(w io.Writer) terminal {
 	t := terminal{width: 80}
@@ -41,6 +42,15 @@ func (t terminal) strong(s string) string {
 		return s
 	}
 	return "\x1b[1m" + s + "\x1b[0m"
+}
+
+// tint is s in the colour an SGR code names, on a terminal that shows
+// it. An empty code leaves s as it is.
+func (t terminal) tint(code, s string) string {
+	if !t.bold || code == "" {
+		return s
+	}
+	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
 
 // fit is s cut to the columns a line has left after lead.

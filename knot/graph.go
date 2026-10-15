@@ -46,11 +46,14 @@ type File struct {
 // directories and comments/; a type directory holds only knots of its
 // type, named <id>-<slug>.md; comments/ holds only a directory per knot,
 // named by the knot's ID, holding only comments named <stamp>-<op>.md.
-// Every file is a plain file, mode 100644: no symlink, executable or
-// submodule. No directory is empty, no name repeats, and no ID is used
-// twice. The counts are held to MaxKnots and MaxComments. Whether each
-// directory of comments is on a knot the graph holds is the push's to
-// check, since a knot deleted is the clearer refusal.
+// Every directory has the mode 40000, exactly as git writes it, and every
+// file is a plain file, mode 100644: no symlink, executable or submodule.
+// Every directory a path passes through is an entry of the listing in its
+// own right, as it is in any listing of a tree git wrote. No directory is
+// empty, no name repeats, and no ID is used twice. The counts are held to
+// MaxKnots and MaxComments. Whether each directory of comments is on a
+// knot the graph holds is the push's to check, since a knot deleted is the
+// clearer refusal.
 func Layout(entries []Entry) (*Index, error) {
 	idx, err := layout(entries)
 	if err != nil {
@@ -63,6 +66,7 @@ func layout(entries []Entry) (*Index, *Error) {
 	idx := &Index{Knots: map[string]File{}, Comments: map[string]File{}, Files: map[string]string{}, knotAt: map[string]string{}}
 	seen := map[string]bool{}
 	children := map[string]int{}
+	isDir := map[string]bool{}
 	var dirs []string
 	for _, e := range entries {
 		if seen[e.Path] {
@@ -73,15 +77,16 @@ func layout(entries []Entry) (*Index, *Error) {
 		dir = strings.TrimSuffix(dir, "/")
 		children[dir]++
 		parts := strings.Split(e.Path, "/")
-		if e.Mode == "40000" || e.Mode == "040000" {
+		if e.Mode == "40000" {
 			dirs = append(dirs, e.Path)
+			isDir[e.Path] = true
 			if err := layoutDir(parts); err != nil {
 				return nil, err
 			}
 			continue
 		}
 		if e.Mode != "100644" {
-			return nil, refuse(RuleLayout, e.Path, fmt.Sprintf("has mode %s, and a graph holds only plain files, mode 100644: no symlink, executable or submodule", e.Mode))
+			return nil, refuse(RuleLayout, e.Path, fmt.Sprintf("has mode %s, and a graph holds only directories, mode 40000, and plain files, mode 100644: no symlink, executable or submodule", e.Mode))
 		}
 		f, err := layoutFile(parts, base)
 		if err != nil {
@@ -102,6 +107,14 @@ func layout(entries []Entry) (*Index, *Error) {
 	for _, d := range dirs {
 		if children[d] == 0 {
 			return nil, refuse(RuleLayout, d, "is an empty directory, which git does not write")
+		}
+	}
+	for _, e := range entries {
+		parts := strings.Split(e.Path, "/")
+		for i := 1; i < len(parts); i++ {
+			if d := strings.Join(parts[:i], "/"); !isDir[d] {
+				return nil, refuse(RuleLayout, e.Path, fmt.Sprintf("is listed without the directory %s it is in, and a tree git writes names each directory as an entry of its own", d))
+			}
 		}
 	}
 	switch {

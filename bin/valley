@@ -390,7 +390,9 @@ usage: valley <verb> [args]
                                   in-progress. a knot claimed already is
                                   a conflict.
                      unclaim <id>
-                                  release the claim
+                                  release the claim. a claim that
+                                  changes before the release lands is
+                                  a conflict.
                      schema [--json]
                                   print the model
   checks [<base> [<head>]]

@@ -56,7 +56,10 @@
   # this check exercises: protected refs, attestations and the names
   # they may take, integration requests and the request grant, the
   # changes of a change record's state, named grants, symbolic refs, a
-  # composed hook, and the namespaces every push is refused. Projects with and without protection are both served.
+  # composed hook, and the namespaces every push is refused. An
+  # attestation's tree written by hand, with the genuine note at a name
+  # holding a slash, is refused. Projects with and without protection are
+  # both served.
   protect-e2e = pkgs.runCommand "valley-protect-e2e" {
     nativeBuildInputs = [
       pkgs.git
@@ -80,9 +83,14 @@
   # executable, a file or directory outside the layout, a non-canonical
   # knot, an oversized one, a shared-subtree bomb, a dangling edge, a
   # cycle, a deletion of the ref, and refs that only begin with its name.
-  # A create with a parent is refused and one without is admitted, and a
-  # valid graph update carries no invalid change record, attestation or
-  # integration request through with it.
+  # Trees written by hand are refused too: a root file named
+  # ideas/<id>-<slug>.md, every file flattened into names with slashes, a
+  # directory in the mode 040000, and entries named ".", ".." and "", the
+  # last sent to receive-pack directly, since git push will not send it.
+  # A refused write from the CLI runs the hook once. A create with a
+  # parent is refused and one without is admitted, and a valid graph
+  # update carries no invalid change record, attestation or integration
+  # request through with it.
   knots-e2e = pkgs.runCommand "valley-knots-e2e" {
     nativeBuildInputs = [
       pkgs.git

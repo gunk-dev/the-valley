@@ -30,6 +30,9 @@ type graphReader interface {
 	tree(id string) ([]knot.Entry, error)
 	// blob reads the file id names, at most max bytes.
 	blob(id string, max int) ([]byte, error)
+	// overdue is nil while the reading's deadline has not passed, and the
+	// refusal that says so once it has.
+	overdue() error
 	close()
 }
 
@@ -44,6 +47,14 @@ func (gitRepository) graph() (graphReader, error) {
 }
 
 func (g streamGraph) close() { g.objects.close() }
+
+func (g streamGraph) overdue() error {
+	if !g.objects.expired() {
+		return nil
+	}
+	b := g.objects.budget
+	return fmt.Errorf("the hook could not finish checking it within the %s it spends on %s", b.deadline, b.subject)
+}
 
 func (g streamGraph) commit(id string) (knot.Commit, error) {
 	body, err := g.objects.read(id, "commit", knot.MaxCommitSize)
@@ -145,6 +156,12 @@ func (p policy) checkGraph(principal string, u update) (verb, why string) {
 		}
 	}
 	if err := (knot.Push{Old: before, New: after, Read: g.blob, Pusher: principal}).Check(); err != nil {
+		return verb, err.Error()
+	}
+	// A read past the deadline is refused as it fails, but a read that
+	// began in time can end late, and the work between reads takes time
+	// too: the push is admitted only if the whole check ended in time.
+	if err := g.overdue(); err != nil {
 		return verb, err.Error()
 	}
 	return verb, ""

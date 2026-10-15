@@ -353,6 +353,34 @@ func TestWhatAPushMayChange(t *testing.T) {
 	}
 }
 
+// A listing is read as git writes a tree: every directory is an entry of
+// its own, in the mode 40000 exactly. A tree written by hand can name a
+// file ideas/<id>-<slug>.md at its root, which lists no ideas directory,
+// or a directory in the mode 040000, which git reads as a tree and never
+// writes.
+func TestALayoutListsEveryDirectoryAsGitWritesIt(t *testing.T) {
+	k := newKnot("idea", "Listed")
+	knotFile := Entry{Path: k.Path(), Mode: "100644", OID: oid("knot")}
+	commentDir := Entry{Path: CommentsDirectory + "/" + k.ID, Mode: "40000"}
+	comment := Entry{Path: commentDir.Path + "/20261015T000000Z-0123456789abcdef.md", Mode: "100644", OID: oid("comment")}
+	ideas, comments := Entry{Path: "ideas", Mode: "40000"}, Entry{Path: CommentsDirectory, Mode: "40000"}
+	for _, x := range []struct {
+		what string
+		es   []Entry
+		rule Rule
+	}{
+		{"every directory listed", []Entry{ideas, knotFile, comments, commentDir, comment}, ""},
+		{"a knot without its directory", []Entry{knotFile}, RuleLayout},
+		{"a comment without its knot's directory", []Entry{ideas, knotFile, comments, comment}, RuleLayout},
+		{"a comment without comments/", []Entry{ideas, knotFile, commentDir, comment}, RuleLayout},
+		{"a directory in the mode 040000", []Entry{{Path: "ideas", Mode: "040000"}, knotFile}, RuleLayout},
+	} {
+		if _, err := Layout(x.es); ruleOf(err) != x.rule {
+			t.Errorf("%s: %v, want rule %q", x.what, err, x.rule)
+		}
+	}
+}
+
 // Each limit, at its edge and one past it.
 func TestTheLimitsHoldAtTheirEdges(t *testing.T) {
 	sized := func(n int) *Knot {

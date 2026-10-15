@@ -484,6 +484,17 @@ for _ in 1 2; do
 done
 occupy "$digest/$keyhash" "$wide" wide.err "a tree of shared subtrees"
 grep -q 'entries in all' wide.err
+# The genuine note, at the root of a tree written by hand under the name
+# ok/statement.note, a name with a slash in it, which git never writes and
+# mktree refuses to. The tree is written byte by byte: the mode, the name,
+# a NUL, and the note's object ID in binary.
+flat_file="$TMPDIR/flat-tree"
+printf '100644 %s\0' ok/statement.note > "$flat_file"
+# shellcheck disable=SC2059 # the format is the object ID as \x escapes
+printf "$(git rev-parse "$landed:ok/statement.note" | sed 's/../\\x&/g')" >> "$flat_file"
+flat="$(git hash-object -t tree --literally -w "$flat_file")"
+occupy "$digest/$keyhash" "$flat" flat.err "a note named with a slash"
+grep -q 'it holds an entry named "ok/statement.note", and git writes no name with a slash' flat.err
 # The ref the real evidence wants is still free, and takes it.
 as anonymous git push --quiet sealed "$att:$att"
 has_ref sealed "$att"

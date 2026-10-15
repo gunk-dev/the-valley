@@ -70,7 +70,7 @@ func readRecord(objects *objectStream, id string) (recordCommit, error) {
 	mode, name, blob, rest, err := treeEntry(entries, hashSize)
 	switch {
 	case err != nil:
-		return recordCommit{}, fmt.Errorf("its tree: %v", err)
+		return recordCommit{}, fmt.Errorf("its tree %v", err)
 	case len(rest) > 0:
 		return recordCommit{}, errors.New("its tree holds more than one entry, and a change record's tree holds record.json alone")
 	case name != "record.json" || mode != "100644":

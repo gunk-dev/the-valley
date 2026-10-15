@@ -196,6 +196,11 @@ fails 0 'claimed by run-1 already' valley knot claim "$work" --run run-1
 ok valley knot set "$twin" status=abandoned
 fails 1 'only an active knot is claimed' valley knot claim "$twin" --run run-2
 fails 3 'requires "run-2"' valley knot unclaim "$work" --if claimed_by=run-2
+# A field no knot has is refused before anything is read. Read as the
+# empty value an unset field holds, this --if would hold on every knot.
+before="$(git -C "$graph" rev-parse refs/the-valley/knots)"
+fails 1 'a knot has no field claimed_byy; --if compares type, id, status, title' valley knot unclaim "$work" --if claimed_byy=
+[ "$(git -C "$graph" rev-parse refs/the-valley/knots)" = "$before" ] || fail "an --if naming no field let a write through"
 ok valley knot unclaim "$work"
 ok valley knot show "$work" --json
 holds '.knot | has("claimed_by") | not' '.knot.status == "in-progress"'
@@ -302,6 +307,18 @@ raced before no no "valley knot claim $work --run run-other" -- \
 grep -q 'conflict: .*is claimed by run-other' "$w/err" || fail "a lost claim was not reported as a conflict"
 ok valley knot show "$work" --json
 holds '.knot.claimed_by == "run-other"'
+
+# An unclaim releases only the claim it read. Here that claim is released,
+# and the knot claimed by another run, before this unclaim's push: on the
+# new tip it finds a claim it never read, and that is a conflict.
+status=0
+raced before no no "valley knot unclaim $work && valley knot claim $work --run run-replacement" -- \
+  valley knot unclaim "$work" > "$w/out" 2> "$w/err" || status=$?
+[ "$status" = 3 ] || fail "an unclaim released a claim it never read (status $status)"
+grep -q "conflict: $work's claim changed from run-other since .* to run-replacement since " "$w/err" \
+  || fail "the conflict does not say how the claim changed"
+ok valley knot show "$work" --json
+holds '.knot.claimed_by == "run-replacement"'
 
 # A field another write changed meanwhile is a conflict too, unless
 # --force says to set it anyway.

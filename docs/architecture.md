@@ -978,14 +978,15 @@ on the same host. A write reads the tip with one `ls-remote`, one fetch and one 
 tree. It builds the new commit with git plumbing on a private index, never touching the worktree,
 and holds the result to the rules the hook applies. Then it pushes with
 `--force-with-lease=refs/the-valley/knots:<old tip>`. When the lease fails, the operation is formed
-again on the new tip, at most 5 tries in all, after a random pause. `set`, `edit`, `link --parent`
-and `claim` compare before they write: a field another write changed meanwhile, or a claim another
-run holds, is reported as a conflict, with exit status 3, and is never overwritten. `--if` adds a
-comparison of its own. Each operation carries a `Valley-Op` trailer whose ID it keeps across every
-try. After a push whose outcome it cannot tell, the CLI looks for that ID among the ref's latest 64
-commits before trying again, so no operation is recorded twice. A push the hook refuses is not tried
-again, and the CLI prints what the hook said. Checked by `valley-knot`, against bare repositories
-with no hook, and by `knots-e2e` through the hook.
+again on the new tip, at most 5 tries in all, after a random pause. `set`, `edit`, `link --parent`,
+`claim` and `unclaim` compare before they write: a field another write changed meanwhile, a claim
+another run holds, or a claim that changed before `unclaim` lands, is reported as a conflict, with
+exit status 3, and is never overwritten. `--if` adds a comparison of its own, and a field it names
+that no knot has is refused before anything is read. Each operation carries a `Valley-Op` trailer
+whose ID it keeps across every try. After a push whose outcome it cannot tell, the CLI looks for
+that ID among the ref's latest 64 commits before trying again, so no operation is recorded twice. A
+push the hook refuses is not tried again, and the CLI prints what the hook said. Checked by
+`valley-knot`, against bare repositories with no hook, and by `knots-e2e` through the hook.
 
 The host decides every push to the ref in `valleyhook` (`valleyhook/knots.go`), with the knot
 module. It matches `refs/the-valley/knots` exactly, so a ref that only begins with that name stays
@@ -999,22 +1000,30 @@ is the pushing principal, and its message ends with a `Valley-Op` trailer.
 
 The hook reads the old and new trees with the bounded walk attestations use, with the graph's own
 budget: trees 3 deep, 20,000 entries in one tree and 30,005 in all, a shared subtree counted each
-time a tree names it, 2 MiB a tree, 64 MiB read in all, and 5 seconds. It then holds the push to the
-module's rules. The layout is checked exhaustively: plain files of mode `100644` at the layout's
-paths and nowhere else, no empty directory, no repeated name, valid UTF-8 with no control character
-but newline and tab. Every knot and comment the commit adds or changes is read and checked, against
-the old tree for the transitions, as the pushing principal for `created_by` and `author`. Every tip
-the hook admitted was valid, so it reads only those files and the knots their edges reach, but it
-checks the counts from the listing on every push, and a cycle is looked for along the edges of every
-knot the push changes. A push that also carries an invalid change record, attestation or integration
-request is refused whole, like any push with one refused update.
+time a tree names it, 2 MiB a tree, 64 MiB read in all, and 5 seconds. When the 5 seconds pass, the
+hook stops the git process it reads with, and refuses the push. It refuses one whose check ends late
+as well, even if every read began in time. The walk refuses any tree entry git does not write, since
+the host does not run git's fsck on what a push brings. An entry's name is not empty, `.` or `..`,
+and holds no slash, so a root entry named `ideas/<id>-<slug>.md` is refused. Its mode is exactly one
+of git's five, so `040000`, which git reads as a tree, is refused too. Attestations are walked the
+same way. The hook then holds the push to the module's rules. The layout is checked exhaustively:
+directories of mode `40000`, each an entry of its own, and plain files of mode `100644` at the
+layout's paths and nowhere else, no empty directory, no repeated name, valid UTF-8 with no control
+character but newline and tab. Every knot and comment the commit adds or changes is read and
+checked, against the old tree for the transitions, as the pushing principal for `created_by` and
+`author`. Every tip the hook admitted was valid, so it reads only those files and the knots their
+edges reach, but it checks the counts from the listing on every push, and a cycle is looked for
+along the edges of every knot the push changes. A push that also carries an invalid change record,
+attestation or integration request is refused whole, like any push with one refused update.
 
 Measured at the limits, on the development VM: an update adding a comment to a graph of 5,000 knots
-and 19,999 comments takes the hook 0.32 s, and one changing the knot at the head of a 5,000-knot
-`blocked_by` chain, so the cycle walk reads every knot, 0.5 s. A typical update of a graph of 100
-knots takes 14 ms. The cycle walk counts against the 64 MiB budget, so a chain of more than about
-4,000 knots of 16 KiB each cannot be extended until it is shortened; knots of a few KiB never come
-near it. Reading the largest graph with `valley knot list` takes 0.4 s.
+and 19,999 comments takes the hook 0.65 s when the comments are spread over every knot, so the walk
+reads a directory of comments for each, and 0.1 s when they are all on one knot. One changing the
+knot at the head of a 5,000-knot `blocked_by` chain of knots of about 250 bytes, so the cycle walk
+reads every knot, takes 0.33 s. A typical update of a graph of 100 knots takes 13 ms. The cycle walk
+counts against the 64 MiB budget, so a chain of more than about 4,000 knots of 16 KiB each cannot be
+extended until it is shortened; knots of a few KiB never come near it. Reading the largest graph
+with `valley knot list` takes 0.4 s.
 
 `valley knot list --ready` and `show` derive what the graph does not store. A knot is ready when it
 is active, unclaimed, and every knot it is blocked by is terminal. A blocker that ended abandoned,

@@ -6,15 +6,15 @@
 //
 // When the lease fails, the operation is formed again on the new tip and
 // pushed again, at most knot.Attempts times in all, after a random pause.
-// set, edit, link --parent and claim are compare-and-set: each remembers
-// the value of every field it changes as it first read it, and when a
-// retry finds another value there it reports a conflict instead of
+// set, edit, link --parent, claim and unclaim are compare-and-set: each
+// remembers the value of every field it changes as it first read it, and
+// when a retry finds another value there it reports a conflict instead of
 // overwriting it. set's --force skips that comparison. --if adds a
-// comparison of its own, which holds on every try. Every operation
-// carries a Valley-Op trailer naming an ID chosen once, so after a push
-// whose outcome it cannot tell, the verb looks for the ID among the ref's
-// latest commits before it tries again, and an operation is never
-// recorded twice.
+// comparison of its own, on a field the knot module names, which holds on
+// every try. Every operation carries a Valley-Op trailer naming an ID
+// chosen once, so after a push whose outcome it cannot tell, the verb
+// looks for the ID among the ref's latest commits before it tries again,
+// and an operation is never recorded twice.
 
 package main
 
@@ -461,6 +461,11 @@ func formOp(a knotArgs, body, principal string) (op, error) {
 	if err != nil {
 		return o, err
 	}
+	for _, g := range guards {
+		if _, ok := knot.FieldNamed(g.field); !ok {
+			return o, failure(fmt.Sprintf("a knot has no field %s; --if compares %s", g.field, strings.Join(fieldNames(), ", ")))
+		}
+	}
 	// first holds the values a compare-and-set read on its first try.
 	var first map[string]string
 	guarded := func(s knotState, id string, fields []string, compare bool) (*knot.Knot, error) {
@@ -681,9 +686,16 @@ func formOp(a knotArgs, body, principal string) (op, error) {
 	case "unclaim":
 		id := a.pos[0]
 		o.form = func(s knotState) (map[string][]byte, string, string, error) {
-			k, err := guarded(s, id, nil, false)
+			// The claim released is the one first read. A retry that finds
+			// another claim, or none, reports a conflict: the claim changed
+			// meanwhile, and what the knot holds now is not this
+			// operation's to release.
+			k, err := guarded(s, id, []string{"claimed_by", "claimed_at"}, false)
 			if err != nil {
 				return nil, "", "", err
+			}
+			if k.ClaimedBy != first["claimed_by"] || k.ClaimedAt != first["claimed_at"] {
+				return nil, "", "", conflict(fmt.Sprintf("%s's claim changed from %s to %s while this was written; read it again", id, claimOf(first["claimed_by"], first["claimed_at"]), claimOf(k.ClaimedBy, k.ClaimedAt)))
 			}
 			if k.ClaimedBy == "" {
 				return nil, "", "", unchanged(fmt.Sprintf("%s is not claimed", id))
@@ -709,6 +721,22 @@ func parseAssignments(list []string, what string) ([]assignment, error) {
 		out = append(out, assignment{field, value})
 	}
 	return out, nil
+}
+
+// claimOf says who holds a claim and since when, or that there is none.
+func claimOf(by, at string) string {
+	if by == "" {
+		return "none"
+	}
+	return by + " since " + at
+}
+
+func fieldNames() []string {
+	var names []string
+	for _, f := range knot.Fields {
+		names = append(names, f.Name)
+	}
+	return names
 }
 
 func settable() []string {

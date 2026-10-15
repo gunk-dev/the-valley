@@ -32,13 +32,17 @@ export PATH="$w/bin:$PATH"
 
 # A bare repo wired as valley-init wires it, with the hook followed from
 # the rendered init script, as protect-e2e wires it. No verifier keys are
-# named: no attestation is accepted here.
+# named: no attestation is accepted here. git runs the hook through a
+# wrapper that adds a line to <name>.runs for each run.
 serve() {
   local hook
   hook="$(grep -o "/nix/store/[^ ]*-valley-protect-$1" "$initScriptPath" | head -n1)"
   test -x "$hook"
   git init --quiet --bare "$w/$1.git"
-  sed "s|/var/lib/valley-instance/known_signers|$w/no_such_keys|" "$hook" > "$w/$1.git/hooks/pre-receive"
+  sed "s|/var/lib/valley-instance/known_signers|$w/no_such_keys|" "$hook" > "$w/$1.git/hooks/valley-protect"
+  chmod +x "$w/$1.git/hooks/valley-protect"
+  printf '#!%s\necho run >> %q\nexec %q\n' "$BASH" "$w/$1.runs" "$w/$1.git/hooks/valley-protect" \
+    > "$w/$1.git/hooks/pre-receive"
   chmod +x "$w/$1.git/hooks/pre-receive"
 }
 serve guarded
@@ -84,11 +88,14 @@ as klaus-env valley knot comment "$work" -m "Claimed." > "$w/out" 2> "$w/err" ||
   || fail "the graph's commits are not both principals'"
 
 # The CLI, written as a principal its key does not push as, is refused by
-# the hook, and says what the hook said.
+# the hook, and says what the hook said. A refusal is the hook's answer,
+# not a race, so the CLI pushes once and does not try again.
 git config valley.principal patrick
+: > "$w/guarded.runs"
 as klaus-env valley knot comment "$bug" -m "Forged." > "$w/out" 2> "$w/err" && fail "a write by a principal other than the pusher landed"
 grep -q 'origin refused the write' "$w/err" || fail "the CLI did not report the hook's refusal"
 grep -q 'patrick as its committer, and klaus-env is pushing it' "$w/err" || fail "the refusal does not name the committer"
+[ "$(wc -l < "$w/guarded.runs")" -eq 1 ] || fail "a refused write ran the hook $(wc -l < "$w/guarded.runs") times, not once"
 
 # ----------------------------------------------------------------------
 # Crafted commits. Each is made on a scratch index from the current tip,
@@ -222,6 +229,74 @@ bomb="$(GIT_COMMITTER_NAME=patrick git commit-tree "$root" -p "$good" -m "$(prin
 start="$(date +%s)"
 refused "a shared-subtree bomb" 'entries in all' patrick origin "$(push_graph "$bomb")"
 [ $(($(date +%s) - start)) -lt 10 ] || fail "the bomb took more than 10 seconds to refuse"
+
+# Trees written by hand. A tree object can hold any bytes, and the host
+# runs no fsck on what a push brings, so the hook refuses every entry git
+# does not write. A name with a slash in it would be joined into a path
+# that is no directory's, and a directory in the mode 040000, which git
+# reads as a tree, would be a subtree the hook never walked. mktree and
+# update-index refuse to write such trees, so raw_tree writes the entries
+# it is given, each a mode, a name and an object, in the order given.
+raw_tree() {
+  local f="$w/raw-tree"
+  : > "$f"
+  while [ "$#" -gt 0 ]; do
+    printf '%s %s\0' "$1" "$2" >> "$f"
+    # shellcheck disable=SC2059 # the format is the object id as \x escapes
+    printf "$(printf '%s' "$3" | sed 's/../\\x&/g')" >> "$f"
+    shift 3
+  done
+  git hash-object -t tree --literally -w "$f"
+}
+# entries_of <tree> [-r]: the tree's entries, or with -r every file below
+# it at its full path, as raw_tree takes them.
+entries_of() {
+  git ls-tree "${@:2}" "$1" | while IFS=$' \t' read -r mode _ oid name; do
+    printf '%s\n%s\n%s\n' "${mode#0}" "$name" "$oid"
+  done
+}
+on_good() { GIT_COMMITTER_NAME=patrick git commit-tree "$1" -p "$good" -m "$(printf 'raw\n\nValley-Op: %016x' "$RANDOM$RANDOM")"; }
+mapfile -t root_entries < <(entries_of "$good")
+mapfile -t flat_entries < <(entries_of "$good" -r)
+named_idea="$(blob "$(idea Named named patrick)")"
+refused "a root file named ideas/<id>-<slug>.md" 'named "ideas/ida-[0-9a-f]{7}-named\.md", and git writes no name with a slash' \
+  patrick origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$(idea_path named)" "$named_idea")")")"
+refused "every knot and comment flattened into names with slashes" 'git writes no name with a slash' \
+  patrick origin "$(push_graph "$(on_good "$(raw_tree "${flat_entries[@]}")")")"
+# comments/, in the mode 040000, naming a subtree with a forged comment.
+hidden="$(raw_tree 40000 "$bug" "$(raw_tree 100644 "$stamp-0123456789abcdef.md" "$(blob "$(comment klaus-env 'Never read.')")")")"
+hiding=()
+for ((i = 0; i < ${#root_entries[@]}; i += 3)); do
+  if [ "${root_entries[i + 1]}" = comments ]; then
+    hiding+=(040000 comments "$hidden")
+  else
+    hiding+=("${root_entries[@]:i:3}")
+  fi
+done
+refused "a directory in the mode 040000" 'holds "comments" with mode 040000, and git writes only the modes' \
+  patrick origin "$(push_graph "$(on_good "$(raw_tree "${hiding[@]}")")")"
+for name in . ..; do
+  refused "an entry named $name" "holds an entry named \"${name//./\\.}\", which git does not write" \
+    patrick origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$name" "$named_idea")")")"
+done
+# git push walks every tree it sends, and will not send one that holds an
+# entry with an empty name. So the update is sent to receive-pack as any
+# client could send it: the command, then a pack of exactly the objects
+# named. git refuses the update itself, since its own walk cannot read the
+# tree, and the hook, which git still runs, refuses it too.
+nameless_tree="$(raw_tree "${root_entries[@]}" 100644 "" "$named_idea")"
+nameless="$(on_good "$nameless_tree")"
+update_line="$good $nameless refs/the-valley/knots"
+capabilities=report-status
+{
+  printf '%04x%s\0%s\n' $((4 + ${#update_line} + 1 + ${#capabilities} + 1)) "$update_line" "$capabilities"
+  printf 0000
+  printf '%s\n' "$nameless" "$nameless_tree" "$named_idea" | git pack-objects --quiet --stdout
+} > "$w/raw.request"
+as patrick git receive-pack "$w/guarded.git" < "$w/raw.request" > "$w/raw.report" 2> "$w/err" || true
+grep -q 'ng refs/the-valley/knots' "$w/raw.report" || fail "an entry with an empty name was admitted"
+grep -q 'its tree: it holds an entry with an empty name' "$w/err" || fail "the hook did not refuse an entry with an empty name"
+[ "$(tip guarded)" = "$good" ] || fail "an entry with an empty name moved the ref"
 
 # Edges: every edge resolves, a parent is an outcome, and no edge forms a
 # cycle. A cycle is crafted, since the CLI refuses to write one.

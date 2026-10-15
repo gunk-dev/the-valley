@@ -232,9 +232,10 @@ in
   # project named by --project and by a qualified id, and then each way a
   # write may fail to land the first time. A stand-in for git, first on
   # PATH, makes another writer land between a read and its push, drops the
-  # connection after a push lands and after one that did not, and takes a
-  # claim or changes a field first. Each write must then land exactly once,
-  # or be reported as a conflict. Two writers also run at once. cliScript
+  # connection after a push lands and after one that did not, takes a
+  # claim or changes a field first, and releases and retakes a claim an
+  # unclaim read. Each write must then land exactly once, or be reported
+  # as a conflict. Two writers also run at once. cliScript
   # is bin/valley itself, because the package's wrapper puts its own git
   # ahead of the stand-in.
   valley-knot = pkgs.runCommand "valley-knot" {

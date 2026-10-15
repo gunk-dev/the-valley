@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -73,6 +74,15 @@ const (
 	maxNoteSize      = 64 << 10 // bytes in any one note
 	maxBytes         = 1 << 20  // bytes read in the whole walk
 )
+
+// context is a context for one reading within the budget: it ends when the
+// deadline passes, if the budget has one, and when it is cancelled.
+func (b budget) context() (context.Context, context.CancelFunc) {
+	if b.deadline > 0 {
+		return context.WithTimeout(context.Background(), b.deadline)
+	}
+	return context.WithCancel(context.Background())
+}
 
 var attestationBudget = budget{
 	subject: "an attestation", depth: maxDepth, entriesInTree: maxEntriesInTree, entries: maxEntries,
@@ -189,7 +199,10 @@ func (w *walk) tree(id, path string, depth int) error {
 		}
 		mode, name, child, rest, err := treeEntry(body, w.hashSize)
 		if err != nil {
-			return err
+			if path == "" {
+				return fmt.Errorf("it %v", err)
+			}
+			return fmt.Errorf("%s %v", path, err)
 		}
 		body = rest
 		at := name
@@ -211,16 +224,37 @@ func (w *walk) tree(id, path string, depth int) error {
 	return nil
 }
 
+// gitModes are the modes git writes in a tree, each spelled as git spells
+// it: a plain file, an executable, a symlink, a tree and a submodule.
+var gitModes = map[string]bool{"100644": true, "100755": true, "120000": true, "40000": true, "160000": true}
+
 // treeEntry reads one entry of a tree object as git stores it: the mode in
-// octal, a space, the name, a NUL, and the raw object id.
+// octal, a space, the name, a NUL, and the raw object id. It refuses an
+// entry git does not write, whatever the tree's reader would make of it.
+// A tree object can be written by hand with any bytes in it, and the host
+// does not run git's fsck on what a push brings, so this is where a mode
+// such as 040000, which git reads as a tree, or a name such as
+// ideas/<id>-<slug>.md, which a walk would join into a path no tree has,
+// is refused. An error is worded to follow a name for the tree, as in
+// "comments holds an entry ...".
 func treeEntry(body []byte, hashSize int) (mode, name, id string, rest []byte, err error) {
 	space := bytes.IndexByte(body, ' ')
 	nul := bytes.IndexByte(body, 0)
 	if space < 0 || nul < space || len(body) < nul+1+hashSize {
-		return "", "", "", nil, errors.New("it holds a tree git could not have written")
+		return "", "", "", nil, errors.New("holds an entry git could not have written")
 	}
-	return string(body[:space]), string(body[space+1 : nul]),
-		hex.EncodeToString(body[nul+1 : nul+1+hashSize]), body[nul+1+hashSize:], nil
+	mode, name = string(body[:space]), string(body[space+1:nul])
+	switch {
+	case name == "":
+		return "", "", "", nil, errors.New("holds an entry with an empty name, which git does not write")
+	case name == "." || name == "..":
+		return "", "", "", nil, fmt.Errorf("holds an entry named %q, which git does not write", name)
+	case strings.ContainsAny(name, "/\x00"):
+		return "", "", "", nil, fmt.Errorf("holds an entry named %q, and git writes no name with a slash or a NUL in it", name)
+	case !gitModes[mode]:
+		return "", "", "", nil, fmt.Errorf("holds %q with mode %s, and git writes only the modes 100644, 100755, 120000, 40000 and 160000", name, mode)
+	}
+	return mode, name, hex.EncodeToString(body[nul+1 : nul+1+hashSize]), body[nul+1+hashSize:], nil
 }
 
 // objectStream reads objects one at a time out of a single
@@ -236,10 +270,11 @@ type objectStream struct {
 	requests []string
 
 	// budget is what the reading may cost, and names what the objects
-	// make up in a refusal. until is when its deadline passes, if it has
-	// one.
+	// make up in a refusal. ctx ends when the budget's deadline passes,
+	// if it has one, and when the stream is closed.
 	budget budget
-	until  time.Time
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // openObjects opens a stream within an attestation's budget.
@@ -247,40 +282,77 @@ func openObjects() (*objectStream, error) {
 	return openObjectsWithin(attestationBudget)
 }
 
+// openObjectsWithin starts git cat-file and opens a stream on it within
+// the budget. When the budget's deadline passes, git is killed and its
+// pipes are closed, so a read or write it has left waiting returns then.
 func openObjectsWithin(b budget) (*objectStream, error) {
-	cmd := exec.Command(gitProgram, "--no-replace-objects", "cat-file", "--batch-command")
+	ctx, cancel := b.context()
+	cmd := exec.CommandContext(ctx, gitProgram, "--no-replace-objects", "cat-file", "--batch-command")
 	cmd.Env = gitEnvironment(os.Environ())
 	in, err := cmd.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	out, err := cmd.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, err
 	}
-	s := &objectStream{cmd: cmd, in: in, out: bufio.NewReaderSize(out, 4096), budget: b}
-	if b.deadline > 0 {
-		s.until = time.Now().Add(b.deadline)
-	}
+	s := newObjectStream(ctx, cancel, in, out, b)
+	s.cmd = cmd
 	return s, nil
+}
+
+// newObjectStream reads answers from out to the commands it writes to
+// in, within the budget. Once ctx ends, both are closed, so a read or a
+// write blocked on them returns at once, and the stream answers nothing
+// more.
+func newObjectStream(ctx context.Context, cancel context.CancelFunc, in io.WriteCloser, out io.ReadCloser, b budget) *objectStream {
+	context.AfterFunc(ctx, func() {
+		_ = in.Close()
+		_ = out.Close()
+	})
+	return &objectStream{in: in, out: bufio.NewReaderSize(out, 4096), budget: b, ctx: ctx, cancel: cancel}
+}
+
+// expired reports whether the budget's deadline has passed.
+func (s *objectStream) expired() bool {
+	until, ok := s.ctx.Deadline()
+	return ok && !time.Now().Before(until)
+}
+
+// failed is the error for a read or write of the stream that failed: the
+// deadline's, when it has passed, since passing it is what closes the
+// stream, and otherwise err.
+func (s *objectStream) failed(err error) error {
+	if s.expired() {
+		return s.late()
+	}
+	return err
+}
+
+func (s *objectStream) late() error {
+	return fmt.Errorf("could not be read within the %s the hook spends reading %s", s.budget.deadline, s.budget.subject)
 }
 
 // ask sends one command and reads the header line git answers it with:
 // the object's id, type and size.
 func (s *objectStream) ask(command, id string) (kind string, size int, err error) {
-	if !s.until.IsZero() && time.Now().After(s.until) {
-		return "", 0, fmt.Errorf("could not be read within the %s the hook spends reading %s", s.budget.deadline, s.budget.subject)
+	if s.expired() {
+		return "", 0, s.late()
 	}
 	s.requests = append(s.requests, command+" "+id)
 	if _, err := fmt.Fprintf(s.in, "%s %s\n", command, id); err != nil {
-		return "", 0, err
+		return "", 0, s.failed(fmt.Errorf("could not be asked for: %v", err))
 	}
 	header, err := s.out.ReadString('\n')
 	if err != nil {
-		return "", 0, fmt.Errorf("could not be read: %v", err)
+		return "", 0, s.failed(fmt.Errorf("could not be read: %v", err))
 	}
 	fields := strings.Fields(header)
 	if len(fields) == 2 && fields[1] == "missing" {
@@ -322,7 +394,7 @@ func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
 	s.spent += size
 	body := make([]byte, size+1) // the content and git's closing newline
 	if _, err := io.ReadFull(s.out, body); err != nil {
-		return nil, fmt.Errorf("could not be read: %v", err)
+		return nil, s.failed(fmt.Errorf("could not be read: %v", err))
 	}
 	return body[:size], nil
 }
@@ -330,9 +402,11 @@ func (s *objectStream) read(id, kind string, max int) ([]byte, error) {
 // close ends the stream. The process is killed rather than asked to
 // finish, since a walk that stopped at a bound has nothing more to ask.
 func (s *objectStream) close() {
-	_ = s.in.Close()
-	_ = s.cmd.Process.Kill()
-	_ = s.cmd.Wait()
+	s.cancel()
+	if s.cmd != nil {
+		_ = s.cmd.Process.Kill()
+		_ = s.cmd.Wait()
+	}
 }
 
 // run runs git in the repository and returns its stdout.

@@ -482,7 +482,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `changes` and `pending` verbs are a Go program, `valley-go`
+`ready`, `unready`, `withdraw`, `changes`, `pending` and `knot` verbs are a Go program, `valley-go`
 (`status/`), which the package puts on the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
@@ -497,6 +497,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
 | `valley unready <change>`    | Makes a ready change a draft, as its owner or the operator.                                           |
 | `valley withdraw <change>`   | Marks a ready change or a draft withdrawn, as its owner or the operator.                              |
+| `valley knot <verb>`         | Reads and writes the project's plan graph (see [The plan graph](#the-plan-graph)).                    |
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
 
@@ -933,6 +934,62 @@ skipped, so a branch name can be used again once its change has landed, whether 
 has moved since. A landing read wrongly could make a draft's branch read as a plain branch. Nothing
 lands from that: the integrator refuses a request at a draft's version head whatever it is named.
 Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
+
+## The plan graph
+
+A project's plan is data kept with the project: a graph of knots at one ref,
+`refs/the-valley/knots`, in the project's repository. A knot is an outcome, a bug, an idea or a
+decision, in the node format the archived knowledge graph uses (`schema/node.cue`). The ref is a
+cord and each knot is tied on it, as people "return to knotting cords and using them" in the Tao Te
+Ching's chapter 80. The ref never touches `main`, and nothing that decides a change reads it: no
+check, policy, build or approval. A knot that says something was approved or landed is not evidence
+of it.
+
+The ref has its own root history. Its first commit has no parent, and each later commit has the
+previous tip as its one parent. Each commit is one operation, and its tree is the whole graph:
+`outcomes/`, `bugs/`, `ideas/` and `decisions/` hold one file per knot, named `<id>-<slug>.md`, and
+`comments/<id>/` holds one file per comment on that knot, named `<stamp>-<op>.md`. A knot's ID is
+its type's prefix and the first 7 hex digits of the SHA-256 of its slug. When that ID is taken, the
+slug gains a suffix, `-2`, `-3` and on, until the ID is free.
+
+The knot module (`knot/`) is the one reading of the graph. A knot's frontmatter is a strict subset
+of YAML that the module owns, because Go has no YAML parser. Keys come in a fixed order, titles and
+other free text are JSON strings, and lists are sorted flow lists. The module refuses any file that
+does not read back byte for byte as it would write it, so there is one way to write each knot. The
+form is still YAML, so the knowledge lint reads it too. The module also fixes the graph's limits as
+named constants: 5,000 knots, 20,000 comments, 64 KiB a knot, 16 KiB a comment, and 32 changed files
+a commit.
+
+The module holds a graph to its layout, its fields and its edges. `parent` names an outcome in the
+graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another project's knot as
+`<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle. A knot is never
+deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is only ever
+added. A new knot's `created_by`, and a new comment's `author`, name the principal that writes it.
+The module and the CUE schema with the knowledge lint are two validators of one documented schema,
+and `knot-agree` runs both over shared fixtures and generated graphs and fails on any disagreement
+about the rules they share. The canonical form, the layout, cycles and transitions are the module's
+alone, and `knot-unit` covers them.
+
+`valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
+`claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project
+on the same host. A write reads the tip with one `ls-remote`, one fetch and one batched read of the
+tree. It builds the new commit with git plumbing on a private index, never touching the worktree,
+and holds the result to every rule the module states. Then it pushes with
+`--force-with-lease=refs/the-valley/knots:<old tip>`. When the lease fails, the operation is formed
+again on the new tip, at most 5 tries in all, after a random pause. `set`, `edit`, `link --parent`
+and `claim` compare before they write: a field another write changed meanwhile, or a claim another
+run holds, is reported as a conflict, with exit status 3, and is never overwritten. `--if` adds a
+comparison of its own. Each operation carries a `Valley-Op` trailer whose ID it keeps across every
+try. After a push whose outcome it cannot tell, the CLI looks for that ID among the ref's latest 64
+commits before trying again, so no operation is recorded twice. Checked by `valley-knot`, against
+bare repositories with no hook.
+
+`valley knot list --ready` and `show` derive what the graph does not store. A knot is ready when it
+is active, unclaimed, and every knot it is blocked by is terminal. A blocker that ended abandoned,
+discarded or superseded still clears, and the view marks it. A parent's progress is its terminal
+children that are not abandoned, out of its children that are not abandoned. A claim older than a
+day is flagged as stale. `show` escapes control characters and characters that reorder text before
+printing, though the graph holds none.
 
 ## The life of a change
 

@@ -28,6 +28,8 @@ project: {
 		"protect-e2e",
 		"note-unit",
 		"change-unit",
+		"knot-unit",
+		"knot-agree",
 		"attest-unit",
 		"attest-conformance",
 		"attest-e2e",
@@ -44,6 +46,7 @@ project: {
 		"valley-status",
 		"valley-ready",
 		"valley-changes",
+		"valley-knot",
 		"valley-darwin-eval",
 		"policy-deriver",
 		"own-policy",
@@ -102,6 +105,17 @@ project: {
 		requires: "integrator-e2e":  true
 	}
 
+	// The plan graph's module, which the CLI's Go verbs write the graph
+	// with. knot-agree holds its validator to the node schema and the
+	// knowledge lint, and valley-knot drives the verbs that use it.
+	classes: knot: {
+		paths: "knot/**":           true
+		requires: "knot-unit":      true
+		requires: "knot-agree":     true
+		requires: "valley-go-unit": true
+		requires: "valley-knot":    true
+	}
+
 	// The note envelope. The hook and attest both read notes through it, so
 	// a change to it requires their tests as well as its own.
 	classes: note: {
@@ -158,6 +172,7 @@ project: {
 		requires: "valley-status":  true
 		requires: "valley-ready":   true
 		requires: "valley-changes": true
+		requires: "valley-knot":    true
 		requires: "policy-deriver": true
 	}
 
@@ -204,7 +219,8 @@ project: {
 	}
 
 	// The knowledge lint itself: its program, the node schema it holds a
-	// graph to, and the example graphs it must accept and reject.
+	// graph to, and the example graphs it must accept and reject. The plan
+	// graph's validator is held to the same two by knot-agree.
 	classes: "knowledge-lint": {
 		paths: "nix/knowledge-lint.*":       true
 		paths: "schema/node.cue":            true
@@ -212,6 +228,7 @@ project: {
 		requires: "knowledge-lint":          true
 		requires: "knowledge-lint-consumer": true
 		requires: "knowledge-lint-rejects":  true
+		requires: "knot-agree":              true
 	}
 
 	// The NixOS module and what its end-to-end checks run. The hook checks

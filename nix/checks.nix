@@ -12,6 +12,8 @@
 #                    must reject
 #   knowledge.nix    knowledge-lint and its consumer and rejection forms,
 #                    prose-format — the graph and the prose
+#   knot.nix         knot-unit, knot-agree — the plan graph's module, and
+#                    its validator held to the schema and the lint
 #   attest.nix       attest-unit, attest-conformance, attest-e2e — the
 #                    helper's unit tests, the written form as a fixed
 #                    contract, and the helper driven end to end
@@ -30,7 +32,8 @@
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, valley-go-unit,
-#                    valley-status, valley-ready, valley-darwin-eval —
+#                    valley-status, valley-ready, valley-changes,
+#                    valley-knot, valley-darwin-eval —
 #                    bin/valley, its Go verbs, the-valley's own policy, and
 #                    the CLI's package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
@@ -72,6 +75,7 @@ in
 import ./checks/host-module.nix args
 // import ./checks/schema.nix args
 // import ./checks/knowledge.nix args
+// import ./checks/knot.nix args
 // import ./checks/attest.nix args
 // import ./checks/integrator.nix args
 // import ./checks/hooks.nix args

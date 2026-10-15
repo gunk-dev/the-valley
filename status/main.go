@@ -3,8 +3,10 @@
 // change record there. bin/valley runs it for status, ready, unready and
 // withdraw, for changes and pending, which list every change across the
 // repositories a host serves, and for resolve, which turns the name of a
-// change into its branch for the verbs bin/valley runs itself, and for
-// stack, which lists the layers under a change for review (stack.go).
+// change into its branch for the verbs bin/valley runs itself, for
+// stack, which lists the layers under a change for review (stack.go), and
+// for knot, the plan graph's API (knot.go), which reads and writes a
+// project's knots at refs/the-valley/knots.
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -39,7 +41,8 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go stack <change>
        valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
-       valley-go pending [--json] [--all] [--repo <name>] [--checks]`
+       valley-go pending [--json] [--all] [--repo <name>] [--checks]
+       valley-go knot <verb> [args]   (valley-go knot for its verbs)`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -78,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
+	case "knot":
+		return runKnot(g, args, os.Stdin, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2

@@ -9,9 +9,11 @@ Three classes of finding, all reported in one run (ida-1ec03b1):
                        id is the id its frontmatter declares, no id repeats, and —
                        for nodes the derivation rule covers — the id's hash is
                        derived from the slug
-  reference integrity  [[wiki-links]], `blocked_by`, `supersedes` and `graduated_into`
-                       ids, and relative markdown links all resolve, and a superseded
-                       node says so in its own status
+  reference integrity  [[wiki-links]], `blocked_by`, `parent`, `supersedes` and
+                       `graduated_into` ids, and relative markdown links all resolve, a
+                       parent is an outcome, and a superseded node says so in its own
+                       status. A `blocked_by` entry written <project>:<id> names a node
+                       in another project's graph, which only a reader of both resolves
 
 The lint reads only the tree it is given. It never runs git, so it holds for a
 worktree, a store path, or an unpacked archive alike.
@@ -268,14 +270,28 @@ def check_filenames(nodes, frontmatter, directories, root, findings):
 def check_references(tree, documents, frontmatter, findings):
     """Every [[id]], typed-edge id, and relative link must resolve inside the tree."""
     status = {node.get("id"): node.get("status") for node in frontmatter.values()}
+    kind = {node.get("id"): node.get("type") for node in frontmatter.values()}
     ids = set(status)
     ids.discard(None)
     headings = {}
 
     for path, node in sorted(frontmatter.items()):
         for blocked_by in node.get("blocked_by", []):
+            if ":" in blocked_by:
+                # Another project's node: the schema has checked its shape,
+                # and this tree cannot answer for the rest.
+                continue
             if blocked_by not in ids:
                 findings.add(path, f"blocked_by names {blocked_by}, which is not a node")
+        # The node this one belongs to, which is always an outcome in the
+        # same graph. The schema checks the id's shape; whether it is there,
+        # and is an outcome, only the whole graph can say.
+        parent = node.get("parent")
+        if parent is not None:
+            if parent not in ids:
+                findings.add(path, f"parent names {parent}, which is not a node")
+            elif kind[parent] != "outcome":
+                findings.add(path, f"parent names {parent}, a {kind[parent]}, not an outcome")
         # The edge and the replaced node's status state one fact twice, so
         # they are checked together: a superseded node still reading `adopted`
         # is exactly the contradiction the convention's resolution rule

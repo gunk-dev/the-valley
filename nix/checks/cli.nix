@@ -3,8 +3,8 @@
 # the-valley's own policy composes and names only checks that exist, what
 # its review verb publishes when it files an integration request, what its
 # Go verbs' unit tests hold, what its ready and withdraw verbs write to a
-# change's record through the real push hook, and that its package
-# evaluates for aarch64-darwin.
+# change's record through the real push hook, what its knot verbs write to
+# the plan graph, and that its package evaluates for aarch64-darwin.
 {
   pkgs,
   self,
@@ -226,6 +226,25 @@ in
     # The floor --checks derives under.
     floor = ../../examples/policy/instance;
   } (builtins.readFile ./valley-changes.sh);
+
+  # valley knot against local bare repositories that run no hook, as any
+  # git remote would: every verb, the ref's shape after each write, another
+  # project named by --project and by a qualified id, and then each way a
+  # write may fail to land the first time. A stand-in for git, first on
+  # PATH, makes another writer land between a read and its push, drops the
+  # connection after a push lands and after one that did not, and takes a
+  # claim or changes a field first. Each write must then land exactly once,
+  # or be reported as a conflict. Two writers also run at once. cliScript
+  # is bin/valley itself, because the package's wrapper puts its own git
+  # ahead of the stand-in.
+  valley-knot = pkgs.runCommand "valley-knot" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.jq
+      packages.valley-go
+    ];
+    cliScript = ../../bin/valley;
+  } (builtins.readFile ./valley-knot.sh);
 
   # The CLI is offered for aarch64-darwin, which nothing here builds or
   # tests (flake.nix). This check holds that offer to evaluating: an input

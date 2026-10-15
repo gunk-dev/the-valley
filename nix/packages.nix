@@ -81,15 +81,19 @@ rec {
   # request and outcome record from origin, and prints them as sentences or
   # as the valley-status/v1 JSON object front ends read. ready, unready and
   # withdraw write a change's record, with the one reading of a record the
-  # push hook shares (../change). Go, standard library only — hence vendorHash = null
-  # and no module fetch. It runs whatever git is on PATH, which inside the
+  # push hook shares (../change). knot reads and writes the plan graph,
+  # with the one reading of a graph the push hook shares (../knot). Go,
+  # standard library only — hence vendorHash = null and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
   # the bash it replaced, so they need bash, and lay pending out over real
   # repositories, so they need git.
   valley-go = pkgs.buildGoModule {
     pname = "valley-go";
     version = "0";
-    src = withLocal ../status [ ../change ];
+    src = withLocal ../status [
+      ../change
+      ../knot
+    ];
     modRoot = "status";
     vendorHash = null;
     preBuild = readsGoMod;
@@ -251,6 +255,18 @@ rec {
     version = "0";
     src = ../note;
     vendorHash = null;
+  };
+
+  # The plan graph (knot/): its canonical form, its layout, cycles and
+  # transitions, held by its own tests. The package is knotcheck, which
+  # knot-agree runs to hold the Go validator to the CUE schema and the
+  # knowledge lint.
+  knot = pkgs.buildGoModule {
+    pname = "valley-knot";
+    version = "0";
+    src = ../knot;
+    vendorHash = null;
+    meta.mainProgram = "knotcheck";
   };
 
   # The change record's own tests: its strict reading, its fuzz target's

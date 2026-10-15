@@ -8,6 +8,14 @@
 // directory its type names. The type table below carries the directory
 // names so the linter and the schema agree on them by construction.
 //
+// One schema covers both graphs: the archived one under archive/.the-valley/,
+// and the live plan graph at refs/the-valley/knots, where each node is a
+// knot. The live graph's own fields are optional here, because the archive
+// predates them. For the live graph the Go module knot/ is the authority:
+// it writes and reads one canonical form of this YAML, and it holds a knot
+// to rules this schema does not state, such as who may create one. The
+// knot-agree check holds the two to agreeing on every rule they share.
+//
 // Like the host and event schemas, this file is deliberately not Nix. The
 // knowledge lint in this repo is one consumer; any other tool that reads a
 // graph reads the same file.
@@ -41,23 +49,50 @@ package knowledge
 	// (archive/.the-valley/README.md, disembodied voice).
 	source?: string
 
+	// The live graph's fields. Every knot names the principal that created
+	// it, which the push hook checks is the principal pushing it.
+	created_by?: #PrincipalName
+
+	// The outcome this node belongs to: a milestone, a work item, or a
+	// residual's work item. It names an outcome in the same graph; the
+	// lint resolves it.
+	parent?: #OutcomeId
+
+	// The principal this node waits on. It names who is responsible, and
+	// grants nothing.
+	owner?: #PrincipalName
+
+	// Outcomes and bugs are work. They can be claimed by a run, link the
+	// changes that do them, and name the project where the work lands
+	// when that is not this one.
+	if type == "outcome" || type == "bug" {
+		claimed_by?: #PrincipalName
+		claimed_at?: #Timestamp
+		changes?: [...#ChangeLink]
+		target?: #PrincipalName | #QualifiedId
+	}
+
 	if type == "outcome" {
 		id:     =~"^oc-"
 		status: "open" | "in-progress" | "done" | "abandoned"
 
-		// One of the two typed edges: the node ids this outcome waits
-		// on. Any node type may block an outcome. Only outcomes carry
-		// it, so the field is absent — and rejected — on every other
-		// type. A blocker clears when its own status is terminal for
-		// its type: an idea at graduated, superseded or discarded; a
-		// decision at decided or superseded; a bug at closed; an
-		// outcome at done or abandoned (dcr-593d3d1).
-		blocked_by: [...#Id]
+		// One of the typed edges: the nodes this outcome waits on. Any
+		// node type may block an outcome or a bug. Outcomes and bugs are
+		// the types that carry it, so the field is rejected on every
+		// other type; an outcome always carries it, and a bug may. A
+		// blocker clears when its own status is terminal for its type:
+		// an idea at graduated, superseded or discarded; a decision at
+		// decided or superseded; a bug at closed; an outcome at done or
+		// abandoned (dcr-593d3d1). An entry is a node id in this graph,
+		// or, in the live graph, <project>:<id> for a node in another
+		// project's, which only the reader resolves.
+		blocked_by!: [...#Ref]
 	}
 
 	if type == "bug" {
 		id:     =~"^bd-"
 		status: "open" | "closed"
+		blocked_by?: [...#Ref]
 	}
 
 	if type == "idea" {
@@ -115,6 +150,28 @@ package knowledge
 #SupersededId: =~"^(ida|dcr)-[0-9a-f]{7}$"
 
 #Date: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+
+// A UTC time to the second, as a claim records it.
+#Timestamp: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+
+// An outcome's id: what a parent edge names.
+#OutcomeId: =~"^oc-[0-9a-f]{7}$"
+
+// A node in another project's graph: the project's name, a colon, and the
+// node's id. Projects do not share an id space, so a reference that leaves
+// the graph names the project.
+#QualifiedId: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*:(oc|bd|ida|dcr)-[0-9a-f]{7}$"
+
+// What a blocked_by entry names: a node here, or one in another project.
+#Ref: #Id | #QualifiedId
+
+// A principal's name, as schema/valley.cue states it (#PrincipalName). A
+// project's name and a run's ID have the same shape.
+#PrincipalName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+
+// A change that does a node's work: a change on a valley host,
+// valley:<project>/<change ID>, or a pull request on GitHub.
+#ChangeLink: =~"^valley:[a-zA-Z0-9][a-zA-Z0-9._-]*/[k-z]{32}$" | =~"^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"
 
 // #Graph is a whole graph: every node's frontmatter, keyed by the node
 // file's path. The key is the path rather than the id so that a vet failure

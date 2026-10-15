@@ -20,6 +20,7 @@ _valley() {
       'ready:mark a head of a branch ready as a new version of its change'
       'unready:make a ready change a draft'
       'withdraw:mark a ready change or a draft withdrawn'
+      'knot:read and write the plan graph at refs/the-valley/knots'
       'checks:print the checks the composed policy requires of a change'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
@@ -28,6 +29,40 @@ _valley() {
     _describe -t verbs 'valley verb' verbs
   elif (( CURRENT == 3 )) && [[ ${words[2]} == replay ]]; then
     _files -/
+  elif (( CURRENT == 3 )) && [[ ${words[2]} == knot ]]; then
+    local -a knotverbs=(
+      'new:make a knot: new <type> <title>'
+      'show:show a knot, its edges both ways and its comments'
+      'list:list the knots'
+      'set:set status, title, source, owner, target or graduated_into'
+      'link:add a blocked-by, parent or change edge'
+      'unlink:drop a blocked-by, parent or change edge'
+      'edit:replace a knot'"'"'s body with stdin'
+      'comment:add a comment'
+      'claim:claim a knot for a run'
+      'unclaim:release a claim'
+      'schema:print the types, statuses, fields and edges'
+    )
+    _describe -t knotverbs 'valley knot verb' knotverbs
+  elif (( CURRENT == 4 )) && [[ ${words[2]} == knot && ${words[3]} == new ]]; then
+    compadd outcome bug idea decision
+  elif [[ ${words[2]} == knot && ${words[CURRENT-1]} == --type ]]; then
+    compadd outcome bug idea decision
+  elif [[ ${words[2]} == knot && ${words[CURRENT-1]} == --status ]]; then
+    compadd active terminal open in-progress done abandoned closed raw exploring adopted graduated superseded discarded proposed decided
+  elif [[ ${words[2]} == knot && ${words[CURRENT]} == -* ]]; then
+    local -a opts=('--project:another project on the same host' '--json:print JSON')
+    case ${words[3]} in
+      new) opts+=('--parent:the outcome it belongs to' '--blocked-by:a knot it waits on' '--owner:the principal it waits on' '--target:the project the work lands in' '--body:read the body from stdin (-)') ;;
+      list) opts+=('--type:only this type' '--status:only this status, active or terminal' '--owner:only this owner' '--ready:only the ready knots') ;;
+      set) opts+=('--if:require <field>=<value> first' '--force:set it even if another write changed it') ;;
+      link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work' '--if:require <field>=<value> first') ;;
+      edit) opts+=('--body:read the new body from stdin (-)' '--if:require <field>=<value> first') ;;
+      comment) opts+=('-m:the comment' '--body:read the comment from stdin (-)') ;;
+      claim) opts+=('--run:the run claiming it' '--if:require <field>=<value> first') ;;
+      unclaim) opts+=('--if:require <field>=<value> first') ;;
+    esac
+    _describe -t options 'valley knot option' opts
   elif [[ ${words[2]} == checks && ${words[CURRENT-1]} == --cost ]]; then
     compadd quick slow
   elif [[ ${words[2]} == checks && ${words[CURRENT]} == -* ]]; then

@@ -341,6 +341,58 @@ usage: valley <verb> [args]
                    then leaves the request standing: only a holder of the
                    request grant may touch a request ref, so the operator
                    must drop it then.
+  knot <verb> [args]
+                   read and write the project's plan graph: knots, at
+                   refs/the-valley/knots on origin. a knot is an outcome,
+                   a bug, an idea or a decision; `knot schema` prints the
+                   types, their statuses, active and terminal, the fields
+                   and the edges. a write is one commit on the ref, made
+                   without a checkout and pushed with a lease on the tip
+                   it was made on; no review is involved. a write that
+                   loses the lease is made again on the new tip, up to 5
+                   tries. every verb takes --project NAME, another
+                   project on the same host, and --json. exit status 3
+                   is a conflict. needs the valley-go helper, and
+                   git config valley.principal for every write.
+                     new <type> <title> [--parent ID] [--blocked-by ID]...
+                         [--owner P] [--target PROJECT] [--body -]
+                                  make a knot. its id is the type's prefix
+                                  and 7 hex digits of the sha-256 of the
+                                  title's slug.
+                     show <id> [--json]
+                                  its fields, body and comments, and the
+                                  edges both ways
+                     list [--type T] [--status S] [--owner P] [--ready]
+                                  every knot. --status takes a status,
+                                  active or terminal. --ready lists the
+                                  active, unclaimed knots whose blockers
+                                  are all terminal.
+                     set <id> <field>=<value>... [--if <field>=<value>]...
+                         [--force]
+                                  change status, title, source, owner,
+                                  target or graduated_into. a field that
+                                  another write changed meanwhile is a
+                                  conflict unless --force. --if requires
+                                  a field to hold a value first.
+                     link <id> (--blocked-by ID | --parent ID | --change X)...
+                     unlink <id> (--blocked-by ID | --parent ID | --change X)...
+                                  add or drop an edge. a change is
+                                  valley:<project>/<change id> or a github
+                                  pull request url.
+                     edit <id> --body -
+                                  replace the body with stdin
+                     comment <id> (-m TEXT | --body -)
+                                  add a comment. comments are never
+                                  changed or deleted.
+                     claim <id> --run RUN
+                                  claim an active outcome or bug for a
+                                  run; an open outcome becomes
+                                  in-progress. a knot claimed already is
+                                  a conflict.
+                     unclaim <id>
+                                  release the claim
+                     schema [--json]
+                                  print the model
   checks [<base> [<head>]]
                    print the check names the composed verification policy
                    (dcr-f41f718) requires of the change between two
@@ -433,11 +485,11 @@ except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
 helper, and status, ready, unready, withdraw, review, approve and rebase,
-which need the valley-go helper, as pending and changes do.
+which need the valley-go helper, as pending, changes and knot do.
 nix run .#valley bundles all of them. Deriving a policy fetches the owning
 valley's repository, so checks and approving also need whatever reaching
 it takes.
-No config but valley.principal, which ready reads; no batch mode; and no
+No config but valley.principal, which ready and knot read; no batch mode; and no
 state but the notes file — the judgment stays with the human.
 EOF
 }
@@ -1277,7 +1329,9 @@ approve() {
 # read is subtle enough to want a real parser: an outcome record it does
 # not recognise must read as unknown, never as success. It writes nothing
 # and moves no local branch. ready, unready and withdraw write a change's
-# record, in the one format the push hook reads it in (change/).
+# record, in the one format the push hook reads it in (change/). knot
+# reads and writes the plan graph at refs/the-valley/knots, in the one
+# form the push hook validates (knot/).
 cmd_go() {
   command -v valley-go > /dev/null 2>&1 \
     || die "$1 needs the valley-go helper; nix run .#valley bundles it"
@@ -2844,7 +2898,7 @@ main() {
     review) cmd_review "$@" ;;
     approve) cmd_approve "$@" ;;
     rebase) cmd_rebase "$@" ;;
-    status | ready | unready | withdraw | changes) cmd_go "$verb" "$@" ;;
+    status | ready | unready | withdraw | changes | knot) cmd_go "$verb" "$@" ;;
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;

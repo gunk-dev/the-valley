@@ -3,6 +3,7 @@ package knot
 import (
 	"fmt"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -373,16 +374,16 @@ func (g *graph) knot(id string) (*Knot, *Error) {
 }
 
 // checkEdges holds every local edge of k to naming a knot in the graph,
-// of the type the edge takes. A reference to another project's knot is
+// of a type the edge takes. A reference to another project's knot is
 // held to its shape alone, which the knot's own check has done.
 func (g *graph) checkEdges(k *Knot) *Error {
-	resolve := func(field, id, want string) *Error {
+	resolve := func(field, id string, want ...string) *Error {
 		f, ok := g.idx.Knots[id]
 		switch {
 		case !ok:
 			return refuse(RuleEdgeResolves, k.Path(), fmt.Sprintf("%s names %s, which is no knot in the graph", field, id))
-		case want != "" && f.Type != want:
-			return refuse(RuleParentOutcome, k.Path(), fmt.Sprintf("%s names %s, a %s, and it names a%s %s", field, id, f.Type, article(want), want))
+		case len(want) > 0 && !slices.Contains(want, f.Type):
+			return refuse(RuleParentOutcome, k.Path(), fmt.Sprintf("%s names %s, a %s, and it names a%s %s", field, id, f.Type, article(want[0]), strings.Join(want, " or ")))
 		}
 		return nil
 	}
@@ -392,13 +393,13 @@ func (g *graph) checkEdges(k *Knot) *Error {
 		}
 	}
 	if k.GraduatedInto != "" {
-		if err := resolve("graduated_into", k.GraduatedInto, "decision"); err != nil {
+		if err := resolve("graduated_into", k.GraduatedInto, "outcome", "question"); err != nil {
 			return err
 		}
 	}
 	for _, ref := range k.BlockedBy {
 		if IsLocalID(ref) {
-			if err := resolve("blocked_by", ref, ""); err != nil {
+			if err := resolve("blocked_by", ref); err != nil {
 				return err
 			}
 		}

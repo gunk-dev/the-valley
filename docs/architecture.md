@@ -70,9 +70,9 @@ has passed (see [The integrator](#the-integrator)).
 **Knots can direct work but never authorize it.** A knot can ask for work. That work reaches the
 source only as a change, under the source's rules. Nothing that decides a change reads a knot.
 
-**A settled decision crosses over.** While a decision is proposed, it lives in project storage as a
-knot. Once it is decided, its reasons enter the source's docs through a change, and the knot links
-that change.
+**A settled answer crosses over.** While a question is open, it lives in project storage as a knot.
+When its answer settles something about the design, the answer enters the source's docs through a
+change, and the knot links that change.
 
 **Project storage shares the project's readers.** Whoever can read the source can read project
 storage, and the reverse. Data that needs different readers belongs to a different project.
@@ -1013,15 +1013,15 @@ Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs 
 A project's plan is data kept with the project, in its
 [project storage](#the-source-and-project-storage): a graph of knots at one ref,
 `refs/the-valley/knots`, in the project's repository. A knot is an outcome, a bug, an idea or a
-decision, in the node format the archived knowledge graph uses (`schema/node.cue`). The ref is a
-cord and each knot is tied on it, as people "return to knotting cords and using them" in the Tao Te
-Ching's chapter 80. The ref never touches `main`, and nothing that decides a change reads it: no
-check, policy, build or approval. A knot that says something was approved or landed is not evidence
-of it.
+question, in the node format `schema/node.cue` states. A question is something work can wait on
+until it is answered. Its `owner` names who has to answer. The ref is a cord and each knot is tied
+on it, as people "return to knotting cords and using them" in the Tao Te Ching's chapter 80. The ref
+never touches `main`, and nothing that decides a change reads it: no check, policy, build or
+approval. A knot that says something was approved or landed is not evidence of it.
 
 The ref has its own root history. Its first commit has no parent, and each later commit has the
 previous tip as its one parent. Each commit is one operation, and its tree is the whole graph:
-`outcomes/`, `bugs/`, `ideas/` and `decisions/` hold one file per knot, named `<id>-<slug>.md`, and
+`outcomes/`, `bugs/`, `ideas/` and `questions/` hold one file per knot, named `<id>-<slug>.md`, and
 `comments/<id>/` holds one file per comment on that knot, named `<stamp>-<op>.md`. A knot's ID is
 its type's prefix and the first 7 hex digits of the SHA-256 of its slug. When that ID is taken, the
 slug gains a suffix, `-2`, `-3` and on, until the ID is free.
@@ -1036,16 +1036,19 @@ knot, 16 KiB a comment, and 32 changed files a commit.
 
 The module holds a graph to its layout, its fields and its edges. `parent` names an outcome in the
 graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another project's knot as
-`<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle. `changes`, on
-outcomes, bugs and decisions, links changes, each as `valley:<project>/<change ID>` or as a GitHub
-pull request URL. On an outcome or a bug, they are the changes that do its work. On a decision, it
-is the change that records the decision in the source. An idea links none, because it graduates into
-a decision. A knot is never deleted, and its `id`, `type`, `created` and `created_by` never change.
-A comment is only ever added. A new knot's `created_by`, and a new comment's `author`, name the
-principal that writes it. The module and the CUE schema with the knowledge lint are two validators
-of one documented schema, and `knot-agree` runs both over shared fixtures and generated graphs and
-fails on any disagreement about the rules they share. The canonical form, the layout, cycles and
-transitions are the module's alone, and `knot-unit` covers them.
+`<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle.
+`graduated_into`, on a graduated idea, names an outcome in the graph, when the idea is taken on as
+work, or a question, when it needs settling. `changes`, on outcomes, bugs and questions, links
+changes, each as `valley:<project>/<change ID>` or as a GitHub pull request URL. On an outcome or a
+bug, they are the changes that do its work. On a question, it is the change that records its answer
+in the source's docs. A question may link none, when its answer is a comment or an outcome that does
+the work. An idea links none, because it graduates into an outcome or a question. A knot is never
+deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is only ever
+added. A new knot's `created_by`, and a new comment's `author`, name the principal that writes it.
+The module and the CUE schema with the knowledge lint are two validators of one documented schema,
+and `knot-agree` runs both over shared fixtures and generated graphs and fails on any disagreement
+about the rules they share. The canonical form, the layout, cycles and transitions are the module's
+alone, and `knot-unit` covers them.
 
 `valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
 `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project
@@ -1102,12 +1105,13 @@ with `valley knot list` takes 0.4 s.
 
 `valley knot list --ready` and `show` derive what the graph does not store. A knot is ready when it
 is an outcome or a bug, is active and unclaimed, and every knot it is blocked by is terminal. An
-idea or a decision is never ready. A blocker that ended abandoned, discarded or superseded still
-clears, and the view marks it. A parent's progress is its terminal children that are not abandoned,
-out of its children that are not abandoned. A claim older than a day is flagged as stale. A write
-that moves a knot to a terminal status clears its claim in the same commit, and a claim left on a
-terminal knot is ignored. `show` escapes control characters and characters that reorder text before
-printing, though the graph holds none.
+idea is never ready. Nor is a question: it is answered, not picked up as work. A question clears the
+work waiting on it when it is answered or dropped. A blocker that ended abandoned, discarded,
+superseded or dropped still clears, and the view marks it. A parent's progress is its terminal
+children that are not abandoned, out of its children that are not abandoned. A claim older than a
+day is flagged as stale. A write that moves a knot to a terminal status clears its claim in the same
+commit, and a claim left on a terminal knot is ignored. `show` escapes control characters and
+characters that reorder text before printing, though the graph holds none.
 
 ### The plan view
 
@@ -1122,20 +1126,20 @@ that are not outcomes are listed after the roots, under `no milestone`.
 
 Each knot shows a glyph for its state, then its ID and its title. These are the states:
 
-| Glyph | State         | What it means                                                                         |
-| ----- | ------------- | ------------------------------------------------------------------------------------- |
-| ○     | `ready`       | An active outcome or bug, unclaimed, whose blockers are all terminal.                 |
-| ◐     | `in-progress` | An active knot that is claimed, or whose status is `in-progress`.                     |
-| ⊘     | `blocked`     | An active knot with a blocker that is not terminal, or that cannot be read.           |
-| ◇     | `active`      | Any other active knot, such as an open idea or a proposed decision.                   |
-| ✓     | `done`        | A terminal knot that finished: `done`, `closed`, `decided` or `graduated`.            |
-| ✗     | `abandoned`   | A terminal knot that ended without finishing: `abandoned`, `discarded`, `superseded`. |
+| Glyph | State         | What it means                                                                                    |
+| ----- | ------------- | ------------------------------------------------------------------------------------------------ |
+| ○     | `ready`       | An active outcome or bug, unclaimed, whose blockers are all terminal.                            |
+| ◐     | `in-progress` | An active knot that is claimed, or whose status is `in-progress`.                                |
+| ⊘     | `blocked`     | An active knot with a blocker that is not terminal, or that cannot be read.                      |
+| ◇     | `active`      | Any other active knot, such as an idea or an open question.                                      |
+| ✓     | `done`        | A terminal knot that finished: `done`, `closed`, `answered` or `graduated`.                      |
+| ✗     | `abandoned`   | A terminal knot that ended without finishing: `abandoned`, `discarded`, `superseded`, `dropped`. |
 
 An active knot also shows its claim: the run and the claim's age, marked `stale` past a day. It
 shows its owner, and its blockers by ID. A finished blocker is left out. A blocker that ended
-abandoned, discarded or superseded no longer blocks, and is shown with how it ended. A reference to
-another project's knot, `<project>:<id>`, in `blocked_by` or `target`, is shown as written. It is
-marked `dangling` when that project's graph cannot be read or holds no such knot.
+abandoned, discarded, superseded or dropped no longer blocks, and is shown with how it ended. A
+reference to another project's knot, `<project>:<id>`, in `blocked_by` or `target`, is shown as
+written. It is marked `dangling` when that project's graph cannot be read or holds no such knot.
 
 A root shows its progress at the right margin, as a count and a bar. Progress counts every
 descendant, not only the children: those that are terminal and not abandoned, out of those that are
@@ -1144,9 +1148,9 @@ terminal is shown as one line.
 
 Three sections follow the tree:
 
-1. `waiting on you` lists the active outcomes and bugs, and the proposed decisions, that the
-   operator owns. Then it lists the changes ready for approval, as `valley pending` selects them:
-   each one's handle, version, repository and title. The operator is the principal
+1. `waiting on you` lists the active outcomes and bugs, and the open questions, that the operator
+   owns. Then it lists the changes ready for approval, as `valley pending` selects them: each one's
+   handle, version, repository and title. The operator is the principal
    `git config valley.principal` names, or the one `--owner` names. When neither names one, the
    section says how to name one, and still lists the changes.
 2. `in flight` lists the active knots that are claimed, the oldest claim first.
@@ -1166,7 +1170,7 @@ bold, unless `NO_COLOR` is set.
 
 ○ oc-1b5d5fe  Slice two lands                                    2/10 ██░░░░░░░░
   ✓ oc-7125815  Read the graph once
-  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner patrick
   ◇ ida-9c65fa3 Colour the glyphs · owner patrick
   ○ oc-c9066f1  Document the schema · owner patrick
                 blocked by oc-23ebda7 (abandoned)
@@ -1187,7 +1191,7 @@ no milestone
   ◇ ida-162ff1b The graph as a web page
 
 waiting on you (patrick)
-  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner patrick
   ○ oc-c9066f1  Document the schema · owner patrick
                 blocked by oc-23ebda7 (abandoned)
                 lands in cosmo:oc-7654321 (dangling)
@@ -1262,7 +1266,7 @@ field is a new version.
         }
       ],
       "waiting_on_you": {
-        "knots": ["dcr-f10cc70", "oc-c9066f1"],
+        "knots": ["qn-f10cc70", "oc-c9066f1"],
         "changes": [
           {
             "repo": "the-valley",

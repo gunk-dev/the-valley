@@ -4,9 +4,9 @@ id: oc-4d5e6f7
 status: open
 title: The design lands
 created: 2026-08-02
-blocked_by: [ida-0a1b2c3]
+blocked_by: [ida-0a1b2c3, qn-eeed90f]
 ---
 
 # The design lands
 
-Waits on [[ida-0a1b2c3]].
+Waits on [[ida-0a1b2c3]] and [[qn-eeed90f]].

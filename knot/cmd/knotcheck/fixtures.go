@@ -42,12 +42,13 @@ func with(fs map[string]string, id, author, body string) map[string]string {
 // breaking a shared rule.
 func Fixtures() []Case {
 	milestone := mk("outcome", "Slice one lands")
-	decision := mk("decision", "One ref for the graph", func(k *knot.Knot) {
-		k.Status, k.Changes = "decided", []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
+	question := mk("question", "Where does the graph live", func(k *knot.Knot) {
+		k.Status, k.Owner = "answered", "patrick"
+		k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 	})
 	bug := mk("bug", "The hook reads too much", func(k *knot.Knot) { k.Parent = milestone.ID })
 	idea := mk("idea", "Knots as cords", func(k *knot.Knot) {
-		k.Status, k.GraduatedInto, k.Parent = "graduated", decision.ID, milestone.ID
+		k.Status, k.GraduatedInto, k.Parent = "graduated", question.ID, milestone.ID
 	})
 	work := mk("outcome", "Write the hook case", func(k *knot.Knot) {
 		k.Status, k.Parent, k.Owner = "in-progress", milestone.ID, "klaus-env"
@@ -64,16 +65,24 @@ func Fixtures() []Case {
 	work2.ID = knot.DeriveID(work2.TypeOf(), work2.Slug)
 
 	valid := []Case{
-		{Name: "every-shape", Accept: true, Files: with(files(milestone, decision, bug, idea, work, waiting, work2), work.ID, "klaus-env", "Claimed for the run.\n")},
+		{Name: "every-shape", Accept: true, Files: with(files(milestone, question, bug, idea, work, waiting, work2), work.ID, "klaus-env", "Claimed for the run.\n")},
 		{Name: "one-knot", Accept: true, Files: files(mk("bug", "A lone bug"))},
+		// A graduated idea moves to work taken on, or to a question to
+		// settle.
+		{Name: "graduated-into-an-outcome", Accept: true, Files: files(milestone, mk("idea", "Slices", func(k *knot.Knot) {
+			k.Status, k.GraduatedInto = "graduated", milestone.ID
+		}))},
+		{Name: "graduated-into-a-question", Accept: true, Files: files(question, mk("idea", "One ref", func(k *knot.Knot) {
+			k.Status, k.GraduatedInto = "graduated", question.ID
+		}))},
 	}
 	for _, t := range knot.Types {
 		for _, s := range t.Statuses() {
 			k := mk(t.Name, "A knot that is "+s, func(k *knot.Knot) { k.Status = s })
 			fs := files(k)
 			if s == "graduated" {
-				k.GraduatedInto = decision.ID
-				fs = files(k, decision)
+				k.GraduatedInto = question.ID
+				fs = files(k, question)
 			}
 			valid = append(valid, Case{Name: "status-" + t.Name + "-" + s, Accept: true, Files: fs})
 		}
@@ -96,13 +105,16 @@ func Fixtures() []Case {
 	misfiled := map[string]string{"outcomes/" + moved.ID + "-" + moved.Slug + ".md": string(knot.Render(moved))}
 	twin := files(a)
 	twin["outcomes/"+a.ID+"-alpha-twin.md"] = string(knot.Render(a))
-	undecided := mk("decision", "Undecided")
+	asked := mk("question", "Asked")
+	other := mk("idea", "Another idea")
 	cases := []Case{
 		reject("unknown-type", knot.RuleType, map[string]string{a.Path(): string(knot.Render(set(a, func(k *knot.Knot) { k.Type = "task" })))}),
+		reject("type-decision", knot.RuleType, map[string]string{asked.Path(): string(knot.Render(set(asked, func(k *knot.Knot) { k.Type = "decision" })))}),
 		reject("unknown-status", knot.RuleStatus, files(set(a, func(k *knot.Knot) { k.Status = "blocked" }))),
 		reject("status-of-another-type", knot.RuleStatus, files(set(mk("bug", "Bug"), func(k *knot.Knot) { k.Status = "done" }))),
 		reject("id-not-hex", knot.RuleIDShape, edit(a, func(s string) string { return strings.Replace(s, "id: "+a.ID, "id: oc-xyz", 1) })),
 		reject("id-of-another-type", knot.RuleIDShape, edit(a, func(s string) string { return strings.Replace(s, "id: oc-", "id: bd-", 1) })),
+		reject("id-prefix-dcr", knot.RuleIDShape, edit(asked, func(s string) string { return strings.Replace(s, "id: qn-", "id: dcr-", 1) })),
 		reject("id-not-derived", knot.RuleIDDerived, files(set(a, func(k *knot.Knot) { k.ID = "oc-0000000" }))),
 		reject("filename-disagrees", knot.RuleFilename, map[string]string{a.Path(): string(knot.Render(set(a, func(k *knot.Knot) { k.ID = b.ID })))}),
 		reject("knot-in-another-directory", knot.RuleDirectory, misfiled),
@@ -116,8 +128,11 @@ func Fixtures() []Case {
 		reject("changes-on-an-idea", knot.RuleFieldOnType, files(set(mk("idea", "Idea"), func(k *knot.Knot) {
 			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 		}))),
-		reject("claim-on-a-decision", knot.RuleFieldOnType, edit(undecided, func(s string) string {
+		reject("claim-on-a-question", knot.RuleFieldOnType, edit(asked, func(s string) string {
 			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nclaimed_by: \"run\"\nclaimed_at: \"2026-10-15T00:58:00Z\"\n", 1)
+		})),
+		reject("blocked-by-on-a-question", knot.RuleFieldOnType, edit(asked, func(s string) string {
+			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nblocked_by: []\n", 1)
 		})),
 		reject("creator-not-a-name", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.CreatedBy = "the operator" }))),
 		reject("owner-not-a-name", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.Owner = "-dash" }))),
@@ -131,10 +146,12 @@ func Fixtures() []Case {
 		reject("no-status", knot.RuleRequired, edit(a, func(s string) string { return strings.Replace(s, "status: open\n", "", 1) })),
 		reject("parent-not-in-the-graph", knot.RuleEdgeResolves, files(set(a, func(k *knot.Knot) { k.Parent = b.ID }))),
 		reject("blocker-not-in-the-graph", knot.RuleEdgeResolves, files(set(a, func(k *knot.Knot) { k.BlockedBy = []string{b.ID} }))),
-		reject("graduated-into-no-decision", knot.RuleEdgeResolves, files(set(idea, func(k *knot.Knot) { k.Parent = "" }))),
+		reject("graduated-into-no-knot", knot.RuleEdgeResolves, files(set(idea, func(k *knot.Knot) { k.Parent = "" }))),
+		reject("graduated-into-a-bug", knot.RuleFieldShape, files(set(idea, func(k *knot.Knot) { k.Parent, k.GraduatedInto = "", bug.ID }), set(bug, func(k *knot.Knot) { k.Parent = "" }))),
+		reject("graduated-into-an-idea", knot.RuleFieldShape, files(set(idea, func(k *knot.Knot) { k.Parent, k.GraduatedInto = "", other.ID }), other)),
 		reject("parent-a-bug", knot.RuleParentOutcome, files(set(a, func(k *knot.Knot) { k.Parent = bug.ID }), set(bug, func(k *knot.Knot) { k.Parent = "" }))),
 		reject("graduated-without-destination", knot.RuleGraduated, files(mk("idea", "Gone", func(k *knot.Knot) { k.Status = "graduated" }))),
-		reject("destination-while-raw", knot.RuleGraduated, files(mk("idea", "Raw", func(k *knot.Knot) { k.GraduatedInto = decision.ID }), decision)),
+		reject("destination-while-raw", knot.RuleGraduated, files(mk("idea", "Raw", func(k *knot.Knot) { k.GraduatedInto = question.ID }), question)),
 	}
 	return append(valid, cases...)
 }

@@ -1,6 +1,9 @@
-# The knowledge graph and the prose: this repo's own graph, the lint in the
-# reusable form a consuming project instantiates, the graphs it must reject,
-# and the format every markdown file is held to.
+# The knowledge lint and the prose: the lint in the reusable form a consuming
+# project instantiates, the graphs it must reject, and the format every
+# markdown file is held to. the-valley's own source holds no knowledge graph:
+# its plan graph is project storage, at refs/the-valley/knots, and the push
+# hook holds it to the knot module's rules. The nodes under
+# archive/.the-valley/ are history, and nothing lints them.
 {
   pkgs,
   self,
@@ -9,19 +12,17 @@
   ...
 }:
 {
-  # This repo's own graph, checked by the derivation the flake
-  # exposes rather than by a second implementation of it. Whatever a
-  # consuming project runs, this repo runs. The graph is archived, so
-  # the root is named: the lint passes a tree with no graph at its root,
-  # and the default root would check nothing.
+  # The lint over the consumer graph, under the name main's policy still
+  # requires. A change's required checks come from its target's policy,
+  # and the policy on main declares knowledge-lint, so a change to main
+  # needs this attribute until that policy stops declaring it.
   knowledge-lint = self.lib.knowledgeLint {
     inherit system;
-    src = self;
-    root = "archive/.the-valley";
+    src = ../../examples/graphs/consumer;
   };
 
   # The reusable form, exercised over a foreign tree: a project that
-  # is a README, a docs directory and five nodes, and a project with no
+  # is a README, a docs directory and seven nodes, and a project with no
   # graph at all. Both must pass, and both are checked by depending on
   # the instantiated derivations rather than by re-running the lint.
   knowledge-lint-consumer = pkgs.runCommand "valley-knowledge-lint-consumer" {

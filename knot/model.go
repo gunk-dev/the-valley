@@ -24,8 +24,8 @@ var Types = []Type{
 		Active: []string{"open"}, Terminal: []string{"closed"}},
 	{Name: "idea", Prefix: "ida", Directory: "ideas",
 		Active: []string{"raw", "exploring", "adopted"}, Terminal: []string{"graduated", "superseded", "discarded"}},
-	{Name: "decision", Prefix: "dcr", Directory: "decisions",
-		Active: []string{"proposed"}, Terminal: []string{"decided", "superseded"}},
+	{Name: "question", Prefix: "qn", Directory: "questions",
+		Active: []string{"open"}, Terminal: []string{"answered", "dropped"}},
 }
 
 // CommentsDirectory holds every knot's comments, one directory per knot.
@@ -99,7 +99,7 @@ type Field struct {
 }
 
 var (
-	allTypes  = []string{"outcome", "bug", "idea", "decision"}
+	allTypes  = []string{"outcome", "bug", "idea", "question"}
 	workTypes = []string{"outcome", "bug"}
 )
 
@@ -107,7 +107,7 @@ var (
 // writes them.
 var Fields = []Field{
 	{Name: "type", On: allTypes, Kind: "token", Required: "always",
-		Meaning: "the knot's type: outcome, bug, idea or decision"},
+		Meaning: "the knot's type: outcome, bug, idea or question"},
 	{Name: "id", On: allTypes, Kind: "token", Required: "always",
 		Meaning: "the type's prefix and the first 7 hex digits of the SHA-256 of the slug"},
 	{Name: "status", On: allTypes, Kind: "token", Required: "always", Set: "set",
@@ -130,12 +130,12 @@ var Fields = []Field{
 		Meaning: "the run working on it"},
 	{Name: "claimed_at", On: workTypes, Kind: "string", Required: "with claimed_by", Set: "claim",
 		Meaning: "when the run claimed it, as a UTC time"},
-	{Name: "changes", On: []string{"outcome", "bug", "decision"}, Kind: "list", Required: "never", Set: "link",
-		Meaning: "the changes that do the work, or that record a decision in the source: valley:<project>/<change ID>, or a GitHub pull request URL"},
+	{Name: "changes", On: []string{"outcome", "bug", "question"}, Kind: "list", Required: "never", Set: "link",
+		Meaning: "the changes that do the work, or the change that records a question's answer in the source: valley:<project>/<change ID>, or a GitHub pull request URL"},
 	{Name: "target", On: workTypes, Kind: "string", Required: "never", Set: "set",
 		Meaning: "the project where the work lands, or <project>:<id>, when that is not this project"},
 	{Name: "graduated_into", On: []string{"idea"}, Kind: "token", Required: "when status is graduated", Set: "set",
-		Meaning: "the decision a graduated idea's thinking moved to"},
+		Meaning: "the outcome or question a graduated idea moved to: work taken on, or a question to settle"},
 }
 
 // FieldNamed is the field called name.

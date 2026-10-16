@@ -52,7 +52,7 @@ _valley() {
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = knot ]; then
     mapfile -t COMPREPLY < <(compgen -W 'new show list set link unlink edit comment claim unclaim schema' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = knot ] && { [ "$COMP_CWORD" -eq 3 ] && [ "${COMP_WORDS[2]}" = new ] || [ "${COMP_WORDS[COMP_CWORD - 1]}" = --type ]; }; then
-    mapfile -t COMPREPLY < <(compgen -W 'outcome bug idea decision' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'outcome bug idea question' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = knot ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--project --json --parent --blocked-by --owner --target --body --type --status --ready --if --force --change -m --run' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = plan ] && [ "${cur:0:1}" = - ]; then

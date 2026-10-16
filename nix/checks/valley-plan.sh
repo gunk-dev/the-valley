@@ -3,7 +3,7 @@
 # repositories that run no hook, as any git remote would. A graph is built
 # with the real valley knot verbs, each at a fixed time given in
 # VALLEY_NOW: milestones, nested items, a blocker chain, a blocker that was
-# abandoned, a fresh claim and a stale one, decisions and an idea with
+# abandoned, a fresh claim and a stale one, questions and an idea with
 # owners, open and closed bugs, an edge to another project's knot and edges
 # to knots that cannot be read. The text, with no terminal and no colour,
 # and the JSON are compared with golden files. Then a project with no
@@ -133,17 +133,20 @@ ship="$(knot "$d2" new outcome "Ship it" --parent "$two" --blocked-by "$golden_f
 widget="$(knot "$d2" new outcome "Use a tree widget" --parent "$two")"
 schema="$(knot "$d2" new outcome "Document the schema" --parent "$two" --blocked-by "$widget" \
   --owner patrick --target cosmo:oc-7654321)"
-glyphs="$(knot "$d2" new decision "Choose the glyphs" --parent "$two" --owner patrick)"
+glyphs="$(knot "$d2" new question "Choose the glyphs" --parent "$two" --owner patrick)"
 colour="$(knot "$d2" new idea "Colour the glyphs" --parent "$two" --owner patrick)"
 old="$(knot "$d2" new outcome "Old work" --parent "$two")"
 knot "$d2" claim "$old" --run run-0
 
-# Day three: a milestone created last whose title sorts first, and two
-# knots under no milestone.
+# Day three: a milestone created last whose title sorts first, two knots
+# under no milestone, and two questions the operator owns that no longer
+# wait on them: one answered, one dropped.
 late="$(knot "$d3" new outcome "A late milestone")"
 stray="$(knot "$d3" new bug "A stray report")"
 web="$(knot "$d3" new idea "The graph as a web page")"
 dropped="$(knot "$d3" new idea "A dropped thought")"
+settled="$(knot "$d3" new question "Where the plan lives" --owner patrick)"
+moot="$(knot "$d3" new question "A moot point" --owner patrick)"
 
 # Then the work moves.
 knot "$d3" set "$hook" status=closed
@@ -152,6 +155,8 @@ knot "$d3" set "$once" status=done
 knot "$d3" set "$level" status=closed
 knot "$d3" set "$widget" status=abandoned
 knot "$d3" set "$dropped" status=discarded
+knot "$d3" set "$settled" status=answered
+knot "$d3" set "$moot" status=dropped
 knot "$d14" claim "$tree" --run run-7
 : "$late" "$stray" "$web" "$ship" "$schema" "$glyphs" "$colour"
 
@@ -191,6 +196,9 @@ holds "$p.roots == [\"$one\", \"$two\", \"$late\"]" \
   "$(k "$tree").claim.age_seconds == 41400" \
   "[$(k "$ship").edges[] | {ref, state, why}] == [{\"ref\": \"cosmo:$other\", \"state\": \"resolved\", \"why\": null}, {\"ref\": \"ghost:oc-0123456\", \"state\": \"dangling\", \"why\": \"unreadable\"}]" \
   "[$(k "$schema").edges[] | {field, state, why}] == [{\"field\": \"target\", \"state\": \"dangling\", \"why\": \"missing\"}]" \
+  "$(k "$glyphs").state == \"active\"" \
+  "$(k "$settled").state == \"done\"" \
+  "$(k "$moot").state == \"abandoned\"" \
   "$p.waiting_on_you.knots == [\"$glyphs\", \"$schema\"]" \
   "$p.waiting_on_you.changes | map(.handle) == [\"pqrs\"]" \
   "$p.in_flight == [\"$old\", \"$tree\"]" \

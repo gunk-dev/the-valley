@@ -71,21 +71,22 @@ func graph(r *rand.Rand) []*knot.Knot {
 		taken[id] = true
 		k := &knot.Knot{Type: t.Name, ID: id, Slug: slug, Status: pick(t.Statuses()), Title: strings.Join(title, " "),
 			Created: fmt.Sprintf("2026-%02d-%02d", 9+r.IntN(3), 1+r.IntN(28)), CreatedBy: pick(principals)}
-		var outcomes, decisions, earlier []string
+		var outcomes, destinations, earlier []string
 		for _, e := range knots {
 			earlier = append(earlier, e.ID)
 			switch e.Type {
 			case "outcome":
 				outcomes = append(outcomes, e.ID)
-			case "decision":
-				decisions = append(decisions, e.ID)
+				destinations = append(destinations, e.ID)
+			case "question":
+				destinations = append(destinations, e.ID)
 			}
 		}
 		if k.Status == "graduated" {
-			if len(decisions) == 0 {
+			if len(destinations) == 0 {
 				k.Status = "raw"
 			} else {
-				k.GraduatedInto = pick(decisions)
+				k.GraduatedInto = pick(destinations)
 			}
 		}
 		if len(outcomes) > 0 && r.IntN(2) == 0 {
@@ -121,9 +122,9 @@ func graph(r *rand.Rand) []*knot.Knot {
 				k.Target = pick([]string{"klaus", "cosmo", "cosmo:bd-0123456"})
 			}
 		}
-		// A decided decision links the change that records it. This draws
-		// nothing, so the graphs a seed makes stay the same.
-		if k.Status == "decided" {
+		// An answered question links the change that records its answer.
+		// This draws nothing, so the graphs a seed makes stay the same.
+		if k.Status == "answered" {
 			k.Changes = []string{"https://github.com/gunk-dev/klaus/pull/12"}
 		}
 		if r.IntN(2) == 0 {
@@ -183,7 +184,7 @@ func mutate(r *rand.Rand, knots []*knot.Knot) (map[string]string, knot.Rule) {
 	case knot.RuleFieldOnType:
 		switch t.Name {
 		case "outcome", "bug":
-			k.GraduatedInto = "dcr-0000000"
+			k.GraduatedInto = "qn-0000000"
 		case "idea":
 			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 		default:

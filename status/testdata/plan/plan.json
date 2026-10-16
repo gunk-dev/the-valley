@@ -107,7 +107,7 @@
           "unresolved": [],
           "children": [
             "oc-7125815",
-            "dcr-f10cc70",
+            "qn-f10cc70",
             "ida-9c65fa3",
             "oc-c9066f1",
             "oc-c23db6f",
@@ -147,9 +147,9 @@
           "edges": []
         },
         {
-          "id": "dcr-f10cc70",
-          "type": "decision",
-          "status": "proposed",
+          "id": "qn-f10cc70",
+          "type": "question",
+          "status": "open",
           "active": true,
           "title": "Choose the glyphs",
           "created": "2026-10-02",
@@ -158,7 +158,7 @@
           "owner": "patrick",
           "blocked_by": [],
           "changes": [],
-          "path": "decisions/dcr-f10cc70-choose-the-glyphs.md",
+          "path": "questions/qn-f10cc70-choose-the-glyphs.md",
           "comment_count": 0,
           "ready": false,
           "waiting_on": [],
@@ -506,6 +506,29 @@
           "edges": []
         },
         {
+          "id": "qn-6052167",
+          "type": "question",
+          "status": "dropped",
+          "active": false,
+          "title": "A moot point",
+          "created": "2026-10-03",
+          "created_by": "patrick",
+          "owner": "patrick",
+          "blocked_by": [],
+          "changes": [],
+          "path": "questions/qn-6052167-a-moot-point.md",
+          "comment_count": 0,
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "state": "abandoned",
+          "edges": []
+        },
+        {
           "id": "bd-bee76f4",
           "type": "bug",
           "status": "open",
@@ -548,11 +571,34 @@
           "blocks": [],
           "state": "active",
           "edges": []
+        },
+        {
+          "id": "qn-6386661",
+          "type": "question",
+          "status": "answered",
+          "active": false,
+          "title": "Where the plan lives",
+          "created": "2026-10-03",
+          "created_by": "patrick",
+          "owner": "patrick",
+          "blocked_by": [],
+          "changes": [],
+          "path": "questions/qn-6386661-where-the-plan-lives.md",
+          "comment_count": 0,
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "state": "done",
+          "edges": []
         }
       ],
       "waiting_on_you": {
         "knots": [
-          "dcr-f10cc70",
+          "qn-f10cc70",
           "oc-c9066f1"
         ],
         "changes": [

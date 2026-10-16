@@ -55,10 +55,9 @@ node mechanics — types, IDs, frontmatter, and linking — defined in
 paragraph stating the idea, decision, bug, or outcome, followed by context, implications, and open
 questions.
 
-**Proposal (open decision for the operator):** Keep `archive/.the-valley/` frozen as read-only
-history and record active design decisions directly in
-[docs/architecture.md](./docs/architecture.md), [docs/security.md](./docs/security.md), and
-[docs/roadmap.md](./docs/roadmap.md). When a durable insight or subtle bug discovery arises that
-does not belong in the four top-level docs, capture it as a new node in
-`docs/decisions/<id>-<slug>.md` validated by `schema/node.cue` and leave a one-line pointer in the
-relevant doc.
+`archive/.the-valley/` is frozen, read-only history, and nothing checks it against today's schema.
+Design decisions are recorded directly in [docs/architecture.md](./docs/architecture.md),
+[docs/security.md](./docs/security.md), and [docs/roadmap.md](./docs/roadmap.md). A question that is
+still open lives in the project's plan graph as a `question` knot, owned by whoever has to answer
+it. When its answer settles something about the design, the answer enters these docs through a
+change, and the knot links that change.

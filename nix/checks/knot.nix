@@ -12,8 +12,8 @@
   knot-unit = packages.knot;
 
   # The Go validator is the authority for refs/the-valley/knots, and
-  # schema/node.cue with nix/knowledge-lint.py is the one documented schema
-  # the archive shares. Both are run over the shared fixtures and over
+  # schema/node.cue with nix/knowledge-lint.py is the one documented schema,
+  # which a graph kept in a project's tree is linted against. Both are run over the shared fixtures and over
   # graphs generated from a fixed seed, and any graph on which either
   # verdict differs from the case's fails the check. The lint and the
   # schema are the same store paths lib.knowledgeLint uses.

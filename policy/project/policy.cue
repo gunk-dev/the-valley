@@ -10,14 +10,14 @@ import (
 )
 
 project: {
-	// the-valley keeps a knowledge graph, so it takes the lint the docs
-	// template offers rather than declining it.
-	#docs
-
-	// The graph is archived under archive/.the-valley/, which the
-	// template's `.the-valley/**` does not reach, so the knowledge class
-	// adds the archived path. nix/checks/knowledge.nix lints that root.
-	classes: knowledge: paths: "archive/.the-valley/**": true
+	// the-valley takes no knowledge lint of its own tree. The docs
+	// template's lint checks a knowledge graph kept in the source, and
+	// the-valley's source holds none: its plan graph is project storage, at
+	// refs/the-valley/knots, and the push hook holds it to the knot
+	// module's rules. The nodes under archive/.the-valley/ are history that
+	// never changes, so linting them against today's schema protects
+	// nothing. The lint itself stays covered: the knowledge-lint class
+	// below requires its consumer and rejection checks.
 
 	// Every check below is the flake check of the same name in
 	// nix/checks.nix, built for the runner's own system. own-policy holds
@@ -237,7 +237,6 @@ project: {
 		paths: "nix/knowledge-lint.*":       true
 		paths: "schema/node.cue":            true
 		paths: "examples/graphs/**":         true
-		requires: "knowledge-lint":          true
 		requires: "knowledge-lint-consumer": true
 		requires: "knowledge-lint-rejects":  true
 		requires: "knot-agree":              true
@@ -288,7 +287,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
-		"knowledge.nix": ["knowledge-lint", "knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
+		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]
 		"host-module.nix": ["module-eval"]
 		"fail-nth.sh": ["policy-deriver", "valley-request"]

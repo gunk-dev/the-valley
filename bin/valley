@@ -344,7 +344,7 @@ usage: valley <verb> [args]
   knot <verb> [args]
                    read and write the project's plan graph: knots, at
                    refs/the-valley/knots on origin. a knot is an outcome,
-                   a bug, an idea or a decision; `knot schema` prints the
+                   a bug, an idea or a question; `knot schema` prints the
                    types, their statuses, active and terminal, the fields
                    and the edges. a write is one commit on the ref, made
                    without a checkout and pushed with a lease on the tip
@@ -380,8 +380,8 @@ usage: valley <verb> [args]
                                   valley:<project>/<change id> or a github
                                   pull request url. outcomes and bugs link
                                   the changes that do the work, and a
-                                  decision links the change that records
-                                  it in the source.
+                                  question links the change that records
+                                  its answer in the source.
                      edit <id> --body -
                                   replace the body with stdin
                      comment <id> (-m TEXT | --body -)
@@ -410,15 +410,15 @@ usage: valley <verb> [args]
                    active, ✓ done, ✗ abandoned), its id and title, and,
                    while active, its claim and the claim's age (marked
                    stale past a day), its owner, and what blocks it. a
-                   blocker that ended abandoned, discarded or superseded
-                   no longer blocks, and is marked with how it ended. a
-                   reference to another project's knot,
+                   blocker that ended abandoned, discarded, superseded or
+                   dropped no longer blocks, and is marked with how it
+                   ended. a reference to another project's knot,
                    <project>:<id>, is marked dangling when that
                    project's graph cannot be read or holds no such knot.
                    a root whose descendants are all terminal is one
                    line. three sections follow. waiting on you: the
-                   active outcomes and bugs and the proposed decisions
-                   the operator owns, then the changes ready for
+                   active outcomes and bugs and the open questions the
+                   operator owns, then the changes ready for
                    approval, as pending lists them. in flight: the
                    claimed knots, oldest claim first. open residuals:
                    the open bugs, under their parent. the operator is

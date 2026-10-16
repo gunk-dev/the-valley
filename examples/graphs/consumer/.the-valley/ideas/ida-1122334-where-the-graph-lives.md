@@ -1,6 +1,6 @@
 ---
-type: decision
-id: dcr-1122334
+type: idea
+id: ida-1122334
 status: superseded
 title: Where the graph lives
 created: 2026-08-02

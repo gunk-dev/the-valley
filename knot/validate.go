@@ -42,7 +42,7 @@ func (k *Knot) check(path string) *Error {
 	case t.Name == "outcome" && k.BlockedBy == nil:
 		return refuse(RuleRequired, path, "an outcome has a blocked_by list, [] when it waits on nothing")
 	case t.Name == "idea" && k.Status == "graduated" && k.GraduatedInto == "":
-		return refuse(RuleGraduated, path, "a graduated idea names the decision it graduated into, in graduated_into")
+		return refuse(RuleGraduated, path, "a graduated idea names the outcome or question it graduated into, in graduated_into")
 	case k.GraduatedInto != "" && k.Status != "graduated":
 		return refuse(RuleGraduated, path, fmt.Sprintf("it names graduated_into, and its status is %s: only a graduated idea names one", k.Status))
 	}
@@ -91,8 +91,8 @@ func (k *Knot) checkShapes(path string) *Error {
 		return shape("claimed_at", k.ClaimedAt, "a UTC time, YYYY-MM-DDTHH:MM:SSZ")
 	case k.Target != "" && !name.MatchString(k.Target) && !qualifiedID.MatchString(k.Target):
 		return shape("target", k.Target, "a project's name, or <project>:<id>")
-	case k.GraduatedInto != "" && (!IsLocalID(k.GraduatedInto) || !strings.HasPrefix(k.GraduatedInto, "dcr-")):
-		return shape("graduated_into", k.GraduatedInto, "a decision's id in this graph, dcr- and 7 hex digits")
+	case k.GraduatedInto != "" && (!IsLocalID(k.GraduatedInto) || !strings.HasPrefix(k.GraduatedInto, "oc-") && !strings.HasPrefix(k.GraduatedInto, "qn-")):
+		return shape("graduated_into", k.GraduatedInto, "an outcome's or a question's id in this graph, oc- or qn- and 7 hex digits")
 	}
 	for _, ref := range k.BlockedBy {
 		if !IsLocalID(ref) && !qualifiedID.MatchString(ref) {

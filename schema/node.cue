@@ -8,13 +8,16 @@
 // directory its type names. The type table below carries the directory
 // names so the linter and the schema agree on them by construction.
 //
-// One schema covers both graphs: the archived one under archive/.the-valley/,
-// and the live plan graph at refs/the-valley/knots, where each node is a
-// knot. The live graph's own fields are optional here, because the archive
-// predates them. For the live graph the Go module knot/ is the authority:
-// it writes and reads one canonical form of this YAML, and it holds a knot
-// to rules this schema does not state, such as who may create one. The
-// knot-agree check holds the two to agreeing on every rule they share.
+// A graph holds four types of node: outcomes, bugs, ideas and questions.
+// The plan graph at refs/the-valley/knots is one such graph, where each
+// node is a knot, and a project may keep another in its tree, under
+// .the-valley/. The plan graph's own fields are optional here, because a
+// graph in a tree need not carry them. For the plan graph the Go module
+// knot/ is the authority: it writes and reads one canonical form of this
+// YAML, and it holds a knot to rules this schema does not state, such as
+// who may create one. The knot-agree check holds the two to agreeing on
+// every rule they share. The nodes under archive/.the-valley/ follow an
+// earlier form of this schema, and nothing checks them against this one.
 //
 // Like the host and event schemas, this file is deliberately not Nix. The
 // knowledge lint in this repo is one consumer; any other tool that reads a
@@ -30,7 +33,7 @@ package knowledge
 #Node: {
 	// The node's type. It fixes the id prefix, the status enum, and the
 	// directory the file lives in.
-	type: "outcome" | "bug" | "idea" | "decision"
+	type: "outcome" | "bug" | "idea" | "question"
 
 	// The node's own id, which is also the leading token of its filename.
 	id: #Id
@@ -71,10 +74,10 @@ package knowledge
 		target?: #PrincipalName | #QualifiedId
 	}
 
-	// A decision links changes too: the change that records it in the
-	// source once it is decided. An idea links none. It graduates into a
-	// decision, and the decision is what crosses into the source.
-	if type == "outcome" || type == "bug" || type == "decision" {
+	// A question links changes too: the change that records its answer in
+	// the source's docs. An idea links none. It graduates into an outcome
+	// or a question, and that is what links the change.
+	if type == "outcome" || type == "bug" || type == "question" {
 		changes?: [...#ChangeLink]
 	}
 
@@ -87,8 +90,8 @@ package knowledge
 		// the types that carry it, so the field is rejected on every
 		// other type; an outcome always carries it, and a bug may. A
 		// blocker clears when its own status is terminal for its type:
-		// an idea at graduated, superseded or discarded; a decision at
-		// decided or superseded; a bug at closed; an outcome at done or
+		// an idea at graduated, superseded or discarded; a question at
+		// answered or dropped; a bug at closed; an outcome at done or
 		// abandoned (dcr-593d3d1). An entry is a node id in this graph,
 		// or, in the live graph, <project>:<id> for a node in another
 		// project's, which only the reader resolves.
@@ -108,7 +111,8 @@ package knowledge
 		// An idea is transitional (dcr-593d3d1): its terminal states are
 		// graduated, superseded and discarded, and `adopted` marks an idea
 		// accepted and awaiting graduation. A graduated idea names where
-		// its thinking now lives. That destination is its own field rather
+		// it went: an outcome, when it is taken on as work, or a question,
+		// when it needs settling. That destination is its own field rather
 		// than a reuse of `supersedes`, because the two edges point in
 		// opposite directions — `supersedes` is carried by the surviving
 		// node and names the replaced one, while graduation is declared by
@@ -120,22 +124,24 @@ package knowledge
 		if status == "graduated" {
 			graduated_into: #GraduationTarget
 		}
-	}
 
-	if type == "decision" {
-		id:     =~"^dcr-"
-		status: "proposed" | "decided" | "superseded"
-	}
-
-	// The other typed edge: the node ids this node replaces. Ideas and
-	// decisions carry it and no other type does, because those are the two
-	// status enums with a `superseded` value for the replaced node to land
-	// in — a bug is closed and an outcome is abandoned, and neither of
-	// those is supersession. Optional, unlike blocked_by: most nodes
-	// replace nothing, and there is no outcome-DAG reading of an empty
-	// list to preserve.
-	if type == "idea" || type == "decision" {
+		// The other typed edge: the ideas this idea replaces. Ideas carry
+		// it and no other type does, because theirs is the one status enum
+		// with a `superseded` value for the replaced node to land in — a
+		// bug is closed, an outcome is abandoned and a question is
+		// dropped, and none of those is supersession. Optional, unlike
+		// blocked_by: most ideas replace nothing, and there is no
+		// outcome-DAG reading of an empty list to preserve.
 		supersedes?: [...#SupersededId]
+	}
+
+	// A question is something work can wait on until it is answered. Its
+	// owner names who has to answer. It is open until it is answered or
+	// dropped, and it is never ready: it is answered, not picked up as
+	// work.
+	if type == "question" {
+		id:     =~"^qn-"
+		status: "open" | "answered" | "dropped"
 	}
 }
 
@@ -143,17 +149,17 @@ package knowledge
 // the slug (archive/.the-valley/README.md). CUE cannot compute the hash, so only the
 // shape is checked here; the lint re-derives it for the nodes the rule
 // covers.
-#Id: =~"^(oc|bd|ida|dcr)-[0-9a-f]{7}$"
+#Id: =~"^(oc|bd|ida|qn)-[0-9a-f]{7}$"
 
-// Where a graduated idea's thinking now lives: a decision node's id, or the
+// Where a graduated idea went: an outcome's or a question's id, or the
 // repo-root-relative path of a design document.
-#GraduationTarget: =~"^dcr-[0-9a-f]{7}$" | =~"^[a-zA-Z0-9._/-]+\\.md$"
+#GraduationTarget: =~"^(oc|qn)-[0-9a-f]{7}$" | =~"^[a-zA-Z0-9._/-]+\\.md$"
 
 // The id of a node something supersedes. Narrower than #Id, because only
-// the two types with a `superseded` status can be superseded: an edge
-// naming a bug or an outcome is wrong on shape, and saying so here is a
-// better error than the lint's later complaint about a status.
-#SupersededId: =~"^(ida|dcr)-[0-9a-f]{7}$"
+// an idea has a `superseded` status: an edge naming an outcome, a bug or
+// a question is wrong on shape, and saying so here is a better error than
+// the lint's later complaint about a status.
+#SupersededId: =~"^ida-[0-9a-f]{7}$"
 
 #Date: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
@@ -166,7 +172,7 @@ package knowledge
 // A node in another project's graph: the project's name, a colon, and the
 // node's id. Projects do not share an id space, so a reference that leaves
 // the graph names the project.
-#QualifiedId: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*:(oc|bd|ida|dcr)-[0-9a-f]{7}$"
+#QualifiedId: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*:(oc|bd|ida|qn)-[0-9a-f]{7}$"
 
 // What a blocked_by entry names: a node here, or one in another project.
 #Ref: #Id | #QualifiedId
@@ -175,8 +181,9 @@ package knowledge
 // project's name and a run's ID have the same shape.
 #PrincipalName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
 
-// A change that does a node's work: a change on a valley host,
-// valley:<project>/<change ID>, or a pull request on GitHub.
+// A change that does a node's work, or records a question's answer: a
+// change on a valley host, valley:<project>/<change ID>, or a pull request
+// on GitHub.
 #ChangeLink: =~"^valley:[a-zA-Z0-9][a-zA-Z0-9._-]*/[k-z]{32}$" | =~"^https://github\\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$"
 
 // #Graph is a whole graph: every node's frontmatter, keyed by the node
@@ -193,5 +200,5 @@ package knowledge
 	outcome:  "outcomes"
 	bug:      "bugs"
 	idea:     "ideas"
-	decision: "decisions"
+	question: "questions"
 }

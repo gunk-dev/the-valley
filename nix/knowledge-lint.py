@@ -11,7 +11,8 @@ Three classes of finding, all reported in one run (ida-1ec03b1):
                        derived from the slug
   reference integrity  [[wiki-links]], `blocked_by`, `parent`, `supersedes` and
                        `graduated_into` ids, and relative markdown links all resolve, a
-                       parent is an outcome, and a superseded node says so in its own
+                       parent is an outcome, a graduated idea went to an outcome, a
+                       question or a document, and a superseded node says so in its own
                        status. A `blocked_by` entry written <project>:<id> names a node
                        in another project's graph, which only a reader of both resolves
 
@@ -38,7 +39,10 @@ NOT_IN_SLUG = re.compile(r"[^\w\s-]")
 # A link target the tree cannot answer for: another host, or a mail client.
 EXTERNAL = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
 # A graduated_into target that is a node id rather than a document path.
-DECISION_ID = re.compile(r"^dcr-[0-9a-f]{7}$")
+NODE_ID = re.compile(r"^[a-z]+-[0-9a-f]{7}$")
+# The types a graduated idea may go to: an outcome, when it is taken on as
+# work, or a question, when it needs settling.
+GRADUATION_TYPES = ("outcome", "question")
 
 # The id-derivation rule (archive/.the-valley/README.md): a node's id hash is the
 # first 7 hex characters of the SHA-256 of its slug. The rule covers every
@@ -48,13 +52,13 @@ ID_RULE_CUTOFF = "2026-08-05"
 
 # When a blocker stops blocking: the statuses, per type, at which a node no
 # longer holds up an outcome that names it in `blocked_by` (dcr-593d3d1). An
-# idea clears by graduating, being superseded, or being discarded; a decision
-# by being decided or superseded; a bug by being closed; an outcome by being
+# idea clears by graduating, being superseded, or being discarded; a question
+# by being answered or dropped; a bug by being closed; an outcome by being
 # done or abandoned. Nothing here computes an outcome's frontier; whatever
 # does applies this predicate.
 BLOCKER_CLEARS_AT = {
     "idea": {"graduated", "superseded", "discarded"},
-    "decision": {"decided", "superseded"},
+    "question": {"answered", "dropped"},
     "bug": {"closed"},
     "outcome": {"done", "abandoned"},
 }
@@ -305,14 +309,22 @@ def check_references(tree, documents, frontmatter, findings):
                     f"supersedes names {supersedes}, whose status is "
                     f"{status[supersedes]}, not superseded",
                 )
-        # A graduated idea's destination: a decision node that must exist, or
-        # a repo-root-relative document that must be in the tree.
+        # A graduated idea's destination: an outcome or a question that must
+        # exist, or a repo-root-relative document that must be in the tree.
         graduated_into = node.get("graduated_into")
         if graduated_into is not None:
-            if DECISION_ID.match(graduated_into):
+            if NODE_ID.match(graduated_into):
                 if graduated_into not in ids:
                     findings.add(
                         path, f"graduated_into names {graduated_into}, which is not a node"
+                    )
+                elif kind[graduated_into] not in GRADUATION_TYPES:
+                    found = kind[graduated_into]
+                    article = "an" if found[:1] in "aeiou" else "a"
+                    findings.add(
+                        path,
+                        f"graduated_into names {graduated_into}, {article} {found}, "
+                        "not an outcome or a question",
                     )
             elif not os.path.exists(os.path.join(tree, graduated_into)):
                 findings.add(

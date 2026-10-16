@@ -2,7 +2,7 @@
 
 ○ oc-1b5d5fe  Slice two lands                                    2/10 ██░░░░░░░░
   ✓ oc-7125815  Read the graph once
-  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner patrick
   ◇ ida-9c65fa3 Colour the glyphs · owner patrick
   ○ oc-c9066f1  Document the schema · owner patrick
                 blocked by oc-23ebda7 (abandoned)
@@ -23,7 +23,7 @@ no milestone
   ◇ ida-162ff1b The graph as a web page
 
 waiting on you (patrick)
-  ◇ dcr-f10cc70 Choose the glyphs · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner patrick
   ○ oc-c9066f1  Document the schema · owner patrick
                 blocked by oc-23ebda7 (abandoned)
                 lands in cosmo:oc-7654321 (dangling)

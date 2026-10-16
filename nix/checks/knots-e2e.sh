@@ -84,13 +84,18 @@ work="oc-$(printf '%s' write-the-hook-case | sha256sum | cut -c1-7)"
 as klaus-env valley knot claim "$work" --run 20261015-0058-feb0a926 > "$w/out" 2> "$w/err" || fail "klaus-env could not claim"
 as klaus-env valley knot set "$bug" status=closed > "$w/out" 2> "$w/err" || fail "klaus-env could not change patrick's knot"
 as klaus-env valley knot comment "$work" -m "Claimed." > "$w/out" 2> "$w/err" || fail "klaus-env could not comment"
-# A decision links the change that records it in the source.
-as klaus-env valley knot new decision "One ref for the graph" > "$w/out" 2> "$w/err" || fail "klaus-env could not add a decision"
-decision="dcr-$(printf '%s' one-ref-for-the-graph | sha256sum | cut -c1-7)"
-as klaus-env valley knot link "$decision" --change valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr > "$w/out" 2> "$w/err" \
-  || fail "klaus-env could not link a change to a decision"
-git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:decisions/$decision-one-ref-for-the-graph.md" \
-  | grep -qx 'changes: \["valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"\]' || fail "the decision's change did not land"
+# A question waits on its owner, and links the change that records its
+# answer in the source.
+as klaus-env valley knot new question "Where does the graph live" --owner patrick > "$w/out" 2> "$w/err" \
+  || fail "klaus-env could not add a question"
+question="qn-$(printf '%s' where-does-the-graph-live | sha256sum | cut -c1-7)"
+as klaus-env valley knot set "$question" status=answered > "$w/out" 2> "$w/err" || fail "klaus-env could not answer the question"
+as klaus-env valley knot link "$question" --change valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr > "$w/out" 2> "$w/err" \
+  || fail "klaus-env could not link a change to a question"
+git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:questions/$question-where-does-the-graph-live.md" > "$w/question"
+grep -qx 'status: answered' "$w/question" || fail "the question's answer did not land"
+grep -qx 'owner: "patrick"' "$w/question" || fail "the question's owner did not land"
+grep -qx 'changes: \["valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"\]' "$w/question" || fail "the question's change did not land"
 [ "$(git -C "$w/guarded.git" log --format=%cn refs/the-valley/knots | sort -u | tr '\n' ' ')" = "klaus-env patrick " ] \
   || fail "the graph's commits are not both principals'"
 
@@ -217,6 +222,12 @@ refused "an executable" 'mode 100755' patrick origin "$(push_graph "$(craft "$go
 refused "a file outside the layout" 'outside the graph.s layout' patrick origin "$(push_graph "$(craft "$good" patrick - "+README.md=hello")")"
 refused "a directory outside the layout" 'no directory a graph holds' patrick origin \
   "$(push_graph "$(craft "$good" patrick - "+tasks/$(basename "$(idea_path tasked)")=$(idea Tasked tasked patrick)")")"
+# A knot is an outcome, a bug, an idea or a question, and the hook names
+# the directories each lives in.
+decision="dcr-$(printf '%s' one-ref | sha256sum | cut -c1-7)"
+decision_text="$(printf -- '---\ntype: decision\nid: %s\nstatus: decided\ntitle: "One ref"\ncreated: 2026-10-15\ncreated_by: "patrick"\n---' "$decision")"
+refused "a decision" 'decisions: is no directory a graph holds; the root holds outcomes, bugs, ideas, questions, comments' patrick origin \
+  "$(push_graph "$(craft "$good" patrick - "+decisions/$decision-one-ref.md=$decision_text")")"
 refused "a non-canonical knot" 'not in canonical form' patrick origin \
   "$(push_graph "$(craft "$good" patrick - "+$(idea_path loose)=$(idea Loose loose patrick | sed 's/^title: "Loose"/title: Loose/')")")"
 big="$(head -c 70000 /dev/zero | tr '\0' x)"

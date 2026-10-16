@@ -1,11 +1,11 @@
 # shellcheck shell=bash
 # The plan graph's two validators, held to agreeing: the Go one (knot/),
 # which is the authority for refs/the-valley/knots, and the CUE schema
-# with the knowledge lint, which read the archived graph. Both are run
-# over the same graphs, the shared fixtures and graphs generated from a
-# fixed seed, and the check fails on any graph where either verdict is not
-# the one the case states. Every rejected case names the rule it breaks,
-# and that rule must be one the two share.
+# with the knowledge lint, which read a graph kept in a project's tree.
+# Both are run over the same graphs, the shared fixtures and graphs
+# generated from a fixed seed, and the check fails on any graph where
+# either verdict is not the one the case states. Every rejected case names
+# the rule it breaks, and that rule must be one the two share.
 # Paths and fixtures come from the derivation environment.
 # shellcheck disable=SC2154
 set -euo pipefail

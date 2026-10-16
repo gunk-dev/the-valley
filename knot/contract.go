@@ -1,8 +1,8 @@
 // Package knot is the plan graph: a project's plan kept as data, at one
 // ref of the project's repository, refs/the-valley/knots. Each item on the
-// ref is a knot: an outcome, a bug, an idea or a decision, in the node
-// format the archived knowledge graph uses (schema/node.cue). The ref is a
-// cord, and each knot is tied on it.
+// ref is a knot: an outcome, a bug, an idea or a question, in the node
+// format schema/node.cue states. The ref is a cord, and each knot is tied
+// on it.
 //
 // The ref has its own root history. Its first commit has no parent, and
 // every later commit has the previous tip as its one parent. Each commit
@@ -11,7 +11,7 @@
 //	outcomes/<id>-<slug>.md
 //	bugs/<id>-<slug>.md
 //	ideas/<id>-<slug>.md
-//	decisions/<id>-<slug>.md
+//	questions/<id>-<slug>.md
 //	comments/<knot id>/<stamp>-<op>.md
 //
 // This package is the one reading of the graph. The valley command reads
@@ -112,10 +112,10 @@ const IDRuleCutoff = "2026-08-05"
 var (
 	// localID is a knot's ID: a type prefix and the first 7 hex digits of
 	// the SHA-256 of its slug.
-	localID = regexp.MustCompile(`^(oc|bd|ida|dcr)-[0-9a-f]{7}$`)
+	localID = regexp.MustCompile(`^(oc|bd|ida|qn)-[0-9a-f]{7}$`)
 	// qualifiedID names a knot in another project's graph:
 	// <project>:<id>.
-	qualifiedID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*:(oc|bd|ida|dcr)-[0-9a-f]{7}$`)
+	qualifiedID = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*:(oc|bd|ida|qn)-[0-9a-f]{7}$`)
 	// name is a principal, a project or a run ID, as schema/valley.cue
 	// names a principal (#PrincipalName).
 	name = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
@@ -131,7 +131,7 @@ var (
 	githubPR = regexp.MustCompile(`^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[1-9][0-9]*$`)
 	// knotFile, commentDir and commentFile are the names the layout
 	// allows below the root.
-	knotFile    = regexp.MustCompile(`^((oc|bd|ida|dcr)-[0-9a-f]{7})-([a-z0-9-]+)\.md$`)
+	knotFile    = regexp.MustCompile(`^((oc|bd|ida|qn)-[0-9a-f]{7})-([a-z0-9-]+)\.md$`)
 	commentFile = regexp.MustCompile(`^([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{16})\.md$`)
 	// opID is the ID an operation carries in its Valley-Op trailer.
 	opID = regexp.MustCompile(`^[0-9a-f]{16}$`)

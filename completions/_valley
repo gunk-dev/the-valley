@@ -46,18 +46,18 @@ _valley() {
     )
     _describe -t knotverbs 'valley knot verb' knotverbs
   elif (( CURRENT == 4 )) && [[ ${words[2]} == knot && ${words[3]} == new ]]; then
-    compadd outcome bug idea decision
+    compadd outcome bug idea question
   elif [[ ${words[2]} == knot && ${words[CURRENT-1]} == --type ]]; then
-    compadd outcome bug idea decision
+    compadd outcome bug idea question
   elif [[ ${words[2]} == knot && ${words[CURRENT-1]} == --status ]]; then
-    compadd active terminal open in-progress done abandoned closed raw exploring adopted graduated superseded discarded proposed decided
+    compadd active terminal open in-progress done abandoned closed raw exploring adopted graduated superseded discarded answered dropped
   elif [[ ${words[2]} == knot && ${words[CURRENT]} == -* ]]; then
     local -a opts=('--project:another project on the same host' '--json:print JSON')
     case ${words[3]} in
       new) opts+=('--parent:the outcome it belongs to' '--blocked-by:a knot it waits on' '--owner:the principal it waits on' '--target:the project the work lands in' '--body:read the body from stdin (-)') ;;
       list) opts+=('--type:only this type' '--status:only this status, active or terminal' '--owner:only this owner' '--ready:only the ready knots') ;;
       set) opts+=('--if:require <field>=<value> first' '--force:set it even if another write changed it') ;;
-      link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work or records the decision' '--if:require <field>=<value> first') ;;
+      link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work or records the answer' '--if:require <field>=<value> first') ;;
       edit) opts+=('--body:read the new body from stdin (-)' '--if:require <field>=<value> first') ;;
       comment) opts+=('-m:the comment' '--body:read the comment from stdin (-)') ;;
       claim) opts+=('--run:the run claiming it' '--if:require <field>=<value> first') ;;

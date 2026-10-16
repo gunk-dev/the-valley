@@ -79,12 +79,13 @@ fi
 # ----------------------------------------------------------------------
 # The model, for an agent that never reads CUE.
 ok valley knot schema --json
-holds '.types | map(.name) == ["outcome","bug","idea","decision"]' \
+holds '.types | map(.name) == ["outcome","bug","idea","question"]' \
   '.types[0].active == ["open","in-progress"]' '.types[0].terminal == ["done","abandoned"]' \
   '[.fields[].name] | index("claimed_by") != null' '.limits.knots == 5000'
 ok valley knot schema
 line '^  idea'
-fails 1 'the types are outcome, bug, idea, decision' valley knot new task "Nothing"
+fails 1 'the types are outcome, bug, idea, question' valley knot new task "Nothing"
+fails 1 '"decision" is no type of knot; the types are outcome, bug, idea, question' valley knot new decision "Nothing"
 fails 2 'knot has no verb' valley knot frob
 
 # ----------------------------------------------------------------------
@@ -223,33 +224,83 @@ git -C "$srv/cosmo.git" rev-parse --verify --quiet refs/the-valley/knots > /dev/
   || fail "--project wrote no graph in cosmo"
 
 # ----------------------------------------------------------------------
-# Ready means an outcome or a bug: an idea and a proposed decision are not.
+# Ready means an outcome or a bug: an idea and an open question are not.
 ok valley knot new idea "A thought, not work" --json
 idea="$(jq -r .knot.id "$w/out")"
-ok valley knot new decision "A choice, not work" --json
-choice="$(jq -r .knot.id "$w/out")"
+ok valley knot new question "Which ref holds the graph" --owner patrick --json
+asked="$(jq -r .knot.id "$w/out")"
+holds '.knot.type == "question"' '.knot.status == "open"' '.knot.owner == "patrick"' \
+  '.knot.path | startswith("questions/qn-")'
+fails 1 'carries no blocked_by' valley knot new question "A blocked question" --blocked-by "$bug"
 ok valley knot list --ready --json
-holds ".knots | map(.id) | index(\"$idea\") == null" ".knots | map(.id) | index(\"$choice\") == null" \
+holds ".knots | map(.id) | index(\"$idea\") == null" ".knots | map(.id) | index(\"$asked\") == null" \
   ".knots | map(.id) | index(\"$bug\") != null"
 ok valley knot show "$idea" --json
 holds '.knot.ready == false'
+ok valley knot show "$asked" --json
+holds '.knot.ready == false'
 
-# A decided decision links the change that records it in the source, and
-# stays never ready. An idea links no change: it graduates into a
-# decision, and the decision crosses over.
-ok valley knot set "$choice" status=decided
-ok valley knot link "$choice" --change https://github.com/gunk-dev/the-valley/pull/7
-ok valley knot show "$choice" --json
+# Work waits on a question until it is answered or dropped. An answer
+# finishes the question, so it is no ending the view reports.
+ok valley knot new outcome "Write the answer down" --blocked-by "$asked" --json
+written="$(jq -r .knot.id "$w/out")"
+ok valley knot new bug "The answer is missing" --blocked-by "$asked" --json
+missing="$(jq -r .knot.id "$w/out")"
+for k in "$written" "$missing"; do
+  ok valley knot show "$k" --json
+  holds '.knot.ready == false' ".knot.waiting_on == [\"$asked\"]"
+done
+ok valley knot set "$asked" status=answered
+ok valley knot show "$asked" --json
+holds '.knot.ready == false'
+for k in "$written" "$missing"; do
+  ok valley knot show "$k" --json
+  holds '.knot.ready == true' '.knot.waiting_on == []' '.knot.cleared_by_ending == []'
+done
+# A question can open again, and the work waits on it again.
+ok valley knot set "$asked" status=open
+for k in "$written" "$missing"; do
+  ok valley knot show "$k" --json
+  holds '.knot.ready == false' ".knot.waiting_on == [\"$asked\"]"
+done
+# A dropped question clears its blocker without being answered, and the
+# view says so.
+ok valley knot new question "Is a second ref needed" --json
+moot="$(jq -r .knot.id "$w/out")"
+ok valley knot new outcome "Mirror the second ref" --blocked-by "$moot" --json
+mirror="$(jq -r .knot.id "$w/out")"
+ok valley knot set "$moot" status=dropped
+ok valley knot show "$mirror" --json
+holds '.knot.ready == true' '.knot.waiting_on == []' ".knot.cleared_by_ending == [\"$moot\"]"
+
+# An answered question links the change that records its answer in the
+# source, and stays never ready. An idea links no change: it graduates
+# into an outcome or a question, and that links the change.
+ok valley knot set "$asked" status=answered
+ok valley knot link "$asked" --change https://github.com/gunk-dev/the-valley/pull/7
+ok valley knot show "$asked" --json
 holds '.knot.changes == ["https://github.com/gunk-dev/the-valley/pull/7"]' '.knot.ready == false'
-ok valley knot show "$choice"
+ok valley knot show "$asked"
 line '^change: +https://github.com/gunk-dev/the-valley/pull/7$'
-ok valley knot list --type decision --json
-holds ".knots | map(select(.id == \"$choice\")) | .[0].changes == [\"https://github.com/gunk-dev/the-valley/pull/7\"]"
+ok valley knot list --type question --json
+holds ".knots | map(select(.id == \"$asked\")) | .[0].changes == [\"https://github.com/gunk-dev/the-valley/pull/7\"]"
 before="$(git -C "$graph" rev-parse refs/the-valley/knots)"
 fails 1 'an idea does not carry changes' valley knot link "$idea" --change https://github.com/gunk-dev/the-valley/pull/7
 [ "$(git -C "$graph" rev-parse refs/the-valley/knots)" = "$before" ] || fail "a change linked to an idea was pushed"
 ok valley knot schema --json
-holds '.fields[] | select(.name == "changes") | .on == ["outcome","bug","decision"]'
+holds '.fields[] | select(.name == "changes") | .on == ["outcome","bug","question"]'
+
+# A graduated idea names where it went: a question to settle, or an
+# outcome taken on as work, and never a bug.
+ok valley knot set "$idea" status=graduated graduated_into="$asked"
+ok valley knot show "$idea" --json
+holds '.knot.status == "graduated"' ".knot.graduated_into == \"$asked\""
+ok valley knot new idea "A thought taken on as work" --json
+taken="$(jq -r .knot.id "$w/out")"
+fails 1 "an outcome's or a question's id" valley knot set "$taken" status=graduated graduated_into="$bug"
+ok valley knot set "$taken" status=graduated graduated_into="$milestone"
+ok valley knot show "$taken" --json
+holds '.knot.status == "graduated"' ".knot.graduated_into == \"$milestone\""
 
 # Finishing a knot releases its claim, in the same commit.
 ok valley knot new outcome "Finish the claimed work" --json

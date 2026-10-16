@@ -10,14 +10,14 @@ duplicate-id	is already used by
 missing-frontmatter	no YAML frontmatter
 dangling-wiki-link	[[ida-9999999]] is not a node id
 dangling-blocked-by	blocked_by names oc-9999999, which is not a node
-dangling-supersedes	supersedes names dcr-9999999, which is not a node
+dangling-supersedes	supersedes names ida-9999999, which is not a node
 # The edge alone is half a supersession. A node declared replaced while its
 # own status still reads otherwise leaves the graph saying two things, which
 # is the defect the edge exists to end.
 supersedes-a-node-still-standing	whose status is adopted, not superseded
 supersedes-on-the-wrong-type	supersedes: field not allowed
-# Only ideas and decisions have a `superseded` status, so an edge naming any
-# other type is rejected on shape by the schema.
+# Only ideas have a `superseded` status, so an edge naming any other type is
+# rejected on shape by the schema.
 supersedes-a-type-that-cannot-be	supersedes.0: invalid value "bd-0000011"
 # The id rule: a node created after the cutoff must carry the id its slug
 # derives, and the failure names the id it should have.
@@ -25,6 +25,10 @@ non-derived-id	sha256 of the slug gives ida-d1d9c0c
 # Graduation cannot be half-declared: the status without the destination is
 # rejected by the schema.
 graduated-without-destination	graduated_into: incomplete value
-dangling-graduated-into	graduated_into names dcr-9999999, which is not a node
+dangling-graduated-into	graduated_into names qn-9999999, which is not a node
+# A node's type is an outcome, a bug, an idea or a question, each in its own
+# directory, so a decision filed under decisions/ is markdown the lint has no
+# reading for.
+decision-node	decisions/dcr-0000012-a-decision.md: markdown outside .the-valley's type directories
 broken-link	./nowhere.md does not exist
 broken-anchor	names no heading

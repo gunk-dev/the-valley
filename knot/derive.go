@@ -90,15 +90,15 @@ type Foreign func(ref string) (k *Knot, found bool, err error)
 // None of it is stored; it is derived from the graph each time.
 type View struct {
 	// Ready is an outcome or a bug that is active, unclaimed, and every
-	// blocker of which is terminal. An idea or a decision is never ready:
-	// it is thought about, not picked up as work.
+	// blocker of which is terminal. An idea is never ready: it is thought
+	// about, not picked up as work. Nor is a question: it is answered.
 	Ready bool `json:"ready"`
 	// WaitingOn are the blockers that are not terminal, or that could not
 	// be resolved.
 	WaitingOn []string `json:"waiting_on"`
 	// ClearedByEnding are blockers that cleared by being abandoned,
-	// discarded or superseded rather than finished: they no longer block,
-	// as the archive's rule says, but a reader should know.
+	// discarded, superseded or dropped rather than finished: they no
+	// longer block, as the archive's rule says, but a reader should know.
 	ClearedByEnding []string `json:"cleared_by_ending"`
 	// Dangling are references to another project's knots that its graph
 	// does not hold; Unresolved are those whose graph could not be read.
@@ -133,7 +133,7 @@ type Claim struct {
 }
 
 // endings are the terminal statuses that end a knot without finishing it.
-var endings = []string{"abandoned", "discarded", "superseded"}
+var endings = []string{"abandoned", "discarded", "superseded", "dropped"}
 
 // View derives the view of the knot with id at the time now. foreign
 // resolves references to other projects' knots; nil leaves them all
@@ -248,8 +248,8 @@ func TheSchema() Schema {
 				Meaning: "the knot belongs to the outcome; parent edges form no cycle"},
 			{Field: "blocked_by", From: "outcome, bug", To: "any knot in this graph, or <project>:<id> in another",
 				Meaning: "the knot waits on each until it is terminal; blocked_by edges form no cycle"},
-			{Field: "graduated_into", From: "a graduated idea", To: "a decision in this graph",
-				Meaning: "where the idea's thinking moved"},
+			{Field: "graduated_into", From: "a graduated idea", To: "an outcome or a question in this graph",
+				Meaning: "where the idea moved: work taken on, or a question to settle"},
 		},
 		Limits: Limits{Knots: MaxKnots, Comments: MaxComments, KnotBytes: MaxKnotSize,
 			CommentBytes: MaxCommentSize, ChangedPaths: MaxChangedPaths, TitleBytes: MaxTitle, ListItems: MaxListItems},

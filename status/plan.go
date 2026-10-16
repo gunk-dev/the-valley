@@ -22,7 +22,7 @@
 //	    ⊘ oc-8a7b6c5 Golden files · blocked by oc-3f4e5d6
 //
 // Three sections follow the tree. "waiting on you" lists the active
-// outcomes and bugs, and the proposed decisions, that the operator owns,
+// outcomes and bugs, and the open questions, that the operator owns,
 // then the changes ready for approval, as valley pending selects them
 // (pending.go). The operator is the principal git config valley.principal
 // names, or the one --owner names. "in flight" lists the claimed knots,
@@ -264,7 +264,7 @@ func (f *foreignGraphs) resolve(ref string) (*knot.Knot, bool, error) {
 
 // planEndings are the terminal statuses that end a knot without finishing
 // it, as the knot module's view reads them (knot/derive.go).
-var planEndings = []string{"abandoned", "discarded", "superseded"}
+var planEndings = []string{"abandoned", "discarded", "superseded", "dropped"}
 
 // planView is one project's graph as plan shows it.
 type planView struct {
@@ -397,7 +397,7 @@ func (v *planView) progress() map[string]knot.Progress {
 // abandoned when it ended without finishing. An active one is blocked
 // while a blocker holds it, in progress while it is claimed or its status
 // says so, ready when the graph reads it as ready (an outcome or a bug),
-// and otherwise active, as an open idea or a proposed decision is.
+// and otherwise active, as an open idea or an open question is.
 func stateOf(k *knot.Knot, view knot.View) string {
 	switch {
 	case !k.Active() && slices.Contains(planEndings, k.Status):
@@ -458,7 +458,7 @@ func (v *planView) collapsed(id string) bool {
 }
 
 // waiting are the knots that wait on the operator, in tree order: the
-// active outcomes and bugs they own, and the proposed decisions they own.
+// active outcomes and bugs they own, and the open questions they own.
 func (v *planView) waiting(operator string) []string {
 	ids := []string{}
 	for _, id := range v.order {
@@ -466,7 +466,7 @@ func (v *planView) waiting(operator string) []string {
 		if k.Owner != operator || !k.Active() {
 			continue
 		}
-		if k.Type == "outcome" || k.Type == "bug" || k.Type == "decision" && k.Status == "proposed" {
+		if k.Type == "outcome" || k.Type == "bug" || k.Type == "question" {
 			ids = append(ids, id)
 		}
 	}

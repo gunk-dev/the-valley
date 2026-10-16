@@ -9,8 +9,8 @@ git config --global init.defaultBranch main
 
 # The real floor is in the owning valley's repository, which a build cannot
 # fetch. The example floor stands in for it: it has the same prose class
-# and unclassified rule, and the template defines the #docs this layer
-# embeds.
+# and unclassified rule. The docs template is composed beside it, as an
+# instance's templates are, and this layer does not embed it.
 policy="$TMPDIR/policy"
 mkdir -p "$policy/instance" "$policy/project"
 cp "$floor" "$policy/instance/floor.cue"

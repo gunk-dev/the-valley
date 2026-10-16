@@ -18,12 +18,12 @@ grep -qx '  ExposeAuthInfo yes' "$sshdConfigPath"
 
 # The mirror publishes main and tags only — a heads glob
 # would publish every topic branch awaiting review — with
-# --prune for tag deletions and a sweep that unpublishes
-# any other head (--prune cannot: it ignores non-glob
-# refspecs). Never --mirror: it also deletes remote-only
-# refs, and GitHub's read-only refs/pull/* fails every such
-# push. Follow the publish unit to the drains and on to the
-# rendered push script, and pin the invocation there.
+# --prune for tag deletions. Never --mirror: it deletes
+# every mirror ref the primary lacks, other writers' refs
+# included, and GitHub's read-only refs/pull/* fails every
+# such push. Follow the publish unit to the drains and on to
+# the rendered push script, and pin the invocation there.
+# What the mirror ends up holding is mirror-e2e's to prove.
 drains="$(sed -n 's|^ExecStart=\(.*\)/%i$|\1|p' "$publishUnitPath")"
 mirrorPush="$(cat "$drains"/* | grep -o '/nix/store/[^ ]*-valley-mirror-push-[^ ]*' | head -n1)"
 test -x "$mirrorPush"
@@ -38,20 +38,12 @@ fi
 grep -q -- 'push --prune' "$mirrorPush"
 grep -qF -- '+refs/heads/main:refs/heads/main' "$mirrorPush"
 grep -qF -- '+refs/tags/*:refs/tags/*' "$mirrorPush"
-grep -qF -- 'ls-remote --heads' "$mirrorPush"
-# shellcheck disable=SC2016  # the text pinned is the script's, not ours
-grep -qF -- 'push "$url" --delete' "$mirrorPush"
 if grep -qF -- '+refs/heads/*:refs/heads/*' "$mirrorPush"; then
   echo "module-eval: mirror push regressed to publishing every head" >&2
   exit 1
 fi
 if grep -q -- '--mirror' "$mirrorPush"; then
   echo "module-eval: mirror push regressed to --mirror" >&2
-  exit 1
-fi
-# Deletions must never reach a namespace the mirror owns.
-if grep -q 'refs/pull' "$mirrorPush"; then
-  echo "module-eval: mirror push must not name refs/pull/*" >&2
   exit 1
 fi
 

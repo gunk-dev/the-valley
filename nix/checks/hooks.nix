@@ -11,9 +11,10 @@
   # What a mirror ends up holding, end to end and unmocked: a bare
   # repo wired with the real rendered hooks, pushed to for real, the
   # real drain run as its unit would run it, and a second bare repo
-  # standing in for the mirror. The refspec is easy to get subtly
-  # wrong — --prune ignores the non-glob heads refspec, so pruning
-  # heads is the sweep's job — and only running git can tell.
+  # standing in for the mirror. The push is easy to get subtly
+  # wrong — it must publish main and the tags, delete the tags the
+  # primary deleted, and leave every other ref on the mirror as it
+  # is — and only running git can tell.
   # Relative mirror URLs (mirrorHost) resolve against the pushing
   # repo, so the shipped scripts run with no substitution: this is
   # exactly what a host executes.

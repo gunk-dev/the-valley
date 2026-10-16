@@ -249,22 +249,24 @@ let
     done
   '';
 
-  # Push replication. Publication mirror: main and tags only. Only the
-  # publish drain further down runs it, for pushes and integrator landings
-  # alike.
-  # Topic branches are review-queue state, not published — the mirror exists
-  # so consumers can fetch what has been integrated; durability is restic's
-  # job, not the mirror's.
-  # --prune propagates tag deletions (glob refspec); it is a no-op for heads
-  # now that the heads refspec names one ref, so a separate best-effort sweep
-  # deletes every mirror head but main — which also strips anything that
-  # appears there by other means. The sweep reads only refs/heads (ls-remote
-  # --heads), never refs/pull/*, and is logged apart from the replication
-  # push so it cannot change that push's reported outcome. --mirror is
-  # rejected outright: it also tries to delete remote-only namespaces, and on
-  # GitHub the read-only refs/pull/* makes that fail every push, masking real
-  # replication failures. The pusher exits non-zero when a replication push
-  # fails, and the drain retries on that.
+  # Push replication. A publication mirror gets main and the tags, and
+  # nothing else. Only the publish drain further down runs it, for pushes
+  # and integrator landings alike.
+  # Topic branches are review-queue state, not published: the mirror exists
+  # so consumers can fetch what has been integrated, and durability is
+  # restic's job, not the mirror's. The two refspecs are what keep every
+  # other ref of the project off the mirror.
+  # --prune propagates tag deletions through the tags glob. The heads
+  # refspec names one ref, so --prune deletes no head.
+  # The pusher deletes nothing else on a mirror. Deleting a ref that a
+  # public mirror has served unpublishes nothing, because forges keep its
+  # objects fetchable by SHA. And a mirror holds refs that other writers put
+  # there, such as a forge's own namespaces or a bot's branches; those are
+  # theirs. --mirror is refused for the same reason: it deletes every mirror
+  # ref the primary lacks, and on GitHub the read-only refs/pull/* makes
+  # that fail every push, masking real replication failures.
+  # The pusher exits non-zero when a replication push fails, and the drain
+  # retries on that.
   mirrorPusher =
     name: mirrors:
     pkgs.writeShellScript "valley-mirror-push-${name}" ''
@@ -275,20 +277,6 @@ let
         else
           ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: push to $url FAILED" || true
           status=1
-        fi
-
-        # Unpublish anything but main. Refnames cannot contain whitespace, so
-        # accumulating them space-separated and splitting on expansion is safe.
-        stale=""
-        while read -r _ ref; do
-          [ "$ref" = refs/heads/main ] || stale="$stale $ref"
-        done < <(${pkgs.git}/bin/git ls-remote --heads "$url" 2>/dev/null)
-        if [ -n "$stale" ]; then
-          if ${pkgs.git}/bin/git push "$url" --delete $stale >/dev/null 2>&1; then
-            ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: unpublished$stale from $url" || true
-          else
-            ${pkgs.util-linux}/bin/logger -t valley-mirror "${name}: unpublish from $url failed (ignored)" || true
-          fi
         fi
       done
       exit "$status"

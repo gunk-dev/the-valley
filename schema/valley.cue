@@ -35,11 +35,13 @@ package valley
 	}
 
 	// Publication-mirror URLs. Every push to the primary replicates main
-	// and the tags to each URL, force-updating and propagating deletions.
-	// Only those: a mirror publishes what has been integrated, and topic
-	// branches awaiting review are not published. Any other branch on a
-	// mirror is removed. Remote-only namespaces (e.g. GitHub's
-	// refs/pull/*) are never touched. Replication is best-effort: a dead
+	// and the tags to each URL, force-updating them. Only those: a mirror
+	// publishes what has been integrated, and topic branches awaiting
+	// review are not published. The host changes nothing else on a
+	// mirror: the only deletions it makes there are tags deleted on the
+	// primary. So a repository that becomes a mirror keeps every ref it
+	// already holds; delete what must not be published when declaring it
+	// (docs/architecture.md shows how). Replication is best-effort: a dead
 	// mirror never rejects the primary push. Credentials are the host's
 	// concern (the installer documents how); they are not declared here.
 	mirrors: [...string] | *[]

@@ -225,10 +225,20 @@ hangs cannot hold up a landing. Checked by `integrator-e2e`.
 One unit pushes the mirrors: `valley-publish@<project>`, a service that runs as git. A systemd path
 unit starts it whenever the project's queue is not empty. Mirrors are a list of URLs
 (`schema/valley.cue`). The service lists the queued files and then runs `git push --prune` of `main`
-and all tags to each URL. After that it deletes every other branch on the mirror. Tags are copied
-whether or not `main` reaches them, refs outside `refs/heads/` and `refs/tags/` on the mirror are
-left alone, and the branch deletion is best effort. The push uses the git user's own ssh identity,
-which the host provides. Checked by `mirror-e2e`.
+and all tags to each URL. Tags are copied whether or not `main` reaches them. Because of `--prune`,
+a tag deleted on the primary is deleted on the mirror. Nothing else on the mirror is changed. A
+mirror holds refs that other writers put there, such as a forge's own namespaces or a bot's
+branches, and those are theirs. Deleting a ref that a public mirror has already served would not
+unpublish it anyway, because forges keep its objects fetchable by SHA. The push uses the git user's
+own ssh identity, which the host provides. Checked by `mirror-e2e`.
+
+A repository that becomes a mirror keeps every ref it already holds. So the operator deletes what
+should not be published when declaring the mirror:
+
+```sh
+git ls-remote <url>               # list every ref the mirror holds
+git push <url> --delete <ref>...  # delete each one that should not be published
+```
 
 The service deletes the files it listed only after every mirror push succeeds. When a push or a
 deletion fails, the service fails and the files stay. systemd then runs the service again after a
@@ -926,8 +936,8 @@ Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs 
 
 ## The life of a change
 
-1. An author pushes a topic branch. The hook accepts it, the bus gets `ref-updated`, and the mirrors
-   prune it.
+1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors
+   never get the branch.
 2. The author marks the branch's head ready with `valley ready`. That writes the change's record at
    `refs/the-valley/changes/main/<change-id>`, with the head as a version. `valley pending` and
    `valley changes --json` list the change by its handle.

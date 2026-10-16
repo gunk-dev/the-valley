@@ -19,7 +19,6 @@ wait_for() {
 heads() { git -C mirror.git for-each-ref --format='%(refname)' refs/heads; }
 tags() { git -C mirror.git for-each-ref --format='%(refname)' refs/tags; }
 mirror_main_is() { [ "$(git -C mirror.git rev-parse main)" = "$tip" ]; }
-only_main() { [ "$(heads)" = refs/heads/main ]; }
 queued() { find "$1/valley-publish-queue" -mindepth 1 -maxdepth 1 | wc -l; }
 
 # A primary repo wired exactly as valley-init wires it, with
@@ -40,9 +39,9 @@ drains="$(sed -n 's|^ExecStart=\(.*\)/%i$|\1|p' "$publishUnitPath")"
 test -x "$drains/mirror-pilot" && test -x "$drains/dead-mirror" && test -x "$drains/race"
 drain() { (cd "$1.git" && "$drains/$1"); }
 
-# The mirror as it stands today: every head and tag of the
-# primary, topic branches included. Seeded before the hook is
-# wired, so nothing sweeps it out from under the setup.
+# The mirror as it stands when it is declared: it already holds
+# every head and tag of the primary, topic branches included.
+# Seeded before the hook is wired, so the seeding queues nothing.
 git init --quiet --bare mirror-pilot.git
 git init --quiet --bare mirror.git
 git clone --quiet "$PWD/mirror-pilot.git" work
@@ -71,21 +70,27 @@ tip="$(git -C work rev-parse HEAD)"
 drain mirror-pilot
 [ "$(queued mirror-pilot.git)" -eq 0 ]
 
-# main and the tags are published; nothing else is, and the
-# topic branches that were on the mirror are gone.
+# main and the tags are published, and the tag deleted on the
+# primary is deleted on the mirror. The topic branch pushed to
+# the primary is not published. The branches the mirror held
+# before it was wired stay: the host deletes nothing else there.
 mirror_main_is
-only_main
 [ "$(tags)" = refs/tags/v1 ]
+[ "$(heads)" = "$(printf 'refs/heads/%s\n' idea/one idea/two main)" ]
 
-# A branch that appears on the mirror by any other route is
-# unpublished on the next push.
-git -C mirror.git branch sneaky main
+# Refs written to the mirror by another route are not the host's:
+# a branch, and a ref outside refs/heads and refs/tags. Both
+# survive the next push, and main moves on beside them.
+prev="$tip"
+git -C mirror.git branch sneaky "$prev"
+git -C mirror.git update-ref refs/klaus/data "$prev"
 git -C work commit --quiet --allow-empty -m three
 git -C work push --quiet origin main
 tip="$(git -C work rev-parse HEAD)"
 drain mirror-pilot
 mirror_main_is
-only_main
+[ "$(git -C mirror.git rev-parse --verify --quiet sneaky)" = "$prev" ]
+[ "$(git -C mirror.git rev-parse --verify --quiet refs/klaus/data)" = "$prev" ]
 
 # A move that cannot be deleted fails the drain, though the mirror
 # push succeeded, so systemd retries it after a delay rather than

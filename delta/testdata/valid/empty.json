@@ -1,0 +1,13 @@
+{
+  "about": "Two equal trees. The delta is the header line alone.",
+  "pre": [
+    {"path": "README", "mode": "100644", "content": "same\n"},
+    {"path": "bin/tool", "mode": "100755", "content": "#!/bin/sh\necho tool\n"},
+    {"path": "latest", "mode": "120000", "content": "bin/tool"}
+  ],
+  "post": [
+    {"path": "README", "mode": "100644", "content": "same\n"},
+    {"path": "bin/tool", "mode": "100755", "content": "#!/bin/sh\necho tool\n"},
+    {"path": "latest", "mode": "120000", "content": "bin/tool"}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "about": "A file that becomes a directory, and a directory that becomes a file: the old entry absent after, the new one absent before.",
+  "pre": [
+    {"path": "config", "mode": "100644", "content": "flat\n"},
+    {"path": "lib/x.go", "mode": "100644", "content": "package lib\n"}
+  ],
+  "post": [
+    {"path": "config/main.toml", "mode": "100644", "content": "nested\n"},
+    {"path": "lib", "mode": "120000", "content": "vendor/lib"}
+  ]
+}

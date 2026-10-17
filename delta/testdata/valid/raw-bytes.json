@@ -1,0 +1,12 @@
+{
+  "about": "Paths that are not UTF-8 are their raw bytes, never decoded or normalised. The two spellings of é, precomposed and decomposed, are two paths.",
+  "pre": [
+    {"path_hex": "ff2e747874", "mode": "100644", "content": "0xff\n"}
+  ],
+  "post": [
+    {"path_hex": "636166e9", "mode": "100644", "content": "latin-1\n"},
+    {"path": "café", "mode": "100644", "content": "precomposed\n"},
+    {"path": "café", "mode": "100644", "content": "decomposed\n"},
+    {"path_hex": "ff2e747874", "mode": "100644", "content": "0xff, changed\n"}
+  ]
+}

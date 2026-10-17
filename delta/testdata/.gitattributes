@@ -1,0 +1,3 @@
+# The vectors are raw bytes, hashed and parsed exactly as committed. No
+# checkout may convert their line endings.
+* -text

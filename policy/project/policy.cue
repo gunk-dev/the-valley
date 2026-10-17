@@ -31,6 +31,7 @@ project: {
 		"change-unit",
 		"knot-unit",
 		"knot-agree",
+		"delta-unit",
 		"attest-unit",
 		"attest-conformance",
 		"attest-e2e",
@@ -123,6 +124,18 @@ project: {
 		requires: "valley-plan":     true
 		requires: "valleyhook-unit": true
 		requires: "knots-e2e":       true
+	}
+
+	// valley-delta-v1, which the CLI's Go verbs compare a version with its
+	// approved version through. delta-unit holds it to its conformance
+	// vectors, valley-go-unit builds the verbs with it, and valley-ready and
+	// review-notes drive review over the comparison.
+	classes: delta: {
+		paths: "delta/**":          true
+		requires: "delta-unit":     true
+		requires: "valley-go-unit": true
+		requires: "valley-ready":   true
+		requires: "review-notes":   true
 	}
 
 	// The note envelope. The hook and attest both read notes through it, so
@@ -283,6 +296,7 @@ project: {
 	// is left to the nix class, as is nix/checks.nix, which wires them all.
 	let checkFiles = {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
+		"delta.nix": ["delta-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]

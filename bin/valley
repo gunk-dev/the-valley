@@ -164,8 +164,28 @@ usage: valley <verb> [args]
                                   host signs with, whenever a check is
                                   required; VALLEY_ATTEST_NAME is the name it
                                   signs under, defaulting to this host's.
+                     [v]iew full diff
+                                  page the change's whole diff, with
+                                  notes taken as below, and ask again
                      [r]eject     delete the remote branch (confirmed first)
                      [s]kip       do nothing
+                   a change with a record is first set against its
+                   approved version: the greatest version below the one
+                   shown whose exact head an integration request or a
+                   land, stale or reject outcome on origin names, under
+                   c-<change id> or a branch name of the change that
+                   nothing else maps to (valley-go compare). with none,
+                   or an ambiguous one, review pages the whole diff. when
+                   each version's diff from its merge base with main
+                   changes the same files the same way (valley-delta-v1),
+                   review prints `<change> v<n> at <head>: clean restack
+                   of approved v<m> at <old head>.`, the two bases, and
+                   the commits main landed between them, and pages
+                   nothing. otherwise it pages `changed since approved
+                   v<m>`, the files whose change differs, and git
+                   range-diff of the two versions. a changed commit
+                   message or author is shown either way. this is
+                   information only: it files nothing and skips no check.
                    when [a]pprove's checks fail, the prompt says approving
                    needs a new head and stops offering [a]pprove until the
                    change has one. any other refusal keeps the prompt as
@@ -216,9 +236,11 @@ usage: valley <verb> [args]
                      [s]top       end the review; nothing done
                    a rebase that is refused or left unfinished says what
                    happened, and then only [s]top is offered.
-                   it then pages each layer's log and diff against the layer
-                   below it, headed `change <k> of <n>: <name> on
-                   <below>`, with notes kept under that layer's branch.
+                   it then shows each layer, headed `change <k> of <n>:
+                   <name> on <below>`, as a change alone is shown: set
+                   against its own change's approved version, or its log
+                   and diff against the layer below it paged, with notes
+                   kept under that layer's branch.
                    after each lower layer it asks, naming the layer and
                    its place, as in `two, 2 of 3:`:
                      [n]ext layer go on to the layer above; the usual
@@ -229,11 +251,17 @@ usage: valley <verb> [args]
                                   prompt names (`one alone`, `one and
                                   two`, `the <k> up to <name>`), and
                                   ends the review
+                     [v]iew full diff
+                                  page that layer's log and diff against
+                                  the layer below it, and ask again
                      [s]top       end the review; nothing done
                    after the top it asks, as in `three, 3 of 3:`:
                      [a]pprove all <n>
                                   approve the top at the head shown,
                                   which lands every layer
+                     [v]iew full diff
+                                  page the top's log and diff against
+                                  the layer below it, and ask again
                      [r]eject <name>
                                   delete the top's branch (confirmed
                                   first)
@@ -869,25 +897,110 @@ print_notes() {
   printf '  %s\n' "${NOTES[@]}"
 }
 
+# ----------------------------------------------------------------------
+# review sets the version it shows of a change against the change's
+# approved version: the greatest version below it whose head a request or
+# an outcome on origin names (valley-go compare, status/compare.go). The
+# logic is valley-go's, and this script prints what it says:
+#
+#   - none: there is no approved version to compare with, so review pages
+#     the whole diff, as for any change. Any note valley-go gives, such as
+#     an approved version it could not compare, heads the page.
+#   - clean: the file delta is the approved version's. review prints that
+#     in a few lines, with the landings between the two bases, and pages
+#     nothing.
+#   - changed: review pages the files whose change differs and the
+#     range-diff between the two versions.
+#
+# A changed commit message or author is in valley-go's text either way.
+# [v]iew full diff pages the whole diff at every prompt. The comparison
+# files no request and skips no check: [a]pprove is the same act whatever
+# it says.
+#
+# compare_shown <change ID> <version> <head>: compare the version shown,
+# against main's tip as the fetch left it. Leaves none, clean or changed
+# in COMPARE_KIND, and the text to show in $REVIEW_TMP/compare. A plain
+# branch is none, and so is a comparison valley-go could not make, with a
+# warning.
+COMPARE_KIND=none
+compare_shown() {
+  local out="$REVIEW_TMP/compare.out" tip
+  COMPARE_KIND=none
+  : > "$REVIEW_TMP/compare"
+  [ -n "$1" ] || return 0
+  if ! tip="$(git rev-parse --verify --quiet refs/remotes/origin/main)" \
+    || ! valley-go compare --tip "$tip" "$1" "$2" "$3" > "$out"; then
+    printf 'valley: warning: could not compare v%s of change %s with its approved version; reviewing it in full\n' \
+      "$2" "$1" >&2
+    return 0
+  fi
+  IFS= read -r COMPARE_KIND < "$out" || COMPARE_KIND=""
+  case "$COMPARE_KIND" in
+    none | clean | changed) tail -n +2 "$out" > "$REVIEW_TMP/compare" ;;
+    *)
+      printf 'valley: warning: valley-go compare answered %s, which this script does not read; reviewing it in full\n' \
+        "$COMPARE_KIND" >&2
+      COMPARE_KIND=none
+      ;;
+  esac
+}
+
+# show_compared <notes key> <head> <heading> <writer> [<arg>…]: show what
+# compare_shown found, under the heading when there is one. A clean
+# restack is printed, and nothing is paged. A changed version pages the
+# comparison. Otherwise the writer writes the whole diff, and it is paged.
+# Notes taken in a page are kept under the notes key, against the head.
+show_compared() {
+  local key="$1" sha heading="$3"
+  sha="$(git rev-parse --short "$2")"
+  shift 3
+  {
+    [ -z "$heading" ] || printf '%s\n' "$heading"
+    cat "$REVIEW_TMP/compare"
+    [ "$COMPARE_KIND" != none ] || "$@"
+  } > "$REVIEW_TMP/review.diff"
+  if [ "$COMPARE_KIND" = clean ]; then
+    cat "$REVIEW_TMP/review.diff"
+    cleanup_review_tmp
+  else
+    page_buffer "$key" "$sha"
+  fi
+}
+
+# full_diff <branch> <head>: the whole diff of a change alone: its log
+# and its diff against origin/main.
+full_diff() {
+  local sha
+  sha="$(git rev-parse --short "$2")"
+  if [ -n "$CHANGE_HEAD" ]; then
+    printf 'change %s v%s at %s, on branch %s, log against origin/main:\n\n' \
+      "$CHANGE_HANDLE" "$CHANGE_VERSION" "$sha" "$1"
+  else
+    printf 'branch %s, log against origin/main:\n\n' "$1"
+  fi
+  git --no-pager log --oneline "origin/main..$2"
+  printf '\n'
+  git --no-pager diff "origin/main...$2"
+}
+
 show_review() {
-  local branch="$1" head sha
+  local branch="$1" head
   head="$(change_head "$branch")"
-  sha="$(git rev-parse --short "$head")"
-  # [a]pprove approves exactly the head paged here (bind_review).
+  # [a]pprove approves exactly the head shown here (bind_review).
   [ -n "$CHANGE_ID" ] || APPROVE_HEAD="$head"
   REVIEW_TMP="$(mktemp -d)"
-  {
-    if [ -n "$CHANGE_HEAD" ]; then
-      printf 'change %s v%s at %s, on branch %s, log against origin/main:\n\n' \
-        "$CHANGE_HANDLE" "$CHANGE_VERSION" "$sha" "$branch"
-    else
-      printf 'branch %s, log against origin/main:\n\n' "$branch"
-    fi
-    git --no-pager log --oneline "origin/main..$head"
-    printf '\n'
-    git --no-pager diff "origin/main...$head"
-  } > "$REVIEW_TMP/review.diff"
-  page_buffer "$branch" "$sha"
+  compare_shown "$CHANGE_ID" "$CHANGE_VERSION" "$head"
+  show_compared "$branch" "$head" "" full_diff "$branch" "$head"
+}
+
+# view_full <branch>: [v]iew full diff for a change alone. It pages the
+# change's whole diff, and keeps the notes taken in it.
+view_full() {
+  local head
+  head="$(change_head "$1")"
+  REVIEW_TMP="$(mktemp -d)"
+  full_diff "$1" "$head" > "$REVIEW_TMP/review.diff"
+  page_buffer "$1" "$(git rev-parse --short "$head")"
 }
 
 # page_buffer <branch> <sha>: page the buffer written to REVIEW_TMP, and
@@ -1697,7 +1810,7 @@ approve_failed_at() {
   git rev-parse --short "$CHECKS_FAILED_AT"
 }
 
-# Page the branch and take the verdict. Split out of cmd_review so that
+# Show the branch and take the verdict. Split out of cmd_review so that
 # every way out of it — approve, reject, skip — is followed by the notes.
 read_and_decide() {
   local branch="$1" choice failed answers
@@ -1710,13 +1823,13 @@ read_and_decide() {
   while ! git merge-base --is-ancestor refs/remotes/origin/main \
     "$(change_head "$branch")"; do
     if failed="$(approve_failed_at "$branch")"; then
-      printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [b]ase onto main, [r]eject, [s]kip? ' \
+      printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
         "$branch" "$failed"
-      answers="b, r, or s"
+      answers="v, b, r, or s"
     else
-      printf '%s does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' \
+      printf '%s does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
         "$branch"
-      answers="a, b, r, or s"
+      answers="a, v, b, r, or s"
     fi
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
@@ -1727,6 +1840,7 @@ read_and_decide() {
           return
         fi
         ;;
+      v) view_full "$branch" ;;
       b)
         # A change with a record gains the rebased head as a new version,
         # so the review goes on at that version, as it does at the rebased
@@ -1756,7 +1870,8 @@ read_and_decide() {
 # from main, and on the top of a stack, which is never offered [b]ase. A
 # change alone is asked about by its branch. The top of a stack of <n> is
 # asked about by its <name>, as the stack lists it, and its prompt says
-# that approving it lands all <n> layers.
+# that approving it lands all <n> layers. [v]iew full diff pages the
+# change's whole diff, or the top layer's.
 decide() {
   local branch="$1" name="${2:-}" n="${3:-}" choice failed answers
   local label="$1" approve="[a]pprove" reject="[r]eject" stop="[s]kip"
@@ -1767,12 +1882,12 @@ decide() {
   fi
   while true; do
     if failed="$(approve_failed_at "$branch")"; then
-      printf '%s: its checks failed at %s, so approving needs a new head: %s, %s? ' \
+      printf '%s: its checks failed at %s, so approving needs a new head: [v]iew full diff, %s, %s? ' \
         "$label" "$failed" "$reject" "$stop"
-      answers="r or s"
+      answers="v, r, or s"
     else
-      printf '%s: %s, %s, %s? ' "$label" "$approve" "$reject" "$stop"
-      answers="a, r, or s"
+      printf '%s: %s, [v]iew full diff, %s, %s? ' "$label" "$approve" "$reject" "$stop"
+      answers="a, v, r, or s"
     fi
     read -r choice || die "stdin closed before an answer; nothing done"
     case "$choice" in
@@ -1785,6 +1900,13 @@ decide() {
           echo "answer $answers"
         elif approve "$branch"; then
           return
+        fi
+        ;;
+      v)
+        if [ -n "$n" ]; then
+          view_layer $((n - 1))
+        else
+          view_full "$branch"
         fi
         ;;
       r) reject "$branch" && return ;;
@@ -1951,40 +2073,76 @@ base_stack() {
   done
 }
 
-# page_layer <k>: page layer k against the layer below it, and keep the
-# notes taken in it under its own branch.
+# layer_heading <k>: the line that heads layer k wherever it is shown.
+layer_heading() {
+  local k="$1" below=main
+  [ "$k" -eq 0 ] || below="${L_NAME[k - 1]}"
+  printf 'change %d of %d: %s on %s' "$((k + 1))" "${#L_NAME[@]}" "${L_NAME[k]}" "$below"
+}
+
+# page_layer <k>: show layer k, as show_review shows a change alone. The
+# layer shown is compared with its own change's approved version, so a
+# lower layer is set against its own approval, not the top's. Its whole
+# diff is against the layer below it. The notes taken in it are kept
+# under its own branch.
 page_layer() {
-  local k="$1" n="${#L_NAME[@]}" below=main head base sha on
+  local k="$1"
+  NOTES=()
+  REVIEW_TMP="$(mktemp -d)"
+  compare_shown "${L_ID[k]}" "${L_VERSION[k]}" "${L_HEAD[k]}"
+  show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$(layer_heading "$k")" layer_diff "$k"
+  keep_layer_notes "$k"
+}
+
+# view_layer <k>: [v]iew full diff for layer k: its whole diff against
+# the layer below it.
+view_layer() {
+  local k="$1"
+  NOTES=()
+  REVIEW_TMP="$(mktemp -d)"
+  {
+    layer_heading "$k"
+    printf '\n'
+    layer_diff "$k"
+  } > "$REVIEW_TMP/review.diff"
+  page_buffer "$(notes_key "$k")" "$(git rev-parse --short "${L_HEAD[k]}")"
+  keep_layer_notes "$k"
+}
+
+# keep_layer_notes <k>: add the notes just taken to layer k's.
+keep_layer_notes() {
+  [ "${#NOTES[@]}" -gt 0 ] || return 0
+  L_NOTES[$1]="${L_NOTES[$1]:+${L_NOTES[$1]}$'\n'}$(printf '%s\n' "${NOTES[@]}")"
+}
+
+# layer_diff <k>: layer k's whole diff: its log and its diff against the
+# layer below it.
+layer_diff() {
+  local k="$1" below=main head base sha on
   [ "$k" -eq 0 ] || below="${L_NAME[k - 1]}"
   head="${L_HEAD[k]}" base="${L_BASE[k]}"
   sha="$(git rev-parse --short "$head")"
   on="$below at $(git rev-parse --short "$base")"
-  NOTES=()
-  REVIEW_TMP="$(mktemp -d)"
-  {
-    printf 'change %d of %d: %s on %s\n' "$((k + 1))" "$n" "${L_NAME[k]}" "$below"
-    if [ "${L_KIND[k]}" = branch ]; then
-      printf 'branch %s, log against %s:\n\n' "${L_NAME[k]}" "$on"
-    elif [ -n "${L_BRANCH[k]}" ]; then
-      printf 'change %s v%s at %s, on branch %s, log against %s:\n\n' \
-        "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "${L_BRANCH[k]}" "$on"
-    else
-      printf 'change %s v%s at %s, log against %s:\n\n' "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "$on"
-    fi
-    git --no-pager log --oneline "$base..$head"
-    printf '\n'
-    git --no-pager diff "$base...$head"
-  } > "$REVIEW_TMP/review.diff"
-  page_buffer "$(notes_key "$k")" "$sha"
-  [ "${#NOTES[@]}" -eq 0 ] || L_NOTES[k]="$(printf '%s\n' "${NOTES[@]}")"
+  if [ "${L_KIND[k]}" = branch ]; then
+    printf 'branch %s, log against %s:\n\n' "${L_NAME[k]}" "$on"
+  elif [ -n "${L_BRANCH[k]}" ]; then
+    printf 'change %s v%s at %s, on branch %s, log against %s:\n\n' \
+      "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "${L_BRANCH[k]}" "$on"
+  else
+    printf 'change %s v%s at %s, log against %s:\n\n' "${L_NAME[k]}" "${L_VERSION[k]}" "$sha" "$on"
+  fi
+  git --no-pager log --oneline "$base..$head"
+  printf '\n'
+  git --no-pager diff "$base...$head"
 }
 
-# Page each layer under the top and ask after each, naming the layer and
+# Show each layer under the top and ask after each, naming the layer and
 # its place: [n]ext layer goes on to the layer above, [a]pprove approves
 # that layer at the head shown, which lands it and every layer under it,
-# as the prompt names them, and [s]top ends the review. [r]eject is not
-# offered under the top: deleting a lower layer's branch would leave the
-# layers above still holding it. After the top, its verdict is taken as
+# as the prompt names them, [v]iew full diff pages the layer's whole diff,
+# and [s]top ends the review. [r]eject is not offered under the top:
+# deleting a lower layer's branch would leave the layers above still
+# holding it. After the top, its verdict is taken as
 # for any change, with a prompt that names the top and says approving it
 # lands all n.
 review_stack() {
@@ -2004,13 +2162,13 @@ review_stack() {
       failed=""
       [ "$CHECKS_FAILED_AT" != "${L_HEAD[k]}" ] || failed="$(git rev-parse --short "${L_HEAD[k]}")"
       if [ -n "$failed" ]; then
-        printf '%s, %d of %d: its checks failed at %s, so approving needs a new head: [n]ext layer, [s]top? ' \
+        printf '%s, %d of %d: its checks failed at %s, so approving needs a new head: [n]ext layer, [v]iew full diff, [s]top? ' \
           "${L_NAME[k]}" "$((k + 1))" "$n" "$failed"
-        answers="n or s"
+        answers="n, v, or s"
       else
-        printf '%s, %d of %d: [n]ext layer, [a]pprove %s, [s]top? ' \
+        printf '%s, %d of %d: [n]ext layer, [a]pprove %s, [v]iew full diff, [s]top? ' \
           "${L_NAME[k]}" "$((k + 1))" "$n" "$lands"
-        answers="n, a, or s"
+        answers="n, a, v, or s"
       fi
       read -r choice || die "stdin closed before an answer; nothing done"
       case "$choice" in
@@ -2026,6 +2184,7 @@ review_stack() {
           fi
           use_layer "$top"
           ;;
+        v) view_layer "$k" ;;
         s)
           echo "stopped reviewing ${L_NAME[top]} at change $((k + 1)) of $n, ${L_NAME[k]}; nothing done"
           return

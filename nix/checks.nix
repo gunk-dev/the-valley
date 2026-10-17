@@ -15,6 +15,8 @@
 #                    forms, and the prose
 #   knot.nix         knot-unit, knot-agree — the plan graph's module, and
 #                    its validator held to the schema and the lint
+#   delta.nix        delta-unit — valley-delta-v1, its conformance vectors,
+#                    and the trees it reads and refuses
 #   attest.nix       attest-unit, attest-conformance, attest-e2e — the
 #                    helper's unit tests, the written form as a fixed
 #                    contract, and the helper driven end to end
@@ -45,7 +47,8 @@
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation
-# vectors under attest/, the integrator's scenarios under integrator/e2e/.
+# vectors under attest/, delta vectors under delta/, the integrator's
+# scenarios under integrator/e2e/.
 {
   pkgs,
   lib,
@@ -77,6 +80,7 @@ import ./checks/host-module.nix args
 // import ./checks/schema.nix args
 // import ./checks/knowledge.nix args
 // import ./checks/knot.nix args
+// import ./checks/delta.nix args
 // import ./checks/attest.nix args
 // import ./checks/integrator.nix args
 // import ./checks/hooks.nix args

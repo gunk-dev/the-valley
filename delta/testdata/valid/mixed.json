@@ -1,0 +1,18 @@
+{
+  "about": "A change of every kind at once, deep in a tree whose other directories are untouched.",
+  "pre": [
+    {"path": "src/app/main.go", "mode": "100644", "content": "package main\n\nfunc main() {}\n"},
+    {"path": "src/app/old.go", "mode": "100644", "content": "package main\n"},
+    {"path": "src/lib/util.go", "mode": "100644", "content": "package lib\n"},
+    {"path": "scripts/run", "mode": "100644", "content": "#!/bin/sh\n"},
+    {"path": "docs/index.md", "mode": "100644", "content": "# Index\n"}
+  ],
+  "post": [
+    {"path": "src/app/main.go", "mode": "100644", "content": "package main\n\nfunc main() { run() }\n"},
+    {"path": "src/app/run.go", "mode": "100644", "content": "package main\n\nfunc run() {}\n"},
+    {"path": "src/lib/util.go", "mode": "100644", "content": "package lib\n"},
+    {"path": "scripts/run", "mode": "100755", "content": "#!/bin/sh\n"},
+    {"path": "scripts/latest", "mode": "120000", "content": "run"},
+    {"path": "docs/index.md", "mode": "100644", "content": "# Index\n"}
+  ]
+}

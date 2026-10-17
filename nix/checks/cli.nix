@@ -48,7 +48,9 @@ in
   # and that the file and line it names are the ones it sat on. It goes
   # on to review a stack layer by layer, and a stale stack: approving its
   # top refused, its bottom approved, and review's [b]ase before the first
-  # page, after which the pages and the request are at the rebased heads.
+  # page, after which the pages and the request are at the rebased heads,
+  # and the layer approved before the rebase is printed as a clean restack
+  # instead of paged.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git
@@ -192,8 +194,15 @@ in
   # moved, and a plain branch readied, after the rebase read the stack; a
   # change unreadied between the branch push and its record write, and the
   # command the manifest gives to finish it; and a second stack left on an
-  # old head. The hook is followed from the protected host's rendered init
-  # script, so the rules the record meets are the ones a host applies.
+  # old head. Then review set against a change's approved version: a clean
+  # restack after [b]ase, with the landing between the bases listed and no
+  # diff paged; a later version with an edited file, paged with the
+  # range-diff; a version whose message alone changed and one whose author
+  # alone did, each flagged; a change with no approved version, paged in
+  # full; and a stack whose lower layer is set against its own approval
+  # while its top, which has none, is paged. The hook is followed from the
+  # protected host's rendered init script, so the rules the record meets
+  # are the ones a host applies.
   valley-ready = pkgs.runCommand "valley-ready" {
     nativeBuildInputs = [
       pkgs.git

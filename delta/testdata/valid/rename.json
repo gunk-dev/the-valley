@@ -1,0 +1,11 @@
+{
+  "about": "Renames, unchanged in content: each is a deletion of the old path and an addition of the new one, with the same hash.",
+  "pre": [
+    {"path": "old.txt", "mode": "100644", "content": "hello\n"},
+    {"path": "docs/guide.md", "mode": "100644", "content": "# Guide\n"}
+  ],
+  "post": [
+    {"path": "new.txt", "mode": "100644", "content": "hello\n"},
+    {"path": "notes/guide.md", "mode": "100644", "content": "# Guide\n"}
+  ]
+}

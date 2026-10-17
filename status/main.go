@@ -8,8 +8,10 @@
 // rebase, which rebases a change's whole stack onto main, and brings, which
 // lists the changes a head would bring that have not landed, for approve
 // (rebase.go), for knot, the plan graph's API (knot.go), which reads and
-// writes a project's knots at refs/the-valley/knots, and for plan, which
-// shows that graph as a view (plan.go).
+// writes a project's knots at refs/the-valley/knots, for plan, which
+// shows that graph as a view (plan.go), and for compare, which sets a
+// version review shows against the change's approved version
+// (compare.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -46,6 +48,7 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go rebase [--head <sha>] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
+       valley-go compare --tip <commit> <change ID> <version> <head>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--checks]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
@@ -88,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runBrings(g, args, stdout)
 	case "versions":
 		err = runVersions(g, args, stdout)
+	case "compare":
+		err = runCompare(g, args, stdout)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":

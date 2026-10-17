@@ -1,0 +1,11 @@
+{
+  "about": "A final newline is content: dropped from one file and added to another.",
+  "pre": [
+    {"path": "ends.txt", "mode": "100644", "content": "last line\n"},
+    {"path": "open.txt", "mode": "100644", "content": "no newline"}
+  ],
+  "post": [
+    {"path": "ends.txt", "mode": "100644", "content": "last line"},
+    {"path": "open.txt", "mode": "100644", "content": "no newline\n"}
+  ]
+}

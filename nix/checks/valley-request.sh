@@ -275,11 +275,11 @@ valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 # The prompt is the whole of what the operator is offered, so it is pinned
 # character for character: a verb that stops being offered, or one that
 # starts, is a change to the review loop and not an incidental one.
-grep -qF 'topic/two does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
+grep -qF 'topic/two does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
 grep -q '^checking topic/two at .*: no-secrets$' "$w/fail.out"
 twohead="$(git rev-parse --short topic/two)"
-grep -qF "topic/two does not fast-forward from main. Its checks failed at $twohead, so approving needs a new head: [b]ase onto main, [r]eject, [s]kip? " "$w/fail.out"
-grep -qF 'answer b, r, or s' "$w/fail.out"
+grep -qF "topic/two does not fast-forward from main. Its checks failed at $twohead, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? " "$w/fail.out"
+grep -qF 'answer v, b, r, or s' "$w/fail.out"
 offers="$(grep -oF '[a]pprove' "$w/fail.out" | wc -l)"
 checked="$(grep -c '^checking topic/two at ' "$w/fail.out" || true)"
 if [ "$offers" != 1 ] || [ "$checked" != 1 ]; then
@@ -316,9 +316,9 @@ leakhead="$(git rev-parse --short topic/leak)"
 : > "$pushlog"
 printf 'a\na\ns\n' > "$w/answers"
 valley review topic/leak < "$w/answers" > "$w/leak.out" 2> "$w/leak.err"
-grep -qF 'topic/leak: [a]pprove, [r]eject, [s]kip? ' "$w/leak.out"
-grep -qF "topic/leak: its checks failed at $leakhead, so approving needs a new head: [r]eject, [s]kip? " "$w/leak.out"
-grep -qF 'answer r or s' "$w/leak.out"
+grep -qF 'topic/leak: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/leak.out"
+grep -qF "topic/leak: its checks failed at $leakhead, so approving needs a new head: [v]iew full diff, [r]eject, [s]kip? " "$w/leak.out"
+grep -qF 'answer v, r, or s' "$w/leak.out"
 grep -q 'skipped topic/leak; nothing done' "$w/leak.out"
 offers="$(grep -oF '[a]pprove' "$w/leak.out" | wc -l)"
 checked="$(grep -c '^checking topic/leak at ' "$w/leak.out" || true)"
@@ -339,7 +339,7 @@ grep -q 'no signing key: set VALLEY_ATTEST_KEY' "$w/nokey.err"
 grep -q 'skipped topic/two; nothing done' "$w/nokey.out"
 # A refusal that is no check failure leaves the prompt as it was, [a]pprove
 # and all: a new session starts with no check failed.
-offers="$(grep -oF 'topic/two does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
+offers="$(grep -oF 'topic/two does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
 if [ "$offers" != 2 ]; then
   echo "valley-request: a refusal that was no check failure changed the prompt" >&2
   cat "$w/nokey.out" >&2
@@ -410,11 +410,11 @@ before_base="$(git -C "$origin" rev-parse refs/heads/main)"
 
 printf 'b\ns\n' > "$w/answers"
 valley review topic/three < "$w/answers" > "$w/base.out" 2>&1
-grep -qF 'topic/three does not fast-forward from main: [a]pprove, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
+grep -qF 'topic/three does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
 grep -qF 'rebased topic/three onto origin/main, pushed with --force-with-lease' "$w/base.out"
 # The post-[b]ase prompt: the branch fast-forwards now, so the loop falls
 # through to the prompt that has no [b]ase in it.
-grep -qF 'topic/three: [a]pprove, [r]eject, [s]kip? ' "$w/base.out"
+grep -qF 'topic/three: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/base.out"
 grep -q 'skipped topic/three; nothing done' "$w/base.out"
 git merge-base --is-ancestor refs/remotes/origin/main refs/remotes/origin/topic/three \
   || { echo "valley-request: [b]ase left the branch stale" >&2; exit 1; }
@@ -1277,7 +1277,7 @@ fi
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]pprove, [b]ase,
-# [r]eject, [s]kip. Every stream this check captured is scanned at the end,
+# [r]eject, [s]kip, and [v]iew full diff, which only shows. Every stream this check captured is scanned at the end,
 # which is what makes the claim about paths rather than about the two
 # prompts pinned character for character above — the fast-forward prompt,
 # the stale one, the one [b]ase comes back to, and the ones a refused [a]pprove
@@ -1285,14 +1285,14 @@ fi
 # operator's own checkout — the retired [i]ntegrate, or any successor to
 # it — fails this wherever it is printed.
 offered="$(cat "$w"/*.out | grep -o '\[[a-z]\][a-z]*' | sort -u || true)"
-outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]pprove|\[b\]ase|\[r\]eject|\[s\]kip' || true)"
+outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]pprove|\[b\]ase|\[r\]eject|\[s\]kip|\[v\]iew' || true)"
 if [ -n "$outside" ]; then
   echo "valley-request: a review path offered a verb outside the set:" >&2
   printf '%s\n' "$outside" >&2
   exit 1
 fi
 # The scan is only worth something if it saw the offers at all.
-for verb in '[a]pprove' '[b]ase' '[r]eject' '[s]kip'; do
+for verb in '[a]pprove' '[b]ase' '[r]eject' '[s]kip' '[v]iew'; do
   printf '%s\n' "$offered" | grep -qxF "$verb" \
     || { echo "valley-request: no captured session offered $verb" >&2; exit 1; }
 done

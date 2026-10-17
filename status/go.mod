@@ -8,14 +8,18 @@ go 1.24
 
 require (
 	the-valley/change v0.0.0
+	the-valley/delta v0.0.0
 	the-valley/knot v0.0.0
 )
 
 // The change record is shared with the push hook (../valleyhook), so this
 // program writes a record exactly the way the hook reads it, and so is the
 // plan graph (../knot), so this program writes a graph exactly the way the
-// hook validates it. Both live in this repository and are never fetched.
+// hook validates it. valley-delta-v1 (../delta) is the one reading of a
+// delta between two trees. All three live in this repository and are
+// never fetched.
 replace (
 	the-valley/change => ../change
+	the-valley/delta => ../delta
 	the-valley/knot => ../knot
 )

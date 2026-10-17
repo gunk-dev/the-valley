@@ -561,7 +561,7 @@ program, `valley-go` (`status/`), which the package puts on the script's `PATH`.
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
-| `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
+| `valley review <b>`          | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject`, `[s]kip`, `[b]ase` if stale. |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
 | `valley rebase <change>`     | Rebases the change's whole stack, as `[b]ase` does, and adds each rebased head as a new version.      |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
@@ -612,15 +612,17 @@ too.
 - Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
   and its diff from the layer below. Notes taken on it are kept under its own branch.
 - After each lower layer, `review` asks a prompt that names the layer and its place, such as
-  `two, 2 of 3: [n]ext layer, [a]pprove one and two, [s]top?`.
+  `two, 2 of 3: [n]ext layer, [a]pprove one and two, [v]iew full diff, [s]top?`.
   - `[n]ext layer` goes on to the layer above. It is the usual answer.
   - `[a]pprove` approves that layer at the head shown, exactly as reviewing it alone would. That
     lands it and every layer under it, and ends the review. The prompt names what it lands:
     `one alone` at the bottom, `one and two` at the second layer, and `the <k> up to <name>` from
     the third layer up.
+  - `[v]iew full diff` pages the layer's log and diff against the layer below it, and asks again.
   - `[s]top` ends the review, and nothing is done.
 - After the top, the prompt names the change and says that approving it lands every layer, such as
-  `three, 3 of 3: [a]pprove all 3, [r]eject three, [s]top?`. Only the top is offered `[r]eject`.
+  `three, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject three, [s]top?`. Only the top is
+  offered `[r]eject`.
 - When a layer's checks fail, its prompt says approving needs a new head and stops offering
   `[a]pprove`, as for a change alone.
 - Every layer's notes are printed at the end, whatever the verdict.
@@ -805,6 +807,95 @@ on origin, under the branch's request name. It takes one `ls-remote` snapshot of
 decision, and fetches the objects it names, without moving a local branch or writing `FETCH_HEAD`.
 It reads ancestry first: a head already in `origin/main` is integrated, even if recording the
 outcome failed. An outcome record it does not recognise is `unknown`, never a success.
+
+### Review against the approved version
+
+`review` sets each version it shows against the change's approved version, so that approving a
+rebased change again is a short, informed step. `valley-go compare` (`status/compare.go`) makes the
+comparison, and `bin/valley` prints what it says. It is information only: it files no request and
+skips no check, and `[a]pprove` is the same act whatever it says. A plain branch is never compared.
+
+The approved version is the greatest version below the one shown whose exact head one of these
+names:
+
+- an integration request on origin for the change;
+- an outcome record on origin for the change that says `land`, `stale` or `reject` at that head. The
+  integrator judges only requests that were filed, so each of these is an approval it judged.
+
+Both are read under `c-<change-id>` and under the request name of each branch the change's versions
+have named. A branch's request name is lossy: `a/b` and `a-b` are both `a-b`. So a branch's name is
+ambiguous when anything else maps to it: a branch named by any version of another change, or a
+branch on origin that is not one of this change's. A record on origin that does not read makes every
+branch's name ambiguous, since it could name such a branch. A request or outcome under an ambiguous
+name is not evidence of approval. When the greatest version with any evidence has only ambiguous
+evidence, the approved version is not known, and `review` is ordinary review. It never searches back
+for an older version instead.
+
+This is not a complete approval history. Outcome records are overwritten, and a version records
+neither the base it was approved on nor when. "Approved" means filed through the request protocol;
+it does not name who approved.
+
+**The comparison.** `review` freezes `main`'s tip T as its fetch left it, and the two heads: H₀, the
+approved version's, and H₁, the one shown. Each head's base is its merge base with T, and each must
+have exactly one: B₀ and B₁. B₀ must be B₁ or below it on T's first-parent history. Otherwise there
+is no comparison, and `review` says why above the full diff. Then `valley-delta-v1` from B₀ to H₀ is
+compared with `valley-delta-v1` from B₁ to H₁. For a layer of a stack, the comparison is the layer's
+own change's: the layer's ID, version and head, so a lower layer is set against its own approval.
+Its delta from its base includes the layers under it, which approving it would bring.
+
+**valley-delta-v1** (`delta/`) is the change between two git trees, as whole files. It is the set of
+paths whose entries differ. Each path has a pre-image and a post-image: its entry in each tree, or
+absent. An entry is a mode (`100644`, `100755` or `120000`) and the SHA-256 of the content, as in
+`valley-tree-v1`; a symlink's content is its target. A rename is a deletion and an addition. So
+binary content, the executable bit, symlink targets, CRLF and final newlines are all bound, and
+nothing is positional. The encoding is a header line, `valley-delta-v1`, then one line per path,
+sorted bytewise: `<len> <path> <pre> <post>`. `<len>` is the path's byte length in canonical
+decimal, and `<path>` is its raw bytes, which a reader takes by that length. Each image is `-` or
+`<mode> <sha256>`. The digest is the SHA-256 of the encoding.
+
+The trees are read straight from git's object store with `git cat-file`. No checkout, filter,
+attribute, diff driver, rename detection or replacement ref is involved. A tree is refused when a
+checkout on case-sensitive Linux could not hold it faithfully: a submodule or any other mode, a name
+that is empty, `.`, `..`, `.git` in any case or holds a slash, two entries with one name (as a file
+and a directory at one path are), an empty subtree, entries out of git's order, or an entry whose
+object is not the type its mode says. The parser is strict. It accepts exactly the encodings two
+such trees can give, and refuses anything else, such as a length with a leading zero, a duplicate or
+unsorted path, an invalid mode or hash, or a line whose images are equal. Conformance vectors under
+`delta/testdata/` fix the encoding and digest. A Python script there computes their expected results
+from the specification alone, independent of the Go code. Checked by `delta-unit`.
+
+**What review shows.** When the two deltas are equal, `review` prints, and pages nothing:
+
+```text
+<change> v<N> at <head>: clean restack of approved v<M> at <old-head>.
+File delta unchanged. Base <old-base> -> <new-base>.
+Landings between bases:
+  <commit> <subject>
+```
+
+The landings are every commit on T's first-parent history in (B₀, B₁], oldest first.
+
+When they differ, `review` pages this, and then `git range-diff B₀..H₀ B₁..H₁`:
+
+```text
+<change> v<N> at <head>: changed since approved v<M> at <old-head>.
+Review the range-diff before approving.
+Base <old-base> -> <new-base>.
+Files whose change differs from v<M>'s, as mode and SHA-256 of the content:
+  <path>
+    v<M>: <pre> -> <post>
+    v<N>: <pre> -> <post>
+```
+
+range-diff compares patches, and a binary file's patch says only that it differs, so range-diff can
+call two commits equal when a binary file or a mode differs between them. The list of files shows
+every such difference.
+
+Either way, the commits from each base to its head are compared for their messages and their author
+fields (name, email and date), apart from the files. A difference is shown under its own heading,
+`Commit messages changed since approved v<M>.` or `Commit authors changed since approved v<M>:`,
+whatever the files say. Every prompt after a change is shown offers `[v]iew full diff`, which pages
+the whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `review-notes`.
 
 ### The status object
 

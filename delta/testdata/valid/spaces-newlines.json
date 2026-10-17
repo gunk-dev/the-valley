@@ -1,0 +1,14 @@
+{
+  "about": "Paths holding spaces and newlines, which a reader takes by their length and never splits.",
+  "pre": [
+    {"path": "with space.txt", "mode": "100644", "content": "before\n"}
+  ],
+  "post": [
+    {"path": " leading space", "mode": "100644", "content": "lead\n"},
+    {"path": "dir with space/inner\nname.txt", "mode": "100644", "content": "inner\n"},
+    {"path": "line\nbreak.txt", "mode": "100644", "content": "broken\n"},
+    {"path": "trailing space ", "mode": "100644", "content": "trail\n"},
+    {"path": "with space.txt", "mode": "100644", "content": "after\n"},
+    {"path": "x 9 - 100644", "mode": "100644", "content": "a path shaped like the rest of a line\n"}
+  ]
+}

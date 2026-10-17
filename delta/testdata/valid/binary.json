@@ -1,0 +1,12 @@
+{
+  "about": "Binary content: one file changed in a single byte past a NUL, and one added.",
+  "pre": [
+    {"path": "image.bin", "mode": "100644", "content_hex": "89504e470d0a1a0a0000000d49484452ff00"},
+    {"path": "keep.txt", "mode": "100644", "content": "kept\n"}
+  ],
+  "post": [
+    {"path": "image.bin", "mode": "100644", "content_hex": "89504e470d0a1a0a0000000d49484452ff01"},
+    {"path": "keep.txt", "mode": "100644", "content": "kept\n"},
+    {"path": "zeros.bin", "mode": "100644", "content_hex": "0000000000000000"}
+  ]
+}

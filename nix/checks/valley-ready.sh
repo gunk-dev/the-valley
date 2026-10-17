@@ -522,7 +522,7 @@ unchanged "$pid" refused "change $ph v1 is draft, not ready; nothing rebased" as
 printf 'a\ns\n' | as requester valley review "$ph" > "$w/out" 2> "$w/err" || fail 'review of a draft failed'
 grep -qF "change $ph v1 is draft, not ready; nothing published" "$w/err" \
   || fail "review's [a]pprove did not refuse a draft"
-[ "$(grep -oF 'drafts/paused: [a]pprove, [r]eject, [s]kip? ' "$w/out" | wc -l)" = 2 ] \
+[ "$(grep -oF 'drafts/paused: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/out" | wc -l)" = 2 ] \
   || fail "review's prompt changed after a refusal that was no check failure"
 # Named by its branch, written either way, the draft is the same change,
 # since its active version is the one record on that branch. It is
@@ -605,7 +605,9 @@ grep -qF "main/drafts-paused for $ph is pending" "$w/err" || fail 'withdraw did 
 #
 # review_while <change> <answers> <command…>: review the change as the
 # operator, run the command once the review waits at its prompt, then
-# give the answers.
+# give the answers. Every prompt that follows a change shown offers
+# [v]iew full diff, so that is the marker waited on, whatever else the
+# prompt offers.
 review_while() {
   local name="$1" answers="$2" reviewer i
   shift 2
@@ -617,10 +619,10 @@ review_while() {
   reviewer=$!
   exec 3> "$w/fifo"
   for i in $(seq 600); do
-    if grep -qF '[s]kip? ' "$w/review.out" 2> /dev/null; then break; fi
+    if grep -qF '[v]iew full diff' "$w/review.out" 2> /dev/null; then break; fi
     sleep 0.1
   done
-  grep -qF '[s]kip? ' "$w/review.out" || fail "review of $name never reached its prompt (after $i tries)"
+  grep -qF '[v]iew full diff' "$w/review.out" || fail "review of $name never reached its prompt (after $i tries)"
   "$@" > "$w/out" 2> "$w/err" || fail "$* failed while the review was open"
   printf '%b' "$answers" >&3
   exec 3>&-
@@ -1016,6 +1018,148 @@ ok as requester valley rebase "$h3"
 grep -qx 's9/side is now on an old head of s9/one; rebase it with valley rebase s9/side' "$w/out" \
   || fail 'the rebase did not name the stack left on an old head'
 [ "$(at refs/heads/s9/side)" = "$side" ] || fail 'the rebase moved another stack'
+
+# ----------------------------------------------------------------------
+# review sets the version it shows against the change's approved version:
+# the greatest version below it whose head a request or an outcome names.
+# main moves here by direct pushes, as a landing moves it.
+#
+# after <log> <line>: what <log> holds from its first line that is exactly
+# <line> on.
+after() {
+  awk -v l="$2" '$0 == l { on = 1 } on' "$1"
+}
+
+# v1 is approved, another change lands, and review's [b]ase makes v2. The
+# rebased version has v1's file delta, so review prints a clean restack
+# of v1, its two bases, and the landing between them, and pages no diff.
+git checkout --quiet -b cmp/topic main
+commit cmp-one
+as contributor git push --quiet origin cmp/topic
+new_change cmp/topic
+cid="$nid" ch="$nh"
+cv1="$(git rev-parse HEAD)"
+git checkout --quiet main
+ok as requester valley approve --head "$cv1" "$ch"
+grep -q "^Approved $ch v1 " "$w/out" || fail "approve did not approve $ch v1"
+base1="$(at refs/heads/main)"
+move_main cmp-landing
+landing="$(at refs/heads/main)"
+printf 'b\ns\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
+cv2="$(at refs/heads/cmp/topic)"
+clean="$ch v2 at ${cv2:0:7}: clean restack of approved v1 at ${cv1:0:7}."
+grep -qx "$clean" "$w/out" || fail "review after [b]ase did not say v2 is a clean restack of v1"
+after "$w/out" "$clean" > "$w/clean"
+[ "$(sed -n 2,4p "$w/clean")" = "$(printf '%s\n' "File delta unchanged. Base ${base1:0:7} -> ${landing:0:7}." \
+  'Landings between bases:' "  ${landing:0:7} cmp-landing")" ] || fail "the clean restack did not list the landing: $(cat "$w/clean")"
+grep -qx "cmp/topic: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped cmp/topic; nothing done" "$w/clean" \
+  || fail 'the prompt after a clean restack did not offer [v]iew full diff'
+if grep -q '^diff --git' "$w/clean"; then fail 'review paged the diff of a clean restack'; fi
+# [v]iew full diff pages it, and the prompt comes back.
+printf 'v\ns\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
+after "$w/out" "$clean" > "$w/clean"
+grep -qF "[s]kip? change $ch v2 at ${cv2:0:7}, on branch cmp/topic, log against origin/main:" "$w/clean" \
+  || fail '[v]iew full diff did not page the change'
+grep -qx 'diff --git a/cmp-one.txt b/cmp-one.txt' "$w/clean" || fail '[v]iew full diff did not show the diff'
+[ "$(grep -c 'cmp/topic: \[a\]pprove, \[v\]iew full diff' "$w/clean")" = 2 ] || fail 'the prompt did not come back after [v]'
+
+# v3 edits a file. The greatest approved version below it is still v1,
+# so review pages that v3 changed since v1, the file whose change
+# differs, and the range-diff.
+git checkout --quiet -B cmp/topic "$cv2"
+echo edited > cmp-one.txt
+git commit --quiet -am 'cmp-one edited'
+as contributor git push --quiet origin cmp/topic
+ok as contributor valley ready --change "$cid"
+cv3="$(git rev-parse HEAD)"
+git checkout --quiet main
+printf 's\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch v3 failed"
+changed="$ch v3 at ${cv3:0:7}: changed since approved v1 at ${cv1:0:7}."
+grep -qx "$changed" "$w/out" || fail "review did not say v3 changed since v1: $(cat "$w/out")"
+after "$w/out" "$changed" > "$w/changed"
+grep -qx 'Review the range-diff before approving.' "$w/changed" || fail 'the changed version did not point at the range-diff'
+grep -A2 -x '  cmp-one.txt' "$w/changed" | grep -q '^    v3: absent -> 100644 ' || fail 'the file whose change differs was not listed'
+grep -qx "git range-diff ${base1:0:7}..${cv1:0:7} ${landing:0:7}..${cv3:0:7}:" "$w/changed" || fail 'no range-diff heading'
+grep -qx "1:  ${cv1:0:7} = 1:  ${cv2:0:7} cmp-one" "$w/changed" || fail 'the range-diff did not pair the rebased commit'
+grep -qx -- "-:  ------- > 2:  ${cv3:0:7} cmp-one edited" "$w/changed" || fail 'the range-diff did not show the new commit'
+
+# v3 approved, v4 is v3 with another message, and v5 is v4 with another
+# author, once v4 is approved. Each has its approved version's file delta
+# on the same base, and each is flagged.
+ok as requester valley approve --head "$cv3" "$ch"
+git checkout --quiet cmp/topic
+git commit --quiet --amend -m 'cmp-one edited, and reworded'
+as contributor git push --quiet --force origin cmp/topic
+ok as contributor valley ready --change "$cid"
+cv4="$(git rev-parse HEAD)"
+printf 's\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch v4 failed"
+after "$w/out" "$ch v4 at ${cv4:0:7}: clean restack of approved v3 at ${cv3:0:7}." > "$w/meta"
+[ -s "$w/meta" ] || fail "a version with another message alone was no clean restack: $(cat "$w/out")"
+grep -qx 'Commit messages changed since approved v3. Read them before approving:' "$w/meta" \
+  || fail 'a changed message was not flagged'
+grep -A1 -x "  v4, commit 2 of 2, ${cv4:0:7}:" "$w/meta" | grep -qx '    cmp-one edited, and reworded' \
+  || fail 'the changed message was not shown'
+if grep -q 'Commit authors changed' "$w/meta"; then fail 'an unchanged author was flagged'; fi
+ok as requester valley approve --head "$cv4" "$ch"
+git commit --quiet --amend --no-edit --author 'Someone Else <else@localhost>'
+as contributor git push --quiet --force origin cmp/topic
+ok as contributor valley ready --change "$cid"
+cv5="$(git rev-parse HEAD)"
+git checkout --quiet main
+printf 's\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch v5 failed"
+after "$w/out" "$ch v5 at ${cv5:0:7}: clean restack of approved v4 at ${cv4:0:7}." > "$w/meta"
+grep -qx 'Commit authors changed since approved v4:' "$w/meta" || fail "a changed author was not flagged: $(cat "$w/out")"
+grep -q "^  v5, commit 2 of 2, ${cv5:0:7}: Someone Else <else@localhost> " "$w/meta" || fail 'the new author was not shown'
+if grep -q 'Commit messages changed' "$w/meta"; then fail 'an unchanged message was flagged'; fi
+
+# A change with no approved version is reviewed as any change is: its
+# whole diff, with no comparison.
+git checkout --quiet -b cmp/fresh main
+commit cmp-fresh
+as contributor git push --quiet origin cmp/fresh
+new_change cmp/fresh
+commit cmp-fresh-more
+as contributor git push --quiet origin cmp/fresh
+ok as contributor valley ready --change "$nid"
+git checkout --quiet main
+printf 's\n' | as requester valley review "$nh" > "$w/out" 2> "$w/err" || fail "review of $nh failed"
+grep -q "^change $nh v2 at .*, on branch cmp/fresh, log against origin/main:$" "$w/out" || fail 'a change with no approval was not paged'
+grep -qx 'diff --git a/cmp-fresh.txt b/cmp-fresh.txt' "$w/out" || fail 'a change with no approval did not show its diff'
+if grep -q 'clean restack\|changed since approved' "$w/out"; then fail 'a change with no approval was compared'; fi
+
+# A stack of two changes, of which only the lower has an approved
+# version. Once rebased, review sets each layer against its own change's
+# approval: the lower is a clean restack of its v1, and the top, which
+# has none, is paged in full.
+git checkout --quiet -b cmp/low main
+commit cmp-low
+as contributor git push --quiet origin cmp/low
+new_change cmp/low
+lid="$nid" lh="$nh" lv1="$(git rev-parse HEAD)"
+git checkout --quiet -b cmp/high
+commit cmp-high
+as contributor git push --quiet origin cmp/high
+new_change cmp/high
+hh="$nh"
+git checkout --quiet main
+ok as requester valley approve --head "$lv1" "$lh"
+move_main cmp-stack-landing
+ok as requester valley rebase "$hh"
+record "$lid" '.active == 2'
+lv2="$(at refs/heads/cmp/low)" hv2="$(at refs/heads/cmp/high)"
+printf 'n\ns\n' | as requester valley review "$hh" > "$w/out" 2> "$w/err" || fail "review of the stack under $hh failed"
+# A prompt ends with no newline, so the next page's heading follows it on
+# its line: each page runs from its heading to the line holding the next.
+awk '/^change 1 of 2: /{ on = 1 } on { print } /change 2 of 2: /{ on = 0 }' "$w/out" > "$w/page1"
+awk '/change 2 of 2: /{ on = 1 } on' "$w/out" > "$w/page2"
+grep -qx "$lh v2 at ${lv2:0:7}: clean restack of approved v1 at ${lv1:0:7}." "$w/page1" \
+  || fail "the lower layer was not set against its own approved version: $(cat "$w/out")"
+grep -qF "$lh, 1 of 2: [n]ext layer, [a]pprove $lh alone, [v]iew full diff, [s]top? " "$w/page1" \
+  || fail 'the lower layer did not offer [v]iew full diff'
+if grep -q '^diff --git' "$w/page1"; then fail 'the clean lower layer was paged'; fi
+grep -q "^change $hh v2 at ${hv2:0:7}, on branch cmp/high, log against $lh at " "$w/page2" || fail 'the top was not paged'
+grep -qx 'diff --git a/cmp-high.txt b/cmp-high.txt' "$w/page2" || fail "the top's page did not hold its own diff"
+if grep -q 'clean restack\|changed since approved' "$w/page2"; then fail 'the top, which has no approval, was compared'; fi
 
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

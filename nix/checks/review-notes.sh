@@ -168,7 +168,7 @@ sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' stack-tty.log > stack-plain.lo
 grep -q 'pppp is a stack of 3 changes; reviewing from the bottom, each against the one below it:$' stack-plain.log
 grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack-plain.log
 grep -q '| change 1 of 3: one on main$' stack-plain.log
-grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [s]top? ' stack-plain.log
+grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [v]iew full diff, [s]top? ' stack-plain.log
 grep -q 'stopped reviewing pppp at change 1 of 3, one; nothing done' stack-plain.log
 if grep -q 'change 2 of 3' stack-plain.log; then exit 1; fi
 grep -qx 'one.md:1: one wants a second line' "$XDG_STATE_HOME/valley/notes/one.md"
@@ -186,9 +186,9 @@ grep -q '^  1\. one (branch): layer one$' stack.out
 grep -q '^  2\. qqqq (ready): layer two$' stack.out
 grep -q '^  3\. pppp (ready): layer three$' stack.out
 grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack.out
-grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [s]top? ' stack.out
-grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [s]top? ' stack.out
-grep -qF 'pppp, 3 of 3: [a]pprove all 3, [r]eject pppp, [s]top? ' stack.out
+grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [v]iew full diff, [s]top? ' stack.out
+grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [v]iew full diff, [s]top? ' stack.out
+grep -qF 'pppp, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject pppp, [s]top? ' stack.out
 # Piped, each page's first line follows the prompt before it.
 [ "$(grep -o 'change [0-9] of 3: [a-z]* on [a-z]*$' stack.out)" = "$(printf '%s\n' \
   'change 1 of 3: one on main' 'change 2 of 3: qqqq on one' 'change 3 of 3: pppp on qqqq')" ]
@@ -207,7 +207,7 @@ git -C "$stack" update-ref -d "$requests/c-$p"
 # prompt is shown.
 : > "$pushlog"
 printf 'n\na\n' | valley review pppp > stack-two.out 2> stack-two.err
-grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [s]top? ' stack-two.out
+grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [v]iew full diff, [s]top? ' stack-two.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$q")" = "$two" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/c-$p" > /dev/null; then exit 1; fi
 grep -q "c-$q" "$pushlog"
@@ -223,7 +223,7 @@ grep -q '^warning: qqqq, change 2 of 3, is a draft\. The integrator refuses to l
 # A change with no stack under it pages and prompts as it always has.
 printf 's\n' | valley review one > stack-one.out 2>&1
 grep -q '^branch one, log against origin/main:$' stack-one.out
-grep -q '^one: \[a\]pprove, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
+grep -q '^one: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
 if grep -q 'stack of\|change 1 of' stack-one.out; then exit 1; fi
 
 # answer_after <log> <prompt> <command> <answers>: wait until the review
@@ -284,14 +284,14 @@ git checkout --quiet main
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
   printf 'n\nn\nn\n'
-  answer_after moved-four.out 'four, 4 of 4: \[a\]pprove all 4, \[r\]eject four, \[s\]top?' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
+  answer_after moved-four.out 'four, 4 of 4: \[a\]pprove all 4, \[v\]iew full diff, \[r\]eject four, \[s\]top?' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
 } | valley review four > moved-four.out 2>&1
 grep -q '^four is a stack of 4 changes' moved-four.out
 # From the third layer up, a lower layer's prompt counts what approving
 # there lands. The top's prompt names the top, and says approving it
 # lands all 4.
-grep -qF 'pppp, 3 of 4: [n]ext layer, [a]pprove the 3 up to pppp, [s]top? ' moved-four.out
-grep -qF 'four, 4 of 4: [a]pprove all 4, [r]eject four, [s]top? ' moved-four.out
+grep -qF 'pppp, 3 of 4: [n]ext layer, [a]pprove the 3 up to pppp, [v]iew full diff, [s]top? ' moved-four.out
+grep -qF 'four, 4 of 4: [a]pprove all 4, [v]iew full diff, [r]eject four, [s]top? ' moved-four.out
 grep -q "origin/four is at $seed, and is no longer at $fourhead, the head shown; nothing published" moved-four.out
 grep -q 'stopped reviewing four at change 4 of 4; nothing done' moved-four.out
 [ ! -s "$pushlog" ]
@@ -361,7 +361,15 @@ git merge-base --is-ancestor origin/main "$newone"
 awk '/change 1 of 3: /{ on = 1 } /change 2 of 3: /{ on = 0 } on' stale-review.out > stale-page1
 grep -q "^$(git rev-parse --short "$newone") layer one$" stale-page1
 if grep -q "$(git rev-parse --short "$onehead")" stale-page1; then exit 1; fi
-grep -qF 'pppp, 3 of 3: [a]pprove all 3, [r]eject pppp, [s]top? ' stale-review.out
+grep -qF 'pppp, 3 of 3: [a]pprove all 3, [v]iew full diff, [r]eject pppp, [s]top? ' stale-review.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$newthree" ]
+# qqqq's v1 was approved earlier, and the rebase gave it v2 with the same
+# file delta, so its layer is printed as a clean restack of v1, and not
+# paged. pppp has no approved version, so its layer is paged in full.
+grep -qx "qqqq v2 at [0-9a-f]*: clean restack of approved v1 at $(git rev-parse --short "$two")\." stale-review.out
+awk '/change 2 of 3: /{ on = 1 } /change 3 of 3: /{ on = 0 } on' stale-review.out > stale-page2
+if grep -q '^diff --git' stale-page2; then exit 1; fi
+awk '/change 3 of 3: /{ on = 1 } on' stale-review.out > stale-page3
+[ "$(grep '^diff --git' stale-page3)" = 'diff --git a/three.md b/three.md' ]
 
 touch "$out"

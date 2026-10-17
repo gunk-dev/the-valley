@@ -1,0 +1,11 @@
+{
+  "about": "Mode-only changes: the content is the same, and only the executable bit moves, each way.",
+  "pre": [
+    {"path": "build.sh", "mode": "100644", "content": "#!/bin/sh\nmake\n"},
+    {"path": "data.csv", "mode": "100755", "content": "a,b\n1,2\n"}
+  ],
+  "post": [
+    {"path": "build.sh", "mode": "100755", "content": "#!/bin/sh\nmake\n"},
+    {"path": "data.csv", "mode": "100644", "content": "a,b\n1,2\n"}
+  ]
+}

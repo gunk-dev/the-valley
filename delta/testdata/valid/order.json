@@ -1,0 +1,16 @@
+{
+  "about": "Paths are sorted bytewise, whole: punctuation, a directory's slash, digits, upper case before lower, and bytes above ASCII last.",
+  "pre": [],
+  "post": [
+    {"path": "B", "mode": "100644", "content": "B\n"},
+    {"path": "a!", "mode": "100644", "content": "a!\n"},
+    {"path": "a-b", "mode": "100644", "content": "a-b\n"},
+    {"path": "a.b", "mode": "100644", "content": "a.b\n"},
+    {"path": "a/b", "mode": "100644", "content": "a/b\n"},
+    {"path": "a0", "mode": "100644", "content": "a0\n"},
+    {"path": "aB", "mode": "100644", "content": "aB\n"},
+    {"path": "ab", "mode": "100644", "content": "ab\n"},
+    {"path": "é", "mode": "100644", "content": "e acute\n"},
+    {"path": "~", "mode": "100644", "content": "tilde\n"}
+  ]
+}

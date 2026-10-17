@@ -1,0 +1,12 @@
+{
+  "about": "Line endings are content: CRLF made LF in one file, LF made CRLF in another, and a file added with CRLF.",
+  "pre": [
+    {"path": "dos.txt", "mode": "100644", "content": "one\r\ntwo\r\n"},
+    {"path": "unix.txt", "mode": "100644", "content": "one\ntwo\n"}
+  ],
+  "post": [
+    {"path": "dos.txt", "mode": "100644", "content": "one\ntwo\n"},
+    {"path": "unix.txt", "mode": "100644", "content": "one\r\ntwo\r\n"},
+    {"path": "windows.ini", "mode": "100644", "content": "[section]\r\nkey=value\r\n"}
+  ]
+}

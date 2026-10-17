@@ -84,7 +84,9 @@ rec {
   # push hook shares (../change). rebase rebases a change's whole stack and
   # adds each change's rebased head to its record. knot reads and writes
   # the plan graph, with the one reading of a graph the push hook shares
-  # (../knot), and plan shows that graph as a view. Go,
+  # (../knot), and plan shows that graph as a view. compare reads a
+  # version's file delta and its approved version's with the one reading
+  # of valley-delta-v1 (../delta), for review. Go,
   # standard library only — hence vendorHash = null and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
   # the bash it replaced, so they need bash, and lay pending out over real
@@ -94,6 +96,7 @@ rec {
     version = "0";
     src = withLocal ../status [
       ../change
+      ../delta
       ../knot
     ];
     modRoot = "status";
@@ -282,6 +285,26 @@ rec {
     src = ../change;
     vendorHash = null;
     nativeCheckInputs = [ pkgs.git ];
+  };
+
+  # valley-delta-v1 (delta/): the encoding's strict reading, and the delta
+  # read from real trees. Its checkPhase runs go vet, the conformance
+  # vectors' script in its --check mode, which holds the committed expected
+  # results to what the script computes, and go test, which builds each
+  # vector's trees with real git and holds the Go code to those results.
+  delta = pkgs.buildGoModule {
+    pname = "valley-delta";
+    version = "0";
+    src = ../delta;
+    vendorHash = null;
+    nativeCheckInputs = [
+      pkgs.git
+      pkgs.python3
+    ];
+    preCheck = ''
+      go vet ./...
+      python3 -I testdata/vectors.py --check testdata
+    '';
   };
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,

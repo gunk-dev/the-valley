@@ -1,0 +1,14 @@
+{
+  "about": "Symlinks, whose content is their target: one retargeted, one added, and one replaced by a file holding the same bytes, which differs in mode alone.",
+  "pre": [
+    {"path": "current", "mode": "120000", "content": "v1"},
+    {"path": "pointer", "mode": "120000", "content": "v1/README"},
+    {"path": "v1/README", "mode": "100644", "content": "one\n"}
+  ],
+  "post": [
+    {"path": "current", "mode": "120000", "content": "v2"},
+    {"path": "latest", "mode": "120000", "content": "v2/README"},
+    {"path": "pointer", "mode": "100644", "content": "v1/README"},
+    {"path": "v1/README", "mode": "100644", "content": "one\n"}
+  ]
+}

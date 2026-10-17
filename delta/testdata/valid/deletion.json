@@ -1,0 +1,12 @@
+{
+  "about": "Deletions: one file, and a whole directory, each path of it a line of its own.",
+  "pre": [
+    {"path": "gone.txt", "mode": "100644", "content": "bye\n"},
+    {"path": "old/a.txt", "mode": "100644", "content": "a\n"},
+    {"path": "old/deeper/b.sh", "mode": "100755", "content": "b\n"},
+    {"path": "stays.txt", "mode": "100644", "content": "here\n"}
+  ],
+  "post": [
+    {"path": "stays.txt", "mode": "100644", "content": "here\n"}
+  ]
+}

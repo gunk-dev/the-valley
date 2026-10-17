@@ -565,10 +565,10 @@ grep -q 'request grant' rwithdraw.err
 # its history or deletes it.
 report_ref="refs/the-valley/restack/main/$restack_id"
 # report_json [<result>]: a report about the restacked change, observed at
-# its record and head now.
+# its record and head now, with its branch at that head.
 report_json() {
-  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 2, "branch": "topic", "head": "git-sha1:%s", "published": null}], "failing_layer": "%s", "conflict_paths": ["readme.txt"], "blocking_requests": [], "refusal": null}\n' \
-    "$restack_id" "$(git -C "$TMPDIR/open.git" rev-parse main)" "${1:-conflict}" "$restack_id" "$held" "$r2" "$restack_id"
+  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 2, "head": "git-sha1:%s", "branch": "topic", "branch_tip": "git-sha1:%s", "published": null}], "failing_layer": "%s", "conflict_paths": ["readme.txt"], "blocking_requests": [], "refusal": null}\n' \
+    "$restack_id" "$(git -C "$TMPDIR/open.git" rev-parse main)" "${1:-conflict}" "$restack_id" "$held" "$r2" "$r2" "$restack_id"
 }
 # report_commit <json> [<file>] [<parent…>]: a commit holding the JSON as
 # the one file given, report.json by default.
@@ -664,8 +664,16 @@ refused report-delete.err "a restack report was deleted" \
 grep -q 'no push deletes one' report-delete.err
 report_at "$second_report" "a refused delete"
 
-# A principal holding both grants writes a report too.
-third_report="$(report_commit "$report" report.json "$second_report")"
+# A principal holding both grants writes a report too. This one is a
+# block: it saw the branch missing, and names the request filed above at
+# the head it read.
+blocked_report="$(report_json blocked | sed \
+  -e 's/"failing_layer": "[a-z]*"/"failing_layer": null/' \
+  -e 's/"branch_tip": "[^"]*"/"branch_tip": null/' \
+  -e "s|\"blocking_requests\": \[\]|\"blocking_requests\": [{\"ref\": \"$request\", \"tip\": \"git-sha1:$filed_request\"}]|")"
+grep -q '"branch_tip": null' <<< "$blocked_report"
+grep -q "\"blocking_requests\": \[{\"ref\": \"$request\"" <<< "$blocked_report"
+third_report="$(report_commit "$blocked_report" report.json "$second_report")"
 as requester git push --quiet open "$third_report:$report_ref"
 report_at "$third_report" "a report by a holder of both grants"
 

@@ -177,8 +177,9 @@ in
   # a recorded decision and a landing, without moving the user's checkout.
   # Each state is read again through --json, and jq holds the object to
   # the valley-status/v1 contract. A change's restack report is shown as
-  # current, and as historical once its branch, main or record has moved,
-  # by status, changes and pending.
+  # current, and as historical once a ref it observed has changed: its
+  # branch, main, its record, a branch it saw missing, or a request that
+  # held it back. Status, changes and pending all show it.
   valley-status = pkgs.runCommand "valley-status" {
     nativeBuildInputs = [
       pkgs.git

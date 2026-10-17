@@ -95,7 +95,7 @@ func writeRestack(s *status, w io.Writer) {
 			fmt.Fprintf(w, "Rebase it by hand: valley rebase %s\n", shellQuote(s.name()))
 		}
 	default:
-		fmt.Fprintf(w, "Its last restack report is historical: %s. main, a record or a branch it read has moved since.\n", readable(s.restackSays))
+		fmt.Fprintf(w, "Its last restack report is historical: %s. main, or a record, branch or request it read, has changed since.\n", readable(s.restackSays))
 	}
 }
 

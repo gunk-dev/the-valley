@@ -476,7 +476,7 @@ rpush valley-restacker "$appended:$record_ref"
   exit 1
 }
 report_ref="refs/the-valley/restack/main/$change_id"
-report="$(one_file report.json "{\"schema\": \"valley-restack-report/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"target_tip\": \"git-sha1:$h1\", \"operation\": \"op-1\", \"result\": \"complete\", \"layers\": [{\"change_id\": \"$change_id\", \"record\": \"git-sha1:$created\", \"version\": 1, \"branch\": \"topic\", \"head\": \"git-sha1:$h1\", \"published\": {\"head\": \"git-sha1:$h2\", \"version\": 2, \"record\": \"git-sha1:$appended\"}}], \"failing_layer\": null, \"conflict_paths\": [], \"blocking_requests\": [], \"refusal\": null}")"
+report="$(one_file report.json "{\"schema\": \"valley-restack-report/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"target_tip\": \"git-sha1:$h1\", \"operation\": \"op-1\", \"result\": \"complete\", \"layers\": [{\"change_id\": \"$change_id\", \"record\": \"git-sha1:$created\", \"version\": 1, \"head\": \"git-sha1:$h1\", \"branch\": \"topic\", \"branch_tip\": \"git-sha1:$h1\", \"published\": {\"head\": \"git-sha1:$h2\", \"version\": 2, \"record\": \"git-sha1:$appended\"}}], \"failing_layer\": null, \"conflict_paths\": [], \"blocking_requests\": [], \"refusal\": null}")"
 if rpush author "$report:$report_ref" 2> report.err; then
   echo "identity-e2e: a principal the registry does not grant restack wrote a restack report" >&2
   exit 1

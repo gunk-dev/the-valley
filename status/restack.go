@@ -1,8 +1,9 @@
 // A change's restack report, as status, changes and pending show it: the
 // latest report the host restacker wrote about the change, and whether it
-// is current (../rebase/report.go). A report is current only while main's
-// tip, and every layer's record and branch head, are what it observed, or
-// what it published. Otherwise it is historical.
+// is current (../rebase/report.go). A report is current only while every
+// ref it observed is still what it observed, or what it published: main,
+// each layer's record and branch, a branch it saw missing still missing,
+// and each request that held it back. Otherwise it is historical.
 
 package main
 
@@ -56,8 +57,8 @@ func restackSays(r *change.RestackReport, name func(id string) string) string {
 		says := "held before rebasing " + onto
 		if len(r.Requests) > 0 {
 			var names []string
-			for _, ref := range r.Requests {
-				names = append(names, strings.TrimPrefix(ref, rebase.RequestPrefix))
+			for _, q := range r.Requests {
+				names = append(names, strings.TrimPrefix(q.Ref, rebase.RequestPrefix))
 			}
 			says += " by the request"
 			if len(names) > 1 {

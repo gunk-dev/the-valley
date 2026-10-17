@@ -12,14 +12,25 @@ import (
 // restacker wrote about the change, at RestackPrefix<change ID>
 // (change/report.go), and whether it is current.
 //
-// A report is current only while every input it observed still holds on
-// origin: main's tip, and for each layer its record commit and the head of
-// its branch. A branch can move or disappear while its record and main
-// stay put, so every layer's branch is compared, not only the record. For
-// a layer the attempt published, the head compared is the one it moved the
-// branch to, and the record compared is the one that recorded that head,
-// when it added a version. A report that is not current is historical: it
-// describes inputs that have moved since.
+// A report is current only while every ref it observed still holds on
+// origin what the report says it held:
+//
+//   - main, at the report's target_tip;
+//   - each layer's record ref, at the record commit it read;
+//   - each layer's branch, at its branch_tip, or still absent when
+//     branch_tip is null. A layer that names no branch has none to compare;
+//   - each blocking request, at the tip it read.
+//
+// For a layer the attempt published, the branch is compared with the head
+// the attempt moved it to, and the record with the one that recorded that
+// head, when it added a version.
+//
+// Each comparison is with what the report recorded of the ref itself,
+// never with the version's head: a branch can be missing, or somewhere
+// other than the head its version names. Absent stays absent, so a report
+// that observed a missing branch is historical once the branch exists. A
+// report that is not current is historical: it describes refs that have
+// moved since.
 
 // Report is a change's latest restack report.
 type Report struct {
@@ -43,25 +54,43 @@ func ReadReport(ctx context.Context, g Git, commit string) (*change.RestackRepor
 	return r, nil
 }
 
-// Current reports whether every input r observed still holds in o.
+// Current reports whether every ref r observed still holds in o what r
+// says it held, or left it holding.
 func (o Origin) Current(r *change.RestackReport) bool {
-	if r.Target != Target || o.Refs["refs/heads/"+Target] != strings.TrimPrefix(r.TargetTip, change.HeadPrefix) {
+	if r.Target != Target || !o.holds("refs/heads/"+Target, &r.TargetTip) {
 		return false
 	}
+	for _, q := range r.Requests {
+		if !o.holds(q.Ref, &q.Tip) {
+			return false
+		}
+	}
 	for _, l := range r.Layers {
-		head, record := l.Head, l.Record
+		record, tip := l.Record, l.BranchTip
 		if p := l.Published; p != nil {
-			head = p.Head
+			tip = &p.Head
 			if p.Record != nil {
 				record = *p.Record
 			}
 		}
-		if o.Refs[change.Ref(Target, l.ChangeID)] != strings.TrimPrefix(record, change.HeadPrefix) ||
-			o.Refs["refs/heads/"+l.Branch] != strings.TrimPrefix(head, change.HeadPrefix) {
+		if !o.holds(change.Ref(Target, l.ChangeID), &record) {
+			return false
+		}
+		if l.Branch != "" && !o.holds("refs/heads/"+l.Branch, tip) {
 			return false
 		}
 	}
 	return true
+}
+
+// holds reports whether ref is at the head want names in o, or absent from
+// o when want is nil.
+func (o Origin) holds(ref string, want *string) bool {
+	oid, present := o.Refs[ref]
+	if want == nil {
+		return !present
+	}
+	return present && oid == strings.TrimPrefix(*want, change.HeadPrefix)
 }
 
 // Report is the restack report origin holds for a change, read once per

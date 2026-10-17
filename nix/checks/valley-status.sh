@@ -362,9 +362,11 @@ git -C "$origin" update-ref -d "refs/heads/$odd"
 git -C "$origin" update-ref -d "refs/the-valley/integration-requests/main/$oddrequest"
 
 # A change's restack report. status shows the latest report the host
-# restacker wrote about a change, and says whether it is current: main's
-# tip, and each layer's record and branch head, are still what it observed.
-# A report whose inputs have moved is historical, and pending leaves it out.
+# restacker wrote about a change, and says whether it is current: every ref
+# it observed is still what it observed. Those are main, each layer's
+# record and branch, a branch it saw missing, and each request that held it
+# back. A report whose refs have changed is historical, and pending leaves
+# it out.
 reset_remote
 restack_id=qqqqrrrrssssttttuuuuvvvvwwwwxxxx
 record_ref="refs/the-valley/changes/main/$restack_id"
@@ -386,12 +388,13 @@ version_json() {
 record_v1="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$restack_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 1, \"versions\": [$(version_json 1 "$head" author)], \"active\": 1}" "$head")"
 git -C "$origin" update-ref "$record_ref" "$record_v1"
 # report_json <result> <layer's published object or null>: a report about
-# the change, observed at main's base, its first record and its head.
+# the change, observed at main's base, its first record, and topic at its
+# head.
 report_json() {
   local failing=null paths='[]'
   if [ "$1" = conflict ]; then failing="\"$restack_id\"" paths='["readme.txt"]'; fi
-  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 1, "branch": "topic", "head": "git-sha1:%s", "published": %s}], "failing_layer": %s, "conflict_paths": %s, "blocking_requests": [], "refusal": null}' \
-    "$restack_id" "$base" "$1" "$restack_id" "$record_v1" "$head" "$2" "$failing" "$paths"
+  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 1, "head": "git-sha1:%s", "branch": "topic", "branch_tip": "git-sha1:%s", "published": %s}], "failing_layer": %s, "conflict_paths": %s, "blocking_requests": [], "refusal": null}' \
+    "$restack_id" "$base" "$1" "$restack_id" "$record_v1" "$head" "$head" "$2" "$failing" "$paths"
 }
 conflict="$(one_file report.json "$(report_json conflict null)")"
 git -C "$origin" update-ref "$report_ref" "$conflict"
@@ -422,13 +425,13 @@ jq -e --arg id "$restack_id" --arg commit "$conflict" '
 (cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
 contains 'restack: a conflict rebasing qqqq onto main' 'pending did not show a current report'
 
-# Each input it observed moving makes it historical: the branch, the
+# Each ref it observed changing makes it historical: the branch, the
 # branch gone, main, and the record. Status says so, and pending leaves it
-# out.
+# out. historical <what> [<what the report says>]
 historical() {
   restack_json false
   status "$restack_id"
-  contains 'Its last restack report is historical: a conflict rebasing' "$1: a historical report was not called historical"
+  contains "Its last restack report is historical: ${2:-a conflict rebasing}" "$1: a historical report was not called historical"
   lacks 'valley rebase' "$1: a historical conflict was given as one to resolve"
   (cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
   lacks 'restack:' "$1: pending showed a historical report"
@@ -464,9 +467,67 @@ status "$restack_id"
 contains "Its restack report: rebased onto main at ${base:0:7}." 'a current complete report was not reported'
 git -C "$origin" update-ref "$record_ref" "$record_v1"
 restack_json false
+git -C "$origin" update-ref refs/heads/topic "$head"
+
+# A report that saw the branch missing records a null branch_tip. It stays
+# current while the branch is missing, and is historical once anyone
+# creates the branch, even at the head the record names.
+git -C "$origin" update-ref -d refs/heads/topic
+missing="$(one_file report.json "$(report_json blocked null | jq -c '
+  .layers[0].branch_tip = null
+  | .refusal = "qqqq is on the branch topic, and origin has no such branch; nothing rebased"')" "$complete")"
+git -C "$origin" update-ref "$report_ref" "$missing"
+restack_json true '.restack.report.layers[0].branch == "topic"' '.restack.report.layers[0].branch_tip == null'
+status "$restack_id"
+contains "Its restack report: held before rebasing onto main at ${base:0:7}: qqqq is on the branch topic, and origin has no such branch; nothing rebased." \
+  'a current report of a missing branch was not reported'
+(cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
+contains 'restack: held before rebasing onto main' 'pending did not show a current report of a missing branch'
+git -C "$origin" update-ref refs/heads/topic "$head"
+historical 'a missing branch created' 'held before rebasing'
+
+# A version that names no branch has no branch to observe. Its layer's
+# branch is empty and its branch_tip null, and the report is current while
+# main and the record stand, wherever any branch is.
+bare_version="{\"n\": 1, \"head\": \"git-sha1:$head\", \"title\": \"topic\", \"branch\": \"\", \"uploader\": \"author\"}"
+record_bare="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$restack_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 1, \"versions\": [$bare_version], \"active\": 1}" "$head")"
+git -C "$origin" update-ref "$record_ref" "$record_bare"
+bare="$(one_file report.json "$(report_json blocked null | jq -c --arg record "git-sha1:$record_bare" '
+  .layers[0].record = $record | .layers[0].branch = "" | .layers[0].branch_tip = null
+  | .refusal = "qqqq records no branch; nothing rebased"')" "$missing")"
+git -C "$origin" update-ref "$report_ref" "$bare"
+restack_json true '.restack.report.layers[0].branch == ""' '.restack.report.layers[0].branch_tip == null' \
+  ".restack.report.layers[0].record == \"git-sha1:$record_bare\""
+status "$restack_id"
+contains "Its restack report: held before rebasing onto main at ${base:0:7}: qqqq records no branch; nothing rebased." \
+  'a current report of a version with no branch was not reported'
+git -C "$origin" update-ref -d refs/heads/topic
+restack_json true
+git -C "$origin" update-ref refs/heads/topic "$head"
+git -C "$origin" update-ref "$record_ref" "$record_v1"
+historical 'the record of a version with no branch moved' 'held before rebasing'
+
+# A block names each request that held it back, at the tip it read. It is
+# current while every one of them stays there, and historical once one is
+# deleted or moved to another head.
+request_ref=refs/the-valley/integration-requests/main/topic
+git -C "$origin" update-ref "$request_ref" "$head"
+blocked="$(one_file report.json "$(report_json blocked null | jq -c --arg ref "$request_ref" --arg tip "git-sha1:$head" '
+  .blocking_requests = [{ref: $ref, tip: $tip}]')" "$bare")"
+git -C "$origin" update-ref "$report_ref" "$blocked"
+restack_json true ".restack.report.blocking_requests == [{\"ref\": \"$request_ref\", \"tip\": \"git-sha1:$head\"}]"
+status "$restack_id"
+contains "Its restack report: held before rebasing onto main at ${base:0:7} by the request topic." \
+  'a current block was not reported with its request'
+git -C "$origin" update-ref -d "$request_ref"
+historical 'a deleted blocking request' "held before rebasing onto main at ${base:0:7} by the request topic"
+git -C "$origin" update-ref "$request_ref" "$head"
+restack_json true
+git -C "$origin" update-ref "$request_ref" "$advanced"
+historical 'a retargeted blocking request' "held before rebasing onto main at ${base:0:7} by the request topic"
+git -C "$origin" update-ref -d "$request_ref"
 git -C "$origin" update-ref -d "$record_ref"
 git -C "$origin" update-ref -d "$report_ref"
-git -C "$origin" update-ref refs/heads/topic "$head"
 
 # A branch no record is on has no restack report to show.
 status_json topic

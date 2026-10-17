@@ -317,30 +317,53 @@ the hook and the CLI share (`change/report.go`):
       "change_id": "<32 letters from k to z>",
       "record": "git-sha1:<the record commit read>",
       "version": 2,
-      "branch": "topic",
       "head": "git-sha1:<the active version's head>",
+      "branch": "topic",
+      "branch_tip": "git-sha1:<origin's topic as read>",
       "published": null
     }
   ],
   "failing_layer": "<change id, or null>",
   "conflict_paths": ["src/main.go"],
-  "blocking_requests": ["refs/the-valley/integration-requests/main/<name>"],
+  "blocking_requests": [
+    {
+      "ref": "refs/the-valley/integration-requests/main/<name>",
+      "tip": "git-sha1:<the request as read>"
+    }
+  ],
   "refusal": null
 }
 ```
 
 - `layers` are the changes the attempt rebased together, bottom first: 1 to 64, each change once,
   and the report's own change among them.
+- A layer's `head` and `branch` are its active version's, as the record names them. `branch` is
+  empty for a version that names no branch.
+- A layer's `branch_tip` is where origin's branch was when the attempt read it. It is `null` when
+  origin had no such branch, and always `null` when `branch` is empty. It is recorded apart from
+  `head` because the two can differ: the branch can be missing, or somewhere other than the head its
+  version names.
 - `result` is `conflict`, `blocked`, `partial`, `complete` or `superseded`. A conflict names its
   `failing_layer`. A conflict and a block publish nothing. `partial` means the branches moved and
   not every version was added; `complete` means every layer gained a version. `superseded` means the
   attempt was given up because its inputs moved while it ran.
 - `published` is `null` for a layer whose branch did not move. Otherwise it is
   `{"head", "version", "record"}`: the head the branch moved to, and the version and record commit
-  that recorded it, both `null` when no version was added.
-- `conflict_paths` holds at most 100 paths of 1 to 1024 bytes. `blocking_requests` holds at most 64
-  integration-request refs on `main`. `refusal` is `null` or 1 to 2048 bytes. `operation` is 1 to 64
-  letters, digits, dots, colons, dashes and underscores. No string holds a control character.
+  that recorded it, both `null` when no version was added. A layer with no branch publishes nothing.
+- `blocking_requests` are the integration requests that held the attempt back. Each is the request's
+  ref, which is on `main`, and `tip`, the object the ref pointed at when the attempt read it. There
+  are at most 64, each ref once.
+- `conflict_paths` holds at most 100 paths of 1 to 1024 bytes. `refusal` is `null` or 1 to 2048
+  bytes. `operation` is 1 to 64 letters, digits, dots, colons, dashes and underscores. No string
+  holds a control character.
+
+A report is current while every ref it observed still holds what the report says it held. Those refs
+are `main`, each layer's record ref and branch, and each blocking request. The comparison is exact,
+and absence counts: a branch the report saw missing must still be missing. A layer with no branch
+has no branch to compare. For a layer the attempt published, the branch must be at the published
+head, and the record ref at the published record when a version was added. Each comparison uses what
+the report recorded of that ref: a branch is compared with its `branch_tip`, never with the
+version's `head`. A report that is not current is historical (`rebase/report.go`).
 
 The parser refuses what the record parser refuses: invalid UTF-8, a duplicate key, an unknown field,
 a field of another type, and data after the object.
@@ -354,7 +377,7 @@ past it.
 
 Checked by `protect-e2e` and `identity-e2e`, which push reports through the rendered hook, by
 `valleyhook-unit`, and by `change-unit`, which runs the parser's tests and its fuzz target's seed
-corpus.
+corpus. `valley-status` reads reports through the CLI and checks when each one is current.
 
 ## After a push: events and mirrors
 
@@ -1112,13 +1135,11 @@ so it is a contract with a version. A change to the name or meaning of any field
 - `restack` was added to `valley-status/v1`. It is `null` for a branch no record is on, and for a
   change with no restack report. Otherwise it is `{"ref", "commit", "current", "report"}`: the
   report's ref, its report commit, whether it is current, and the report as
-  [Restack reports](#restack-reports) gives it. A report is current only while every input it
-  observed still holds on origin: `main` is at its `target_tip`, and each layer's record ref and
-  branch are at the record and head it read. For a layer the attempt published, the branch must be
-  at the published head, and the record at the published record when a version was added. A branch
-  can move or disappear while its record and `main` stay where they were, so every layer's branch is
-  compared. A report that is not current is historical. The sentences say which it is, and name a
-  current conflict's command to rebase by hand.
+  [Restack reports](#restack-reports) gives it. `current` is true only while every ref the report
+  observed holds what it says it held, as [Restack reports](#restack-reports) defines it: `main`,
+  each layer's record ref and branch, a branch it saw missing still missing, and each blocking
+  request at its `tip`. A report that is not current is historical. The sentences say which it is,
+  and name a current conflict's command to rebase by hand.
 - `refused-not-ready`, `refused-merge` and `voided-withdrawn` were added to `valley-status/v1` as
   decisions and as states. A reader that meets a decision or a state it does not know should treat
   the status as unknown.

@@ -13,6 +13,7 @@ const (
 	record1 = HeadPrefix + "3333333333333333333333333333333333333333"
 	record2 = HeadPrefix + "4444444444444444444444444444444444444444"
 	tip     = HeadPrefix + "5555555555555555555555555555555555555555"
+	request = "refs/the-valley/integration-requests/main/topic"
 )
 
 // report is a well-formed report of a conflict in a stack of two layers,
@@ -26,8 +27,8 @@ func report() string {
   "operation": "20261017T203500Z-1",
   "result": "conflict",
   "layers": [
-    {"change_id": "` + id2 + `", "record": "` + record2 + `", "version": 1, "branch": "lower", "head": "` + head2 + `", "published": null},
-    {"change_id": "` + id1 + `", "record": "` + record1 + `", "version": 2, "branch": "topic", "head": "` + head1 + `", "published": null}
+    {"change_id": "` + id2 + `", "record": "` + record2 + `", "version": 1, "head": "` + head2 + `", "branch": "lower", "branch_tip": "` + head2 + `", "published": null},
+    {"change_id": "` + id1 + `", "record": "` + record1 + `", "version": 2, "head": "` + head1 + `", "branch": "topic", "branch_tip": "` + head1 + `", "published": null}
   ],
   "failing_layer": "` + id1 + `",
   "conflict_paths": ["src/main.go", "docs/a b.md"],
@@ -42,10 +43,10 @@ func published() string {
 	r := strings.Replace(report(), `"result": "conflict"`, `"result": "complete"`, 1)
 	r = strings.Replace(r, `"failing_layer": "`+id1+`"`, `"failing_layer": null`, 1)
 	r = strings.Replace(r, `"conflict_paths": ["src/main.go", "docs/a b.md"]`, `"conflict_paths": []`, 1)
-	r = strings.Replace(r, `"head": "`+head2+`", "published": null`,
-		`"head": "`+head2+`", "published": {"head": "`+head1+`", "version": 2, "record": "`+record1+`"}`, 1)
-	return strings.Replace(r, `"head": "`+head1+`", "published": null`,
-		`"head": "`+head1+`", "published": {"head": "`+head2+`", "version": 3, "record": "`+record2+`"}`, 1)
+	r = strings.Replace(r, `"branch_tip": "`+head2+`", "published": null`,
+		`"branch_tip": "`+head2+`", "published": {"head": "`+head1+`", "version": 2, "record": "`+record1+`"}`, 1)
+	return strings.Replace(r, `"branch_tip": "`+head1+`", "published": null`,
+		`"branch_tip": "`+head1+`", "published": {"head": "`+head2+`", "version": 3, "record": "`+record2+`"}`, 1)
 }
 
 func TestAWellFormedReportReadsWhole(t *testing.T) {
@@ -53,15 +54,15 @@ func TestAWellFormedReportReadsWhole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failing := id1
+	failing, tip1, tip2 := id1, head1, head2
 	want := &RestackReport{
 		Schema: RestackSchema, ChangeID: id1, Target: "main", TargetTip: tip,
 		Operation: "20261017T203500Z-1", Result: RestackConflict,
 		Layers: []RestackLayer{
-			{ChangeID: id2, Record: record2, Version: 1, Branch: "lower", Head: head2},
-			{ChangeID: id1, Record: record1, Version: 2, Branch: "topic", Head: head1},
+			{ChangeID: id2, Record: record2, Version: 1, Head: head2, Branch: "lower", BranchTip: &tip2},
+			{ChangeID: id1, Record: record1, Version: 2, Head: head1, Branch: "topic", BranchTip: &tip1},
 		},
-		Failing: &failing, Conflicts: []string{"src/main.go", "docs/a b.md"}, Requests: []string{},
+		Failing: &failing, Conflicts: []string{"src/main.go", "docs/a b.md"}, Requests: []RestackRequest{},
 	}
 	if !reflect.DeepEqual(r, want) {
 		t.Errorf("ParseRestackReport = %+v, want %+v", r, want)
@@ -120,6 +121,12 @@ func TestTheReportReadingIsStrict(t *testing.T) {
 		{"paths as an object", swap(`"conflict_paths": ["src/main.go", "docs/a b.md"]`, `"conflict_paths": {}`), "where an array is expected"},
 		{"a path as a number", swap(`"src/main.go"`, `7`), "where a string is expected"},
 		{"requests as null", swap(`"blocking_requests": []`, `"blocking_requests": null`), "where an array is expected"},
+		{"a request as a string", swap(`"blocking_requests": []`, `"blocking_requests": ["`+request+`"]`), "blocking_requests[0] is a string, where an object is expected"},
+		{"a request with no tip", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`"}]`), `no field "tip"`},
+		{"an unknown request field", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": "`+head1+`", "at": 1}]`), `"at"`},
+		{"a request's tip as null", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": null}]`), "where a string is expected"},
+		{"a branch tip as a number", swap(`"branch_tip": "`+head2+`"`, `"branch_tip": 1`), "a string or null"},
+		{"a missing branch tip", swap(`"branch_tip": "`+head2+`", `, ``), `no field "branch_tip"`},
 		{"layers as null", withLayers(t, r, `null`), "where an array is expected"},
 		{"published as a string", swap(`"published": null`, `"published": "x"`), "where an object is expected"},
 
@@ -136,25 +143,30 @@ func TestTheReportReadingIsStrict(t *testing.T) {
 		{"another result", swap(`"result": "conflict"`, `"result": "merged"`), "its result"},
 		{"a layer's record that is no head", swap(record2, "git-sha1:xyz"), "layers[0].record"},
 		{"a layer's version of zero", swap(`"version": 1`, `"version": 0`), "outside 1 to 1000"},
-		{"a layer with no branch", swap(`"branch": "lower"`, `"branch": ""`), "layers[0].branch"},
 		{"a layer's branch git refuses", swap(`"branch": "lower"`, `"branch": "lo..wer"`), "layers[0].branch"},
 		{"a layer's head that is no head", swap(`"head": "`+head2+`"`, `"head": "`+head2[:20]+`"`), "layers[0].head"},
+		{"a layer's branch tip that is no head", swap(`"branch_tip": "`+head2+`"`, `"branch_tip": "`+head2[:20]+`"`), "layers[0].branch_tip"},
 		{"an empty path", swap(`"src/main.go"`, `""`), "conflict_paths[0]"},
 		{"a path with a newline", swap(`"src/main.go"`, `"src/\nmain.go"`), "conflict_paths[0]"},
 		{"a path past its bound", swap(`"src/main.go"`, `"`+strings.Repeat("p", MaxConflictPath+1)+`"`), "conflict_paths[0]"},
 		{"too many paths", swap(`"src/main.go", `, strings.Repeat(`"p", `, MaxConflictPaths)), "more than the 100"},
-		{"a request that is no request", swap(`"blocking_requests": []`, `"blocking_requests": ["refs/heads/main"]`), "blocking_requests[0]"},
-		{"a request on another target", swap(`"blocking_requests": []`, `"blocking_requests": ["refs/the-valley/integration-requests/next/x"]`), "blocking_requests[0]"},
-		{"a request past its bound", swap(`"blocking_requests": []`, `"blocking_requests": ["refs/the-valley/integration-requests/main/`+strings.Repeat("r", MaxRequestRef)+`"]`), "blocking_requests[0]"},
+		{"a request that is no request", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "refs/heads/main", "tip": "`+head1+`"}]`), "blocking_requests[0].ref"},
+		{"a request on another target", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "refs/the-valley/integration-requests/next/x", "tip": "`+head1+`"}]`), "blocking_requests[0].ref"},
+		{"a request past its bound", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "refs/the-valley/integration-requests/main/`+strings.Repeat("r", MaxRequestRef)+`", "tip": "`+head1+`"}]`), "blocking_requests[0].ref"},
+		{"a request's tip that is no head", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": "`+head1[:20]+`"}]`), "blocking_requests[0].tip"},
+		{"too many requests", swap(`"blocking_requests": []`, `"blocking_requests": [`+strings.Repeat(`{"ref": "`+request+`", "tip": "`+head1+`"}, `, MaxBlockingRequest)+`{"ref": "`+request+`", "tip": "`+head1+`"}]`), "more than the 64"},
 		{"an empty refusal", swap(`"refusal": null`, `"refusal": ""`), "its refusal"},
 		{"a refusal past its bound", swap(`"refusal": null`, `"refusal": "`+strings.Repeat("r", MaxRefusal+1)+`"`), "its refusal"},
 		{"a refusal with a control character", swap(`"refusal": null`, `"refusal": "a\u0007b"`), "its refusal"},
-		{"too many layers", swap(`"layers": [`, `"layers": [`+strings.Repeat(`{"change_id": "`+id2+`", "record": "`+record2+`", "version": 1, "branch": "b", "head": "`+head2+`", "published": null}, `, MaxRestackLayers)), "more than the 64"},
+		{"too many layers", swap(`"layers": [`, `"layers": [`+strings.Repeat(`{"change_id": "`+id2+`", "record": "`+record2+`", "version": 1, "head": "`+head2+`", "branch": "b", "branch_tip": null, "published": null}, `, MaxRestackLayers)), "more than the 64"},
 
 		// What the fields say about one another.
 		{"no layer", withLayers(t, r, `[]`), "holds no layer"},
 		{"no layer for its own change", swap(`"change_id": "`+id1+`", "record"`, `"change_id": "`+strings.Repeat("l", 32)+`", "record"`), "no layer names the change"},
 		{"a layer twice", swap(`"change_id": "`+id2+`", "record"`, `"change_id": "`+id1+`", "record"`), "which an earlier layer names"},
+		{"a branch tip with no branch", swap(`"branch": "lower"`, `"branch": ""`), "names no branch, so it observed no branch_tip"},
+		{"a layer with no branch that published", published2(t, `"branch": "lower", "branch_tip": "`+head2+`"`, `"branch": "", "branch_tip": null`), "a layer with no branch publishes nothing"},
+		{"a request twice", swap(`"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": "`+head1+`"}, {"ref": "`+request+`", "tip": "`+head2+`"}]`), "which an earlier entry names"},
 		{"a failing layer that is no layer", swap(`"failing_layer": "`+id1+`"`, `"failing_layer": "`+strings.Repeat("l", 32)+`"`), "none of its layers"},
 		{"a conflict with no failing layer", swap(`"failing_layer": "`+id1+`"`, `"failing_layer": null`), "names its failing_layer"},
 		{"a conflict that published", swap(`"published": null`, `"published": {"head": "`+head1+`", "version": null, "record": null}`), "publishes nothing"},
@@ -177,12 +189,45 @@ func TestTheReportReadingIsStrict(t *testing.T) {
 	partial := strings.Replace(published(), `"result": "complete"`, `"result": "partial"`, 1)
 	partial = strings.Replace(partial, `"version": 2, "record": "`+record1+`"`, `"version": null, "record": null`, 1)
 	blocked := strings.Replace(swap(`"result": "conflict"`, `"result": "blocked"`), `"blocking_requests": []`,
-		`"blocking_requests": ["refs/the-valley/integration-requests/main/c-`+id1+`", "refs/the-valley/integration-requests/main/topic/one"]`, 1)
+		`"blocking_requests": [{"ref": "refs/the-valley/integration-requests/main/c-`+id1+`", "tip": "`+head1+`"}, {"ref": "refs/the-valley/integration-requests/main/topic/one", "tip": "`+head2+`"}]`, 1)
 	blocked = strings.Replace(blocked, `"refusal": null`, `"refusal": "the branch lower is not at the head its record names"`, 1)
 	for what, text := range map[string]string{"a partial attempt": partial, "a block": blocked} {
 		if _, err := ParseRestackReport([]byte(text)); err != nil {
 			t.Errorf("%s: %v", what, err)
 		}
+	}
+}
+
+// A report says what it saw of each ref, absence included, apart from
+// what the record says. A branch origin did not hold is a null tip, and a
+// version that names no branch has no branch to observe. Both read, and
+// both are written back as they read.
+func TestAReportKeepsWhatItSawOfEachRef(t *testing.T) {
+	text := strings.Replace(report(), `"branch": "lower", "branch_tip": "`+head2+`"`, `"branch": "", "branch_tip": null`, 1)
+	text = strings.Replace(text, `"branch_tip": "`+head1+`"`, `"branch_tip": null`, 1)
+	text = strings.Replace(text, `"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": "`+head2+`"}]`, 1)
+	r, err := ParseRestackReport([]byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if l := r.Layers[0]; l.Branch != "" || l.BranchTip != nil || l.Head != head2 {
+		t.Errorf("a layer with no branch read as %+v", l)
+	}
+	if l := r.Layers[1]; l.Branch != "topic" || l.BranchTip != nil || l.Head != head1 {
+		t.Errorf("a layer whose branch was missing read as %+v", l)
+	}
+	if want := []RestackRequest{{Ref: request, Tip: head2}}; !reflect.DeepEqual(r.Requests, want) {
+		t.Errorf("its blocking requests read as %+v, want %+v", r.Requests, want)
+	}
+	encoded, err := EncodeRestackReport(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again, err := ParseRestackReport(encoded); err != nil || !reflect.DeepEqual(again, r) {
+		t.Errorf("the report was written back as %s, which reads as %+v, %v", encoded, again, err)
+	}
+	if !bytes.Contains(encoded, []byte(`"branch": "",`)) || bytes.Count(encoded, []byte(`"branch_tip": null`)) != 2 {
+		t.Errorf("the report was not written with an empty branch and two null tips:\n%s", encoded)
 	}
 }
 
@@ -236,6 +281,8 @@ func FuzzParseRestackReport(f *testing.F) {
 	f.Add([]byte(strings.Replace(report(), `"refusal": null`, `"refusal": null, "refusal": "x"`, 1)))
 	f.Add([]byte(strings.Replace(report(), `"published": null`, `"published": {"head": "x"}`, 1)))
 	f.Add([]byte(report() + "[]"))
+	f.Add([]byte(strings.Replace(report(), `"branch": "lower", "branch_tip": "`+head2+`"`, `"branch": "", "branch_tip": null`, 1)))
+	f.Add([]byte(strings.Replace(report(), `"blocking_requests": []`, `"blocking_requests": [{"ref": "`+request+`", "tip": "`+head1+`"}]`, 1)))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		r, err := ParseRestackReport(data)
 		if err != nil {

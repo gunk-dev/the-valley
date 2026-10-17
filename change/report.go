@@ -27,8 +27,8 @@ import (
 //	  "result": "conflict",
 //	  "layers": [
 //	    {"change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
-//	     "record": "git-sha1:<40 hex>", "version": 2, "branch": "topic",
-//	     "head": "git-sha1:<40 hex>", "published": null}
+//	     "record": "git-sha1:<40 hex>", "version": 2, "head": "git-sha1:<40 hex>",
+//	     "branch": "topic", "branch_tip": "git-sha1:<40 hex>", "published": null}
 //	  ],
 //	  "failing_layer": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
 //	  "conflict_paths": ["src/main.go"],
@@ -38,18 +38,25 @@ import (
 //
 // The layers are the changes the attempt rebased together, bottom first,
 // each as it was read: its record commit, its active version, and that
-// version's branch and head. published is null for a layer whose branch
-// the attempt did not move. Otherwise it is the head the branch was moved
-// to, and the version and record commit that recorded it, both null when
-// no version was added.
+// version's head and branch. The branch is "" for a version that names
+// none. branch_tip is where origin's branch was when the attempt read it,
+// or null when origin had no such branch, which a layer with no branch
+// always is. It is read apart from the version's head, because the two can
+// differ. published is null for a layer whose branch the attempt did not
+// move. Otherwise it is the head the branch was moved to, and the version
+// and record commit that recorded it, both null when no version was added.
+//
+// blocking_requests are the integration requests that held the attempt
+// back, each as its ref and the object it pointed at when the attempt read
+// it.
 //
 // Each report commit has the report it replaces as its one parent, and the
 // first has none, so the ref holds the change's whole history of reports.
 //
 // A report is an observation and grants nothing. It is not evidence that
 // a version's content is unchanged or approved. A reader decides whether
-// it still applies by comparing what it observed with what origin holds
-// now.
+// it still applies by comparing every ref it observed with what origin
+// holds now (../rebase/report.go).
 //
 // It is read as strictly as a record: valid UTF-8, no key twice, no field
 // the schema does not have, every field of exactly its type, and every
@@ -122,27 +129,30 @@ const (
 
 // RestackReport is one restack report.
 type RestackReport struct {
-	Schema    string         `json:"schema"`
-	ChangeID  string         `json:"change_id"`
-	Target    string         `json:"target"`
-	TargetTip string         `json:"target_tip"`
-	Operation string         `json:"operation"`
-	Result    string         `json:"result"`
-	Layers    []RestackLayer `json:"layers"`
-	Failing   *string        `json:"failing_layer"`
-	Conflicts []string       `json:"conflict_paths"`
-	Requests  []string       `json:"blocking_requests"`
-	Refusal   *string        `json:"refusal"`
+	Schema    string           `json:"schema"`
+	ChangeID  string           `json:"change_id"`
+	Target    string           `json:"target"`
+	TargetTip string           `json:"target_tip"`
+	Operation string           `json:"operation"`
+	Result    string           `json:"result"`
+	Layers    []RestackLayer   `json:"layers"`
+	Failing   *string          `json:"failing_layer"`
+	Conflicts []string         `json:"conflict_paths"`
+	Requests  []RestackRequest `json:"blocking_requests"`
+	Refusal   *string          `json:"refusal"`
 }
 
 // RestackLayer is one change an attempt rebased, as the attempt read it,
-// and what it published for it.
+// and what it published for it. Branch is "" for a version that names no
+// branch. BranchTip is where origin's branch was when the attempt read it,
+// nil when origin had no such branch.
 type RestackLayer struct {
 	ChangeID  string            `json:"change_id"`
 	Record    string            `json:"record"`
 	Version   int               `json:"version"`
-	Branch    string            `json:"branch"`
 	Head      string            `json:"head"`
+	Branch    string            `json:"branch"`
+	BranchTip *string           `json:"branch_tip"`
 	Published *RestackPublished `json:"published"`
 }
 
@@ -153,6 +163,13 @@ type RestackPublished struct {
 	Head    string  `json:"head"`
 	Version *int    `json:"version"`
 	Record  *string `json:"record"`
+}
+
+// RestackRequest is an integration request that held an attempt back: its
+// ref, and the object it pointed at when the attempt read it.
+type RestackRequest struct {
+	Ref string `json:"ref"`
+	Tip string `json:"tip"`
 }
 
 // Layer is the layer of the change given, if the report has one.
@@ -197,7 +214,7 @@ func ParseRestackReport(data []byte) (*RestackReport, error) {
 	if r.Conflicts, err = stringsOf(o["conflict_paths"], "conflict_paths", MaxConflictPaths); err != nil {
 		return nil, err
 	}
-	if r.Requests, err = stringsOf(o["blocking_requests"], "blocking_requests", MaxBlockingRequest); err != nil {
+	if r.Requests, err = requestsOf(o["blocking_requests"]); err != nil {
 		return nil, err
 	}
 	layers := o["layers"]
@@ -222,7 +239,7 @@ func ParseRestackReport(data []byte) (*RestackReport, error) {
 }
 
 func layerOf(v *value, where string) (RestackLayer, error) {
-	o, err := fieldsOf(v, where, "change_id", "record", "version", "branch", "head", "published")
+	o, err := fieldsOf(v, where, "change_id", "record", "version", "head", "branch", "branch_tip", "published")
 	if err != nil {
 		return RestackLayer{}, err
 	}
@@ -231,13 +248,16 @@ func layerOf(v *value, where string) (RestackLayer, error) {
 		name string
 		into *string
 	}{
-		{"change_id", &l.ChangeID}, {"record", &l.Record}, {"branch", &l.Branch}, {"head", &l.Head},
+		{"change_id", &l.ChangeID}, {"record", &l.Record}, {"head", &l.Head}, {"branch", &l.Branch},
 	} {
 		if *f.into, err = stringOf(o[f.name], where+"."+f.name); err != nil {
 			return RestackLayer{}, err
 		}
 	}
 	if l.Version, err = integerOf(o["version"], where+".version", MaxVersions); err != nil {
+		return RestackLayer{}, err
+	}
+	if l.BranchTip, err = optionalString(o["branch_tip"], where+".branch_tip"); err != nil {
 		return RestackLayer{}, err
 	}
 	p := o["published"]
@@ -270,9 +290,11 @@ func layerOf(v *value, where string) (RestackLayer, error) {
 // its fields: the formats and bounds of its strings and lists, and what
 // its fields say about one another. The change it is about is one of its
 // layers, no layer appears twice, and a failing layer is one of them. A
-// conflict names its failing layer. A conflict or a block published
-// nothing, and a complete attempt published a version for every layer. A
-// published version comes with the record commit that holds it.
+// layer with no branch observed no branch tip and published nothing. No
+// blocking request appears twice. A conflict names its failing layer. A
+// conflict or a block published nothing, and a complete attempt published
+// a version for every layer. A published version comes with the record
+// commit that holds it.
 func (r *RestackReport) Check() error {
 	switch {
 	case r.Schema != RestackSchema:
@@ -312,10 +334,16 @@ func (r *RestackReport) Check() error {
 			return fmt.Errorf("its %s.record %q is not %s and 40 lowercase hex digits", where, l.Record, HeadPrefix)
 		case l.Version < 1 || l.Version > MaxVersions:
 			return fmt.Errorf("its %s.version is %d, outside 1 to %d", where, l.Version, MaxVersions)
-		case !ValidBranch(l.Branch) || !utf8.ValidString(l.Branch):
-			return fmt.Errorf("its %s.branch %q is not a branch name in UTF-8", where, l.Branch)
 		case !ValidHead(l.Head):
 			return fmt.Errorf("its %s.head %q is not %s and 40 lowercase hex digits", where, l.Head, HeadPrefix)
+		case l.Branch != "" && (!ValidBranch(l.Branch) || !utf8.ValidString(l.Branch)):
+			return fmt.Errorf("its %s.branch %q is neither empty nor a branch name in UTF-8", where, l.Branch)
+		case l.BranchTip != nil && !ValidHead(*l.BranchTip):
+			return fmt.Errorf("its %s.branch_tip %q is not %s and 40 lowercase hex digits", where, *l.BranchTip, HeadPrefix)
+		case l.Branch == "" && l.BranchTip != nil:
+			return fmt.Errorf("its %s names no branch, so it observed no branch_tip, and its branch_tip is %s", where, *l.BranchTip)
+		case l.Branch == "" && l.Published != nil:
+			return fmt.Errorf("its %s names no branch, and a layer with no branch publishes nothing", where)
 		}
 		seen[l.ChangeID] = true
 		p := l.Published
@@ -341,11 +369,18 @@ func (r *RestackReport) Check() error {
 			return fmt.Errorf("its conflict_paths[%d] is not 1 to %d bytes free of control characters", i, MaxConflictPath)
 		}
 	}
-	for i, ref := range r.Requests {
-		name, ok := strings.CutPrefix(ref, "refs/the-valley/integration-requests/"+r.Target+"/")
-		if !ok || !ValidBranch(name) || len(ref) > MaxRequestRef {
-			return fmt.Errorf("its blocking_requests[%d] %q is not an integration request's ref on %s of at most %d bytes", i, ref, r.Target, MaxRequestRef)
+	requests := map[string]bool{}
+	for i, q := range r.Requests {
+		name, ok := strings.CutPrefix(q.Ref, "refs/the-valley/integration-requests/"+r.Target+"/")
+		switch {
+		case !ok || !ValidBranch(name) || len(q.Ref) > MaxRequestRef:
+			return fmt.Errorf("its blocking_requests[%d].ref %q is not an integration request's ref on %s of at most %d bytes", i, q.Ref, r.Target, MaxRequestRef)
+		case requests[q.Ref]:
+			return fmt.Errorf("its blocking_requests[%d] names the request %s, which an earlier entry names", i, q.Ref)
+		case !ValidHead(q.Tip):
+			return fmt.Errorf("its blocking_requests[%d].tip %q is not %s and 40 lowercase hex digits", i, q.Tip, HeadPrefix)
 		}
+		requests[q.Ref] = true
 	}
 	switch {
 	case !seen[r.ChangeID]:
@@ -374,7 +409,7 @@ func EncodeRestackReport(r *RestackReport) ([]byte, error) {
 		out.Conflicts = []string{}
 	}
 	if out.Requests == nil {
-		out.Requests = []string{}
+		out.Requests = []RestackRequest{}
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -421,6 +456,34 @@ func optionalString(v *value, name string) (*string, error) {
 		return nil, fmt.Errorf("its %s is %s, where a string or null is expected", name, v.kind)
 	}
 	return &s, nil
+}
+
+// requestsOf reads blocking_requests: an array of at most
+// MaxBlockingRequest objects, each a request's ref and tip.
+func requestsOf(v *value) ([]RestackRequest, error) {
+	if v.kind != kindArray {
+		return nil, fmt.Errorf("its blocking_requests is %s, where an array is expected", v.kind)
+	}
+	if len(v.items) > MaxBlockingRequest {
+		return nil, fmt.Errorf("its blocking_requests holds %d entries, more than the %d it may", len(v.items), MaxBlockingRequest)
+	}
+	list := []RestackRequest{}
+	for i, item := range v.items {
+		where := fmt.Sprintf("blocking_requests[%d]", i)
+		o, err := fieldsOf(item, where, "ref", "tip")
+		if err != nil {
+			return nil, err
+		}
+		var q RestackRequest
+		if q.Ref, err = stringOf(o["ref"], where+".ref"); err != nil {
+			return nil, err
+		}
+		if q.Tip, err = stringOf(o["tip"], where+".tip"); err != nil {
+			return nil, err
+		}
+		list = append(list, q)
+	}
+	return list, nil
 }
 
 // stringsOf reads an array of at most max strings.

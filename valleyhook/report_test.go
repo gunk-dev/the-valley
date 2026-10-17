@@ -112,12 +112,13 @@ func TestRestackingAVersion(t *testing.T) {
 // observed at the head h.
 func report(t *testing.T, h string) change.RestackReport {
 	t.Helper()
-	failing := changeID
+	failing, tip := changeID, change.HeadPrefix+h
 	return change.RestackReport{
 		Schema: change.RestackSchema, ChangeID: changeID, Target: "main",
 		TargetTip: change.HeadPrefix + h, Operation: "op-1", Result: change.RestackConflict,
 		Layers: []change.RestackLayer{{
-			ChangeID: changeID, Record: change.HeadPrefix + h, Version: 1, Branch: "topic", Head: change.HeadPrefix + h,
+			ChangeID: changeID, Record: change.HeadPrefix + h, Version: 1, Head: change.HeadPrefix + h,
+			Branch: "topic", BranchTip: &tip,
 		}},
 		Failing: &failing, Conflicts: []string{"a.go"},
 	}

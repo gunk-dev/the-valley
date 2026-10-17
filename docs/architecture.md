@@ -453,6 +453,32 @@ required check, and the integrator requires evidence for every required check, w
 The cost changes neither which checks a change requires nor what the integrator accepts. Checked by
 `policy-deriver` and `integrator-unit`.
 
+Each class also declares a carry mode. The mode says how far an approval of a change touching the
+class carries when the change is rebased onto a target that has moved. An approval carries only when
+the rebased change has exactly the files the approval saw. The mode adds a condition on the landings
+since the approval:
+
+- `exact`: there were none, so the target has not moved.
+- `same-class`: none of them touched a path in any class the change touches.
+- `same-paths`: no further condition.
+
+A class writes its modes as a set of keys, such as `carry: {"same-class": true}`, in the same form
+as `requires`. The class's mode is the strictest mode whose key is `true`, and `same-paths` when no
+key is `true`. The layers compose as they do for checks. A floor's `true` cannot be turned off, a
+template's `bool | *true` is a default a project may turn off, and a project may always add a
+stricter mode. A change's carry mode is the strictest among the classes its paths match, and a path
+no class matches is `same-paths`. `valley checks` prints the mode on a `carry mode:` line, and the
+integrator refuses a report without a valid one. Checked by `cue-vet`, `policy-deriver` and
+`integrator-unit`.
+
+A policy also sets `restack.maxAutomaticVersions`, a whole number of at least 1. It is 64 unless a
+layer sets it. The restacker rebases a ready change when its target moves, and adds each result to
+the change as a new version. The cap is how many of those versions it adds to one change. A host may
+impose a lower ceiling of its own, outside the policy. The carry modes and the cap are part of the
+composed policy, so the integrator's policy digest, a SHA-256 of the whole composition, changes when
+either does. Approval carry reads the carry modes, and the restacker reads the cap. Neither is
+built, so nothing acts on either setting. Checked by `cue-vet` and `integrator-unit`.
+
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
 a class that requires the checks reading that part. A Go module requires its unit tests, and its
 end-to-end check where it has one. The CLI requires its script and status checks. The Nix, the
@@ -465,6 +491,16 @@ stop every derivation once it landed, including the derivation of its own fix. S
 check composes the layer with the example floor before it lands. It fails if the layer names a check
 this flake does not define, if a script under `nix/checks/` requires no check of its own, or if a
 docs-only change would require more than `prose-format`.
+
+In the-valley's layer, four parts are `same-class`: the hook, the integrator, the signature
+verifier, and the identity compiler with `schema/identity.cue`. The policy is `exact`: `policy/` and
+`schema/verification.cue`. Everything else is `same-paths`. The tree holds no registry, grant or
+secret data of its own. The ones under `examples/` and `attest/conformance/` are test fixtures. Two
+classes exist only to set a mode, `identity-compiler` and `policy-authority`. They require no
+checks, so the paths they cover require what they did before. `schema/verification.cue` also
+requires the integrator's checks, because both compose a policy under it. The layer leaves the
+restacker's cap at 64. `own-policy` holds each scope to its mode, holds the paths the two mode
+classes cover to every check they required before, and holds the cap to 64.
 
 The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 [dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and
@@ -1563,6 +1599,8 @@ provisioning, so the run logs a failure until it is set up.
 | Hardware-backed keys in the registry        | `schema/identity.cue` accepts `ssh-ed25519` keys only.                           |
 | SSHSIG evidence                             | Attestations use the signed-note format.                                         |
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class. |
+| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.               |
+| The restacker                               | The policy sets its cap. There is no restacker.                                  |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                         |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                 |
 | Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                    |

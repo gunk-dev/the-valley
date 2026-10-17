@@ -9,7 +9,9 @@
   # protection block the installer renders a hook from, and the twelve
   # declarations the schema must refuse. The event payloads live here too —
   # the publisher hook's vocabulary is a schema like any other — and so
-  # does the worked verification policy under examples/policy/.
+  # does the worked verification policy under examples/policy/, with the
+  # carry modes and the restacker's cap case by case under
+  # examples/policy/carry/.
   cue-vet = pkgs.runCommand "valley-cue-vet" {
     nativeBuildInputs = [ pkgs.cue ];
     schema = ../../schema/valley.cue;

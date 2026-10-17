@@ -53,6 +53,20 @@ expect() {
   fi
 }
 
+# Assert the carry mode the report states. The floor gives flat
+# `same-class` and nested `exact`, and no other class a mode.
+expect_carry() {
+  local got
+  got="$(sed -n 's/^carry mode: //p' <<<"$report")"
+  if [ "$got" != "$1" ]; then
+    echo "policy-deriver: $2" >&2
+    echo "  expected carry mode: $1" >&2
+    echo "  got:                 $got" >&2
+    echo "$report" >&2
+    exit 1
+  fi
+}
+
 # `**` crosses segments, `*` does not. One file under src/
 # matches both patterns; one a segment deeper matches only
 # the `**` one.
@@ -61,12 +75,16 @@ echo edit > src/one.rs
 git commit --quiet -am flat
 report="$(derive)"
 expect "c-deep c-flat" "src/*.rs must match a file directly under src/"
+# Overlapping classes compose to the strictest mode: flat's same-class
+# over deep's same-paths.
+expect_carry same-class "a path in a same-class class and a same-paths one must be same-class"
 
 case_start deep
 echo edit > src/deep/two.rs
 git commit --quiet -am deep
 report="$(derive)"
 expect "c-deep" "src/*.rs must not match across a path separator"
+expect_carry same-paths "a class that asks for no mode must be same-paths"
 
 # A `**` between two segments matches no segment at all …
 case_start nested-none
@@ -74,6 +92,16 @@ echo edit > a/b
 git commit --quiet -am nested-none
 report="$(derive)"
 expect "c-nested" "a/**/b must match a/b"
+expect_carry exact "a path in an exact class must be exact"
+
+# Paths in different classes compose the same way: exact over same-class.
+case_start strictest
+echo edit > a/b
+echo edit > src/one.rs
+git commit --quiet -am strictest
+report="$(derive)"
+expect "c-deep c-flat c-nested" "a change to two classes must require both"
+expect_carry exact "an exact path beside a same-class one must be exact"
 
 # … and any number of them.
 case_start nested-many
@@ -152,6 +180,7 @@ fi
 report="$(valley checks --schema "$schema" \
   --instance "$policy/instance" --project "$policy/project-slow" "$base" "$base")"
 grep -qx 'required checks: none' <<<"$report"
+expect_carry same-paths "a change that touches nothing must be same-paths"
 if grep -q '^quick:' <<<"$report"; then
   echo "policy-deriver: a change that requires nothing printed a cost summary" >&2
   exit 1
@@ -176,8 +205,25 @@ if valley checks --schema "$TMPDIR/costless.cue" \
 fi
 grep -q 'does not render' "$TMPDIR/costless.out"
 
+# The same for a schema that predates the carry modes: with no resolved
+# mode to render, the deriver refuses rather than reading every class as
+# same-paths.
+grep -v '^_mode: ' "$schema" > "$TMPDIR/modeless.cue"
+if cmp -s "$schema" "$TMPDIR/modeless.cue"; then
+  echo "policy-deriver: the modeless schema still resolves modes, so this case proves nothing" >&2
+  exit 1
+fi
+if valley checks --schema "$TMPDIR/modeless.cue" \
+  --instance "$policy/instance" --project "$policy/project" \
+  "$base" HEAD > "$TMPDIR/modeless.out" 2>&1; then
+  echo "policy-deriver: a schema with no carry modes derived an answer" >&2
+  cat "$TMPDIR/modeless.out" >&2
+  exit 1
+fi
+grep -q 'does not render' "$TMPDIR/modeless.out"
+
 # A path no class covers takes the unclassified set, and says
-# so by name.
+# so by name. It is same-paths.
 case_start uncovered
 echo edit > Makefile
 git commit --quiet -am uncovered
@@ -186,6 +232,7 @@ expect "c-uncovered" "an uncovered path must take the unclassified set"
 grep -q '^classes matched: unclassified$' <<<"$report"
 grep -q '^unclassified: 1 path(s) matched no class$' <<<"$report"
 grep -q '^  Makefile$' <<<"$report"
+expect_carry same-paths "an unclassified path must be same-paths"
 
 # A replacement ref changes nothing the derivation reads. Here
 # refs/replace/<head> makes git read the uncovered case's head as
@@ -219,6 +266,9 @@ echo edit > docs/kept.md
 echo edit > src/one.rs
 echo edit > Makefile
 git commit --quiet -am mixed
+# An unclassified path beside a same-class one makes the change no looser.
+report="$(derive)"
+expect_carry same-class "an unclassified path must not loosen a same-class change"
 
 shims="$TMPDIR/shims"
 mkdir -p "$shims"

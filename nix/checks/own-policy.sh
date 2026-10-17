@@ -57,6 +57,14 @@ mkdir -p docs valleyhook nix/checks
 echo seed > docs/architecture.md
 echo seed > valleyhook/main.go
 echo seed > nix/packages.nix
+# One path in each scope the carry modes below are asserted over.
+for f in integrator/main.go sigverify/keys.go identity/registry.go \
+  schema/identity.cue schema/verification.cue policy/project/policy.cue \
+  policy/valley examples/policy/project/policy.cue \
+  examples/identity/registry/registry.cue research/notes.txt; do
+  mkdir -p "$(dirname "$f")"
+  echo seed > "$f"
+done
 for f in $checkFiles; do
   echo seed > "nix/checks/$f"
 done
@@ -127,5 +135,68 @@ for f in $checkFiles; do
   failed=1
 done
 [ "$failed" -eq 0 ] || exit 1
+
+# Each scope's carry mode, as the deriver reports it for a change to one
+# path in it. The hook, the integrator, the signature verifier and the
+# identity compiler are same-class, the policy is exact, and everything
+# else, unclassified paths included, is same-paths.
+while read -r path mode; do
+  git checkout --quiet -B carry "$base"
+  echo edit > "$path"
+  git commit --quiet -am "$path"
+  got="$(valley checks --schema "$schema" \
+    --instance "$policy/instance" --project "$policy/project" "$base" HEAD \
+    | sed -n 's/^carry mode: //p')"
+  [ "$got" = "$mode" ] && continue
+  echo "own-policy: a change to $path must be $mode, got '$got'" >&2
+  failed=1
+done <<'EOF'
+valleyhook/main.go same-class
+integrator/main.go same-class
+sigverify/keys.go same-class
+identity/registry.go same-class
+schema/identity.cue same-class
+policy/project/policy.cue exact
+policy/valley exact
+schema/verification.cue exact
+examples/policy/project/policy.cue same-paths
+examples/identity/registry/registry.cue same-paths
+docs/architecture.md same-paths
+research/notes.txt same-paths
+EOF
+[ "$failed" -eq 0 ] || exit 1
+
+# The scopes the carry classes newly classify keep every check they
+# required before those classes existed. Each line is a path and the checks
+# a change to it required then, composed with this same floor.
+# schema/verification.cue requires more now: the integrator's checks read
+# it.
+while read -r path before; do
+  git checkout --quiet -B classified "$base"
+  echo edit > "$path"
+  git commit --quiet -am "$path"
+  got="$(required)"
+  for check in ${before//,/ }; do
+    grep -qx -- "$check" <<<"$got" && continue
+    echo "own-policy: a change to $path no longer requires $check, got:" >&2
+    echo "$got" >&2
+    failed=1
+  done
+done <<'EOF'
+identity/registry.go identity-e2e,identity-unit
+schema/identity.cue attest-schema,cue-vet,identity-schema
+policy/project/policy.cue cue-vet,own-policy,policy-deriver
+policy/valley cue-vet,own-policy,policy-deriver
+schema/verification.cue attest-schema,cue-vet,identity-schema,own-policy,policy-deriver
+EOF
+[ "$failed" -eq 0 ] || exit 1
+
+# The restacker's cap is the default.
+cap="$(cue export -e policy.restack.maxAutomaticVersions "$schema" \
+  "$policy"/instance/*.cue "$policy"/project/*.cue)"
+[ "$cap" = 64 ] || {
+  echo "own-policy: the restacker's cap is $cap, not 64" >&2
+  exit 1
+}
 
 touch "$out"

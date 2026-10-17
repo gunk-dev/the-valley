@@ -1,11 +1,13 @@
 package main
 
 // The policy bridge, where this program is coupled to two others: the
-// deriver's output, and the window a policy writes down. Both are pinned
-// here rather than assumed.
+// deriver's output, and the policy cue composes, with the window a check
+// writes down and the digest of the whole. Both are pinned here rather than
+// assumed.
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -17,6 +19,7 @@ func TestDeriverOutputIsRead(t *testing.T) {
 	out := `abc1234..def5678: 3 changed path(s)
 policy: instance + policy
 classes matched: code, prose
+carry mode: same-class
 
 required checks:
   code-build      mandatory  code
@@ -41,6 +44,9 @@ unclassified: 1 path(s) matched no class
 	if len(d.requires) != 2 {
 		t.Fatalf("required = %v", d.requires)
 	}
+	if d.carry != "same-class" {
+		t.Fatalf("carry mode = %q", d.carry)
+	}
 }
 
 // The deriver ends its report with what each required check costs. Those
@@ -52,6 +58,7 @@ func TestTheCostSummaryChangesNothingRead(t *testing.T) {
 	table := `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
 classes matched: code, prose
+carry mode: same-paths
 
 required checks:
   code-build      mandatory  code
@@ -92,6 +99,7 @@ func TestAPartialReportIsRefused(t *testing.T) {
 		{"a required-checks heading with no checks under it", `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
 classes matched: code
+carry mode: same-paths
 
 required checks:
 
@@ -101,15 +109,18 @@ slow: none
 		{"a required-checks heading that ends the output", `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
 classes matched: code
+carry mode: same-paths
 
 required checks:
 `},
 		{"no required-checks section", `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
 classes matched: code
+carry mode: same-paths
 `},
 		{"no header", `policy: instance + policy
 classes matched: code
+carry mode: same-paths
 
 required checks:
   code-build  mandatory  code
@@ -118,12 +129,37 @@ required checks:
 		{"changed paths and no class", `abc1234..def5678: 2 changed path(s)
 policy: instance + policy
 classes matched: none
+carry mode: same-paths
 
 required checks: none
 `},
 		{"no changed paths and a class", `abc1234..def5678: 0 changed path(s)
 policy: instance + policy
 classes matched: code
+carry mode: same-paths
+
+required checks:
+  code-build  mandatory  code
+`},
+		{"no carry mode", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+
+required checks:
+  code-build  mandatory  code
+`},
+		{"a carry mode that is not one", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+carry mode: same-file
+
+required checks:
+  code-build  mandatory  code
+`},
+		{"an empty carry mode", `abc1234..def5678: 2 changed path(s)
+policy: instance + policy
+classes matched: code
+carry mode:
 
 required checks:
   code-build  mandatory  code
@@ -141,13 +177,14 @@ func TestAnEmptyDiffReadsAsRequiringNothing(t *testing.T) {
 	d, err := parseDerived(`abc1234..abc1234: 0 changed path(s)
 policy: instance + policy
 classes matched: none
+carry mode: same-paths
 
 required checks: none
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.paths != 0 || len(d.classes) != 0 || len(d.requires) != 0 {
+	if d.paths != 0 || len(d.classes) != 0 || len(d.requires) != 0 || d.carry != "same-paths" {
 		t.Fatalf("an empty diff reads as %+v", d)
 	}
 }
@@ -180,7 +217,7 @@ func TestAReportOfNoChangedPathsIsCheckedAgainstGit(t *testing.T) {
 	changed := run("rev-parse", "HEAD")
 
 	deriver := filepath.Join(t.TempDir(), "valley")
-	report := `printf '%s\n' 'x..y: 0 changed path(s)' 'policy: a + b' 'classes matched: none' '' 'required checks: none'`
+	report := `printf '%s\n' 'x..y: 0 changed path(s)' 'policy: a + b' 'classes matched: none' 'carry mode: same-paths' '' 'required checks: none'`
 	if err := os.WriteFile(deriver, []byte("#!/bin/sh\n"+report+"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +228,64 @@ func TestAReportOfNoChangedPathsIsCheckedAgainstGit(t *testing.T) {
 	}
 	if d, err := p.derive(tip, one, changed); err == nil {
 		t.Fatalf("a change reported as touching nothing was read as %+v", d)
+	}
+}
+
+// The policy digest is of the whole composed policy, so a class's carry
+// mode and the restacker's cap are in it as much as a check is. The layers
+// are composed by the real cue under the real schema, with the floor fixed
+// and the project layer varied.
+func TestThePolicyDigestCoversCarryAndTheCap(t *testing.T) {
+	cue, err := exec.LookPath("cue")
+	if err != nil {
+		t.Skip("no cue to compose a policy with; the nix check provides one")
+	}
+	schema, err := filepath.Abs(filepath.Join("..", "schema", "verification.cue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const floor = `package verification
+floor: {
+	checks: "c-build": {runner: "nix", attribute: "c-build"}
+	classes: code: {paths: "src/**": true, requires: "c-build": true}
+}
+`
+	digest := func(project string) string {
+		t.Helper()
+		p := policySource{schema: schema, cue: cue, instance: t.TempDir(), project: t.TempDir()}
+		if err := os.WriteFile(filepath.Join(p.instance, "floor.cue"), []byte(floor), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(p.project, "policy.cue"), []byte("package verification\n"+project), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, sum, err := p.catalogue()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sum
+	}
+
+	base := digest("")
+	if again := digest(""); again != base {
+		t.Fatalf("one policy digested twice gave %s and %s", base, again)
+	}
+	// The digest is of the composition, not of the text: writing the cap's
+	// default composes the same policy.
+	if same := digest("project: restack: maxAutomaticVersions: 64\n"); same != base {
+		t.Errorf("writing the default cap moved the digest from %s to %s", base, same)
+	}
+	seen := map[string]string{base: "the floor alone"}
+	for _, c := range []struct{ name, project string }{
+		{"a class asking for same-class", `project: classes: code: carry: "same-class": true` + "\n"},
+		{"a class asking for exact", "project: classes: code: carry: exact: true\n"},
+		{"a lower cap", "project: restack: maxAutomaticVersions: 16\n"},
+	} {
+		sum := digest(c.project)
+		if other, ok := seen[sum]; ok {
+			t.Errorf("%s digests the same as %s: %s", c.name, other, sum)
+		}
+		seen[sum] = c.name
 	}
 }
 

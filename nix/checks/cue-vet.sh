@@ -72,4 +72,51 @@ done < "$rejectedCases"
 # deriver's own fixtures are policy-deriver's.
 cue vet -c "$verificationSchema" "$policies"/instance/*.cue \
   "$policies"/project/*.cue
+
+# The carry modes, case by case. Each fixture under examples/policy/carry/
+# composes a floor, a template and a project in one document. Each must vet,
+# and each class must resolve to the mode the layers mean: the strictest
+# mode whose key is true, and same-paths when none is.
+carry="$policies/carry"
+while read -r fixture class mode; do
+  cue vet -c "$verificationSchema" "$carry/$fixture.cue"
+  got="$(cue eval --out text -e "_mode.$class" "$verificationSchema" "$carry/$fixture.cue")"
+  [ "$got" = "$mode" ] || {
+    echo "cue-vet: carry/$fixture.cue resolves $class to '$got', not $mode" >&2
+    exit 1
+  }
+done <<'EOF'
+floor-pins-exact guarded exact
+template-default-declined guarded same-paths
+template-default-declined kept same-class
+no-carry guarded same-paths
+project-adds-exact guarded exact
+EOF
+
+# The restacker's cap is 64 unless a layer sets it.
+[ "$(cue export -e policy.restack.maxAutomaticVersions "$verificationSchema" \
+  "$carry/no-carry.cue")" = 64 ]
+[ "$(cue export -e policy.restack.maxAutomaticVersions "$verificationSchema" \
+  "$carry/project-adds-exact.cue")" = 16 ]
+
+# The compositions the schema must reject, and the field each rejection must
+# name: a project dropping the floor's mode, a carry key that is not a
+# mode, a cap below 1, and a cap outside every layer.
+while read -r fixture names; do
+  if cue vet -c "$verificationSchema" "$carry/rejected/$fixture.cue" \
+    > "$fixture.err" 2>&1; then
+    echo "cue-vet: expected carry/rejected/$fixture.cue to be rejected" >&2
+    exit 1
+  fi
+  grep -qF -- "$names" "$fixture.err" || {
+    echo "cue-vet: carry/rejected/$fixture.cue was rejected without naming $names" >&2
+    cat "$fixture.err" >&2
+    exit 1
+  }
+done <<'EOF'
+project-drops-floor-exact policy.classes.guarded.carry.exact
+not-a-mode policy.classes.guarded.carry."same-file"
+cap-below-one policy.restack.maxAutomaticVersions
+restack-outside-project restack: conflicting values "INVALID: unknown top-level field
+EOF
 touch "$out"

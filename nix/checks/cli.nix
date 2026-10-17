@@ -78,7 +78,9 @@ in
   # the scratch policy in examples/policy/deriver/, whose floor is
   # one glob boundary per class. A check's cost is pinned the same way:
   # marking a check slow moves it between the summary lines and the
-  # --cost lists, and changes nothing required.
+  # --cost lists, and changes nothing required. So is the carry mode:
+  # overlapping classes, and paths in different classes, report the
+  # strictest of their modes, and an unclassified path is same-paths.
   #
   # And the deriver fails closed: failNth stands in for git, sort and
   # cue, and fails each call the deriver makes in turn. Every failure
@@ -108,7 +110,9 @@ in
   # prose-format alone. And it holds a check's own files to requiring
   # that check: every file in this directory named after a check, and every
   # other script here, read from the directory itself so a new one is
-  # held as soon as it is added.
+  # held as soon as it is added. It holds each scope to its carry mode,
+  # the scopes the carry classes classify to every check they required
+  # before, and the restacker's cap to the default.
   own-policy = pkgs.runCommand "valley-own-policy" {
     nativeBuildInputs = [
       pkgs.git

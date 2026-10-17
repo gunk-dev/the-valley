@@ -337,12 +337,21 @@ rec {
   integrator-unwrapped = pkgs.buildGoModule {
     pname = "valley-integrator";
     version = "0";
-    src = withLocal ../integrator [ ../change ];
+    # The verification schema is in the source for the policy bridge's
+    # tests, which compose a policy under it.
+    src = withLocal ../integrator [
+      ../change
+      ../schema/verification.cue
+    ];
     modRoot = "integrator";
     vendorHash = null;
     preBuild = readsGoMod;
-    # The policy bridge's tests check a deriver's report against real git.
-    nativeCheckInputs = [ pkgs.git ];
+    # The policy bridge's tests check a deriver's report against real git,
+    # and compose a policy with real cue.
+    nativeCheckInputs = [
+      pkgs.git
+      pkgs.cue
+    ];
     meta.mainProgram = "integrator";
   };
 

@@ -11,9 +11,9 @@ floor: {
   classes: {
     docs: {paths: "docs/**": true, requires: "c-docs": true}
     notes: {paths: "notes/**": true, requires: "c-notes": true}
-    flat: {paths: "src/*.rs": true, requires: "c-flat": true}
+    flat: {paths: "src/*.rs": true, requires: "c-flat": true, carry: "same-class": true}
     deep: {paths: "src/**/*.rs": true, requires: "c-deep": true}
-    nested: {paths: "a/**/b": true, requires: "c-nested": true}
+    nested: {paths: "a/**/b": true, requires: "c-nested": true, carry: exact: true}
   }
   unclassified: "c-uncovered": true
 }

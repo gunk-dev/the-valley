@@ -193,13 +193,19 @@ func (p *policySource) openProject(tip *worktree) (func(), error) {
 }
 
 // derived is one run of the deriver over a diff: how many changed paths it
-// read, which classes the diff matched, and which checks that made
-// required.
+// read, which classes the diff matched, which checks that made required,
+// and the change's carry mode.
 type derived struct {
 	paths    int
 	classes  map[string]bool
 	requires map[string][]string // check name -> the classes requiring it
+	carry    string              // how far an approval carries across a rebase
 }
+
+// carryModes are the modes a report may state (schema/verification.cue's
+// #Carry). The integrator reads the mode and does not act on it: approval
+// carry is what reads it.
+var carryModes = map[string]bool{"same-paths": true, "same-class": true, "exact": true}
 
 // derive runs the deriver over a diff, in a checkout of the target tip. The
 // checkout supplies the project layer and the commits the diff names; the
@@ -240,10 +246,11 @@ var reportHeader = regexp.MustCompile(`^\S+\.\.\S+: ([0-9]+) changed path\(s\)$`
 // than assumed.
 //
 // Output that is not a whole report is refused rather than read as one
-// that requires nothing: no header, no required-checks section, a required-checks
-// heading with no checks under it, or classes that disagree with the
-// number of changed paths. The deriver never prints any of those, so each
-// is a deriver that failed partway and still exited zero.
+// that requires nothing: no header, no carry mode or one that is not a
+// mode, no required-checks section, a required-checks heading with no
+// checks under it, or classes that disagree with the number of changed
+// paths. The deriver never prints any of those, so each is a deriver that
+// failed partway and still exited zero.
 func parseDerived(out string) (derived, error) {
 	d := derived{classes: map[string]bool{}, requires: map[string][]string{}}
 	header, required := false, false
@@ -267,6 +274,12 @@ func parseDerived(out string) (derived, error) {
 					d.classes[c] = true
 				}
 			}
+		case strings.HasPrefix(line, "carry mode:"):
+			mode := strings.TrimSpace(strings.TrimPrefix(line, "carry mode:"))
+			if !carryModes[mode] {
+				return derived{}, fmt.Errorf("the deriver printed %q, which is not a carry mode", line)
+			}
+			d.carry = mode
 		case line == "required checks:":
 			required = true
 			rows := len(d.requires)
@@ -301,6 +314,8 @@ func parseDerived(out string) (derived, error) {
 	switch {
 	case !header:
 		return derived{}, fmt.Errorf("the deriver printed no header line counting the changed paths, so this is not a report")
+	case d.carry == "":
+		return derived{}, fmt.Errorf("the deriver printed no carry mode, so this is not a report")
 	case !required:
 		return derived{}, fmt.Errorf("the deriver printed no required-checks section, so this is not a report")
 	case d.paths > 0 && len(d.classes) == 0:
@@ -330,6 +345,10 @@ type catalogueEntry struct {
 // This is the same composition the deriver ran, over the same layers and
 // the same schema — `cue export` of a field the deriver does not print,
 // not a second opinion about what the policy says.
+//
+// The digest it returns is of the whole export, so everything the policy
+// composes is in it: every check, every class's paths, requirements and
+// carry mode, and the restacker's cap.
 func (p policySource) catalogue() (map[string]catalogueEntry, string, error) {
 	args := []string{"export", "--out", "json", "-e", "policy", p.schema}
 	for _, dir := range []string{p.instance, p.project} {

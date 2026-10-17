@@ -12,9 +12,10 @@
 // overridable distinction; #Requires spells it out.
 //
 // Two tools read this file. `valley checks` composes the two layers with it
-// and prints the checks the policy requires of a change (dcr-f41f718);
-// that deriver only reports. The Phase 3 integrator asks the deriver the same question and
-// acts on the answer, which is the enforcement point (archive/design/integration.md).
+// and prints the checks the policy requires of a change, and the change's
+// carry mode (dcr-f41f718); that deriver only reports. The Phase 3
+// integrator asks the deriver the same question and acts on the answer,
+// which is the enforcement point (archive/design/integration.md).
 //
 // Like the host and event schemas, this file is deliberately not Nix. A
 // policy names checks; it never names derivations, systems, or store
@@ -25,11 +26,13 @@
 //       examples/policy/instance/*.cue examples/policy/project/*.cue
 package verification
 
+import "list"
+
 // #Policy is one layer's contribution to a verification policy: the checks
-// it can require, the path classes that require them, and what a path no
-// class covers costs. Both layers are the same shape, because the
-// composition is unification and unification needs both sides to agree on
-// structure.
+// it can require, the path classes that require them, what a path no class
+// covers costs, and the restacker's cap. Both layers are the same shape,
+// because the composition is unification and unification needs both sides
+// to agree on structure.
 #Policy: {
 	// checks maps a check's name to how that check is run. Classes
 	// require checks by name; a name that is not a key here fails vet
@@ -62,6 +65,16 @@ package verification
 	// the empty one. An empty set is allowed, and is a deliberate
 	// statement that uncovered paths are unconstrained.
 	unclassified: #Requires
+
+	// The restacker rebases a ready change when its target moves, and adds
+	// each rebased result to the change as a new version. Those are the
+	// change's automatic versions. maxAutomaticVersions caps how many the
+	// restacker adds to one change over the change's life. The cap is
+	// policy so that it is composed, and hashed into the policy digest,
+	// with everything else here. A layer that sets the cap writes a plain
+	// number. A second default would leave the cap with no default, and vet
+	// would fail.
+	restack: {maxAutomaticVersions: int & >=1 | *64}
 }
 
 // #Class is one path class and what touching it requires.
@@ -84,6 +97,54 @@ package verification
 	// The checks a change touching this class must carry. Every name must
 	// be a key of the composed policy's `checks`.
 	requires: #Requires
+
+	// How far an approval of a change touching this class carries when the
+	// change is rebased onto a target that has moved. #Carry spells out the
+	// modes.
+	carry: #Carry
+}
+
+// #Carry is the set of carry modes a class asks for, in the same
+// set-as-struct encoding as #Requires. A class's resolved mode is the
+// strictest mode whose key is `true`, and `same-paths` when no key is
+// (#Resolve).
+//
+// An approval carries across a rebase only when the rebased change has
+// exactly the files the approval saw. The mode adds a condition on the
+// landings since the approval. From the strictest:
+//
+//   - `exact` — there were none: the target has not moved.
+//   - `same-class` — none of them touched a path in any class the change
+//     touches.
+//   - `same-paths` — no condition. It is not a key: it is what a class with
+//     no key `true` asks for.
+//
+// The layers compose the way #Requires does, and the value's form is the
+// mandatory bit:
+//
+//   - The floor writes a concrete `true`, which no project can drop: a
+//     project writing `false` conflicts, and `cue vet` names the field.
+//   - A template writes `bool | *true`, a default a project may turn off.
+//   - A project may always add a stricter key.
+//
+// The modes are keys rather than one string field because the three layers
+// unify. Two different strings conflict, so a string field could not say
+// "the strictest of the layers".
+#Carry: [#Mode]: bool
+
+// #Mode is a carry mode a class can ask for: either mode stricter than the
+// default `same-paths`.
+#Mode: "same-class" | "exact"
+
+// #Resolve reads a carry set as the one mode it means.
+#Resolve: {
+	carry: #Carry
+	let on = [for m, v in carry if v {m}]
+	mode: [
+		if list.Contains(on, "exact") {"exact"},
+		if list.Contains(on, "same-class") {"same-class"},
+		"same-paths",
+	][0]
 }
 
 // #Requires is a set of check names written as a struct, with the value
@@ -252,6 +313,13 @@ policy: {
 		checks: (n): _
 	}
 }
+
+// The resolved carry mode of every class of the composed policy, keyed by
+// class name. A change's carry mode is the strictest of these among the
+// classes its paths match, and an unclassified path is `same-paths`.
+// `valley checks` reads this field and reports that mode. The field is
+// hidden because the sentinel below rejects every other top-level field.
+_mode: {for n, c in composed.classes {(n): (#Resolve & {carry: c.carry}).mode}}
 
 // A file's top level cannot be closed (embedding a definition would open
 // it instead — embedding lifts closedness), so reject stray top-level

@@ -168,11 +168,14 @@ project: {
 		requires: "identity-e2e":      true
 	}
 
-	// The integrator, and the end-to-end scenarios under integrator/e2e/.
+	// The integrator, the end-to-end scenarios under integrator/e2e/, and the
+	// verification schema, which the integrator composes every policy under
+	// and both checks read.
 	classes: integrator: {
-		paths: "integrator/**":      true
-		requires: "integrator-unit": true
-		requires: "integrator-e2e":  true
+		paths: "integrator/**":           true
+		paths: "schema/verification.cue": true
+		requires: "integrator-unit":      true
+		requires: "integrator-e2e":       true
 	}
 
 	// The security-key signature verifier.
@@ -327,6 +330,44 @@ project: {
 			requires: {for n in ns {(n): true}}
 		}
 	}
+
+	// How far an approval carries across a rebase (#Carry in
+	// schema/verification.cue). Every path not named here is same-paths.
+	//
+	// The hook, the integrator, the signature verifier and the identity
+	// compiler enforce who may do what. An approval of a change to one of
+	// them carries only while no landing has touched the same classes:
+	// same-class. The identity compiler's class is its code and the schema
+	// it holds a registry to. It requires nothing, because the identity and
+	// schema classes already require the checks of its paths.
+	classes: valleyhook: carry: "same-class": true
+	classes: integrator: carry: "same-class": true
+	classes: sigverify: carry: "same-class":  true
+	classes: "identity-compiler": {
+		paths: "identity/**":         true
+		paths: "schema/identity.cue": true
+		carry: "same-class":          true
+	}
+
+	// The policy decides what every change requires, so an approval of a
+	// change to it carries across no landing at all: exact. That is this
+	// layer, the pointer to the owning valley, and the schema a policy is
+	// written in. The example policies are fixtures and stay same-paths. Like
+	// identity-compiler, this class requires nothing: the policy class
+	// requires the checks of its paths.
+	//
+	// This tree holds no registry, grant or secret data of its own. The
+	// registries, grants and keys under examples/ and attest/conformance/
+	// are test fixtures, and the instance's registry is in its instance
+	// repository. So nothing else here is exact.
+	classes: "policy-authority": {
+		paths: "policy/**":               true
+		paths: "schema/verification.cue": true
+		carry: exact:                     true
+	}
+
+	// The restacker's cap is the schema's default of 64 automatic versions
+	// per change.
 }
 
 // What no class above covers falls to the floor's `unclassified` rule and

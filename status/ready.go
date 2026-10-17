@@ -97,69 +97,76 @@ func runReady(g git, args []string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
+	_, err = ready(g, a, w)
+	return err
+}
+
+// ready writes the record a asks for, prints the handle and version it
+// made ready, and returns that version's number.
+func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
+		return 0, failure("not a git repository")
 	}
 	principal, err := g.output(true, "config", "valley.principal")
 	if err != nil || !change.ValidPrincipal(principal) {
-		return failure("ready records the principal your key pushes as, and git config valley.principal names none; set it with git config valley.principal <name>")
+		return 0, failure("ready records the principal your key pushes as, and git config valley.principal names none; set it with git config valley.principal <name>")
 	}
 	if a.branch == "" {
 		if a.branch, err = g.output(true, "symbolic-ref", "--quiet", "--short", "HEAD"); err != nil {
-			return failure("HEAD is on no branch; name one: " + readyUsage)
+			return 0, failure("HEAD is on no branch; name one: " + readyUsage)
 		}
 	}
 	if !change.ValidBranch(a.branch) {
-		return failure("not a branch name: " + a.branch)
+		return 0, failure("not a branch name: " + a.branch)
 	}
 	if a.stamp && a.head != "" {
-		return failure("--stamp amends the branch's own head, so it takes no --head")
+		return 0, failure("--stamp amends the branch's own head, so it takes no --head")
 	}
 	if a.ifActive != "" && !isObjectID(a.ifActive) {
-		return failure("--if-active takes the full object ID of a version's head, and " + a.ifActive + " is not one")
+		return 0, failure("--if-active takes the full object ID of a version's head, and " + a.ifActive + " is not one")
 	}
 	if a.ifActive != "" && a.stamp {
-		return failure("--stamp starts a new change, so it takes no --if-active")
+		return 0, failure("--stamp starts a new change, so it takes no --if-active")
 	}
 
 	o, err := listOrigin(g, append([]string{"refs/heads/" + recordTarget, "refs/heads/" + a.branch}, recordPatterns...)...)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tip, remote := o.refs["refs/heads/"+recordTarget], o.refs["refs/heads/"+a.branch]
 	if tip == "" {
-		return failure("origin has no " + recordTarget + " branch, so a change has nothing to target")
+		return 0, failure("origin has no " + recordTarget + " branch, so a change has nothing to target")
 	}
 	if err := fetch(g, tip, remote); err != nil {
-		return err
+		return 0, err
 	}
 
 	var head string
 	switch {
 	case a.stamp:
 		if head, err = g.output(true, "rev-parse", "--verify", "--quiet", "refs/heads/"+a.branch+"^{commit}"); err != nil {
-			return failure("--stamp amends the head of your local " + a.branch + ", and there is no such branch")
+			return 0, failure("--stamp amends the head of your local " + a.branch + ", and there is no such branch")
 		}
 	case a.head != "":
 		if !isHexPrefix(a.head) {
-			return failure("--head takes a commit's object ID, and " + a.head + " is not one")
+			return 0, failure("--head takes a commit's object ID, and " + a.head + " is not one")
 		}
 		head, err = g.output(true, "rev-parse", "--verify", "--quiet", a.head+"^{commit}")
 		if err != nil || remote == "" || !g.succeeds(true, "merge-base", "--is-ancestor", head, remote) {
-			return failure(a.head + " is not on origin's " + a.branch + "; push it there first")
+			return 0, failure(a.head + " is not on origin's " + a.branch + "; push it there first")
 		}
 	default:
 		if remote == "" {
-			return failure(a.branch + " is not on origin; push it there first")
+			return 0, failure(a.branch + " is not on origin; push it there first")
 		}
 		head = remote
 	}
 	if err := checkRange(g, tip, head); err != nil {
-		return err
+		return 0, err
 	}
 	id, generated, err := changeID(g, head, a.id)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	ref := change.Ref(recordTarget, id)
@@ -167,21 +174,21 @@ func runReady(g git, args []string, w io.Writer) error {
 	var before *change.Record
 	if old != "" {
 		if err := fetch(g, old); err != nil {
-			return err
+			return 0, err
 		}
 		if before, err = readRecord(g, old); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	handle := o.handle(id)
 	if a.ifActive != "" {
 		switch {
 		case before == nil:
-			return failure(fmt.Sprintf("--if-active %s: origin holds no record of %s, so no version is added", short(a.ifActive), handle))
+			return 0, failure(fmt.Sprintf("--if-active %s: origin holds no record of %s, so no version is added", short(a.ifActive), handle))
 		case before.State != change.Ready:
-			return failure(fmt.Sprintf("%s is %s, not ready, so no version is added: --if-active adds one only while the change is ready", handle, before.State))
+			return 0, failure(fmt.Sprintf("%s is %s, not ready, so no version is added: --if-active adds one only while the change is ready", handle, before.State))
 		case headOf(before.ActiveVersion()) != a.ifActive:
-			return failure(fmt.Sprintf("%s v%d is at %s, not %s, so no version is added", handle, before.Active, short(headOf(before.ActiveVersion())), short(a.ifActive)))
+			return 0, failure(fmt.Sprintf("%s v%d is at %s, not %s, so no version is added", handle, before.Active, short(headOf(before.ActiveVersion())), short(a.ifActive)))
 		}
 	}
 
@@ -192,16 +199,16 @@ func runReady(g git, args []string, w io.Writer) error {
 		// record is pushed, starts new changes alone and never asks whose
 		// an existing one is.
 		if before != nil {
-			return failure(fmt.Sprintf("--stamp marks only a new change's first version, and %s has a record on origin already; ready this head with --change %s instead, without --stamp", handle, id))
+			return 0, failure(fmt.Sprintf("--stamp marks only a new change's first version, and %s has a record on origin already; ready this head with --change %s instead, without --stamp", handle, id))
 		}
 		if head, err = stamp(g, a.branch, head, remote, tip, id); err != nil {
-			return err
+			return 0, err
 		}
 	}
 
 	subject, err := g.output(true, "log", "-1", "--format=%s", head)
 	if err != nil {
-		return failure("could not read the subject of " + short(head))
+		return 0, failure("could not read the subject of " + short(head))
 	}
 	version := change.Version{
 		Head: change.HeadPrefix + head, Title: change.Title(subject), Branch: a.branch, Uploader: principal,
@@ -220,11 +227,11 @@ func runReady(g git, args []string, w io.Writer) error {
 		same := active.Head == version.Head
 		switch {
 		case same && before.State == change.Ready:
-			return failure(fmt.Sprintf("%s v%d is at %s already; a new version needs a new head", handle, active.N, short(head)))
+			return 0, failure(fmt.Sprintf("%s v%d is at %s already; a new version needs a new head", handle, active.N, short(head)))
 		case !same && len(before.Versions) >= change.MaxVersions:
-			return failure(fmt.Sprintf("%s has %d versions, the most a change may have", handle, len(before.Versions)))
+			return 0, failure(fmt.Sprintf("%s has %d versions, the most a change may have", handle, len(before.Versions)))
 		case before.Seq >= change.MaxSeq:
-			return failure(fmt.Sprintf("%s's record has been updated %d times, the most a record may be", handle, before.Seq))
+			return 0, failure(fmt.Sprintf("%s's record has been updated %d times, the most a record may be", handle, before.Seq))
 		}
 		after = *before
 		if same {
@@ -244,16 +251,16 @@ func runReady(g git, args []string, w io.Writer) error {
 	message := fmt.Sprintf("valley ready: %s v%d\n\nChange %s, version %d, at %s.", handle, version.N, id, version.N, head)
 	commit, err := writeRecord(g, &after, message, parents...)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := pushRecord(g, id, old, commit); err != nil {
-		return err
+		return 0, err
 	}
 	fmt.Fprintf(w, "%s %s v%d ready\n", project(g), handle, version.N)
 	if generated {
 		fmt.Fprintf(w, "The change ID %s is new. Ready a later head of this change with --change %s, or carry the ID in the head with --stamp.\n", id, id)
 	}
-	return nil
+	return version.N, nil
 }
 
 func runUnready(g git, args []string, stdout, stderr io.Writer) error {

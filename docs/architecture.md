@@ -554,8 +554,8 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `changes`, `pending`, `knot` and `plan` verbs are a Go program,
-`valley-go` (`status/`), which the package puts on the script's `PATH`.
+`ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot` and `plan` verbs are a Go
+program, `valley-go` (`status/`), which the package puts on the script's `PATH`.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -563,7 +563,7 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
 | `valley review <b>`          | Shows a branch and offers `[a]pprove`, `[r]eject` and `[s]kip`, plus `[b]ase` when it needs a rebase. |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
-| `valley rebase <change>`     | Does what `[b]ase` does, and adds the rebased head to the change's record as a new version.           |
+| `valley rebase <change>`     | Rebases the change's whole stack, as `[b]ase` does, and adds each rebased head as a new version.      |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
 | `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
@@ -577,9 +577,9 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 `[a]pprove` is the operator's approval of a change. It runs the required checks with `attest` in a
 worktree of the head it approves. Then one atomic push carries the evidence refs and the integration
 request, with a lease on the request ref. When the request already names this head, the push leaves
-the request ref out. When nothing is required as well, there is no push. `[b]ase` rebases the branch
-in a temporary worktree and pushes it with a lease. `[r]eject` deletes the remote branch after a
-prompt.
+the request ref out. When nothing is required as well, there is no push. `[b]ase` rebases the
+change's whole stack in a temporary worktree, and pushes every layer's branch in one atomic push,
+with a lease on each. `[r]eject` deletes the remote branch after a prompt.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
 branch no record is on is requested under its name with each `/` replaced by `-`, as before records
@@ -599,9 +599,16 @@ version has not landed, and the branches no record is on, whose heads the change
 too.
 
 - `review` first lists the layers. It warns of each lower layer that is a draft or withdrawn, since
-  the integrator refuses to land it or anything above it. It says so when the bottom does not
-  fast-forward from `main`. Its last line says how the review goes: read each layer and go on with
-  `[n]`, and approving the top lands every layer.
+  the integrator refuses to land it or anything above it. Its last line says how the review goes:
+  read each layer and go on with `[n]`, and approving the top lands every layer.
+- When the bottom does not fast-forward from `main`, the summary ends with a prompt, before any
+  layer is paged, such as
+  `one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top?`.
+  - `[b]ase` rebases the whole stack, as `valley rebase` does. `review` then reads the stack again,
+    lists it again, and pages the rebased layers. So the heads paged are the heads approved.
+  - `[s]top` ends the review, and nothing is done.
+  - When the rebase is refused or left unfinished, `review` says what happened and offers only
+    `[s]top`.
 - Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
   and its diff from the layer below. Notes taken on it are kept under its own branch.
 - After each lower layer, `review` asks a prompt that names the layer and its place, such as
@@ -613,8 +620,7 @@ too.
     the third layer up.
   - `[s]top` ends the review, and nothing is done.
 - After the top, the prompt names the change and says that approving it lands every layer, such as
-  `three, 3 of 3: [a]pprove all 3, [r]eject three, [s]top?`. A stack is never offered `[b]ase`,
-  because rebasing one layer would break the layers above it. Only the top is offered `[r]eject`.
+  `three, 3 of 3: [a]pprove all 3, [r]eject three, [s]top?`. Only the top is offered `[r]eject`.
 - When a layer's checks fail, its prompt says approving needs a new head and stops offering
   `[a]pprove`, as for a change alone.
 - Every layer's notes are printed at the end, whatever the verdict.
@@ -622,11 +628,25 @@ too.
 A change with nothing under it is reviewed against `main` as before.
 
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
-change their own way. Each runs the same function as its key, so the checks, the request write and
-the refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review the
-result, and it leaves a branch that already fast-forwards from `main` alone. Checked by
-`valley-cli`, `valley-request`, `valley-status`, `valley-ready`, `valley-changes` and
-`review-notes`.
+change their own way. Each runs the same code as its key, so the checks, the request write and the
+refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review the
+result, and it leaves a stack that already fast-forwards from `main` alone. Checked by `valley-cli`,
+`valley-request`, `valley-status`, `valley-ready`, `valley-changes`, `review-notes` and
+`integrator-e2e`.
+
+`approve`, and so `[a]pprove`, refuses a head before any check runs when two things hold:
+
+- the head does not fast-forward from `main`;
+- the commits it would bring, from its merge base with `main` to the head, include a version head of
+  another change that has not landed.
+
+Such a head is a layer above the bottom of a stale stack. The refusal gives the command that rebases
+the stack: `valley rebase <change>`. This is the project's choice, not a rule the integrator needs.
+The integrator could land the head, as one commit recorded against its request alone. The changes
+under it would then have no landing record of their own (see [Listing changes](#listing-changes)).
+The checks would also run over a head that has to be rebased anyway. A stale head with no change
+under it is approved as before: the bottom layer of a stack, or a change alone. The integrator
+merges it onto `main`.
 
 An approval of a change with a record binds one head, and the request names exactly that head:
 
@@ -645,13 +665,49 @@ showed. Just before it publishes, it reads the branch on origin, and refuses whe
 that head, naming both heads. The operator reviewed the branch, and the commits it has moved to have
 not been read.
 
-`valley rebase <change>`, and `[b]ase` in a review, rebase a change with a record at its active
-version's head. They push the branch that version names, with a lease, and then add the rebased head
-as a new version, as the principal `valley.principal` names. They add it with
-`valley ready --if-active <head>`, which writes the version only while the change is still `ready`
-at the head the rebase began with. The record ref is leased on the record that check read, so a
-change unreadied in the meantime stays a draft at its old head. `rebase` refuses a version that
-names no branch. After `[b]ase`, the review goes on at the new version.
+`valley rebase <change>`, and `[b]ase` in a review, rebase the change's whole stack
+(`status/rebase.go`). The stack is the change and the layers `valley-go stack` lists under it. A
+change with nothing under it is a stack of one. In a throwaway worktree, bottom first, each layer's
+own commits are rebased onto the rebased layer below it, and the bottom's onto `main`. So each layer
+keeps its own delta. Commits under the bottom that a lower change landed through an integrator merge
+drop out, since their content is on `main`. The rebase reads that landing as `valley changes` does,
+so it needs `VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` to verify the transfer statement.
+
+The rebase refuses, and changes nothing, when the stack cannot move whole:
+
+- a change in it is not `ready`, records no branch, or has a branch that is missing on origin or not
+  at its recorded head;
+- a plain branch in it is the branch of a change that is not in the stack;
+- two layers are on one branch;
+- the commits to be rebased hold a merge, or a version head of a change that is not `ready` or is
+  not in the stack. A rebase gives every commit a new ID, so without this check a draft's commits
+  could enter the stack under IDs no record names. This is the integrator's rule for what a request
+  may bring, applied before the rebase;
+- it holds a change, and `valley.principal` is unset. The refusal gives the command that sets it.
+
+A conflict in any layer pushes nothing and records nothing, and the error names the layer. Otherwise
+the rebase publishes in two phases:
+
+1. One atomic push moves every layer's branch, each leased on the tip the rebase read. Every branch
+   moves, or none does.
+2. Bottom first, each change's rebased head is added to its record as a new version, as the
+   principal `valley.principal` names. Each is added with `valley ready --if-active <head>`, which
+   writes the version only while the change is still `ready` at the head the rebase began with. The
+   record ref is leased on the record that check read, so a change unreadied in the meantime stays a
+   draft at its old head. A failure for one change does not stop the others.
+
+A change alone prints its new head. A stack prints a manifest: one line for each layer, with its old
+and new head, whether its branch was pushed, and whether a version was added. For each change left
+unfinished, the manifest gives the exact `valley ready --head … --change … <branch>` command that
+finishes it, and the rebase exits non-zero. Running the rebase again on a change whose branch holds
+a head no version records is refused by the recorded-tip check, which prints the same command. When
+the push's outcome is unknown, as after a transport error, the rebase says so, prints the manifest,
+and says how to check: `git ls-remote origin <branches>`.
+
+After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
+head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
+the `valley rebase` that moves it, and does not move it. After `[b]ase`, the review goes on at the
+new heads.
 
 `valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
 change's record (`status/ready.go`). The branch is the current one unless named. The head is
@@ -714,16 +770,16 @@ The record can change while one of these verbs runs. Another principal may unrea
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the
 record again before it runs the checks, and again before it files the request. It refuses when the
 change is no longer `ready`, or when the head it approves is no longer a version head. A new version
-does not stop it, since the request names the head that was approved. `rebase` reads the record
-again before it starts, and again before it pushes. It refuses when the change is no longer `ready`,
-or when its active version is at another head than the one the rebase began with. These client
-checks save a run that would come to nothing. The integrator makes the same check on origin.
+does not stop it, since the request names the head that was approved. `rebase` reads each change's
+record before it starts, and again just before it pushes. It refuses when a record has changed at
+all in between. These client checks save a run that would come to nothing. The integrator makes the
+same check on origin.
 
 A name that read as a plain branch can come to name a change while the verb runs. For example,
 someone readies the branch, and then unreadies it, while a review of it is open. So before `approve`
-files and before `rebase` pushes, the verb reads the original name again. If it names a change by
-then, the change must be `ready`, and its active version's head must be the head the verb began
-with.
+files, it reads the original name again. If it names a change by then, the change must be `ready`,
+and its active version's head must be the head `approve` began with. Before `rebase` pushes, it
+reads each plain branch in the stack again, and refuses when one names a change by then.
 
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
 (`status/ready.go`). Either may be run by the change's owner or by the operator, who holds the

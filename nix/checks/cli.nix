@@ -45,7 +45,10 @@ in
   # the pager is open — because every property under test is a
   # property of that arrangement: that v is handed the raw buffer
   # and not the rendering, that an inserted line becomes a note,
-  # and that the file and line it names are the ones it sat on.
+  # and that the file and line it names are the ones it sat on. It goes
+  # on to review a stack layer by layer, and a stale stack: approving its
+  # top refused, its bottom approved, and review's [b]ase before the first
+  # page, after which the pages and the request are at the rebased heads.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git
@@ -183,9 +186,14 @@ in
   # earlier version's branch too. A review left open while another
   # principal unreadies the change, or readies a new version, refuses to
   # act on it. A branch no record is on is acted on as a branch, and one
-  # two records are on is refused. The hook is followed from the protected
-  # host's rendered init script, so the rules the record meets are the
-  # ones a host applies.
+  # two records are on is refused. Last, stacks rebased whole: every layer
+  # moved and each change given a version, by ancestry and by trees; a
+  # conflict in the middle layer; each refusal before the rebase; a branch
+  # moved, and a plain branch readied, after the rebase read the stack; a
+  # change unreadied between the branch push and its record write, and the
+  # command the manifest gives to finish it; and a second stack left on an
+  # old head. The hook is followed from the protected host's rendered init
+  # script, so the rules the record meets are the ones a host applies.
   valley-ready = pkgs.runCommand "valley-ready" {
     nativeBuildInputs = [
       pkgs.git

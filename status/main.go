@@ -5,9 +5,11 @@
 // repositories a host serves, and for resolve, which turns the name of a
 // change into its branch for the verbs bin/valley runs itself, for
 // stack, which lists the layers under a change for review (stack.go), for
-// knot, the plan graph's API (knot.go), which reads and writes a
-// project's knots at refs/the-valley/knots, and for plan, which shows that
-// graph as a view (plan.go).
+// rebase, which rebases a change's whole stack onto main, and brings, which
+// lists the changes a head would bring that have not landed, for approve
+// (rebase.go), for knot, the plan graph's API (knot.go), which reads and
+// writes a project's knots at refs/the-valley/knots, and for plan, which
+// shows that graph as a view (plan.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -41,6 +43,8 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go withdraw <change>
        valley-go resolve <change>
        valley-go stack <change>
+       valley-go rebase [--head <sha>] <change>
+       valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--checks]
@@ -78,6 +82,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runResolve(g, args, stdout)
 	case "stack":
 		err = runStack(g, args, stdout)
+	case "rebase":
+		return runRebase(g, args, stdout, stderr)
+	case "brings":
+		err = runBrings(g, args, stdout)
 	case "versions":
 		err = runVersions(g, args, stdout)
 	case "changes":

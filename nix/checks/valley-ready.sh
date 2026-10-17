@@ -751,5 +751,271 @@ if git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requ
 fi
 refused 'that name is reserved for the change with the ID' valley status "$reserved"
 
+# ----------------------------------------------------------------------
+# A stack is rebased whole: every layer onto the rebased layer below it,
+# and the bottom onto main, with one atomic push of every branch, and then
+# each change's rebased head added to its record as a new version.
+#
+# new_change <branch>: origin's head of the branch readied by the
+# contributor as a new change, whose ID and handle are left in nid and nh.
+new_change() {
+  ok as contributor valley ready "$1"
+  nid="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+  nh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+  if [ "${#nid}" != 32 ] || [ -z "$nh" ]; then fail "ready $1 did not name a new change"; fi
+}
+# build_stack <name>: three layers on main, each adding files of its own:
+# <name>/one, a plain branch, then <name>/two and <name>/three, changes the
+# contributor readies. The top has two commits. The heads are left in
+# one, two and three, and the changes' IDs and handles in id2, h2, id3
+# and h3.
+build_stack() {
+  local from=main layer
+  for layer in one two three; do
+    git checkout --quiet -b "$1/$layer" "$from"
+    commit "$1-$layer"
+    as contributor git push --quiet origin "$1/$layer"
+    from="$1/$layer"
+  done
+  commit "$1-three-more"
+  as contributor git push --quiet origin "$1/three"
+  git checkout --quiet main
+  one="$(git rev-parse "$1/one")" two="$(git rev-parse "$1/two")" three="$(git rev-parse "$1/three")"
+  new_change "$1/two"
+  id2="$nid" h2="$nh"
+  new_change "$1/three"
+  id3="$nid" h3="$nh"
+}
+# move_main <subject>: main moves on, adding a file of its own.
+move_main() {
+  git checkout --quiet main
+  commit "$1"
+  env -u VALLEY_PRINCIPAL git push --quiet origin main
+}
+at() { git -C "$origin" rev-parse "$1"; }
+# moved_nothing <name>: no branch of the stack and no record has moved
+# since $before was read.
+stack_refs() {
+  git -C "$origin" for-each-ref --format='%(objectname) %(refname)' "refs/heads/$1/" refs/the-valley/changes/
+}
+moved_nothing() {
+  [ "$(stack_refs "$1")" = "$before" ] || fail "the rebase of $1 moved something"
+}
+# same_delta <old base> <old head> <new base> <new head>: a layer's diff
+# from its base is what it was.
+same_delta() {
+  [ "$(git -C "$origin" diff "$1" "$2")" = "$(git -C "$origin" diff "$3" "$4")" ] \
+    || fail "the diff of $2 from $1 changed in the rebase"
+}
+
+# A three-layer stack with main moved under it, without conflict. Every
+# branch moves, each change gains a ready version at its new head, the
+# operator's, and every layer keeps its diff, on the rebased layer below.
+build_stack s1
+oldmain="$(at refs/heads/main)"
+move_main s1-main
+main="$(at refs/heads/main)"
+ok as requester valley rebase "$h3"
+new1="$(at refs/heads/s1/one)" new2="$(at refs/heads/s1/two)" new3="$(at refs/heads/s1/three)"
+for b in "$one:$new1" "$two:$new2" "$three:$new3"; do
+  [ "${b%%:*}" != "${b#*:}" ] || fail "the rebase left a branch of s1 where it was"
+done
+record "$id2" '.state == "ready"' '.active == 2' ".versions[1].head == \"git-sha1:$new2\"" \
+  '.versions[1].uploader == "requester"' '.versions[1].branch == "s1/two"'
+record "$id3" '.state == "ready"' '.active == 2' ".versions[1].head == \"git-sha1:$new3\"" \
+  '.versions[1].uploader == "requester"' '.versions[1].branch == "s1/three"'
+git -C "$origin" merge-base --is-ancestor "$main" "$new1" || fail 'the bottom is not on main'
+git -C "$origin" merge-base --is-ancestor "$new1" "$new2" || fail 'the second layer is not on the first'
+git -C "$origin" merge-base --is-ancestor "$new2" "$new3" || fail 'the top is not on the second layer'
+same_delta "$oldmain" "$one" "$main" "$new1"
+same_delta "$one" "$two" "$new1" "$new2"
+same_delta "$two" "$three" "$new2" "$new3"
+grep -qx "the stack under $h3, bottom first:" "$w/out" || fail 'the rebase printed no manifest'
+grep -qE "^  s1/one +${one:0:7} -> ${new1:0:7}  origin/s1/one pushed$" "$w/out" || fail 'the manifest misread s1/one'
+grep -qE "^  $h2 +${two:0:7} -> ${new2:0:7}  origin/s1/two pushed, v2 added$" "$w/out" || fail "the manifest misread $h2"
+grep -qE "^  $h3 +${three:0:7} -> ${new3:0:7}  origin/s1/three pushed, v2 added$" "$w/out" || fail "the manifest misread $h3"
+if grep -q '^to finish' "$w/out"; then fail 'a finished rebase printed a command to finish it'; fi
+# Rebased again, a stack that fast-forwards from main is left as it is.
+before="$(stack_refs s1)"
+ok as requester valley rebase "$h3"
+grep -qx 's1/three already fast-forwards from origin/main; nothing rebased' "$w/out" \
+  || fail 'a stack that fast-forwards was not left alone'
+moved_nothing s1
+
+# A conflict in the middle layer pushes nothing, records nothing, and
+# names the layer.
+build_stack s3
+git checkout --quiet main
+echo 'main has its own' > s3-two.txt
+git add s3-two.txt
+git commit --quiet -m 'main has its own s3-two'
+env -u VALLEY_PRINCIPAL git push --quiet origin main
+before="$(stack_refs s3)"
+refused "$h2, layer 2 of 3 under $h3, conflicts with s3/one as rebased — resolve by hand; nothing changed" \
+  as requester valley rebase "$h3"
+moved_nothing s3
+
+# Each refusal before the rebase changes nothing.
+build_stack s4
+move_main s4-main
+before="$(stack_refs s4)"
+# A lower change that is a draft.
+ok as contributor valley unready "$h2"
+before="$(stack_refs s4)"
+refused "change $h2 v1, layer 2 of 3 under $h3, is draft, not ready; nothing rebased. Ready it first: valley ready --change $id2 s4/two" \
+  as requester valley rebase "$h3"
+moved_nothing s4
+ok as contributor valley ready --change "$id2" s4/two
+before="$(stack_refs s4)"
+# A layer's branch missing on origin.
+git -C "$origin" update-ref -d refs/heads/s4/two
+refused "change $h2 v1, layer 2 of 3 under $h3, is on the branch s4/two, and origin has no such branch; nothing rebased" \
+  as requester valley rebase "$h3"
+git -C "$origin" update-ref refs/heads/s4/two "$two"
+moved_nothing s4
+# A layer's branch at another commit than its recorded head.
+git checkout --quiet -b s4-elsewhere "$two"
+commit s4-elsewhere
+elsewhere="$(git rev-parse HEAD)"
+git checkout --quiet main
+as contributor git push --quiet --force origin "$elsewhere:refs/heads/s4/two"
+refused "change $h2 v1, layer 2 of 3 under $h3, records the head $two, and origin/s4/two is at $elsewhere; nothing rebased. Ready the branch's head as a new version of $h2 to act on it: valley ready --head $elsewhere --change $id2 s4/two" \
+  as requester valley rebase "$h3"
+git -C "$origin" update-ref refs/heads/s4/two "$two"
+moved_nothing s4
+# Two layers on one branch: s4/two at the top's first commit is a plain
+# branch in the stack, and the change under it is on s4/two as well.
+git -C "$origin" update-ref refs/heads/s4/two "$three~1"
+refused "$h2 and s4/two, layers 2 and 3 of 4 under $h3, are both on the branch s4/two; nothing rebased" \
+  as requester valley rebase "$h3"
+git -C "$origin" update-ref refs/heads/s4/two "$two"
+moved_nothing s4
+# No valley.principal: the refusal gives the command that sets it.
+refused "git config valley.principal names none, so nothing is rebased; set it with git config valley.principal <name>" \
+  as anonymous valley rebase "$h3"
+moved_nothing s4
+# A draft's earlier version head among the commits to be rebased. The
+# draft readied s4/one's head as its v1, then readied a head elsewhere as
+# v2, and was unreadied. s4/one is a plain branch again, and its head is
+# a version head of a change that is not ready.
+ok as contributor valley ready --head "$one" s4/one
+did="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+dh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
+git checkout --quiet -b s4/draft main
+commit s4-draft
+as contributor git push --quiet origin s4/draft
+git checkout --quiet main
+ok as contributor valley ready --change "$did" s4/draft
+ok as contributor valley unready "$dh"
+before="$(stack_refs s4)"
+refused "the commit ${one:0:7} under $h3 is v1 of change $dh, which is draft, not ready; nothing rebased" \
+  as requester valley rebase "$h3"
+moved_nothing s4
+
+# race_hook <command>: the command runs once, from the next rebase's
+# post-rewrite hook: after the stack is read and a layer is rebased, and
+# before anything is pushed.
+race_hook() {
+  cat > "$repo/.git/hooks/post-rewrite" << EOF
+#!/bin/sh
+[ -e "$w/race-armed" ] || exit 0
+rm -f "$w/race-armed"
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX
+cd "$repo" && $1
+exit 0
+EOF
+  chmod +x "$repo/.git/hooks/post-rewrite"
+  touch "$w/race-armed"
+}
+disarm_hook() {
+  rm -f "$repo/.git/hooks/post-rewrite"
+  [ ! -e "$w/race-armed" ] || fail 'the race hook never ran'
+}
+
+# A layer's branch moves after the rebase read it: the atomic push is
+# refused, and no branch moves.
+build_stack s5
+move_main s5-main
+git checkout --quiet -b s5-moved "$two"
+commit s5-moved
+moved="$(git rev-parse HEAD)"
+as contributor git push --quiet origin "$moved:refs/heads/s5-moved"
+git checkout --quiet main
+race_hook "git -C '$origin' update-ref refs/heads/s5/two $moved"
+refused 'origin refused the push of the stack'"'"'s branches, so none moved' as requester valley rebase "$h3"
+disarm_hook
+[ "$(at refs/heads/s5/one)" = "$one" ] || fail 'a refused push moved s5/one'
+[ "$(at refs/heads/s5/two)" = "$moved" ] || fail 'a refused push moved s5/two'
+[ "$(at refs/heads/s5/three)" = "$three" ] || fail 'a refused push moved s5/three'
+record "$id2" '.active == 1'
+record "$id3" '.active == 1'
+grep -qE "^  $h3 +.* origin/s5/three not pushed, no version added$" "$w/out" || fail 'the manifest did not say nothing was pushed'
+
+# A plain branch in the stack becomes a change after the rebase read it:
+# the last read before the push refuses it, and nothing moves.
+build_stack s6
+move_main s6-main
+before="$(stack_refs s6)"
+race_hook "valley ready s6/one > '$w/raced.out'"
+refused "origin/s6/one, layer 1 of 3 under $h3, is now change" as requester valley rebase "$h3"
+disarm_hook
+grep -qF 'nothing pushed. Rebase it again by its handle' "$w/err" || fail 'the refusal did not say what to do'
+[ "$(at refs/heads/s6/one)" = "$one" ] || fail 's6/one moved'
+[ "$(at refs/heads/s6/two)" = "$two" ] || fail 's6/two moved'
+[ "$(at refs/heads/s6/three)" = "$three" ] || fail 's6/three moved'
+record "$id2" '.active == 1'
+record "$id3" '.active == 1'
+
+# The middle change is unreadied after the branches are pushed and before
+# its record is written. The other layers are finished, the manifest gives
+# the exact command that finishes the middle one, the exit is non-zero,
+# and that command finishes it. A stand-in for origin's receive-pack
+# unreadies it in front of the second push: the first moves the branches,
+# and the second writes the middle change's record.
+build_stack s7
+move_main s7-main
+cat > "$w/racing-receive-pack" << EOF
+#!/bin/sh
+n=\$((\$(cat "$w/pushes" 2> /dev/null || echo 0) + 1))
+echo "\$n" > "$w/pushes"
+if [ "\$n" = 2 ]; then
+  (unset GIT_DIR; cd "$repo" && valley unready $id2 > /dev/null 2>&1)
+fi
+exec git-receive-pack "\$@"
+EOF
+chmod +x "$w/racing-receive-pack"
+rm -f "$w/pushes"
+git config remote.origin.receivepack "$w/racing-receive-pack"
+refused '1 change of the stack under' as requester valley rebase "$h3"
+git config --unset remote.origin.receivepack
+[ "$(cat "$w/pushes")" -ge 3 ] || fail 'the record writes did not follow the branch push'
+new2="$(at refs/heads/s7/two)" new3="$(at refs/heads/s7/three)"
+[ "$new2" != "$two" ] || fail 's7/two did not move'
+record "$id2" '.state == "draft"' '.active == 1'
+record "$id3" '.state == "ready"' '.active == 2' ".versions[1].head == \"git-sha1:$new3\""
+grep -qE "^  $h2 +.* origin/s7/two pushed, no version added$" "$w/out" || fail "the manifest did not say $h2 is unfinished"
+grep -qE "^  $h3 +.* origin/s7/three pushed, v2 added$" "$w/out" || fail "the manifest did not say $h3 is finished"
+finish="$(sed -n "s/^to finish $h2: //p" "$w/out")"
+[ "$finish" = "valley ready --head $new2 --change $id2 s7/two" ] || fail "the manifest gave the command: $finish"
+# Run again, the rebase refuses the stack, since a branch in it holds a
+# head no version of its change records, and gives the same command.
+refused "Ready the branch's head as a new version of $h2 to act on it: $finish" as requester valley rebase "$h3"
+eval "ok as contributor $finish"
+record "$id2" '.state == "ready"' '.active == 2' ".versions[1].head == \"git-sha1:$new2\""
+
+# A second stack shares the bottom layer. The rebase names it as on an
+# old head of that layer, and does not move it.
+build_stack s9
+git checkout --quiet -b s9/side "$one"
+commit s9-side
+side="$(git rev-parse HEAD)"
+as contributor git push --quiet origin s9/side
+git checkout --quiet main
+move_main s9-main
+ok as requester valley rebase "$h3"
+grep -qx 's9/side is now on an old head of s9/one; rebase it with valley rebase s9/side' "$w/out" \
+  || fail 'the rebase did not name the stack left on an old head'
+[ "$(at refs/heads/s9/side)" = "$side" ] || fail 'the rebase moved another stack'
+
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

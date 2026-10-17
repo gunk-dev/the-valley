@@ -44,7 +44,7 @@ rec {
       pkgs.cue # checks and approving — it composes the policy layers
       pkgs.less # review only — its v key is what takes a note
       attest # approving only — it runs the checks and signs them
-      valley-go # status, ready, unready and withdraw, naming a change by its ID, and pending's drafts
+      valley-go # status, ready, unready, withdraw and rebase, naming a change by its ID, and pending's drafts
     ];
     text = builtins.readFile ../bin/valley;
   };
@@ -81,9 +81,10 @@ rec {
   # request and outcome record from origin, and prints them as sentences or
   # as the valley-status/v1 JSON object front ends read. ready, unready and
   # withdraw write a change's record, with the one reading of a record the
-  # push hook shares (../change). knot reads and writes the plan graph,
-  # with the one reading of a graph the push hook shares (../knot), and
-  # plan shows that graph as a view. Go,
+  # push hook shares (../change). rebase rebases a change's whole stack and
+  # adds each change's rebased head to its record. knot reads and writes
+  # the plan graph, with the one reading of a graph the push hook shares
+  # (../knot), and plan shows that graph as a view. Go,
   # standard library only — hence vendorHash = null and no module fetch. It runs whatever git is on PATH, which inside the
   # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
   # the bash it replaced, so they need bash, and lay pending out over real

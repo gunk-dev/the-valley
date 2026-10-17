@@ -306,4 +306,62 @@ grep -q "origin/solo is at $seed, and is no longer at $solohead, the head shown;
 [ ! -s "$pushlog" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/solo" > /dev/null; then exit 1; fi
 
+# ----------------------------------------------------------------------
+# A stack whose bottom does not fast-forward from main. The draft in the
+# middle is readied again, the top gains a second version, and main moves
+# on under the stack.
+valley ready --change "$q" two > /dev/null
+git checkout --quiet three
+echo "layer three, again" >> three.md
+git commit --quiet -am "layer three again"
+git push --quiet origin three
+threeagain="$(git rev-parse three)"
+valley ready --change "$p" three > /dev/null
+git checkout --quiet main
+echo "main moves on" > moved.md
+git add moved.md
+git commit --quiet -m "main moves on"
+git push --quiet origin main
+
+# Approving the top is refused before any check runs, at its active head
+# and at an earlier version's head, and the refusal names the rebase that
+# fixes it. Nothing is published.
+: > "$pushlog"
+for head in "$threeagain" "$three"; do
+  if valley approve --head "$head" pppp > stale-approve.out 2>&1; then exit 1; fi
+  grep -qF 'does not fast-forward from main, and the commits it would bring hold a version of qqqq, not landed.' stale-approve.out
+  grep -qF 'nothing published. Rebase the stack first: valley rebase pppp' stale-approve.out
+  if grep -q 'requires no check' stale-approve.out; then exit 1; fi
+done
+[ ! -s "$pushlog" ]
+# The bottom layer has no change under it, so it is approved as it is.
+valley approve one > stale-bottom.out 2>&1
+grep -q 'requires no check' stale-bottom.out
+[ "$(git -C "$stack" rev-parse "$requests/one")" = "$onehead" ]
+git -C "$stack" update-ref -d "$requests/one"
+
+# review asks, before any layer is paged, whether to rebase the stack.
+# [s]top ends it there, and nothing is done.
+: > "$pushlog"
+printf 's\n' | valley review pppp > stale-stop.out 2>&1
+grep -qF 'one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top? stopped reviewing pppp before its first layer; nothing done' stale-stop.out
+if grep -q 'change 1 of 3' stale-stop.out; then exit 1; fi
+[ ! -s "$pushlog" ]
+
+# [b]ase rebases the whole stack. The review then lists the stack again
+# and pages the rebased layers, and [a]pprove at the top files the
+# request at the top's rebased head.
+printf 'b\nn\nn\na\n' | valley review pppp > stale-review.out 2>&1
+grep -qF 'one, at the bottom, does not fast-forward from main: [b]ase all 3 onto main, [s]top? ' stale-review.out
+grep -qF 'the stack under pppp, bottom first:' stale-review.out
+git fetch --quiet origin
+newone="$(git rev-parse origin/one)" newthree="$(git rev-parse origin/three)"
+[ "$newone" != "$onehead" ]
+git merge-base --is-ancestor origin/main "$newone"
+awk '/change 1 of 3: /{ on = 1 } /change 2 of 3: /{ on = 0 } on' stale-review.out > stale-page1
+grep -q "^$(git rev-parse --short "$newone") layer one$" stale-page1
+if grep -q "$(git rev-parse --short "$onehead")" stale-page1; then exit 1; fi
+grep -qF 'pppp, 3 of 3: [a]pprove all 3, [r]eject pppp, [s]top? ' stale-review.out
+[ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$newthree" ]
+
 touch "$out"

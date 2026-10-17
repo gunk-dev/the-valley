@@ -15,7 +15,7 @@ _valley() {
       'changes:print every change, across the host, as valley-changes/v1 JSON'
       'review:page through a change, or a stack bottom-up, then approve, reject, or skip'
       'approve:approve a change without paging it, filing its integration request'
-      'rebase:rebase a change onto origin/main and push it with a lease'
+      'rebase:rebase a change and its whole stack onto origin/main'
       'status:read the integration result for a change from origin'
       'ready:mark a head of a branch ready as a new version of its change'
       'unready:make a ready change a draft'

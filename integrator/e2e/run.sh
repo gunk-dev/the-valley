@@ -1326,4 +1326,91 @@ grep -q "^c-$id26 -> refs/heads/main .*: land$" "$work/last.out" \
 [ "$(tip)" = "$(git rev-parse c26)" ] || die "main is not at c26's head"
 holds "withdraw voided the request on the next pass; readied again, the change landed only on a fresh approval"
 
+# ----------------------------------------------------------------------
+say "27. a stack is rebased whole, a landed change under it drops out, and approving its top lands every layer"
+
+# approve reads the floor where the integrator does: the owning valley,
+# which policy/valley names at main's tip.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+mkdir -p policy
+echo "$instance_repo" > policy/valley
+git add policy/valley
+git commit --quiet -m "name the owning valley"
+git push --quiet origin main
+
+# A change of two commits, a plain branch on it, and two changes on that.
+git checkout --quiet -b c27-a
+echo "the first half of a" > docs/c27-a1.md
+git add -A
+git commit --quiet -m "c27: the first half of a"
+echo "the second half of a" > docs/c27-a2.md
+git add -A
+git commit --quiet -m "c27: the second half of a"
+attest_change c27-a "" "" --check prose-format
+ready_change c27-a
+id27a="$readied"
+for layer in p b c; do
+  git checkout --quiet -b "c27-$layer"
+  echo "layer $layer" > "docs/c27-$layer.md"
+  git add -A
+  git commit --quiet -m "c27: layer $layer"
+  git push --quiet origin "c27-$layer"
+done
+ready_change c27-b
+id27b="$readied"
+ready_change c27-c
+id27c="$readied"
+a="$(git rev-parse c27-a)" p="$(git rev-parse c27-p)" b="$(git rev-parse c27-b)" c="$(git rev-parse c27-c)"
+
+# main moves under the stack, outside what prose-format reads, and then a
+# lands through an integrator merge: one new commit, not its own two.
+git checkout --quiet main
+git checkout --quiet -b c27-x
+mkdir -p notes
+echo "main moves on" > notes/c27-x.txt
+git add -A
+git commit --quiet -m "c27: main moves on"
+git push --quiet origin c27-x
+request c27-x main "$(git rev-parse c27-x)"
+integrate
+grep -q "^c27-x -> refs/heads/main .*: land$" "$work/last.out" || die "c27-x did not land"
+request "c-$id27a" main "$a"
+integrate
+grep -q "^c-$id27a -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id27a did not land"
+main27="$(tip)"
+git -C "$origin" merge-base --is-ancestor "$a" "$main27" && die "a landed by fast-forward; the scenario proves nothing"
+
+# The rebase reads a's landing from its transfer statement, so a is no
+# layer, and its two commits under the plain branch drop out. Each layer
+# keeps its own diff, on the rebased layer below.
+export VALLEY_KNOWN_SIGNERS="$work/reader_keys" VALLEY_INTEGRATOR_SIGNER="$integrator_name"
+valley status --json "$id27a" | grep -q '"landing": *"landed-recorded"' || die "a's landing was not read as recorded"
+valley rebase "$id27c" > "$work/rebase.out" 2>&1 || die "the rebase failed: $(cat "$work/rebase.out")"
+git fetch --quiet origin
+np="$(git rev-parse origin/c27-p)" nb="$(git rev-parse origin/c27-b)" nc="$(git rev-parse origin/c27-c)"
+git merge-base --is-ancestor "$main27" "$np" || die "the bottom is not on main"
+git merge-base --is-ancestor "$np" "$nb" || die "b is not on the rebased plain branch"
+git merge-base --is-ancestor "$nb" "$nc" || die "c is not on b"
+[ "$(git rev-list --count "$main27..$np")" = 1 ] || die "a's commits did not drop out from under the plain branch"
+[ "$(git diff "$a" "$p")" = "$(git diff "$main27" "$np")" ] || die "the plain branch's diff changed"
+[ "$(git diff "$p" "$b")" = "$(git diff "$np" "$nb")" ] || die "b's diff changed"
+[ "$(git diff "$b" "$c")" = "$(git diff "$nb" "$nc")" ] || die "c's diff changed"
+grep -q "^  c27-p .* origin/c27-p pushed$" "$work/rebase.out" || die "the manifest did not list the plain branch: $(cat "$work/rebase.out")"
+holds "the stack moved whole onto main, and the landed change's commits dropped out from under it"
+
+# Approving the rebased top, and landing it, lands every layer.
+VALLEY_ATTEST_KEY="$work/contributor" VALLEY_ATTEST_NAME="$contributor" \
+  valley approve --head "$nc" "$id27c" > "$work/approve.out" 2>&1 \
+  || die "approving the rebased top failed: $(cat "$work/approve.out")"
+integrate
+grep -q "^c-$id27c -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id27c did not land"
+[ "$(tip)" = "$nc" ] || die "main is not at the top's rebased head"
+for id in "$id27b" "$id27c"; do
+  valley status --json "$id" | grep -q '"landing": *"landed"' || die "change $id does not read landed"
+done
+git -C "$origin" merge-base --is-ancestor "$np" "$(tip)" || die "the plain branch did not land"
+unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
+holds "the rebased stack landed as one fast-forward, and every layer reads landed"
+
 printf '\nintegrator-e2e: every scenario held\n'

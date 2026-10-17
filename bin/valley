@@ -180,9 +180,9 @@ usage: valley <verb> [args]
                    integrator does, having judged the request.
                    a stale branch (won't fast-forward from main) is first
                    offered:
-                     [b]ase       rebase it onto origin/main in a throwaway
-                                  worktree, push --force-with-lease, then
-                                  re-review the diff that would actually land
+                     [b]ase       rebase it onto origin/main, as rebase
+                                  does below, then re-review the diff that
+                                  would actually land
                    [a]pprove is offered there too: a stale branch is nothing
                    the integrator cannot apply, so it need not be rebased
                    first.
@@ -203,10 +203,20 @@ usage: valley <verb> [args]
                    that its head contains (valley-go stack). review first
                    lists them, warns of a lower layer that is a draft or
                    withdrawn, since the integrator lands nothing above it,
-                   says when the bottom does not fast-forward from main,
-                   and ends with how the review goes: [n] through the
-                   layers, and approving the top lands them all. it then
-                   pages each layer's log and diff against the layer
+                   and says how the review goes: [n] through the layers,
+                   and approving the top lands them all. a stack whose
+                   bottom does not fast-forward from main is then asked,
+                   before any layer is paged, as in `one, at the bottom,
+                   does not fast-forward from main:`:
+                     [b]ase all <n>
+                                  rebase the whole stack onto origin/main,
+                                  as rebase does below, then list it again
+                                  and page the rebased layers, so the
+                                  heads paged are the heads approved
+                     [s]top       end the review; nothing done
+                   a rebase that is refused or left unfinished says what
+                   happened, and then only [s]top is offered.
+                   it then pages each layer's log and diff against the layer
                    below it, headed `change <k> of <n>: <name> on
                    <below>`, with notes kept under that layer's branch.
                    after each lower layer it asks, naming the layer and
@@ -228,12 +238,10 @@ usage: valley <verb> [args]
                                   delete the top's branch (confirmed
                                   first)
                      [s]top       end the review; nothing done
-                   a stack is never offered [b]ase, since rebasing one
-                   layer would break the layers above it, and only the
-                   top is offered [r]eject. when a layer's checks fail,
-                   its prompt says approving needs a new head and stops
-                   offering [a]pprove, as for any change. every layer's
-                   notes are printed at the end.
+                   only the top is offered [r]eject. when a layer's checks
+                   fail, its prompt says approving needs a new head and
+                   stops offering [a]pprove, as for any change. every
+                   layer's notes are printed at the end.
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -257,17 +265,60 @@ usage: valley <verb> [args]
                    each / replaced by -. a branch whose request name would
                    be c-<change id> is refused, since that name is the
                    change's.
-  rebase <change>  do what review's [b]ase does for the change: rebase it
-                   onto origin/main in a throwaway worktree and push it
-                   with --force-with-lease, then print its new head. for a
-                   change with a record, it rebases the active version's
-                   head, pushes the branch that version names, and then
-                   adds the rebased head as a new version, as
-                   valley.principal names, the way ready --if-active does:
-                   only while the change is still ready at the head the
-                   rebase began with. a version that names no branch is
-                   refused. it does not re-review the result. a change
-                   that already fast-forwards from main is left as it is.
+                   approve refuses, before any check runs, a head that does
+                   not fast-forward from main and would bring a version of
+                   another change that has not landed: a layer above the
+                   bottom of a stale stack. the refusal names the command
+                   that rebases the stack, valley rebase <change>. this is
+                   the project's choice, not a rule the integrator needs:
+                   approved as it is, the stack would land as one commit
+                   recorded against this request alone, so the changes
+                   under it would have no landing record of their own, and
+                   the checks would run over a head that has to be rebased
+                   anyway. a stale head with no change under it, such as
+                   the bottom layer of a stack or a change alone, is
+                   approved as it is, and the integrator merges it onto
+                   main.
+  rebase <change>  rebase the change's whole stack onto origin/main, as
+                   review's [b]ase does: the layers valley-go stack lists
+                   under the change, and the change itself. in a throwaway
+                   worktree, bottom first, each layer's own commits go onto
+                   the rebased layer below it, and the bottom's onto
+                   origin/main, so each layer keeps its own diff. commits
+                   under the bottom that a lower change landed through the
+                   integrator drop out, since main holds them; that landing
+                   is read as changes reads it, with VALLEY_KNOWN_SIGNERS
+                   and VALLEY_INTEGRATOR_SIGNER. one atomic
+                   push then moves every layer's branch, each leased on the
+                   tip read: every branch moves, or none does. last, bottom
+                   first, each change gains its rebased head as a new
+                   version, as valley.principal names, the way ready
+                   --if-active does: only while the change is still ready
+                   at the head the rebase began with.
+                   it refuses, with nothing changed, a stack holding a
+                   change that is not ready, records no branch, or whose
+                   branch is missing on origin or is not at its recorded
+                   head; a plain branch that is the branch of a change not
+                   in the stack; two layers on one branch; a merge among the
+                   commits to be rebased, or a version head of a change
+                   that is not ready or not in the stack, since a rebase
+                   gives each commit a new id; and a stack holding a change
+                   while git config valley.principal names no one. a
+                   conflict in any layer pushes nothing, records nothing
+                   and names the layer.
+                   a change alone prints its new head, as it always has. a
+                   stack prints a manifest: one line for each layer, with
+                   its old and new head, whether its branch was pushed, and
+                   whether a version was added. then, for each change left
+                   unfinished, the valley ready command that finishes it,
+                   and the exit status is non-zero. rebasing again refuses
+                   a change whose branch holds a head no version records,
+                   and prints the same command. last, it names each ready
+                   change or branch outside the stack that is left on an
+                   old head of a layer, such as a second stack on a lower
+                   layer, with the rebase that moves it; it does not move
+                   it. rebase does not re-review the result. a stack that
+                   already fast-forwards from main is left as it is.
   status [--json] <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
@@ -526,15 +577,16 @@ commit. approve approves the head bound to it, wherever the branch is.
 rebase, and review's [a]pprove and [b]ase refuse a change whose record is
 not ready, naming its state. Each reads the record again just before it
 acts, and again before approve files or rebase pushes, and refuses when
-the change is no longer ready. rebase also refuses when the active
-version has moved to another head since it began, and approve when the
-head it approves is no longer a version's. A name that read as a plain
-branch is read again before approve files or rebase pushes, and if it
-names a change by then, the change must be ready at the head the verb
-began with. An approval already past that last check can still file if
-the change is unreadied or withdrawn in the moment before its push; the
-integrator refuses to land it, since it lands no request that would bring
-a version of a change that is not ready, whatever the request is named.
+the change is no longer ready. rebase also refuses when the change's
+record has changed at all since it began, and approve when the head it
+approves is no longer a version's. A name that read as a plain branch is
+read again before approve files or rebase pushes. If it names a change by
+then, rebase refuses, and approve files only while the change is ready at
+the head it began with. An approval already past that last check can
+still file if the change is unreadied or withdrawn in the moment before
+its push; the integrator refuses to land it, since it lands no request
+that would bring a version of a change that is not ready, whatever the
+request is named.
 The integrator reads the records last just before it moves main, so a
 change paused in that moment can still land at the head the operator
 approved, and never at any other.
@@ -847,24 +899,13 @@ page_buffer() {
   cleanup_review_tmp
 }
 
-# Throwaway worktree for review's [b]ase choice; a global so the traps can
-# always clean it up — success, conflict, or ctrl-C. Never a mid-rebase state.
-REBASE_WT=""
-cleanup_rebase_wt() {
-  [ -n "$REBASE_WT" ] || return 0
-  git -C "$REBASE_WT" rebase --abort >/dev/null 2>&1 || true
-  git worktree remove --force "$REBASE_WT" >/dev/null 2>&1 || true
-  rm -rf "$REBASE_WT"
-  REBASE_WT=""
-}
-
-# Everything review, approve and rebase leave outside the repository: the
-# two throwaway worktrees, the paged buffer, the two policy layers read out
-# of their tips, and the scratch the policy deriver writes into. One
-# handler, installed once by each of those verbs, so that no path through
-# them — and no ctrl-C in the pager — leaves any of them behind.
+# Everything review and approve leave outside the repository: approve's
+# throwaway worktree, the paged buffer, the two policy layers read out of
+# their tips, and the scratch the policy deriver writes into. One handler,
+# installed once by each of those verbs, so that no path through them —
+# and no ctrl-C in the pager — leaves any of them behind. The rebase's
+# worktree is valley-go's, which removes it itself.
 cleanup_scratch() {
-  cleanup_rebase_wt
   cleanup_approve_wt
   cleanup_policy_tmp
   cleanup_instance_tmp
@@ -872,71 +913,20 @@ cleanup_scratch() {
   cleanup_review_tmp
 }
 
-# Rebase origin/<branch> onto origin/main in an isolated worktree — the
-# user's checkout is never touched — and push with a lease so a concurrently
-# updated branch is never clobbered. Mechanics only; the judgment on the
-# rebased diff stays with the human, back at the review prompt or in
-# whatever front end ran the rebase verb.
+# [b]ase and the rebase verb are one piece of code, valley-go rebase
+# (status/rebase.go). It rebases the change's whole stack in a throwaway
+# worktree of its own — the user's checkout is never touched — pushes
+# every layer's branch in one atomic push, leased on the tips it read, and
+# adds each change's rebased head to its record as a new version. A
+# change alone prints what rebase always has; a stack prints a manifest
+# of what became of each layer. The judgment on the rebased diff stays
+# with the human, back at the review prompt or in whatever front end ran
+# the rebase verb.
 #
-# Every step is checked by hand rather than left to `set -e`, because
-# rebase_change runs this inside a condition, where bash suspends `set -e`
-# for the whole call. An unchecked step that failed there would leave
-# REBASE_WT empty, and `git -C ""` would rebase and push the user's own
-# checkout.
-#
-# The commit rebased is the second argument when given, the head a change's
-# record names, and otherwise origin/<branch> as the fetch left it. It is
-# read once, and the push is leased on exactly that commit, so a fetch that
-# moves origin/<branch> meanwhile changes neither. The rebased head is left
-# in REBASED_HEAD.
-REBASED_HEAD=""
-rebase_onto_main() {
-  local branch="$1" from="${2:-}" rebased
-  if [ -z "$from" ]; then
-    from="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch^{commit}")" \
-      || die "no such branch on origin: $branch; nothing changed"
-  fi
-  REBASE_WT="$(mktemp -d)" && [ -d "$REBASE_WT" ] || {
-    REBASE_WT=""
-    die "could not make a directory for the rebase; nothing changed"
-  }
-  git worktree add --quiet --detach "$REBASE_WT" "$from" || {
-    cleanup_rebase_wt
-    die "could not check out origin/$branch for the rebase; nothing changed"
-  }
-  if ! git -C "$REBASE_WT" rebase --quiet refs/remotes/origin/main; then
-    cleanup_rebase_wt
-    die "$branch conflicts with main — resolve by hand; nothing changed"
-  fi
-  rebased="$(git -C "$REBASE_WT" rev-parse HEAD)" || {
-    cleanup_rebase_wt
-    die "could not read the rebased head of $branch; nothing pushed"
-  }
-  # A change with a record is read once more, just before the push, and a
-  # name that read as a plain branch is read again in case it names a
-  # change now.
-  #
-  # This is the last check, and a window remains between it and the push
-  # below. A change unreadied or withdrawn in that window is rebased all
-  # the same. git compares only the refs a push changes, and the record ref
-  # is not one of them, so no client can make the push conditional on the
-  # record. rebase_change then adds the rebased head as a version only
-  # while the change is still ready at the head it began with, under a
-  # lease on the record, so a change unreadied in that window stays a draft
-  # at its old head, and the integrator lands nothing for it.
-  if ! check_record "nothing pushed" "$from"; then
-    cleanup_rebase_wt
-    exit 1
-  fi
-  if ! git -C "$REBASE_WT" push --quiet "--force-with-lease=refs/heads/$branch:$from" \
-    origin "HEAD:refs/heads/$branch"; then
-    cleanup_rebase_wt
-    die "lease on origin/$branch failed (it moved since the fetch); nothing pushed"
-  fi
-  cleanup_rebase_wt
-  REBASED_HEAD="$rebased"
-  echo "rebased $branch onto origin/main, pushed with --force-with-lease"
-  printf '  head     %s\n' "$rebased"
+# rebase_shown <head>: [b]ase for the change under review, while it is
+# still at <head>, the head review showed of it.
+rebase_shown() {
+  valley-go rebase --head "$1" "${CHANGE_ID:-$CHANGE_NAME}"
 }
 
 # ----------------------------------------------------------------------
@@ -1133,6 +1123,31 @@ approve() {
     return 1
   }
   ref="refs/the-valley/integration-requests/$target/$change"
+  local named="$branch" under of
+  [ -z "$CHANGE_ID" ] || named="$CHANGE_HANDLE"
+
+  # A head that does not fast-forward from main, and would bring a version
+  # of another change that has not landed, is a layer above the bottom of
+  # a stale stack. The integrator could land it all the same, as one
+  # commit recorded against this request alone, and the changes under it
+  # would have no landing record of their own. So it is refused before
+  # any check runs over a head that has to be rebased anyway, and the
+  # stack is rebased first. This is the project's choice, not a rule the
+  # integrator needs. A stale head with no change under it, such as the
+  # bottom layer of a stack or a change alone, is approved as it is, and
+  # the integrator merges it onto main.
+  if ! git merge-base --is-ancestor "$tip" "$head"; then
+    if ! under="$(valley-go brings ${CHANGE_ID:+--change "$CHANGE_ID"} "$head")"; then
+      refuse "could not read which changes $what would bring to main; nothing published"
+      return 1
+    fi
+    if [ -n "$under" ]; then
+      of="a version of $under"
+      [ "$(printf '%s\n' "$under" | wc -l)" -eq 1 ] || of="versions of $(printf '%s\n' "$under" | join_lines)"
+      refuse "$what does not fast-forward from main, and the commits it would bring hold $of, not landed. Approved as it is, it would land them with no landing record of their own; nothing published. Rebase the stack first: valley rebase $(printf '%q' "$named")"
+      return 1
+    fi
+  fi
 
   # What the policy requires of the change, read out of exactly the
   # sources the integrator reads: both layers from the target's tip, which
@@ -1368,8 +1383,6 @@ approve() {
     "$what" "$(git rev-parse --short "$head")" "$target"
   printf 'The integrator will decide whether this change can land.\n'
   printf 'Your local checkout has not changed.\n\n'
-  local named="$branch"
-  [ -z "$CHANGE_ID" ] || named="$CHANGE_HANDLE"
   printf 'Check the result: valley status %q\n\n' "$named"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
   [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
@@ -1408,10 +1421,11 @@ cmd_go() {
 # and review, approve and rebase cannot run without the helper.
 #
 # A change with a record is acted on at a head its record names, and never
-# at the branch's tip: review and rebase at CHANGE_HEAD, and approve at the
-# head bound to it (bind_head). The branch a record names is only where its
-# head is expected to be, and anyone who can push the branch can move it,
-# in the same push as the record if they like.
+# at the branch's tip: review at CHANGE_HEAD, and approve at the head bound
+# to it (bind_head). rebase reads the record itself (status/rebase.go).
+# The branch a record names is only where its head is expected to be, and
+# anyone who can push the branch can move it, in the same push as the
+# record if they like.
 CHANGE_NAME="" CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
 
 # read_resolved <line> <name…>: read a line of valley-go resolve into the
@@ -1457,17 +1471,18 @@ resolve_change() {
 }
 
 # need_branch <verb>: refuse a change whose active version records no
-# branch. review and rebase act on the change's branch: review files its
-# notes under it and its [r]eject deletes it, and rebase pushes it.
-# approve files the head alone, so it approves such a change.
+# branch. review acts on the change's branch: it files its notes under it
+# and its [r]eject deletes it. rebase, which pushes it, refuses such a
+# change in valley-go. approve files the head alone, so it approves such a
+# change.
 need_branch() {
   if [ -n "$CHANGE_ID" ] && [ -z "$CHANGE_BRANCH" ]; then
     die "change $CHANGE_HANDLE v$CHANGE_VERSION records no branch, and $1 acts on a change's branch. Approve its head alone: valley approve --head $CHANGE_HEAD $CHANGE_HANDLE"
   fi
 }
 
-# The commit review, approve and rebase act on: the recorded head for a
-# change with a record, and otherwise the branch's head on origin.
+# The commit review and approve act on: the recorded head for a change
+# with a record, and otherwise the branch's head on origin.
 change_head() {
   if [ -n "$CHANGE_HEAD" ]; then
     printf '%s\n' "$CHANGE_HEAD"
@@ -1477,10 +1492,10 @@ change_head() {
 }
 
 # For a change with a record, refuse unless the branch's tip on origin is
-# the recorded head, and name both. rebase and review's [r]eject act on
-# the branch itself: rebasing or deleting it while it is elsewhere would
-# rebase or delete a commit no version records. approve does not ask this,
-# since the request it files names the head it approves and not the
+# the recorded head, and name both. review's [r]eject acts on the branch
+# itself: deleting it while it is elsewhere would delete a commit no
+# version records. rebase asks the same in valley-go. approve does not ask
+# this, since the request it files names the head it approves and not the
 # branch. The second argument is what the refusal leaves undone.
 check_recorded_tip() {
   local branch="$1" undone="$2" tip
@@ -1496,22 +1511,21 @@ check_recorded_tip() {
 # For a change with a record, read the record again from origin, and
 # refuse unless the change is still ready at the head this run began with.
 # A draft is paused and a withdrawn change given up, and neither is
-# approved or rebased until it is readied again. The record was read when
-# review, approve or rebase began, and another principal may unready,
-# withdraw or ready a new version of the change while a review is open or
-# the checks run. So approve reads it again before it runs the checks and
-# before it files, and rebase before it starts and before it pushes. These
-# checks save a run that would come to nothing: the integrator makes the
-# same one on origin, and lands no request for a change that is not ready.
+# approved until it is readied again. The record was read when review or
+# approve began, and another principal may unready, withdraw or ready a
+# new version of the change while a review is open or the checks run. So
+# approve reads it again before it runs the checks and before it files.
+# These checks save a run that would come to nothing: the integrator makes
+# the same one on origin, and lands no request for a change that is not
+# ready. rebase makes its own checks in valley-go (status/rebase.go).
 #
 # A name that read as a plain branch can come to name a change meanwhile:
 # someone readies the branch, and perhaps unreadies it, while the review
-# is open. So the last check before approve files and before rebase
-# pushes reads the original name again too. Those two callers pass the
-# head they are about to act on as the second argument. When the name now
-# names a change, the same rules hold: the change must be ready, and its
-# recorded head must be that head. The first argument is what the refusal
-# leaves undone.
+# is open. So the last check before approve files reads the original name
+# again too. approve passes the head it is about to file as the second
+# argument. When the name now names a change, the same rules hold: the
+# change must be ready, and its recorded head must be that head. The first
+# argument is what the refusal leaves undone.
 #
 # approve binds the head it approves (APPROVE_HEAD), and passes it as the
 # third argument. For approve the change must be ready, and that head must
@@ -1671,29 +1685,6 @@ branch_at_shown() {
   refuse "origin/$1 is at $now, and is no longer at $APPROVE_HEAD, the head shown; nothing published"
 }
 
-# rebase for a change with a record rebases the active version's head
-# alone, so the branch must still be at it. It pushes the branch with a
-# lease, and then adds the rebased head to the record as a new version, as
-# the principal git config valley.principal names: the operator, who holds
-# the request grant, or the change's owner. The version is added only
-# while the change is still ready at the head the rebase began with, under
-# a lease on the record (ready --if-active).
-rebase_change() {
-  local branch="$1"
-  check_record "nothing rebased" || return 1
-  check_recorded_tip "$branch" "nothing rebased" || return 1
-  if [ -n "$CHANGE_ID" ] && [ -z "$(git config valley.principal 2>/dev/null)" ]; then
-    refuse "rebasing change $CHANGE_HANDLE adds the rebased head to its record as the principal your key pushes as, and git config valley.principal names none; nothing rebased"
-    return 1
-  fi
-  rebase_onto_main "$branch" "$CHANGE_HEAD"
-  [ -n "$CHANGE_ID" ] || return 0
-  if ! valley-go ready --head "$REBASED_HEAD" --change "$CHANGE_ID" --if-active "$CHANGE_HEAD" "$branch"; then
-    refuse "origin/$branch is rebased to $REBASED_HEAD, and no version of $CHANGE_HANDLE records it. Ready it once the change is ready: valley ready --head $REBASED_HEAD --change $CHANGE_ID $(printf '%q' "$branch")"
-    return 1
-  fi
-}
-
 # The head the checks failed at in this review, short, while the change is
 # still at it. Approving that head again would run the same checks over
 # the same tree and fail the same way, so the prompt stops offering
@@ -1739,16 +1730,13 @@ read_and_decide() {
       b)
         # A change with a record gains the rebased head as a new version,
         # so the review goes on at that version, as it does at the rebased
-        # tip of a plain branch.
-        if [ -n "$CHANGE_ID" ]; then
-          if rebase_change "$branch"; then
+        # tip of a plain branch. A refused rebase has said why, and the
+        # prompt comes back.
+        if rebase_shown "$(change_head "$branch")"; then
+          if [ -n "$CHANGE_ID" ]; then
             resolve_change "$CHANGE_ID" || die "could not read change $CHANGE_HANDLE again after the rebase"
             bind_review
-            fetch_origin
-            show_review "$branch"
           fi
-        else
-          rebase_onto_main "$branch"
           fetch_origin
           show_review "$branch"
         fi
@@ -1901,8 +1889,7 @@ layer_label() {
 }
 
 # What is coming: the layers bottom first, the lower layers the integrator
-# would refuse, whether the bottom fast-forwards from main, and what each
-# answer lands.
+# would refuse, and what each answer lands.
 summarize_stack() {
   local n="${#L_NAME[@]}" k
   printf '%s is a stack of %d changes; reviewing from the bottom, each against the one below it:\n' \
@@ -1918,15 +1905,50 @@ summarize_stack() {
         ;;
     esac
   done
-  # Rebasing one layer would leave the layers above it on the old one, so
-  # a stack is not offered [b]ase. A stale bottom is still approvable: the
-  # integrator applies the delta to main's tip.
-  if ! git merge-base --is-ancestor refs/remotes/origin/main "${L_HEAD[0]}"; then
-    printf '%s, at the bottom, does not fast-forward from main. A stack is not rebased here, since that would break the layers above it; approving still files the request, and the integrator applies the delta to main.\n' \
-      "${L_NAME[0]}"
-  fi
-  printf 'read each layer and go on with [n]; approving %s at the top lands all %d. [a] on a lower layer lands it and the layers under it, and ends the review.\n\n' \
+  printf 'read each layer and go on with [n]; approving %s at the top lands all %d. [a] on a lower layer lands it and the layers under it, and ends the review.\n' \
     "${L_NAME[n - 1]}" "$n"
+}
+
+# base_stack: before any layer is paged, a stack whose bottom does not
+# fast-forward from main is offered [b]ase, which rebases every layer as
+# the rebase verb does (status/rebase.go), or [s]top. After a rebase the
+# stack is read again and listed again, so the heads paged are the heads
+# approved. A rebase refused or left unfinished has said what happened,
+# and only [s]top is offered then. Fails when the review stops here.
+base_stack() {
+  local n choice offered="[b]ase" stopped="; nothing done"
+  while ! git merge-base --is-ancestor refs/remotes/origin/main "${L_HEAD[0]}"; do
+    n="${#L_NAME[@]}"
+    if [ -n "$offered" ]; then
+      printf '%s, at the bottom, does not fast-forward from main: [b]ase all %d onto main, [s]top? ' \
+        "${L_NAME[0]}" "$n"
+    else
+      printf 'the stack under %s is not rebased: [s]top? ' "${L_NAME[n - 1]}"
+    fi
+    read -r choice || die "stdin closed before an answer; nothing done"
+    case "$choice" in
+      b)
+        if [ -z "$offered" ]; then
+          echo "answer s"
+        elif rebase_shown "${L_HEAD[n - 1]}"; then
+          fetch_origin
+          if [ -n "$CHANGE_ID" ]; then
+            resolve_change "$CHANGE_ID" || die "could not read change $CHANGE_HANDLE again after the rebase"
+          fi
+          bind_review
+          read_stack || die "could not read the stack under $TOP_NAME again after the rebase"
+          summarize_stack
+        else
+          offered="" stopped=""
+        fi
+        ;;
+      s)
+        echo "stopped reviewing ${L_NAME[n - 1]} before its first layer$stopped"
+        return 1
+        ;;
+      *) echo "answer ${offered:+b or }s" ;;
+    esac
+  done
 }
 
 # page_layer <k>: page layer k against the layer below it, and keep the
@@ -1966,9 +1988,11 @@ page_layer() {
 # for any change, with a prompt that names the top and says approving it
 # lands all n.
 review_stack() {
-  local n="${#L_NAME[@]}" top k choice answers failed lands
-  top=$((n - 1))
+  local n top k choice answers failed lands
   summarize_stack
+  base_stack || return 0
+  printf '\n'
+  n="${#L_NAME[@]}" top=$((${#L_NAME[@]} - 1))
   for ((k = 0; k < top; k++)); do
     page_layer "$k"
     case "$k" in
@@ -2056,8 +2080,9 @@ cmd_review() {
 
 # approve and rebase are review's [a]pprove and [b]ase without the pager,
 # for a front end that has shown the change its own way. Each runs the
-# function its key runs, so the verb and the key cannot drift apart. A
-# change is named as resolve_change reads it.
+# code its key runs, approve and valley-go rebase, so the verb and the key
+# cannot drift apart. A change is named as resolve_change reads it, and
+# rebase reads its name the same way, in valley-go.
 #
 # approve of a change with a record approves exactly one head (bind_head):
 # --head's, or the active version's once the operator confirms it on a
@@ -2106,26 +2131,12 @@ cmd_approve() {
 }
 
 cmd_rebase() {
+  case "${1:-}" in -*) die "usage: valley rebase <change>" ;; esac
   [ $# -eq 1 ] || die "usage: valley rebase <change>"
-  resolve_change "$1" || exit 1
-  need_branch rebase
-  local branch="$CHANGE_BRANCH"
+  command -v valley-go > /dev/null 2>&1 \
+    || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   fetch_origin
-  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
-    || die "no such branch on origin: $branch"
-  check_record "nothing rebased" || exit 1
-  check_recorded_tip "$branch" "nothing rebased" || exit 1
-  # review offers [b]ase only to a stale branch. One that fast-forwards
-  # already is left alone, rather than rewritten for nothing.
-  if git merge-base --is-ancestor refs/remotes/origin/main \
-    "refs/remotes/origin/$branch"; then
-    echo "$branch already fast-forwards from origin/main; nothing rebased"
-    printf '  head     %s\n' "$(git rev-parse "refs/remotes/origin/$branch")"
-    return
-  fi
-  trap cleanup_scratch EXIT
-  trap 'exit 130' INT TERM
-  rebase_change "$branch" || exit 1
+  exec valley-go rebase "$1"
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,

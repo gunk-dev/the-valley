@@ -600,14 +600,23 @@ too.
 
 - `review` first lists the layers. It warns of each lower layer that is a draft or withdrawn, since
   the integrator refuses to land it or anything above it. It says so when the bottom does not
-  fast-forward from `main`.
+  fast-forward from `main`. Its last line says how the review goes: read each layer and go on with
+  `[n]`, and approving the top lands every layer.
 - Each layer's page is headed `change <k> of <n>: <name> on <below>`. The page shows the layer's log
   and its diff from the layer below. Notes taken on it are kept under its own branch.
-- After each lower layer, `review` asks `[n]ext, [a]pprove up to here, [s]kip`.
-  `[a]pprove up to here` approves that layer at the head shown, exactly as reviewing it alone would.
-  That lands it and every layer under it. `[s]kip` stops, and nothing is done.
-- After the top, the prompt is the usual one. A stack is never offered `[b]ase`, because rebasing
-  one layer would break the layers above it. Only the top is offered `[r]eject`.
+- After each lower layer, `review` asks a prompt that names the layer and its place, such as
+  `two, 2 of 3: [n]ext layer, [a]pprove one and two, [s]top?`.
+  - `[n]ext layer` goes on to the layer above. It is the usual answer.
+  - `[a]pprove` approves that layer at the head shown, exactly as reviewing it alone would. That
+    lands it and every layer under it, and ends the review. The prompt names what it lands:
+    `one alone` at the bottom, `one and two` at the second layer, and `the <k> up to <name>` from
+    the third layer up.
+  - `[s]top` ends the review, and nothing is done.
+- After the top, the prompt names the change and says that approving it lands every layer, such as
+  `three, 3 of 3: [a]pprove all 3, [r]eject three, [s]top?`. A stack is never offered `[b]ase`,
+  because rebasing one layer would break the layers above it. Only the top is offered `[r]eject`.
+- When a layer's checks fail, its prompt says approving needs a new head and stops offering
+  `[a]pprove`, as for a change alone.
 - Every layer's notes are printed at the end, whatever the verdict.
 
 A change with nothing under it is reviewed against `main` as before.

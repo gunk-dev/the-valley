@@ -166,9 +166,10 @@ chmod +x "$TMPDIR/stack-editor"
   | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stack-tty.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' stack-tty.log > stack-plain.log
 grep -q 'pppp is a stack of 3 changes; reviewing from the bottom, each against the one below it:$' stack-plain.log
+grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack-plain.log
 grep -q '| change 1 of 3: one on main$' stack-plain.log
-grep -q 'one: \[n\]ext, \[a\]pprove up to here, \[s\]kip?' stack-plain.log
-grep -q 'skipped pppp at change 1 of 3, one; nothing done' stack-plain.log
+grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [s]top? ' stack-plain.log
+grep -q 'stopped reviewing pppp at change 1 of 3, one; nothing done' stack-plain.log
 if grep -q 'change 2 of 3' stack-plain.log; then exit 1; fi
 grep -qx 'one.md:1: one wants a second line' "$XDG_STATE_HOME/valley/notes/one.md"
 grep -q '1 note(s) on one, appended to .*/valley/notes/one.md:' stack-plain.log
@@ -177,12 +178,17 @@ grep -q '^  one.md:1: one wants a second line$' stack-plain.log
 [ ! -s "$pushlog" ]
 
 # n, n, a: the layers are paged bottom up, each diff holds only its own
-# layer's file, and the top's request is filed at the top's head.
+# layer's file, and the top's request is filed at the top's head. Each
+# prompt names its layer and place, and what approving there lands.
 : > "$pushlog"
 printf 'n\nn\na\n' | valley review pppp > stack.out 2> stack.err
 grep -q '^  1\. one (branch): layer one$' stack.out
 grep -q '^  2\. qqqq (ready): layer two$' stack.out
 grep -q '^  3\. pppp (ready): layer three$' stack.out
+grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack.out
+grep -qF 'one, 1 of 3: [n]ext layer, [a]pprove one alone, [s]top? ' stack.out
+grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [s]top? ' stack.out
+grep -qF 'pppp, 3 of 3: [a]pprove all 3, [r]eject pppp, [s]top? ' stack.out
 # Piped, each page's first line follows the prompt before it.
 [ "$(grep -o 'change [0-9] of 3: [a-z]* on [a-z]*$' stack.out)" = "$(printf '%s\n' \
   'change 1 of 3: one on main' 'change 2 of 3: qqqq on one' 'change 3 of 3: pppp on qqqq')" ]
@@ -192,20 +198,22 @@ done
 [ "$(grep '^diff --git' page1)" = 'diff --git a/one.md b/one.md' ]
 [ "$(grep '^diff --git' page2)" = 'diff --git a/two.md b/two.md' ]
 [ "$(grep '^diff --git' page3)" = 'diff --git a/three.md b/three.md' ]
-grep -q '^three: \[a\]pprove, \[r\]eject, \[s\]kip?' stack.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$p")" = "$three" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/c-$q" > /dev/null; then exit 1; fi
 git -C "$stack" update-ref -d "$requests/c-$p"
 
 # a at the second layer files the second layer's request at its head, and
-# nothing for the top.
+# nothing for the top, whose review never starts: neither its page nor its
+# prompt is shown.
 : > "$pushlog"
 printf 'n\na\n' | valley review pppp > stack-two.out 2> stack-two.err
+grep -qF 'qqqq, 2 of 3: [n]ext layer, [a]pprove one and qqqq, [s]top? ' stack-two.out
 [ "$(git -C "$stack" rev-parse "$requests/c-$q")" = "$two" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/c-$p" > /dev/null; then exit 1; fi
 grep -q "c-$q" "$pushlog"
 if grep -q "c-$p" "$pushlog"; then exit 1; fi
 if grep -q 'change 3 of 3' stack-two.out; then exit 1; fi
+if grep -q '3 of 3: ' stack-two.out; then exit 1; fi
 
 # A draft in the middle is named in the warning before anything is paged.
 valley unready qqqq > /dev/null 2>&1
@@ -233,7 +241,7 @@ answer_after() {
 }
 seed="$(git rev-parse main)" onehead="$(git rev-parse one)"
 
-# [a]pprove up to here on a plain branch under the top files that
+# [a]pprove at the bottom, on a plain branch under the top, files that
 # branch's head under its own request name, and nothing for the top.
 : > "$pushlog"
 printf 'a\n' | valley review pppp > stack-a-one.out 2>&1
@@ -250,7 +258,7 @@ if grep -q "c-$p" "$pushlog"; then exit 1; fi
 git -C "$stack" update-ref -d "$requests/one"
 : > "$pushlog"
 # shellcheck disable=SC2094 # the answers wait on the review's own output
-answer_after moved-one.out 'one: \[n\]ext' "git -C '$stack' update-ref refs/heads/one $seed; git fetch -q origin" 'a\ns\n' \
+answer_after moved-one.out 'one, 1 of 3: \[n\]ext' "git -C '$stack' update-ref refs/heads/one $seed; git fetch -q origin" 'a\ns\n' \
   | valley review pppp > moved-one.out 2>&1
 grep -q "origin/one is at $seed, and is no longer at $onehead, the head shown; nothing published" moved-one.out
 [ ! -s "$pushlog" ]
@@ -276,10 +284,16 @@ git checkout --quiet main
 # shellcheck disable=SC2094 # the answers wait on the review's own output
 {
   printf 'n\nn\nn\n'
-  answer_after moved-four.out 'four: \[a\]pprove' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
+  answer_after moved-four.out 'four, 4 of 4: \[a\]pprove all 4, \[r\]eject four, \[s\]top?' "git -C '$stack' update-ref refs/heads/four $seed; git fetch -q origin" 'a\ns\n'
 } | valley review four > moved-four.out 2>&1
 grep -q '^four is a stack of 4 changes' moved-four.out
+# From the third layer up, a lower layer's prompt counts what approving
+# there lands. The top's prompt names the top, and says approving it
+# lands all 4.
+grep -qF 'pppp, 3 of 4: [n]ext layer, [a]pprove the 3 up to pppp, [s]top? ' moved-four.out
+grep -qF 'four, 4 of 4: [a]pprove all 4, [r]eject four, [s]top? ' moved-four.out
 grep -q "origin/four is at $seed, and is no longer at $fourhead, the head shown; nothing published" moved-four.out
+grep -q 'stopped reviewing four at change 4 of 4; nothing done' moved-four.out
 [ ! -s "$pushlog" ]
 if git -C "$stack" rev-parse --verify --quiet "$requests/four" > /dev/null; then exit 1; fi
 

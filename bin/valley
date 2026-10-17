@@ -203,21 +203,37 @@ usage: valley <verb> [args]
                    that its head contains (valley-go stack). review first
                    lists them, warns of a lower layer that is a draft or
                    withdrawn, since the integrator lands nothing above it,
-                   and says when the bottom does not fast-forward from
-                   main. it then pages each layer's log and diff against
-                   the layer below it, headed `change <k> of <n>: <name>
-                   on <below>`, with notes kept under that layer's
-                   branch. after each lower layer it asks:
-                     [n]ext       go on to the layer above
-                     [a]pprove up to here
-                                  approve that layer at the head shown,
-                                  as review of it would; this lands it
-                                  and every layer under it
-                     [s]kip       stop; nothing done
-                   after the top it asks as for any change. a stack is
-                   never offered [b]ase, since rebasing one layer would
-                   break the layers above it, and only the top is offered
-                   [r]eject. every layer's notes are printed at the end.
+                   says when the bottom does not fast-forward from main,
+                   and ends with how the review goes: [n] through the
+                   layers, and approving the top lands them all. it then
+                   pages each layer's log and diff against the layer
+                   below it, headed `change <k> of <n>: <name> on
+                   <below>`, with notes kept under that layer's branch.
+                   after each lower layer it asks, naming the layer and
+                   its place, as in `two, 2 of 3:`:
+                     [n]ext layer go on to the layer above; the usual
+                                  answer
+                     [a]pprove    approve that layer at the head shown,
+                                  as review of it would. this lands it
+                                  and every layer under it, which the
+                                  prompt names (`one alone`, `one and
+                                  two`, `the <k> up to <name>`), and
+                                  ends the review
+                     [s]top       end the review; nothing done
+                   after the top it asks, as in `three, 3 of 3:`:
+                     [a]pprove all <n>
+                                  approve the top at the head shown,
+                                  which lands every layer
+                     [r]eject <name>
+                                  delete the top's branch (confirmed
+                                  first)
+                     [s]top       end the review; nothing done
+                   a stack is never offered [b]ase, since rebasing one
+                   layer would break the layers above it, and only the
+                   top is offered [r]eject. when a layer's checks fail,
+                   its prompt says approving needs a new head and stops
+                   offering [a]pprove, as for any change. every layer's
+                   notes are printed at the end.
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -1748,17 +1764,26 @@ read_and_decide() {
   decide "$branch"
 }
 
-# The verdict on a change that fast-forwards from main, and on the top of
-# a stack, which is never offered [b]ase.
+# decide <branch> [<name> <n>]: the verdict on a change that fast-forwards
+# from main, and on the top of a stack, which is never offered [b]ase. A
+# change alone is asked about by its branch. The top of a stack of <n> is
+# asked about by its <name>, as the stack lists it, and its prompt says
+# that approving it lands all <n> layers.
 decide() {
-  local branch="$1" choice failed answers
+  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers
+  local label="$1" approve="[a]pprove" reject="[r]eject" stop="[s]kip"
+  local stopped="skipped $1; nothing done"
+  if [ -n "$n" ]; then
+    label="$name, $n of $n" approve="[a]pprove all $n" reject="[r]eject $name" stop="[s]top"
+    stopped="stopped reviewing $name at change $n of $n; nothing done"
+  fi
   while true; do
     if failed="$(approve_failed_at "$branch")"; then
-      printf '%s: its checks failed at %s, so approving needs a new head: [r]eject, [s]kip? ' \
-        "$branch" "$failed"
+      printf '%s: its checks failed at %s, so approving needs a new head: %s, %s? ' \
+        "$label" "$failed" "$reject" "$stop"
       answers="r or s"
     else
-      printf '%s: [a]pprove, [r]eject, [s]kip? ' "$branch"
+      printf '%s: %s, %s, %s? ' "$label" "$approve" "$reject" "$stop"
       answers="a, r, or s"
     fi
     read -r choice || die "stdin closed before an answer; nothing done"
@@ -1776,7 +1801,7 @@ decide() {
         ;;
       r) reject "$branch" && return ;;
       s)
-        echo "skipped $branch; nothing done"
+        echo "$stopped"
         return
         ;;
       *) echo "answer $answers" ;;
@@ -1876,7 +1901,8 @@ layer_label() {
 }
 
 # What is coming: the layers bottom first, the lower layers the integrator
-# would refuse, and whether the bottom fast-forwards from main.
+# would refuse, whether the bottom fast-forwards from main, and what each
+# answer lands.
 summarize_stack() {
   local n="${#L_NAME[@]}" k
   printf '%s is a stack of %d changes; reviewing from the bottom, each against the one below it:\n' \
@@ -1899,7 +1925,8 @@ summarize_stack() {
     printf '%s, at the bottom, does not fast-forward from main. A stack is not rebased here, since that would break the layers above it; approving still files the request, and the integrator applies the delta to main.\n' \
       "${L_NAME[0]}"
   fi
-  printf '\n'
+  printf 'read each layer and go on with [n]; approving %s at the top lands all %d. [a] on a lower layer lands it and the layers under it, and ends the review.\n\n' \
+    "${L_NAME[n - 1]}" "$n"
 }
 
 # page_layer <k>: page layer k against the layer below it, and keep the
@@ -1930,27 +1957,35 @@ page_layer() {
   [ "${#NOTES[@]}" -eq 0 ] || L_NOTES[k]="$(printf '%s\n' "${NOTES[@]}")"
 }
 
-# Page each layer under the top and ask after each: [n]ext goes on to the
-# layer above, [a]pprove up to here approves that layer at the head shown,
-# which lands it and every layer under it, and [s]kip ends the review.
-# [r]eject is not offered under the top: deleting a lower layer's branch
-# would leave the layers above still holding it. After the top, its verdict
-# is taken as for any change.
+# Page each layer under the top and ask after each, naming the layer and
+# its place: [n]ext layer goes on to the layer above, [a]pprove approves
+# that layer at the head shown, which lands it and every layer under it,
+# as the prompt names them, and [s]top ends the review. [r]eject is not
+# offered under the top: deleting a lower layer's branch would leave the
+# layers above still holding it. After the top, its verdict is taken as
+# for any change, with a prompt that names the top and says approving it
+# lands all n.
 review_stack() {
-  local n="${#L_NAME[@]}" top k choice answers failed
+  local n="${#L_NAME[@]}" top k choice answers failed lands
   top=$((n - 1))
   summarize_stack
   for ((k = 0; k < top; k++)); do
     page_layer "$k"
+    case "$k" in
+      0) lands="${L_NAME[0]} alone" ;;
+      1) lands="${L_NAME[0]} and ${L_NAME[1]}" ;;
+      *) lands="the $((k + 1)) up to ${L_NAME[k]}" ;;
+    esac
     while true; do
       failed=""
       [ "$CHECKS_FAILED_AT" != "${L_HEAD[k]}" ] || failed="$(git rev-parse --short "${L_HEAD[k]}")"
       if [ -n "$failed" ]; then
-        printf '%s: its checks failed at %s, so approving needs a new head: [n]ext, [s]kip? ' \
-          "${L_NAME[k]}" "$failed"
+        printf '%s, %d of %d: its checks failed at %s, so approving needs a new head: [n]ext layer, [s]top? ' \
+          "${L_NAME[k]}" "$((k + 1))" "$n" "$failed"
         answers="n or s"
       else
-        printf '%s: [n]ext, [a]pprove up to here, [s]kip? ' "${L_NAME[k]}"
+        printf '%s, %d of %d: [n]ext layer, [a]pprove %s, [s]top? ' \
+          "${L_NAME[k]}" "$((k + 1))" "$n" "$lands"
         answers="n, a, or s"
       fi
       read -r choice || die "stdin closed before an answer; nothing done"
@@ -1968,7 +2003,7 @@ review_stack() {
           use_layer "$top"
           ;;
         s)
-          echo "skipped ${L_NAME[top]} at change $((k + 1)) of $n, ${L_NAME[k]}; nothing done"
+          echo "stopped reviewing ${L_NAME[top]} at change $((k + 1)) of $n, ${L_NAME[k]}; nothing done"
           return
           ;;
         *) echo "answer $answers" ;;
@@ -1977,7 +2012,7 @@ review_stack() {
   done
   page_layer "$top"
   use_layer "$top"
-  decide "${L_BRANCH[top]}"
+  decide "${L_BRANCH[top]}" "${L_NAME[top]}" "$n"
 }
 
 # The notes taken on every layer, each under its own branch.

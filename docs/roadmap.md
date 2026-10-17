@@ -88,7 +88,7 @@ a touch.
 ### 5. M6: klaus on the valley
 
 - The pipeline moves out of the dashboard into a daemon with persistent state, and with budgets per
-  pull request, per session and for every backend.
+  change, per session and for every backend.
 - A valley backend: agents file integration requests through `valley request` with `Change-Id` and
   `Klaus-Run` trailers, and paused runs checkpoint to valley refs.
 - Instrumentation: head SHAs on events, a dispatch reason, check start and end, and repo-qualified
@@ -119,8 +119,6 @@ where agent wall-clock time goes.
     crashes, and interruption tests prove it.
   - The reconciliation memo includes the instance policy and registry snapshot.
   - Workers produce missing check results, and the integrator only referees.
-  - Path classes for Go, Nix and CUE, so the integrator's own code is gated by real checks (done:
-    `policy/project/policy.cue`).
   - The review flow inverts: `valley request` produces the evidence before human review.
   - Effectful validity windows and the closure-transfer machinery are dropped.
   - `bin/valley`, `integrator/`, `identity/` and `attest/` become one Go binary, and SSHSIG with
@@ -155,4 +153,3 @@ where agent wall-clock time goes.
    the cache becomes untrusted transport.
 5. **The `klaus-env` memory size.** The VM's memory is too small for a full `nix flake check` of
    cosmo.
-6. **Where new knowledge-graph nodes go.** See the proposal in [AGENTS.md](../AGENTS.md).

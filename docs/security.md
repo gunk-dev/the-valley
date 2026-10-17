@@ -235,8 +235,6 @@ themselves when to deploy.
   lands.
 - **Check definitions come from the change.** A change can edit the flake check it is judged by
   ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md)).
-  the-valley's project layer declares no class for its own code paths. Whether the floor does
-  depends on qinling's private policy.
 - **Two hosts update unsigned.** johnny-walker and makers-nix run `system.autoUpgrade` from GitHub
   (cosmo `modules/common/system.nix`).
 - **Readiness is not enforced atomically.** A change paused in the moment before the integrator

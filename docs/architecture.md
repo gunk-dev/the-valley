@@ -257,8 +257,8 @@ refuses its write when the change is `draft` or `withdrawn`, when the record cha
 one parent, and when it adds more than one version. It also refuses a changed earlier version,
 owner, target, change ID, branch or title, and an uploader other than the pusher. A `restack` holder
 may not delete a record. A `restack` holder that owns the change, or also holds `request`, writes by
-the other rows as before. The hook cannot tell a submitted change from a ready one, because a landed
-change can stay `ready`; leaving submitted changes alone is the restacker's own selection.
+the other rows. The hook cannot tell a submitted change from a ready one, because a landed change
+can stay `ready`; leaving submitted changes alone is the restacker's own selection.
 
 The hook refuses every other write. That includes a key that names no principal, extra parents,
 parents in another order, a head that is not a commit, and a tree of another shape. It also includes
@@ -280,8 +280,8 @@ integrator could not tell which heads are versions of changes that are not `read
 its own integrator, so no other repository is held up.
 
 The writer numbers versions, and the hook holds them to append-only and gap-free. The integrator
-takes this numbering as it is. For now, a change is owned by the principal whose key pushed its
-first record, so `klaus-env` owns every agent change.
+takes this numbering as it is. A change is owned by the principal whose key pushed its first record,
+so `klaus-env` owns every agent change.
 
 A record keeps every head it names reachable, because each head is a parent of a record commit. So
 records retain source objects the way topic branches do, and the hook restricts them no further.
@@ -609,10 +609,10 @@ verifier, and the identity compiler with `schema/identity.cue`. The policy is `e
 `schema/verification.cue`. Everything else is `same-paths`. The tree holds no registry, grant or
 secret data of its own. The ones under `examples/` and `attest/conformance/` are test fixtures. Two
 classes exist only to set a mode, `identity-compiler` and `policy-authority`. They require no
-checks, so the paths they cover require what they did before. `schema/verification.cue` also
-requires the integrator's checks, because both compose a policy under it. The layer leaves the
+checks, so the paths they cover require the checks of their other classes. `schema/verification.cue`
+also requires the integrator's checks, because both compose a policy under it. The layer leaves the
 restacker's cap at 64. `own-policy` holds each scope to its mode, holds the paths the two mode
-classes cover to every check they required before, and holds the cap to 64.
+classes cover to the checks of their other classes, and holds the cap to 64.
 
 The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 [dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and
@@ -649,8 +649,6 @@ Check definitions come from the change being judged. `attest` builds the flake c
 exported tree, so a change can edit the check it is judged by
 ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md),
 [ida-a9e274c](../archive/.the-valley/ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md)).
-the-valley's project layer declares no class for its Go, Nix and CUE paths. Whether the instance
-floor adds one depends on qinling's private policy.
 
 ## Identity
 
@@ -714,7 +712,7 @@ keeps a user's `valley` at the tip of a branch (see
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
-| `valley review <b>`          | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject`, `[s]kip`, `[b]ase` if stale. |
+| `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject`, `[s]kip`, `[b]ase` if stale. |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
 | `valley rebase <change>`     | Rebases the change's whole stack, as `[b]ase` does, and adds each rebased head as a new version.      |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
@@ -737,9 +735,8 @@ change's whole stack in a temporary worktree, and pushes every layer's branch in
 with a lease on each. `[r]eject` deletes the remote branch after a prompt.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
-branch no record is on is requested under its name with each `/` replaced by `-`, as before records
-existed. A branch whose name maps to `c-<change-id>` is refused, by `approve` and by `status`: that
-name is the change's.
+branch no record is on is requested under its name with each `/` replaced by `-`. A branch whose
+name maps to `c-<change-id>` is refused, by `approve` and by `status`: that name is the change's.
 
 When the checks fail under `[a]pprove`, approving the same head again can only fail again. So the
 prompt then says approving needs a new head. It offers only `[r]eject` and `[s]kip`, plus `[b]ase`
@@ -760,8 +757,8 @@ the run finishes. `[a]pprove` would be refused. `[b]ase` is not offered either, 
 rebased head as a version would ready the change behind its owner's back. `[r]eject` is not offered,
 because it records nothing on the change. It only deletes the branch, which the owner may still be
 working on. The state can change while the review is open, so `[a]pprove` and `[b]ase` still read
-the record again when they act, and refuse a change that is no longer ready. A branch no record is
-on has no state, and is offered the usual prompt.
+the record again when they act, and refuse a change that is not ready. A branch no record is on has
+no state, and is offered the usual prompt.
 
 A change with a stack under it is reviewed one layer at a time, bottom first, each against the layer
 below it. The layers are what `valley pending` lists under the change: the changes whose active
@@ -803,7 +800,7 @@ too.
   A top that is not ready is not offered `[r]eject` either.
 - Every layer's notes are printed at the end, whatever the verdict.
 
-A change with nothing under it is reviewed against `main` as before.
+A change with nothing under it is reviewed against `main`.
 
 `valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
 change their own way. Each runs the same code as its key, so the checks, the request write and the
@@ -823,8 +820,8 @@ the stack: `valley rebase <change>`. This is the project's choice, not a rule th
 The integrator could land the head, as one commit recorded against its request alone. The changes
 under it would then have no landing record of their own (see [Listing changes](#listing-changes)).
 The checks would also run over a head that has to be rebased anyway. A stale head with no change
-under it is approved as before: the bottom layer of a stack, or a change alone. The integrator
-merges it onto `main`.
+under it is approved as it is: the bottom layer of a stack, or a change alone. The integrator merges
+it onto `main`.
 
 An approval of a change with a record binds one head, and the request names exactly that head:
 
@@ -886,15 +883,16 @@ rebase says so, prints the manifest, and says how to check: `git ls-remote origi
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
 the `valley rebase` that moves it, and does not move it. After `[b]ase`, the review goes on at the
-new heads. An interrupt or a SIGTERM while the stack is rebased kills git and any hook it started,
-removes the worktree, pushes nothing, and exits 130.
+new heads. An interrupt or a SIGTERM while the stack is being prepared kills git and any hook it
+started, removes the worktree, pushes nothing, and exits 130.
 
 The rebase engine is a Go package that a program imports, such as a service that keeps ready changes
-based on `main`. It never exits the process: every step takes a `context.Context`, and cancelling it
-ends the git the step is running, along with anything that git started, such as a hook. It works on
-a family of layers rather than one chain. Linear history gives each layer at most one base, so the
-layers on one bottom layer form a tree: a chain such as A → B → C, or a shared lower layer such as A
-→ B and A → C. Its steps are:
+based on `main`. It never exits the process: every step that runs git takes a `context.Context`.
+Cancelling it kills git and, for local commands, the process group it runs in, including any hook or
+filter it started; `ls-remote`, `fetch` and `push` stay in the caller's process group so ssh can
+read the terminal, and git is killed alone. It works on a family of layers rather than one chain.
+Linear history gives each layer at most one base, so the layers on one bottom layer form a tree: a
+chain such as A → B → C, or a shared lower layer such as A → B and A → C. Its steps are:
 
 1. **Capture.** From one snapshot of origin, read the family that a change or branch belongs to: the
    chain under it, as `valley rebase` takes, or every layer connected to it. Every layer keeps its
@@ -918,7 +916,7 @@ is unknown, and a record write keeps the commit it tried to push. Only an outrig
 refused: `[rejected]`, which git decides before it sends anything, or origin's own
 `[remote rejected]`. A ref that origin sent no status for, or a status the engine does not
 recognise, leaves the outcome unknown, since origin may have taken the update. `valley rebase` words
-these results as it always has. Checked by `rebase-unit`, over real repositories and real pushes.
+these results for the terminal. Checked by `rebase-unit`, over real repositories and real pushes.
 
 `valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
 change's record (`status/ready.go`). The branch is the current one unless named. The head is
@@ -951,14 +949,17 @@ already on origin.
 
 A change is named by its full ID or by its handle. The handle is the shortest prefix of the ID, at
 least four letters, that no other change recorded on origin shares. A change can also be named by
-its branch, as it was before records existed. Every verb that takes a change takes all three
-(`status/changes.go`).
+its branch. Every verb that takes a change takes all three (`status/changes.go`). `valley pending`
+and `valley changes` write a local handle cache at `valley/handles` under the common git directory,
+ready changes before drafts, with each change's handle, state, branch and title
+(`status/handles.go`). The zsh completion script (`completions/_valley`) offers those handles with
+their titles and never fetches.
 
 `review`, `approve` and `rebase` read a branch name further, whether it is written as `<branch>` or
 `origin/<branch>`. They read every record on origin and look for the ones whose active version is on
 that branch:
 
-- If there are none, the name is a branch, as it was before records existed.
+- If there are none, the name is a branch.
 - If there is exactly one, the name is that record's change, exactly as if its ID had been given.
 - If there is more than one, the verb refuses and lists their change IDs, so that one can be named.
 
@@ -980,11 +981,11 @@ branch, state and owner on one line, and `valley-go versions` lists every versio
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the
 record again before it runs the checks, and again before it files the request. It refuses when the
-change is no longer `ready`, or when the head it approves is no longer a version head. A new version
-does not stop it, since the request names the head that was approved. `rebase` reads each change's
-record before it starts, and again just before it pushes. It refuses when a record has changed at
-all in between. These client checks save a run that would come to nothing. The integrator makes the
-same check on origin.
+change is not `ready`, or when the head it approves is not a version head. A new version does not
+stop it, since the request names the head that was approved. `rebase` reads each change's record
+before it starts, and again just before it pushes. It refuses when a record has changed at all in
+between. These client checks save a run that would come to nothing. The integrator makes the same
+check on origin.
 
 A name that read as a plain branch can come to name a change while the verb runs. For example,
 someone readies the branch, and then unreadies it, while a review of it is open. So before `approve`
@@ -1117,8 +1118,9 @@ the whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `
 
 ### The status object
 
-`valley status --json <b>` prints one JSON object on one line. Front ends read it, klaus among them,
-so it is a contract with a version. A change to the name or meaning of any field is a new version.
+`valley status --json <change>` prints one JSON object on one line. Front ends read it, klaus among
+them, so it is a contract with a version. A change to the name or meaning of any field is a new
+version.
 
 ```json
 {
@@ -1153,28 +1155,26 @@ so it is a contract with a version. A change to the name or meaning of any field
   `voided-withdrawn`, `failed` or `unknown`. A record that does not parse is `unknown`.
   `outcome.head` and `outcome.tip` are `null` unless they are object ids, and `failed_at` is `null`
   unless the decision is `failed`.
-- `change_id`, `handle`, `version`, `title`, `owner` and `landing` were added to `valley-status/v1`.
-  Each is `null` for a branch no record is on. For a change with a record they are its ID, its
-  handle, its active version's number and title, its owner, and the active version's landing
-  evidence as [Listing changes](#listing-changes) decides it.
-- `restack` was added to `valley-status/v1`. It is `null` for a branch no record is on, and for a
-  change with no restack report. Otherwise it is `{"ref", "commit", "current", "report"}`: the
-  report's ref, its report commit, whether it is current, and the report as
-  [Restack reports](#restack-reports) gives it. `current` is true only while every ref the report
-  observed holds what it says it held, as [Restack reports](#restack-reports) defines it: `main`,
-  each layer's record ref and branch, a branch it saw missing still missing, and each blocking
-  request at its `tip`. A report that is not current is historical. The sentences say which it is,
-  and name a current conflict's command to rebase by hand.
-- `refused-not-ready`, `refused-merge` and `voided-withdrawn` were added to `valley-status/v1` as
-  decisions and as states. A reader that meets a decision or a state it does not know should treat
-  the status as unknown.
+- `change_id`, `handle`, `version`, `title`, `owner` and `landing` are `null` for a branch no record
+  is on. For a change with a record they are its ID, its handle, its active version's number and
+  title, its owner, and the active version's landing evidence as [Listing changes](#listing-changes)
+  decides it.
+- `restack` is `null` for a branch no record is on, and for a change with no restack report.
+  Otherwise it is `{"ref", "commit", "current", "report"}`: the report's ref, its report commit,
+  whether it is current, and the report as [Restack reports](#restack-reports) gives it. `current`
+  is true only while every ref the report observed holds what it says it held, as
+  [Restack reports](#restack-reports) defines it: `main`, each layer's record ref and branch, a
+  branch it saw missing still missing, and each blocking request at its `tip`. A report that is not
+  current is historical. The sentences say which it is, and name a current conflict's command to
+  rebase by hand.
+- A reader that meets a decision or a state it does not know should treat the status as unknown.
 - `state` is one of these:
 
 | `state`                 | What it means                                                                         |
 | ----------------------- | ------------------------------------------------------------------------------------- |
 | `integrated`            | The head is in `origin/main`.                                                         |
 | `integrated-recorded`   | A `land` outcome names this head. The change landed as a different commit.            |
-| `outdated-request`      | The request names an older commit than the branch head.                               |
+| `outdated-request`      | The request names a different commit from the active version's head, or the branch's. |
 | `outcome-unreadable`    | The outcome record does not parse.                                                    |
 | `not-requested`         | No request stands for the change. An outcome from an earlier head may remain.         |
 | `awaiting-decision`     | A request stands for this head, and no outcome names it.                              |
@@ -1226,7 +1226,7 @@ they decide its landing evidence (`status/inventory.go`). The first rule that ap
 3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`. The
    integrator moves `main` before it stores its evidence, so a landing can exist without its
    evidence. A request is consumed when its outcome record says `land` for this head and the request
-   ref no longer points at it.
+   ref does not point at it.
 4. `not-landed`: otherwise.
 
 The outcome record alone is never proof of a landing, because a later pass can overwrite it. A
@@ -1319,7 +1319,7 @@ configuration.
 - `includes` lists the changes whose active head is a strict ancestor of this one's, nearest only.
   It is ancestry alone: approving this change lands their content too.
 - `restack` is the change's latest restack report, or `null`, with the shape and the meaning of
-  `current` that `valley-status/v1` gives it. It was added to `valley-changes/v1`.
+  `current` that `valley-status/v1` gives it.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
   no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
@@ -1471,7 +1471,7 @@ The knot module (`knot/`) is the one reading of the graph, shared by the CLI and
 knot's frontmatter is a strict subset of YAML that the module owns, because Go has no YAML parser.
 Keys come in a fixed order, titles and other free text are JSON strings, and lists are sorted flow
 lists. The module refuses any file that does not read back byte for byte as it would write it, so
-there is one way to write each knot. The form is still YAML, so the knowledge lint reads it too. The
+there is one way to write each knot. The form is YAML, so the knowledge lint reads it too. The
 module also fixes the graph's limits as named constants: 5,000 knots, 20,000 comments, 64 KiB a
 knot, 16 KiB a comment, and 32 changed files a commit.
 
@@ -1578,7 +1578,7 @@ Each knot shows a glyph for its state, then its ID and its title. These are the 
 
 An active knot also shows its claim: the run and the claim's age, marked `stale` past a day. It
 shows its owner, and its blockers by ID. A finished blocker is left out. A blocker that ended
-abandoned, discarded, superseded or dropped no longer blocks, and is shown with how it ended. A
+abandoned, discarded, superseded or dropped clears the knot, and is shown with how it ended. A
 reference to another project's knot, `<project>:<id>`, in `blocked_by` or `target`, is shown as
 written. It is marked `dangling` when that project's graph cannot be read or holds no such knot.
 
@@ -1781,7 +1781,7 @@ exit status is 1.
 5. On a landing, the publisher sends `ref-updated` to the bus and pushes `main` and tags to the
    mirrors. `valley status <handle>` shows the outcome, and the version's landing evidence.
 
-A branch no record is on is approved by its name and requested under it, as before records existed.
+A branch no record is on is approved by its name and requested under it.
 
 ## How cosmo deploys it
 

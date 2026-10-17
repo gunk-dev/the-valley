@@ -369,7 +369,7 @@ usage: valley <verb> [args]
                    while git config valley.principal names no one. a
                    conflict in any layer pushes nothing, records nothing
                    and names the layer.
-                   a change alone prints its new head, as it always has. a
+                   a change alone prints its new head. a
                    stack prints a manifest: one line for each layer, with
                    its old and new head, whether its branch was pushed, and
                    whether a version was added. then, for each change left
@@ -439,11 +439,12 @@ usage: valley <verb> [args]
                    naming anyone else. the record ref is pushed leased on
                    the value read. a new change is owned by the principal
                    that readies it, and a later version may come from its
-                   owner or the operator, who holds the request grant.
+                   owner, the operator, or a restack holder while the
+                   change is ready.
                    a record never makes anything land, and approve is
                    still the only way to main. the integrator reads
-                   records only to refuse: it lands no request whose head
-                   is a version of a change that is not ready.
+                   records only to refuse: it lands no request that would
+                   bring a version of a change that is not ready.
                    needs the valley-go helper.
   unready <change>
                    make a ready change a draft in its record on origin, as
@@ -460,8 +461,9 @@ usage: valley <verb> [args]
                    approvals. ready brings it back, at the same version
                    or a new one. prints e.g. `cosmo nxvp v2 withdrawn`.
                    needs the valley-go helper.
-                   the integrator lands no request at a head of a change
-                   that is not ready, so unready and withdraw both stop a
+                   the integrator lands no request that would bring a
+                   version of a change that is not ready, so unready and
+                   withdraw both stop a
                    pending integration request, under c-<change id> or a
                    branch's request name. each says so when origin holds
                    one. a draft's request stands and lands once the change
@@ -541,7 +543,7 @@ usage: valley <verb> [args]
                    while active, its claim and the claim's age (marked
                    stale past a day), its owner, and what blocks it. a
                    blocker that ended abandoned, discarded, superseded or
-                   dropped no longer blocks, and is marked with how it
+                   dropped clears the knot, and is marked with how it
                    ended. a reference to another project's knot,
                    <project>:<id>, is marked dangling when that
                    project's graph cannot be read or holds no such knot.
@@ -662,9 +664,9 @@ rebase, and review's [a]pprove and [b]ase refuse a change whose record is
 not ready, naming its state, and review offers none of them for a change
 that is not ready when it shows it. Each reads the record again just before it
 acts, and again before approve files or rebase pushes, and refuses when
-the change is no longer ready. rebase also refuses when the change's
+the change is not ready. rebase also refuses when the change's
 record has changed at all since it began, and approve when the head it
-approves is no longer a version's. A name that read as a plain branch is
+approves is not a version's. A name that read as a plain branch is
 read again before approve files or rebase pushes. If it names a change by
 then, rebase refuses, and approve files only while the change is ready at
 the head it began with. An approval already past that last check can
@@ -685,9 +687,10 @@ which need the valley-go helper, as pending, changes, knot, plan and
 self-update do. nix run .#valley bundles all of them. self-update also
 needs nix. Deriving a policy fetches the owning valley's repository, so
 checks and approving also need whatever reaching it takes.
-No config but valley.principal, which ready, knot and plan read, and
-valley.selfUpdate.repo and .branch, which self-update reads; no batch mode;
-and no state but the notes file and self-update's record of what it
+No config but valley.principal, which ready, rebase, knot and plan read,
+and valley.selfUpdate.repo and .branch, which self-update reads; no batch
+mode; and no state but the notes file, the handle cache pending and
+changes write for completion, and self-update's record of what it
 installed — the judgment stays with the human.
 EOF
 }

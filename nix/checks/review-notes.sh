@@ -216,9 +216,12 @@ if grep -q 'change 3 of 3' stack-two.out; then exit 1; fi
 if grep -q '3 of 3: ' stack-two.out; then exit 1; fi
 
 # A draft in the middle is named in the warning before anything is paged.
+# It is readied again after, since review offers no [a]pprove at or above
+# a draft, and the stacks below approve above it.
 valley unready qqqq > /dev/null 2>&1
 printf 's\n' | valley review pppp > stack-draft.out 2>&1
 grep -q '^warning: qqqq, change 2 of 3, is a draft\. The integrator refuses to land it or anything above it (refused-not-ready)\.$' stack-draft.out
+valley ready --change "$q" two > /dev/null
 
 # A change with no stack under it pages and prompts as it always has.
 printf 's\n' | valley review one > stack-one.out 2>&1
@@ -307,10 +310,8 @@ grep -q "origin/solo is at $seed, and is no longer at $solohead, the head shown;
 if git -C "$stack" rev-parse --verify --quiet "$requests/solo" > /dev/null; then exit 1; fi
 
 # ----------------------------------------------------------------------
-# A stack whose bottom does not fast-forward from main. The draft in the
-# middle is readied again, the top gains a second version, and main moves
-# on under the stack.
-valley ready --change "$q" two > /dev/null
+# A stack whose bottom does not fast-forward from main. The top gains a
+# second version, and main moves on under the stack.
 git checkout --quiet three
 echo "layer three, again" >> three.md
 git commit --quiet -am "layer three again"

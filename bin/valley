@@ -215,6 +215,22 @@ usage: valley <verb> [args]
                    [a]pprove is offered there too: a stale branch is nothing
                    the integrator cannot apply, so it need not be rebased
                    first.
+                   a change whose record is not ready says so above its
+                   diff, and again in place of the prompt, which then
+                   offers only [v]iew full diff and [s]kip:
+                     `<change> v<n> is a draft: its owner (<owner>) hasn't
+                     marked it ready, so it can't be approved yet.`
+                     `<change> is withdrawn: there is nothing to approve.`
+                   a draft is often a change an agent is still working on.
+                   [a]pprove would be refused, and so would [b]ase, since
+                   adding the rebased head as a version would ready the
+                   change behind its owner's back. [r]eject records
+                   nothing on the change: it would only delete a branch
+                   its owner may still be working on. a change unreadied
+                   or withdrawn while the review is open is still refused
+                   by [a]pprove and [b]ase, which read the record again.
+                   a branch no record is on has no state, and is offered
+                   the usual prompt.
                    while paging, press v: less opens the diff in $EDITOR.
                    every line you insert there is a note. it is anchored to
                    the file and new-side line it sits on — to the file alone
@@ -280,8 +296,15 @@ usage: valley <verb> [args]
                      [s]top       end the review; nothing done
                    only the top is offered [r]eject. when a layer's checks
                    fail, its prompt says approving needs a new head and
-                   stops offering [a]pprove, as for any change. every
-                   layer's notes are printed at the end.
+                   stops offering [a]pprove, as for any change. a layer
+                   that is not ready says so as a change alone does, under
+                   its heading and in its prompt. neither it nor any layer
+                   above it is offered [a]pprove, since approving one would
+                   land it: each prompt above it says `it would bring
+                   <name>, change <k> of <n>, which is a draft` (or
+                   withdrawn) in its place. a top that is not ready is not
+                   offered [r]eject either. every layer's notes are printed
+                   at the end.
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -636,7 +659,8 @@ that head and its [a]pprove approves it, and rebase and review's
 commit. approve approves the head bound to it, wherever the branch is.
 [r]eject deletes the branch under a lease on the recorded head. approve,
 rebase, and review's [a]pprove and [b]ase refuse a change whose record is
-not ready, naming its state. Each reads the record again just before it
+not ready, naming its state, and review offers none of them for a change
+that is not ready when it shows it. Each reads the record again just before it
 acts, and again before approve files or rebase pushes, and refuses when
 the change is no longer ready. rebase also refuses when the change's
 record has changed at all since it began, and approve when the head it
@@ -1021,14 +1045,17 @@ full_diff() {
   git --no-pager diff "origin/main...$2"
 }
 
+# show_review <branch>: show a change alone. A change that is not ready
+# says so first, before anything else shown of it (shown_not_ready).
 show_review() {
-  local branch="$1" head
+  local branch="$1" head held
   head="$(change_head "$branch")"
   # [a]pprove approves exactly the head shown here (bind_review).
   [ -n "$CHANGE_ID" ] || APPROVE_HEAD="$head"
+  held="$(shown_not_ready)" || held=""
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "$CHANGE_ID" "$CHANGE_VERSION" "$head"
-  show_compared "$branch" "$head" "" full_diff "$branch" "$head"
+  show_compared "$branch" "$head" "$held" full_diff "$branch" "$head"
 }
 
 # view_full <branch>: [v]iew full diff for a change alone. It pages the
@@ -1565,8 +1592,8 @@ cmd_go() {
 # A change is named by its full change ID, its handle, or its branch.
 # resolve_change reads the name with the helper and sets CHANGE_BRANCH, the
 # branch to act on. When the name is a change's, it also sets the change's
-# ID, handle, active version and state, and CHANGE_HEAD, the head that
-# version records. A branch name is a change's when exactly one record's
+# ID, handle, active version, state and owner, and CHANGE_HEAD, the head
+# that version records. A branch name is a change's when exactly one record's
 # active version is on that branch, and is refused when more than one's is.
 # So whether a change's record is read never depends on how it is named,
 # and review, approve and rebase cannot run without the helper.
@@ -1578,6 +1605,7 @@ cmd_go() {
 # anyone who can push the branch can move it, in the same push as the
 # record if they like.
 CHANGE_NAME="" CHANGE_ID="" CHANGE_HANDLE="" CHANGE_VERSION="" CHANGE_HEAD="" CHANGE_BRANCH="" CHANGE_STATE=""
+CHANGE_OWNER=""
 
 # read_resolved <line> <name…>: read a line of valley-go resolve into the
 # variables named, one field each. A version's branch may be empty, and
@@ -1603,7 +1631,7 @@ resolve_change() {
   command -v valley-go > /dev/null 2>&1 \
     || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   line="$(valley-go resolve "$1")" || return 1
-  read_resolved "$line" kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE
+  read_resolved "$line" kind CHANGE_ID CHANGE_HANDLE CHANGE_VERSION CHANGE_HEAD CHANGE_BRANCH CHANGE_STATE CHANGE_OWNER
   case "$kind" in
     branch)
       CHANGE_BRANCH="$CHANGE_ID"
@@ -1684,14 +1712,14 @@ check_recorded_tip() {
 # record that moves after review cannot change what lands, since the
 # request names the head approved.
 check_record() {
-  local undone="$1" acting="${2:-}" bound="${3:-}" line kind id handle version head branch state
+  local undone="$1" acting="${2:-}" bound="${3:-}" line kind id handle version head branch state owner
   if [ -z "$CHANGE_ID" ]; then
     [ -n "$acting" ] || return 0
     if ! line="$(valley-go resolve "$CHANGE_NAME")"; then
       refuse "could not read $CHANGE_NAME again against origin's records; $undone"
       return 1
     fi
-    read_resolved "$line" kind id handle version head branch state
+    read_resolved "$line" kind id handle version head branch state owner
     [ "$kind" = change ] || return 0
     if [ "$state" != ready ]; then
       refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone. Ready it first: $(ready_hint "$id" "$branch")"
@@ -1707,7 +1735,7 @@ check_record() {
     refuse "could not read the record of change $CHANGE_HANDLE again; $undone"
     return 1
   fi
-  read_resolved "$line" kind id handle version head branch state
+  read_resolved "$line" kind id handle version head branch state owner
   if [ "$kind" != change ] || [ "$id" != "$CHANGE_ID" ]; then
     refuse "origin no longer holds a record of change $CHANGE_HANDLE; $undone"
     return 1
@@ -1848,8 +1876,35 @@ approve_failed_at() {
   git rev-parse --short "$CHECKS_FAILED_AT"
 }
 
+# not_ready <handle> <version> <state> <owner>: the line review shows for a
+# change whose record is not ready, above its diff and in its prompt.
+# Prints nothing, and fails, for a ready change, and for a plain branch,
+# which has no record. A draft is often a change an agent is still working
+# on, so the prompt then offers only [v]iew full diff and [s]kip.
+# [a]pprove would be refused. [b]ase is not offered either: rebase refuses
+# such a change, since adding its rebased head as a version would ready it
+# behind its owner's back. Nor is [r]eject, which records nothing on the
+# change: it deletes the branch its owner may still be working on, and the
+# record says what it said before. approve still reads the record again
+# when it acts, since the state can change while the review is open.
+not_ready() {
+  case "$3" in
+    draft) printf "%s v%s is a draft: its owner (%s) hasn't marked it ready, so it can't be approved yet." "$1" "$2" "$4" ;;
+    withdrawn) printf '%s is withdrawn: there is nothing to approve.' "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+# shown_not_ready: not_ready for the change review is showing.
+shown_not_ready() {
+  not_ready "$CHANGE_HANDLE" "$CHANGE_VERSION" "$CHANGE_STATE" "$CHANGE_OWNER"
+}
+
 # Show the branch and take the verdict. Split out of cmd_review so that
 # every way out of it — approve, reject, skip — is followed by the notes.
+# A change that is not ready is asked as decide asks it: it can be neither
+# approved nor rebased, so whether it fast-forwards from main changes
+# nothing.
 read_and_decide() {
   local branch="$1" choice failed answers
   show_review "$branch"
@@ -1858,8 +1913,8 @@ read_and_decide() {
   # here as well, because the integrator applies a delta to the tip rather
   # than fast-forwarding: a stale branch is a request it can judge, and
   # rebasing first is a convenience rather than a precondition.
-  while ! git merge-base --is-ancestor refs/remotes/origin/main \
-    "$(change_head "$branch")"; do
+  while ! shown_not_ready > /dev/null \
+    && ! git merge-base --is-ancestor refs/remotes/origin/main "$(change_head "$branch")"; do
     if failed="$(approve_failed_at "$branch")"; then
       printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
         "$branch" "$failed"
@@ -1910,16 +1965,35 @@ read_and_decide() {
 # asked about by its <name>, as the stack lists it, and its prompt says
 # that approving it lands all <n> layers. [v]iew full diff pages the
 # change's whole diff, or the top layer's.
+#
+# A change that is not ready is asked about by the line not_ready gives,
+# in place of the label, and is offered only [v]iew full diff and
+# [s]kip, or [s]top. The top of a stack with a layer under it that is not
+# ready says why it can't be approved (layer_held), and is offered the
+# rest.
 decide() {
-  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers
+  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers own held=""
   local label="$1" approve="[a]pprove" reject="[r]eject" stop="[s]kip"
   local stopped="skipped $1; nothing done"
+  own="$(shown_not_ready)" || own=""
   if [ -n "$n" ]; then
     label="$name, $n of $n" approve="[a]pprove all $n" reject="[r]eject $name" stop="[s]top"
     stopped="stopped reviewing $name at change $n of $n; nothing done"
+    held="$(layer_held $((n - 1)))" || held=""
   fi
   while true; do
-    if failed="$(approve_failed_at "$branch")"; then
+    failed=""
+    if [ -n "$own" ]; then
+      if [ -n "$n" ]; then
+        printf '%s: %s [v]iew full diff, %s? ' "$label" "$own" "$stop"
+      else
+        printf '%s [v]iew full diff, %s? ' "$own" "$stop"
+      fi
+      answers="v or s"
+    elif [ -n "$held" ]; then
+      printf '%s: %s [v]iew full diff, %s, %s? ' "$label" "$held" "$reject" "$stop"
+      answers="v, r, or s"
+    elif failed="$(approve_failed_at "$branch")"; then
       printf '%s: its checks failed at %s, so approving needs a new head: [v]iew full diff, %s, %s? ' \
         "$label" "$failed" "$reject" "$stop"
       answers="v, r, or s"
@@ -1932,9 +2006,9 @@ decide() {
       # A refusal from approve is not a verdict: it says what it did not do
       # and the prompt comes back, so the branch can still be rejected or
       # skipped. When the checks failed, approving the same head again is
-      # no longer offered.
+      # no longer offered, nor is approving a change that is not ready.
       a)
-        if [ -n "$failed" ]; then
+        if [ -n "$failed" ] || [ -n "$own" ] || [ -n "$held" ]; then
           echo "answer $answers"
         elif approve "$branch"; then
           return
@@ -1947,7 +2021,13 @@ decide() {
           view_full "$branch"
         fi
         ;;
-      r) reject "$branch" && return ;;
+      r)
+        if [ -n "$own" ]; then
+          echo "answer $answers"
+        else
+          reject "$branch" && return
+        fi
+        ;;
       s)
         echo "$stopped"
         return
@@ -1967,24 +2047,25 @@ decide() {
 # The layers are valley-go stack's (status/stack.go): one line each, bottom
 # first, the change itself last, read here into one array per field.
 # L_BRANCH is the branch a layer's notes are kept under: a branch's own
-# name, or the branch a change's active version names. L_NOTES holds the
-# notes taken on each layer, for the print after the verdict.
+# name, or the branch a change's active version names. L_OWNER is a
+# change's owner, as its record names it. L_NOTES holds the notes taken on
+# each layer, for the print after the verdict.
 L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
-L_ID=() L_VERSION=() L_BRANCH=() L_NOTES=()
+L_ID=() L_VERSION=() L_BRANCH=() L_OWNER=() L_NOTES=()
 # The name review was given, which the top is read again by.
 TOP_NAME=""
 
 # read_stack: read the stack under the change review resolved. Each change
-# under the top is read again with resolve, for its ID, version and
-# branch, and must still be at the head the stack names. The top must be
+# under the top is read again with resolve, for its ID, version, branch
+# and owner, and must still be at the head the stack names. The top must be
 # what review resolved. Fails, having said why, when either does not hold
 # or the helper cannot read the stack. Called in a condition, so each step
 # is checked by hand.
 read_stack() {
   local out line kind name base head state title k last
-  local rkind id handle version rhead branch rstate
+  local rkind id handle version rhead branch rstate owner
   L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
-  L_ID=() L_VERSION=() L_BRANCH=() L_NOTES=()
+  L_ID=() L_VERSION=() L_BRANCH=() L_OWNER=() L_NOTES=()
   out="$(valley-go stack "${CHANGE_ID:-origin/$CHANGE_BRANCH}")" || return 1
   while IFS= read -r line; do
     read_resolved "$line" kind name base head state title
@@ -1994,7 +2075,7 @@ read_stack() {
     fi
     L_KIND+=("$kind") L_NAME+=("$name") L_BASE+=("$base") L_HEAD+=("$head")
     L_STATE+=("$state") L_TITLE+=("$title") L_NOTES+=("")
-    L_ID+=("") L_VERSION+=("") L_BRANCH+=("$name")
+    L_ID+=("") L_VERSION+=("") L_BRANCH+=("$name") L_OWNER+=("")
   done <<< "$out"
   last=$((${#L_NAME[@]} - 1))
   if [ "${L_HEAD[last]}" != "$(change_head "$CHANGE_BRANCH")" ] \
@@ -2003,15 +2084,17 @@ read_stack() {
     return 1
   fi
   L_ID[last]="$CHANGE_ID" L_VERSION[last]="$CHANGE_VERSION" L_BRANCH[last]="$CHANGE_BRANCH"
+  L_OWNER[last]="$CHANGE_OWNER"
   for ((k = 0; k < last; k++)); do
     [ "${L_KIND[k]}" = change ] || continue
     line="$(valley-go resolve "${L_NAME[k]}")" || return 1
-    read_resolved "$line" rkind id handle version rhead branch rstate
+    read_resolved "$line" rkind id handle version rhead branch rstate owner
     if [ "$rkind" != change ] || [ "$rhead" != "${L_HEAD[k]}" ]; then
       refuse "change ${L_NAME[k]}, under $TOP_NAME, moved while the stack was read"
       return 1
     fi
     L_ID[k]="$id" L_VERSION[k]="$version" L_BRANCH[k]="$branch" L_STATE[k]="$rstate"
+    L_OWNER[k]="$owner"
   done
 }
 
@@ -2021,7 +2104,7 @@ read_stack() {
 use_layer() {
   local k="$1"
   CHANGE_ID="${L_ID[k]}" CHANGE_VERSION="${L_VERSION[k]}" CHANGE_BRANCH="${L_BRANCH[k]}"
-  CHANGE_STATE="${L_STATE[k]}" CHANGE_HANDLE="" CHANGE_HEAD=""
+  CHANGE_STATE="${L_STATE[k]}" CHANGE_OWNER="${L_OWNER[k]}" CHANGE_HANDLE="" CHANGE_HEAD=""
   CHANGE_NAME="origin/${L_NAME[k]}"
   [ "$k" -lt $((${#L_NAME[@]} - 1)) ] || CHANGE_NAME="$TOP_NAME"
   if [ -n "$CHANGE_ID" ]; then
@@ -2118,17 +2201,41 @@ layer_heading() {
   printf 'change %d of %d: %s on %s' "$((k + 1))" "${#L_NAME[@]}" "${L_NAME[k]}" "$below"
 }
 
+# layer_held <k>: why layer k can't be approved, when it or a layer under
+# it is not ready. A layer that is not ready says so as a change alone
+# does (not_ready). A layer above one says which: approving it would land
+# that layer too, and the integrator lands nothing that would bring a
+# version of a change that is not ready. Prints nothing, and fails, when
+# every layer up to k is ready or a plain branch.
+layer_held() {
+  local k="$1" j
+  not_ready "${L_NAME[k]}" "${L_VERSION[k]}" "${L_STATE[k]}" "${L_OWNER[k]}" && return
+  for ((j = k - 1; j >= 0; j--)); do
+    case "${L_STATE[j]}" in
+      draft | withdrawn)
+        printf "it would bring %s, change %d of %d, which is %s, so it can't be approved yet." \
+          "${L_NAME[j]}" "$((j + 1))" "${#L_NAME[@]}" "$([ "${L_STATE[j]}" = draft ] && echo 'a draft' || echo withdrawn)"
+        return
+        ;;
+    esac
+  done
+  return 1
+}
+
 # page_layer <k>: show layer k, as show_review shows a change alone. The
 # layer shown is compared with its own change's approved version, so a
 # lower layer is set against its own approval, not the top's. Its whole
 # diff is against the layer below it. The notes taken in it are kept
-# under its own branch.
+# under its own branch. When it can't be approved, layer_held's line
+# follows its heading.
 page_layer() {
-  local k="$1"
+  local k="$1" heading held
   NOTES=()
+  heading="$(layer_heading "$k")"
+  if held="$(layer_held "$k")"; then heading+=$'\n'"$held"; fi
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "${L_ID[k]}" "${L_VERSION[k]}" "${L_HEAD[k]}"
-  show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$(layer_heading "$k")" layer_diff "$k"
+  show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$heading" layer_diff "$k"
   keep_layer_notes "$k"
 }
 
@@ -2180,11 +2287,12 @@ layer_diff() {
 # as the prompt names them, [v]iew full diff pages the layer's whole diff,
 # and [s]top ends the review. [r]eject is not offered under the top:
 # deleting a lower layer's branch would leave the layers above still
-# holding it. After the top, its verdict is taken as
-# for any change, with a prompt that names the top and says approving it
-# lands all n.
+# holding it. [a]pprove is not offered at or above a layer that is not
+# ready, and the prompt says why in its place (layer_held). After the
+# top, its verdict is taken as for any change, with a prompt that names
+# the top and says approving it lands all n.
 review_stack() {
-  local n top k choice answers failed lands
+  local n top k choice answers failed lands held
   summarize_stack
   base_stack || return 0
   printf '\n'
@@ -2196,10 +2304,15 @@ review_stack() {
       1) lands="${L_NAME[0]} and ${L_NAME[1]}" ;;
       *) lands="the $((k + 1)) up to ${L_NAME[k]}" ;;
     esac
+    held="$(layer_held "$k")" || held=""
     while true; do
       failed=""
       [ "$CHECKS_FAILED_AT" != "${L_HEAD[k]}" ] || failed="$(git rev-parse --short "${L_HEAD[k]}")"
-      if [ -n "$failed" ]; then
+      if [ -n "$held" ]; then
+        printf '%s, %d of %d: %s [n]ext layer, [v]iew full diff, [s]top? ' \
+          "${L_NAME[k]}" "$((k + 1))" "$n" "$held"
+        answers="n, v, or s"
+      elif [ -n "$failed" ]; then
         printf '%s, %d of %d: its checks failed at %s, so approving needs a new head: [n]ext layer, [v]iew full diff, [s]top? ' \
           "${L_NAME[k]}" "$((k + 1))" "$n" "$failed"
         answers="n, v, or s"
@@ -2212,7 +2325,7 @@ review_stack() {
       case "$choice" in
         n) break ;;
         a)
-          if [ -n "$failed" ]; then
+          if [ -n "$failed" ] || [ -n "$held" ]; then
             echo "answer $answers"
             continue
           fi

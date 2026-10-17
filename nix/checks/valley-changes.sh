@@ -575,13 +575,13 @@ line "^change"$'\t'"$A"$'\t'
 # approving the branch is refused for I's state rather than taken as a
 # plain branch.
 ok valley-go resolve again
-line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft$"
+line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft"$'\t'"klaus-env$"
 if valley approve again > "$w/out" 2> "$w/err"; then fail "approve took the branch of a draft"; fi
 grep -q "change zzzz v2 is draft, not ready" "$w/err" || fail "approve did not refuse the draft for its state"
 
 # J' is not J's landing replayed, so its branch names J, a draft, too.
 ok valley-go resolve ffrec
-line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft$"
+line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft"$'\t'"klaus-env$"
 if valley approve ffrec > "$w/out" 2> "$w/err"; then fail "approve took the branch of a replayed landing"; fi
 grep -q "change lmlm v2 is draft, not ready" "$w/err" || fail "approve did not refuse J' for its state"
 

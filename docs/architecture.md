@@ -747,6 +747,22 @@ where it is offered. `[a]pprove` comes back once the change is at another head, 
 `[b]ase`. A refusal that is not a check failure, such as a lost lease race, keeps the prompt as it
 was.
 
+`review` reads the change's state from its record before it shows the change. A change that is not
+ready says so on the first line shown, above its diff, and again in place of the usual prompt:
+
+- A draft:
+  `nxvp v2 is a draft: its owner (klaus-env) hasn't marked it ready, so it can't be approved yet.`
+- A withdrawn change: `nxvp is withdrawn: there is nothing to approve.`
+
+The prompt then offers only `[v]iew full diff` and `[s]kip`. A change is often a draft because an
+agent is working on it: klaus unreadies a change while its run works, and readies the new head when
+the run finishes. `[a]pprove` would be refused. `[b]ase` is not offered either, since adding the
+rebased head as a version would ready the change behind its owner's back. `[r]eject` is not offered,
+because it records nothing on the change. It only deletes the branch, which the owner may still be
+working on. The state can change while the review is open, so `[a]pprove` and `[b]ase` still read
+the record again when they act, and refuse a change that is no longer ready. A branch no record is
+on has no state, and is offered the usual prompt.
+
 A change with a stack under it is reviewed one layer at a time, bottom first, each against the layer
 below it. The layers are what `valley pending` lists under the change: the changes whose active
 version has not landed, and the branches no record is on, whose heads the change's head contains.
@@ -780,6 +796,11 @@ too.
   offered `[r]eject`.
 - When a layer's checks fail, its prompt says approving needs a new head and stops offering
   `[a]pprove`, as for a change alone.
+- A layer that is not ready says so under its heading and in its prompt, as a change alone does.
+  `[a]pprove` is not offered at that layer or at any layer above it, since approving one would land
+  it. Each prompt above it says why in its place, such as
+  `three, 3 of 3: it would bring two, change 2 of 3, which is a draft, so it can't be approved yet. [v]iew full diff, [r]eject three, [s]top?`.
+  A top that is not ready is not offered `[r]eject` either.
 - Every layer's notes are printed at the end, whatever the verdict.
 
 A change with nothing under it is reviewed against `main` as before.
@@ -952,9 +973,9 @@ branch is. `rebase` and `review`'s `[r]eject` act on the branch itself, so they 
 branch's tip on origin is another commit than the active version's head, and the refusal names both
 commits. `[r]eject` deletes the branch under a lease on the recorded head. `approve`, `rebase`, and
 `review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not `ready`, and the refusal
-names its state. `valley-go resolve` gives these verbs the change's ID, handle, active version,
-recorded head, branch and state on one line, and `valley-go versions` lists every version, for
-`approve`.
+names its state. `review` does not offer them for a change that is not ready when it shows it.
+`valley-go resolve` gives these verbs the change's ID, handle, active version, recorded head,
+branch, state and owner on one line, and `valley-go versions` lists every version, for `approve`.
 
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the

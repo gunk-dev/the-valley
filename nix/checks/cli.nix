@@ -233,19 +233,23 @@ in
   # review and rebase, which act on a branch. A name no record is on that
   # is no branch name is refused. Then a
   # draft: unready, ready again at the same head and at a new one, listed
-  # apart by pending, refused by approve, rebase and review's [a]pprove
+  # apart by pending, refused by approve and rebase, and shown by review
+  # as a draft, with neither [a]pprove, [b]ase nor [r]eject offered,
   # whether it is named by its handle or its branch, and a request pending
   # under either name warned of by unready and withdraw, a request for an
-  # earlier version's branch too. A review left open while another
-  # principal unreadies the change, or readies a new version, refuses to
-  # act on it. A branch no record is on is acted on as a branch, and one
-  # two records are on is refused. Last, stacks rebased whole: every layer
-  # moved and each change given a version, by ancestry and by trees; a
+  # earlier version's branch too. review shows a withdrawn change the same
+  # way. A review left open while another principal unreadies the change,
+  # or readies a new version, refuses to act on it. A branch no record is
+  # on is acted on as a branch, and one two records are on is refused.
+  # Last, stacks rebased whole: every layer moved and each change given a
+  # version, by ancestry and by trees; a
   # conflict in the middle layer; each refusal before the rebase; a branch
   # moved, and a plain branch readied, after the rebase read the stack; a
   # change unreadied between the branch push and its record write, and the
   # command the manifest gives to finish it; and a second stack left on an
-  # old head. Then review set against a change's approved version: a clean
+  # old head. review of a stack whose middle layer is a draft, then
+  # withdrawn, offers [a]pprove under it and neither at it nor above it.
+  # Then review set against a change's approved version: a clean
   # restack after [b]ase, with the landing between the bases listed and no
   # diff paged; a later version with an edited file, paged with the
   # range-diff and its own diff of that file; a version whose message

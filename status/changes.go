@@ -150,10 +150,10 @@ func handlePart(g git, name string) (handle string, qualified bool, err error) {
 // resolution is what the name of a change stands for. A name that is a
 // branch's sets branch alone. A name that is a change's sets every field
 // from the change's record on origin: the active version, the head that
-// version names, the branch it names, and the change's state.
+// version names, the branch it names, the change's state, and its owner.
 type resolution struct {
-	id, handle, head, branch, state string
-	version                         int
+	id, handle, head, branch, state, owner string
+	version                                int
 }
 
 // resolveRecorded reads a change's name for the verbs that act on a
@@ -224,13 +224,14 @@ func lookupRecorded(g git, name string) (origin, recorded, bool, error) {
 }
 
 // resolution is what a change's record says its name stands for: the
-// active version, the head that version names, the branch it names, and
-// the change's state.
+// active version, the head that version names, the branch it names, the
+// change's state, and its owner.
 func (o origin) resolution(n recorded) resolution {
 	v := n.record.ActiveVersion()
 	return resolution{
 		id: n.id, handle: o.handle(n.id), version: v.N,
 		head: strings.TrimPrefix(v.Head, change.HeadPrefix), branch: v.Branch, state: n.record.State,
+		owner: n.record.Owner,
 	}
 }
 
@@ -247,16 +248,18 @@ func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
 // bin/valley runs itself, as resolveRecorded reads it: one line of fields
 // separated by tabs. For a change it is
 //
-//	change <ID> <handle> <version> <head> <branch> <state>
+//	change <ID> <handle> <version> <head> <branch> <state> <owner>
 //
-// with the head as a full object ID, and the state as the record says it:
-// ready, draft or withdrawn. For a branch it is
+// with the head as a full object ID, the state as the record says it:
+// ready, draft or withdrawn, and the owner as the record names it. review
+// names the owner of a draft it shows. For a branch it is
 //
 //	branch <branch>
 //
 // A version may name no branch, and then the branch field is empty. A
 // branch name holds no tab, since git refuses control characters in a
-// ref name. The record commit, which has the head as a parent, has been
+// ref name, and an owner holds none, since the record's validation allows
+// only a principal's name there. The record commit, which has the head as a parent, has been
 // fetched, so the head is in this checkout's objects.
 func runResolve(g git, args []string, w io.Writer) error {
 	if len(args) != 1 {
@@ -273,7 +276,7 @@ func runResolve(g git, args []string, w io.Writer) error {
 		_, err = fmt.Fprintf(w, "branch\t%s\n", r.branch)
 		return err
 	}
-	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch, r.state)
+	_, err = fmt.Fprintf(w, "change\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", r.id, r.handle, r.version, r.head, r.branch, r.state, r.owner)
 	return err
 }
 

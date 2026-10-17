@@ -4,8 +4,9 @@
 // change's record ref leased on the record commit that was read. The
 // push's outcome is read from git's porcelain report, so a push origin
 // refused is told apart from one whose outcome is unknown, as after a lost
-// connection. The record commit is kept either way: a caller that cannot
-// tell whether origin took it can compare origin's ref with it later.
+// connection or an answer origin never gave. The record commit is kept
+// either way: a caller that cannot tell whether origin took it can compare
+// origin's ref with it later.
 
 package rebase
 
@@ -14,7 +15,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	"the-valley/change"
@@ -79,29 +79,52 @@ type RefusedRef struct {
 }
 
 // push runs one push to origin, with --porcelain and the arguments given,
-// and reads what became of it: Pushed when git exits zero; Refused, with
-// each ref git reports refused, when it reports any; and otherwise
-// Unknown, since with no ref reported the push may have reached origin
-// before it failed. No push is made under a context already done.
+// and reads what became of it: Pushed when git exits zero, and otherwise
+// what readPush makes of git's report. No push is made under a context
+// already done.
 func push(ctx context.Context, g Git, args ...string) (Push, []RefusedRef) {
 	if ctx.Err() != nil {
 		return Unpushed, nil
 	}
-	cmd := exec.CommandContext(ctx, "git", append([]string{"push", "--porcelain"}, args...)...)
-	cmd.Env, cmd.Dir, cmd.Stderr = g.Env, g.Dir, g.Stderr
+	cmd := g.command(ctx, append([]string{"push", "--porcelain"}, args...)...)
+	cmd.Stderr = g.Stderr
 	out, err := cmd.Output()
 	switch {
-	case err == nil:
+	case finished(err) == nil:
 		return Pushed, nil
 	case cmd.Process == nil:
 		return Unpushed, nil
 	}
+	return readPush(string(out))
+}
+
+// readPush reads a failed push's porcelain report. git prints one line for
+// each ref: a flag, the refspec, and a summary with any reason after it in
+// parentheses, such as "!\trefs/x:refs/x\t[rejected] (stale info)" (see
+// print_ref_status in git's transport.c).
+//
+// The push is Refused, with each ref refused, only when git reports a ref
+// refused outright. That is "[rejected]", which git decides before it
+// sends anything, or "[remote rejected]", which is origin's own answer.
+// Any other line flagged "!" makes the push Unknown. git prints
+// "[remote failure] (remote failed to report status)" for a ref origin
+// sent no status for, and origin may have taken that ref before its
+// answer was lost. A flag this reader does not know, or a report that
+// names no ref refused, is Unknown too.
+func readPush(out string) (Push, []RefusedRef) {
 	var refused []RefusedRef
-	for _, line := range strings.Split(string(out), "\n") {
+	for _, line := range strings.Split(out, "\n") {
 		f := strings.SplitN(line, "\t", 3)
-		if len(f) == 3 && f[0] == "!" {
+		if len(f) != 3 || len(f[0]) != 1 {
+			continue
+		}
+		summary, _, _ := strings.Cut(f[2], " (")
+		switch {
+		case f[0] == "!" && (summary == "[rejected]" || summary == "[remote rejected]"):
 			_, to, _ := strings.Cut(f[1], ":")
 			refused = append(refused, RefusedRef{Ref: to, Why: f[2]})
+		case !strings.Contains(" +-*=", f[0]):
+			return Unknown, nil
 		}
 	}
 	if len(refused) > 0 {

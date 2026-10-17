@@ -152,15 +152,17 @@ in
   # The rebase engine's tests (rebase/), run in its package's checkPhase
   # with go vet: a chain, a shared lower layer, a conflict, an empty layer,
   # a lease lost to a moved branch, a record append refused after the
-  # branches moved, and a cancellation before the push, each over real
-  # repositories and real pushes. valley-ready and integrator-e2e drive it
-  # through valley rebase.
+  # branches moved, a branch push and a record push that origin takes and
+  # never acknowledges, a cancellation before the push, and a cancellation
+  # while a hook or a filter blocks, each over real repositories and real
+  # pushes. valley-ready and integrator-e2e drive it through valley rebase.
   rebase-unit = packages.rebase;
 
   # The Go verbs' tests (status/), run in valley-go's checkPhase: the
-  # outcome records status accepts, the names its JSON refuses, and its
-  # shell quoting held to the bash it replaced. valley-status and
-  # valley-ready drive the verbs through the CLI over real repositories.
+  # outcome records status accepts, the names its JSON refuses, its shell
+  # quoting held to the bash it replaced, and a rebase ended by a SIGTERM
+  # while a hook blocks it. valley-status and valley-ready drive the verbs
+  # through the CLI over real repositories.
   valley-go-unit = packages.valley-go;
 
   # Read origin's request/outcome refs and distinguish a pending request,

@@ -1,16 +1,95 @@
 package rebase
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"the-valley/change"
 )
+
+// roleEnv, set to "drop-acks", makes the test binary origin's receive-pack
+// that never acknowledges a push: see dropAcks.
+const roleEnv = "REBASE_TEST_ROLE"
+
+func TestMain(m *testing.M) {
+	if os.Getenv(roleEnv) == "drop-acks" {
+		os.Exit(dropAcks(os.Args[1:]))
+	}
+	os.Exit(m.Run())
+}
+
+// dropAcks is git receive-pack less its acknowledgements. It runs the real
+// receive-pack, which takes the push, and passes its report on without the
+// status of any ref, as when origin's answer is lost. The side-band
+// capabilities are taken out of its advertisement, so the report comes as
+// plain pkt-lines.
+func dropAcks(args []string) int {
+	cmd := exec.Command("git", append([]string{"receive-pack"}, args...)...)
+	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil || cmd.Start() != nil {
+		return 1
+	}
+	r := bufio.NewReader(out)
+	advertised := false
+	for {
+		p, err := readPkt(r)
+		if err != nil {
+			break
+		}
+		switch {
+		case p == nil:
+			advertised = true
+		case !advertised:
+			if refs, caps, ok := bytes.Cut(p, []byte{0}); ok {
+				var kept []string
+				for _, c := range strings.Fields(string(caps)) {
+					if !strings.HasPrefix(c, "side-band") {
+						kept = append(kept, c)
+					}
+				}
+				p = []byte(string(refs) + "\x00" + strings.Join(kept, " ") + "\n")
+			}
+		case bytes.HasPrefix(p, []byte("ok ")) || bytes.HasPrefix(p, []byte("ng ")) || bytes.HasPrefix(p, []byte("option ")):
+			continue
+		}
+		if p == nil {
+			io.WriteString(os.Stdout, "0000")
+		} else {
+			fmt.Fprintf(os.Stdout, "%04x%s", len(p)+4, p)
+		}
+	}
+	if cmd.Wait() != nil {
+		return 1
+	}
+	return 0
+}
+
+// readPkt reads one pkt-line, nil for a flush.
+func readPkt(r *bufio.Reader) ([]byte, error) {
+	var size [4]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return nil, err
+	}
+	n, err := strconv.ParseUint(string(size[:]), 16, 16)
+	if err != nil || n < 4 {
+		return nil, err
+	}
+	p := make([]byte, n-4)
+	_, err = io.ReadFull(r, p)
+	return p, err
+}
 
 // world is a bare origin and a clone of it to work in, with git's
 // configuration its own.
@@ -167,6 +246,22 @@ func (w *world) publish(f *Family) *Publication {
 	}
 	pub.AppendAll(ctx, w.g, "rebaser")
 	return pub
+}
+
+// unacknowledged is a receive-pack for origin that takes a push and never
+// acknowledges it, for remote.origin.receivepack.
+func (w *world) unacknowledged() string {
+	w.t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		w.t.Fatal(err)
+	}
+	path := filepath.Join(w.t.TempDir(), "unacknowledged-receive-pack")
+	script := fmt.Sprintf("#!/bin/sh\n%s=drop-acks exec '%s' \"$@\"\n", roleEnv, self)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		w.t.Fatal(err)
+	}
+	return path
 }
 
 // sameDelta holds that a layer's diff from its base is what it was.
@@ -376,9 +471,9 @@ func TestMovedBranchLosesItsLease(t *testing.T) {
 
 // After the branches move, each append stands alone. A change unreadied
 // meanwhile gains no version and writes no record; one whose record push
-// the hook refuses keeps the record commit it tried; one whose push
-// response is lost is unknown, though origin took it; and the rest are
-// appended.
+// the hook refuses keeps the record commit it tried; one whose record push
+// origin takes and never acknowledges is unknown, not refused; and the
+// rest are appended.
 func TestAppendsAfterThePushStandAlone(t *testing.T) {
 	w := newWorld(t)
 	w.layer("a", "main")
@@ -408,12 +503,7 @@ func TestAppendsAfterThePushStandAlone(t *testing.T) {
 	if err := os.WriteFile(hook, []byte(refuse), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A receive-pack that takes the push and then fails, as when the
-	// connection drops before the client reads the result.
-	lossy := filepath.Join(t.TempDir(), "lossy-receive-pack")
-	if err := os.WriteFile(lossy, []byte("#!/bin/sh\ngit-receive-pack \"$@\"\nexit 1\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	lossy := w.unacknowledged()
 
 	for _, res := range pub.Results {
 		if res.Layer.ID == idD {
@@ -436,8 +526,8 @@ func TestAppendsAfterThePushStandAlone(t *testing.T) {
 		w.at(change.Ref(Target, idC)) != ap.Write.Old {
 		t.Errorf("c, refused by the hook: %+v", ap)
 	}
-	if ap := byID[idD]; ap.Err == nil || ap.Write.Push != Unknown || w.at(change.Ref(Target, idD)) != ap.Write.Commit {
-		t.Errorf("d, its response lost: %+v", ap)
+	if ap := byID[idD]; ap.Err == nil || ap.Write.Push != Unknown || ap.Write.Why != "" || w.at(change.Ref(Target, idD)) != ap.Write.Commit {
+		t.Errorf("d, its acknowledgement lost: %+v", ap)
 	}
 	if r := w.record(idB); r.State != change.Draft || len(r.Versions) != 1 {
 		t.Errorf("b gained a version while a draft: %+v", r)
@@ -450,6 +540,176 @@ func TestAppendsAfterThePushStandAlone(t *testing.T) {
 	}
 	if got := strings.Join(unfinished, " "); got != "mmmm nnnn pppp" {
 		t.Errorf("the unfinished layers are %q", got)
+	}
+}
+
+// A branch push that origin takes and never acknowledges is unknown, not
+// refused. git reports each branch as a remote failure, origin holds
+// every prepared head, and each change is left unfinished, with no version
+// appended.
+func TestUnacknowledgedBranchPushIsUnknown(t *testing.T) {
+	w := newWorld(t)
+	w.layer("a", "main")
+	w.layer("b", "a")
+	w.ready(idA, "a")
+	w.ready(idB, "b")
+	w.moveMain("main.txt", "main\n")
+	ctx := context.Background()
+
+	p, err := Prepare(ctx, w.g, w.capture(Selection{ID: idB}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Release(ctx, w.g)
+	w.git("config", "remote.origin.receivepack", w.unacknowledged())
+	pub, err := Publish(ctx, w.g, p)
+	w.git("config", "--unset", "remote.origin.receivepack")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub.AppendAll(ctx, w.g, "rebaser")
+	if pub.Push != Unknown || len(pub.Refused) != 0 {
+		t.Fatalf("the push was %v, refusing %+v", pub.Push, pub.Refused)
+	}
+	for _, res := range pub.Results {
+		if got := w.at("refs/heads/" + res.Layer.Branch); got != res.Head {
+			t.Errorf("origin's %s is at %s, not the prepared %s", res.Layer.Branch, got, res.Head)
+		}
+		if res.Branch != Unknown || res.Appended != nil || !res.Unfinished() {
+			t.Errorf("%s: %+v", res.Layer.Name, res)
+		}
+	}
+}
+
+// blocker is a script that stands for a hook or a filter that does not
+// return. The first time it gets past its guard, it says it has started.
+// It then keeps whatever output it was given open for a minute, and beats
+// while it does: it adds a line to a file every tenth of a second.
+type blocker struct {
+	script, started, beats string
+}
+
+func newBlocker(t *testing.T, script, guard string) *blocker {
+	t.Helper()
+	dir := t.TempDir()
+	b := &blocker{script: script, started: filepath.Join(dir, "started"), beats: filepath.Join(dir, "beats")}
+	body := fmt.Sprintf("#!/bin/sh\n%s\n[ -e '%s' ] && exit 0\n: > '%s'\n"+
+		"i=0\nwhile [ $i -lt 600 ]; do echo >> '%s'; sleep 0.1; i=$((i+1)); done\n",
+		guard, b.started, b.started, b.beats)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// wait waits for the blocker to start.
+func (b *blocker) wait(t *testing.T) {
+	t.Helper()
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(b.started); err == nil {
+			return
+		}
+	}
+	t.Fatal("the blocker never started")
+}
+
+// beating reports whether the blocker is still alive: whether it beats
+// within a second.
+func (b *blocker) beating() bool {
+	size := func() int64 {
+		fi, err := os.Stat(b.beats)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	time.Sleep(200 * time.Millisecond)
+	before := size()
+	time.Sleep(time.Second)
+	return size() != before
+}
+
+// A Prepare cancelled while git waits on a hook or a filter returns at
+// once, and leaves nothing behind. git and what it started are killed,
+// even when they hold the output the engine reads. No worktree stays
+// registered, though worktree add was killed part way, and no ref stays,
+// though update-ref had created the refs before it was killed.
+func TestCancelledPartWayLeavesNothing(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		block func(w *world) *blocker
+	}{
+		{"a post-checkout hook, as worktree add ends", func(w *world) *blocker {
+			return newBlocker(w.t, filepath.Join(w.work, ".git", "hooks", "post-checkout"), "")
+		}},
+		{"a smudge filter, as worktree add checks out", func(w *world) *blocker {
+			b := newBlocker(w.t, filepath.Join(w.t.TempDir(), "smudge"), "")
+			w.git("config", "filter.block.smudge", b.script)
+			return b
+		}},
+		{"a reference-transaction hook, once the kept refs are created", func(w *world) *blocker {
+			guard := "[ \"$1\" = committed ] || exit 0\ncase $(cat) in *' " + keepPrefix + "'*) ;; *) exit 0 ;; esac"
+			return newBlocker(w.t, filepath.Join(w.work, ".git", "hooks", "reference-transaction"), guard)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			w := newWorld(t)
+			w.git("checkout", "--quiet", "-b", "a", "main")
+			w.commit("layer a", ".gitattributes", "*.blocked filter=block\n")
+			w.commit("layer a, blocked", "a.blocked", "a\n")
+			w.git("push", "--quiet", "origin", "a")
+			w.ready(idA, "a")
+			w.moveMain("main.txt", "main\n")
+			f := w.capture(Selection{ID: idA})
+			before := w.refs()
+			b := c.block(w)
+			tmp := filepath.Join(t.TempDir(), "tmp")
+			if err := os.Mkdir(tmp, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("TMPDIR", tmp)
+
+			// The engine's stderr is a pipe that the blocker holds.
+			var stderr bytes.Buffer
+			g := w.g
+			g.Stderr = &stderr
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := Prepare(ctx, g, f)
+				done <- err
+			}()
+			b.wait(t)
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("prepare: %v", err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("prepare did not return once cancelled")
+			}
+
+			if b.beating() {
+				t.Error("what git started outlived the cancellation")
+			}
+			if kept := w.git("for-each-ref", keepPrefix); kept != "" {
+				t.Errorf("the rebase left a ref behind: %q", kept)
+			}
+			if out := w.git("worktree", "list", "--porcelain"); strings.Count(out, "worktree ") != 1 {
+				t.Errorf("the rebase left a worktree registered:\n%s", out)
+			}
+			if left, _ := os.ReadDir(filepath.Join(w.work, ".git", "worktrees")); len(left) != 0 {
+				t.Errorf("the rebase left %d worktree registrations", len(left))
+			}
+			if left, _ := os.ReadDir(tmp); len(left) != 0 {
+				t.Errorf("the rebase left its worktree's directory: %s", left[0].Name())
+			}
+			if after := w.refs(); after != before {
+				t.Errorf("a cancelled rebase moved something")
+			}
+		})
 	}
 }
 

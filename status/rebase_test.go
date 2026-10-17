@@ -1,6 +1,126 @@
 package main
 
-import "testing"
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// A SIGTERM while a hook blocks the rebase ends it: rebase exits 130 at
+// once, though the post-checkout hook worktree add runs holds the stderr
+// the verb was given. The hook is killed with the git that ran it, and the
+// rebase leaves no worktree, no ref and no temporary directory, and moves
+// nothing on origin.
+func TestRebaseSignalledWhileAHookBlocks(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("VALLEY_KNOWN_SIGNERS", "")
+	origin, work := filepath.Join(dir, "origin.git"), filepath.Join(dir, "work")
+	git := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git(dir, "init", "--quiet", "--bare", "--initial-branch=main", origin)
+	git(dir, "clone", "--quiet", origin, work)
+	git(work, "config", "user.name", "rebase-test")
+	git(work, "config", "user.email", "rebase-test@localhost")
+	git(work, "config", "valley.principal", "rebaser")
+	git(work, "checkout", "--quiet", "-b", "main")
+	git(work, "commit", "--quiet", "--allow-empty", "-m", "base")
+	git(work, "push", "--quiet", "origin", "main")
+	git(work, "checkout", "--quiet", "-b", "one")
+	git(work, "commit", "--quiet", "--allow-empty", "-m", "layer one")
+	git(work, "push", "--quiet", "origin", "one")
+	t.Chdir(work)
+	id := strings.Repeat("q", 32)
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"ready", "--change", id, "one"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("ready: %s", stderr.String())
+	}
+	git(work, "checkout", "--quiet", "main")
+	git(work, "commit", "--quiet", "--allow-empty", "-m", "main moves on")
+	git(work, "push", "--quiet", "origin", "main")
+	before := git(origin, "for-each-ref")
+
+	// The hook says it has started, and then beats for a minute: it adds
+	// a line to a file every tenth of a second.
+	started, beats := filepath.Join(dir, "started"), filepath.Join(dir, "beats")
+	hook := fmt.Sprintf("#!/bin/sh\n[ -e '%s' ] && exit 0\n: > '%s'\n"+
+		"i=0\nwhile [ $i -lt 600 ]; do echo >> '%s'; sleep 0.1; i=$((i+1)); done\n", started, started, beats)
+	if err := os.WriteFile(filepath.Join(work, ".git", "hooks", "post-checkout"), []byte(hook), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmp := filepath.Join(dir, "tmp")
+	if err := os.Mkdir(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", tmp)
+
+	stdout.Reset()
+	stderr.Reset()
+	exited := make(chan int, 1)
+	go func() { exited <- run([]string{"rebase", id}, &stdout, &stderr) }()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the hook never started")
+		}
+	}
+	self, _ := os.FindProcess(os.Getpid())
+	if err := self.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case code := <-exited:
+		if code != 130 {
+			t.Fatalf("rebase exited %d, not 130:\n%s%s", code, stdout.String(), stderr.String())
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("rebase did not end on SIGTERM")
+	}
+
+	size := func() int64 {
+		fi, err := os.Stat(beats)
+		if err != nil {
+			return 0
+		}
+		return fi.Size()
+	}
+	time.Sleep(200 * time.Millisecond)
+	was := size()
+	time.Sleep(time.Second)
+	if size() != was {
+		t.Error("the hook outlived the rebase")
+	}
+	if kept := git(work, "for-each-ref", "refs/valley-rebase/"); kept != "" {
+		t.Errorf("the rebase left a ref behind: %q", kept)
+	}
+	if out := git(work, "worktree", "list", "--porcelain"); strings.Count(out, "worktree ") != 1 {
+		t.Errorf("the rebase left a worktree registered:\n%s", out)
+	}
+	if left, _ := os.ReadDir(tmp); len(left) != 0 {
+		t.Errorf("the rebase left its worktree's directory: %s", left[0].Name())
+	}
+	if after := git(origin, "for-each-ref"); after != before {
+		t.Errorf("an interrupted rebase moved something:\n%s\nnow:\n%s", before, after)
+	}
+}
 
 // The manifest lines up the layers' names, says for each change whether a
 // version was added, and gives the command that finishes each change whose

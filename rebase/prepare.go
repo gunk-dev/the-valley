@@ -36,9 +36,10 @@ type Prepared struct {
 // delta. A conflict or a layer left empty anywhere ends it with nothing
 // prepared and nothing pushed.
 //
-// The worktree is removed however Prepare ends. A cancelled context ends
-// the git it is running, and Prepare returns the context's error; git
-// ended by a signal gives ErrInterrupted.
+// The worktree is removed however Prepare ends, and a Prepare that
+// returns no Prepared leaves no ref behind. A cancelled context ends the
+// git it is running, and Prepare returns the context's error; git ended
+// by a signal gives ErrInterrupted.
 func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 	if err := f.Check(); err != nil {
 		return nil, err
@@ -51,18 +52,32 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 		return nil, &Refusal{Kind: NoWorktree}
 	}
 	wt := g.in(dir)
-	added := false
-	// git runs in dir only once it is a worktree: a directory that is not
-	// one would leave git to find the repository above it. The cleanup
-	// runs under a context of its own, since it must run when the caller's
-	// is cancelled.
+	p := &Prepared{Family: f, Heads: map[*Layer]string{}}
+	// A step killed part way may have done some of its work. A worktree
+	// add may have registered the worktree and not checked it out, and an
+	// update-ref may have created the refs before it returned. So each
+	// step's cleanup is armed before the step starts. The cleanup runs
+	// under a context of its own, since it must run when the caller's is
+	// cancelled.
+	adding, added, prepared := false, false, false
 	defer func() {
 		done := context.WithoutCancel(ctx)
+		if !prepared {
+			p.Release(done, g)
+		}
+		// git runs in dir only once it is a worktree: a directory that is
+		// not one would leave git to find the repository above it.
 		if added {
 			wt.succeeds(done, true, "rebase", "--abort")
-			g.succeeds(done, true, "worktree", "remove", "--force", dir)
 		}
+		// worktree remove refuses a worktree whose directory holds no .git
+		// file, as a killed worktree add can leave it, unless the
+		// directory is gone. Forced twice, it also removes a worktree that
+		// is still locked: worktree add locks one until it is checked out.
 		os.RemoveAll(dir)
+		if adding {
+			g.succeeds(done, true, "worktree", "remove", "--force", "--force", dir)
+		}
 	}()
 	stopped := func(err error) error {
 		var exit *exec.ExitError
@@ -76,6 +91,7 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 	}
 
 	bottom := f.Bottom()
+	adding = true
 	if _, err := g.output(ctx, false, "worktree", "add", "--quiet", "--detach", dir, bottom.Head); err != nil {
 		if err := stopped(err); err != nil {
 			return nil, err
@@ -83,7 +99,6 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 		return nil, &Refusal{Kind: NoCheckout, Layer: bottom}
 	}
 	added = true
-	p := &Prepared{Family: f, Heads: map[*Layer]string{}}
 	for _, l := range f.Layers {
 		onto, below := f.Tip, Target
 		if l.Below != nil {
@@ -118,6 +133,7 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 	if err := p.hold(ctx, g); err != nil {
 		return nil, err
 	}
+	prepared = true
 	return p, nil
 }
 
@@ -138,7 +154,9 @@ func conflicted(ctx context.Context, wt Git) []string {
 }
 
 // hold keeps every prepared head reachable, under refs of its own in the
-// repository, so the objects outlive the worktree until Release.
+// repository, so the objects outlive the worktree until Release. Each ref
+// is in p.keep before update-ref runs, so Release deletes any it created
+// however it ended.
 func (p *Prepared) hold(ctx context.Context, g Git) error {
 	var token [8]byte
 	if _, err := rand.Read(token[:]); err != nil {

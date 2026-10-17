@@ -21,7 +21,8 @@
 // alone prints what rebase has always printed.
 //
 // An interrupt or a SIGTERM while the stack is rebased cancels the
-// rebase: the engine removes its worktree, nothing is pushed, and the verb
+// rebase: the engine kills git and anything git started, such as a hook,
+// and removes its worktree and its refs. Nothing is pushed, and the verb
 // exits 130.
 
 package main

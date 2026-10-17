@@ -706,20 +706,21 @@ and new head, whether its branch was pushed, and whether a version was added. Fo
 unfinished, the manifest gives the exact `valley ready --head … --change … <branch>` command that
 finishes it, and the rebase exits non-zero. Running the rebase again on a change whose branch holds
 a head no version records is refused by the recorded-tip check, which prints the same command. When
-the push's outcome is unknown, as after a transport error, the rebase says so, prints the manifest,
-and says how to check: `git ls-remote origin <branches>`.
+the push's outcome is unknown, as after a transport error or when origin does not report it, the
+rebase says so, prints the manifest, and says how to check: `git ls-remote origin <branches>`.
 
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
 the `valley rebase` that moves it, and does not move it. After `[b]ase`, the review goes on at the
-new heads. An interrupt while the stack is rebased removes the worktree, pushes nothing, and
-exits 130.
+new heads. An interrupt or a SIGTERM while the stack is rebased kills git and any hook it started,
+removes the worktree, pushes nothing, and exits 130.
 
 The rebase engine is a Go package that a program imports, such as a service that keeps ready changes
 based on `main`. It never exits the process: every step takes a `context.Context`, and cancelling it
-ends the git the step is running. It works on a family of layers rather than one chain. Linear
-history gives each layer at most one base, so the layers on one bottom layer form a tree: a chain
-such as A → B → C, or a shared lower layer such as A → B and A → C. Its steps are:
+ends the git the step is running, along with anything that git started, such as a hook. It works on
+a family of layers rather than one chain. Linear history gives each layer at most one base, so the
+layers on one bottom layer form a tree: a chain such as A → B → C, or a shared lower layer such as A
+→ B and A → C. Its steps are:
 
 1. **Capture.** From one snapshot of origin, read the family that a change or branch belongs to: the
    chain under it, as `valley rebase` takes, or every layer connected to it. Every layer keeps its
@@ -730,7 +731,8 @@ such as A → B → C, or a shared lower layer such as A → B and A → C. Its 
 3. **Prepare.** Rebase every layer in a throwaway worktree and publish nothing. A shared lower layer
    is rebased once, and each layer on it is rebased onto its new head. A conflict or an empty layer
    anywhere refuses the whole family. The prepared heads stay reachable under local refs until the
-   caller releases them.
+   caller releases them. A Prepare that fails or is cancelled leaves no worktree and no local ref
+   behind.
 4. **Publish.** Read origin again, then move every branch of the family in one atomic leased push.
 5. **Append.** Add each change's prepared head as a version, lower layers first, one change at a
    time, with the `ready --if-active` rule. The caller may stop between appends.
@@ -738,8 +740,11 @@ such as A → B → C, or a shared lower layer such as A → B and A → C. Its 
 Each step returns Go values rather than prose: a refusal with its kind and layer, and for each layer
 its prepared head, what became of its branch, and what became of its record. A push's outcome is
 read from git's porcelain report. So a push that origin refused is told apart from one whose outcome
-is unknown, and a record write keeps the commit it tried to push. `valley rebase` words these
-results as it always has. Checked by `rebase-unit`, over real repositories and real pushes.
+is unknown, and a record write keeps the commit it tried to push. Only an outright refusal counts as
+refused: `[rejected]`, which git decides before it sends anything, or origin's own
+`[remote rejected]`. A ref that origin sent no status for, or a status the engine does not
+recognise, leaves the outcome unknown, since origin may have taken the update. `valley rebase` words
+these results as it always has. Checked by `rebase-unit`, over real repositories and real pushes.
 
 `valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
 change's record (`status/ready.go`). The branch is the current one unless named. The head is

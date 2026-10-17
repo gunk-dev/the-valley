@@ -555,7 +555,9 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
 `ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot` and `plan` verbs are a Go
-program, `valley-go` (`status/`), which the package puts on the script's `PATH`.
+program, `valley-go` (`status/`), which the package puts on the script's `PATH`. `valley-go` rebases
+with the rebase engine, a Go module of its own (`rebase/`), which also reads how far each version
+has landed for its listings.
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -667,13 +669,14 @@ showed. Just before it publishes, it reads the branch on origin, and refuses whe
 that head, naming both heads. The operator reviewed the branch, and the commits it has moved to have
 not been read.
 
-`valley rebase <change>`, and `[b]ase` in a review, rebase the change's whole stack
-(`status/rebase.go`). The stack is the change and the layers `valley-go stack` lists under it. A
-change with nothing under it is a stack of one. In a throwaway worktree, bottom first, each layer's
-own commits are rebased onto the rebased layer below it, and the bottom's onto `main`. So each layer
-keeps its own delta. Commits under the bottom that a lower change landed through an integrator merge
-drop out, since their content is on `main`. The rebase reads that landing as `valley changes` does,
-so it needs `VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` to verify the transfer statement.
+`valley rebase <change>`, and `[b]ase` in a review, rebase the change's whole stack. The verb is
+`status/rebase.go`, and the rebase engine (`rebase/`) does the work. The stack is the change and the
+layers `valley-go stack` lists under it. A change with nothing under it is a stack of one. In a
+throwaway worktree, bottom first, each layer's own commits are rebased onto the rebased layer below
+it, and the bottom's onto `main`. So each layer keeps its own delta. Commits under the bottom that a
+lower change landed through an integrator merge drop out, since their content is on `main`. The
+rebase reads that landing as `valley changes` does, so it needs `VALLEY_KNOWN_SIGNERS` and
+`VALLEY_INTEGRATOR_SIGNER` to verify the transfer statement.
 
 The rebase refuses, and changes nothing, when the stack cannot move whole:
 
@@ -709,7 +712,34 @@ and says how to check: `git ls-remote origin <branches>`.
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
 the `valley rebase` that moves it, and does not move it. After `[b]ase`, the review goes on at the
-new heads.
+new heads. An interrupt while the stack is rebased removes the worktree, pushes nothing, and
+exits 130.
+
+The rebase engine is a Go package that a program imports, such as a service that keeps ready changes
+based on `main`. It never exits the process: every step takes a `context.Context`, and cancelling it
+ends the git the step is running. It works on a family of layers rather than one chain. Linear
+history gives each layer at most one base, so the layers on one bottom layer form a tree: a chain
+such as A → B → C, or a shared lower layer such as A → B and A → C. Its steps are:
+
+1. **Capture.** From one snapshot of origin, read the family that a change or branch belongs to: the
+   chain under it, as `valley rebase` takes, or every layer connected to it. Every layer keeps its
+   captured head, branch tip and record commit. Each layer has a state: `ready`, `draft`,
+   `withdrawn`, a plain branch, `submitted` or `uncertain`. The caller decides from the states
+   whether to move the family.
+2. **Check.** Refuse what cannot be rebased whole, with the refusals listed above.
+3. **Prepare.** Rebase every layer in a throwaway worktree and publish nothing. A shared lower layer
+   is rebased once, and each layer on it is rebased onto its new head. A conflict or an empty layer
+   anywhere refuses the whole family. The prepared heads stay reachable under local refs until the
+   caller releases them.
+4. **Publish.** Read origin again, then move every branch of the family in one atomic leased push.
+5. **Append.** Add each change's prepared head as a version, lower layers first, one change at a
+   time, with the `ready --if-active` rule. The caller may stop between appends.
+
+Each step returns Go values rather than prose: a refusal with its kind and layer, and for each layer
+its prepared head, what became of its branch, and what became of its record. A push's outcome is
+read from git's porcelain report. So a push that origin refused is told apart from one whose outcome
+is unknown, and a record write keeps the commit it tried to push. `valley rebase` words these
+results as it always has. Checked by `rebase-unit`, over real repositories and real pushes.
 
 `valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
 change's record (`status/ready.go`). The branch is the current one unless named. The head is

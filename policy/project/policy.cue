@@ -41,6 +41,7 @@ project: {
 		"integrator-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
+		"rebase-unit",
 		"valley-go-unit",
 		"valley-cli",
 		"review-notes",
@@ -95,14 +96,15 @@ project: {
 		requires: "knots-e2e":       true
 	}
 
-	// The change record, which the hook guards, the CLI's Go verbs write and
-	// the integrator reads. Each reads a record through it, so a change to
-	// it requires their tests as well as its own.
+	// The change record, which the hook guards, the CLI's Go verbs and the
+	// rebase engine write, and the integrator reads. Each reads a record
+	// through it, so a change to it requires their tests as well as its own.
 	classes: change: {
 		paths: "change/**":          true
 		requires: "change-unit":     true
 		requires: "valleyhook-unit": true
 		requires: "protect-e2e":     true
+		requires: "rebase-unit":     true
 		requires: "valley-go-unit":  true
 		requires: "valley-ready":    true
 		requires: "valley-changes":  true
@@ -180,14 +182,16 @@ project: {
 		requires: "sigverify-e2e":  true
 	}
 
-	// The valley CLI: the script, its Go verbs (status/), and its
-	// completions. valley-ready drives ready, withdraw and the verbs that
-	// take a change's handle, valley-changes drives changes and pending,
-	// and valley-plan drives plan against the golden files under
+	// The valley CLI: the script, its Go verbs (status/), the rebase engine
+	// they rebase and read landings with (rebase/), and its completions.
+	// valley-ready drives ready, withdraw, rebase and the verbs that take a
+	// change's handle, valley-changes drives changes and pending, and
+	// valley-plan drives plan against the golden files under
 	// status/testdata/plan/.
 	classes: cli: {
 		paths: "bin/valley":        true
 		paths: "status/**":         true
+		paths: "rebase/**":         true
 		paths: "completions/**":    true
 		requires: "valley-go-unit": true
 		requires: "valley-cli":     true
@@ -199,6 +203,13 @@ project: {
 		requires: "valley-knot":    true
 		requires: "valley-plan":    true
 		requires: "policy-deriver": true
+	}
+
+	// The rebase engine, with its own tests over real repositories. The
+	// verbs that run it are the cli class's, so its paths are there too.
+	classes: rebase: {
+		paths: "rebase/**":      true
+		requires: "rebase-unit": true
 	}
 
 	// The verification policy: this layer, the pointer to the owning

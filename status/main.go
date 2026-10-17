@@ -37,6 +37,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"the-valley/rebase"
 )
 
 const usage = `usage: valley-go status [--json] <change>
@@ -123,6 +125,12 @@ type git struct {
 	env    []string
 	stderr io.Writer // where git's own diagnostics go, unless quiet
 	dir    string    // the repository's directory; "" for the current one
+}
+
+// engine is g as the rebase engine runs git: in the same repository and
+// environment, with git's own diagnostics on the same stderr.
+func (g git) engine() rebase.Git {
+	return rebase.Git{Dir: g.dir, Env: g.env, Stderr: g.stderr}
 }
 
 // gitEnvironment is the caller's environment with replacement refs off.

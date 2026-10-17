@@ -35,11 +35,13 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"strings"
 
 	"the-valley/change"
+	"the-valley/rebase"
 )
 
 const readyUsage = "usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]"
@@ -182,13 +184,8 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	}
 	handle := o.handle(id)
 	if a.ifActive != "" {
-		switch {
-		case before == nil:
-			return 0, failure(fmt.Sprintf("--if-active %s: origin holds no record of %s, so no version is added", short(a.ifActive), handle))
-		case before.State != change.Ready:
-			return 0, failure(fmt.Sprintf("%s is %s, not ready, so no version is added: --if-active adds one only while the change is ready", handle, before.State))
-		case headOf(before.ActiveVersion()) != a.ifActive:
-			return 0, failure(fmt.Sprintf("%s v%d is at %s, not %s, so no version is added", handle, before.Active, short(headOf(before.ActiveVersion())), short(a.ifActive)))
+		if err := rebase.CheckActive(handle, before, a.ifActive); err != nil {
+			return 0, err
 		}
 	}
 
@@ -213,43 +210,33 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	version := change.Version{
 		Head: change.HeadPrefix + head, Title: change.Title(subject), Branch: a.branch, Uploader: principal,
 	}
-	var after change.Record
+	var after *change.Record
 	var parents []string
-	if before == nil {
+	switch {
+	case before == nil:
 		version.N = 1
-		after = change.Record{
+		after = &change.Record{
 			Schema: change.Schema, ChangeID: id, Target: recordTarget, Owner: principal,
 			State: change.Ready, Seq: 1, Versions: []change.Version{version}, Active: 1,
 		}
 		parents = []string{head}
-	} else {
-		active := before.ActiveVersion()
-		same := active.Head == version.Head
-		switch {
-		case same && before.State == change.Ready:
-			return 0, failure(fmt.Sprintf("%s v%d is at %s already; a new version needs a new head", handle, active.N, short(head)))
-		case !same && len(before.Versions) >= change.MaxVersions:
-			return 0, failure(fmt.Sprintf("%s has %d versions, the most a change may have", handle, len(before.Versions)))
-		case before.Seq >= change.MaxSeq:
+	case before.ActiveVersion().Head == version.Head && before.State != change.Ready:
+		// A draft or a withdrawn change readied at its active head is
+		// ready again at the version it had, and the record changes
+		// nothing else.
+		if before.Seq >= change.MaxSeq {
 			return 0, failure(fmt.Sprintf("%s's record has been updated %d times, the most a record may be", handle, before.Seq))
 		}
-		after = *before
-		if same {
-			// A draft or a withdrawn change readied at its active head is
-			// ready again at the version it had, and the record changes
-			// nothing else.
-			version = active
-			parents = []string{old}
-		} else {
-			version.N = before.Last().N + 1
-			after.Versions = append(append([]change.Version(nil), before.Versions...), version)
-			after.Active = version.N
-			parents = []string{old, head}
+		revived := *before
+		revived.State, revived.Seq = change.Ready, before.Seq+1
+		after, version, parents = &revived, before.ActiveVersion(), []string{old}
+	default:
+		if after, err = rebase.NextRecord(handle, before, version); err != nil {
+			return 0, err
 		}
-		after.State, after.Seq = change.Ready, before.Seq+1
+		version, parents = after.ActiveVersion(), []string{old, head}
 	}
-	message := fmt.Sprintf("valley ready: %s v%d\n\nChange %s, version %d, at %s.", handle, version.N, id, version.N, head)
-	commit, err := writeRecord(g, &after, message, parents...)
+	commit, err := writeRecord(g, after, rebase.ReadyMessage(handle, id, version.N, head), parents...)
 	if err != nil {
 		return 0, err
 	}
@@ -390,27 +377,10 @@ func onBranch(g git, o origin, branch string) (recorded, error) {
 		strings.Join(handles, ", "), branch))
 }
 
-// checkRange refuses a change whose commits are not one line: the range
-// from the merge base of origin's main and the head, to the head, must hold
-// no merge commit, and the merge base must be one commit.
+// checkRange refuses a change whose commits are not one line, as the
+// rebase engine checks a version's head (rebase.CheckRange).
 func checkRange(g git, tip, head string) error {
-	out, err := g.output(true, "merge-base", "--all", tip, head)
-	bases := strings.Fields(out)
-	switch {
-	case err != nil && len(bases) == 0:
-		return failure(fmt.Sprintf("%s shares no history with origin's %s, so it is no change to it", short(head), recordTarget))
-	case len(bases) > 1:
-		return failure(fmt.Sprintf("%s has %d merge bases with origin's %s, so the commits of the change are ambiguous", short(head), len(bases), recordTarget))
-	}
-	merges, err := g.output(true, "rev-list", "--min-parents=2", bases[0]+".."+head)
-	if err != nil {
-		return failure("could not read the commits from origin's " + recordTarget + " to " + short(head))
-	}
-	if merges != "" {
-		first := strings.Fields(merges)[0]
-		return failure(fmt.Sprintf("the commits from origin's %s to %s include the merge %s, and a change is a line of commits", recordTarget, short(head), short(first)))
-	}
-	return nil
+	return rebase.CheckRange(context.Background(), g.engine(), tip, head)
 }
 
 // changeID is the change's ID: --change when given, then the head
@@ -445,50 +415,9 @@ func changeID(g git, head, flag string) (id string, generated bool, err error) {
 }
 
 // headIDs reads the change IDs a commit carries: the change-id header in
-// the commit object itself, never text in its message, and the Change-Id
-// trailer, as git interpret-trailers parses the message.
+// the commit object itself, and the Change-Id trailer (rebase.HeadIDs).
 func headIDs(g git, head string) (header, trailer string, err error) {
-	raw, err := g.output(true, "cat-file", "commit", head)
-	if err != nil {
-		return "", "", failure("could not read the commit " + short(head))
-	}
-	headers, message, _ := strings.Cut(raw, "\n\n")
-	var found []string
-	for _, line := range strings.Split(headers, "\n") {
-		// A line opening with a space continues the header above it.
-		if v, ok := strings.CutPrefix(line, "change-id "); ok {
-			found = append(found, v)
-		}
-	}
-	switch {
-	case len(found) > 1:
-		return "", "", failure(short(head) + " has more than one change-id header")
-	case len(found) == 1 && !change.ValidID(found[0]):
-		return "", "", failure(fmt.Sprintf("%s has the change-id header %q, which is not a change ID", short(head), found[0]))
-	case len(found) == 1:
-		header = found[0]
-	}
-
-	parsed, err := g.input(true, strings.NewReader(message), "interpret-trailers", "--parse")
-	if err != nil {
-		return "", "", failure("could not read the trailers of " + short(head))
-	}
-	found = nil
-	for _, line := range strings.Split(parsed, "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "Change-Id") {
-			found = append(found, strings.TrimSpace(value))
-		}
-	}
-	switch {
-	case len(found) > 1:
-		return "", "", failure(short(head) + " has more than one Change-Id trailer")
-	case len(found) == 1 && !change.ValidID(found[0]):
-		return "", "", failure(fmt.Sprintf("%s has the Change-Id trailer %q, which is not a change ID", short(head), found[0]))
-	case len(found) == 1:
-		trailer = found[0]
-	}
-	return header, trailer, nil
+	return rebase.HeadIDs(context.Background(), g.engine(), head)
 }
 
 // stamp amends the head of the local branch to carry the change ID as a

@@ -165,7 +165,6 @@ func readHistory(g git, id string) (*history, error) {
 	if err := fetch(g, want...); err != nil {
 		return nil, err
 	}
-	s := newSnapshot(g, o, all, verifier{})
 	h := &history{
 		id: id, handle: o.handle(id), unread: len(unread) > 0,
 		requests: map[string]string{}, outcomes: map[string]outcome{}, others: map[string]bool{},
@@ -201,9 +200,14 @@ func readHistory(g git, id string) (*history, error) {
 		if name, ok := strings.CutPrefix(ref, requestPrefix); ok {
 			h.requests[name] = oid
 		}
-	}
-	for ref, m := range s.outcomes {
-		h.outcomes[strings.TrimPrefix(ref, outcomePrefix)] = outcome{head: m.head, decision: m.decision}
+		if name, ok := strings.CutPrefix(ref, outcomePrefix); ok {
+			record, err := g.output(true, "cat-file", "blob", oid)
+			if err != nil {
+				record = ""
+			}
+			m := parseMemo(record)
+			h.outcomes[name] = outcome{head: m.head, decision: m.decision}
+		}
 	}
 	return h, nil
 }

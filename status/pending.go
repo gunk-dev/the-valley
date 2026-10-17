@@ -71,6 +71,7 @@ import (
 	"unicode"
 
 	"the-valley/change"
+	"the-valley/rebase"
 )
 
 // pendingChange is a ready change whose active version has not landed.
@@ -147,8 +148,6 @@ type entry struct {
 	ref      string   // what the entry is typed as: its handle, or its branch
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
-	id       string   // a change's ID; "" for a branch (stack.go)
-	state    string   // a change's state, or - for a branch (stack.go)
 	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and checks
 
@@ -260,61 +259,30 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 
 // stack nests each entry under the nearest entry whose head strictly
 // contains its own, and gives each entry its base: the nearest entry its
-// own head strictly contains. Where two are equally near, the one with the
+// own head strictly contains, as the rebase engine stacks layers
+// (rebase.Snapshot.Nest). Where two are equally near, the one with the
 // later commit is taken. It returns the entries nested under none, each the
 // top of a stack, the stack with the latest commit first. Each top lists
 // every entry nested under it, at any depth, in its below.
 func (s *snapshot) stack(all []*entry) []*entry {
-	in := make([][]bool, len(all)) // in[i][j]: entry i's head strictly contains entry j's
-	for i := range all {
-		in[i] = make([]bool, len(all))
-		for j := range all {
-			in[i][j] = i != j && s.strictAncestor(all[j].head, all[i].head)
-			if in[i][j] {
-				all[j].inside = append(all[j].inside, all[i])
-			}
-		}
-	}
-	// nearest is the entries i contains, or that contain i, with none
-	// between.
-	nearest := func(i int, above bool) []*entry {
-		var near []*entry
-		for j := range all {
-			outer, inner := j, i
-			if !above {
-				outer, inner = i, j
-			}
-			if !in[outer][inner] {
-				continue
-			}
-			between := false
-			for k := range all {
-				between = between || in[outer][k] && in[k][inner]
-			}
-			if !between {
-				near = append(near, all[j])
-			}
-		}
-		byActivity(near, func(e *entry) int64 { return e.when })
-		return near
-	}
+	nodes := make([]rebase.Node, len(all))
 	for i, e := range all {
-		if above := nearest(i, true); len(above) > 0 {
-			e.parent = above[0]
+		nodes[i] = rebase.Node{Name: e.name, Head: e.head, When: e.when}
+	}
+	nest := s.land.Nest(nodes)
+	for i, e := range all {
+		for _, j := range nest.Inside[i] {
+			e.inside = append(e.inside, all[j])
+		}
+		if p := nest.Parent[i]; p >= 0 {
+			e.parent = all[p]
 			e.parent.kids = append(e.parent.kids, e)
 		}
 	}
 	var tops []*entry
 	for i, e := range all {
-		below := nearest(i, false)
-		for _, d := range below {
-			if d.parent == e {
-				e.base = d
-				break
-			}
-		}
-		if e.base == nil && len(below) > 0 {
-			e.base = below[0]
+		if b := nest.Base[i]; b >= 0 {
+			e.base = all[b]
 		}
 		s.measure(e)
 		if e.parent == nil {
@@ -450,10 +418,17 @@ func (s *snapshot) measure(e *entry) {
 	}
 	e.layer = commits + " · " + diff
 	if e.section == "branches" {
-		out, _ := s.g.output(true, append([]string{"log", "--first-parent", "--reverse", "--format=%s", e.head}, not...)...)
-		first, _, _ := strings.Cut(out, "\n")
-		e.title = readable(change.Title(first))
+		e.title = s.branchTitle(e.head, not)
 	}
+}
+
+// branchTitle is a branch's title: the subject of the first of its own
+// commits on its first-parent line, those its head reaches and not leaves
+// out.
+func (s *snapshot) branchTitle(head string, not []string) string {
+	out, _ := s.g.output(true, append([]string{"log", "--first-parent", "--reverse", "--format=%s", head}, not...)...)
+	first, _, _ := strings.Cut(out, "\n")
+	return readable(change.Title(first))
 }
 
 func counted(n int, noun string) string {

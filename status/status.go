@@ -30,6 +30,7 @@ import (
 	"unicode/utf8"
 
 	"the-valley/change"
+	"the-valley/rebase"
 )
 
 const statusUsage = "usage: valley status [--json] <change>"
@@ -72,9 +73,9 @@ func parseStatusArgs(args []string) (asJSON bool, name string, err error) {
 
 const (
 	target          = "main"
-	requestPrefix   = "refs/the-valley/integration-requests/" + target + "/"
-	outcomePrefix   = "refs/the-valley/integration-outcomes/" + target + "/"
-	attestationRefs = "refs/the-valley/attestations/"
+	requestPrefix   = rebase.RequestPrefix
+	outcomePrefix   = rebase.OutcomePrefix
+	attestationRefs = rebase.AttestationRefs
 )
 
 // status is what one read of origin found for a change, and the state
@@ -186,9 +187,7 @@ func reservedName(branch string) error {
 // holding a slash (integrator/refs.go), so a branch name with one is
 // written with dashes instead. bin/valley's change_name is the same
 // mapping, and the request approve files is named by it.
-func changeName(branch string) string {
-	return strings.ReplaceAll(branch, "/", "-")
-}
+func changeName(branch string) string { return rebase.ChangeName(branch) }
 
 // read takes one snapshot of origin and decides the change's state from
 // it. A status read is a snapshot of origin, not a replay of this
@@ -265,7 +264,7 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 	}
 	snap := newSnapshot(g, o, nil, verifierFromEnv())
 	s.recorded.landing, _ = snap.landing(n.id, v)
-	if snap.unverified {
+	if snap.unverified() {
 		fmt.Fprintf(stderr, "valley: a transfer statement could not be verified, so %s may have landed though its landing does not say so. %s\n", s.recorded.handle, verifierHint)
 	}
 	return s, nil
@@ -337,60 +336,18 @@ type memo struct {
 	failedAt            string // set for failed alone
 }
 
-// parseMemo reads an outcome record. Anything it does not recognise is
-// unknown, never a decision: a damaged record, or one in a format newer
-// than this reader, must not read as a landing or as any other answer the
-// integrator did not give. Fields are separated by spaces or tabs, and
-// trailing newlines are dropped, as bin/valley read it with read(1); a
-// second line, a NUL, or a sixth field makes the record unknown.
-func parseMemo(record string) memo {
-	line := strings.TrimRight(record, "\n")
-	fields := strings.FieldsFunc(line, func(r rune) bool { return r == ' ' || r == '\t' })
-	field := func(i int) string {
-		if i < len(fields) {
-			return fields[i]
-		}
-		return ""
-	}
-	m := memo{head: field(0), tip: field(1), evidence: field(2), decision: field(3), failedAt: field(4)}
-	if strings.ContainsAny(line, "\n\x00") || len(fields) > 5 ||
-		!isObjectID(m.head) || !isObjectID(m.tip) || !isHex(m.evidence, 16) {
-		m.decision = "unknown"
-	}
-	switch m.decision {
-	case "land", "stale", "reject", "refused-not-ready", "refused-merge", "voided-withdrawn":
-		if m.failedAt != "" {
-			m.decision = "unknown"
-		}
-	case "failed":
-		if m.failedAt == "" {
-			m.decision = "unknown"
-		}
-	default:
-		m.decision = "unknown"
-	}
-	if m.decision != "failed" {
-		m.failedAt = ""
-	}
-	return m
+// parseMemo reads an outcome record, as the rebase engine reads one
+// (rebase.ParseOutcome). Anything it does not recognise is unknown, never
+// a decision.
+func parseMemo(record string) memo { return memoOf(rebase.ParseOutcome(record)) }
+
+// memoOf is an outcome record as status holds one.
+func memoOf(o rebase.Outcome) memo {
+	return memo{head: o.Head, tip: o.Tip, evidence: o.Evidence, decision: o.Decision, failedAt: o.FailedAt}
 }
 
 // isObjectID is a full SHA-1 or SHA-256 object id, lowercase.
-func isObjectID(s string) bool {
-	return isHex(s, 40) || isHex(s, 64)
-}
-
-func isHex(s string, n int) bool {
-	if len(s) != n {
-		return false
-	}
-	for _, c := range []byte(s) {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
+func isObjectID(s string) bool { return rebase.IsObjectID(s) }
 
 // evidenceFingerprint is the evidence state the integrator records in a
 // memo: the first 16 hex digits of the SHA-256 over every attestation ref

@@ -2,7 +2,7 @@
 # anchors a note to, what its deriver makes of a policy and a diff, that
 # the-valley's own policy composes and names only checks that exist, what
 # its review verb publishes when it files an integration request, what its
-# Go verbs' unit tests hold, what its ready and withdraw verbs write to a
+# Go verbs' unit tests and the rebase engine's hold, what its ready and withdraw verbs write to a
 # change's record through the real push hook, what its knot verbs write to
 # the plan graph, what its plan verb shows of that graph, and that its
 # package evaluates for aarch64-darwin.
@@ -148,6 +148,14 @@ in
     cliScript = ../../bin/valley;
     inherit failNth;
   } (builtins.readFile ./valley-request.sh);
+
+  # The rebase engine's tests (rebase/), run in its package's checkPhase
+  # with go vet: a chain, a shared lower layer, a conflict, an empty layer,
+  # a lease lost to a moved branch, a record append refused after the
+  # branches moved, and a cancellation before the push, each over real
+  # repositories and real pushes. valley-ready and integrator-e2e drive it
+  # through valley rebase.
+  rebase-unit = packages.rebase;
 
   # The Go verbs' tests (status/), run in valley-go's checkPhase: the
   # outcome records status accepts, the names its JSON refuses, and its

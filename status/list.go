@@ -667,7 +667,7 @@ func warnUnverified(repos []listed, stderr io.Writer) {
 				fmt.Fprintf(stderr, "valley: warning: %s: the change record %s does not read, so it is not listed: %s. The hook refuses such a record, so origin's storage is corrupt\n", r.name, u.ref, u.why)
 			}
 		}
-		if r.snap != nil && r.snap.unverified {
+		if r.snap != nil && r.snap.unverified() {
 			fmt.Fprintf(stderr, "valley: %s: a transfer statement could not be verified, so a change may have landed that is not listed so. %s\n", r.name, verifierHint)
 		}
 	}

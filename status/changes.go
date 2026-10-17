@@ -27,111 +27,55 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"the-valley/change"
+	"the-valley/rebase"
 )
 
 // recordTarget is the one target a change may name for now. The hook
 // refuses a record for any other.
-const recordTarget = "main"
+const recordTarget = rebase.Target
 
 // origin is one ls-remote snapshot of the refs a verb reads.
 type origin struct {
 	refs map[string]string // ref → object ID
 }
 
-// listOrigin takes one snapshot of origin's refs matching the patterns.
-// ls-remote matches a pattern against the tail of a ref name, so every ref
-// is compared whole afterwards.
+// listOrigin takes one snapshot of origin's refs matching the patterns, as
+// the rebase engine reads origin.
 func listOrigin(g git, patterns ...string) (origin, error) {
-	out, err := g.output(false, append([]string{"ls-remote", "--refs", "origin"}, patterns...)...)
-	if err != nil {
-		return origin{}, failure("could not read origin")
-	}
-	o := origin{refs: map[string]string{}}
-	for _, line := range strings.Split(out, "\n") {
-		oid, ref, ok := strings.Cut(line, "\t")
-		if ok && ref != "" {
-			o.refs[ref] = oid
-		}
-	}
-	return o, nil
+	o, err := rebase.ListOrigin(context.Background(), g.engine(), patterns...)
+	return origin{refs: o.Refs}, err
 }
+
+// engine is the snapshot as the rebase engine holds one.
+func (o origin) engine() rebase.Origin { return rebase.Origin{Refs: o.refs} }
 
 // recordPatterns are the ls-remote patterns that list every record.
-var recordPatterns = []string{change.RefPrefix + recordTarget + "/*"}
+var recordPatterns = rebase.RecordPatterns
 
 // changes is the ID of every change origin holds a record for, in order.
-func (o origin) changes() []string {
-	var ids []string
-	for ref := range o.refs {
-		if target, id, ok := change.ParseRef(ref); ok && target == recordTarget {
-			ids = append(ids, id)
-		}
-	}
-	sort.Strings(ids)
-	return ids
-}
+func (o origin) changes() []string { return o.engine().Changes() }
 
 // handle is the change's handle among the changes origin holds, and this
 // one, which may not be among them yet.
-func (o origin) handle(id string) string {
-	return change.Handle(id, append(o.changes(), id))
-}
+func (o origin) handle(id string) string { return o.engine().Handle(id) }
 
-// fetch brings the objects named into this checkout's object store,
-// without writing FETCH_HEAD, moving a ref or fetching tags. An object
-// already here is not asked for: a fetch brings an object with everything
-// it reaches, so one that is here has what it reaches here too.
+// fetch brings the objects named into this checkout's object store, as
+// the rebase engine fetches them: by ID, without moving a ref.
 func fetch(g git, oids ...string) error {
-	var query bytes.Buffer
-	for _, oid := range oids {
-		if oid != "" {
-			fmt.Fprintln(&query, oid)
-		}
-	}
-	if query.Len() == 0 {
-		return nil
-	}
-	present, _ := g.input(true, &query, "cat-file", "--batch-check=%(objectname)")
-	here := map[string]bool{}
-	for _, line := range strings.Split(present, "\n") {
-		here[line] = true
-	}
-	var stdin bytes.Buffer
-	for _, oid := range oids {
-		if oid != "" && !here[oid] {
-			fmt.Fprintln(&stdin, oid)
-		}
-	}
-	if stdin.Len() == 0 {
-		return nil
-	}
-	_, err := g.input(false, &stdin, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--stdin", "origin")
-	if err != nil {
-		return failure("could not fetch from origin")
-	}
-	return nil
+	return rebase.Fetch(context.Background(), g.engine(), oids...)
 }
 
 // readRecord reads the record a record commit holds. The commit must have
 // been fetched.
 func readRecord(g git, commit string) (*change.Record, error) {
-	data, err := g.output(true, "cat-file", "blob", commit+":record.json")
-	if err != nil {
-		return nil, failure(fmt.Sprintf("the change record %s holds no record.json", short(commit)))
-	}
-	r, err := change.Parse([]byte(data + "\n"))
-	if err != nil {
-		return nil, failure(fmt.Sprintf("the change record %s does not read: %v", short(commit), err))
-	}
-	return r, nil
+	return rebase.ReadRecord(context.Background(), g.engine(), commit)
 }
 
 // recorded is a change that a name resolved to: its ID, and its record on
@@ -291,47 +235,12 @@ func (o origin) resolution(n recorded) resolution {
 }
 
 // unlandedOn is every change origin holds a record of whose active
-// version names branch, less each whose active version has landed. o must
-// list inventoryPatterns. Landing is read only for a change on the
-// branch, so a name no record is on costs no more than reading the
-// records.
-//
-// A landed change is left out wherever the branch has moved since. The
-// branch then holds new work, and the name is free for it. A landing read
-// wrongly could make a draft's branch read as a plain branch, but nothing
-// lands from that: the integrator refuses any request whose head is a
-// version of a change that is not ready, whatever the request is named.
+// version names branch, less each whose active version has landed, as
+// the rebase engine reads it (rebase.UnlandedOn). o must list
+// inventoryPatterns.
 func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
-	all, _, err := readAll(g, o)
-	if err != nil {
-		return nil, err
-	}
-	var on []recorded
-	for _, n := range all {
-		if n.record.ActiveVersion().Branch == branch {
-			on = append(on, n)
-		}
-	}
-	if len(on) == 0 {
-		return nil, nil
-	}
-	var want []string
-	for ref, oid := range o.refs {
-		if ref == "refs/heads/"+recordTarget || strings.HasPrefix(ref, outcomePrefix) {
-			want = append(want, oid)
-		}
-	}
-	if err := fetch(g, want...); err != nil {
-		return nil, err
-	}
-	s := newSnapshot(g, o, all, verifierFromEnv())
-	var found []recorded
-	for _, n := range on {
-		if !s.isLanded(n.id, n.record.ActiveVersion()) {
-			found = append(found, n)
-		}
-	}
-	return found, nil
+	found, err := rebase.UnlandedOn(context.Background(), g.engine(), o.engine(), branch, verifierFromEnv())
+	return fromEngine(found), err
 }
 
 // runResolve prints what a change's name stands for, for the verbs
@@ -410,29 +319,29 @@ func runVersions(g git, args []string, w io.Writer) error {
 	return err
 }
 
-// readAll reads every record origin holds, in the order of their IDs. A
-// record that does not read is kept apart, in unread, and is no change for
-// any reader: the integrator treats it the same way. The hook refuses such
-// a record, so only corrupt storage holds one. err is for origin that
-// could not be read.
+// readAll reads every record origin holds, in the order of their IDs, as
+// the rebase engine reads them (rebase.ReadAll). A record that does not
+// read is kept apart, in unread, and is no change for any reader.
 func readAll(g git, o origin) (all []recorded, unread []unreadRecord, err error) {
-	ids := o.changes()
-	var commits []string
-	for _, id := range ids {
-		commits = append(commits, o.refs[change.Ref(recordTarget, id)])
+	read, bad, err := rebase.ReadAll(context.Background(), g.engine(), o.engine())
+	for _, u := range bad {
+		unread = append(unread, unreadRecord{ref: u.Ref, commit: u.Commit, why: u.Why})
 	}
-	if err := fetch(g, commits...); err != nil {
-		return nil, nil, err
+	return fromEngine(read), unread, err
+}
+
+// fromEngine is the engine's records as this program holds them.
+func fromEngine(read []rebase.Recorded) []recorded {
+	var all []recorded
+	for _, n := range read {
+		all = append(all, recorded{id: n.ID, commit: n.Commit, record: n.Record})
 	}
-	for i, id := range ids {
-		r, err := readRecord(g, commits[i])
-		if err != nil {
-			unread = append(unread, unreadRecord{ref: change.Ref(recordTarget, id), commit: commits[i], why: err.Error()})
-			continue
-		}
-		all = append(all, recorded{id: id, commit: commits[i], record: r})
-	}
-	return all, unread, nil
+	return all
+}
+
+// engine is the record as the rebase engine holds one.
+func (n recorded) engine() rebase.Recorded {
+	return rebase.Recorded{ID: n.id, Commit: n.commit, Record: n.record}
 }
 
 // unreadRecord is a record on origin that does not read.
@@ -477,47 +386,17 @@ func project(g git) string {
 }
 
 // writeRecord writes a record commit holding r, with the parents given,
-// and returns its ID. Its tree holds record.json alone, as a plain file,
-// which is the only shape the hook accepts.
+// and returns its ID, as the rebase engine writes one.
 func writeRecord(g git, r *change.Record, message string, parents ...string) (string, error) {
-	data, err := change.Encode(r)
-	if err != nil {
-		return "", err
-	}
-	if len(data) > maxRecordBlob {
-		return "", failure(fmt.Sprintf("the change's record would be %d bytes, more than the %d a record may be", len(data), maxRecordBlob))
-	}
-	blob, err := g.input(false, bytes.NewReader(data), "hash-object", "-w", "--stdin")
-	if err != nil {
-		return "", failure("could not write the record")
-	}
-	tree, err := g.input(false, strings.NewReader("100644 blob "+blob+"\trecord.json\n"), "mktree")
-	if err != nil {
-		return "", failure("could not write the record's tree")
-	}
-	args := []string{"commit-tree", tree}
-	for _, p := range parents {
-		args = append(args, "-p", p)
-	}
-	commit, err := g.input(false, strings.NewReader(message+"\n"), append(args, "-F", "-")...)
-	if err != nil {
-		return "", failure("could not write the record commit")
-	}
-	return commit, nil
+	return rebase.WriteRecord(context.Background(), g.engine(), r, message, parents...)
 }
-
-// maxRecordBlob is the most bytes a record.json may hold, as the hook
-// bounds it.
-const maxRecordBlob = change.MaxRecordBlob
 
 // pushRecord moves the change's record ref on origin from old to commit,
 // leased on old: the push is refused if the ref has moved since it was
 // read, and a record that did not exist must still not exist. The hook's
 // refusal reaches stderr through git.
 func pushRecord(g git, id, old, commit string) error {
-	ref := change.Ref(recordTarget, id)
-	_, err := g.output(false, "push", "--quiet", "--force-with-lease="+ref+":"+old, "origin", commit+":"+ref)
-	if err != nil {
+	if w := rebase.PushRecord(context.Background(), g.engine(), id, old, commit); w.Push != rebase.Pushed {
 		return failure("origin did not take the record of " + id)
 	}
 	return nil

@@ -82,15 +82,17 @@ rec {
   # as the valley-status/v1 JSON object front ends read. ready, unready and
   # withdraw write a change's record, with the one reading of a record the
   # push hook shares (../change). rebase rebases a change's whole stack and
-  # adds each change's rebased head to its record. knot reads and writes
-  # the plan graph, with the one reading of a graph the push hook shares
-  # (../knot), and plan shows that graph as a view. compare reads a
-  # version's file delta and its approved version's with the one reading
-  # of valley-delta-v1 (../delta), for review. Go,
-  # standard library only — hence vendorHash = null and no module fetch. It runs whatever git is on PATH, which inside the
-  # CLI's package is the CLI's own. Its unit tests hold its shell quoting to
-  # the bash it replaced, so they need bash, and lay pending out over real
-  # repositories, so they need git.
+  # adds each change's rebased head to its record, through the rebase engine
+  # (../rebase), which also reads how far each version has landed for the
+  # listings. knot reads and writes the plan graph, with the one reading of
+  # a graph the push hook shares (../knot), and plan shows that graph as a
+  # view. compare reads a version's file delta and its approved version's
+  # with the one reading of valley-delta-v1 (../delta), for review. Go,
+  # standard library only — hence vendorHash = null and no module fetch. It
+  # runs whatever git is on PATH, which inside the CLI's package is the
+  # CLI's own. Its unit tests hold its shell quoting to the bash it
+  # replaced, so they need bash, and lay pending out over real repositories,
+  # so they need git.
   valley-go = pkgs.buildGoModule {
     pname = "valley-go";
     version = "0";
@@ -98,6 +100,7 @@ rec {
       ../change
       ../delta
       ../knot
+      ../rebase
     ];
     modRoot = "status";
     vendorHash = null;
@@ -274,6 +277,26 @@ rec {
     src = ../knot;
     vendorHash = null;
     meta.mainProgram = "knotcheck";
+  };
+
+  # The rebase engine (rebase/): a family of stacked changes captured from
+  # one snapshot of origin, rebased in a throwaway worktree, and published
+  # as one atomic branch push and one record append per change. Building
+  # valley-go does not run a module's tests that it only imports, so this
+  # package runs the engine's: go test, against real repositories, real
+  # pushes and real git, and go vet. Go, standard library only — hence
+  # vendorHash = null and no module fetch.
+  rebase = pkgs.buildGoModule {
+    pname = "valley-rebase";
+    version = "0";
+    src = withLocal ../rebase [ ../change ];
+    modRoot = "rebase";
+    vendorHash = null;
+    preBuild = readsGoMod;
+    nativeCheckInputs = [ pkgs.git ];
+    postCheck = ''
+      go vet ./...
+    '';
   };
 
   # The change record's own tests: its strict reading, its fuzz target's

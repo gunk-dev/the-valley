@@ -21,9 +21,10 @@ package main
 import (
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"the-valley/rebase"
 )
 
 // runStack prints the layers of a change's stack, bottom first, then the
@@ -43,7 +44,8 @@ import (
 //
 // The change is named as resolve reads a name. Its head is read again
 // from the snapshot the layers are read from, so every line is of one
-// read of origin.
+// read of origin. The layers are the chain valley rebase moves, as the
+// rebase engine captures it (rebase.Capture).
 func runStack(g git, args []string, w io.Writer) error {
 	if len(args) != 1 {
 		return failure("usage: valley-go stack <change>")
@@ -62,81 +64,33 @@ func runStack(g git, args []string, w io.Writer) error {
 	if s.tip == "" {
 		return failure("origin has no " + recordTarget + " to read a stack against")
 	}
-	layers, err := s.layers(r)
+	f, err := rebase.Capture(s.land, rebase.Selection{ID: r.id, Branch: r.branch})
 	if err != nil {
 		return err
 	}
 	var b strings.Builder
-	for _, e := range layers {
-		kind, base := "change", ""
-		if e.id == "" {
-			kind = "branch"
+	for _, l := range f.Layers {
+		if !utf8.ValidString(l.Name) {
+			return failure(fmt.Sprintf("the stack under %s holds the branch %s, whose name is not UTF-8", args[0], shellQuote(l.Name)))
 		}
-		if !utf8.ValidString(e.ref) {
-			return failure(fmt.Sprintf("the stack under %s holds the branch %s, whose name is not UTF-8", args[0], shellQuote(e.ref)))
+		var base string
+		if l.Below != nil {
+			base = l.Below.Head
+		} else if base, err = s.g.output(true, "merge-base", s.tip, l.Head); err != nil {
+			return failure(fmt.Sprintf("%s and %s share no history", l.Name, recordTarget))
 		}
-		if e.base != nil {
-			base = e.base.head
-		} else if base, err = s.g.output(true, "merge-base", s.tip, e.head); err != nil {
-			return failure(fmt.Sprintf("%s and %s share no history", e.ref, recordTarget))
+		kind, state, title := "branch", "-", ""
+		if l.ID != "" {
+			kind, state, title = "change", l.Record.State, readable(l.Record.ActiveVersion().Title)
+		} else {
+			not := []string{"^" + s.tip}
+			if l.Below != nil {
+				not = []string{"^" + l.Below.Head, "^" + s.tip}
+			}
+			title = s.branchTitle(l.Head, not)
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\n", kind, e.ref, base, e.head, e.state, e.title)
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\n", kind, l.Name, base, l.Head, state, title)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err
-}
-
-// layers is the change r names and the layers under it, bottom first, each
-// with its base. Only the change and the entries its head contains are
-// stacked, so only they are measured.
-func (s *snapshot) layers(r resolution) ([]*entry, error) {
-	var top *entry
-	if r.id != "" {
-		for _, n := range s.all {
-			if n.id == r.id {
-				top = s.layerOf(n)
-			}
-		}
-		if top == nil {
-			return nil, failure("origin no longer holds a record of change " + r.handle)
-		}
-	} else {
-		head := s.o.refs["refs/heads/"+r.branch]
-		if head == "" {
-			return nil, failure("no such branch on origin: " + r.branch)
-		}
-		top = &entry{section: "branches", ref: r.branch, head: head, state: "-"}
-	}
-	all := []*entry{top}
-	for _, n := range s.all {
-		if n.id != top.id && unlanded(s, n) && s.strictAncestor(headOf(n.record.ActiveVersion()), top.head) {
-			all = append(all, s.layerOf(n))
-		}
-	}
-	for _, b := range s.unrecorded() {
-		if b.Branch != top.ref && s.strictAncestor(b.Head, top.head) {
-			all = append(all, &entry{section: "branches", ref: b.Branch, head: b.Head, state: "-"})
-		}
-	}
-	for _, e := range all {
-		out, _ := s.g.output(true, "log", "-1", "--format=%ct", e.head)
-		e.when, _ = strconv.ParseInt(out, 10, 64)
-	}
-	s.stack(all)
-	var chain []*entry
-	for e := top; e != nil; e = e.base {
-		chain = append([]*entry{e}, chain...)
-	}
-	return chain, nil
-}
-
-// layerOf is a change as a layer: its handle, its active version's head
-// and title, and its state. Its section is its state: what measure reads
-// a section for is whether the entry is a branch.
-func (s *snapshot) layerOf(n recorded) *entry {
-	v := n.record.ActiveVersion()
-	return &entry{
-		section: n.record.State, ref: s.o.handle(n.id), id: n.id, state: n.record.State,
-		head: headOf(v), title: readable(v.Title),
-	}
 }

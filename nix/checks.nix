@@ -34,11 +34,12 @@
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
 #   cli.nix          valley-cli, review-notes, policy-deriver,
-#                    own-policy, valley-request, valley-go-unit,
-#                    valley-status, valley-ready, valley-changes,
-#                    valley-knot, valley-plan, valley-darwin-eval —
-#                    bin/valley, its Go verbs, the-valley's own policy, and
-#                    the CLI's package evaluated for Darwin
+#                    own-policy, valley-request, rebase-unit,
+#                    valley-go-unit, valley-status, valley-ready,
+#                    valley-changes, valley-knot, valley-plan,
+#                    valley-darwin-eval — bin/valley, its Go verbs, the
+#                    rebase engine, the-valley's own policy, and the CLI's
+#                    package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push

@@ -12,15 +12,6 @@
   ...
 }:
 {
-  # The lint over the consumer graph, under the name main's policy still
-  # requires. A change's required checks come from its target's policy,
-  # and the policy on main declares knowledge-lint, so a change to main
-  # needs this attribute until that policy stops declaring it.
-  knowledge-lint = self.lib.knowledgeLint {
-    inherit system;
-    src = ../../examples/graphs/consumer;
-  };
-
   # The reusable form, exercised over a foreign tree: a project that
   # is a README, a docs directory and seven nodes, and a project with no
   # graph at all. Both must pass, and both are checked by depending on

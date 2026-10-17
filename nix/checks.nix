@@ -10,8 +10,9 @@
 #   schema.nix       cue-vet, attest-schema, identity-schema — the schemas
 #                    against the examples they accept and the ones they
 #                    must reject
-#   knowledge.nix    knowledge-lint and its consumer and rejection forms,
-#                    prose-format — the lint and the prose
+#   knowledge.nix    knowledge-lint-consumer, knowledge-lint-rejects,
+#                    prose-format — the lint's reusable and rejection
+#                    forms, and the prose
 #   knot.nix         knot-unit, knot-agree — the plan graph's module, and
 #                    its validator held to the schema and the lint
 #   attest.nix       attest-unit, attest-conformance, attest-e2e — the

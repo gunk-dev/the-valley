@@ -3,8 +3,29 @@
 # compiler, the pre-receive hook's policy, the security-key signature
 # verifier. The flake wires these into packages, apps, and the checks that
 # drive them; nothing here knows about any of those outputs.
-{ pkgs, lib }:
+{
+  pkgs,
+  lib,
+  # The commit the flake is built from: its full SHA, the SHA with -dirty
+  # after it for a tree with uncommitted changes, or null when nix knows no
+  # commit. Only the installed CLI's version stamp reads it.
+  rev ? null,
+}:
 rec {
+  # The CLI's version, which `valley --version` prints and self-update
+  # reads to tell which commit is installed (selfupdate/): cliVersion and
+  # the short commit, as 0.1.0-97db597. A dirty tree's has -dirty after
+  # it, and with no commit known it ends in -unknown, so neither names a
+  # commit.
+  cliVersion = "0.1.0";
+  version =
+    if rev == null then
+      "${cliVersion}-unknown"
+    else if lib.hasSuffix "-dirty" rev then
+      "${cliVersion}-${builtins.substring 0 7 rev}-dirty"
+    else
+      "${cliVersion}-${builtins.substring 0 7 rev}";
+
   # The source of a Go program that uses modules of this repository: its own
   # directory and those modules, which its go.mod replaces with their local
   # directories. Nothing shared this way is fetched.
@@ -65,17 +86,32 @@ rec {
           --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
       '';
 
-  # The installed package: the wrapped script plus the shell completions,
-  # at the standard paths home-manager/NixOS auto-link.
-  valley = pkgs.symlinkJoin {
-    name = "valley";
-    paths = [ valley-script ];
-    nativeBuildInputs = [ pkgs.installShellFiles ];
-    postBuild = ''
-      installShellCompletion --bash --name valley ${../completions/valley.bash}
-      installShellCompletion --zsh --name _valley ${../completions/_valley}
-    '';
-  };
+  # The installed package: the wrapped script stamped with its version, the
+  # shell completions at the standard paths home-manager/NixOS auto-link,
+  # and the tiny policy self-update's smoke test derives checks from
+  # (examples/policy/smoke/). The stamp is set on this outer wrapper alone,
+  # so the packages the checks and the integrator use do not change with
+  # every commit. The name carries the version as well: nix profile names
+  # the element valley from it, and self-update reads a hand-installed
+  # valley's commit from it.
+  valley =
+    pkgs.runCommand "valley-${version}"
+      {
+        inherit version;
+        nativeBuildInputs = [
+          pkgs.makeWrapper
+          pkgs.installShellFiles
+        ];
+        meta.mainProgram = "valley";
+      }
+      ''
+        mkdir -p $out/bin $out/share/valley
+        makeWrapper ${lib.getExe valley-script} $out/bin/valley \
+          --set VALLEY_VERSION ${version}
+        installShellCompletion --bash --name valley ${../completions/valley.bash}
+        installShellCompletion --zsh --name _valley ${../completions/_valley}
+        cp -r --no-preserve=mode ${../examples/policy/smoke} $out/share/valley/smoke-policy
+      '';
 
   # The verbs of the CLI written in Go (status/). status reads one change's
   # request and outcome record from origin, and prints them as sentences or
@@ -87,7 +123,9 @@ rec {
   # listings. knot reads and writes the plan graph, with the one reading of
   # a graph the push hook shares (../knot), and plan shows that graph as a
   # view. compare reads a version's file delta and its approved version's
-  # with the one reading of valley-delta-v1 (../delta), for review. Go,
+  # with the one reading of valley-delta-v1 (../delta), for review.
+  # self-update installs the tip of a branch of the-valley into the user's
+  # nix profile (../selfupdate). Go,
   # standard library only — hence vendorHash = null and no module fetch. It
   # runs whatever git is on PATH, which inside the CLI's package is the
   # CLI's own. Its unit tests hold its shell quoting to the bash it
@@ -101,6 +139,7 @@ rec {
       ../delta
       ../knot
       ../rebase
+      ../selfupdate
     ];
     modRoot = "status";
     vendorHash = null;
@@ -293,6 +332,24 @@ rec {
     modRoot = "rebase";
     vendorHash = null;
     preBuild = readsGoMod;
+    nativeCheckInputs = [ pkgs.git ];
+    postCheck = ''
+      go vet ./...
+    '';
+  };
+
+  # Self-update (selfupdate/): the installed CLI brought up to the tip of a
+  # branch, built with nix and installed into the user's profile. Building
+  # valley-go does not run the tests of a module it only imports, so this
+  # package runs them, and go vet: a real bare repository for ls-remote,
+  # and a stand-in for nix whose builds are small scripts, so nothing is
+  # built and no profile is touched. Go, standard library only — hence
+  # vendorHash = null and no module fetch.
+  selfupdate = pkgs.buildGoModule {
+    pname = "valley-selfupdate";
+    version = "0";
+    src = ../selfupdate;
+    vendorHash = null;
     nativeCheckInputs = [ pkgs.git ];
     postCheck = ''
       go vet ./...

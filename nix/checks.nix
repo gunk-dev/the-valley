@@ -37,8 +37,10 @@
 #                    own-policy, valley-request, rebase-unit,
 #                    valley-go-unit, valley-status, valley-ready,
 #                    valley-changes, valley-knot, valley-plan,
+#                    selfupdate-unit, valley-self-update,
 #                    valley-darwin-eval — bin/valley, its Go verbs, the
-#                    rebase engine, the-valley's own policy, and the CLI's
+#                    rebase engine, self-update and its home-manager
+#                    module, the-valley's own policy, and the CLI's
 #                    package evaluated for Darwin
 #   ssh-e2e.nix      ssh-e2e — the push boundary over a real sshd in a
 #                    NixOS machine, and the request grant's handoff

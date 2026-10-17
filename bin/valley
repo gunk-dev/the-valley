@@ -41,6 +41,14 @@ set -euo pipefail
 export GIT_NO_REPLACE_OBJECTS=1
 unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
 
+# The version the package stamped on this script when nix built it
+# (nix/packages.nix): the CLI's version and the commit it was built from.
+# A script run straight from a checkout has none. It is taken here and
+# unset, so no program this script runs inherits a stamp that is not its
+# own; self-update is handed it explicitly.
+VALLEY_STAMP="${VALLEY_VERSION:-}"
+unset VALLEY_VERSION
+
 die() {
   printf 'valley: %s\n' "$*" >&2
   exit 1
@@ -585,7 +593,26 @@ usage: valley <verb> [args]
   replay [dir]     publish one ref-updated event per current ref of the
                    repo at dir (default: .) — rebuilds the stream's
                    projection, e.g. after nats stream purge valley
-  help             show this help
+  self-update [-v] [--retry | --rollback | --pin | --unpin]
+              [--repo <url>] [--branch <name>]
+                   install the tip of a branch of the-valley into your
+                   default nix profile, in place of its valley element,
+                   once that exact commit builds and passes a smoke test.
+                   a commit that fails is skipped until the branch moves,
+                   or until --retry. it is off until --repo or
+                   git config valley.selfUpdate.repo names the
+                   repository; the branch is valley.selfUpdate.branch,
+                   or main. --rollback reinstalls the previous build, and
+                   --pin and --unpin freeze and release the install.
+                   `valley help self-update` gives every step. needs the
+                   valley-go helper and nix.
+  --version        print this valley's version: the package's version and
+                   the commit it was built from, e.g. 0.1.0-97db597, with
+                   -dirty after it for a tree with uncommitted changes and
+                   -unknown in its place when nix knew no commit. run
+                   straight from a checkout, it says it is unstamped.
+  help [self-update]
+                   show this help, or self-update's
 
 A change is named by its full change id, by its handle — the shortest
 prefix of the id, four letters at least, that no other change recorded on
@@ -630,12 +657,14 @@ except tail and replay, which also need the nats CLI (natscli), checks,
 which also needs the cue CLI, review's notes, which need less, approve
 and review's [a]pprove, which need both the cue CLI and the attest
 helper, and status, ready, unready, withdraw, review, approve and rebase,
-which need the valley-go helper, as pending, changes, knot and plan do.
-nix run .#valley bundles all of them. Deriving a policy fetches the owning
-valley's repository, so checks and approving also need whatever reaching
-it takes.
-No config but valley.principal, which ready, knot and plan read; no batch mode; and no
-state but the notes file — the judgment stays with the human.
+which need the valley-go helper, as pending, changes, knot, plan and
+self-update do. nix run .#valley bundles all of them. self-update also
+needs nix. Deriving a policy fetches the owning valley's repository, so
+checks and approving also need whatever reaching it takes.
+No config but valley.principal, which ready, knot and plan read, and
+valley.selfUpdate.repo and .branch, which self-update reads; no batch mode;
+and no state but the notes file and self-update's record of what it
+installed — the judgment stays with the human.
 EOF
 }
 
@@ -3202,6 +3231,25 @@ cmd_checks() {
   fi
 }
 
+# self-update installs the tip of a branch of the-valley into the user's
+# nix profile (status/selfupdate.go). It is told this valley's stamp, which
+# says what is installed until it has installed something itself.
+cmd_self_update() {
+  export VALLEY_VERSION="$VALLEY_STAMP"
+  cmd_go self-update "$@"
+}
+
+cmd_version() {
+  printf 'valley %s\n' "${VALLEY_STAMP:-unstamped (run from a checkout, not built by nix)}"
+}
+
+cmd_help() {
+  case "${1:-}" in
+    self-update) cmd_go self-update --help ;;
+    *) usage ;;
+  esac
+}
+
 main() {
   local verb="${1:-help}"
   if [ $# -gt 0 ]; then shift; fi
@@ -3216,7 +3264,9 @@ main() {
     checks) cmd_checks "$@" ;;
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;
-    help | -h | --help) usage ;;
+    self-update) cmd_self_update "$@" ;;
+    --version) cmd_version ;;
+    help | -h | --help) cmd_help "$@" ;;
     *)
       printf 'valley: unknown verb: %s\n\n' "$verb" >&2
       usage >&2

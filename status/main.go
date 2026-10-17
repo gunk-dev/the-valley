@@ -9,9 +9,10 @@
 // lists the changes a head would bring that have not landed, for approve
 // (rebase.go), for knot, the plan graph's API (knot.go), which reads and
 // writes a project's knots at refs/the-valley/knots, for plan, which
-// shows that graph as a view (plan.go), and for compare, which sets a
+// shows that graph as a view (plan.go), for compare, which sets a
 // version review shows against the change's approved version
-// (compare.go).
+// (compare.go), and for self-update, which installs the tip of a branch of
+// the-valley into the user's nix profile (selfupdate.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -54,7 +55,8 @@ const usage = `usage: valley-go status [--json] <change>
        valley-go changes --json [--all] [--repo <name>]
        valley-go pending [--json] [--all] [--repo <name>] [--checks]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
-       valley-go plan [--project <name> | --all] [--owner <name>] [--json]`
+       valley-go plan [--project <name> | --all] [--owner <name>] [--json]
+       valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -99,6 +101,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
+	case "self-update":
+		return runSelfUpdate(args, stdout, stderr)
 	case "knot", "plan":
 		if _, err := clockSetting(); err != nil {
 			fmt.Fprintf(stderr, "valley: %s\n", err)

@@ -52,6 +52,8 @@ project: {
 		"valley-knot",
 		"valley-plan",
 		"valley-darwin-eval",
+		"selfupdate-unit",
+		"valley-self-update",
 		"policy-deriver",
 		"own-policy",
 		"module-eval",
@@ -188,24 +190,40 @@ project: {
 	// The valley CLI: the script, its Go verbs (status/), the rebase engine
 	// they rebase and read landings with (rebase/), and its completions.
 	// valley-ready drives ready, withdraw, rebase and the verbs that take a
-	// change's handle, valley-changes drives changes and pending, and
+	// change's handle, valley-changes drives changes and pending,
 	// valley-plan drives plan against the golden files under
-	// status/testdata/plan/.
+	// status/testdata/plan/, and valley-self-update drives --version and
+	// self-update.
 	classes: cli: {
-		paths: "bin/valley":        true
-		paths: "status/**":         true
-		paths: "rebase/**":         true
-		paths: "completions/**":    true
-		requires: "valley-go-unit": true
-		requires: "valley-cli":     true
-		requires: "review-notes":   true
-		requires: "valley-request": true
-		requires: "valley-status":  true
-		requires: "valley-ready":   true
-		requires: "valley-changes": true
-		requires: "valley-knot":    true
-		requires: "valley-plan":    true
-		requires: "policy-deriver": true
+		paths: "bin/valley":            true
+		paths: "status/**":             true
+		paths: "rebase/**":             true
+		paths: "completions/**":        true
+		requires: "valley-go-unit":     true
+		requires: "valley-cli":         true
+		requires: "review-notes":       true
+		requires: "valley-request":     true
+		requires: "valley-status":      true
+		requires: "valley-ready":       true
+		requires: "valley-changes":     true
+		requires: "valley-knot":        true
+		requires: "valley-plan":        true
+		requires: "valley-self-update": true
+		requires: "policy-deriver":     true
+	}
+
+	// Self-update: its module (selfupdate/), the policy the package ships
+	// for its smoke test, and the home-manager module that runs it on a
+	// timer. valley-go-unit builds the verb with the module, and
+	// valley-self-update drives the verb through the package and holds the
+	// units the home-manager module renders.
+	classes: selfupdate: {
+		paths: "selfupdate/**":            true
+		paths: "examples/policy/smoke/**": true
+		paths: "nix/home-module.nix":      true
+		requires: "selfupdate-unit":       true
+		requires: "valley-go-unit":        true
+		requires: "valley-self-update":    true
 	}
 
 	// The rebase engine, with its own tests over real repositories. The

@@ -57,6 +57,13 @@ cosmo `modules/klaus-env/` and `hosts/classic-laddie/klaus-env.nix`.
   IPv6.
 - **ssh into the host.** From the guest's subnet, sshd admits only the valley git user, with no
   forwarding, TTY or tunnel.
+- **Tools that follow `main`.** `valley self-update` can keep the guest's `valley` at the tip of
+  `main`, through the flake's home-manager module (architecture,
+  [Version and self-update](./architecture.md#version-and-self-update)). It installs only a commit
+  that has landed, built from the exact commit `git ls-remote` named, once it passes a smoke test.
+  The valley host and the machine the operator approves from do not run it. Their `valley` stays at
+  the version their system configuration pins, so a landing never changes the tool that approves or
+  admits the next change.
 
 Checks: cosmo `checks.x86_64-linux.klaus-env-firewall` (a three-node VM test with negative
 controls), `klaus-env-sshd` (the host's real sshd config) and `klaus-env-check` (the probe tool's

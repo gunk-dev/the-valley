@@ -25,11 +25,26 @@ _valley() {
       'checks:print the checks the composed policy requires of a change'
       'tail:watch bus events scroll by'
       'replay:publish ref-updated events for the current refs of a repo'
+      'self-update:install the tip of a branch of the-valley into your nix profile'
       'help:show help'
     )
     _describe -t verbs 'valley verb' verbs
   elif (( CURRENT == 3 )) && [[ ${words[2]} == replay ]]; then
     _files -/
+  elif (( CURRENT == 3 )) && [[ ${words[2]} == help ]]; then
+    local -a topics=('self-update:every step self-update takes, and its flags')
+    _describe -t topics 'valley help topic' topics
+  elif [[ ${words[2]} == self-update && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--verbose:also say so when valley is up to date'
+      '--retry:build the branch'"'"'s tip even if it failed before'
+      '--rollback:reinstall the previous valley'
+      '--pin:leave the current install alone until --unpin'
+      '--unpin:let self-update install the branch'"'"'s tip again'
+      '--repo:the repository, in place of valley.selfUpdate.repo'
+      '--branch:the branch, in place of valley.selfUpdate.branch'
+    )
+    _describe -t options 'valley self-update option' opts
   elif (( CURRENT == 3 )) && [[ ${words[2]} == knot ]]; then
     local -a knotverbs=(
       'new:make a knot: new <type> <title>'

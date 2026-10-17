@@ -33,11 +33,19 @@
         import ./nix/packages.nix {
           inherit lib;
           pkgs = pkgsFor system;
+          # For the CLI's version stamp. A dirty tree has no rev, and nix
+          # gives its dirtyRev instead.
+          rev = self.rev or self.dirtyRev or null;
         };
     in
     {
       nixosModules.valley-host = ./nix/valley-host.nix;
       nixosModules.default = self.nixosModules.valley-host;
+
+      # The valley CLI's self-update on a user timer, for a home-manager
+      # user whose valley follows a branch of the-valley
+      # (programs.valley.selfUpdate).
+      homeManagerModules.valley = ./nix/home-module.nix;
 
       # The knowledge lint, for any project that keeps a `.the-valley/` graph.
       # This is the check's primary form: a consuming project takes this flake

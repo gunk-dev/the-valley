@@ -4,10 +4,12 @@
 # its review verb publishes when it files an integration request, what its
 # Go verbs' unit tests and the rebase engine's hold, what its ready and withdraw verbs write to a
 # change's record through the real push hook, what its knot verbs write to
-# the plan graph, what its plan verb shows of that graph, and that its
-# package evaluates for aarch64-darwin.
+# the plan graph, what its plan verb shows of that graph, what its
+# self-update verb installs and what the home-manager module runs it with,
+# and that its package evaluates for aarch64-darwin.
 {
   pkgs,
+  lib,
   self,
   system,
   packages,
@@ -18,6 +20,33 @@ let
   # A stand-in for git, sort or cue that fails one chosen call; see
   # fail-nth.sh.
   failNth = pkgs.writeShellScript "fail-nth" (builtins.readFile ./fail-nth.sh);
+
+  # The user units the home-manager module renders for a home with
+  # self-update on. The module is evaluated over stand-ins for the
+  # home-manager options it sets, because this flake has no home-manager.
+  selfUpdateUnits =
+    (lib.evalModules {
+      modules = [
+        self.homeManagerModules.valley
+        {
+          options = {
+            systemd.user.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; };
+            systemd.user.timers = lib.mkOption { type = lib.types.attrsOf lib.types.anything; };
+            home.homeDirectory = lib.mkOption { type = lib.types.str; };
+            home.username = lib.mkOption { type = lib.types.str; };
+          };
+          config = {
+            _module.args.pkgs = pkgs;
+            home.homeDirectory = "/home/someone";
+            home.username = "someone";
+            programs.valley.selfUpdate = {
+              enable = true;
+              repo = "git@classic-laddie:the-valley";
+            };
+          };
+        }
+      ];
+    }).config.systemd.user;
 in
 {
   # The CLI must stay a lint-clean script whose help verb answers
@@ -307,6 +336,41 @@ in
     cliScript = ../../bin/valley;
     golden = ../../status/testdata/plan;
   } (builtins.readFile ./valley-plan.sh);
+
+  # Self-update's own tests (selfupdate/), run in its package's checkPhase
+  # with go vet: a real bare repository for ls-remote and a stand-in for
+  # nix, over an install, an up-to-date run, each step of the smoke test
+  # failing and being skipped, --retry, a rollback and its return, a pin, a
+  # valley removed from the profile by hand, and the repositories and
+  # branches it refuses. valley-self-update drives the verb through the CLI.
+  selfupdate-unit = packages.selfupdate;
+
+  # valley --version and valley self-update through the installed package,
+  # against a real bare repository. A build has no nix, so a stand-in for
+  # nix builds a commit as a valley that runs the real, unstamped script
+  # under the stamp nix would give that commit, beside the package's own
+  # share/. The smoke test therefore runs the real CLI over the policy the
+  # package ships, under the schema it carries. A run installs main's tip;
+  # the next finds it up to date, also from a repository whose own git
+  # config names another; a commit whose build cannot compose a policy
+  # fails the smoke test, installs nothing, and is skipped. Then the
+  # home-manager module, evaluated over stand-ins for the home-manager
+  # options it sets: its timer, its service's PATH, and the arguments its
+  # script runs valley with. A real nix build into a throwaway profile
+  # needs a nix daemon and a writable store, which a build does not have.
+  valley-self-update = pkgs.runCommand "valley-self-update" {
+    nativeBuildInputs = [
+      pkgs.git
+      pkgs.jq
+      packages.valley
+    ];
+    inherit (packages.valley) version;
+    valley = packages.valley;
+    valleyScript = packages.valley-script;
+    cliScript = ../../bin/valley;
+    units = builtins.toJSON selfUpdateUnits;
+    passAsFile = [ "units" ];
+  } (builtins.readFile ./valley-self-update.sh);
 
   # The CLI is offered for aarch64-darwin, which nothing here builds or
   # tests (flake.nix). This check holds that offer to evaluating: an input

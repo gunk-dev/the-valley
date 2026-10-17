@@ -706,7 +706,9 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 `ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot` and `plan` verbs are a Go
 program, `valley-go` (`status/`), which the package puts on the script's `PATH`. `valley-go` rebases
 with the rebase engine, a Go module of its own (`rebase/`), which also reads how far each version
-has landed for its listings.
+has landed for its listings. The package stamps its version on the script, and `valley self-update`
+keeps a user's `valley` at the tip of a branch (see
+[Version and self-update](#version-and-self-update)).
 
 | Command                      | What it does                                                                                          |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
@@ -724,6 +726,8 @@ has landed for its listings.
 | `valley plan`                | Shows the plan graph as a tree, and what waits on the operator (see [The plan view](#the-plan-view)). |
 | `valley tail [subj]`         | Subscribes to bus events.                                                                             |
 | `valley replay [dir]`        | Publishes one `ref-updated` event per current ref.                                                    |
+| `valley self-update`         | Installs the tip of a branch of the-valley into the user's nix profile, once it passes a smoke test.  |
+| `valley --version`           | Prints the version stamp: the CLI's version and the commit its package was built from.                |
 
 `[a]pprove` is the operator's approval of a change. It runs the required checks with `attest` in a
 worktree of the head it approves. Then one atomic push carries the evidence refs and the integration
@@ -1371,6 +1375,59 @@ lands from that: the integrator refuses a request at a draft's version head what
 Checked by `valley-changes`, by `valley-status` for restack reports, and by the Go tests in
 `status/` for handles, URLs and the JSON writer.
 
+### Version and self-update
+
+The installed `valley` package carries a version stamp: the CLI's version and the commit nix built
+it from, such as `0.1.0-97db597` (`nix/packages.nix`). `valley --version` prints it. A build from a
+tree with uncommitted changes ends in `-dirty`, and a build with no known commit ends in `-unknown`.
+The stamp is on the package's outer wrapper and in its name only. So the packages that the checks
+and the integrator use do not change with every commit. The script run straight from a checkout says
+it is unstamped.
+
+`valley self-update` keeps a user's `valley` at the tip of a branch of the-valley, without a system
+rebuild. It is for a machine where `valley` is a working tool, such as an agent's guest. The machine
+the operator approves from, and the valley host, keep the version their system configuration pins.
+So a commit on `main` never changes the tool that approves or admits the next one.
+
+Self-update is a Go module (`selfupdate/`) that `valley-go` runs. It mirrors klaus's self-update:
+the same steps, state file and flags. Each run:
+
+1. resolves the branch with `git ls-remote`;
+2. stops if the installed `valley` was built from that commit. The state file says which commit
+   self-update last installed. Before its first install, the running `valley`'s stamp says;
+3. builds exactly that commit with nix:
+   `nix build 'git+<repo>?ref=refs/heads/<branch>&rev=<sha>#packages.<system>.valley'`;
+4. smoke-tests the build, in an environment that carries nothing of the running `valley`'s. Its
+   `valley --version` must report the commit, and its `valley help` must exit 0. Its
+   `valley checks --names` must derive two known checks from a tiny policy the package ships
+   (`examples/policy/smoke/`), which shows that the schema the build carries composes a policy;
+5. installs the build into the user's default nix profile, in place of the element named `valley`.
+   The `valley` the system installs stays underneath as the fallback.
+
+The state file, `$XDG_STATE_HOME/valley/self-update.json`, records the current install, the previous
+one, and the last failure. A commit that fails to build or to pass the smoke test is skipped until
+the branch moves, or until `--retry`. `--rollback` reinstalls the previous build, and `--pin` and
+`--unpin` freeze and release the current one.
+
+The repository and branch come from `--repo` and `--branch`, or from the user's git config,
+`valley.selfUpdate.repo` and `valley.selfUpdate.branch`. The branch defaults to `main`. No
+repository's own config is read. A repository is refused unless it is an `https://`, `ssh://`,
+`git://` or `file://` URL, an absolute path, or `user@host:path`, with no character that nix's
+flake-ref parser would rewrite. `user@host:path` is read under the login's home, as git reads it, so
+`git@classic-laddie:the-valley` is `ssh://git@classic-laddie/~/the-valley` to both git and nix. Nix
+fetches the repository as the user who runs self-update, with that user's ssh keys and config.
+
+The flake's home-manager module, `homeManagerModules.valley` (`nix/home-module.nix`), runs
+self-update on a timer. `programs.valley.selfUpdate.enable` adds the `valley-self-update` user
+service and a timer that starts it two minutes after boot and every five minutes after. `.repo`
+names the repository, and `.branch` the branch. The service runs the first `valley` on its `PATH`:
+the one in the user's nix profile, then the one the user's home-manager profile installs.
+
+Checked by `selfupdate-unit`, over a real repository with a stand-in for nix, and by
+`valley-self-update`, which runs the real package's smoke test with a stand-in for nix and holds the
+units the home-manager module renders. No check runs a real nix build or profile install, because a
+check's build has no nix daemon and no writable store.
+
 ## The plan graph
 
 A project's plan is data kept with the project, in its
@@ -1733,3 +1790,4 @@ provisioning, so the run logs a failure until it is set up.
 | Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                    |
 | Bus authentication                          | The bus listens on localhost with no authentication.                             |
 | Other projects on the valley                | cosmo and klaus are not hosted on the valley.                                    |
+| Self-update in the agent guest              | The home-manager module exists. cosmo does not enable it yet.                    |

@@ -2411,6 +2411,14 @@ glob_ere() {
 # it is one more source a check can come from. A class's carry mode is the
 # one the schema resolves (`_mode`), so the shell only picks the strictest.
 #
+# Each line is held to its shape (`line`): three fields, two tabs, and no
+# other control character. A newline in a field would end its line and
+# start one of the policy's choosing, and a tab would add a field. The
+# schema already refuses control characters in every string rendered here,
+# so this is a second wall: a line out of shape fails the render, and the
+# deriver refuses a render that fails. The whole line is checked because a
+# bound on a value inside an interpolation does not fail the string.
+#
 # The catalogue is rendered because a caller that runs a check needs what
 # the policy says a check IS — its runner, and the attribute or command
 # line that runner takes — and a tool that groups the required checks
@@ -2425,24 +2433,26 @@ import (
 	"strings"
 )
 
+let line = =~"^[^\\x00-\\x1f\\x7f]+\t[^\\x00-\\x1f\\x7f]+\t[^\\x00-\\x1f\\x7f]+$"
+
 _render: strings.Join(list.Concat([[
 	for cn, c in policy.classes
-	for p, on in c.paths if on {"path\t\(cn)\t\(p)"}
+	for p, on in c.paths if on {"path\t\(cn)\t\(p)" & line}
 ], [
 	for cn, c in policy.classes
-	for k, on in c.requires if on {"requires\t\(cn)\t\(k)"}
+	for k, on in c.requires if on {"requires\t\(cn)\t\(k)" & line}
 ], [
-	for k, on in policy.unclassified if on {"requires\tunclassified\t\(k)"}
+	for k, on in policy.unclassified if on {"requires\tunclassified\t\(k)" & line}
 ], [
-	for cn, m in _mode {"carry\t\(cn)\t\(m)"}
+	for cn, m in _mode {"carry\t\(cn)\t\(m)" & line}
 ], [
-	for n, c in policy.checks {"runner\t\(n)\t\(c.runner)"}
+	for n, c in policy.checks {"runner\t\(n)\t\(c.runner)" & line}
 ], [
-	for n, c in policy.checks if c.runner == "nix" {"attribute\t\(n)\t\(c.attribute)"}
+	for n, c in policy.checks if c.runner == "nix" {"attribute\t\(n)\t\(c.attribute)" & line}
 ], [
-	for n, c in policy.checks if c.runner == "command" {"command\t\(n)\t\(c.command)"}
+	for n, c in policy.checks if c.runner == "command" {"command\t\(n)\t\(c.command)" & line}
 ], [
-	for n, c in policy.checks {"cost\t\(n)\t\(c.cost)"}
+	for n, c in policy.checks {"cost\t\(n)\t\(c.cost)" & line}
 ]]), "\n")
 EOF
 }
@@ -2917,10 +2927,12 @@ derive_required() {
 
   # The render is checked before it is read. A render that fails prints
   # nothing, and an empty render reads as a policy that requires nothing. A
-  # schema older than this script fails it, by lacking a field it reads.
+  # schema older than this script fails it, by lacking a field it reads. So
+  # does a policy string holding a control character, which a schema that
+  # admits one lets through.
   cue eval --out text -e _render "${POLICY_LAYER[@]}" "$POLICY_TMP/render.cue" \
     > "$POLICY_TMP/rendered" || {
-    refuse "the composed policy does not render (a schema older than this script is one cause); nothing derived"
+    refuse "the composed policy does not render (a schema older than this script, and a policy string holding a control character, are two causes); nothing derived"
     return 1
   }
   # Sorted once here, so every list below comes out in a stable order.
@@ -2938,14 +2950,29 @@ derive_required() {
 
   # The middle field is a class name for a coverage or requirement line and
   # a check name for a catalogue one; `key` is what both are.
+  #
+  # The render states each thing once: a class has one carry mode, a check
+  # one runner, and a class requires a check once. A second line for the
+  # same thing is forged, and a reader that took the last one would let the
+  # forgery win, so it is refused. A coverage or requirement line is one
+  # member of a set, so it is identified by its value too.
   local -a pat_class=() pat_ere=() req_class=() req_check=()
-  local -A class_carry=()
-  local line kind key value
+  local -A class_carry=() seen=()
+  local line kind key value id
   for line in "${rendered[@]}"; do
     kind="${line%%$'\t'*}"
     key="${line#*$'\t'}"
     value="${key#*$'\t'}"
     key="${key%%$'\t'*}"
+    case "$kind" in
+      path | requires) id="$kind $key $value" ;;
+      *) id="$kind $key" ;;
+    esac
+    [ -z "${seen[$id]:-}" ] || {
+      refuse "the composed policy rendered '$id' twice, and states each thing once; nothing derived"
+      return 1
+    }
+    seen["$id"]=1
     case "$kind" in
       path)
         pat_class+=("$key")

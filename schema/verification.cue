@@ -246,14 +246,23 @@ import "list"
 
 // Names are lowercase, dash-separated, and short. They are quoted in
 // integrator output and carried in attestation payloads, so they are held
-// to the same shape as project names in schema/valley.cue.
+// to the same shape as project names in schema/valley.cue. The shape also
+// keeps every control character out of a class or check name, which
+// `valley checks` relies on (see #Pattern).
 #Name: =~"^[a-z0-9][a-z0-9-]*$"
 
 // A path glob, relative to the repository root. A leading slash and a `..`
 // segment are both rejected: a pattern that reaches outside the tree is
 // describing something a diff cannot contain, and silently matching
 // nothing is the expensive way to find that out.
-#Pattern: =~"^[^/]" & !~"(^|/)\\.\\.(/|$)"
+//
+// A control character is rejected too. `valley checks` reads the composed
+// policy as lines of tab-separated fields, and a pattern is one of those
+// fields. A newline in a pattern would end its line and start a forged one,
+// such as a carry mode for a class the floor pinned. A tab would add a
+// field. Git allows both in a path, but a policy has no use for a pattern
+// that matches one.
+#Pattern: =~"^[^/]" & !~"(^|/)\\.\\.(/|$)" & !~"[\\x00-\\x1f\\x7f]"
 
 // ----------------------------------------------------------------------
 // The composition.
@@ -319,7 +328,13 @@ policy: {
 // classes its paths match, and an unclassified path is `same-paths`.
 // `valley checks` reads this field and reports that mode. The field is
 // hidden because the sentinel below rejects every other top-level field.
-_mode: {for n, c in composed.classes {(n): (#Resolve & {carry: c.carry}).mode}}
+//
+// It reads `policy` rather than `composed`, because a document may refine
+// `policy` directly. A key written there is in `policy` and not in
+// `composed`, and the deriver matches paths and reads requirements from
+// `policy`. Reading `composed` here would miss a mode added that way, or a
+// whole class.
+_mode: {for n, c in policy.classes {(n): (#Resolve & {carry: c.carry}).mode}}
 
 // A file's top level cannot be closed (embedding a definition would open
 // it instead — embedding lifts closedness), so reject stray top-level

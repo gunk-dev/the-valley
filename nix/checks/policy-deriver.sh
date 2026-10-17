@@ -222,6 +222,105 @@ if valley checks --schema "$TMPDIR/modeless.cue" \
 fi
 grep -q 'does not render' "$TMPDIR/modeless.out"
 
+# A document may refine `policy` directly, and a mode written there counts.
+# The floor gives the deep class no mode, and a project document that
+# refines `policy` makes it exact.
+cp -R "$policy/project" "$policy/project-refined"
+cat > "$policy/project-refined/refined.cue" <<'EOF'
+package verification
+policy: classes: deep: carry: exact: true
+EOF
+git checkout --quiet deep
+report="$(valley checks --schema "$schema" \
+  --instance "$policy/instance" --project "$policy/project-refined" "$base" HEAD)"
+expect "c-deep" "refining policy's carry must not change what deep requires"
+expect_carry exact "a mode written by refining policy must count"
+
+# A policy string holding a newline cannot forge a line of the render. Each
+# forged layer adds a pattern that would end its own line and start another:
+# a looser carry mode for the nested class, which the floor makes exact, or
+# a second copy of a requirement. There are three walls, and each is tested
+# with the walls before it taken down. The schema refuses the pattern, so
+# the layers do not compose. Under a schema that admits it, the render
+# refuses the line. Under a copy of the script whose render admits it too,
+# the deriver refuses the second line.
+for forged in carry requires; do
+  mkdir -p "$policy/forged-$forged"
+  cp "$policy/project/policy.cue" "$policy/forged-$forged/policy.cue"
+done
+cat > "$policy/forged-carry/forged.cue" <<'EOF'
+package verification
+project: classes: forged: paths: "unused\ncarry\tnested\tsame-paths": true
+EOF
+cat > "$policy/forged-requires/forged.cue" <<'EOF'
+package verification
+project: classes: forged: paths: "unused\nrequires\tnested\tc-nested": true
+EOF
+
+# The schema with #Pattern admitting anything, and the script with its
+# render's line check removed. Each must differ from what it copies, or the
+# case below it proves nothing.
+[ "$(grep -c '^#Pattern: ' "$schema")" = 1 ] || {
+  echo "policy-deriver: #Pattern is not one line of the schema, so the loose schema proves nothing" >&2
+  exit 1
+}
+{ grep -v '^#Pattern: ' "$schema"; echo '#Pattern: string'; } > "$TMPDIR/loose.cue"
+sed -e 's/" & line}$/"}/' -e '/^let line = /d' "$cliScript" > "$TMPDIR/valley-unguarded"
+if ! grep -q '" & line}$' "$cliScript" || grep -q '& line}\|^let line' "$TMPDIR/valley-unguarded"; then
+  echo "policy-deriver: the unguarded script still checks its render's lines, so it proves nothing" >&2
+  exit 1
+fi
+
+# refused WHAT TEXT COMMAND…: COMMAND must fail, print nothing on stdout,
+# and say TEXT.
+refused() {
+  local what="$1" text="$2"
+  shift 2
+  if "$@" > "$TMPDIR/forged.out" 2> "$TMPDIR/forged.err"; then
+    echo "policy-deriver: $what derived an answer" >&2
+    cat "$TMPDIR/forged.out" >&2
+    exit 1
+  fi
+  [ ! -s "$TMPDIR/forged.out" ] || {
+    echo "policy-deriver: $what printed to stdout" >&2
+    exit 1
+  }
+  grep -qF -- "$text" "$TMPDIR/forged.err" || {
+    echo "policy-deriver: $what was refused without saying $text" >&2
+    cat "$TMPDIR/forged.err" >&2
+    exit 1
+  }
+}
+
+# forged_derive SCHEMA LAYER [SCRIPT]: derive the case at HEAD under SCHEMA
+# and the project layer LAYER, with the real deriver or with SCRIPT.
+forged_derive() {
+  local -a deriver=(valley)
+  [ $# -lt 3 ] || deriver=(bash "$3")
+  "${deriver[@]}" checks --schema "$1" --instance "$policy/instance" \
+    --project "$policy/$2" "$base" HEAD
+}
+
+case_start forged
+echo edit > a/b
+git commit --quiet -am forged
+# Without the walls, an honest layer still derives exact here, so each
+# refusal below is the forgery's doing.
+report="$(forged_derive "$TMPDIR/loose.cue" project "$TMPDIR/valley-unguarded")"
+expect "c-nested" "the unguarded script must derive an honest layer as the real one does"
+expect_carry exact "the unguarded script must derive an honest layer's carry mode"
+
+refused "a forged carry line" "do not compose" \
+  forged_derive "$schema" forged-carry
+refused "a forged carry line under a schema that admits it" "does not render" \
+  forged_derive "$TMPDIR/loose.cue" forged-carry
+refused "a forged carry line under a render that admits it" \
+  "rendered 'carry nested' twice" \
+  forged_derive "$TMPDIR/loose.cue" forged-carry "$TMPDIR/valley-unguarded"
+refused "a forged requirement line under a render that admits it" \
+  "rendered 'requires nested c-nested' twice" \
+  forged_derive "$TMPDIR/loose.cue" forged-requires "$TMPDIR/valley-unguarded"
+
 # A path no class covers takes the unclassified set, and says
 # so by name. It is same-paths.
 case_start uncovered

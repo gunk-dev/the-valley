@@ -171,6 +171,33 @@ required checks:
 	}
 }
 
+// The deriver states each thing once. A report that states one twice holds
+// a forged line, such as a looser carry mode after the real one, and a
+// parser that kept the last would let the forgery win. Each forged line
+// here follows the real one, as a sorted forgery did, and is refused.
+func TestAReportThatSaysOneThingTwiceIsRefused(t *testing.T) {
+	const header = "abc1234..def5678: 2 changed path(s)\n"
+	const classes = "classes matched: guarded\n"
+	const carry = "carry mode: exact\n"
+	const table = "\nrequired checks:\n  c-build  mandatory  guarded\n"
+	whole := header + "policy: instance + policy\n" + classes + carry + table
+	if _, err := parseDerived(whole); err != nil {
+		t.Fatalf("the report without a forged line is refused: %v", err)
+	}
+	for _, c := range []struct{ name, out string }{
+		{"a second carry mode", header + classes + carry + "carry mode: same-paths\n" + table},
+		{"the same carry mode twice", header + classes + carry + carry + table},
+		{"a second row for one check", header + classes + carry + table + "  c-build  default    unclassified\n"},
+		{"a second required-checks section", header + classes + carry + table + "\nrequired checks: none\n"},
+		{"a second header", header + "abc1234..def5678: 0 changed path(s)\n" + classes + carry + table},
+		{"a second classes line", header + classes + "classes matched: none\n" + carry + table},
+	} {
+		if d, err := parseDerived(c.out); err == nil {
+			t.Errorf("%s: read as %+v", c.name, d)
+		}
+	}
+}
+
 // The report of a diff with nothing in it is still a whole report, and it
 // requires nothing.
 func TestAnEmptyDiffReadsAsRequiringNothing(t *testing.T) {

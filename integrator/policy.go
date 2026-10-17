@@ -251,20 +251,32 @@ var reportHeader = regexp.MustCompile(`^\S+\.\.\S+: ([0-9]+) changed path\(s\)$`
 // checks under it, or classes that disagree with the number of changed
 // paths. The deriver never prints any of those, so each is a deriver that
 // failed partway and still exited zero.
+//
+// A report that says one thing twice is refused too: a second header,
+// classes line, carry mode or required-checks section, or a second row for
+// one check. The deriver prints each once, so a second is a forged line,
+// and reading the last one would let the forgery win.
 func parseDerived(out string) (derived, error) {
 	d := derived{classes: map[string]bool{}, requires: map[string][]string{}}
-	header, required := false, false
+	header, classes, required := false, false, false
 	lines := strings.Split(out, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		switch {
 		case reportHeader.MatchString(line):
+			if header {
+				return derived{}, fmt.Errorf("the deriver printed a second header line, %q", line)
+			}
 			n, err := strconv.Atoi(reportHeader.FindStringSubmatch(line)[1])
 			if err != nil {
 				return derived{}, fmt.Errorf("the deriver printed %q, which is not a count of changed paths", line)
 			}
 			d.paths, header = n, true
 		case strings.HasPrefix(line, "classes matched:"):
+			if classes {
+				return derived{}, fmt.Errorf("the deriver printed a second classes line, %q", line)
+			}
+			classes = true
 			rest := strings.TrimSpace(strings.TrimPrefix(line, "classes matched:"))
 			if rest == "none" {
 				continue
@@ -279,8 +291,14 @@ func parseDerived(out string) (derived, error) {
 			if !carryModes[mode] {
 				return derived{}, fmt.Errorf("the deriver printed %q, which is not a carry mode", line)
 			}
+			if d.carry != "" {
+				return derived{}, fmt.Errorf("the deriver printed a second carry mode, %q", line)
+			}
 			d.carry = mode
 		case line == "required checks:":
+			if required {
+				return derived{}, fmt.Errorf("the deriver printed a second required-checks section")
+			}
 			required = true
 			rows := len(d.requires)
 			for i++; i < len(lines); i++ {
@@ -295,19 +313,25 @@ func parseDerived(out string) (derived, error) {
 					return derived{}, fmt.Errorf("the deriver printed %q, which is not a required-check line", body)
 				}
 				name := fields[0]
-				var classes []string
+				if _, twice := d.requires[name]; twice {
+					return derived{}, fmt.Errorf("the deriver printed a second row for check %s, %q", name, body)
+				}
+				var by []string
 				for _, c := range strings.Split(strings.Join(fields[2:], " "), ",") {
 					if c = strings.TrimSpace(c); c != "" {
-						classes = append(classes, c)
+						by = append(by, c)
 					}
 				}
-				d.requires[name] = classes
+				d.requires[name] = by
 			}
 			if len(d.requires) == rows {
 				return derived{}, fmt.Errorf("the deriver printed a required-checks heading with no checks under it")
 			}
 		case strings.HasPrefix(line, "required checks: none"):
 			// Nothing is required; the map stays empty.
+			if required {
+				return derived{}, fmt.Errorf("the deriver printed a second required-checks section")
+			}
 			required = true
 		}
 	}

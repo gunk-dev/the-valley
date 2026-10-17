@@ -444,6 +444,15 @@ required-checks heading with no checks under it. It believes a report of no chan
 git agrees that the two trees are the same. Checked by `policy-deriver`, `valley-request` and
 `integrator-unit`.
 
+A policy cannot forge a line of what it renders. `valley checks` reads the composed policy as lines
+of tab-separated fields, and the policy's own strings are fields of those lines. A newline in one
+would end its line and start a forged one, such as a looser carry mode for a class the floor pinned.
+So the schema refuses control characters in path globs, and its name shape already keeps them out of
+class and check names. `valley checks` also refuses a rendered line holding one. It refuses a second
+line for anything the policy states once, such as a class's carry mode or a class's requirement of a
+check. The integrator refuses a report that states one thing twice, such as two carry modes or two
+rows for one check. Checked by `cue-vet`, `policy-deriver` and `integrator-unit`.
+
 A check also declares a `cost`, `quick` by default. A `slow` check takes minutes, or needs special
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
 report it prints two lines, `quick:` and `slow:`, each listing the required checks of that cost.

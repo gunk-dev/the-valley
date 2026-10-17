@@ -74,9 +74,10 @@ cue vet -c "$verificationSchema" "$policies"/instance/*.cue \
   "$policies"/project/*.cue
 
 # The carry modes, case by case. Each fixture under examples/policy/carry/
-# composes a floor, a template and a project in one document. Each must vet,
-# and each class must resolve to the mode the layers mean: the strictest
-# mode whose key is true, and same-paths when none is.
+# composes a floor, a template and a project in one document, or refines
+# `policy` itself. Each must vet, and each class must resolve to the mode
+# the layers mean: the strictest mode whose key is true, and same-paths when
+# none is.
 carry="$policies/carry"
 while read -r fixture class mode; do
   cue vet -c "$verificationSchema" "$carry/$fixture.cue"
@@ -91,6 +92,8 @@ template-default-declined guarded same-paths
 template-default-declined kept same-class
 no-carry guarded same-paths
 project-adds-exact guarded exact
+policy-refines-carry guarded exact
+policy-refines-carry added same-class
 EOF
 
 # The restacker's cap is 64 unless a layer sets it.
@@ -101,7 +104,8 @@ EOF
 
 # The compositions the schema must reject, and the field each rejection must
 # name: a project dropping the floor's mode, a carry key that is not a
-# mode, a cap below 1, and a cap outside every layer.
+# mode, a cap below 1, a cap outside every layer, and a pattern that would
+# forge a line of the policy `valley checks` renders.
 while read -r fixture names; do
   if cue vet -c "$verificationSchema" "$carry/rejected/$fixture.cue" \
     > "$fixture.err" 2>&1; then
@@ -118,5 +122,37 @@ project-drops-floor-exact policy.classes.guarded.carry.exact
 not-a-mode policy.classes.guarded.carry."same-file"
 cap-below-one policy.restack.maxAutomaticVersions
 restack-outside-project restack: conflicting values "INVALID: unknown top-level field
+forged-carry-row policy.classes.injected.paths."unused\ncarry\tguarded\tsame-paths": field not allowed
+EOF
+
+# No control character reaches a string `valley checks` renders as a field
+# of a line: a path pattern, a class name, a check name in the catalogue,
+# in a class's requirements or in the unclassified set, an attribute, or a
+# command line. Each case is written once with a dash where the character
+# goes, and must vet, so that its failure with the character is the
+# character's doing. The last case refines `policy` itself rather than a
+# layer.
+while read -r field doc; do
+  printf 'package verification\n%s\n' "${doc//@/-}" > control.cue
+  cue vet -c "$verificationSchema" control.cue || {
+    echo "cue-vet: the $field case does not vet without a control character, so it proves nothing" >&2
+    exit 1
+  }
+  for char in '\n' '\r' '\t' '\u0000' '\u001b' '\u007f'; do
+    printf 'package verification\n%s\n' "${doc//@/"$char"}" > control.cue
+    if cue vet -c "$verificationSchema" control.cue > control.err 2>&1; then
+      echo "cue-vet: a $field holding $char vetted" >&2
+      exit 1
+    fi
+  done
+done <<'EOF'
+pattern project: classes: c: paths: "a@b": true
+class project: classes: "a@b": paths: "a": true
+check project: checks: "a@b": {runner: "nix", attribute: "a"}
+requirement project: {checks: "a-b": {runner: "nix", attribute: "a"}, classes: c: {paths: "a": true, requires: "a@b": true}}
+unclassified project: {checks: "a-b": {runner: "nix", attribute: "a"}, unclassified: "a@b": true}
+attribute project: checks: c: {runner: "nix", attribute: "a@b"}
+command project: checks: c: {runner: "command", command: "a@b"}
+refined-pattern policy: classes: c: paths: "a@b": true
 EOF
 touch "$out"

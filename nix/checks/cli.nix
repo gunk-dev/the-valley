@@ -80,7 +80,11 @@ in
   # marking a check slow moves it between the summary lines and the
   # --cost lists, and changes nothing required. So is the carry mode:
   # overlapping classes, and paths in different classes, report the
-  # strictest of their modes, and an unclassified path is same-paths.
+  # strictest of their modes, and an unclassified path is same-paths. A
+  # mode written by refining `policy` counts. A pattern holding a newline
+  # cannot forge a line of the render: the schema refuses it, the render
+  # refuses it under a schema that admits it, and the deriver refuses the
+  # second line under a render that admits it too.
   #
   # And the deriver fails closed: failNth stands in for git, sort and
   # cue, and fails each call the deriver makes in turn. Every failure

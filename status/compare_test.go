@@ -208,9 +208,46 @@ func TestTheApprovedVersionIsNamedUnambiguously(t *testing.T) {
 	}
 }
 
+// A branch named c/<ID> or c-<ID> maps to c-<ID>, which is reserved for
+// the change with that ID. A request or an outcome under it is that
+// change's, so it is no evidence of approval for a change whose versions
+// name the branch, even when it names one of their heads.
+func TestAnotherChangesReservedNameIsNoEvidence(t *testing.T) {
+	id, other := strings.Repeat("x", 32), strings.Repeat("y", 32)
+	for _, prefix := range []string{"c/", "c-"} {
+		t.Run(prefix, func(t *testing.T) {
+			r := newCompareRepo(t)
+			branch := prefix + other
+			r.git("checkout", "--quiet", "-b", branch)
+			r.file("feature.txt", "feature\n")
+			r.git("commit", "--quiet", "-m", "add the feature")
+			r.git("push", "--quiet", "origin", branch)
+			r.valley("ready", "--change", id, branch)
+			v1 := r.git("rev-parse", branch)
+			r.moveMain("other")
+			v2 := r.rebaseOnto(branch)
+			r.valley("ready", "--change", id, branch)
+			r.git("fetch", "--quiet", "origin")
+
+			reserved := "c-" + other
+			r.setRef(requestPrefix+reserved, v1)
+			r.setRef(outcomePrefix+reserved, r.outcomeRecord(v1, "land"))
+			if kind, text := r.compare(id, 2, v2); kind != compareNone || text != "" {
+				t.Fatalf("a request and an outcome under %s counted for %s: %s\n%s", reserved, id[:4], kind, text)
+			}
+			r.setRef(requestPrefix+"c-"+id, v1)
+			if kind, text := r.compare(id, 2, v2); kind != compareClean || !strings.Contains(text, "clean restack of approved v1 at "+short(v1)) {
+				t.Fatalf("a request under the change's own c-<change ID>: %s\n%s", kind, text)
+			}
+		})
+	}
+}
+
 // clean names the landings between the two bases, oldest first; changed
-// lists the files whose change differs and the range-diff; and a message
-// or an author that changed is shown whatever the files say.
+// lists the files whose change differs, the range-diff, and the shown
+// version's diff of those files in git's ordinary form, whatever the
+// person's diff configuration; and a message or an author that changed is
+// shown whatever the files say.
 func TestCompareSaysWhatChanged(t *testing.T) {
 	r := newCompareRepo(t)
 	id := strings.Repeat("z", 32)
@@ -253,7 +290,9 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 	r.valley("ready", "--change", id, "topic")
 	r.git("checkout", "--quiet", "main")
 	v3 := r.git("rev-parse", "topic")
+	r.git("config", "diff.noprefix", "true")
 	kind, text = r.compare(id, 3, v3)
+	r.git("config", "--unset", "diff.noprefix")
 	for _, line := range []string{
 		"zzzz v3 at " + short(v3) + ": changed since approved v2 at " + short(v2) + ".\nReview the range-diff before approving.\n",
 		"Files whose change differs from v2's, as mode and SHA-256 of the content:\n  image.bin\n    v2: absent -> 100644 ",
@@ -261,6 +300,10 @@ func TestCompareSaysWhatChanged(t *testing.T) {
 		"    v3: absent -> 100755 ",
 		"git range-diff " + short(two) + ".." + short(v2) + " " + short(two) + ".." + short(v3) + ":\n",
 		"1:  " + short(v2) + " = 1:  " + short(v3) + " add the tool",
+		"\nv3's diff of the files whose change differs, from its base " + short(two) +
+			". A note written beside a line of it keeps its file and line:\ndiff --git a/image.bin b/image.bin\n",
+		"Binary files /dev/null and b/image.bin differ\ndiff --git a/tool.sh b/tool.sh\nnew file mode 100755\n",
+		"@@ -0,0 +1 @@\n+#!/bin/sh\n",
 	} {
 		if !strings.Contains(text, line) {
 			t.Fatalf("changed does not say %q:\n%s", line, text)

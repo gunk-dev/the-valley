@@ -1082,6 +1082,11 @@ grep -A2 -x '  cmp-one.txt' "$w/changed" | grep -q '^    v3: absent -> 100644 ' 
 grep -qx "git range-diff ${base1:0:7}..${cv1:0:7} ${landing:0:7}..${cv3:0:7}:" "$w/changed" || fail 'no range-diff heading'
 grep -qx "1:  ${cv1:0:7} = 1:  ${cv2:0:7} cmp-one" "$w/changed" || fail 'the range-diff did not pair the rebased commit'
 grep -qx -- "-:  ------- > 2:  ${cv3:0:7} cmp-one edited" "$w/changed" || fail 'the range-diff did not show the new commit'
+# The page ends with v3's own diff of that file, where a note keeps its
+# file and line.
+after "$w/changed" "v3's diff of the files whose change differs, from its base ${landing:0:7}. A note written beside a line of it keeps its file and line:" > "$w/own"
+[ "$(sed -n 2p "$w/own")" = 'diff --git a/cmp-one.txt b/cmp-one.txt' ] || fail "the changed version did not end with its own diff: $(cat "$w/changed")"
+grep -qx '+edited' "$w/own" || fail "v3's own diff did not show the edited line"
 
 # v3 approved, v4 is v3 with another message, and v5 is v4 with another
 # author, once v4 is approved. Each has its approved version's file delta

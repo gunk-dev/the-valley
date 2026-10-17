@@ -35,10 +35,13 @@ const modeTree = "40000"
 // Both trees are read whole, and either is refused when a checkout on
 // case-sensitive Linux could not hold it faithfully: an entry whose mode
 // is not 100644, 100755, 120000 or a subtree's (a submodule among them);
-// a name that is empty, . or .., .git in any case, or holds a slash; two
-// entries with one name, as a file and a directory at one path are; a
-// subtree with no entries, which a checkout drops; entries out of git's
-// order; and an entry whose object is not the type its mode says.
+// a name that is empty, . or .., .git in any case, holds a slash, or is
+// longer than Linux's limit of 255 bytes; two entries with one name, as a
+// file and a directory at one path are; a subtree with no entries, which
+// a checkout drops; entries out of git's order; an entry whose object is
+// not the type its mode says; and a symlink whose target is empty, holds
+// a NUL, or is longer than Linux's limit of 4095 bytes. Every entry of
+// both trees is checked, the ones the delta leaves out included.
 func Between(r Repo, pre, post string) (Delta, error) {
 	rd, err := r.open()
 	if err != nil {
@@ -78,9 +81,14 @@ type reader struct {
 	out    *bufio.Reader
 	hexLen int                    // an object ID's length in hex, once known
 	trees  map[string][]treeEntry // tree → its entries, each tree checked
-	leaves map[string]string      // blob → the mode an entry gave it
+	leaves map[string]string      // blob → the mode the first entry naming it gave it
+	links  map[string]string      // blob → the path of the first symlink whose target it is
 	sums   map[string][32]byte    // blob → the SHA-256 of its content
 }
+
+// maxTarget is the longest symlink target Linux takes: PATH_MAX, 4096
+// bytes, less the NUL that ends it.
+const maxTarget = 4095
 
 func (r Repo) command(args ...string) *exec.Cmd {
 	program := r.Git
@@ -108,7 +116,8 @@ func (r Repo) open() (*reader, error) {
 	}
 	return &reader{
 		repo: r, cmd: cmd, in: in, out: bufio.NewReader(out),
-		trees: map[string][]treeEntry{}, leaves: map[string]string{}, sums: map[string][32]byte{},
+		trees: map[string][]treeEntry{}, leaves: map[string]string{}, links: map[string]string{},
+		sums: map[string][32]byte{},
 	}, nil
 }
 
@@ -177,24 +186,28 @@ func (rd *reader) treeOf(oid string) (string, error) {
 
 // check reads a tree and every subtree under it, and refuses one that a
 // checkout could not hold faithfully, as Between describes. Each tree is
-// read and checked once. Its leaves are kept, for checkLeaves.
+// read and checked once. Its leaves are kept, for checkLeaves. A tree met
+// again is still refused as an empty directory, since it may have been
+// read first as the empty root, which is no directory.
 func (rd *reader) check(oid, at string) error {
-	if _, done := rd.trees[oid]; done {
-		return nil
-	}
-	kind, data, err := rd.read(oid)
-	if err != nil {
-		return err
-	}
-	if kind != "tree" {
-		return fmt.Errorf("%s is a directory whose object %s is a %s", described(at), oid, kind)
-	}
-	entries, err := rd.parseTree(data, at)
-	if err != nil {
-		return err
+	entries, done := rd.trees[oid]
+	if !done {
+		kind, data, err := rd.read(oid)
+		if err != nil {
+			return err
+		}
+		if kind != "tree" {
+			return fmt.Errorf("%s is a directory whose object %s is a %s", described(at), oid, kind)
+		}
+		if entries, err = rd.parseTree(data, at); err != nil {
+			return err
+		}
 	}
 	if len(entries) == 0 && at != "" {
 		return fmt.Errorf("%s is an empty directory, which a checkout does not hold", described(at))
+	}
+	if done {
+		return nil
 	}
 	rd.trees[oid] = entries
 	for _, e := range entries {
@@ -207,6 +220,9 @@ func (rd *reader) check(oid, at string) error {
 		}
 		if _, seen := rd.leaves[e.oid]; !seen {
 			rd.leaves[e.oid] = e.mode
+		}
+		if _, seen := rd.links[e.oid]; e.mode == ModeSymlink && !seen {
+			rd.links[e.oid] = path
 		}
 	}
 	return nil
@@ -259,7 +275,8 @@ func (rd *reader) parseTree(data []byte, at string) ([]treeEntry, error) {
 
 // checkLeaves refuses an entry whose object is not a blob, or is missing,
 // for every leaf of the trees checked, with one `git cat-file
-// --batch-check`.
+// --batch-check`. Then it reads every blob a symlink names, and refuses a
+// target a checkout could not make (checkTarget).
 func (rd *reader) checkLeaves() error {
 	if len(rd.leaves) == 0 {
 		return nil
@@ -283,6 +300,35 @@ func (rd *reader) checkLeaves() error {
 		if line != oids[i]+" blob" {
 			return fmt.Errorf("an entry with the mode %s names the object %s, which is no blob in the repository", rd.leaves[oids[i]], oids[i])
 		}
+	}
+	for _, oid := range oids {
+		path, ok := rd.links[oid]
+		if !ok {
+			continue
+		}
+		_, target, err := rd.read(oid)
+		if err != nil {
+			return err
+		}
+		if err := checkTarget(target); err != nil {
+			return fmt.Errorf("the symlink %s %w", described(path), err)
+		}
+		rd.sums[oid] = sha256.Sum256(target)
+	}
+	return nil
+}
+
+// checkTarget refuses a symlink's target that symlink(2) on Linux would
+// not make: an empty one, one holding a NUL, which would end it early,
+// and one longer than maxTarget.
+func checkTarget(target []byte) error {
+	switch {
+	case len(target) == 0:
+		return fmt.Errorf("has an empty target, which a checkout cannot make")
+	case bytes.IndexByte(target, 0) >= 0:
+		return fmt.Errorf("has a target holding a NUL, which a checkout cannot make")
+	case len(target) > maxTarget:
+		return fmt.Errorf("has a target of %d bytes, longer than Linux's limit of %d", len(target), maxTarget)
 	}
 	return nil
 }

@@ -52,11 +52,15 @@ func TestBetweenReadsTreesAsWholeFiles(t *testing.T) {
 
 // Trees a checkout on case-sensitive Linux could not hold faithfully are
 // refused on either side, and so is one whose entries git would not read
-// as written. An alias deep in a directory both trees share is refused
-// too: each tree is read whole.
+// as written. Each is refused against a good tree, against the empty
+// tree in either order, and against itself, where nothing differs. An
+// alias deep in a directory both trees share is refused too: each tree
+// is read whole. So is a symlink both trees hold unchanged, and one whose
+// blob another entry names first as a file.
 func TestTreesACheckoutCannotHoldAreRefused(t *testing.T) {
 	r := newRepo(t)
 	blob := r.blob([]byte("x\n"))
+	nothing := r.blob(nil)
 	sub := r.tree([]file{{"inner", ModeFile, []byte("x\n")}})
 	empty := r.git(nil, "mktree")
 	good := r.tree([]file{{"ok", ModeFile, []byte("x\n")}})
@@ -95,10 +99,20 @@ func TestTreesACheckoutCannotHoldAreRefused(t *testing.T) {
 		{"an alias in a shared directory", "named twice",
 			r.rawTree(rawEntry{"40000", "shared",
 				r.rawTree(rawEntry{"100644", "a", blob}, rawEntry{"40000", "a", sub})})},
+		{"a name of 256 bytes", "a component of 256 bytes, longer than Linux's limit of 255",
+			r.rawTree(rawEntry{"40000", "d", r.rawTree(rawEntry{"100644", strings.Repeat("n", 256), blob})})},
+		{"a symlink with an empty target", "\"link\" has an empty target",
+			r.rawTree(rawEntry{"120000", "link", nothing})},
+		{"a symlink whose target holds a NUL", "\"d/link\" has a target holding a NUL",
+			r.rawTree(rawEntry{"40000", "d", r.rawTree(rawEntry{"120000", "link", r.blob([]byte("a\x00b"))})})},
+		{"a symlink whose target is 4096 bytes", "a target of 4096 bytes, longer than Linux's limit of 4095",
+			r.rawTree(rawEntry{"120000", "link", r.blob([]byte(strings.Repeat("t", 4096)))})},
+		{"a symlink whose blob a file names first", "\"b\" has an empty target",
+			r.rawTree(rawEntry{"100644", "a", nothing}, rawEntry{"120000", "b", nothing})},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			for _, pair := range [][2]string{{c.tree, good}, {good, c.tree}, {c.tree, c.tree}} {
+			for _, pair := range [][2]string{{c.tree, good}, {good, c.tree}, {c.tree, empty}, {empty, c.tree}, {c.tree, c.tree}} {
 				_, err := Between(r.repo(), pair[0], pair[1])
 				if err == nil {
 					t.Fatalf("Between(%s, %s) accepted it", pair[0], pair[1])

@@ -50,7 +50,8 @@ in
   # top refused, its bottom approved, and review's [b]ase before the first
   # page, after which the pages and the request are at the rebased heads,
   # and the layer approved before the rebase is printed as a clean restack
-  # instead of paged.
+  # instead of paged. Last, a note written beside an edited line of a
+  # version paged as changed since its approval keeps its file and line.
   review-notes = pkgs.runCommand "valley-review-notes" {
     nativeBuildInputs = [
       pkgs.git
@@ -197,12 +198,12 @@ in
   # old head. Then review set against a change's approved version: a clean
   # restack after [b]ase, with the landing between the bases listed and no
   # diff paged; a later version with an edited file, paged with the
-  # range-diff; a version whose message alone changed and one whose author
-  # alone did, each flagged; a change with no approved version, paged in
-  # full; and a stack whose lower layer is set against its own approval
-  # while its top, which has none, is paged. The hook is followed from the
-  # protected host's rendered init script, so the rules the record meets
-  # are the ones a host applies.
+  # range-diff and its own diff of that file; a version whose message
+  # alone changed and one whose author alone did, each flagged; a change
+  # with no approved version, paged in full; and a stack whose lower layer
+  # is set against its own approval while its top, which has none, is
+  # paged. The hook is followed from the protected host's rendered init
+  # script, so the rules the record meets are the ones a host applies.
   valley-ready = pkgs.runCommand "valley-ready" {
     nativeBuildInputs = [
       pkgs.git

@@ -50,6 +50,7 @@ def encode(pre, post):
 
 H1 = hashlib.sha256(b"one\n").hexdigest().encode()
 H2 = hashlib.sha256(b"two\n").hexdigest().encode()
+EMPTY = hashlib.sha256(b"").hexdigest().encode()
 
 
 def line(path, pre, post):
@@ -115,6 +116,10 @@ MALFORMED = [
     ("path-double-slash", "a path has an empty component",
      HEADER + line(b"a//b", b"-", b"100644 " + H1)),
     ("path-nul", "a path holds a NUL", HEADER + line(b"a\x00b", b"-", b"100644 " + H1)),
+    ("path-component-long", "a path has a component of 256 bytes, past Linux's limit of 255",
+     HEADER + line(b"d/" + b"n" * 256, b"-", b"100644 " + H1)),
+    ("symlink-empty-target", "a symlink has the hash of empty content, and no target is empty",
+     HEADER + line(b"a", b"-", b"120000 " + EMPTY)),
     ("alias-post", "the post side has a file at a path and another under it",
      HEADER + line(b"a", b"-", b"100644 " + H1) + line(b"a/b", b"-", b"100644 " + H2)),
     ("alias-pre", "the pre side has a symlink at a path and a file under it",

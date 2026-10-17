@@ -8,12 +8,14 @@
 //
 //   - an integration request on origin for the change: one filed under
 //     c-<change ID>, or under the request name of one of the change's
-//     versions' branches;
+//     versions' branches, unless that name is c-<ID> for some change ID;
 //   - an outcome record on origin under one of those names that says land,
 //     stale or reject at that head. The integrator judges only requests
 //     that were filed, so each of those is an approval it judged.
 //
-// A branch's request name is lossy, since a/b and a-b are both a-b. A name
+// A branch's request name is lossy, since a/b and a-b are both a-b. So a
+// branch named c/<ID> or c-<ID> maps to c-<ID>, which is reserved for the
+// change with that ID, and is never read as this change's. Another name
 // is ambiguous when anything other than this change maps to it: a branch
 // any version of another change names, or a branch on origin that is no
 // branch of this change. A name is ambiguous too when a record on origin
@@ -31,10 +33,13 @@
 // from B₀ to H₀ is set against the one from B₁ to H₁ (valley-delta-v1,
 // ../delta). Equal deltas are a clean restack, and review shows the
 // landings in (B₀, B₁] instead of the diff. Different deltas are a change,
-// and review shows the files whose change differs and git range-diff
-// B₀..H₀ B₁..H₁. Either way, the commits' messages and authors, from each
-// base to its head, are compared separately, and a difference is shown
-// whatever the files say.
+// and review shows the files whose change differs, git range-diff
+// B₀..H₀ B₁..H₁, and the diff of those files from B₁ to H₁. range-diff's
+// hunks carry no line numbers, so a note review takes beside them has no
+// anchor. The diff is in git's ordinary form, so a note taken beside a
+// line of it keeps its file and line. Either way, the commits' messages
+// and authors, from each base to its head, are compared separately, and a
+// difference is shown whatever the files say.
 //
 // The output is one line naming the kind, none, clean or changed, and then
 // the text review shows. none has text only when an approved version was
@@ -209,7 +214,10 @@ func (h *history) head(n int) string {
 }
 
 // names are the request names a request for this change may be filed
-// under: c-<change ID> first, then each version's branch's, each once.
+// under: c-<change ID> first, then each version's branch's, each once. A
+// branch whose name maps to c-<ID> adds nothing. That name is reserved
+// for the change with that ID, which may be another change, and this
+// change's own is already first.
 func (h *history) names() []string {
 	names := []string{change.RequestName(h.id)}
 	seen := map[string]bool{names[0]: true}
@@ -217,7 +225,11 @@ func (h *history) names() []string {
 		if v.Branch == "" {
 			continue
 		}
-		if name := changeName(v.Branch); !seen[name] {
+		name := changeName(v.Branch)
+		if _, reserved := change.RequestID(name); reserved {
+			continue
+		}
+		if !seen[name] {
 			seen[name] = true
 			names = append(names, name)
 		}
@@ -365,12 +377,29 @@ func compareVersion(g git, h *history, a compareArgs) (kind, text string, err er
 	b.WriteString(meta)
 	fmt.Fprintf(&b, "Base %s -> %s.\n", short(b0), short(b1))
 	fmt.Fprintf(&b, "Files whose change differs from v%d's, as mode and SHA-256 of the content:\n", old)
-	b.WriteString(deltaDifferences(d0, d1, old, a.version))
+	listing, paths := deltaDifferences(d0, d1, old, a.version)
+	b.WriteString(listing)
 	fmt.Fprintf(&b, "\ngit range-diff %s..%s %s..%s:\n", short(b0), short(h0), short(b1), short(a.head))
 	out, err := g.output(true, "range-diff", "--no-color", b0+".."+h0, b1+".."+a.head)
 	if err != nil {
 		b.WriteString("  (git range-diff failed; view the full diff)\n")
 	} else {
+		b.WriteString(out + "\n")
+	}
+	fmt.Fprintf(&b, "\nv%d's diff of the files whose change differs, from its base %s. A note written beside a line of it keeps its file and line:\n",
+		a.version, short(b1))
+	// The prefixes and the options are fixed, so that the person's
+	// configuration cannot change the form review anchors notes by. The
+	// paths are taken literally, as the delta has them, and a rename is a
+	// deletion and an addition, as it is in the delta.
+	out, err = g.output(true, append([]string{"--literal-pathspecs", "diff", "--no-color", "--no-ext-diff", "--no-textconv",
+		"--no-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", b1, a.head, "--"}, paths...)...)
+	switch {
+	case err != nil:
+		b.WriteString("  (git diff failed; view the full diff)\n")
+	case out == "":
+		fmt.Fprintf(&b, "  none: v%d leaves each of them as its base has it.\n", a.version)
+	default:
 		b.WriteString(out + "\n")
 	}
 	return kind, b.String(), nil
@@ -398,8 +427,9 @@ func indexOf(list []string, s string) int {
 // deltaDifferences lists each path whose change differs between two
 // deltas: its change in the approved version's, then in the shown one's.
 // Each image is its mode and the first twelve hex digits of its hash, so a
-// binary file or a mode that changed is listed like any other.
-func deltaDifferences(d0, d1 delta.Delta, old, shown int) string {
+// binary file or a mode that changed is listed like any other. It returns
+// the listing and the paths, sorted.
+func deltaDifferences(d0, d1 delta.Delta, old, shown int) (string, []string) {
 	byPath := map[string][2]*delta.Change{}
 	for side, d := range []delta.Delta{d0, d1} {
 		for i := range d {
@@ -421,7 +451,7 @@ func deltaDifferences(d0, d1 delta.Delta, old, shown int) string {
 		pair := byPath[p]
 		fmt.Fprintf(&b, "  %s\n    v%d: %s\n    v%d: %s\n", quotedPath(p), old, described(pair[0]), shown, described(pair[1]))
 	}
-	return b.String()
+	return b.String(), paths
 }
 
 // described is a path's change in one delta, or unchanged for none.

@@ -823,13 +823,14 @@ names:
   integrator judges only requests that were filed, so each of these is an approval it judged.
 
 Both are read under `c-<change-id>` and under the request name of each branch the change's versions
-have named. A branch's request name is lossy: `a/b` and `a-b` are both `a-b`. So a branch's name is
-ambiguous when anything else maps to it: a branch named by any version of another change, or a
-branch on origin that is not one of this change's. A record on origin that does not read makes every
-branch's name ambiguous, since it could name such a branch. A request or outcome under an ambiguous
-name is not evidence of approval. When the greatest version with any evidence has only ambiguous
-evidence, the approved version is not known, and `review` is ordinary review. It never searches back
-for an older version instead.
+have named. A branch's request name is lossy: `a/b` and `a-b` are both `a-b`. A branch named
+`c/<ID>` or `c-<ID>` maps to `c-<ID>`, which is reserved for the change with that ID, so it adds no
+name. Any other branch's name is ambiguous when anything else maps to it: a branch named by any
+version of another change, or a branch on origin that is not one of this change's. A record on
+origin that does not read makes every branch's name ambiguous, since it could name such a branch. A
+request or outcome under an ambiguous name is not evidence of approval. When the greatest version
+with any evidence has only ambiguous evidence, the approved version is not known, and `review` is
+ordinary review. It never searches back for an older version instead.
 
 This is not a complete approval history. Outcome records are overwritten, and a version records
 neither the base it was approved on nor when. "Approved" means filed through the request protocol;
@@ -856,11 +857,15 @@ decimal, and `<path>` is its raw bytes, which a reader takes by that length. Eac
 The trees are read straight from git's object store with `git cat-file`. No checkout, filter,
 attribute, diff driver, rename detection or replacement ref is involved. A tree is refused when a
 checkout on case-sensitive Linux could not hold it faithfully: a submodule or any other mode, a name
-that is empty, `.`, `..`, `.git` in any case or holds a slash, two entries with one name (as a file
-and a directory at one path are), an empty subtree, entries out of git's order, or an entry whose
-object is not the type its mode says. The parser is strict. It accepts exactly the encodings two
-such trees can give, and refuses anything else, such as a length with a leading zero, a duplicate or
-unsorted path, an invalid mode or hash, or a line whose images are equal. Conformance vectors under
+that is empty, `.`, `..`, `.git` in any case, holds a slash or is longer than Linux's limit of 255
+bytes, two entries with one name (as a file and a directory at one path are), an empty subtree,
+entries out of git's order, an entry whose object is not the type its mode says, or a symlink whose
+target is empty, holds a NUL or is longer than Linux's limit of 4095 bytes. Every entry of both
+trees is checked, including those the delta leaves out. The parser is strict. It accepts exactly the
+encodings two such trees can give, and refuses anything else, such as a length with a leading zero,
+a duplicate or unsorted path, an invalid mode or hash, a symlink with the hash of empty content, or
+a line whose images are equal. The one exception is a symlink whose target holds a NUL or is too
+long: an encoding holds only the target's hash, which shows neither. Conformance vectors under
 `delta/testdata/` fix the encoding and digest. A Python script there computes their expected results
 from the specification alone, independent of the Go code. Checked by `delta-unit`.
 
@@ -890,6 +895,10 @@ Files whose change differs from v<M>'s, as mode and SHA-256 of the content:
 range-diff compares patches, and a binary file's patch says only that it differs, so range-diff can
 call two commits equal when a binary file or a mode differs between them. The list of files shows
 every such difference.
+
+The page ends with the shown version's own diff of those files, from B₁ to H₁, in git's ordinary
+form. range-diff's hunks carry no line numbers, so a note written beside them has no anchor. A note
+written beside a line of that last diff keeps its file and line.
 
 Either way, the commits from each base to its head are compared for their messages and their author
 fields (name, email and date), apart from the files. A difference is shown under its own heading,

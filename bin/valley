@@ -182,8 +182,9 @@ usage: valley <verb> [args]
                    of approved v<m> at <old head>.`, the two bases, and
                    the commits main landed between them, and pages
                    nothing. otherwise it pages `changed since approved
-                   v<m>`, the files whose change differs, and git
-                   range-diff of the two versions. a changed commit
+                   v<m>`, the files whose change differs, git
+                   range-diff of the two versions, and the shown
+                   version's diff of those files. a changed commit
                    message or author is shown either way. this is
                    information only: it files nothing and skips no check.
                    when [a]pprove's checks fail, the prompt says approving
@@ -209,7 +210,10 @@ usage: valley <verb> [args]
                    while paging, press v: less opens the diff in $EDITOR.
                    every line you insert there is a note. it is anchored to
                    the file and new-side line it sits on — to the file alone
-                   when it sits above the first hunk — then appended to
+                   when it sits above the first hunk. range-diff gives no
+                   line numbers, so on a changed version a note keeps its
+                   file and line only in the shown version's diff at the
+                   end of the page. each note is then appended to
                    $XDG_STATE_HOME/valley/notes/<branch>.md (default
                    ~/.local/state) and printed after the verdict. notes
                    survive [b]ase. lines you change or delete instead of
@@ -909,8 +913,11 @@ print_notes() {
 #   - clean: the file delta is the approved version's. review prints that
 #     in a few lines, with the landings between the two bases, and pages
 #     nothing.
-#   - changed: review pages the files whose change differs and the
-#     range-diff between the two versions.
+#   - changed: review pages the files whose change differs, the
+#     range-diff between the two versions, and the shown version's diff
+#     of those files. range-diff's hunks carry no line numbers, so a note
+#     taken beside them is unanchored. That last diff is in git's ordinary
+#     form, so a note taken there keeps its file and line (anchor_buffer).
 #
 # A changed commit message or author is in valley-go's text either way.
 # [v]iew full diff pages the whole diff at every prompt. The comparison

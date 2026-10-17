@@ -372,4 +372,37 @@ if grep -q '^diff --git' stale-page2; then exit 1; fi
 awk '/change 3 of 3: /{ on = 1 } on' stale-review.out > stale-page3
 [ "$(grep '^diff --git' stale-page3)" = 'diff --git a/three.md b/three.md' ]
 
+# ----------------------------------------------------------------------
+# A note taken on a changed comparison. v1 of a change is approved, and
+# v2 edits line 9 of its file, so review pages v2 as changed since v1.
+# range-diff's hunks carry no line numbers, so the page ends with v2's
+# own diff of the file, and the note written beside the edited line there
+# keeps its file and line.
+git checkout --quiet -b edited main
+seq 1 12 | sed 's/^/line /' > lines.md
+git add lines.md
+git commit --quiet -m "add the lines"
+git push --quiet origin edited
+m=mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm
+valley ready --change "$m" edited > /dev/null
+git -C "$stack" update-ref "$requests/c-$m" "$(git rev-parse edited)"
+sed -i 's/^line 9$/line 9 edited/' lines.md
+git commit --quiet -am "edit line 9"
+git push --quiet origin edited
+valley ready --change "$m" edited > /dev/null
+git checkout --quiet main
+cat > "$TMPDIR/changed-editor" << 'EOF'
+#!/bin/sh
+f="$1"
+case "$1" in +*) f="$2" ;; esac
+sed -i '/^+line 9 edited$/a why edit line 9?' "$f"
+EOF
+chmod +x "$TMPDIR/changed-editor"
+{ printf 'v\nq'; sleep 2; printf 's\n'; sleep 1; } \
+  | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1
+sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' changed-tty.log > changed-plain.log
+grep -q "| mmmm v2 at [0-9a-f]*: changed since approved v1 at " changed-plain.log
+grep -qx 'lines.md:9: why edit line 9?' "$XDG_STATE_HOME/valley/notes/edited.md"
+grep -q '^  lines.md:9: why edit line 9?$' changed-plain.log
+
 touch "$out"

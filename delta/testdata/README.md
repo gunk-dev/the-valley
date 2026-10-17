@@ -17,10 +17,12 @@ malformed encoding here. The encoding itself is specified in [`../delta.go`](../
 
 The valid vectors cover the empty delta, binary content, renames, mode-only changes, symlinks,
 deletions, CRLF, a missing final newline, and paths holding spaces and newlines. They also cover a
-file that becomes a directory, bytewise path order, and paths that are not UTF-8. The malformed
+file that becomes a directory, bytewise path order, and paths that are not UTF-8. One vector meets
+Linux's limits exactly: a name of 255 bytes and a symlink target of 4095 bytes. The malformed
 vectors cover duplicate and unsorted paths, non-canonical lengths, invalid modes and hashes,
-unsupported entries such as a submodule or a directory, paths no tree can hold, and broken line
-structure.
+unsupported entries such as a submodule or a directory, and paths no tree can hold, such as one with
+a name of 256 bytes. They also cover a symlink with the hash of empty content, since no symlink's
+target is empty, and broken line structure.
 
 ## Where the expected results come from
 
@@ -53,4 +55,5 @@ The `delta-unit` check runs three things:
 
 Trees that no checkout can hold faithfully, such as a file and a directory at one path, cannot be
 written as JSON specs. `../tree_test.go` builds them with git directly and requires them to be
-refused.
+refused. A symlink whose target holds a NUL or is longer than 4095 bytes is one of them. An encoding
+cannot show such a target, since it holds only the target's hash, so only the trees are refused.

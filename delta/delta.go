@@ -25,6 +25,8 @@
 //
 // Parse reads an encoding strictly: it accepts exactly the encodings
 // Between can produce, and Encode writes a parsed delta back byte for byte.
+// The one exception is a symlink's target. Between refuses a target that
+// holds a NUL or is too long, and a hash does not show either.
 //
 // The package depends on the standard library alone, and on git for
 // Between.
@@ -109,8 +111,9 @@ const maxLenDigits = 10
 // header, a length with a sign or a leading zero, or one that does not
 // end at a space; a path that is empty, out of order or given twice, or
 // that no tree could hold; an image whose mode is not one of the three,
-// or whose hash is not 64 lowercase hex digits; a line whose images are
-// equal; and a missing final newline or anything after it.
+// or whose hash is not 64 lowercase hex digits; a symlink whose hash is
+// that of empty content, since its target would be empty; a line whose
+// images are equal; and a missing final newline or anything after it.
 func Parse(data []byte) (Delta, error) {
 	if !bytes.HasPrefix(data, []byte(Header)) {
 		return nil, fmt.Errorf("it does not open with the header %q", strings.TrimSuffix(Header, "\n"))
@@ -211,8 +214,14 @@ func parseImage(b []byte) (Image, []byte, error) {
 		return Image{}, nil, fmt.Errorf("its hash is not 64 lowercase hex digits")
 	}
 	hex.Decode(i.Sum[:], b[:hexLen])
+	if i.Mode == ModeSymlink && i.Sum == emptySum {
+		return Image{}, nil, fmt.Errorf("it is a symlink with the hash of empty content, and no symlink's target is empty")
+	}
 	return i, b[hexLen:], nil
 }
+
+// emptySum is the SHA-256 of empty content.
+var emptySum = sha256.Sum256(nil)
 
 // checkMode refuses a mode no image can have, naming what it is when git
 // would write it: a directory or a submodule is no entry of a delta.
@@ -246,8 +255,8 @@ func isHexDigit(c byte) bool {
 // checkPath refuses a path that no tree a checkout can hold on
 // case-sensitive Linux could give: an empty path, an empty component (a
 // leading, trailing or doubled slash), a component that is . or .., or
-// .git in any case, which git keeps for itself, and a NUL, which a tree
-// entry's name cannot hold.
+// .git in any case, which git keeps for itself, a component longer than
+// maxName, and a NUL, which a tree entry's name cannot hold.
 func checkPath(p string) error {
 	if p == "" {
 		return fmt.Errorf("a path is empty")
@@ -263,6 +272,10 @@ func checkPath(p string) error {
 	return nil
 }
 
+// maxName is the longest name a file may have on Linux: NAME_MAX, 255
+// bytes.
+const maxName = 255
+
 // checkName refuses one component of a path, as checkPath describes.
 func checkName(name string) error {
 	switch {
@@ -274,6 +287,8 @@ func checkName(name string) error {
 		return fmt.Errorf("has the component %s, which git keeps for itself", name)
 	case strings.IndexByte(name, '/') >= 0:
 		return fmt.Errorf("has a component holding a slash")
+	case len(name) > maxName:
+		return fmt.Errorf("has a component of %d bytes, longer than Linux's limit of %d", len(name), maxName)
 	}
 	return nil
 }

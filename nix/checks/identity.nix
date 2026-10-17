@@ -3,8 +3,10 @@
 # the instance maintains by hand today is exactly what the registry must
 # compile to, so the golden case is a byte-for-byte comparison against the
 # artifact this compiler exists to replace. The grants it compiles are then
-# read by the pre-receive hook a host renders, and the registry is read past
-# a replacement ref planted to forge it.
+# read by the pre-receive hook a host renders: request, and restack, whose
+# holder adds a version to another principal's ready change and writes its
+# restack report. The registry is read past a replacement ref planted to
+# forge it.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {

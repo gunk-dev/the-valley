@@ -2,9 +2,10 @@
 // has landed.
 //
 // A snapshot is one read of origin: every branch, every record, every
-// integration request and outcome, and every attestation ref. From it, for
-// each version of each change, it decides the landing evidence the
-// version has. The first rule that applies is the answer:
+// integration request and outcome, every attestation ref, and every
+// restack report. From it, for each version of each change, it decides the
+// landing evidence the version has. The first rule that applies is the
+// answer:
 //
 //  1. landed: the version's head is on main's first-parent history, and
 //     no commit on that history between the head and main's tip is a
@@ -93,6 +94,7 @@ type Snapshot struct {
 	verify Verifier
 
 	outcomes    map[string]Outcome   // outcome ref → the record it holds
+	reports     map[string]Report    // change ID → its restack report, once read
 	landings    map[string][2]string // "<change ID> <n>" → landing and commit
 	firstParent map[string]bool      // main's first-parent history, down to its first merge; nil until read
 	reachesOf   map[string]bool
@@ -107,9 +109,9 @@ type Snapshot struct {
 }
 
 // ReadSnapshot lists origin once and fetches every object the snapshot
-// reads: main, every branch tip, every record commit and every outcome
-// record. A record commit has its version heads as parents, so they come
-// with it.
+// reads: main, every branch tip, every record commit, every outcome record
+// and every restack report. A record commit has its version heads as
+// parents, so they come with it.
 func ReadSnapshot(ctx context.Context, g Git, v Verifier) (*Snapshot, error) {
 	o, err := ListOrigin(ctx, g, InventoryPatterns...)
 	if err != nil {
@@ -117,7 +119,7 @@ func ReadSnapshot(ctx context.Context, g Git, v Verifier) (*Snapshot, error) {
 	}
 	var want []string
 	for ref, oid := range o.Refs {
-		if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, OutcomePrefix) {
+		if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, OutcomePrefix) || strings.HasPrefix(ref, RestackPrefix) {
 			want = append(want, oid)
 		}
 	}
@@ -139,7 +141,7 @@ func NewSnapshot(ctx context.Context, g Git, o Origin, all []Recorded, v Verifie
 	s := &Snapshot{
 		Origin: o, Tip: o.Refs["refs/heads/"+Target], Changes: all,
 		ctx: ctx, g: g, verify: v,
-		outcomes: map[string]Outcome{}, landings: map[string][2]string{},
+		outcomes: map[string]Outcome{}, reports: map[string]Report{}, landings: map[string][2]string{},
 		reachesOf: map[string]bool{}, reachOf: map[string]map[string]bool{}, digestOf: map[string]string{},
 	}
 	for ref, oid := range o.Refs {

@@ -32,55 +32,76 @@ const (
 	recordTarget = "main"
 )
 
-// recordCommit is what a record commit says: its parents, in order, and
-// its record.json, unread.
-type recordCommit struct {
-	parents []string
-	record  []byte
+// oneFile is the layout of a commit whose tree holds one file and nothing
+// else: a change record's, and a restack report's (report.go).
+type oneFile struct {
+	subject            string // what such a commit is, as a refusal names it
+	name               string // the one file its tree holds
+	commit, tree, blob int    // the most bytes each of its objects may hold
 }
 
-func (gitRepository) record(id string) (recordCommit, error) {
+var recordLayout = oneFile{
+	subject: "a change record", name: "record.json",
+	commit: maxRecordCommit, tree: maxRecordTree, blob: maxRecordBlob,
+}
+
+// fileCommit is what a commit of one file says: its parents, in order,
+// and its file, unread.
+type fileCommit struct {
+	parents []string
+	file    []byte
+}
+
+func (gitRepository) record(id string) (fileCommit, error) {
+	return readOneFile(id, recordLayout)
+}
+
+// readOneFile reads the commit id names as a commit of the layout given,
+// in one stream of its own.
+func readOneFile(id string, layout oneFile) (fileCommit, error) {
 	b := attestationBudget
-	b.subject = "a change record"
+	b.subject = layout.subject
 	objects, err := openObjectsWithin(b)
 	if err != nil {
-		return recordCommit{}, err
+		return fileCommit{}, err
 	}
 	defer objects.close()
-	return readRecord(objects, id)
+	return readFileCommit(objects, id, layout)
 }
 
-func readRecord(objects *objectStream, id string) (recordCommit, error) {
+// readFileCommit reads a commit, its tree and the one file in it, each
+// held to its bound before its content is asked for.
+func readFileCommit(objects *objectStream, id string, l oneFile) (fileCommit, error) {
 	hashSize := len(id) / 2
-	body, err := objects.read(id, "commit", maxRecordCommit)
+	body, err := objects.read(id, "commit", l.commit)
 	if err != nil {
-		return recordCommit{}, fmt.Errorf("it %v", err)
+		return fileCommit{}, fmt.Errorf("it %v", err)
 	}
 	tree, parents, err := commitLinks(body, hashSize)
 	if err != nil {
-		return recordCommit{}, err
+		return fileCommit{}, err
 	}
-	entries, err := objects.read(tree, "tree", maxRecordTree)
+	entries, err := objects.read(tree, "tree", l.tree)
 	if err != nil {
-		return recordCommit{}, fmt.Errorf("its tree %v", err)
+		return fileCommit{}, fmt.Errorf("its tree %v", err)
 	}
 	if len(entries) == 0 {
-		return recordCommit{}, errors.New("its tree is empty, and a change record's tree holds record.json alone")
+		return fileCommit{}, fmt.Errorf("its tree is empty, and %s's tree holds %s alone", l.subject, l.name)
 	}
 	mode, name, blob, rest, err := treeEntry(entries, hashSize)
 	switch {
 	case err != nil:
-		return recordCommit{}, fmt.Errorf("its tree %v", err)
+		return fileCommit{}, fmt.Errorf("its tree %v", err)
 	case len(rest) > 0:
-		return recordCommit{}, errors.New("its tree holds more than one entry, and a change record's tree holds record.json alone")
-	case name != "record.json" || mode != "100644":
-		return recordCommit{}, fmt.Errorf("its tree holds %q with mode %s, and a change record's tree holds record.json alone, as a plain file", name, mode)
+		return fileCommit{}, fmt.Errorf("its tree holds more than one entry, and %s's tree holds %s alone", l.subject, l.name)
+	case name != l.name || mode != "100644":
+		return fileCommit{}, fmt.Errorf("its tree holds %q with mode %s, and %s's tree holds %s alone, as a plain file", name, mode, l.subject, l.name)
 	}
-	data, err := objects.read(blob, "blob", maxRecordBlob)
+	data, err := objects.read(blob, "blob", l.blob)
 	if err != nil {
-		return recordCommit{}, fmt.Errorf("its record.json %v", err)
+		return fileCommit{}, fmt.Errorf("its %s %v", l.name, err)
 	}
-	return recordCommit{parents: parents, record: data}, nil
+	return fileCommit{parents: parents, file: data}, nil
 }
 
 // commitLinks reads the tree and the parents out of a commit object, as
@@ -147,12 +168,20 @@ func (gitRepository) records() (int, error) {
 //	unready      owner or request holder P = [old]   ready → draft
 //	re-ready     owner or request holder P = [old]   draft or withdrawn → ready
 //	withdraw     owner or request holder P = [old]   ready or draft → withdrawn
+//	restack      restack holder          P = [old, h] ready → ready
 //	delete       request holder          —
 //
 // A new version always leaves the change ready, from whatever state it
 // was in. A record whose one parent is old changes the state and the seq
 // alone. A withdrawn change comes back ready, at the same version or a new
 // one, and never as a draft. Every other combination is refused.
+//
+// The restack row is the one write the restack grant authorises: a
+// principal that neither owns the change nor holds the request grant adds
+// one version to a change that is ready, on the branch and under the title
+// of the version that was active. It changes no state. A restack holder
+// that owns the change, or holds the request grant too, writes by those
+// rows instead, unrestricted by this one.
 func (p policy) checkRecord(principal string, u update) (verb, why string) {
 	target, id, ok := change.ParseRef(u.ref)
 	if !ok || target != recordTarget {
@@ -190,7 +219,7 @@ func (p policy) checkCreate(principal, target, id, commit string) string {
 	if why := p.isCommit(h); why != "" {
 		return why
 	}
-	r, err := change.Parse(rc.record)
+	r, err := change.Parse(rc.file)
 	if err != nil {
 		return "its record.json does not read: " + err.Error()
 	}
@@ -225,18 +254,27 @@ func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	if err != nil {
 		return "the record it replaces " + err.Error()
 	}
-	before, err := change.Parse(prev.record)
+	before, err := change.Parse(prev.file)
 	if err != nil {
 		return "the record it replaces does not read: " + err.Error()
 	}
+	// restack is whether the restack grant is what authorises the write,
+	// which holds it to the restack row alone.
+	restack := false
 	if principal != before.Owner && !p.grants.holds(principal, grantRequest) {
-		return fmt.Sprintf("only the change's owner, %s, or a principal holding the %s grant may update its record", before.Owner, grantRequest)
+		if !p.grants.holds(principal, grantRestack) {
+			return fmt.Sprintf("only the change's owner, %s, or a principal holding the %s grant may update its record", before.Owner, grantRequest)
+		}
+		if before.State != change.Ready {
+			return fmt.Sprintf("the change is %s, and the %s grant adds a version only to a change that is %s", before.State, grantRestack, change.Ready)
+		}
+		restack = true
 	}
 	rc, err := p.repo.record(commit)
 	if err != nil {
 		return err.Error()
 	}
-	after, err := change.Parse(rc.record)
+	after, err := change.Parse(rc.file)
 	if err != nil {
 		return "its record.json does not read: " + err.Error()
 	}
@@ -245,13 +283,19 @@ func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	}
 	switch {
 	case len(rc.parents) == 1 && rc.parents[0] == old:
+		if restack {
+			return fmt.Sprintf("a record whose one parent is the record it replaces changes the change's state, and the %s grant changes no state: it only adds a version", grantRestack)
+		}
 		return checkStateChange(before, after)
 	case len(rc.parents) == 2 && rc.parents[0] == old:
 		h := rc.parents[1]
 		if why := p.isCommit(h); why != "" {
 			return why
 		}
-		return checkNewVersion(principal, before, after, h)
+		if why := checkNewVersion(principal, before, after, h); why != "" || !restack {
+			return why
+		}
+		return checkRestack(before, after)
 	default:
 		return "a record that updates a change has the record it replaces as its first parent, and no other parent but the head of the version it adds"
 	}
@@ -306,6 +350,21 @@ func checkNewVersion(principal string, before, after *change.Record, h string) s
 		return fmt.Sprintf("its seq is %d, and an update's is the seq before it plus one, %d", after.Seq, before.Seq+1)
 	case after.Owner != before.Owner:
 		return fmt.Sprintf("it changes the owner from %s to %s, and no update does", before.Owner, after.Owner)
+	}
+	return ""
+}
+
+// checkRestack holds a new version that the restack grant authorises to
+// the restack row, past what checkNewVersion holds every new version to:
+// the change was ready before it, and the new version keeps the branch and
+// the title of the version that was active.
+func checkRestack(before, after *change.Record) string {
+	was, v := before.ActiveVersion(), after.Last()
+	switch {
+	case v.Branch != was.Branch:
+		return fmt.Sprintf("its new version names the branch %q, and the %s grant adds a version on the branch of the active one, %q", v.Branch, grantRestack, was.Branch)
+	case v.Title != was.Title:
+		return fmt.Sprintf("its new version is titled %q, and the %s grant adds a version under the title of the active one, %q", v.Title, grantRestack, was.Title)
 	}
 	return ""
 }

@@ -176,7 +176,9 @@ in
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.
   # Each state is read again through --json, and jq holds the object to
-  # the valley-status/v1 contract.
+  # the valley-status/v1 contract. A change's restack report is shown as
+  # current, and as historical once its branch, main or record has moved,
+  # by status, changes and pending.
   valley-status = pkgs.runCommand "valley-status" {
     nativeBuildInputs = [
       pkgs.git

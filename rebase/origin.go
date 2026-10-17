@@ -16,11 +16,13 @@ import (
 const Target = "main"
 
 // The namespaces of origin's integration requests, the integrator's
-// outcome records, and the attestations the evidence is kept under.
+// outcome records, the attestations the evidence is kept under, and the
+// host restacker's reports.
 const (
 	RequestPrefix   = "refs/the-valley/integration-requests/" + Target + "/"
 	OutcomePrefix   = "refs/the-valley/integration-outcomes/" + Target + "/"
 	AttestationRefs = "refs/the-valley/attestations/"
+	RestackPrefix   = change.RestackPrefix + Target + "/"
 )
 
 // RecordPatterns are the ls-remote patterns that list every record.
@@ -28,13 +30,14 @@ var RecordPatterns = []string{change.RefPrefix + Target + "/*"}
 
 // InventoryPatterns are the ls-remote patterns of every ref a snapshot
 // reads: every branch, every record, every integration request and
-// outcome, and every attestation ref.
+// outcome, every attestation ref, and every restack report.
 var InventoryPatterns = []string{
 	"refs/heads/*",
 	change.RefPrefix + Target + "/*",
 	RequestPrefix + "*",
 	OutcomePrefix + "*",
 	AttestationRefs + "*",
+	RestackPrefix + "*",
 }
 
 // Origin is one ls-remote snapshot of the refs a reader reads.

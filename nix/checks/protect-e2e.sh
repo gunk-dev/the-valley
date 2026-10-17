@@ -412,6 +412,264 @@ as contributor git push --quiet open "$revived:$record_ref"
 record_at "$revived" "a re-ready from withdrawn at the same version"
 
 # ----------------------------------------------------------------------
+# The restack grant: the host restacker's one record write. restacker holds
+# it alone, and requester holds it beside the request grant. Neither owns
+# the change, which contributor does. A holder may add exactly one version
+# to the change while it is ready, on the active version's branch and under
+# its title, naming itself as the uploader. Every other write the grant
+# would have to authorise is refused, and leaves the record where it was.
+restack_id=pqrstuvwxyzklmnopqrstuvwxyzklmno
+restack_ref="refs/the-valley/changes/main/$restack_id"
+# restack_json <state> <seq> <active> <version…>: the record of the change,
+# owned by contributor. Each version is "<head>|<uploader>|<title>|<branch>".
+restack_json() {
+  local state="$1" seq="$2" active="$3" spec head who title branch n=0 versions=""
+  shift 3
+  for spec in "$@"; do
+    IFS='|' read -r head who title branch <<< "$spec"
+    n=$((n + 1))
+    [ -z "$versions" ] || versions="$versions, "
+    versions="$versions{\"n\": $n, \"head\": \"git-sha1:$head\", \"title\": \"$title\", \"branch\": \"$branch\", \"uploader\": \"$who\"}"
+  done
+  printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "contributor", "state": "%s", "seq": %s, "versions": [%s], "active": %s}\n' \
+    "$restack_id" "$state" "$seq" "$versions" "$active"
+}
+restack_at() {
+  if [ "$(git -C "$TMPDIR/open.git" rev-parse "$restack_ref")" != "$1" ]; then
+    echo "protect-e2e: the restacked change's record is not where $2 left it" >&2
+    exit 1
+  fi
+}
+# restack_refused <file> <what> <commit> [<who>]: a push of the record
+# commit is refused, and the record stays where it was.
+restack_refused() {
+  local before
+  before="$(git -C "$TMPDIR/open.git" rev-parse "$restack_ref")"
+  refused "$1" "$2" as "${4:-restacker}" git push --quiet open "$3:$restack_ref"
+  restack_at "$before" "a refused push: $2"
+}
+r1="$(git commit-tree "HEAD^{tree}" -p HEAD -m 'the restacked change, v1')"
+r2="$(git commit-tree "HEAD^{tree}" -p HEAD -m 'the restacked change, rebased')"
+r3="$(git commit-tree "HEAD^{tree}" -p HEAD -m 'the restacked change, rebased again')"
+v1="$r1|contributor|the change|topic"
+at_r2="$r2|restacker|the change|topic"
+
+rcreated="$(record_commit "$(restack_json ready 1 1 "$v1")" "$r1")"
+as contributor git push --quiet open "$rcreated:$restack_ref"
+restack_at "$rcreated" "the create"
+
+# A principal without the grant may not add the version, and neither may a
+# key that names no principal.
+appended="$(record_commit "$(restack_json ready 2 2 "$v1" "$at_r2")" "$rcreated" "$r2")"
+for who in integrator anonymous; do
+  restack_refused nogrant.err "$who added a version to another's change without the restack grant" "$appended" "$who"
+done
+grep -q 'a key that names no principal' nogrant.err
+refused nogrant.err "integrator added a version without the grant" \
+  as integrator git push --quiet open "$appended:$restack_ref"
+grep -q "only the change's owner, contributor, or a principal holding the request grant" nogrant.err
+
+# Each way to write more than the one version is refused.
+two="$(record_commit "$(restack_json ready 2 3 "$v1" "$at_r2" "$r3|restacker|the change|topic")" "$rcreated" "$r3")"
+restack_refused two.err "a holder added two versions" "$two"
+grep -q 'a new version adds one version to the 1 before it, and this record holds 3' two.err
+rewritten="$(record_commit "$(restack_json ready 2 2 "$r1|contributor|rewritten|topic" "$at_r2")" "$rcreated" "$r2")"
+restack_refused rewritten.err "a holder changed an earlier version" "$rewritten"
+grep -q 'it changes version 1' rewritten.err
+owned="$(record_commit "$(restack_json ready 2 2 "$v1" "$at_r2" | sed 's/"owner": "contributor"/"owner": "restacker"/')" "$rcreated" "$r2")"
+restack_refused owned.err "a holder changed the owner" "$owned"
+grep -q 'changes the owner from contributor to restacker' owned.err
+retargeted="$(record_commit "$(restack_json ready 2 2 "$v1" "$at_r2" | sed 's/"target": "main"/"target": "release"/')" "$rcreated" "$r2")"
+restack_refused retargeted.err "a holder changed the target" "$retargeted"
+grep -q 'names the target release' retargeted.err
+retitled="$(record_commit "$(restack_json ready 2 2 "$v1" "$r2|restacker|another title|topic")" "$rcreated" "$r2")"
+restack_refused retitled.err "a holder changed the title" "$retitled"
+grep -q 'is titled "another title"' retitled.err
+moved="$(record_commit "$(restack_json ready 2 2 "$v1" "$r2|restacker|the change|elsewhere")" "$rcreated" "$r2")"
+restack_refused moved.err "a holder moved the change to another branch" "$moved"
+grep -q 'names the branch "elsewhere"' moved.err
+forged="$(record_commit "$(restack_json ready 2 2 "$v1" "$r2|contributor|the change|topic")" "$rcreated" "$r2")"
+restack_refused forged.err "a holder forged the owner as the uploader" "$forged"
+grep -q 'names contributor as its uploader, and restacker is pushing it' forged.err
+for state in draft withdrawn; do
+  stated="$(record_commit "$(restack_json "$state" 2 1 "$v1")" "$rcreated")"
+  restack_refused stated.err "a holder moved a ready change to $state" "$stated"
+  grep -q 'the restack grant changes no state' stated.err
+done
+
+# The one version is added.
+as restacker git push --quiet open "$appended:$restack_ref"
+restack_at "$appended" "a version added under the restack grant"
+
+# Not to a draft, nor to a withdrawn change. The owner's moves between
+# states are as they were.
+paused="$(record_commit "$(restack_json draft 3 2 "$v1" "$at_r2")" "$appended")"
+as contributor git push --quiet open "$paused:$restack_ref"
+on_draft="$(record_commit "$(restack_json ready 4 3 "$v1" "$at_r2" "$r3|restacker|the change|topic")" "$paused" "$r3")"
+restack_refused draft.err "a holder added a version to a draft" "$on_draft"
+grep -q 'the change is draft, and the restack grant adds a version only to a change that is ready' draft.err
+gone_r="$(record_commit "$(restack_json withdrawn 4 2 "$v1" "$at_r2")" "$paused")"
+as contributor git push --quiet open "$gone_r:$restack_ref"
+on_withdrawn="$(record_commit "$(restack_json ready 5 3 "$v1" "$at_r2" "$r3|restacker|the change|topic")" "$gone_r" "$r3")"
+restack_refused withdrawn.err "a holder added a version to a withdrawn change" "$on_withdrawn"
+grep -q 'the change is withdrawn, and the restack grant adds a version only to a change that is ready' withdrawn.err
+back_r="$(record_commit "$(restack_json ready 5 2 "$v1" "$at_r2")" "$gone_r")"
+as contributor git push --quiet open "$back_r:$restack_ref"
+restack_at "$back_r" "the owner's re-ready"
+
+# Deleting stays the request grant's alone.
+refused rdelete.err "a holder of restack alone deleted a record" \
+  as restacker git push --quiet --delete open "$restack_ref"
+grep -q 'only a principal holding the request grant may delete' rdelete.err
+restack_at "$back_r" "a refused delete"
+
+# Holding restack beside request leaves request's powers as they were:
+# requester unreadies the change, which restack alone may not.
+held="$(record_commit "$(restack_json draft 6 2 "$v1" "$at_r2")" "$back_r")"
+as requester git push --quiet open "$held:$restack_ref"
+restack_at "$held" "an unready under the request grant"
+
+# A holder keeps a named principal's own powers: it creates its own
+# record, and unreadies it.
+own_id=lmnopqrstuvwxyzklmnopqrstuvwxyzk
+own_ref="refs/the-valley/changes/main/$own_id"
+own_json() {
+  printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "restacker", "state": "%s", "seq": %s, "versions": [{"n": 1, "head": "git-sha1:%s", "title": "its own", "branch": "own", "uploader": "restacker"}], "active": 1}\n' \
+    "$own_id" "$1" "$2" "$r1"
+}
+own="$(record_commit "$(own_json ready 1)" "$r1")"
+as restacker git push --quiet open "$own:$own_ref"
+own_draft="$(record_commit "$(own_json draft 2)" "$own")"
+as restacker git push --quiet open "$own_draft:$own_ref"
+[ "$(git -C "$TMPDIR/open.git" rev-parse "$own_ref")" = "$own_draft" ]
+
+# The grant opens nothing on integration requests: restacker files none,
+# and neither replaces nor withdraws the one requester filed.
+refused rrequest.err "a holder of restack alone filed a request" \
+  as restacker git push --quiet open "$r2:refs/the-valley/integration-requests/main/c-$restack_id"
+grep -q 'request grant' rrequest.err
+lacks_ref open "refs/the-valley/integration-requests/main/c-$restack_id"
+filed_request="$(git -C "$TMPDIR/open.git" rev-parse "$request")"
+refused rreplace.err "a holder of restack alone replaced a request" \
+  as restacker git push --quiet --force open "$r2:$request"
+grep -q 'request grant' rreplace.err
+refused rwithdraw.err "a holder of restack alone withdrew a request" \
+  as restacker git push --quiet --delete open "$request"
+grep -q 'request grant' rwithdraw.err
+[ "$(git -C "$TMPDIR/open.git" rev-parse "$request")" = "$filed_request" ]
+
+# ----------------------------------------------------------------------
+# Restack reports, at refs/the-valley/restack/main/<change-id>: a holder of
+# the restack grant creates one, and extends it with a report whose one
+# parent is the one before. Nothing else writes one, and nothing replaces
+# its history or deletes it.
+report_ref="refs/the-valley/restack/main/$restack_id"
+# report_json [<result>]: a report about the restacked change, observed at
+# its record and head now.
+report_json() {
+  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 2, "branch": "topic", "head": "git-sha1:%s", "published": null}], "failing_layer": "%s", "conflict_paths": ["readme.txt"], "blocking_requests": [], "refusal": null}\n' \
+    "$restack_id" "$(git -C "$TMPDIR/open.git" rev-parse main)" "${1:-conflict}" "$restack_id" "$held" "$r2" "$restack_id"
+}
+# report_commit <json> [<file>] [<parent…>]: a commit holding the JSON as
+# the one file given, report.json by default.
+report_commit() {
+  local json="$1" file="${2:-report.json}" blob tree parent
+  local -a parents=()
+  shift
+  [ "$#" = 0 ] || shift
+  for parent in "$@"; do parents+=(-p "$parent"); done
+  blob="$(printf '%s' "$json" | git hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\t%s\n' "$blob" "$file" | git mktree)"
+  git commit-tree "$tree" "${parents[@]}" -m 'a restack report'
+}
+report_at() {
+  if [ "$(git -C "$TMPDIR/open.git" rev-parse "$report_ref")" != "$1" ]; then
+    echo "protect-e2e: the restack report is not where $2 left it" >&2
+    exit 1
+  fi
+}
+# report_refused <file> <what> <commit> [<who>] [<ref>]: the push is
+# refused, and the report stays where it was.
+report_refused() {
+  local before
+  before="$(git -C "$TMPDIR/open.git" rev-parse --verify --quiet "$report_ref" || true)"
+  refused "$1" "$2" as "${4:-restacker}" git push --quiet --force open "$3:${5:-$report_ref}"
+  if [ -n "$before" ]; then report_at "$before" "a refused push: $2"; else lacks_ref open "$report_ref"; fi
+}
+report="$(report_json)"
+
+# Who.
+first_report="$(report_commit "$report")"
+for who in contributor integrator anonymous; do
+  report_refused report-who.err "$who wrote a restack report without the grant" "$first_report" "$who"
+  grep -q 'refs/the-valley/restack/ takes writes only from a principal holding the restack grant' report-who.err
+done
+
+# The ref: main alone, and a well-formed change ID that names a change the
+# repository records.
+report_refused report-target.err "a report for another target was written" "$first_report" restacker \
+  "refs/the-valley/restack/release/$restack_id"
+grep -q 'a restack report.s ref is refs/the-valley/restack/main/<change ID>' report-target.err
+lacks_ref open "refs/the-valley/restack/release/$restack_id"
+report_refused report-id.err "a report under a malformed change ID was written" "$first_report" restacker \
+  "refs/the-valley/restack/main/${restack_id:0:31}"
+grep -q '32 letters from k to z' report-id.err
+unknown_id=zyxwvutsrqponmlkzyxwvutsrqponmlk
+report_refused report-unknown.err "a report about a change nobody records was written" \
+  "$(report_commit "${report//$restack_id/$unknown_id}")" restacker "refs/the-valley/restack/main/$unknown_id"
+grep -q "holds no record of the change $unknown_id" report-unknown.err
+
+# The first report has no parent.
+report_refused report-parent.err "a first report with a parent was written" \
+  "$(report_commit "$report" report.json "$r1")"
+grep -q 'first restack report has no parent' report-parent.err
+as restacker git push --quiet open "$first_report:$report_ref"
+report_at "$first_report" "the first report"
+
+# The report itself.
+report_refused report-file.err "a report with a second file was written" \
+  "$(git commit-tree "$(printf '100644 blob %s\treport.json\n100644 blob %s\textra\n' \
+    "$(printf '%s' "$report" | git hash-object -w --stdin)" "$(printf x | git hash-object -w --stdin)" | git mktree)" \
+    -p "$first_report" -m 'a restack report')"
+grep -q "a restack report's tree holds report.json alone" report-file.err
+report_refused report-name.err "a report under another name was written" \
+  "$(report_commit "$report" record.json "$first_report")"
+grep -q 'holds "record.json"' report-name.err
+report_refused report-big.err "an oversized report was written" \
+  "$(report_commit "$report$(head -c 65536 /dev/zero | tr '\0' ' ')" report.json "$first_report")"
+grep -q 'more than the 65536' report-big.err
+report_refused report-unknown-field.err "a report with an unknown field was written" \
+  "$(report_commit "$(printf '%s' "$report" | sed 's/"refusal": null/"refusal": null, "note": "x"/')" report.json "$first_report")"
+grep -q 'which the schema does not have' report-unknown-field.err
+report_refused report-malformed.err "a report that is no JSON was written" \
+  "$(report_commit "conflict in readme.txt" report.json "$first_report")"
+grep -q 'its report.json does not read' report-malformed.err
+report_refused report-other.err "a report about another change was written" \
+  "$(report_commit "$(report_json | sed "s/\"change_id\": \"$restack_id\", \"target\"/\"change_id\": \"$own_id\", \"target\"/")" report.json "$first_report")"
+grep -q "no layer names the change $own_id" report-other.err
+
+# History: a later report extends the one before, and nothing replaces the
+# history or deletes it.
+report_refused report-restart.err "a report that starts the history over was written" \
+  "$(report_commit "$(report_json blocked | sed 's/"failing_layer": "[a-z]*"/"failing_layer": null/')")"
+grep -q 'as its one parent, so a push only adds to the history of reports' report-restart.err
+report_refused report-elsewhere.err "a report on another parent was written" \
+  "$(report_commit "$report" report.json "$r1")"
+grep -q 'as its one parent' report-elsewhere.err
+second_report="$(report_commit "$report" report.json "$first_report")"
+as restacker git push --quiet open "$second_report:$report_ref"
+report_at "$second_report" "the report that extends the first"
+refused report-delete.err "a restack report was deleted" \
+  as restacker git push --quiet --delete open "$report_ref"
+grep -q 'no push deletes one' report-delete.err
+report_at "$second_report" "a refused delete"
+
+# A principal holding both grants writes a report too.
+third_report="$(report_commit "$report" report.json "$second_report")"
+as requester git push --quiet open "$third_report:$report_ref"
+report_at "$third_report" "a report by a holder of both grants"
+
+# ----------------------------------------------------------------------
 # Attestation refs: anyone may create one, if it is what its
 # name says, and it opens under the keys this host accepts.
 attest run --key "$TMPDIR/signer" --name signer.valley.invalid/attestations \

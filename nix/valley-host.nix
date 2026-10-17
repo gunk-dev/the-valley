@@ -626,6 +626,7 @@ let
       # Declared in services.valley.grants — do not edit.
     ''
     + lib.concatMapStrings (principal: "request ${principal}\n") cfg.grants.request
+    + lib.concatMapStrings (principal: "restack ${principal}\n") cfg.grants.restack
   );
 
   # Every file the hook reads grants from. The compiled file is added to the
@@ -1006,6 +1007,28 @@ in
           only ever add. The list is therefore how a host grants request
           before its registry does — including to the operator who has to
           file the registry change that grants it.
+        '';
+      };
+
+      restack = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
+        default = [ ];
+        example = [ "valley-restacker" ];
+        description = ''
+          Principals holding the restack grant: the host restacker's. A
+          holder that neither owns a change nor holds the request grant may
+          add exactly one version to the change's record while the change
+          is ready, on the branch and under the title of its active version,
+          with itself as the uploader. It may also write restack reports
+          (`refs/the-valley/restack/main/<change-id>`). The grant permits
+          no other record write and nothing on integration requests, and a
+          holder keeps every ordinary power of a named principal.
+
+          The grant rides on push, like request: a principal named here also
+          needs a key. With {option}`services.valley.identity.enable` on,
+          the holders the registry names are added to these. The list is
+          how a host grants restack before its registry does; remove an
+          entry once the registry grants the same principal.
         '';
       };
     };

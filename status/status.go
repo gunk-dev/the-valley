@@ -90,6 +90,13 @@ type status struct {
 	// and nil for a branch.
 	recorded *statusRecord
 
+	// restack is the change's restack report, for a change with a record
+	// and a report; nil otherwise.
+	restack *jsonRestack
+	// restackSays is what the report says, with each change named by its
+	// handle.
+	restackSays string
+
 	tip     string // origin's main
 	head    string // the change's head as this read knows it; "" for none
 	request string // the commit the integration request names; "" for none
@@ -252,10 +259,11 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 	if err := s.settle(g, o.refs); err != nil {
 		return nil, err
 	}
-	// How far the active version has landed, by the rules changes uses.
+	// How far the active version has landed, by the rules changes uses,
+	// and the change's restack report.
 	var want []string
 	for ref, oid := range o.refs {
-		if strings.HasPrefix(ref, outcomePrefix) {
+		if strings.HasPrefix(ref, outcomePrefix) || ref == rebase.RestackPrefix+n.id {
 			want = append(want, oid)
 		}
 	}
@@ -264,6 +272,10 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 	}
 	snap := newSnapshot(g, o, nil, verifierFromEnv())
 	s.recorded.landing, _ = snap.landing(n.id, v)
+	if r, found := snap.report(n.id); found {
+		s.restack = restackView(r, found)
+		s.restackSays = restackSays(r.Report, o.handle)
+	}
 	if snap.unverified() {
 		fmt.Fprintf(stderr, "valley: a transfer statement could not be verified, so %s may have landed though its landing does not say so. %s\n", s.recorded.handle, verifierHint)
 	}

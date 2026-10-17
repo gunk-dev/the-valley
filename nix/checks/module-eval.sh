@@ -156,6 +156,8 @@ fi
 # compiles no registry reads that file alone.
 grants="$(grep -o '/nix/store/[^ ]*-valley-grants' "$guardedHook" | head -n1)"
 grep -qx 'request requester' "$grants"
+grep -qx 'restack restacker' "$grants"
+grep -qx 'restack requester' "$grants"
 if grep -q '/var/lib/valley-identity' "$guardedHook"; then
   echo "module-eval: a host that compiles no registry reads compiled grants" >&2
   exit 1

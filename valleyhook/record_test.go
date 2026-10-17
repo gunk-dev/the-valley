@@ -221,7 +221,7 @@ func TestCreatingAChangeRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	objects.budget.subject = "a change record"
-	_, err = readRecord(objects, big)
+	_, err = readFileCommit(objects, big, recordLayout)
 	objects.close()
 	if err == nil || strings.Join(objects.requests, "; ") != "info "+big {
 		t.Errorf("an oversized commit: requests = %v, error = %v; want its info alone", objects.requests, err)
@@ -527,9 +527,17 @@ func (u unreadable) notes(string) (map[string][]byte, error) {
 	u.t.Error("an object was read")
 	return nil, errors.New("unread")
 }
-func (u unreadable) record(string) (recordCommit, error) {
+func (u unreadable) record(string) (fileCommit, error) {
 	u.t.Error("a record was read")
-	return recordCommit{}, errors.New("unread")
+	return fileCommit{}, errors.New("unread")
+}
+func (u unreadable) report(string) (fileCommit, error) {
+	u.t.Error("a report was read")
+	return fileCommit{}, errors.New("unread")
+}
+func (u unreadable) hasRecord(string) (bool, error) {
+	u.t.Error("the records were read")
+	return false, errors.New("unread")
 }
 func (u unreadable) kind(string) (string, error) {
 	u.t.Error("an object was read")

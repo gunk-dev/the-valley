@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"the-valley/change"
 )
 
 // A memo records a decision and not why, so a current decision says so.
@@ -17,6 +19,7 @@ func writeHuman(g git, s *status, w io.Writer) int {
 	if r := s.recorded; r != nil {
 		p("Change %s v%d on %s, owned by %s: %s\n", r.handle, r.version, s.branch, r.owner, r.title)
 		p("Its landing: %s.\n", r.landing)
+		writeRestack(s, w)
 	}
 	switch s.state {
 	case "integrated":
@@ -78,6 +81,22 @@ func writeHuman(g git, s *status, w io.Writer) int {
 	p("Request: %s\n", s.requestRef)
 	p("Check again: valley status %s\n", shellQuote(s.name()))
 	return 0
+}
+
+// writeRestack says what the change's restack report says, and whether it
+// still applies. A historical report is named as one, so it is never read
+// as the change's state now.
+func writeRestack(s *status, w io.Writer) {
+	switch {
+	case s.restack == nil:
+	case s.restack.Current:
+		fmt.Fprintf(w, "Its restack report: %s.\n", readable(s.restackSays))
+		if s.restack.Report.Result == change.RestackConflict {
+			fmt.Fprintf(w, "Rebase it by hand: valley rebase %s\n", shellQuote(s.name()))
+		}
+	default:
+		fmt.Fprintf(w, "Its last restack report is historical: %s. main, a record or a branch it read has moved since.\n", readable(s.restackSays))
+	}
 }
 
 // writeCheckout says how the local checkout stands against the main a
@@ -147,6 +166,7 @@ type jsonStatus struct {
 	Title       *string      `json:"title"`
 	Owner       *string      `json:"owner"`
 	Landing     *string      `json:"landing"`
+	Restack     *jsonRestack `json:"restack"`
 }
 
 type jsonRequest struct {
@@ -184,6 +204,7 @@ func writeJSON(s *status, w, stderr io.Writer) int {
 		out.ChangeID, out.Handle, out.Version = &r.id, &r.handle, &r.version
 		out.Title, out.Owner, out.Landing = &r.title, &r.owner, &r.landing
 	}
+	out.Restack = s.restack
 	if s.outcome != "" {
 		o := &jsonOutcome{Decision: s.memo.decision, FailedAt: optional(s.memo.failedAt)}
 		if isObjectID(s.memo.head) {

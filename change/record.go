@@ -33,6 +33,10 @@
 // reads both sides of every pushed update with it, so a record one of them
 // accepts is a record the other accepts.
 //
+// The package also holds the restack report (report.go): what the host
+// restacker observed about a change, which the hook admits and valley
+// status reads with the same strict reading.
+//
 // The package depends on the standard library alone, like everything that
 // uses it.
 package change

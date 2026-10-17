@@ -79,6 +79,31 @@ The security invariant is the operator's approval: only content the operator app
 request names the exact head that was approved, and the integrator lands only what a request names
 (`integrator/refs.go`). Checks: `integrator-e2e` and `valley-ready`.
 
+The `restack` grant is the host restacker's, and it files nothing. The hook lets a holder that
+neither owns a change nor holds `request` add exactly one version to the change's record, while the
+change is `ready`. The version keeps the branch and title of the active one, and names the holder as
+its uploader. A holder may also write restack reports (`refs/the-valley/restack/main/*`). The grant
+authorises no other record write, no record delete, and nothing on integration requests
+(`valleyhook/record.go`, `valleyhook/report.go`). Checks: `protect-e2e` and `identity-e2e`.
+
+A `restack` holder is still a named principal, and keeps every ordinary power of one. So a
+compromised restacker key can:
+
+- rewrite or delete unprotected branches;
+- add arbitrary versions to other owners' ready changes;
+- create and manage its own records, and write valid plan-graph updates;
+- publish misleading reports, consume storage, exhaust a record's capacity, or withhold work.
+
+It cannot write a protected `main`, file, replace or withdraw a request, write an integrator
+outcome, or forge a check signature. It can relay evidence someone else signed, as any key can. The
+hook proves who uploaded a version and nothing about its content: not that it is a rebase of the old
+head, holds only the change's content, keeps its message and author, or sits on `main`. What
+protects the operator is approval. A request names the exact head the operator approved, so a
+version the restacker added lands only once the operator approves that head. Review compares a
+version with its approved version from git objects, and never trusts a report's account of it (see
+the architecture's
+[Review against the approved version](./architecture.md#review-against-the-approved-version)).
+
 Readiness is different. A change record's state is the author's workflow signal, and the integrator
 enforces it as closely as refs allow. It does not enforce it atomically. A record written between
 the integrator's last read of the records and its move of the target can be missed. That can land a
@@ -135,6 +160,7 @@ converge, and cosmo's ROADMAP D11 carries them as the acceptance criteria of a G
 | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | An agent acting as the operator    | Agents run in `klaus-env` with their own identities and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                 |
 | The interactive coordinator        | It runs in `klaus-env` with the other agents. Only a verified touch stops an agent that holds a grant, and that gate is queued (step 3).                            |
+| A compromised restacker            | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2).       |
 | A compromised agent                | Assume arbitrary commands inside the VM. The VM has no production secrets and no signing sockets, and its egress is limited.                                        |
 | A broken but honest change         | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness. |
 | A lost hardware key                | An offline backup YubiKey holds every role (plan Trust roots, 2026-10-04).                                                                                          |

@@ -42,9 +42,13 @@ const grantsHeader = `# Compiled from the identity registry — do not edit (dcr
 # principal holding it. A principal not named here holds none.
 `
 
-// grantRequest is the line a holder of a grant at a boundary of kind
-// "request" is written under: the verb the hook checks (dcr-e544f20).
-const grantRequest = "request"
+// The lines a holder of a grant at a hook boundary is written under, one
+// per boundary kind: the grant the hook checks. request is the verb of
+// dcr-e544f20; restack is the host restacker's.
+const (
+	grantRequest = "request"
+	grantRestack = "restack"
+)
 
 // artifacts is a whole compilation: every file, what was left out, and the
 // counts the journal line reports. Nothing is written until every part of
@@ -101,6 +105,9 @@ func render(r registry, day time.Time, declared map[string]string) (artifacts, e
 		pushes := held[boundaryGitPush]
 		if held[boundaryRequest] {
 			granted = append(granted, grantRequest+" "+name)
+		}
+		if held[boundaryRestack] {
+			granted = append(granted, grantRestack+" "+name)
 		}
 
 		for i, k := range p.Keys {

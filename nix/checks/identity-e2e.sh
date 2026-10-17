@@ -398,4 +398,94 @@ git -C attested.git rev-parse --verify --quiet "$theirs" > /dev/null || {
   exit 1
 }
 
+# The restack grant. A principal holding a grant at a boundary of kind
+# restack is compiled into the grants as "restack <principal>", and the
+# hook a host renders then lets it add a version to another principal's
+# ready change and write that change's restack report. The same write from
+# a principal the registry grants push alone is refused.
+ssh-keygen -q -t ed25519 -N "" -C restacker -f "$TMPDIR/restacker"
+mkdir -p restack-registry
+{
+  echo 'package identity'
+  echo 'boundaries: {'
+  echo '	"push": kind:     "git-push"'
+  echo '	"registry": kind: "registry"'
+  echo '	"restack": kind:  "restack"'
+  echo '}'
+  echo 'genesis: "author"'
+  echo 'principals: "author": {'
+  echo '	kind: "human"'
+  echo '	keys: [{'
+  echo '		class:  "ssh-ed25519"'
+  echo '		bound:  "hardware"'
+  printf '\t\tpublic: "%s"\n' "$(cut -d' ' -f1,2 < "$TMPDIR/victim.pub")"
+  echo '	}]'
+  echo '	grants: {push: boundary: "push", govern: boundary: "registry"}'
+  echo '}'
+  echo 'principals: "valley-restacker": {'
+  echo '	kind: "service"'
+  echo '	keys: [{'
+  echo '		class:  "ssh-ed25519"'
+  echo '		bound:  "host"'
+  printf '\t\tpublic: "%s"\n' "$(cut -d' ' -f1,2 < "$TMPDIR/restacker.pub")"
+  echo '	}]'
+  echo '	grants: {push: boundary: "push", restack: boundary: "restack"}'
+  echo '	expires: "2027-01-01"'
+  echo '}'
+} > restack-registry/registry.cue
+serve instance restack-registry
+compile --now 2026-08-09 || exit 1
+if [ "$(grep -v '^#' "$TMPDIR/grants")" != "restack valley-restacker" ]; then
+  echo "identity-e2e: the restack grant did not compile into the one line it holds" >&2
+  cat "$TMPDIR/grants" >&2
+  exit 1
+fi
+
+git init --quiet --bare restacked.git
+ln -s "$TMPDIR/hook" restacked.git/hooks/pre-receive
+git init --quiet rs
+git -C rs commit --quiet --allow-empty -m "the change"
+h1="$(git -C rs rev-parse HEAD)"
+h2="$(git -C rs commit-tree "HEAD^{tree}" -p HEAD -m "the change, restacked")"
+change_id=nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
+version() { printf '{"n": %s, "head": "git-sha1:%s", "title": "the change", "branch": "topic", "uploader": "%s"}' "$@"; }
+# one_file <file> <json> <parent…>: a commit whose tree holds the JSON as
+# the file.
+one_file() {
+  local file="$1" json="$2" blob tree parent
+  local -a parents=()
+  shift 2
+  for parent in "$@"; do parents+=(-p "$parent"); done
+  blob="$(printf '%s' "$json" | git -C rs hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\t%s\n' "$blob" "$file" | git -C rs mktree)"
+  git -C rs commit-tree "$tree" "${parents[@]}" -m "$file"
+}
+rpush() { VALLEY_PRINCIPAL="$1" git -C rs push --quiet "$TMPDIR/restacked.git" "$2"; }
+record_ref="refs/the-valley/changes/main/$change_id"
+created="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 1, \"versions\": [$(version 1 "$h1" author)], \"active\": 1}" "$h1")"
+rpush author "$created:$record_ref"
+appended="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 2, \"versions\": [$(version 1 "$h1" author), $(version 2 "$h2" valley-restacker)], \"active\": 2}" "$created" "$h2")"
+if rpush stoned-flynn "$appended:$record_ref" 2> restack.err; then
+  echo "identity-e2e: a principal the registry does not grant restack added a version to another's change" >&2
+  exit 1
+fi
+grep -q "only the change's owner, author" restack.err
+rpush valley-restacker "$appended:$record_ref"
+[ "$(git -C restacked.git rev-parse "$record_ref")" = "$appended" ] || {
+  echo "identity-e2e: the principal the registry grants restack could not add a version" >&2
+  exit 1
+}
+report_ref="refs/the-valley/restack/main/$change_id"
+report="$(one_file report.json "{\"schema\": \"valley-restack-report/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"target_tip\": \"git-sha1:$h1\", \"operation\": \"op-1\", \"result\": \"complete\", \"layers\": [{\"change_id\": \"$change_id\", \"record\": \"git-sha1:$created\", \"version\": 1, \"branch\": \"topic\", \"head\": \"git-sha1:$h1\", \"published\": {\"head\": \"git-sha1:$h2\", \"version\": 2, \"record\": \"git-sha1:$appended\"}}], \"failing_layer\": null, \"conflict_paths\": [], \"blocking_requests\": [], \"refusal\": null}")"
+if rpush author "$report:$report_ref" 2> report.err; then
+  echo "identity-e2e: a principal the registry does not grant restack wrote a restack report" >&2
+  exit 1
+fi
+grep -q 'restack grant' report.err
+rpush valley-restacker "$report:$report_ref"
+[ "$(git -C restacked.git rev-parse "$report_ref")" = "$report" ] || {
+  echo "identity-e2e: the principal the registry grants restack could not write a restack report" >&2
+  exit 1
+}
+
 touch "$out"

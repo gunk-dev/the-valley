@@ -70,6 +70,7 @@ type jsonChange struct {
 	Active   int           `json:"active"`
 	Versions []jsonVersion `json:"versions"`
 	Includes []string      `json:"includes"`
+	Restack  *jsonRestack  `json:"restack"`
 }
 
 type jsonVersion struct {
@@ -514,6 +515,7 @@ func (s *snapshot) changeView(n recorded, handle string, candidates []recorded) 
 	c := jsonChange{
 		ChangeID: n.id, Handle: handle, Target: r.Target, Owner: r.Owner, State: r.State,
 		Record: n.commit, Seq: r.Seq, Active: r.Active, Includes: s.includes(n, candidates),
+		Restack: restackView(s.report(n.id)),
 	}
 	for _, v := range r.Versions {
 		kind, commit := s.landing(n.id, v)

@@ -84,9 +84,11 @@ in
   };
 
   # The protection declaration, plus the machine half it needs: keys
-  # bound to the principal names it uses, and the request grant held by
-  # hand. The baseline key above is anonymous and stays in the list, so
-  # this host also renders the two forms of key side by side.
+  # bound to the principal names it uses, and the request and restack
+  # grants held by hand. requester holds both grants, so the hook checks
+  # read a principal whose request grant the restack grant leaves as it
+  # is. The baseline key above is anonymous and stays in the list, so this
+  # host also renders the two forms of key side by side.
   protectedHost = mkHost {
     services.valley = {
       config = ../../examples/hosts/protected.cue;
@@ -103,8 +105,16 @@ in
           principal = "requester";
           key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck3 requester";
         }
+        {
+          principal = "restacker";
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck4 restacker";
+        }
       ];
       grants.request = [ "requester" ];
+      grants.restack = [
+        "restacker"
+        "requester"
+      ];
       # The keys attestations pushed here are checked against: the ones a
       # controller would accept evidence from, though this host runs none.
       integrator.knownSignersFile = "/var/lib/valley-instance/known_signers";

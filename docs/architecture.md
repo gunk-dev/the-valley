@@ -157,7 +157,8 @@ the plan graph by `knots-e2e`.
 | Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
 | `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
-| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner or a `request` holder updates; a `request` holder deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
+| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner, `request` or `restack` holders update; `request` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
+| `refs/the-valley/restack/main/<change-id>`          | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
 | `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
 | Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`.                                                                      |
@@ -168,9 +169,12 @@ the plan graph by `knots-e2e`.
 Branches and tags hold the source. The namespaces under `refs/the-valley/` are project storage, as
 [The source and project storage](#the-source-and-project-storage) describes.
 
-The `request` grant comes from two places: the host's declared `services.valley.grants.request` and
-the identity compiler's `grants` file. Why replace refs are closed is recorded in
-[bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
+The `request` and `restack` grants each come from two places: the host's declared
+`services.valley.grants.request` and `services.valley.grants.restack`, and the identity compiler's
+`grants` file. The two sources add up. The `restack` grant is the host restacker's. It authorises
+two writes and nothing else: one version added to another principal's ready change, and the change's
+restack report. It grants nothing on integration requests. Why replace refs are closed is recorded
+in [bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
 
 ### Change records
 
@@ -244,7 +248,17 @@ parents, `old` is the ref's value before the push, and `h` is the head of the ve
 | Withdraw                  | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` or `draft` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                        |
 | Ready again, same version | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `draft` or `withdrawn` to `ready` and `seq` goes up by one. `active` stays.                                                                        |
 | Ready again, new version  | The owner or a `request` holder | `[old, h]` | As for a new version, from `draft` or `withdrawn`.                                                                                                                                                  |
+| Restack                   | A `restack` holder              | `[old, h]` | As for a new version, from `ready` only. The new version keeps the `branch` and `title` of the version that was active.                                                                             |
 | Delete                    | A `request` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
+
+The restack row applies only when the `restack` grant is what authorises the write: the pusher
+neither owns the change nor holds `request`. Such a pusher may write that row and no other. The hook
+refuses its write when the change is `draft` or `withdrawn`, when the record changes the state with
+one parent, and when it adds more than one version. It also refuses a changed earlier version,
+owner, target, change ID, branch or title, and an uploader other than the pusher. A `restack` holder
+may not delete a record. A `restack` holder that owns the change, or also holds `request`, writes by
+the other rows as before. The hook cannot tell a submitted change from a ready one, because a landed
+change can stay `ready`; leaving submitted changes alone is the restacker's own selection.
 
 The hook refuses every other write. That includes a key that names no principal, extra parents,
 parents in another order, a head that is not a commit, and a tree of another shape. It also includes
@@ -273,8 +287,74 @@ A record keeps every head it names reachable, because each head is a parent of a
 records retain source objects the way topic branches do, and the hook restricts them no further.
 
 Checked by `valleyhook-unit`, with a case for each rule of each transition against real git objects,
-by `change-unit`, which runs the parser's tests and its fuzz target's seed corpus, and by
-`valley-ready`, which drives the transitions through real pushes.
+by `change-unit`, which runs the parser's tests and its fuzz target's seed corpus, by
+`valley-ready`, which drives the transitions through real pushes, and for the restack row by
+`protect-e2e` and `identity-e2e`.
+
+### Restack reports
+
+A restack report is what the host restacker observed when it tried to rebase a ready change onto
+`main`. It records the inputs it read, what came of the attempt, and what it published. A report is
+an observation. It grants nothing, and it is not evidence that a version's content is unchanged or
+approved.
+
+The ref `refs/the-valley/restack/main/<change-id>` points at the change's latest report commit. The
+commit's tree holds one entry, `report.json`, as a plain file. The first report commit has no
+parent. Each later one has the report it replaces as its one parent, so the ref keeps the change's
+whole history of reports. Its schema is `valley-restack-report/v1`, read by one strict parser that
+the hook and the CLI share (`change/report.go`):
+
+```json
+{
+  "schema": "valley-restack-report/v1",
+  "change_id": "<32 letters from k to z>",
+  "target": "main",
+  "target_tip": "git-sha1:<main as the attempt read it>",
+  "operation": "<the restacker's name for the attempt>",
+  "result": "conflict",
+  "layers": [
+    {
+      "change_id": "<32 letters from k to z>",
+      "record": "git-sha1:<the record commit read>",
+      "version": 2,
+      "branch": "topic",
+      "head": "git-sha1:<the active version's head>",
+      "published": null
+    }
+  ],
+  "failing_layer": "<change id, or null>",
+  "conflict_paths": ["src/main.go"],
+  "blocking_requests": ["refs/the-valley/integration-requests/main/<name>"],
+  "refusal": null
+}
+```
+
+- `layers` are the changes the attempt rebased together, bottom first: 1 to 64, each change once,
+  and the report's own change among them.
+- `result` is `conflict`, `blocked`, `partial`, `complete` or `superseded`. A conflict names its
+  `failing_layer`. A conflict and a block publish nothing. `partial` means the branches moved and
+  not every version was added; `complete` means every layer gained a version. `superseded` means the
+  attempt was given up because its inputs moved while it ran.
+- `published` is `null` for a layer whose branch did not move. Otherwise it is
+  `{"head", "version", "record"}`: the head the branch moved to, and the version and record commit
+  that recorded it, both `null` when no version was added.
+- `conflict_paths` holds at most 100 paths of 1 to 1024 bytes. `blocking_requests` holds at most 64
+  integration-request refs on `main`. `refusal` is `null` or 1 to 2048 bytes. `operation` is 1 to 64
+  letters, digits, dots, colons, dashes and underscores. No string holds a control character.
+
+The parser refuses what the record parser refuses: invalid UTF-8, a duplicate key, an unknown field,
+a field of another type, and data after the object.
+
+Only a `restack` holder may write a report. The hook refuses a report for any target but `main`, a
+ref whose last part is not a change ID, and a change the repository holds no record of. It refuses a
+first report with a parent, a later one whose one parent is not the ref's old value, and every
+delete. Each report commit is at most 4 KiB, its tree at most 1 KiB, and its `report.json` at most
+64 KiB. A push may update at most 64 reports. The hook checks each bound before it reads anything
+past it.
+
+Checked by `protect-e2e` and `identity-e2e`, which push reports through the rendered hook, by
+`valleyhook-unit`, and by `change-unit`, which runs the parser's tests and its fuzz target's seed
+corpus.
 
 ## After a push: events and mirrors
 
@@ -556,7 +636,7 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 
 - A principal has a kind (`human`, `machine` or `service`), one or more `ssh-ed25519` keys, and
   grants. A key may also sign attestations, under a name it declares.
-- A grant names a boundary. A boundary has a kind: `git-push`, `registry` or `request`.
+- A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `request` or `restack`.
 - A machine, service or external principal must declare `expires`. From that day on, a successful
   compile leaves the principal out of every file. A compile that is refused keeps the previous
   files, expired entries included. Keys the host declares statically are outside the registry and do
@@ -569,7 +649,8 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 - `authorized_keys.git`: one line per key of a principal with a `git-push` grant, tagged
   `environment="VALLEY_PRINCIPAL=<principal>"`. sshd reads it after the host's declared keys.
 - `known-signers`: the keys that may sign attestations, for the hook and the integrator.
-- `grants`: one `request <principal>` line per holder of the `request` grant.
+- `grants`: one `request <principal>` line per holder of a `request` grant, and one
+  `restack <principal>` line per holder of a `restack` grant.
 
 The compiler refuses a registry where no principal holds a registry grant, where one key pushes for
 two principals, or where a pushing key matches a host-declared key under a different tag or none.
@@ -1007,7 +1088,8 @@ so it is a contract with a version. A change to the name or meaning of any field
   "version": null,
   "title": null,
   "owner": null,
-  "landing": null
+  "landing": null,
+  "restack": null
 }
 ```
 
@@ -1027,6 +1109,16 @@ so it is a contract with a version. A change to the name or meaning of any field
   Each is `null` for a branch no record is on. For a change with a record they are its ID, its
   handle, its active version's number and title, its owner, and the active version's landing
   evidence as [Listing changes](#listing-changes) decides it.
+- `restack` was added to `valley-status/v1`. It is `null` for a branch no record is on, and for a
+  change with no restack report. Otherwise it is `{"ref", "commit", "current", "report"}`: the
+  report's ref, its report commit, whether it is current, and the report as
+  [Restack reports](#restack-reports) gives it. A report is current only while every input it
+  observed still holds on origin: `main` is at its `target_tip`, and each layer's record ref and
+  branch are at the record and head it read. For a layer the attempt published, the branch must be
+  at the published head, and the record at the published record when a version was added. A branch
+  can move or disappear while its record and `main` stay where they were, so every layer's branch is
+  compared. A report that is not current is historical. The sentences say which it is, and name a
+  current conflict's command to rebase by hand.
 - `refused-not-ready`, `refused-merge` and `voided-withdrawn` were added to `valley-status/v1` as
   decisions and as states. A reader that meets a decision or a state it does not know should treat
   the status as unknown.
@@ -1149,7 +1241,8 @@ configuration.
               "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>" }
             }
           ],
-          "includes": ["<change id>"]
+          "includes": ["<change id>"],
+          "restack": null
         }
       ],
       "branches": [{ "branch": "loose", "head": "<sha>" }]
@@ -1179,6 +1272,8 @@ configuration.
   included.
 - `includes` lists the changes whose active head is a strict ancestor of this one's, nearest only.
   It is ancestry alone: approving this change lands their content too.
+- `restack` is the change's latest restack report, or `null`, with the shape and the meaning of
+  `current` that `valley-status/v1` gives it. It was added to `valley-changes/v1`.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
   no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
@@ -1206,11 +1301,12 @@ the other says `on <base>`. A stack is printed in the section of its top entry. 
 another section is marked with it, as `(ready)` marks a ready change inside a branch.
 
 A change also says `includes <handle>` for a change its head contains that is not an entry, such as
-a withdrawn one, and `uncertain` when that applies. `--checks` adds the checks each change requires,
-by cost, as `valley checks` derives them. Within a section, the stack with the latest commit comes
-first. Every line fits the terminal's width, or 80 columns when stdout is not a terminal. A title is
-cut short with `…`, and a handle or a branch never is. On a terminal, names are bold, unless
-`NO_COLOR` is set.
+a withdrawn one, and `uncertain` when that applies. It says `restack:` and what its restack report
+says when that report is current. A historical report is left out. `--checks` adds the checks each
+change requires, by cost, as `valley checks` derives them. Within a section, the stack with the
+latest commit comes first. Every line fits the terminal's width, or 80 columns when stdout is not a
+terminal. A title is cut short with `…`, and a handle or a branch never is. On a terminal, names are
+bold, unless `NO_COLOR` is set.
 
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
 the human view's sections. `changes` holds only the ready changes that have not landed. Each
@@ -1251,7 +1347,8 @@ whose active version is on it. A change whose active version is `landed` or `lan
 skipped, so a branch name can be used again once its change has landed, whether or not the branch
 has moved since. A landing read wrongly could make a draft's branch read as a plain branch. Nothing
 lands from that: the integrator refuses a request at a draft's version head whatever it is named.
-Checked by `valley-changes`, and by the Go tests in `status/` for handles, URLs and the JSON writer.
+Checked by `valley-changes`, by `valley-status` for restack reports, and by the Go tests in
+`status/` for handles, URLs and the JSON writer.
 
 ## The plan graph
 

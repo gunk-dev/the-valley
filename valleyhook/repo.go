@@ -33,7 +33,13 @@ type repository interface {
 	// record reads the change record commit id names (record.go): its
 	// parents, and the record.json its tree holds, or an error saying why
 	// id is not such a commit.
-	record(id string) (recordCommit, error)
+	record(id string) (fileCommit, error)
+	// report reads the restack report commit id names (report.go) the
+	// same way: its parents, and the report.json its tree holds.
+	report(id string) (fileCommit, error)
+	// hasRecord reports whether the repository holds a record of the
+	// change with the ID given now.
+	hasRecord(id string) (bool, error)
 	// kind is the type of the object id names.
 	kind(id string) (string, error)
 	// records counts the change records the repository holds now, with

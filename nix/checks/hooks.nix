@@ -55,8 +55,10 @@
   # by module-eval, and everything the hook decides after it is what
   # this check exercises: protected refs, attestations and the names
   # they may take, integration requests and the request grant, the
-  # changes of a change record's state, named grants, symbolic refs, a
-  # composed hook, and the namespaces every push is refused. An
+  # changes of a change record's state, the restack grant's one version
+  # and each write it does not authorise, restack reports and their
+  # history, named grants, symbolic refs, a composed hook, and the
+  # namespaces every push is refused. An
   # attestation's tree written by hand, with the genuine note at a name
   # holding a slash, is refused. Projects with and without protection are
   # both served.

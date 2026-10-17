@@ -232,6 +232,10 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 		if v.Landing == uncertain {
 			e.notes = append(e.notes, "uncertain: it may have landed without its evidence being stored")
 		}
+		if c.Restack != nil && c.Restack.Current {
+			name := func(id string) string { return h[handleKey{r.name, c.Target, id}] }
+			e.notes = append(e.notes, "restack: "+readable(restackSays(c.Restack.Report, name)))
+		}
 		if l.checks {
 			e.notes = append(e.notes, s.checks(v.Head))
 		}

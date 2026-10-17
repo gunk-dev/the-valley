@@ -5,8 +5,9 @@
 // It renders, and enforces nothing itself. sshd refuses a key that is not
 // in the authorized_keys it writes, the integrator refuses evidence signed
 // by nobody in the known-signers it writes, and the pre-receive hook
-// refuses an integration request from anybody not in the grants it writes;
-// this program is the step between the document and those three gates.
+// refuses an integration request or a restack write from anybody not in
+// the grants it writes; this program is the step between the document and
+// those three gates.
 package main
 
 import (
@@ -40,8 +41,11 @@ only thing that can tell one pusher from another over a shared git user.
 
 The grants file is every grant the pre-receive hook checks, one line per
 holder: "request <principal>" for each principal holding a grant at a
-boundary of kind "request". The hook takes writes to the integration
-request namespace only from a principal named there.
+boundary of kind "request", and "restack <principal>" for each holding one
+at a boundary of kind "restack". The hook takes writes to the integration
+request namespace only from a principal named under request. It takes a
+version added to another principal's ready change, and a restack report,
+only from one named under restack.
 
 The registry is read with git's replacement refs off and with no GIT_
 variable or user or system configuration inherited, so the registry

@@ -35,7 +35,7 @@ pre-receive hook answers for the push and not for each ref.
 
 A write is allowed only if every rule that applies to its ref allows it:
 
-  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the four
+  refs/replace/*, refs/notes/*, and refs/the-valley/* other than the five
   namespaces below
                     nobody, whatever a declaration says. A replacement ref
                     makes one object stand in for another wherever git
@@ -60,11 +60,22 @@ A write is allowed only if every rule that applies to its ref allows it:
                     add a version, whose head is the commit's second parent
                     after the record it replaces, or withdraw the change,
                     with that record as the one parent. Only a holder of
-                    the request grant may delete one. Every other write is
+                    the request grant may delete one. A holder of the
+                    restack grant that is neither may add one version to a
+                    ready change, on the active version's branch and under
+                    its title, and nothing more. Every other write is
                     refused. A push may update at most 32 records, and a
                     repository may hold at most 2000. That bound is soft:
                     pushes running at once can pass it by the records
                     they create.
+  refs/the-valley/restack/main/<change ID>
+                    a restack report: principals holding the restack
+                    grant, about a change the repository records. A commit
+                    whose tree holds one file, report.json, read within
+                    fixed bounds as a valley-restack-report/v1 report about
+                    that change. The first has no parent, and each later
+                    one has the report it replaces as its one parent. No
+                    push deletes one. A push may update at most 64.
   refs/the-valley/knots
                     the plan graph, that name exactly: any named
                     principal. A create is one commit with no parent, and
@@ -206,8 +217,8 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 		return failClosed(stderr, err)
 	}
 
-	// The bounds on change records that are about the push as a whole are
-	// checked before any record is read.
+	// The bounds on change records and restack reports that are about the
+	// push as a whole are checked before any record or report is read.
 	records := 0
 	for _, u := range updates {
 		if strings.HasPrefix(u.ref, change.RefPrefix) {
@@ -219,6 +230,16 @@ func preReceive(args []string, stdin io.Reader, stderr io.Writer, repo repositor
 	}
 	if records > maxRecordUpdates {
 		fmt.Fprintf(stderr, "valley: the push is refused: it updates %d change records, and a push may update at most %d\n", records, maxRecordUpdates)
+		return 1
+	}
+	reports := 0
+	for _, u := range updates {
+		if strings.HasPrefix(u.ref, change.RestackPrefix) {
+			reports++
+		}
+	}
+	if reports > maxReportUpdates {
+		fmt.Fprintf(stderr, "valley: the push is refused: it updates %d restack reports, and a push may update at most %d\n", reports, maxReportUpdates)
 		return 1
 	}
 	if p.recordCreates > 0 {

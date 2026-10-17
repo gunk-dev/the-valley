@@ -50,10 +50,15 @@ const (
 	// registry document itself. A render leaving nobody there is refused.
 	boundaryRegistry = "registry"
 
-	// boundaryRequest is the boundary kind the grants artifact is rendered
+	// boundaryRequest is a boundary kind the grants artifact is rendered
 	// from: the pre-receive hook's check of writes to the integration
 	// request namespace (valleyhook/).
 	boundaryRequest = "request"
+
+	// boundaryRestack is the other: the pre-receive hook's check of the
+	// host restacker's writes, a version added to another principal's
+	// ready change and a restack report (valleyhook/).
+	boundaryRestack = "restack"
 )
 
 // readRegistry takes the registry out of a repository's tip, vets it, and

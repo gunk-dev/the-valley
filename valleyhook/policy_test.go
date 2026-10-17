@@ -44,8 +44,14 @@ func (f fakeRepository) symbolic([]string) (map[string]bool, error) { return nil
 func (f fakeRepository) notes(string) (map[string][]byte, error) {
 	return nil, errors.New("holds no objects")
 }
-func (f fakeRepository) record(string) (recordCommit, error) {
-	return recordCommit{}, errors.New("holds no objects")
+func (f fakeRepository) record(string) (fileCommit, error) {
+	return fileCommit{}, errors.New("holds no objects")
+}
+func (f fakeRepository) report(string) (fileCommit, error) {
+	return fileCommit{}, errors.New("holds no objects")
+}
+func (f fakeRepository) hasRecord(string) (bool, error) {
+	return false, errors.New("holds no refs")
 }
 func (f fakeRepository) kind(string) (string, error) { return "", errors.New("holds no objects") }
 func (f fakeRepository) records() (int, error)       { return 0, nil }

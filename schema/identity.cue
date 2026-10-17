@@ -131,7 +131,16 @@ package identity
 	// not name there: it cannot file, replace or withdraw a request. The
 	// grant rides on push — only a key sshd admits reaches the hook — so a
 	// principal that files requests holds a "git-push" grant too.
-	kind: "git-push" | "registry" | "request"
+	//
+	// "restack" — the same pre-receive hook, checking the two writes the
+	// host restacker needs beyond an ordinary push: adding one version to
+	// another principal's ready change record, on the branch and under the
+	// title of its active version, and writing restack reports
+	// (refs/the-valley/restack/*). The compiler writes each holder into the
+	// grants file as "restack <principal>". The grant opens nothing else:
+	// no other record transition, and no integration request. It rides on
+	// push too.
+	kind: "git-push" | "registry" | "request" | "restack"
 }
 
 // An identity the registry cites rather than mints.

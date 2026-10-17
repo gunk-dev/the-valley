@@ -361,6 +361,117 @@ jq -e --arg change "$odd" --arg name "$oddrequest" --arg head "$head" '
 git -C "$origin" update-ref -d "refs/heads/$odd"
 git -C "$origin" update-ref -d "refs/the-valley/integration-requests/main/$oddrequest"
 
+# A change's restack report. status shows the latest report the host
+# restacker wrote about a change, and says whether it is current: main's
+# tip, and each layer's record and branch head, are still what it observed.
+# A report whose inputs have moved is historical, and pending leaves it out.
+reset_remote
+restack_id=qqqqrrrrssssttttuuuuvvvvwwwwxxxx
+record_ref="refs/the-valley/changes/main/$restack_id"
+report_ref="refs/the-valley/restack/main/$restack_id"
+# one_file <file> <json> <parent…>: a commit on origin holding the JSON as
+# the one file given.
+one_file() {
+  local file="$1" json="$2" blob tree parent
+  local -a parents=()
+  shift 2
+  for parent in "$@"; do parents+=(-p "$parent"); done
+  blob="$(printf '%s' "$json" | git -C "$origin" hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\t%s\n' "$blob" "$file" | git -C "$origin" mktree)"
+  git -C "$origin" commit-tree "$tree" "${parents[@]}" -m "$file"
+}
+version_json() {
+  printf '{"n": %s, "head": "git-sha1:%s", "title": "topic", "branch": "topic", "uploader": "%s"}' "$@"
+}
+record_v1="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$restack_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 1, \"versions\": [$(version_json 1 "$head" author)], \"active\": 1}" "$head")"
+git -C "$origin" update-ref "$record_ref" "$record_v1"
+# report_json <result> <layer's published object or null>: a report about
+# the change, observed at main's base, its first record and its head.
+report_json() {
+  local failing=null paths='[]'
+  if [ "$1" = conflict ]; then failing="\"$restack_id\"" paths='["readme.txt"]'; fi
+  printf '{"schema": "valley-restack-report/v1", "change_id": "%s", "target": "main", "target_tip": "git-sha1:%s", "operation": "op-1", "result": "%s", "layers": [{"change_id": "%s", "record": "git-sha1:%s", "version": 1, "branch": "topic", "head": "git-sha1:%s", "published": %s}], "failing_layer": %s, "conflict_paths": %s, "blocking_requests": [], "refusal": null}' \
+    "$restack_id" "$base" "$1" "$restack_id" "$record_v1" "$head" "$2" "$failing" "$paths"
+}
+conflict="$(one_file report.json "$(report_json conflict null)")"
+git -C "$origin" update-ref "$report_ref" "$conflict"
+
+# restack_json <current> [<jq condition>...]: the change's status, through
+# --json, carries the report and says whether it is current.
+restack_json() {
+  local want="$1" cond
+  shift
+  status_json "$restack_id"
+  for cond in ".restack.ref == \"$report_ref\"" ".restack.current == $want" ".change_id == \"$restack_id\"" "$@"; do
+    jq -e "$cond" "$w/status.json" > /dev/null || fail "status --json: $cond does not hold"
+  done
+}
+restack_json true ".restack.commit == \"$conflict\"" '.restack.report.result == "conflict"' \
+  ".restack.report.failing_layer == \"$restack_id\"" '.restack.report.conflict_paths == ["readme.txt"]' \
+  ".restack.report.layers[0].record == \"git-sha1:$record_v1\""
+status "$restack_id"
+contains "Its restack report: a conflict rebasing qqqq onto main at ${base:0:7}, in readme.txt." \
+  'a current conflict was not reported'
+contains "valley rebase qqqq" 'a current conflict did not say how to rebase by hand'
+lacks 'historical' 'a current report was called historical'
+(cd "$repo" && valley changes --json) > "$w/changes.json" || fail 'changes --json failed'
+jq -e --arg id "$restack_id" --arg commit "$conflict" '
+  .repos[0].changes[] | select(.change_id == $id)
+  | .restack.current == true and .restack.commit == $commit and .restack.report.result == "conflict"
+' "$w/changes.json" > /dev/null || fail 'changes --json did not carry the current report'
+(cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
+contains 'restack: a conflict rebasing qqqq onto main' 'pending did not show a current report'
+
+# Each input it observed moving makes it historical: the branch, the
+# branch gone, main, and the record. Status says so, and pending leaves it
+# out.
+historical() {
+  restack_json false
+  status "$restack_id"
+  contains 'Its last restack report is historical: a conflict rebasing' "$1: a historical report was not called historical"
+  lacks 'valley rebase' "$1: a historical conflict was given as one to resolve"
+  (cd "$repo" && valley pending) > "$w/status.out" || fail 'pending failed'
+  lacks 'restack:' "$1: pending showed a historical report"
+}
+git -C "$origin" update-ref refs/heads/topic "$base"
+historical 'a moved branch'
+git -C "$origin" update-ref refs/heads/topic "$head"
+git -C "$origin" update-ref refs/heads/main "$advanced"
+historical 'a moved main'
+git -C "$origin" update-ref refs/heads/main "$base"
+record_v1_draft="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$restack_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"draft\", \"seq\": 2, \"versions\": [$(version_json 1 "$head" author)], \"active\": 1}" "$record_v1")"
+git -C "$origin" update-ref "$record_ref" "$record_v1_draft"
+historical 'a moved record'
+git -C "$origin" update-ref "$record_ref" "$record_v1"
+restack_json true
+git -C "$origin" update-ref -d refs/heads/topic
+restack_json false
+git -C "$origin" update-ref refs/heads/topic "$head"
+
+# A complete report is matched against what it published: the head it
+# moved the branch to, and the record that recorded it. It is current once
+# both stand on origin, and historical while the branch is at the head it
+# was moved from.
+rebased="$(git -C "$origin" commit-tree "$head^{tree}" -p "$base" -m 'topic, rebased')"
+record_v2="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$restack_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 2, \"versions\": [$(version_json 1 "$head" author), $(version_json 2 "$rebased" restacker)], \"active\": 2}" "$record_v1" "$rebased")"
+complete="$(one_file report.json "$(report_json complete "{\"head\": \"git-sha1:$rebased\", \"version\": 2, \"record\": \"git-sha1:$record_v2\"}")" "$conflict")"
+git -C "$origin" update-ref "$report_ref" "$complete"
+git -C "$origin" update-ref "$record_ref" "$record_v2"
+restack_json false ".restack.commit == \"$complete\"" '.restack.report.result == "complete"'
+git -C "$origin" update-ref refs/heads/topic "$rebased"
+restack_json true '.restack.report.layers[0].published.version == 2' ".version == 2"
+status "$restack_id"
+contains "Its restack report: rebased onto main at ${base:0:7}." 'a current complete report was not reported'
+git -C "$origin" update-ref "$record_ref" "$record_v1"
+restack_json false
+git -C "$origin" update-ref -d "$record_ref"
+git -C "$origin" update-ref -d "$report_ref"
+git -C "$origin" update-ref refs/heads/topic "$head"
+
+# A branch no record is on has no restack report to show.
+status_json topic
+jq -e '.restack == null' "$w/status.json" > /dev/null || fail 'a branch status carried a restack report'
+
 # A target with no main is no answer either.
 git -C "$origin" update-ref -d refs/heads/main
 json_refused

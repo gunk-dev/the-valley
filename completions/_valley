@@ -119,6 +119,7 @@ _valley() {
       '--repo:that one project'
       '--checks:the checks each change requires, by cost'
       '--json:print valley-pending/v1 JSON'
+      '-v:say why no change shows a knot'
     )
     _describe -t options 'valley pending option' opts
   elif [[ ${words[2]} == changes && ${words[CURRENT]} == -* ]]; then
@@ -126,11 +127,18 @@ _valley() {
       '--json:print valley-changes/v1 JSON'
       '--all:every project the serving host publishes'
       '--repo:that one project'
+      '-v:say why no change shows a knot'
     )
     _describe -t options 'valley changes option' opts
   elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
-    local -a opts=('--json:print the status as one valley-status/v1 JSON object')
+    local -a opts=(
+      '--json:print the status as one valley-status/v1 JSON object'
+      '-v:say why the object lists no knot'
+    )
     _describe -t options 'valley status option' opts
+  elif [[ ${words[2]} == review && ${words[CURRENT]} == -* ]]; then
+    local -a opts=('-v:say why no knot is shown')
+    _describe -t options 'valley review option' opts
   elif [[ ${words[2]} == (review|approve|rebase|status|unready|withdraw) ]] \
     && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|approve) ]]; }; then
     _valley_change_names ${words[2]}

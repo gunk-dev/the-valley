@@ -1234,5 +1234,53 @@ grep -q "^change $hh v2 at ${hv2:0:7}, on branch cmp/high, log against $lh at " 
 grep -qx 'diff --git a/cmp-high.txt b/cmp-high.txt' "$w/page2" || fail "the top's page did not hold its own diff"
 if grep -q 'clean restack\|changed since approved' "$w/page2"; then fail 'the top, which has no approval, was compared'; fi
 
+# ----------------------------------------------------------------------
+# review names the knots each change it shows does: every knot in the
+# project's plan graph whose changes lists valley:project/<change ID>, one
+# line each, after the line that names the change and before its diff,
+# active knots first. The graph is written through the hook. cmp/fresh is
+# linked from one knot, cmp/low from two, cmp/high from one, and cmp/topic
+# from none.
+change_id() { valley status --json "$1" | jq -r .change_id; }
+fid="$(change_id cmp/fresh)" hid="$(change_id "$hh")"
+ok as contributor valley knot new outcome "Ready changes stay landable as main moves" --json
+goal="$(jq -r .knot.id "$w/out")"
+ok as contributor valley knot new bug "The stack reads the wrong base" --json
+bug="$(jq -r .knot.id "$w/out")"
+ok as contributor valley knot link "$goal" --change "valley:project/$fid" --change "valley:project/$lid" \
+  --change "valley:project/$hid"
+ok as contributor valley knot link "$bug" --change "valley:project/$lid"
+goal_line="does $goal (open): Ready changes stay landable as main moves"
+bug_line="does $bug (open): The stack reads the wrong base"
+printf 's\n' | as requester valley review cmp/fresh > "$w/out" 2> "$w/err" || fail 'review of cmp/fresh failed'
+grep -A1 "^change [a-z]* v2 at .*, on branch cmp/fresh, log against origin/main:$" "$w/out" | sed -n 2p \
+  | grep -qxF "$goal_line" || fail "review of a change one knot links did not name it under the change: $(cat "$w/out")"
+[ "$(grep -c '^does ' "$w/out")" = 1 ] || fail 'review of cmp/fresh named another knot than its own'
+printf 'n\ns\n' | as requester valley review "$hh" > "$w/out" 2> "$w/err" || fail "review of the stack under $hh failed"
+awk '/^change 1 of 2: /{ on = 1 } on { print } /change 2 of 2: /{ on = 0 }' "$w/out" > "$w/page1"
+awk '/change 2 of 2: /{ on = 1 } on' "$w/out" > "$w/page2"
+[ "$(sed -n 2,3p "$w/page1")" = "$(printf '%s\n' "$bug_line" "$goal_line")" ] \
+  || fail "the lower layer's page did not name both its knots under its heading: $(cat "$w/page1")"
+[ "$(grep -c '^does ' "$w/page1")" = 2 ] || fail "the lower layer's page named another layer's knots"
+[ "$(sed -n 2p "$w/page2")" = "$goal_line" ] || fail "the top's page did not name its knot under its heading: $(cat "$w/page2")"
+[ "$(grep -c '^does ' "$w/page2")" = 1 ] || fail "the top's page named another layer's knots"
+printf 's\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
+if grep -q '^does ' "$w/out"; then fail 'review named a knot for a change no knot links'; fi
+# A graph that does not read shows no knot, and review goes on as before.
+# It says why only with -v.
+graph_tip="$(at refs/the-valley/knots)"
+junk="$(printf 'junk\n' | git -C "$origin" hash-object -w --stdin)"
+junk_tree="$(printf '100644 blob %s\tjunk.txt\n' "$junk" | git -C "$origin" mktree)"
+git -C "$origin" update-ref refs/the-valley/knots "$(git -C "$origin" commit-tree "$junk_tree" -m junk)"
+printf 's\n' | as requester valley review cmp/fresh > "$w/out" 2> "$w/err" || fail 'review of cmp/fresh failed over a broken graph'
+grep -q 'on branch cmp/fresh, log against origin/main:$' "$w/out" || fail 'review over a broken graph did not show the change'
+grep -qF 'skipped cmp/fresh; nothing done' "$w/out" || fail 'review over a broken graph did not reach its prompt'
+if grep -q '^does ' "$w/out"; then fail 'review named a knot from a graph that does not read'; fi
+if grep -q 'graph' "$w/err"; then fail 'review spoke of a broken graph without -v'; fi
+printf 's\n' | as requester valley review -v cmp/fresh > "$w/out" 2> "$w/err" || fail 'review -v of cmp/fresh failed'
+grep -qF "project's plan graph could not be read, so no change shows a knot" "$w/err" \
+  || fail 'review -v did not say why it shows no knot'
+git -C "$origin" update-ref refs/the-valley/knots "$graph_tip"
+
 echo 'valley-ready: change records through real pushes passed'
 touch "$out"

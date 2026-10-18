@@ -595,6 +595,66 @@ git push --quiet origin ff-again:ff
 ok valley-go resolve ff
 line "^branch"$'\t'"ff$"
 
+# ----------------------------------------------------------------------
+# The listings name the knots that link each change: every knot in its
+# project's plan graph whose changes lists valley:<project>/<change ID>,
+# active knots first. The graph is written through the hook. nxvp is
+# linked from two knots, one of them closed, mmmm from one, pppp from
+# none, and the draft qqqq from the closed one. mmmm's change ID is linked
+# in guarded's name too, and guarded has no graph, so its mmmm has none.
+ok valley knot new outcome "The stack lands" --json
+goal="$(jq -r .knot.id "$w/out")"
+ok valley knot new bug "The stack reads the wrong base" --json
+bug="$(jq -r .knot.id "$w/out")"
+ok valley knot link "$goal" --change "valley:open/$A" --change "valley:open/$B"
+ok valley knot link "$bug" --change "valley:open/$A" --change "valley:open/$D" --change "valley:guarded/$B"
+ok valley knot set "$bug" status=closed
+goal_ref="[\"$goal\", \"outcome\", \"open\", \"The stack lands\"]"
+bug_ref="[\"$bug\", \"bug\", \"closed\", \"The stack reads the wrong base\"]"
+k() { printf '[.repos[0].%s[] | select(.change_id == "%s") | .knots[] | [.id, .type, .status, .title]]' "$1" "$2"; }
+ok valley changes --json
+holds "$(k changes "$A") == [$goal_ref, $bug_ref]" "$(k changes "$B") == [$goal_ref]" "$(k changes "$C") == []" \
+  "$(k changes "$D") == [$bug_ref]" '[.repos[0].changes[] | .knots | type] | unique == ["array"]'
+if grep -q 'plan graph' "$w/err"; then fail 'changes spoke of the plan graph without -v'; fi
+ok valley pending --json
+holds "$(k changes "$A") == [$goal_ref, $bug_ref]" "$(k changes "$C") == []" "$(k drafts "$D") == [$bug_ref]"
+# pending shows the first knot's ID after the title.
+ok valley pending
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  approving it lands the 2 below too$' '^  ├ mmmm v1  ' \
+  "^  │   stack-b · $goal\$" '^  │   1 commit · ' '^  └ nxvp v1  ' "^      stack-a · $goal\$"
+after '^qqqq v1 on paused  ' "^  paused · $bug\$"
+ok valley status --json nxvp
+holds "[.knots[] | [.id, .type, .status, .title]] == [$goal_ref, $bug_ref]"
+ok valley status --json pppp
+holds '.knots == []'
+ok valley status --json loose
+holds '.change_id == null and .knots == []'
+ok valley changes --json --all
+holds "[.repos[] | select(.repo == \"open\") | .changes[] | select(.change_id == \"$B\") | .knots[].id] == [\"$goal\"]" \
+  "[.repos[] | select(.repo == \"guarded\") | .changes[] | select(.change_id == \"$B\") | .knots] == [[]]"
+if grep -q 'plan graph' "$w/err"; then fail 'changes --all spoke of a missing plan graph without -v'; fi
+ok valley changes --json --repo guarded -v
+grep -qF 'guarded has no plan graph at refs/the-valley/knots, so no change shows a knot' "$w/err" \
+  || fail 'changes -v did not say guarded has no plan graph'
+# A graph that does not read links no change, and the listings go on as
+# before. Only -v says why.
+graph_tip="$(git -C "$data/open.git" rev-parse refs/the-valley/knots)"
+junk="$(printf 'junk\n' | git -C "$data/open.git" hash-object -w --stdin)"
+junk_tree="$(printf '100644 blob %s\tjunk.txt\n' "$junk" | git -C "$data/open.git" mktree)"
+git -C "$data/open.git" update-ref refs/the-valley/knots "$(git -C "$data/open.git" commit-tree "$junk_tree" -m junk)"
+ok valley changes --json
+holds '(.repos[0].changes | length) == 12' '[.repos[0].changes[].knots] | unique == [[]]'
+if grep -q 'plan graph' "$w/err"; then fail 'changes spoke of a broken plan graph without -v'; fi
+ok valley pending
+line '^      stack-a$'
+no_line " · ($goal|$bug)\$"
+ok valley status --json nxvp
+holds '.knots == []'
+ok valley changes --json -v
+grep -qF "open's plan graph could not be read, so no change shows a knot" "$w/err" \
+  || fail 'changes -v did not say why it shows no knot'
+git -C "$data/open.git" update-ref refs/the-valley/knots "$graph_tip"
+
 # valley help names the verbs klaus looks for.
 valley help > "$w/out"
 line '^  ready '

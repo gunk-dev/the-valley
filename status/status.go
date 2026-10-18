@@ -30,10 +30,10 @@ import (
 	"the-valley/rebase"
 )
 
-const statusUsage = "usage: valley status [--json] <change>"
+const statusUsage = "usage: valley status [--json] [-v] <change>"
 
 func runStatus(g git, args []string, stdout, stderr io.Writer) int {
-	asJSON, name, err := parseStatusArgs(args)
+	asJSON, verbose, name, err := parseStatusArgs(args)
 	if err == nil && asJSON && !utf8.ValidString(name) {
 		err = failure(name + ": not UTF-8, so JSON cannot carry the change name")
 	}
@@ -46,26 +46,37 @@ func runStatus(g git, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if asJSON {
+		// The knots that link the change are listed in the object alone,
+		// so the graph is read for it alone.
+		if s.recorded != nil {
+			s.knots = readDoers(g, project(g), verbose, stderr).of(s.recorded.id)
+		}
 		return writeJSON(s, stdout, stderr)
 	}
 	return writeHuman(g, s, stdout)
 }
 
-// parseStatusArgs takes one change and an optional --json, in either
-// order. The change is named the way every verb names one (changes.go).
-func parseStatusArgs(args []string) (asJSON bool, name string, err error) {
+// parseStatusArgs takes one change, an optional --json and an optional
+// -v, in any order. The change is named the way every verb names one
+// (changes.go). -v says why the object lists no knot, when the plan graph
+// is missing or does not read.
+func parseStatusArgs(args []string) (asJSON, verbose bool, name string, err error) {
 	var rest []string
 	for _, a := range args {
-		if a == "--json" {
+		switch a {
+		case "--json":
 			asJSON = true
+			continue
+		case "-v":
+			verbose = true
 			continue
 		}
 		rest = append(rest, a)
 	}
 	if len(rest) != 1 {
-		return false, "", failure(statusUsage)
+		return false, false, "", failure(statusUsage)
 	}
-	return asJSON, rest[0], nil
+	return asJSON, verbose, rest[0], nil
 }
 
 const (
@@ -93,6 +104,10 @@ type status struct {
 	// restackSays is what the report says, with each change named by its
 	// handle.
 	restackSays string
+
+	// knots are the knots in the plan graph that link the change, for
+	// --json alone (does.go); nil for a branch.
+	knots []knotRef
 
 	tip     string // origin's main
 	head    string // the change's head as this read knows it; "" for none

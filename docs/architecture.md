@@ -821,6 +821,25 @@ working on. The state can change while the review is open, so `[a]pprove` and `[
 the record again when they act, and refuse a change that is not ready. A branch no record is on has
 no state, and is offered the usual prompt.
 
+`review` also names the knots a change does. These are the knots in the project's plan graph whose
+`changes` lists the change as `valley:<project>/<change ID>` (see
+[The plan graph](#the-plan-graph)). The project is origin's repository name, as `valley knot` reads
+it. The change record keeps no knot field: the plan lives in project storage, and the record holds
+the change's workflow. So the link is read from the graph alone. Each knot is one line, after the
+line that names the change and before its diff:
+
+```text
+does oc-6335749 (open): Ready changes stay landable as main moves
+```
+
+The line that names the change is the one that says it is not ready, when it is not. Otherwise it is
+the first line of the comparison or of the whole diff. In a stack, each layer's page names its own
+change's knots, under its heading. Active knots come first, then the ones that have ended, each
+group in ID order. `valley-go does` reads the graph once per review, for every change in it
+(`status/does.go`), and `bin/valley` prints the lines it gives. A graph that is missing or does not
+read gives no knots, and the review goes on as before. `valley review -v` says why on stderr.
+Checked by `valley-ready`.
+
 A change with a stack under it is reviewed one layer at a time, bottom first, each against the layer
 below it. The layers are what `valley pending` lists under the change: the changes whose active
 version has not landed, and the branches no record is on, whose heads the change's head contains.
@@ -1200,7 +1219,8 @@ version.
   "title": null,
   "owner": null,
   "landing": null,
-  "restack": null
+  "restack": null,
+  "knots": []
 }
 ```
 
@@ -1228,6 +1248,9 @@ version.
   branch it saw missing still missing, and each blocking request at its `tip`. A report that is not
   current is historical. The sentences say which it is, and name a current conflict's command to
   rebase by hand.
+- `knots` lists the knots that link the change, as [Listing changes](#listing-changes) gives them,
+  and is an empty list for a branch no record is on. `valley status --json -v` says why it is empty
+  when the plan graph is missing or does not read.
 - A reader that meets a decision or a state it does not know should treat the status as unknown.
 - `state` is one of these:
 
@@ -1349,7 +1372,15 @@ configuration.
             }
           ],
           "includes": ["<change id>"],
-          "restack": null
+          "restack": null,
+          "knots": [
+            {
+              "id": "oc-6335749",
+              "type": "outcome",
+              "status": "open",
+              "title": "Ready changes stay landable as main moves"
+            }
+          ]
         }
       ],
       "branches": [{ "branch": "loose", "head": "<sha>" }]
@@ -1381,6 +1412,12 @@ configuration.
   It is ancestry alone: approving this change lands their content too.
 - `restack` is the change's latest restack report, or `null`, with the shape and the meaning of
   `current` that `valley-status/v1` gives it.
+- `knots` lists the knots the change does: every knot in its repository's plan graph whose `changes`
+  lists the change as `valley:<repo>/<change ID>`, with its ID, type, status and title. Active knots
+  come first, then the ones that have ended, each group in ID order. A link must name the repository
+  and the full change ID, so a link in another project's name, or to a pull request, is not this
+  change's. Each repository's graph is read once per command. A graph that is missing or does not
+  read gives every change an empty list, and is not an error. `-v` says why on stderr.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
   no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
@@ -1394,7 +1431,9 @@ Each entry is a block. Its first line is its name, with the age and author of it
 and version for a change, the branch for a branch, and the handle and version on its branch for a
 draft. The lines under it give the title and what the entry adds to its base, in commits and diff. A
 change's title is its record's, for the active version. A branch's title is the subject of its first
-own commit.
+own commit. When a knot links a change, the change's title is followed by the ID of the first knot
+`knots` lists, as `stack-c: build on stack-b · oc-6335749`. The title is cut short to make room, and
+the ID never is.
 
 An entry's base is the nearest other entry its head strictly contains, or `main` when there is none.
 That is the ancestry `includes` reads. A stack is an entry no other entry contains, the top, then
@@ -1417,13 +1456,14 @@ bold, unless `NO_COLOR` is set.
 
 `valley pending --json` prints `valley-pending/v1`. It has the shape of `valley-changes/v1`, with
 the human view's sections. `changes` holds only the ready changes that have not landed. Each
-repository has a `drafts` array as well, holding the drafts, with the same entry shape. `branches`
-is the same as in `valley-changes/v1`. Its `includes` counts only changes that have not landed.
+repository has a `drafts` array as well, holding the drafts, with the same entry shape, `knots`
+included. `branches` is the same as in `valley-changes/v1`. Its `includes` counts only changes that
+have not landed.
 
 ```text
 ready
 pppp v1                                                 1 minute ago · klaus-env
-  stack-c: build on stack-b
+  stack-c: build on stack-b · oc-6335749
   1 commit · 1 file +5 −0
   approving it lands the 2 below too
   ├ mmmm v1                                            2 minutes ago · klaus-env
@@ -1543,14 +1583,15 @@ graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another 
 work, or a question, when it needs settling. `changes`, on outcomes, bugs and questions, links
 changes, each as `valley:<project>/<change ID>` or as a GitHub pull request URL. On an outcome or a
 bug, they are the changes that do its work. On a question, it is the change that records its answer
-in the source's docs. A question may link none, when its answer is a comment or an outcome that does
-the work. An idea links none, because it graduates into an outcome or a question. A knot is never
-deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is only ever
-added. A new knot's `created_by`, and a new comment's `author`, name the principal that writes it.
-The module and the CUE schema with the knowledge lint are two validators of one documented schema,
-and `knot-agree` runs both over shared fixtures and generated graphs and fails on any disagreement
-about the rules they share. The canonical form, the layout, cycles and transitions are the module's
-alone, and `knot-unit` covers them.
+in the source's docs. `valley review` and the listings read these links to show the knots each
+change does (see [Listing changes](#listing-changes)). A question may link none, when its answer is
+a comment or an outcome that does the work. An idea links none, because it graduates into an outcome
+or a question. A knot is never deleted, and its `id`, `type`, `created` and `created_by` never
+change. A comment is only ever added. A new knot's `created_by`, and a new comment's `author`, name
+the principal that writes it. The module and the CUE schema with the knowledge lint are two
+validators of one documented schema, and `knot-agree` runs both over shared fixtures and generated
+graphs and fails on any disagreement about the rules they share. The canonical form, the layout,
+cycles and transitions are the module's alone, and `knot-unit` covers them.
 
 `valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
 `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project

@@ -71,6 +71,9 @@ type jsonChange struct {
 	Versions []jsonVersion `json:"versions"`
 	Includes []string      `json:"includes"`
 	Restack  *jsonRestack  `json:"restack"`
+	// Knots are the knots in the project's plan graph that link the
+	// change, active first (does.go).
+	Knots []knotRef `json:"knots"`
 }
 
 type jsonVersion struct {
@@ -98,10 +101,11 @@ type jsonBranch struct {
 	Head   string `json:"head"`
 }
 
-// listing is what changes and pending were asked for.
+// listing is what changes and pending were asked for. verbose says why
+// no change shows a knot, when a plan graph is missing or does not read.
 type listing struct {
-	asJSON, all, checks bool
-	repo                string
+	asJSON, all, checks, verbose bool
+	repo                         string
 }
 
 func parseListing(verb string, args []string, checks bool) (listing, error) {
@@ -114,6 +118,8 @@ func parseListing(verb string, args []string, checks bool) (listing, error) {
 			l.all = true
 		case a == "--checks" && checks:
 			l.checks = true
+		case a == "-v":
+			l.verbose = true
 		case a == "--repo" && i+1 < len(args):
 			i++
 			l.repo = args[i]
@@ -435,10 +441,12 @@ func cacheEnvironment(env []string) []string {
 }
 
 // listed is one repository as read: its snapshot, or the error that kept
-// it from being read.
+// it from being read, and the knots its plan graph links to its changes,
+// once readDoers has read them.
 type listed struct {
 	source
-	snap *snapshot
+	snap  *snapshot
+	knots doers
 }
 
 // readSources reads every source. A repository that cannot be read is
@@ -460,6 +468,16 @@ func readSources(list []source, v verifier) []listed {
 		out = append(out, l)
 	}
 	return out
+}
+
+// readKnots reads the plan graph of every repository that was read, once
+// each, for the knots that link its changes.
+func readKnots(repos []listed, verbose bool, stderr io.Writer) {
+	for i := range repos {
+		if repos[i].err == nil {
+			repos[i].knots = readDoers(repos[i].g, repos[i].name, verbose, stderr)
+		}
+	}
 }
 
 // handleKey names one change listed: changes are keyed by repository,
@@ -515,7 +533,7 @@ func (s *snapshot) changeView(n recorded, handle string, candidates []recorded) 
 	c := jsonChange{
 		ChangeID: n.id, Handle: handle, Target: r.Target, Owner: r.Owner, State: r.State,
 		Record: n.commit, Seq: r.Seq, Active: r.Active, Includes: s.includes(n, candidates),
-		Restack: restackView(s.report(n.id)),
+		Restack: restackView(s.report(n.id)), Knots: []knotRef{},
 	}
 	for _, v := range r.Versions {
 		kind, commit := s.landing(n.id, v)
@@ -555,7 +573,9 @@ func (l listed) repoView(h handleMap, keep, include func(*snapshot, recorded) bo
 	}
 	for _, n := range l.snap.all {
 		if keep(l.snap, n) {
-			r.Changes = append(r.Changes, l.snap.changeView(n, h[handleKey{l.name, n.record.Target, n.id}], candidates))
+			c := l.snap.changeView(n, h[handleKey{l.name, n.record.Target, n.id}], candidates)
+			c.Knots = l.knots.of(n.id)
+			r.Changes = append(r.Changes, c)
 		}
 	}
 	r.Branches = l.snap.unrecorded()
@@ -608,6 +628,12 @@ func walkStrings(doc any, f func(string)) {
 			f(c.Target)
 			f(c.Owner)
 			f(c.State)
+			for _, k := range c.Knots {
+				f(k.ID)
+				f(k.Type)
+				f(k.Status)
+				f(k.Title)
+			}
 			for _, v := range c.Versions {
 				f(v.Title)
 				f(v.Branch)
@@ -647,6 +673,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	repos := readSources(list, verifierFromEnv())
+	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}

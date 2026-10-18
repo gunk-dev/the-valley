@@ -60,7 +60,7 @@ valley — S1 integrator verbs for a valley project
 
 usage: valley <verb> [args]
 
-  pending [--all] [--repo <name>] [--checks] [--json]
+  pending [--all] [--repo <name>] [--checks] [--json] [-v]
                    list what is waiting to land, in three sections: ready,
                    the ready changes whose active version has not landed;
                    branches, each branch on origin that main does not
@@ -71,7 +71,9 @@ usage: valley <verb> [args]
                    the branch for a branch, and handle and version on its
                    branch for a draft. under it come its title (the
                    record's for a change, the subject of its first own
-                   commit for a branch), then the commits and the diff it
+                   commit for a branch), with the id of the first knot in
+                   the plan graph that links a change after its title, then
+                   the commits and the diff it
                    adds to its base: the nearest other entry its head
                    strictly contains, or main. a stack is its top entry,
                    then every entry the top contains, listed under it at
@@ -100,15 +102,22 @@ usage: valley <verb> [args]
                                   valley-changes/v1 shape, with the
                                   pending changes in changes and the
                                   drafts in drafts
+                     -v           say why no change shows a knot, when a
+                                  plan graph is missing or does not read
                    needs the valley-go helper.
-  changes --json [--all] [--repo <name>]
+  changes --json [--all] [--repo <name>] [-v]
                    print every change origin holds a record of, in every
                    state, as one JSON object, valley-changes/v1, for front
                    ends to read (docs/architecture.md): each version's
                    head, title and branch, how far it has landed
                    (landed, landed-recorded, uncertain or not-landed),
-                   its pending request and its last outcome, and the
-                   branches no change is on. handles are unique across
+                   its pending request and its last outcome, the knots in
+                   the plan graph at refs/the-valley/knots that link it
+                   (every knot whose changes lists
+                   valley:<project>/<change id>, active ones first), and
+                   the branches no change is on. -v says why no change
+                   shows a knot, when a graph is missing or does not read.
+                   handles are unique across
                    everything listed: a change id recorded in more than
                    one repository listed has the handle <repo>:<prefix>
                    in each. without --all it covers this
@@ -134,9 +143,14 @@ usage: valley <verb> [args]
                    file and VALLEY_INTEGRATOR_SIGNER the integrator's
                    signing name, and attest checks the note.
                    needs the valley-go helper.
-  review <change>  page through the change's branch: its log and diff vs
-                   origin/main, or a stack layer by layer (below). then
-                   choose:
+  review [-v] <change>
+                   page through the change's branch: its log and diff vs
+                   origin/main, or a stack layer by layer (below). each
+                   change's page names, after the line that names the
+                   change and before its diff, every knot in the plan
+                   graph that links it, as `does oc-6335749 (open): <its
+                   title>` (valley-go does). a missing or unreadable graph
+                   shows none; -v says why. then choose:
                      [a]pprove    file an integration request for the
                                   head shown. runs the
                                   checks the composed policy requires of
@@ -382,7 +396,7 @@ usage: valley <verb> [args]
                    layer, with the rebase that moves it; it does not move
                    it. rebase does not re-review the result. a stack that
                    already fast-forwards from main is left as it is.
-  status [--json] <change>
+  status [--json] [-v] <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
                    attention, and a change integrated into origin/main.
@@ -397,9 +411,13 @@ usage: valley <verb> [args]
                    no checks run and no request is filed.
                      --json       print the status as one JSON object,
                                   valley-status/v1, for front ends to read
-                                  (docs/architecture.md). an error prints
-                                  no object: it goes to stderr and the exit
-                                  status is non-zero.
+                                  (docs/architecture.md), with the knots
+                                  in the plan graph that link the change.
+                                  an error prints no object: it goes to
+                                  stderr and the exit status is non-zero.
+                     -v           say why the object lists no knot, when
+                                  the plan graph is missing or does not
+                                  read
                    needs the valley-go helper.
   ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
                    mark a head of the branch ready, as a new version of its
@@ -1010,19 +1028,33 @@ compare_shown() {
   esac
 }
 
-# show_compared <notes key> <head> <heading> <writer> [<arg>…]: show what
-# compare_shown found, under the heading when there is one. A clean
-# restack is printed, and nothing is paged. A changed version pages the
-# comparison. Otherwise the writer writes the whole diff, and it is paged.
-# Notes taken in a page are kept under the notes key, against the head.
+# show_compared <notes key> <head> <heading> <knots> <writer> [<arg>…]:
+# show what compare_shown found, under the heading when there is one. A
+# clean restack is printed, and nothing is paged. A changed version pages
+# the comparison. Otherwise the writer writes the whole diff, and it is
+# paged. Notes taken in a page are kept under the notes key, against the
+# head.
+#
+# The knots the change does (does_of) come after the line that names the
+# change, and before its diff: under the heading, when there is one, and
+# otherwise under the first line of the comparison or of the whole diff,
+# each of which opens by naming the change.
 show_compared() {
-  local key="$1" sha heading="$3"
+  local key="$1" sha heading="$3" knots="$4"
   sha="$(git rev-parse --short "$2")"
-  shift 3
+  shift 4
   {
-    [ -z "$heading" ] || printf '%s\n' "$heading"
-    cat "$REVIEW_TMP/compare"
-    [ "$COMPARE_KIND" != none ] || "$@"
+    if [ -n "$heading" ]; then
+      printf '%s\n' "$heading"
+      [ -z "$knots" ] || printf '%s\n' "$knots"
+      cat "$REVIEW_TMP/compare"
+      [ "$COMPARE_KIND" != none ] || "$@"
+    else
+      {
+        cat "$REVIEW_TMP/compare"
+        [ "$COMPARE_KIND" != none ] || "$@"
+      } | under_first "$knots"
+    fi
   } > "$REVIEW_TMP/review.diff"
   if [ "$COMPARE_KIND" = clean ]; then
     cat "$REVIEW_TMP/review.diff"
@@ -1030,6 +1062,52 @@ show_compared() {
   else
     page_buffer "$key" "$sha"
   fi
+}
+
+# under_first <lines>: copy stdin, with the lines given after its first
+# line.
+under_first() {
+  local first
+  IFS= read -r first || [ -n "$first" ] || return 0
+  printf '%s\n' "$first"
+  [ -z "$1" ] || printf '%s\n' "$1"
+  cat
+}
+
+# DOES holds the knots each change review shows does, as valley-go does
+# prints them (status/does.go): one line per knot, the change's ID, a tab,
+# and the line review shows, such as
+#
+#   does oc-6335749 (open): Ready changes stay landable as main moves
+#
+# The plan graph is read once per review, for every change in it.
+DOES=""
+
+# read_does [-v]: read the knots of the change review shows, or of every
+# change in its stack. A graph that is missing or does not read gives no
+# knots, and is never an error: -v has valley-go say why on stderr.
+read_does() {
+  local ids=() k
+  DOES=""
+  if [ "${#L_NAME[@]}" -gt 1 ]; then
+    for ((k = 0; k < ${#L_ID[@]}; k++)); do
+      [ -z "${L_ID[k]}" ] || ids+=("${L_ID[k]}")
+    done
+  elif [ -n "$CHANGE_ID" ]; then
+    ids=("$CHANGE_ID")
+  fi
+  [ "${#ids[@]}" -gt 0 ] || return 0
+  DOES="$(valley-go does "$@" "${ids[@]}")" || DOES=""
+}
+
+# does_of <change ID>: the lines of the knots the change does, as review
+# shows them. A plain branch, with no ID, does none.
+does_of() {
+  local line
+  [ -n "$1" ] || return 0
+  while IFS= read -r line; do
+    [ "${line%%$'\t'*}" != "$1" ] || printf '%s\n' "${line#*$'\t'}"
+  done <<< "$DOES"
 }
 
 # full_diff <branch> <head>: the whole diff of a change alone: its log
@@ -1049,7 +1127,8 @@ full_diff() {
 }
 
 # show_review <branch>: show a change alone. A change that is not ready
-# says so first, before anything else shown of it (shown_not_ready).
+# says so first, before anything else shown of it (shown_not_ready). The
+# knots it does follow the line that names it (show_compared).
 show_review() {
   local branch="$1" head held
   head="$(change_head "$branch")"
@@ -1058,7 +1137,7 @@ show_review() {
   held="$(shown_not_ready)" || held=""
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "$CHANGE_ID" "$CHANGE_VERSION" "$head"
-  show_compared "$branch" "$head" "$held" full_diff "$branch" "$head"
+  show_compared "$branch" "$head" "$held" "$(does_of "$CHANGE_ID")" full_diff "$branch" "$head"
 }
 
 # view_full <branch>: [v]iew full diff for a change alone. It pages the
@@ -2230,7 +2309,7 @@ layer_held() {
 # lower layer is set against its own approval, not the top's. Its whole
 # diff is against the layer below it. The notes taken in it are kept
 # under its own branch. When it can't be approved, layer_held's line
-# follows its heading.
+# follows its heading. The knots its own change does follow those.
 page_layer() {
   local k="$1" heading held
   NOTES=()
@@ -2238,7 +2317,7 @@ page_layer() {
   if held="$(layer_held "$k")"; then heading+=$'\n'"$held"; fi
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "${L_ID[k]}" "${L_VERSION[k]}" "${L_HEAD[k]}"
-  show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$heading" layer_diff "$k"
+  show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$heading" "$(does_of "${L_ID[k]}")" layer_diff "$k"
   keep_layer_notes "$k"
 }
 
@@ -2363,7 +2442,19 @@ print_stack_notes() {
 }
 
 cmd_review() {
-  [ $# -eq 1 ] || die "usage: valley review <change>"
+  local name="" verbose=() arg
+  for arg in "$@"; do
+    case "$arg" in
+      -v) verbose=(-v) ;;
+      -*) die "usage: valley review [-v] <change>" ;;
+      *)
+        [ -z "$name" ] || die "usage: valley review [-v] <change>"
+        name="$arg"
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "usage: valley review [-v] <change>"
+  set -- "$name"
   resolve_change "$1" || exit 1
   need_branch review
   local branch="$CHANGE_BRANCH"
@@ -2382,6 +2473,7 @@ cmd_review() {
     printf 'valley: warning: the stack under %s could not be read; reviewing it whole, against main\n' "$1" >&2
     L_NAME=()
   fi
+  read_does "${verbose[@]}"
   if [ "${#L_NAME[@]}" -gt 1 ]; then
     review_stack
     print_stack_notes

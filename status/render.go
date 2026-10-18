@@ -149,7 +149,7 @@ func short(oid string) string {
 // The valley-status/v1 object. docs/architecture.md documents it, and a
 // change to any field's name or meaning is a new schema version. The
 // fields from change_id on were added to it, and are null for a branch no
-// record names.
+// record names, but for knots, which is an empty list for one.
 type jsonStatus struct {
 	Schema      string       `json:"schema"`
 	Change      string       `json:"change"`
@@ -167,6 +167,7 @@ type jsonStatus struct {
 	Owner       *string      `json:"owner"`
 	Landing     *string      `json:"landing"`
 	Restack     *jsonRestack `json:"restack"`
+	Knots       []knotRef    `json:"knots"`
 }
 
 type jsonRequest struct {
@@ -196,6 +197,10 @@ func writeJSON(s *status, w, stderr io.Writer) int {
 		TargetTip:   s.tip,
 		Head:        optional(s.head),
 		State:       s.state,
+		Knots:       s.knots,
+	}
+	if out.Knots == nil {
+		out.Knots = []knotRef{}
 	}
 	if s.request != "" {
 		out.Request = &jsonRequest{Ref: s.requestRef, Commit: s.request}

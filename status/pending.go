@@ -27,7 +27,9 @@
 //
 // A change's title is its record's, for the active version. A branch's
 // title is the subject of its first own commit: the oldest commit on its
-// first-parent line that its base does not hold.
+// first-parent line that its base does not hold. A change's title is
+// followed by the ID of the first knot in the plan graph that links it,
+// when one does, as "<title> · oc-6335749" (does.go).
 //
 // An entry's base is the nearest other entry its head strictly contains,
 // or main when there is none. That is the ancestry includes reads
@@ -112,6 +114,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	repos := readSources(list, verifierFromEnv())
+	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)
 	defer warnUnverified(repos, stderr)
@@ -148,6 +151,7 @@ type entry struct {
 	ref      string   // what the entry is typed as: its handle, or its branch
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
+	knot     string   // the first knot that links the change, if any (does.go)
 	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and checks
 
@@ -220,6 +224,9 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 	recorded := func(section string, c jsonChange) {
 		v := c.Versions[c.Active-1]
 		e := &entry{section: section, name: fmt.Sprintf("%s v%d", c.Handle, v.N), ref: c.Handle, head: v.Head, title: readable(v.Title)}
+		if len(c.Knots) > 0 {
+			e.knot = readable(c.Knots[0].ID)
+		}
 		if section == "drafts" && v.Branch != "" {
 			e.name += " on " + branchName(v.Branch)
 		}
@@ -473,7 +480,7 @@ func (t terminal) drawStack(top *entry) []string {
 			}
 		}
 		lines = append(lines, t.nameLine(first, e.name, suffix, e, rest)...)
-		lines = append(lines, rest+t.fit(e.title, rest), rest+t.fit(e.layer, rest))
+		lines = append(lines, rest+t.titled(e, rest), rest+t.fit(e.layer, rest))
 		switch {
 		case e.base == next:
 		case e.base != nil:
@@ -494,6 +501,17 @@ func (t terminal) drawStack(top *entry) []string {
 		}
 	}
 	return lines
+}
+
+// titled is an entry's title line after lead: its title, then the first
+// knot that links it, as "<title> · <knot ID>". The title is cut short to
+// fit the line, and the knot's ID never is.
+func (t terminal) titled(e *entry, lead string) string {
+	if e.knot == "" {
+		return t.fit(e.title, lead)
+	}
+	tail := " · " + e.knot
+	return fit(e.title, t.width-columns(lead+tail)) + tail
 }
 
 func prefixed(lead string, lines []string) []string {

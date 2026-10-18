@@ -7,7 +7,8 @@
 // stack, which lists the layers under a change for review (stack.go), for
 // rebase, which rebases a change's whole stack onto main, and brings, which
 // lists the changes a head would bring that have not landed, for approve
-// (rebase.go), for knot, the plan graph's API (knot.go), which reads and
+// (rebase.go), for does, which lists the knots each change does, for review
+// (does.go), for knot, the plan graph's API (knot.go), which reads and
 // writes a project's knots at refs/the-valley/knots, for plan, which
 // shows that graph as a view (plan.go), for compare, which sets a
 // version review shows against the change's approved version
@@ -42,18 +43,19 @@ import (
 	"the-valley/rebase"
 )
 
-const usage = `usage: valley-go status [--json] <change>
+const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
        valley-go unready <change>
        valley-go withdraw <change>
        valley-go resolve <change>
        valley-go stack <change>
+       valley-go does [-v] <change ID>...
        valley-go rebase [--head <sha>] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
        valley-go compare --tip <commit> <change ID> <version> <head>
-       valley-go changes --json [--all] [--repo <name>]
-       valley-go pending [--json] [--all] [--repo <name>] [--checks]
+       valley-go changes --json [--all] [--repo <name>] [-v]
+       valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
        valley-go plan [--project <name> | --all] [--owner <name>] [--json]
        valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]`
@@ -89,6 +91,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runResolve(g, args, stdout)
 	case "stack":
 		err = runStack(g, args, stdout)
+	case "does":
+		err = runDoes(g, args, stdout, stderr)
 	case "rebase":
 		return runRebase(g, args, stdout, stderr)
 	case "brings":

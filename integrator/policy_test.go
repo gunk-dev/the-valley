@@ -309,6 +309,9 @@ floor: {
 		{"a class asking for same-class", `project: classes: code: carry: "same-class": true` + "\n"},
 		{"a class asking for exact", "project: classes: code: carry: exact: true\n"},
 		{"a lower cap", "project: restack: maxAutomaticVersions: 16\n"},
+		// The schema puts no upper bound on the cap. The integrator does
+		// not read the cap, so it composes and digests one no Go int holds.
+		{"a cap no int holds", "project: restack: maxAutomaticVersions: 9223372036854775808\n"},
 	} {
 		sum := digest(c.project)
 		if other, ok := seen[sum]; ok {
@@ -400,6 +403,68 @@ func TestAFloorThatIsNotThereIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), composed.Floorless) {
 		t.Fatalf("the refusal reads %q", err)
+	}
+}
+
+// The floor is every *.cue document directly in its directory, whatever
+// its name. Listed one name a line, git quotes a name with non-ASCII
+// characters in it, and the quoted name does not end in .cue, so a floor
+// read that way skipped naïve.cue. The repository sets core.quotePath to
+// the default that quotes, and the document is composed into the
+// catalogue like any other.
+func TestAFloorDocumentWithANonASCIINameIsRead(t *testing.T) {
+	cue, err := exec.LookPath("cue")
+	if err != nil {
+		t.Skip("no cue to compose a policy with; the nix check provides one")
+	}
+	schema, err := filepath.Abs(filepath.Join("..", "schema", "verification.cue"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newScratchRepo(t)
+	s.git("config", "core.quotePath", "true")
+	dir := filepath.Join(s.repo, "policy", "instance")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"floor.cue": `package verification
+floor: {
+	checks: "c-build": {runner: "nix", attribute: "c-build"}
+	classes: code: {paths: "src/**": true, requires: "c-build": true}
+}
+`,
+		"naïve.cue": `package verification
+floor: checks: "c-lint": {runner: "nix", attribute: "c-lint"}
+`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.git("add", "policy")
+	s.git("commit", "--quiet", "-m", "the floor")
+
+	p := policySource{
+		schema:     schema,
+		cue:        cue,
+		layer:      composed.Floor{Repo: s.repo, Ref: "refs/heads/main", Dir: "policy/instance"},
+		projectDir: "policy/project",
+	}
+	p, done, err := p.open(&worktree{dir: t.TempDir()})
+	defer done()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cat, _, err := p.catalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cat["c-lint"]; !ok {
+		t.Fatalf("the floor's naïve.cue was not read: the catalogue holds %v", cat)
+	}
+	if _, ok := cat["c-build"]; !ok {
+		t.Fatalf("the floor's floor.cue was not read: the catalogue holds %v", cat)
 	}
 }
 

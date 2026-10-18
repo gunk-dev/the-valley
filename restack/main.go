@@ -251,10 +251,7 @@ func policyCap(ctx context.Context, g rebase.Git, c config, tip string) (int, er
 	if err != nil {
 		return 0, err
 	}
-	if pol.MaxAutomaticVersions < 1 {
-		return 0, errors.New("the composed policy states no restack.maxAutomaticVersions")
-	}
-	return pol.MaxAutomaticVersions, nil
+	return CapOf(pol.MaxAutomaticVersions)
 }
 
 // planOnce reads one snapshot and plans every family in it.

@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -143,6 +145,31 @@ func TestCapacityCountsTheVersionTheRestackWouldAdd(t *testing.T) {
 	}
 	if c := CapacityOf(record(1, 1, "alice"), "restacker", 64, maxBytes+1); !at(c, "bytes") {
 		t.Errorf("%d bytes: over %v", maxBytes+1, c.Over)
+	}
+}
+
+// The schema puts no upper bound on the cap, so a cap no int holds is no
+// practical cap rather than a refusal. Only what the schema itself refuses
+// is refused.
+func TestACapTooLargeToCountIsNoPracticalCap(t *testing.T) {
+	for _, tc := range []struct {
+		stated json.Number
+		want   int
+	}{
+		{"1", 1},
+		{"64", 64},
+		{"9223372036854775807", math.MaxInt},
+		{"9223372036854775808", math.MaxInt},
+		{"100000000000000000000000000000", math.MaxInt},
+	} {
+		if got, err := CapOf(tc.stated); err != nil || got != tc.want {
+			t.Errorf("a cap of %s counts as %d, %v; want %d", tc.stated, got, err, tc.want)
+		}
+	}
+	for _, stated := range []json.Number{"", "0", "-1", "-9223372036854775809", "1.5", "1e3"} {
+		if got, err := CapOf(stated); err == nil {
+			t.Errorf("a cap of %q counts as %d; want it refused", stated, got)
+		}
 	}
 }
 

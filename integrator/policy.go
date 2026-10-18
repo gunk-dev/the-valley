@@ -42,7 +42,7 @@ import (
 // it is authoritative: no checkout to keep in step, no refresh to schedule,
 // and no way for the floor a controller composes against to differ from the
 // floor the group last landed. composed.Floor reads it with ls-tree and
-// cat-file rather than a worktree, because a worktree would write into the
+// show rather than a worktree, because a worktree would write into the
 // instance repository, and a controller has no business writing a
 // repository it does not serve.
 //

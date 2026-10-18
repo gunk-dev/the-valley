@@ -568,6 +568,11 @@ The cap is read through `composed/`, the composed-policy reader the integrator r
 policy digest through. Both run `cue export` of the floor, the template the policy's type selects,
 and the project layer, under the packaged schema.
 
+The schema puts no upper bound on the cap. `composed/` keeps the cap as cue writes it, so the
+integrator, which does not read the cap, composes any policy the schema admits. The planner counts a
+cap larger than a Go `int` holds as the largest `int`. That is no practical cap, since no record
+holds that many versions. Checked by `integrator-unit`, `restack-unit` and `restack-e2e`.
+
 The plan prints as a summary, or with `--json` for tests and for the next slice. The JSON is not a
 published format. `restack-unit` covers request association, outcome currency and the capacity
 arithmetic. `restack-e2e` runs the planner over a repository wired with the rendered hook and checks
@@ -583,7 +588,10 @@ A project's required checks come from three CUE layers, unified as
 - **The floor and templates** come from the owning valley's instance repository, at
   `policy/instance/*.cue` on its `main`. `policy/valley` names that repository. A value the floor
   writes as `true` is mandatory. A template value written `bool | *true` is a default a project may
-  turn off.
+  turn off. Every `*.cue` document directly in that directory is read, whatever its name. A name
+  with non-ASCII characters in it, such as `naïve.cue`, is read like any other, as a materialized
+  `--instance` directory already read it. The integrator once skipped such a document, because it
+  listed the tree one name a line and git quotes those names. Checked by `integrator-unit`.
 - **The project layer** is `policy/project/*.cue`, read at the tip of the target branch.
 
 Both layers are read from integrated tips, never from the change being judged

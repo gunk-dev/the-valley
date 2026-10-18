@@ -248,4 +248,21 @@ if valley-restacker once --repo "$origin" --state "$w/state" --principal request
   fail 'once ran without --report-only'
 fi
 
+# ----------------------------------------------------------------------
+# A cap larger than any int. The schema admits it, so it composes, and the
+# planner counts it as the largest int: no practical cap. k, held above by
+# the cap of 2, is not held by this one. The request whose head is no
+# commit would hold k too, so it is removed first, on the server side
+# where it was injected.
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/zz-blob
+git checkout --quiet main
+printf 'package verification\n\nproject: restack: maxAutomaticVersions: 9223372036854775808\n' \
+  > policy/project/policy.cue
+git commit --quiet -am 'a cap larger than any int'
+env -u VALLEY_PRINCIPAL git push --quiet origin main
+plan
+grep -q '"maxAutomaticVersions": 9223372036854775807,' "$w/plan.json" \
+  || fail "the plan does not count the cap as the largest int: $(cat "$w/plan.json")"
+action "$k" restack
+
 touch "$out"

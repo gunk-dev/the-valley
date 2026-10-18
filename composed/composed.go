@@ -116,6 +116,12 @@ const (
 // tree-ish out of a repository, into a scratch directory. The deriver and
 // cue both read a layer as those documents, so they are what is taken.
 // The scratch directory is removed unless the layer is present.
+//
+// The listing is NUL-separated, so every name is read as it is. A
+// newline-separated listing quotes a name with non-ASCII characters in it,
+// such as naïve.cue, and the quoted name does not end in .cue, so that
+// document would be skipped. A materialized floor's glob finds it, and so
+// does this.
 func readLayer(repo, treeish, dir, prefix string) (string, int, func(), error) {
 	noop := func() {}
 	tree := treeish + ":" + dir
@@ -133,7 +139,7 @@ func readLayer(repo, treeish, dir, prefix string) (string, int, func(), error) {
 		if !strings.HasSuffix(name, ".cue") {
 			continue
 		}
-		body, err := git(repo, "cat-file", "blob", tree+"/"+name)
+		body, err := git(repo, "show", tree+"/"+name)
 		if err != nil {
 			done()
 			return "", absent, noop, fmt.Errorf("reading %s/%s from %s at %s: %w", dir, name, repo, treeish, err)
@@ -166,7 +172,11 @@ type Policy struct {
 
 	// MaxAutomaticVersions caps how many versions the restacker adds to
 	// one change over the change's life (restack.maxAutomaticVersions).
-	MaxAutomaticVersions int
+	// It is kept as cue wrote it. The schema admits any whole number of at
+	// least 1, and a Go int holds only some of them, so decoding into an
+	// int would refuse policies the schema admits. The restacker converts
+	// it where it counts.
+	MaxAutomaticVersions json.Number
 
 	// Digest is the SHA-256 of the whole export, so everything the policy
 	// composes is in it: every check, every class's paths, requirements and
@@ -194,7 +204,7 @@ func Compose(cue, schema, instance, project string) (*Policy, error) {
 	var read struct {
 		Checks  map[string]Check `json:"checks"`
 		Restack struct {
-			MaxAutomaticVersions int `json:"maxAutomaticVersions"`
+			MaxAutomaticVersions json.Number `json:"maxAutomaticVersions"`
 		} `json:"restack"`
 	}
 	if err := json.Unmarshal(out, &read); err != nil {

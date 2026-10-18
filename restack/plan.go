@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"sort"
+	"strconv"
 	"strings"
 
 	"the-valley/change"
@@ -30,8 +34,8 @@ const (
 type Plan struct {
 	Target   string       `json:"target"`
 	Tip      string       `json:"tip"`
-	Evidence string       `json:"evidence"` // change.EvidenceFingerprint of every attestation ref
-	Cap      int          `json:"maxAutomaticVersions"`
+	Evidence string       `json:"evidence"`             // change.EvidenceFingerprint of every attestation ref
+	Cap      int          `json:"maxAutomaticVersions"` // the policy's cap as CapOf counts it
 	Families []FamilyPlan `json:"families"`
 }
 
@@ -194,6 +198,26 @@ func Currency(o rebase.Outcome, found bool, head, tip, evidence string) (current
 		return true, false, fmt.Sprintf("a current %s outcome with the request still filed", o.Decision)
 	}
 	return true, false, "the integrator refused it (" + o.Decision + ")"
+}
+
+// CapOf reads the policy's cap on automatic versions as the count the
+// planner compares uploads against. The schema admits any whole number of
+// at least 1, with no upper bound. A cap larger than an int holds is no
+// practical cap: it is counted as the largest int, and no record holds
+// that many versions. An absent cap, or one that is not a whole number of
+// at least 1, is refused, since the schema admits neither.
+func CapOf(stated json.Number) (int, error) {
+	if stated == "" {
+		return 0, errors.New("the composed policy states no restack.maxAutomaticVersions")
+	}
+	n, err := strconv.Atoi(string(stated))
+	switch {
+	case errors.Is(err, strconv.ErrRange) && n > 0:
+		return math.MaxInt, nil
+	case err != nil || n < 1:
+		return 0, fmt.Errorf("the composed policy's restack.maxAutomaticVersions is %s, not a whole number of at least 1", stated)
+	}
+	return n, nil
 }
 
 // CapacityOf counts a record against every limit as it would stand with

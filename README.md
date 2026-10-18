@@ -1,93 +1,65 @@
 # the-valley
 
-> "Whatever."
+the-valley is a software change, verification, and planning system for teams where humans and
+autonomous agents build together. Like a valley, it is the low place where streams of work meet and
+settle into `main`.
 
-A space to rethink developer workflow and source management from scratch.
+## How a change moves
 
-This is not a project to "move off GitHub." That framing is too narrow. The question is: **what
-would source management look like if designed today**, with AI agents as first-class authors and no
-assumption that a single platform should own hosting, identity, CI, artifacts, review, and
-automation?
+1. **Author** — A person or agent commits work locally, inspects the checks the change requires
+   (`valley checks`), and marks the change **ready** (`valley ready`).
+2. **Review** — An operator inspects ready changes (`valley pending`, `valley review <change>`).
+   When a change has an earlier **approved version**, `valley review` compares the active version
+   against it: a clean restack prints a short summary with any landings between the two bases and
+   pages nothing; a version that changed files pages the comparison (the files whose change differs,
+   the range-diff, and the shown version's diff of those files); and when no comparison is
+   available, it pages the full diff (`[v]iew full diff` is available at the prompt in every case).
+3. **Approve** — A principal holding the `request` grant approves the change
+   (`valley approve <change>`, or `[a]pprove` inside `valley review`), running and signing the
+   required checks and writing an integration request that binds that exact commit for integration.
+4. **Integrate** — When the host's integrator is enabled and `main` is protected, the integrator
+   verifies signed check evidence against the two-layer CUE policy (instance floor + optional
+   project policy), integrates the change into `main`, countersigns the evidence with a transfer
+   statement, and writes an outcome record (`land`, `stale`, `reject`, `refused-not-ready`,
+   `refused-merge`, `voided-withdrawn`, or `failed`).
 
-## The pain
+## Quick tour
 
-GitHub bundles every concern of source management — from hosting through verification to project
-knowledge; [archive/design/architecture.md](./archive/design/architecture.md) tables them one by one
-— and does several of them poorly enough that unbundling looks attractive:
+```sh
+valley plan                     # view the live plan graph (knots)
+valley checks                   # list checks required for your diff
+valley ready --stamp            # stamp a Change-Id, push, and mark v1 ready
+valley pending                  # list ready changes and what each awaits
+valley review kqxm              # inspect the diff (and interactively approve)
+```
 
-- **CI is slow and YAML-shaped.** The feedback loop that matters most runs in minutes on someone
-  else's infrastructure, configured in a language nobody chose.
-- **The pull request conflates four things** — coordination, gating, record, and notification — and
-  the bundle serves each worse than a mechanism designed for it would.
-- **Agents are second-class.** The platform is built around a human clicking through a web UI. An AI
-  agent authoring changes, reading project knowledge, or reacting to events is an afterthought
-  bolted on through APIs designed for something else.
-- **Project knowledge has no home.** Issues, wikis, docs, scratch files, and heads — scattered,
-  unstructured, and invisible to the agents doing a growing share of the work.
+## Prerequisites and current limitations
 
-## The promise
+- **Prerequisites:** On the client, the bundled environment from this flake (`nix develop` or the
+  flake package, providing `valley`, `valley-go`, `attest`, `cue`, `git`, `ssh`, `coreutils`, and
+  `less` for interactive review) and `nix` with flakes enabled; on the server, a NixOS host running
+  `services.valley`.
+- **Configuration vs. guarantees:** Sealing `main` against direct SSH pushes, restricting who holds
+  the `request` grant, and enabling the integrator or identity compiler are host configuration
+  choices in `valley.cue` and `services.valley`.
+- **Not built yet:** The automatic host restacker service (`restack` reports are validated and
+  displayed, and the read-only planner `valley-restacker once --report-only` is implemented, but the
+  write pass and host service are not built yet, so authors restack manually with `valley rebase`),
+  automatic approval carry across restacks, skipping already-attested checks during
+  `valley approve`, hardware-key (`sk-*`) touch-bound approval envelopes, and crash-safe atomic
+  multi-ref landing transactions.
+- **Finding the live plan:** The project's roadmap and open questions live in the plan graph
+  (`refs/the-valley/knots`), viewed by running `valley plan` against a clone of the valley host. The
+  host's mirror publisher sends only `main` and tags (`refs/heads/main` and `refs/tags/*`), so
+  cloning from a push mirror (such as GitHub) does not fetch the host's plan graph or change
+  records.
 
-Compose small tools over a durable substrate you own. Each concern gets the mechanism it deserves
-instead of the bundle's compromise, and everything that matters survives the loss of any one host.
+## Documentation
 
-## Where this goes
-
-At its most general, the-valley is a **recursive, transparent outcome-production engine**: its unit
-of work is the outcome — a thing someone wants to exist that does not yet — and its job is to
-complete the dependency graph outcomes form, transparently
-([ida-eac723e](./archive/.the-valley/ideas/ida-eac723e-outcome-dag.md) carries the full sketch). The
-software development lifecycle is the v1 reference implementation, not the boundary: everything
-above is how the engine gets pointed at code first. Recursive includes the engine itself —
-the-valley builds the-valley.
-
-## Constraints
-
-- **Open source.**
-- **Minimal.** Prefer composing small tools over building a platform.
-- **Nix-native.** Builds, verification, and artifacts run as derivations in the reference
-  implementation — Nix is a backend, not the substrate, and every schema stays portable beyond it
-  ([ida-b9f646c](./archive/.the-valley/ideas/ida-b9f646c-nix-backend-not-substrate.md)).
-- **Decentralized where possible.** Accept centralization only where ordering or coordination
-  genuinely require it, and be explicit about it.
-
-## Status
-
-Phase 0 in progress. The repo ships its first artifacts: the CUE schema defining what a valley host
-declares — its projects, their push mirrors, and the durability policy for its data
-([`schema/valley.cue`](./schema/valley.cue), with an example in
-[`examples/host.cue`](./examples/host.cue)) — and a NixOS module ([`flake.nix`](./flake.nix)) that
-installs a valley host from that declaration. Phase 1's spine is landing: the host module can run an
-event bus onto which every push's ref updates are projected as events
-([`schema/events.cue`](./schema/events.cue)), watchable with `valley tail`. The knowledge-graph
-convention has a checkable form as well: [`schema/node.cue`](./schema/node.cue) describes a node's
-frontmatter, and the flake exposes the lint that enforces it as `lib.knowledgeLint`, so any project
-can instantiate the same check over its own tree from a flake input. The plan of record is
-[`docs/roadmap.md`](./docs/roadmap.md).
-
-## The docs
-
-- [`docs/purpose.md`](./docs/purpose.md) — purpose and principles.
-- [`docs/architecture.md`](./docs/architecture.md) — the-valley as deployed: what runs, and the life
-  of a change.
-- [`docs/security.md`](./docs/security.md) — security and rollouts: the gates along the path a
-  change takes, the trust roots, and the residual risks.
-- [`docs/roadmap.md`](./docs/roadmap.md) — the milestones, what each unlocks, what is deferred, and
-  the open decisions.
-- [`archive/`](./archive/) — the earlier design documents and knowledge graph, kept read-only so the
-  node ids cited in code still resolve.
-- [`bin/valley`](./bin/valley) — the integrator's CLI: the Phase 0 verbs (`pending`, `review`) as a
-  plain shell script, accreting one verb per phase per the roadmap's CLI thread. `valley checks`
-  derives the checks the declared verification policy requires of a change, and only reports them.
-  The policy it composes is this project's own layer at `policy/project` and the floor of the valley
-  named at [`policy/valley`](./policy/valley), fetched from that valley's repository. Both are read
-  from the tip of the branch the change targets, never from your checkout, which is what the
-  integrator reads — so the answer is the same from any branch, however stale. It also groups the
-  required checks by their declared cost. `valley approve` and `valley rebase` do what review's keys
-  do, for front ends that show a change their own way, and `valley status --json` gives them the
-  change's status as a versioned JSON object. `valley ready`, `valley unready` and `valley withdraw`
-  record a change's versions and whether it is ready, a draft or withdrawn, under a change ID that
-  survives rebases. Every verb names a change by that ID, by its short handle, or by its branch.
-  `valley approve --head` approves exactly the head a front end showed, and the integrator lands
-  nothing for a change that is not ready. `valley knot` keeps a project's plan as a graph of knots
-  at its own ref beside the code, and `valley plan` shows that graph as a tree, with what waits on
-  the operator.
+- **[Concepts and glossary](./docs/concepts.md)** — Why the-valley is shaped this way, core
+  concepts, and every term defined.
+- **[Architecture](./docs/architecture.md)** — Component design, verification policy, identity
+  compilation, and executable checks.
+- **[Security](./docs/security.md)** — Threat model, trust boundaries, and rollout gates.
+- **[Archive](./archive/)** and **[Research](./research/)** — Historical design exploration
+  (`dcr-*`, `ida-*`, `bd-*`, `oc-*`) and foundational notes.

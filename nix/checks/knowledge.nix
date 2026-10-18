@@ -43,11 +43,15 @@
     rejectedCases = ./knowledge-lint-rejected.txt;
   } (builtins.readFile ./knowledge-lint-rejects.sh);
 
-  # Markdown prose format (ida-1ec03b1): the check is formatter
-  # idempotence — formatting the tree must change nothing. On failure,
-  # fix with `nix run .#fmt`.
+  # Markdown prose format (ida-1ec03b1): formatter idempotence —
+  # formatting the tree must change nothing — and relative link and
+  # heading-anchor integrity across README.md, AGENTS.md and docs/*.md.
+  # On formatting failure, fix with `nix run .#fmt`.
   prose-format = pkgs.runCommand "valley-prose-format" {
-    nativeBuildInputs = [ pkgs.prettier ];
+    nativeBuildInputs = [
+      pkgs.prettier
+      pkgs.python3
+    ];
     tree = self;
     inherit (packages) proseFmtArgs;
   } (builtins.readFile ./prose-format.sh);

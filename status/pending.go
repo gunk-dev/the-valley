@@ -27,9 +27,9 @@
 //
 // A change's title is its record's, for the active version. A branch's
 // title is the subject of its first own commit: the oldest commit on its
-// first-parent line that its base does not hold. A change's title is
-// followed by the ID of the first knot in the plan graph that links it,
-// when one does, as "<title> · oc-6335749" (does.go).
+// first-parent line that its base does not hold. When a knot in the plan
+// graph links a change, the first knot's ID follows the title, as
+// "<title> · oc-6335749" (does.go).
 //
 // An entry's base is the nearest other entry its head strictly contains,
 // or main when there is none. That is the ancestry includes reads
@@ -151,7 +151,7 @@ type entry struct {
 	ref      string   // what the entry is typed as: its handle, or its branch
 	head     string   // the head commit
 	title    string   // the record's title; for a branch, read by measure
-	knot     string   // the first knot that links the change, if any (does.go)
+	knot     string   // ID of the first knot that links the change (does.go)
 	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and checks
 
@@ -503,9 +503,9 @@ func (t terminal) drawStack(top *entry) []string {
 	return lines
 }
 
-// titled is an entry's title line after lead: its title, then the first
-// knot that links it, as "<title> · <knot ID>". The title is cut short to
-// fit the line, and the knot's ID never is.
+// titled formats e's title line after lead, appending " · <knot ID>" when a
+// knot links the change. Long titles are truncated so the knot ID fits in
+// full.
 func (t terminal) titled(e *entry, lead string) string {
 	if e.knot == "" {
 		return t.fit(e.title, lead)

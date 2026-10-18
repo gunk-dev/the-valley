@@ -71,8 +71,8 @@ type jsonChange struct {
 	Versions []jsonVersion `json:"versions"`
 	Includes []string      `json:"includes"`
 	Restack  *jsonRestack  `json:"restack"`
-	// Knots are the knots in the project's plan graph that link the
-	// change, active first (does.go).
+	// Knots lists the knots in the project's plan graph that link the
+	// change, active knots first (does.go).
 	Knots []knotRef `json:"knots"`
 }
 
@@ -101,8 +101,8 @@ type jsonBranch struct {
 	Head   string `json:"head"`
 }
 
-// listing is what changes and pending were asked for. verbose says why
-// no change shows a knot, when a plan graph is missing or does not read.
+// listing holds the flags parsed for changes or pending. verbose warns on
+// stderr when a repository's plan graph is missing or unreadable.
 type listing struct {
 	asJSON, all, checks, verbose bool
 	repo                         string
@@ -440,9 +440,8 @@ func cacheEnvironment(env []string) []string {
 	return append(kept, "GIT_ALLOW_PROTOCOL="+allowedProtocols)
 }
 
-// listed is one repository as read: its snapshot, or the error that kept
-// it from being read, and the knots its plan graph links to its changes,
-// once readDoers has read them.
+// listed is one repository as read: its snapshot (or the error from reading
+// it) and the knots its plan graph links to its changes.
 type listed struct {
 	source
 	snap  *snapshot
@@ -470,8 +469,7 @@ func readSources(list []source, v verifier) []listed {
 	return out
 }
 
-// readKnots reads the plan graph of every repository that was read, once
-// each, for the knots that link its changes.
+// readKnots reads the plan graph once for each readable repository in repos.
 func readKnots(repos []listed, verbose bool, stderr io.Writer) {
 	for i := range repos {
 		if repos[i].err == nil {

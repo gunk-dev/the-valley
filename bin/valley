@@ -70,10 +70,9 @@ usage: valley <verb> [args]
                    head's age and author: handle and version for a change,
                    the branch for a branch, and handle and version on its
                    branch for a draft. under it come its title (the
-                   record's for a change, the subject of its first own
-                   commit for a branch), with the id of the first knot in
-                   the plan graph that links a change after its title, then
-                   the commits and the diff it
+                   record's for a change, followed by the first linked
+                   knot's id; the subject of its first own commit for a
+                   branch), then the commits and the diff it
                    adds to its base: the nearest other entry its head
                    strictly contains, or main. a stack is its top entry,
                    then every entry the top contains, listed under it at
@@ -102,8 +101,8 @@ usage: valley <verb> [args]
                                   valley-changes/v1 shape, with the
                                   pending changes in changes and the
                                   drafts in drafts
-                     -v           say why no change shows a knot, when a
-                                  plan graph is missing or does not read
+                     -v           warn on stderr when a plan graph is
+                                  missing or unreadable
                    needs the valley-go helper.
   changes --json [--all] [--repo <name>] [-v]
                    print every change origin holds a record of, in every
@@ -112,11 +111,10 @@ usage: valley <verb> [args]
                    head, title and branch, how far it has landed
                    (landed, landed-recorded, uncertain or not-landed),
                    its pending request and its last outcome, the knots in
-                   the plan graph at refs/the-valley/knots that link it
-                   (every knot whose changes lists
-                   valley:<project>/<change id>, active ones first), and
-                   the branches no change is on. -v says why no change
-                   shows a knot, when a graph is missing or does not read.
+                   refs/the-valley/knots that link it
+                   (valley:<project>/<change id>, active first), and
+                   the branches no change is on. -v warns on stderr when a
+                   plan graph is missing or unreadable.
                    handles are unique across
                    everything listed: a change id recorded in more than
                    one repository listed has the handle <repo>:<prefix>
@@ -145,12 +143,11 @@ usage: valley <verb> [args]
                    needs the valley-go helper.
   review [-v] <change>
                    page through the change's branch: its log and diff vs
-                   origin/main, or a stack layer by layer (below). each
-                   change's page names, after the line that names the
-                   change and before its diff, every knot in the plan
-                   graph that links it, as `does oc-6335749 (open): <its
-                   title>` (valley-go does). a missing or unreadable graph
-                   shows none; -v says why. then choose:
+                   origin/main, or a stack layer by layer (below). above
+                   each change's diff, review shows every knot in the plan
+                   graph that links the change, as `does oc-6335749 (open):
+                   <title>` (valley-go does). a missing or unreadable graph
+                   shows no knots; -v warns on stderr. then choose:
                      [a]pprove    file an integration request for the
                                   head shown. runs the
                                   checks the composed policy requires of
@@ -415,9 +412,8 @@ usage: valley <verb> [args]
                                   in the plan graph that link the change.
                                   an error prints no object: it goes to
                                   stderr and the exit status is non-zero.
-                     -v           say why the object lists no knot, when
-                                  the plan graph is missing or does not
-                                  read
+                     -v           with --json, warn on stderr when the plan
+                                  graph is missing or unreadable
                    needs the valley-go helper.
   ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
                    mark a head of the branch ready, as a new version of its
@@ -1035,10 +1031,8 @@ compare_shown() {
 # paged. Notes taken in a page are kept under the notes key, against the
 # head.
 #
-# The knots the change does (does_of) come after the line that names the
-# change, and before its diff: under the heading, when there is one, and
-# otherwise under the first line of the comparison or of the whole diff,
-# each of which opens by naming the change.
+# Knots follow the heading when there is one. Otherwise they follow the
+# first line of the comparison or full diff, which names the change.
 show_compared() {
   local key="$1" sha heading="$3" knots="$4"
   sha="$(git rev-parse --short "$2")"
@@ -1064,8 +1058,7 @@ show_compared() {
   fi
 }
 
-# under_first <lines>: copy stdin, with the lines given after its first
-# line.
+# under_first <lines>: copy stdin, inserting <lines> after the first line.
 under_first() {
   local first
   IFS= read -r first || [ -n "$first" ] || return 0
@@ -1074,18 +1067,12 @@ under_first() {
   cat
 }
 
-# DOES holds the knots each change review shows does, as valley-go does
-# prints them (status/does.go): one line per knot, the change's ID, a tab,
-# and the line review shows, such as
-#
-#   does oc-6335749 (open): Ready changes stay landable as main moves
-#
-# The plan graph is read once per review, for every change in it.
+# DOES caches the output of `valley-go does` for the review (status/does.go):
+# one `<change ID>\tdoes <knot ID> (<status>): <title>` line per knot.
 DOES=""
 
-# read_does [-v]: read the knots of the change review shows, or of every
-# change in its stack. A graph that is missing or does not read gives no
-# knots, and is never an error: -v has valley-go say why on stderr.
+# read_does [-v]: read the plan graph once for every change in the review.
+# A missing or unreadable graph leaves DOES empty; -v warns on stderr.
 read_does() {
   local ids=() k
   DOES=""
@@ -1100,8 +1087,7 @@ read_does() {
   DOES="$(valley-go does "$@" "${ids[@]}")" || DOES=""
 }
 
-# does_of <change ID>: the lines of the knots the change does, as review
-# shows them. A plain branch, with no ID, does none.
+# does_of <change ID>: print the `does ...` lines for one change from DOES.
 does_of() {
   local line
   [ -n "$1" ] || return 0
@@ -1127,8 +1113,8 @@ full_diff() {
 }
 
 # show_review <branch>: show a change alone. A change that is not ready
-# says so first, before anything else shown of it (shown_not_ready). The
-# knots it does follow the line that names it (show_compared).
+# says so first, before anything else shown of it (shown_not_ready). That
+# notice becomes the heading, so the change's knots follow it.
 show_review() {
   local branch="$1" head held
   head="$(change_head "$branch")"
@@ -2309,7 +2295,7 @@ layer_held() {
 # lower layer is set against its own approval, not the top's. Its whole
 # diff is against the layer below it. The notes taken in it are kept
 # under its own branch. When it can't be approved, layer_held's line
-# follows its heading. The knots its own change does follow those.
+# follows its heading, before the layer's knots.
 page_layer() {
   local k="$1" heading held
   NOTES=()

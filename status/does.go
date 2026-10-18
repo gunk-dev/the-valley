@@ -1,13 +1,12 @@
 // The knots a change does: every knot in its project's plan graph whose
-// changes lists the change, as valley:<project>/<change ID>. review shows
-// them above a change's diff (runDoes), and changes, pending and status
-// list them (list.go, pending.go, render.go).
+// changes field lists valley:<project>/<change ID>. review shows them above
+// a change's diff (runDoes), and changes, pending and status --json include
+// them (list.go, pending.go, render.go).
 //
-// The change record holds no knot field. The plan lives in project
-// storage, and the record holds the change's workflow, so the link is read
-// from the graph's side alone. The graph is read once per command, however
-// many changes it lists. A graph that is missing or does not read links no
-// change. That is never an error: with -v, the command says so on stderr.
+// The plan graph in project storage holds the links from knots to changes.
+// Each command reads a project's graph once, however many changes it
+// inspects. When the graph is missing or unreadable, every change gets no
+// knots, and -v warns on stderr.
 
 package main
 
@@ -21,7 +20,7 @@ import (
 	"the-valley/knot"
 )
 
-// knotRef is a knot as a listing names it.
+// knotRef is a knot that links a change, as JSON listings and review use it.
 type knotRef struct {
 	ID     string `json:"id"`
 	Type   string `json:"type"`
@@ -31,13 +30,13 @@ type knotRef struct {
 	active bool
 }
 
-// line is how review shows a knot the change does:
+// line formats a knot for review:
 //
 //	does oc-6335749 (open): Ready changes stay landable as main moves
 //
-// The graph holds no control character, and a title holds no newline or
-// tab. The title is made visible all the same, so the line is one line
-// whatever the graph holds.
+// It strips newlines, tabs and control characters even though the graph
+// schema forbids them, so a malformed knot cannot break runDoes's
+// tab-separated output or write escape sequences to the terminal.
 func (k knotRef) line() string {
 	title := strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' {
@@ -48,15 +47,14 @@ func (k knotRef) line() string {
 	return fmt.Sprintf("does %s (%s): %s", visible(k.ID), visible(k.Status), visible(title))
 }
 
-// doers is one read of a project's graph: the knots that link each change,
-// by change ID.
+// doers maps each change ID in a project to the knots that link it.
 type doers map[string][]knotRef
 
-// readDoers reads the project's graph at refs/the-valley/knots on the
-// origin of g, and finds the knots that link each change in the project.
-// A link names the project and the full change ID, and links to any other
-// project or to a pull request are passed over. A missing graph, or one
-// that does not read, gives no knots, and says why on stderr when verbose.
+// readDoers reads the project's plan graph at refs/the-valley/knots on g's
+// origin and indexes the knots by linked change ID. It keeps only links of
+// the form valley:<project>/<change ID>, ignoring links to other projects
+// or pull requests. When the graph is missing or unreadable, it returns an
+// empty map and, if verbose, warns on stderr.
 func readDoers(g git, project string, verbose bool, stderr io.Writer) doers {
 	if !verbose {
 		g.stderr = io.Discard
@@ -90,16 +88,15 @@ func readDoers(g git, project string, verbose bool, stderr io.Writer) doers {
 		}
 	}
 	for _, list := range d {
-		// IDs() gives each list in ID order. The stable sort puts active
-		// knots ahead of the ones that have ended, so the first knot is
-		// one the work still serves.
+		// IDs() visits knots in ID order; a stable sort puts active knots
+		// before terminal ones while keeping each group in ID order.
 		sort.SliceStable(list, func(i, j int) bool { return list[i].active && !list[j].active })
 	}
 	return d
 }
 
-// of is the knots that link the change: active knots first, each group in
-// ID order. It is never nil, so JSON writes an empty list.
+// of returns the knots that link change id, or an empty slice so JSON
+// encodes [] instead of null.
 func (d doers) of(id string) []knotRef {
 	if list := d[id]; list != nil {
 		return list
@@ -107,16 +104,15 @@ func (d doers) of(id string) []knotRef {
 	return []knotRef{}
 }
 
-// runDoes prints the knots each change named does, for review, which
-// shows them after the line that names the change and before its diff.
-// The graph is that of this repository's project, read once. One line per
-// knot, in the order the changes are given, each change's knots in the
-// order of:
+// runDoes implements `valley-go does`, which `valley review` calls to find
+// the knots each change in the review does. It reads this project's plan
+// graph once and prints one tab-separated line per knot, in the order the
+// change IDs are given:
 //
 //	<change ID>\tdoes <knot ID> (<status>): <title>
 //
-// A change no knot links prints nothing. -v says why on stderr when the
-// graph is missing or does not read.
+// Changes with no linked knots produce no lines. -v warns on stderr when
+// the graph is missing or unreadable.
 func runDoes(g git, args []string, stdout, stderr io.Writer) error {
 	verbose := false
 	var ids []string

@@ -46,8 +46,8 @@ func runStatus(g git, args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	if asJSON {
-		// The knots that link the change are listed in the object alone,
-		// so the graph is read for it alone.
+		// Only the JSON output includes linked knots, so human status
+		// skips reading the plan graph.
 		if s.recorded != nil {
 			s.knots = readDoers(g, project(g), verbose, stderr).of(s.recorded.id)
 		}
@@ -56,10 +56,10 @@ func runStatus(g git, args []string, stdout, stderr io.Writer) int {
 	return writeHuman(g, s, stdout)
 }
 
-// parseStatusArgs takes one change, an optional --json and an optional
-// -v, in any order. The change is named the way every verb names one
-// (changes.go). -v says why the object lists no knot, when the plan graph
-// is missing or does not read.
+// parseStatusArgs takes one change and optional --json and -v flags, in any
+// order. The change is named the way every verb names one (changes.go).
+// With --json, -v warns on stderr when the plan graph is missing or
+// unreadable.
 func parseStatusArgs(args []string) (asJSON, verbose bool, name string, err error) {
 	var rest []string
 	for _, a := range args {
@@ -105,8 +105,8 @@ type status struct {
 	// handle.
 	restackSays string
 
-	// knots are the knots in the plan graph that link the change, for
-	// --json alone (does.go); nil for a branch.
+	// knots lists the knots in the plan graph that link the change,
+	// populated for --json on a recorded change (does.go).
 	knots []knotRef
 
 	tip     string // origin's main

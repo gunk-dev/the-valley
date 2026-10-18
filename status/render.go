@@ -147,9 +147,9 @@ func short(oid string) string {
 }
 
 // The valley-status/v1 object. docs/architecture.md documents it, and a
-// change to any field's name or meaning is a new schema version. The
-// fields from change_id on were added to it, and are null for a branch no
-// record names, but for knots, which is an empty list for one.
+// change to any field's name or meaning is a new schema version. For a
+// branch with no record, the fields from change_id on are null, except
+// knots, which is an empty slice.
 type jsonStatus struct {
 	Schema      string       `json:"schema"`
 	Change      string       `json:"change"`

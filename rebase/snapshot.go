@@ -216,6 +216,13 @@ func (s *Snapshot) Request(id string, v change.Version) (ref string, ok bool) {
 	return "", false
 }
 
+// OutcomeOf is the outcome record origin holds under a request name, as
+// ParseOutcome reads it, and whether origin holds one.
+func (s *Snapshot) OutcomeOf(name string) (Outcome, bool) {
+	m, ok := s.outcomes[OutcomePrefix+name]
+	return m, ok
+}
+
 // Outcome is the integrator's last decision about a version: the outcome
 // record under either of its names whose head is the version's head.
 func (s *Snapshot) Outcome(id string, v change.Version) (name string, m Outcome, found bool) {

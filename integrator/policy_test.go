@@ -6,6 +6,8 @@ package main
 // assumed.
 
 import (
+	"the-valley/composed"
+
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -391,12 +393,12 @@ func TestAFloorThatIsNotThereIsRefused(t *testing.T) {
 	// The materialized source, which is the one a test can drive without a
 	// repository. The repository source refuses the same way, and the e2e
 	// observes it there.
-	_, done, err := instanceLayer{path: t.TempDir()}.open()
+	_, done, err := composed.Floor{Path: t.TempDir()}.Open("valley-integrator-floor")
 	defer done()
 	if err == nil {
 		t.Fatal("a floor directory with no documents in it was accepted")
 	}
-	if !strings.Contains(err.Error(), floorless) {
+	if !strings.Contains(err.Error(), composed.Floorless) {
 		t.Fatalf("the refusal reads %q", err)
 	}
 }

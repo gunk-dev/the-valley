@@ -387,6 +387,57 @@ rec {
     '';
   };
 
+  # The restacker's planner (restack/): `valley-restacker once
+  # --report-only` reads one snapshot of origin through the rebase engine
+  # (../rebase) and says which families it would restack and which it
+  # would hold. It reads the cap on its automatic versions through the
+  # composed-policy reader it shares with the integrator (../composed). Its
+  # unit tests cover request association, outcome currency and capacity,
+  # and go vet runs after them. Go, standard library only — hence
+  # vendorHash = null and no module fetch.
+  restack-unwrapped = pkgs.buildGoModule {
+    pname = "valley-restacker";
+    version = "0";
+    src = withLocal ../restack [
+      ../change
+      ../composed
+      ../rebase
+    ];
+    modRoot = "restack";
+    vendorHash = null;
+    preBuild = readsGoMod;
+    postCheck = ''
+      go vet ./...
+    '';
+    # The module is named for its directory; the program, for what it is.
+    postInstall = ''
+      mv $out/bin/restack $out/bin/valley-restacker
+    '';
+    meta.mainProgram = "valley-restacker";
+  };
+
+  # The shipping form: git to read origin, cue to compose the policy, and
+  # attest to check a transfer statement, all pinned to this flake's
+  # nixpkgs, with the packaged verification schema as the default.
+  valley-restacker =
+    pkgs.runCommand "valley-restacker"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley-restacker";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe restack-unwrapped} $out/bin/valley-restacker \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.cue
+              attest
+            ]
+          } \
+          --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
+      '';
+
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
   # same trade as attest — hence vendorHash = null and no module fetch. It
   # reads change records with the one reading of a record the push hook
@@ -398,6 +449,7 @@ rec {
     # tests, which compose a policy under it.
     src = withLocal ../integrator [
       ../change
+      ../composed
       ../schema/verification.cue
     ];
     modRoot = "integrator";

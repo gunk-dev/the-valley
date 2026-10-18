@@ -22,6 +22,8 @@
 #                    contract, and the helper driven end to end
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
+#   restack.nix      restack-unit, restack-e2e — the restacker's planner
+#                    over a repository wired with the rendered hook
 #   hooks.nix        valleyhook-unit, note-unit, change-unit, mirror-e2e,
 #                    bus-e2e, protect-e2e, knots-e2e, init-e2e — the hooks
 #                    the module renders, run against real git, the formats
@@ -86,6 +88,7 @@ import ./checks/host-module.nix args
 // import ./checks/delta.nix args
 // import ./checks/attest.nix args
 // import ./checks/integrator.nix args
+// import ./checks/restack.nix args
 // import ./checks/hooks.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args

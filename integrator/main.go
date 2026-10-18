@@ -10,6 +10,8 @@
 package main
 
 import (
+	"the-valley/composed"
+
 	"flag"
 	"fmt"
 	"os"
@@ -232,11 +234,11 @@ func run(args []string, loop bool) error {
 	}
 	// abs of an empty path is the working directory, and an empty field is
 	// how the layer says which of its two sources it is.
-	layer := instanceLayer{ref: *instanceRef, dir: *instancePolicy}
+	layer := composed.Floor{Ref: *instanceRef, Dir: *instancePolicy}
 	if *instanceRepo != "" {
-		layer.repo = abs(*instanceRepo)
+		layer.Repo = abs(*instanceRepo)
 	} else {
-		layer.path = abs(*instance)
+		layer.Path = abs(*instance)
 	}
 	in.policy = policySource{
 		schema:     abs(*schema),

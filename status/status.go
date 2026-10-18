@@ -21,11 +21,8 @@
 package main
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -333,7 +330,7 @@ func (s *status) settle(g git, refs map[string]string) error {
 	if s.head == "" && isObjectID(s.memo.head) {
 		s.head = s.memo.head
 	}
-	s.state = decide(g, s, evidenceFingerprint(attestations))
+	s.state = decide(g, s, change.EvidenceFingerprint(attestations))
 	return nil
 }
 
@@ -360,20 +357,6 @@ func memoOf(o rebase.Outcome) memo {
 
 // isObjectID is a full SHA-1 or SHA-256 object id, lowercase.
 func isObjectID(s string) bool { return rebase.IsObjectID(s) }
-
-// evidenceFingerprint is the evidence state the integrator records in a
-// memo: the first 16 hex digits of the SHA-256 over every attestation ref
-// on origin, one "<ref> <oid>" line each, in byte order. A memo with a
-// different fingerprint was written about other evidence.
-func evidenceFingerprint(attestations []string) string {
-	sorted := append([]string(nil), attestations...)
-	sort.Strings(sorted)
-	h := sha256.New()
-	for _, line := range sorted {
-		h.Write([]byte(line + "\n"))
-	}
-	return hex.EncodeToString(h.Sum(nil))[:16]
-}
 
 // decide names the change's state, one per answer status gives.
 //

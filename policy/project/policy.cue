@@ -39,6 +39,8 @@ project: {
 		"identity-e2e",
 		"integrator-unit",
 		"integrator-e2e",
+		"restack-unit",
+		"restack-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
 		"rebase-unit",
@@ -175,6 +177,7 @@ project: {
 	// and both checks read.
 	classes: integrator: {
 		paths: "integrator/**":           true
+		paths: "composed/**":             true
 		paths: "schema/verification.cue": true
 		requires: "integrator-unit":      true
 		requires: "integrator-e2e":       true
@@ -231,6 +234,18 @@ project: {
 	classes: rebase: {
 		paths: "rebase/**":      true
 		requires: "rebase-unit": true
+	}
+
+	// The restacker, with its unit tests and its planner end to end. It
+	// reads origin through the rebase engine and the policy through the
+	// composed-policy reader it shares with the integrator, so a change to
+	// either requires its checks too.
+	classes: restack: {
+		paths: "restack/**":      true
+		paths: "composed/**":     true
+		paths: "rebase/**":       true
+		requires: "restack-unit": true
+		requires: "restack-e2e":  true
 	}
 
 	// The verification policy: this layer, the pointer to the owning

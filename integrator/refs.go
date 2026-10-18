@@ -30,6 +30,7 @@ package main
 // (records.go).
 
 import (
+	"the-valley/change"
 	"the-valley/integrator/verdict"
 
 	"fmt"
@@ -566,8 +567,9 @@ func (in *integrator) writeMemo(r request, value string) error {
 }
 
 // evidenceState digests the attestation namespace: every ref under it and
-// the object it points at. Attestation refs are create-only, so this moves
-// exactly when evidence arrives.
+// the object it points at, as change.EvidenceFingerprint reads them.
+// Attestation refs are create-only, so this moves exactly when evidence
+// arrives.
 //
 // It is deliberately the whole namespace rather than the refs for one
 // change's subject digest, which would take a checkout to compute and would
@@ -581,7 +583,11 @@ func (in *integrator) evidenceState() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return sha256hex([]byte(out))[:16], nil
+	var lines []string
+	if out = strings.TrimSuffix(out, "\n"); out != "" {
+		lines = strings.Split(out, "\n")
+	}
+	return change.EvidenceFingerprint(lines), nil
 }
 
 func (in *integrator) now() time.Time {

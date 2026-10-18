@@ -520,6 +520,59 @@ its record commit reaches, since a record names its version heads as parents of 
 `valley status` warns the same way for the change's request. The hook refuses a record that does not
 read, so corrupt storage is the only way to get one.
 
+## The restacker
+
+The restacker rebases ready changes onto `main` when `main` moves under them, as its own principal,
+so their evidence stays fresh without their owners rebasing and approving again. Today it is only a
+planner. `valley-restacker once --report-only` (`restack/`) reads one snapshot of origin, prints
+what a pass would do, and pushes nothing. Nothing deploys it yet.
+
+It is a git client of origin. It reads origin into a bare scratch repository under `--state`, with
+hooks off and no system or user git configuration, so no filter driver is defined. Its flags name
+origin (`--repo`), the principal it pushes as (`--principal`), the landing verifier
+(`--known-signers`, `--integrator-name`, `--attest`), and the floor, which it finds as the
+integrator does: `--instance-repo` with `--instance-ref` and `--instance-policy`, or a materialized
+`--instance`. The project layer is read from `main`'s tip.
+
+A family is the connected layers of one snapshot, as the rebase engine captures them
+(`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family
+one of four answers:
+
+- **leave**: no layer is a ready change: drafts, withdrawn changes and uncertain landings alone. A
+  plain branch is never planned on its own, and a submitted change is no layer.
+- **current**: the family already descends from `main`'s tip.
+- **hold**: something stops it, and each reason is listed. A layer that is not a ready change holds
+  its family, as does any refusal of the engine's `Family.Check`.
+- **restack**: nothing holds it.
+
+A family is also held while a related integration request might still land. A request is related by
+its name (`c-<change-id>`, or the branch-derived name of any version the change has had), by a head
+equal to a layer's head, or by an incoming range (what the request's head reaches and `main`'s tip
+does not) that contains a layer's head. The snapshot lists request heads without fetching them, so
+the planner fetches them before it reads any ancestry. A request whose relation cannot be determined
+holds every family it might be about. A related request releases the family only with a current
+outcome of `stale` or `reject`; a `reject` is noted. Current means the outcome's head, target tip
+and evidence fingerprint all equal what the planner sees. The fingerprint is
+`change.EvidenceFingerprint`, which the integrator writes and `valley status` reads.
+
+A family is held when any record it would change is over a limit, counted with the version the
+restack would add:
+
+- `restack.maxAutomaticVersions` versions uploaded by the restacker's principal, from the composed
+  policy at `main`'s tip;
+- 900 versions;
+- 99,000 record updates;
+- 48 KiB of encoded record JSON.
+
+The cap is read through `composed/`, the composed-policy reader the integrator reads its checks and
+policy digest through. Both run `cue export` of the floor, the template the policy's type selects,
+and the project layer, under the packaged schema.
+
+The plan prints as a summary, or with `--json` for tests and for the next slice. The JSON is not a
+published format. `restack-unit` covers request association, outcome currency and the capacity
+arithmetic. `restack-e2e` runs the planner over a repository wired with the rendered hook and checks
+that no ref on origin moves.
+
 ## Policy
 
 A project's required checks come from three CUE layers, unified as

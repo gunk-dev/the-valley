@@ -21,7 +21,7 @@ const Target = "main"
 const (
 	RequestPrefix   = "refs/the-valley/integration-requests/" + Target + "/"
 	OutcomePrefix   = "refs/the-valley/integration-outcomes/" + Target + "/"
-	AttestationRefs = "refs/the-valley/attestations/"
+	AttestationRefs = change.AttestationRefs
 	RestackPrefix   = change.RestackPrefix + Target + "/"
 )
 

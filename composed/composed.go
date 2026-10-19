@@ -10,10 +10,16 @@
 // The project layer is read from the target tip. A layer that is not there
 // defaults in the safe direction of its job: an absent project layer
 // composes the floor alone, and an absent floor is refused.
+//
+// Every git and cue it runs runs under the caller's context, in a process
+// group of its own. A context that is done kills the whole group, and the
+// wait for the output is bounded, so a caller with a deadline is never
+// held past it.
 package composed
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +28,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // Floor is where the group's floor comes from: a repository's tip, read
@@ -43,7 +50,7 @@ const Floorless = "a valley without a written floor is not a valley whose change
 // Open resolves the floor to a directory of *.cue on disk, and returns
 // what removes it. A floor read from a repository is copied into a
 // scratch directory whose name starts with prefix.
-func (f Floor) Open(prefix string) (string, func(), error) {
+func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) {
 	noop := func() {}
 	if f.Repo == "" {
 		// The materialized layer is held to the same minimum as the one a
@@ -54,7 +61,7 @@ func (f Floor) Open(prefix string) (string, func(), error) {
 		}
 		return f.Path, noop, nil
 	}
-	dir, found, done, err := readLayer(f.Repo, f.Ref, f.Dir, prefix)
+	dir, found, done, err := readLayer(ctx, f.Repo, f.Ref, f.Dir, prefix)
 	switch {
 	case err != nil:
 		return "", noop, err
@@ -76,8 +83,8 @@ func (f Floor) Open(prefix string) (string, func(), error) {
 // a document that adds nothing rather than with an argument left off,
 // because cue is handed a directory of *.cue and has no spelling for "no
 // layer".
-func Project(repo, treeish, dir, prefix string) (string, string, func(), error) {
-	path, found, done, err := readLayer(repo, treeish, dir, prefix)
+func Project(ctx context.Context, repo, treeish, dir, prefix string) (string, string, func(), error) {
+	path, found, done, err := readLayer(ctx, repo, treeish, dir, prefix)
 	if err != nil {
 		return "", "", func() {}, err
 	}
@@ -122,11 +129,14 @@ const (
 // such as naïve.cue, and the quoted name does not end in .cue, so that
 // document would be skipped. A materialized floor's glob finds it, and so
 // does this.
-func readLayer(repo, treeish, dir, prefix string) (string, int, func(), error) {
+func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, int, func(), error) {
 	noop := func() {}
 	tree := treeish + ":" + dir
-	listing, err := git(repo, "ls-tree", "--name-only", "-z", tree)
+	listing, err := git(ctx, repo, "ls-tree", "--name-only", "-z", tree)
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", absent, noop, fmt.Errorf("reading %s from %s at %s: %w", dir, repo, treeish, ctx.Err())
+		}
 		return "", absent, noop, nil
 	}
 	out, err := scratch(prefix)
@@ -139,7 +149,7 @@ func readLayer(repo, treeish, dir, prefix string) (string, int, func(), error) {
 		if !strings.HasSuffix(name, ".cue") {
 			continue
 		}
-		body, err := git(repo, "show", tree+"/"+name)
+		body, err := git(ctx, repo, "show", tree+"/"+name)
 		if err != nil {
 			done()
 			return "", absent, noop, fmt.Errorf("reading %s/%s from %s at %s: %w", dir, name, repo, treeish, err)
@@ -188,7 +198,7 @@ type Policy struct {
 // floor's documents and the project layer's documents, and reads it. The
 // template is the one the policy's `type` names, which the schema selects
 // as it composes.
-func Compose(cue, schema, instance, project string) (*Policy, error) {
+func Compose(ctx context.Context, cue, schema, instance, project string) (*Policy, error) {
 	args := []string{"export", "--out", "json", "-e", "policy", schema}
 	for _, dir := range []string{instance, project} {
 		docs, err := filepath.Glob(filepath.Join(dir, "*.cue"))
@@ -197,7 +207,11 @@ func Compose(cue, schema, instance, project string) (*Policy, error) {
 		}
 		args = append(args, docs...)
 	}
-	out, err := exec.Command(cue, args...).CombinedOutput()
+	cmd := command(ctx, cue, args...)
+	var combined bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &combined, &combined
+	err := cmd.Run()
+	out := combined.Bytes()
 	if err != nil {
 		return nil, fmt.Errorf("composing the policy: %w\n%s", err, strings.TrimSpace(string(out)))
 	}
@@ -218,8 +232,22 @@ func Compose(cue, schema, instance, project string) (*Policy, error) {
 	}, nil
 }
 
-func git(repo string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+// waitDelay is how long a wait for a program's output may go on after it
+// has exited, or after a done context has killed it. Something it started
+// that left its process group may still hold the output open.
+const waitDelay = 5 * time.Second
+
+// command is a program run under ctx in a process group of its own, which
+// a done context kills whole, with the wait for its output bounded.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = waitDelay
+	ownGroup(cmd)
+	return cmd
+}
+
+func git(ctx context.Context, repo string, args ...string) (string, error) {
+	cmd := command(ctx, "git", args...)
 	cmd.Dir = repo
 	var out, errb bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &errb

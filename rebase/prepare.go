@@ -58,10 +58,11 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 	// update-ref may have created the refs before it returned. So each
 	// step's cleanup is armed before the step starts. The cleanup runs
 	// under a context of its own, since it must run when the caller's is
-	// cancelled.
+	// cancelled, and that context is bounded (cleanupContext).
 	adding, added, prepared := false, false, false
 	defer func() {
-		done := context.WithoutCancel(ctx)
+		done, cancel := cleanupContext(ctx)
+		defer cancel()
 		if !prepared {
 			p.Release(done, g)
 		}
@@ -178,8 +179,8 @@ func (p *Prepared) hold(ctx context.Context, g Git) error {
 }
 
 // Release lets the prepared heads go: their refs are deleted, and git may
-// collect the objects no other ref reaches. It runs under a cancelled
-// context too, as cleanup does.
+// collect the objects no other ref reaches. It runs under a cancelled or
+// expired context too, as cleanup does, and for at most cleanupBound.
 func (p *Prepared) Release(ctx context.Context, g Git) error {
 	if len(p.keep) == 0 {
 		return nil
@@ -188,7 +189,9 @@ func (p *Prepared) Release(ctx context.Context, g Git) error {
 	for _, ref := range p.keep {
 		fmt.Fprintf(&stdin, "delete %s\n", ref)
 	}
-	if _, err := g.input(context.WithoutCancel(ctx), true, strings.NewReader(stdin.String()), "update-ref", "--stdin"); err != nil {
+	done, cancel := cleanupContext(ctx)
+	defer cancel()
+	if _, err := g.input(done, true, strings.NewReader(stdin.String()), "update-ref", "--stdin"); err != nil {
 		return errors.New("could not delete the refs that kept the rebased heads")
 	}
 	p.keep = nil

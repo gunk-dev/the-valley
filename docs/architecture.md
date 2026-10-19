@@ -527,12 +527,26 @@ so their evidence stays fresh without their owners rebasing and approving again.
 planner. `valley-restacker once --report-only` (`restack/`) reads one snapshot of origin, prints
 what a pass would do, and pushes nothing. Nothing deploys it yet.
 
-It is a git client of origin. It reads origin into a bare scratch repository under `--state`, with
-hooks off and no system or user git configuration, so no filter driver is defined. Its flags name
-origin (`--repo`), the principal it pushes as (`--principal`), the landing verifier
-(`--known-signers`, `--integrator-name`, `--attest`), and the floor, which it finds as the
-integrator does: `--instance-repo` with `--instance-ref` and `--instance-policy`, or a materialized
-`--instance`. The project layer is read from `main`'s tip.
+It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
+off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
+out in the scratch repository's work tree. The work tree exists because `attest`, which verifies the
+integrator's transfer statements, reads only a repository that has one. Its flags name origin
+(`--repo`), the principal it pushes as (`--principal`), the landing verifier (`--known-signers`,
+`--integrator-name`, `--attest`), and the floor, which it finds as the integrator does:
+`--instance-repo` with `--instance-ref` and `--instance-policy`, or a materialized `--instance`. The
+project layer is read from `main`'s tip.
+
+git in the scratch repository commits under the identity that `--commit-name` and `--commit-email`
+give. By default that is the principal's name and `restacker@the-valley.invalid`. It never takes an
+identity from `GIT_AUTHOR_*`, `GIT_COMMITTER_*` or `EMAIL` in the restacker's environment, and git
+is told not to guess one. A `--report-only` pass commits nothing.
+
+A pass locks its state directory from start to end, so a second pass on the same directory fails at
+once while one runs. The directory belongs to the repository, target and principal of the first pass
+that used it, recorded in its `binding.json`. A pass for any other is refused, and needs its own
+`--state`. A pass runs for at most `--timeout`, 10 minutes by default. When the timeout passes, or
+the pass is interrupted or stopped, every git, cue and attest it started is killed, with whatever
+each of them started, ssh included. Checked by `restack-unit` and `restack-e2e`.
 
 A family is the connected layers of one snapshot, as the rebase engine captures them
 (`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family

@@ -3,14 +3,16 @@ package rebase
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"the-valley/change"
 )
 
-// A change's restack report, read back: the latest report the host
-// restacker wrote about the change, at RestackPrefix<change ID>
-// (change/report.go), and whether it is current.
+// A change's restack report: written as a report commit and pushed to
+// RestackPrefix<change ID> (change/report.go) in two steps, and read back
+// as the latest report the host restacker wrote about the change, and
+// whether it is current.
 //
 // A report is current only while every ref it observed still holds on
 // origin what the report says it held:
@@ -31,6 +33,47 @@ import (
 // that observed a missing branch is historical once the branch exists. A
 // report that is not current is historical: it describes refs that have
 // moved since.
+
+// WriteReport writes a report commit holding r, and returns its ID. Its
+// tree holds report.json alone, the one shape the hook accepts. Its one
+// parent is the report it replaces, the commit origin's report ref names,
+// or it has none when old is "" and the change has no report yet. Nothing
+// is pushed, so a caller can keep the commit's ID and old before
+// PushReport, and compare origin's report ref with them after a crash.
+func WriteReport(ctx context.Context, g Git, r *change.RestackReport, message, old string) (string, error) {
+	data, err := change.EncodeRestackReport(r)
+	if err != nil {
+		return "", err
+	}
+	if len(data) > change.MaxReportBlob {
+		return "", fmt.Errorf("the restack report would be %d bytes, more than the %d a report may be", len(data), change.MaxReportBlob)
+	}
+	var parents []string
+	if old != "" {
+		parents = append(parents, old)
+	}
+	commit, err := writeOneFile(ctx, g, "restack report", "report.json", data, message, parents...)
+	if err != nil {
+		return "", err
+	}
+	size, err := g.output(ctx, true, "cat-file", "-s", commit)
+	if n, perr := strconv.Atoi(size); err != nil || perr != nil || n > change.MaxReportCommit {
+		return "", fmt.Errorf("the restack report's commit is %s bytes, and a report commit may be at most %d", size, change.MaxReportCommit)
+	}
+	return commit, nil
+}
+
+// ReportMessage is the message of a report commit.
+func ReportMessage(handle string, r *change.RestackReport) string {
+	return fmt.Sprintf("valley restack: %s %s\n\nChange %s, operation %s, on %s at %s.",
+		handle, r.Result, r.ChangeID, r.Operation, r.Target, strings.TrimPrefix(r.TargetTip, change.HeadPrefix))
+}
+
+// PushReport moves the change's report ref on origin from old to commit,
+// leased on old, as PushRecord moves a record ref.
+func PushReport(ctx context.Context, g Git, id, old, commit string) RecordWrite {
+	return pushLeased(ctx, g, RestackPrefix+id, old, commit)
+}
 
 // Report is a change's latest restack report.
 type Report struct {

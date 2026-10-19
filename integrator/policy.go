@@ -26,6 +26,7 @@ import (
 	"the-valley/composed"
 	"the-valley/integrator/verdict"
 
+	"context"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +80,7 @@ type policySource struct {
 // resolved per call, so the deriver and the composer are given the same
 // bytes: they are two readings of one policy, not two policies.
 func (p policySource) open(tip *worktree) (policySource, func(), error) {
-	dir, done, err := p.layer.Open("valley-integrator-floor")
+	dir, done, err := p.layer.Open(context.Background(), "valley-integrator-floor")
 	if err != nil {
 		return p, done, err
 	}
@@ -298,7 +299,7 @@ type catalogueEntry = composed.Check
 // composes is in it: every check, every class's paths, requirements and
 // carry mode, and the restacker's cap.
 func (p policySource) catalogue() (map[string]catalogueEntry, string, error) {
-	pol, err := composed.Compose(p.cue, p.schema, p.instance, p.project)
+	pol, err := composed.Compose(context.Background(), p.cue, p.schema, p.instance, p.project)
 	if err != nil {
 		return nil, "", err
 	}

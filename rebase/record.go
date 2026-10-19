@@ -1,12 +1,14 @@
 // Writing a change's record on origin, and adding a version to it.
 //
 // A record is written as a commit holding record.json, and pushed to the
-// change's record ref leased on the record commit that was read. The
-// push's outcome is read from git's porcelain report, so a push origin
-// refused is told apart from one whose outcome is unknown, as after a lost
-// connection or an answer origin never gave. The record commit is kept
-// either way: a caller that cannot tell whether origin took it can compare
-// origin's ref with it later.
+// change's record ref leased on the record commit that was read. Writing
+// the commit and pushing it are separate steps, so a caller can keep the
+// commit's ID and its lease before the push. The push's outcome is read
+// from git's porcelain report, so a push origin refused is told apart from
+// one whose outcome is unknown, as after a lost connection or an answer
+// origin never gave. The record commit is kept either way: a caller that
+// cannot tell whether origin took it can compare origin's ref with it
+// later.
 
 package rebase
 
@@ -31,13 +33,19 @@ func WriteRecord(ctx context.Context, g Git, r *change.Record, message string, p
 	if len(data) > change.MaxRecordBlob {
 		return "", fmt.Errorf("the change's record would be %d bytes, more than the %d a record may be", len(data), change.MaxRecordBlob)
 	}
+	return writeOneFile(ctx, g, "record", "record.json", data, message, parents...)
+}
+
+// writeOneFile writes a commit whose tree holds one plain file, with the
+// parents given, and returns its ID. what names the file in errors.
+func writeOneFile(ctx context.Context, g Git, what, name string, data []byte, message string, parents ...string) (string, error) {
 	blob, err := g.input(ctx, false, bytes.NewReader(data), "hash-object", "-w", "--stdin")
 	if err != nil {
-		return "", errors.New("could not write the record")
+		return "", errors.New("could not write the " + what)
 	}
-	tree, err := g.input(ctx, false, strings.NewReader("100644 blob "+blob+"\trecord.json\n"), "mktree")
+	tree, err := g.input(ctx, false, strings.NewReader("100644 blob "+blob+"\t"+name+"\n"), "mktree")
 	if err != nil {
-		return "", errors.New("could not write the record's tree")
+		return "", errors.New("could not write the " + what + "'s tree")
 	}
 	args := []string{"commit-tree", tree}
 	for _, p := range parents {
@@ -45,7 +53,7 @@ func WriteRecord(ctx context.Context, g Git, r *change.Record, message string, p
 	}
 	commit, err := g.input(ctx, false, strings.NewReader(message+"\n"), append(args, "-F", "-")...)
 	if err != nil {
-		return "", errors.New("could not write the record commit")
+		return "", errors.New("could not write the " + what + " commit")
 	}
 	return commit, nil
 }
@@ -133,12 +141,12 @@ func readPush(out string) (Push, []RefusedRef) {
 	return Unknown, nil
 }
 
-// RecordWrite is a record commit pushed to a change's record ref, and what
-// became of the push.
+// RecordWrite is a record commit pushed to a change's record ref, or a
+// report commit pushed to its report ref, and what became of the push.
 type RecordWrite struct {
-	Ref    string // the change's record ref
-	Old    string // the record commit the push was leased on; "" for a record that did not exist
-	Commit string // the record commit written
+	Ref    string // the change's record ref, or its report ref
+	Old    string // the commit the push was leased on; "" for a ref that did not exist
+	Commit string // the commit written
 	Push   Push
 	Why    string // git's reason, when origin refused it
 }
@@ -148,7 +156,11 @@ type RecordWrite struct {
 // read, and a record that did not exist must still not exist. The hook's
 // refusal reaches Stderr through git.
 func PushRecord(ctx context.Context, g Git, id, old, commit string) RecordWrite {
-	ref := change.Ref(Target, id)
+	return pushLeased(ctx, g, change.Ref(Target, id), old, commit)
+}
+
+// pushLeased moves ref on origin from old to commit, leased on old.
+func pushLeased(ctx context.Context, g Git, ref, old, commit string) RecordWrite {
 	w := RecordWrite{Ref: ref, Old: old, Commit: commit}
 	var refused []RefusedRef
 	w.Push, refused = push(ctx, g, "--quiet", "--force-with-lease="+ref+":"+old, "origin", commit+":"+ref)
@@ -280,6 +292,18 @@ type Append struct {
 	Principal string // the principal the push authenticates as, named as the version's uploader
 }
 
+// RestackAppend is a version the restack grant adds to a ready change: the
+// head a restack moved the change's branch to. The version names the
+// branch of the active version and keeps its title, as the hook requires
+// of a version the restack grant authorises (valleyhook/record.go). The
+// branch on origin must be at Head exactly.
+type RestackAppend struct {
+	ID        string // the change
+	Head      string // the head the restack moved the branch to, as a full object ID
+	IfActive  string // the head the change must still be ready at: the one the restack rebased
+	Principal string // the principal the push authenticates as, named as the version's uploader
+}
+
 // Appended is what became of an Append.
 type Appended struct {
 	Handle  string      // the change's handle on origin
@@ -288,84 +312,208 @@ type Appended struct {
 	Err     error       // why no version was added; nil when one was
 }
 
+// PendingVersion is a version written into a record commit and not yet
+// pushed. A caller that has to know after a crash whether origin took the
+// commit keeps Commit and Old somewhere durable before it calls Push.
+// Origin's record ref at Commit then means the push was taken, and at Old
+// that it was not.
+type PendingVersion struct {
+	ID      string         // the change
+	Handle  string         // its handle on origin
+	Ref     string         // its record ref
+	Old     string         // the record commit read, which the push is leased on
+	Commit  string         // the record commit written
+	Record  *change.Record // the record Commit holds
+	Version int            // the version it adds
+	Head    string         // the head that version records
+	Branch  string         // the branch that version names
+	restack bool
+}
+
 // AppendVersion adds a.Head to the change's record as its next version,
 // only while the change is still ready at a.IfActive. It reads the record
 // and pushes the new one leased on the record it read, so nothing can
 // unready the change or ready another version between that check and the
-// write.
+// write. It is BuildVersion and Push in one call.
 func AppendVersion(ctx context.Context, g Git, a Append) Appended {
-	ap := Appended{}
-	ap.Err = func() error {
-		switch {
-		case !change.ValidPrincipal(a.Principal):
-			return fmt.Errorf("%q is not a principal's name", a.Principal)
-		case !change.ValidBranch(a.Branch):
-			return errors.New("not a branch name: " + a.Branch)
-		case !change.ValidID(a.ID):
-			return fmt.Errorf("%q is not a change ID", a.ID)
-		case !IsObjectID(a.Head) || !IsObjectID(a.IfActive):
-			return errors.New("a version is added at a head given as a full object ID, while the change is at another given the same way")
+	p, err := buildVersion(ctx, g, a, false)
+	if err != nil {
+		return Appended{Handle: p.Handle, Err: err}
+	}
+	return p.Push(ctx, g)
+}
+
+// BuildVersion reads origin and writes the record commit that adds a.Head
+// as the change's next version, as AppendVersion does, and pushes nothing.
+// The version's title is a.Head's commit subject.
+func BuildVersion(ctx context.Context, g Git, a Append) (*PendingVersion, error) {
+	p, err := buildVersion(ctx, g, a, false)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// BuildRestack reads origin and writes the record commit that adds a.Head
+// as the change's next version under the restack grant, and pushes
+// nothing. The change must be ready at a.IfActive. Its active version must
+// name a branch, and origin's branch must be at a.Head exactly: a head
+// further along it is the owner's work, which no restack records. The new
+// version keeps the active version's branch and title.
+//
+// Push reads the branch once more before it pushes. No read can be atomic
+// with the push, though: the push is leased on the record ref alone, and
+// git compares only the refs a push changes, so the branch can still move
+// between that read and the record's write.
+func BuildRestack(ctx context.Context, g Git, a RestackAppend) (*PendingVersion, error) {
+	p, err := buildVersion(ctx, g, Append{ID: a.ID, Head: a.Head, IfActive: a.IfActive, Principal: a.Principal}, true)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// buildVersion is BuildVersion, and BuildRestack when restack is set. The
+// PendingVersion it returns with an error names the change, and its
+// handle once origin has been read.
+func buildVersion(ctx context.Context, g Git, a Append, restack bool) (*PendingVersion, error) {
+	p := &PendingVersion{ID: a.ID, restack: restack}
+	switch {
+	case !change.ValidPrincipal(a.Principal):
+		return p, fmt.Errorf("%q is not a principal's name", a.Principal)
+	case !restack && !change.ValidBranch(a.Branch):
+		return p, errors.New("not a branch name: " + a.Branch)
+	case !change.ValidID(a.ID):
+		return p, fmt.Errorf("%q is not a change ID", a.ID)
+	case !IsObjectID(a.Head) || !IsObjectID(a.IfActive):
+		return p, errors.New("a version is added at a head given as a full object ID, while the change is at another given the same way")
+	}
+	// A restack reads its branch from the record, so it lists every branch
+	// in the same read as the record.
+	branches := "refs/heads/" + a.Branch
+	if restack {
+		branches = "refs/heads/*"
+	}
+	o, err := ListOrigin(ctx, g, append([]string{"refs/heads/" + Target, branches}, RecordPatterns...)...)
+	if err != nil {
+		return p, err
+	}
+	tip := o.Refs["refs/heads/"+Target]
+	if tip == "" {
+		return p, errors.New("origin has no " + Target + " branch, so a change has nothing to target")
+	}
+	p.Ref = change.Ref(Target, a.ID)
+	p.Old = o.Refs[p.Ref]
+	var before *change.Record
+	if restack {
+		if before, err = readBefore(ctx, g, p.Old); err != nil {
+			return p, err
 		}
-		o, err := ListOrigin(ctx, g, append([]string{"refs/heads/" + Target, "refs/heads/" + a.Branch}, RecordPatterns...)...)
-		if err != nil {
-			return err
+		p.Handle = o.Handle(a.ID)
+		if err := CheckActive(p.Handle, before, a.IfActive); err != nil {
+			return p, err
 		}
-		tip, remote := o.Refs["refs/heads/"+Target], o.Refs["refs/heads/"+a.Branch]
-		if tip == "" {
-			return errors.New("origin has no " + Target + " branch, so a change has nothing to target")
+		active := before.ActiveVersion()
+		if active.Branch == "" {
+			return p, fmt.Errorf("%s v%d names no branch, so no restack moved one and no version is added", p.Handle, active.N)
 		}
-		if err := Fetch(ctx, g, tip, remote); err != nil {
-			return err
+		a.Branch = active.Branch
+		if err := atHead(o, a.Branch, a.Head); err != nil {
+			return p, err
 		}
-		head, err := g.output(ctx, true, "rev-parse", "--verify", "--quiet", a.Head+"^{commit}")
-		if err != nil || remote == "" || !g.succeeds(ctx, true, "merge-base", "--is-ancestor", head, remote) {
-			return errors.New(a.Head + " is not on origin's " + a.Branch + "; push it there first")
+	}
+	remote := o.Refs["refs/heads/"+a.Branch]
+	if err := Fetch(ctx, g, tip, remote); err != nil {
+		return p, err
+	}
+	head, err := g.output(ctx, true, "rev-parse", "--verify", "--quiet", a.Head+"^{commit}")
+	if err != nil || remote == "" || !g.succeeds(ctx, true, "merge-base", "--is-ancestor", head, remote) {
+		return p, errors.New(a.Head + " is not on origin's " + a.Branch + "; push it there first")
+	}
+	if err := CheckRange(ctx, g, tip, head); err != nil {
+		return p, err
+	}
+	header, trailer, err := HeadIDs(ctx, g, head)
+	if err != nil {
+		return p, err
+	}
+	if header != "" && trailer != "" && header != trailer {
+		return p, fmt.Errorf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer)
+	}
+	var title string
+	if restack {
+		title = before.ActiveVersion().Title
+	} else {
+		if before, err = readBefore(ctx, g, p.Old); err != nil {
+			return p, err
 		}
-		if err := CheckRange(ctx, g, tip, head); err != nil {
-			return err
-		}
-		header, trailer, err := HeadIDs(ctx, g, head)
-		if err != nil {
-			return err
-		}
-		if header != "" && trailer != "" && header != trailer {
-			return fmt.Errorf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer)
-		}
-		ref := change.Ref(Target, a.ID)
-		old := o.Refs[ref]
-		var before *change.Record
-		if old != "" {
-			if err := Fetch(ctx, g, old); err != nil {
-				return err
-			}
-			if before, err = ReadRecord(ctx, g, old); err != nil {
-				return err
-			}
-		}
-		ap.Handle = o.Handle(a.ID)
-		if err := CheckActive(ap.Handle, before, a.IfActive); err != nil {
-			return err
+		p.Handle = o.Handle(a.ID)
+		if err := CheckActive(p.Handle, before, a.IfActive); err != nil {
+			return p, err
 		}
 		subject, err := g.output(ctx, true, "log", "-1", "--format=%s", head)
 		if err != nil {
-			return errors.New("could not read the subject of " + short(head))
+			return p, errors.New("could not read the subject of " + short(head))
 		}
-		after, err := NextRecord(ap.Handle, before, change.Version{
-			Head: change.HeadPrefix + head, Title: change.Title(subject), Branch: a.Branch, Uploader: a.Principal,
-		})
+		title = change.Title(subject)
+	}
+	after, err := NextRecord(p.Handle, before, change.Version{
+		Head: change.HeadPrefix + head, Title: title, Branch: a.Branch, Uploader: a.Principal,
+	})
+	if err != nil {
+		return p, err
+	}
+	commit, err := WriteRecord(ctx, g, after, ReadyMessage(p.Handle, a.ID, after.Active, head), p.Old, head)
+	if err != nil {
+		return p, err
+	}
+	p.Commit, p.Record, p.Version, p.Head, p.Branch = commit, after, after.Active, head, a.Branch
+	return p, nil
+}
+
+// readBefore reads the record a record commit on origin holds, or nil for
+// none.
+func readBefore(ctx context.Context, g Git, old string) (*change.Record, error) {
+	if old == "" {
+		return nil, nil
+	}
+	if err := Fetch(ctx, g, old); err != nil {
+		return nil, err
+	}
+	return ReadRecord(ctx, g, old)
+}
+
+// atHead refuses a branch that o does not list at head exactly.
+func atHead(o Origin, branch, head string) error {
+	switch at := o.Refs["refs/heads/"+branch]; {
+	case at == "":
+		return fmt.Errorf("origin has no %s, so it is not at %s and no version is added", branch, short(head))
+	case at != head:
+		return fmt.Errorf("origin's %s is at %s, not %s, so no version is added: a restack records only the head it moved the branch to", branch, short(at), short(head))
+	}
+	return nil
+}
+
+// Push pushes the record commit to the change's record ref, leased on
+// Old. A restack's push first reads origin's branch once more, and pushes
+// nothing unless the branch is still at Head (see BuildRestack).
+func (p *PendingVersion) Push(ctx context.Context, g Git) Appended {
+	ap := Appended{Handle: p.Handle, Write: RecordWrite{Ref: p.Ref, Old: p.Old, Commit: p.Commit}}
+	if p.restack {
+		o, err := ListOrigin(ctx, g, "refs/heads/"+p.Branch)
+		if err == nil {
+			err = atHead(o, p.Branch, p.Head)
+		}
 		if err != nil {
-			return err
+			ap.Err = err
+			return ap
 		}
-		commit, err := WriteRecord(ctx, g, after, ReadyMessage(ap.Handle, a.ID, after.Active, head), old, head)
-		if err != nil {
-			return err
-		}
-		ap.Write = PushRecord(ctx, g, a.ID, old, commit)
-		if ap.Write.Push != Pushed {
-			return errors.New("origin did not take the record of " + a.ID)
-		}
-		ap.Version = after.Active
-		return nil
-	}()
+	}
+	ap.Write = PushRecord(ctx, g, p.ID, p.Old, p.Commit)
+	if ap.Write.Push != Pushed {
+		ap.Err = errors.New("origin did not take the record of " + p.ID)
+		return ap
+	}
+	ap.Version = p.Version
 	return ap
 }

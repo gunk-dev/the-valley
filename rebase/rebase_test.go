@@ -160,13 +160,20 @@ func (w *world) moveMain(file, content string) string {
 }
 
 // ready writes a ready record for a change at v1, on branch at its head on
-// origin, through the engine's own write path.
+// origin, through the engine's own write path. Its title is its head's
+// commit subject.
 func (w *world) ready(id, branch string) {
+	w.t.Helper()
+	w.readyTitled(id, branch, "layer "+branch)
+}
+
+// readyTitled is ready with the title given.
+func (w *world) readyTitled(id, branch, title string) {
 	w.t.Helper()
 	head := w.at("refs/heads/" + branch)
 	r := &change.Record{
 		Schema: change.Schema, ChangeID: id, Target: Target, Owner: "author", State: change.Ready, Seq: 1, Active: 1,
-		Versions: []change.Version{{N: 1, Head: change.HeadPrefix + head, Title: "layer " + branch, Branch: branch, Uploader: "author"}},
+		Versions: []change.Version{{N: 1, Head: change.HeadPrefix + head, Title: title, Branch: branch, Uploader: "author"}},
 	}
 	w.write(id, r, "", head)
 }

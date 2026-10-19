@@ -430,11 +430,9 @@ func (s *Snapshot) digest(oid string) (string, bool) {
 	if d, ok := s.digestOf[oid]; ok {
 		return d, d != ""
 	}
-	cmd := exec.CommandContext(s.ctx, s.verify.Attest, "digest", "--repo", s.repoDir(), "--rev", oid)
-	cmd.Env = s.g.Env
-	out, err := cmd.Output()
+	out, err := s.g.tool(s.ctx, s.verify.Attest, "digest", "--repo", s.repoDir(), "--rev", oid).Output()
 	d := ""
-	if scheme, value, ok := strings.Cut(strings.TrimSpace(string(out)), ":"); err == nil && ok && scheme == "valley-tree-v1" {
+	if scheme, value, ok := strings.Cut(strings.TrimSpace(string(out)), ":"); finished(err) == nil && ok && scheme == "valley-tree-v1" {
 		d = value
 	}
 	s.digestOf[oid] = d
@@ -460,11 +458,10 @@ func (s *Snapshot) verified(t transferStatement) bool {
 		s.unverified = true
 		return false
 	}
-	cmd := exec.CommandContext(s.ctx, s.verify.Attest, "verify", "--note", file.Name(),
+	cmd := s.g.tool(s.ctx, s.verify.Attest, "verify", "--note", file.Name(),
 		"--known-keys", s.verify.Keys, "--signer", s.verify.Signer,
 		"--repo", s.repoDir(), "--rev", t.landed)
-	cmd.Env = s.g.Env
-	if err := cmd.Run(); err != nil {
+	if err := finished(cmd.Run()); err != nil {
 		// attest refusing the note is an answer. Failing to run it is not.
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) {

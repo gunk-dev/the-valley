@@ -21,6 +21,13 @@ type Git struct {
 	Env    []string  // git's environment; nil for this process's own
 	Stdout io.Writer // where a rebase prints as it goes; nil discards it
 	Stderr io.Writer // where git's own diagnostics go, unless quiet; nil discards them
+
+	// Unattended is git that nobody is at a terminal for, as a service's
+	// is. Every command runs in a process group of its own, a command that
+	// reaches origin included, so a cancelled context kills what that
+	// command started too, such as ssh. A caller that sets it never lets git
+	// or ssh ask a question: see command.
+	Unattended bool
 }
 
 // waitDelay is how long a wait for git's output may go on after git has
@@ -42,17 +49,49 @@ var reachesOrigin = map[string]bool{"ls-remote": true, "fetch": true, "push": tr
 // process that has left the group.
 //
 // A command that reaches origin stays in the caller's process group, and
-// is killed alone. A process group of its own is not the terminal's
-// foreground group, and a process outside that group that reads the
-// terminal is stopped. ssh reads the terminal to ask for a passphrase,
-// and git reads it to ask for credentials.
+// is killed alone, unless g is Unattended. A process group of its own is
+// not the terminal's foreground group, and a process outside that group
+// that reads the terminal is stopped. ssh reads the terminal to ask for a
+// passphrase, and git reads it to ask for credentials.
 func (g Git) command(ctx context.Context, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Env, cmd.Dir, cmd.WaitDelay = g.Env, g.Dir, waitDelay
-	if len(args) == 0 || !reachesOrigin[args[0]] {
+	if g.Unattended || len(args) == 0 || !reachesOrigin[args[0]] {
 		ownGroup(cmd)
 	}
 	return cmd
+}
+
+// Command is git with the arguments given, run as the engine runs its
+// own: in g's repository and environment, killed with what it started
+// once ctx is done, and with the wait for its output bounded. A caller
+// that runs git beside the engine runs it this way, so its git is bounded
+// as the engine's is.
+func (g Git) Command(ctx context.Context, args ...string) *exec.Cmd {
+	return g.command(ctx, args...)
+}
+
+// tool is a program other than git, such as attest, run in g's
+// environment. It never reads the terminal, so it always runs in a
+// process group of its own, killed whole once ctx is done, and the wait
+// for its output is bounded as git's is.
+func (g Git) tool(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env, cmd.WaitDelay = g.Env, waitDelay
+	ownGroup(cmd)
+	return cmd
+}
+
+// cleanupBound is the longest cleanup may run: removing a worktree,
+// aborting its rebase, and deleting the refs that kept a prepared family.
+var cleanupBound = time.Minute
+
+// cleanupContext is the context cleanup runs under. It is not cancelled
+// with ctx, since cleanup has to run once the caller's work is cancelled
+// or past its deadline. It is done after cleanupBound, so cleanup cannot
+// hang on a hook or a filter that never returns.
+func cleanupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), cleanupBound)
 }
 
 // finished is the error of git that has ended. git that exits zero has

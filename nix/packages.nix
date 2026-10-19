@@ -393,8 +393,10 @@ rec {
   # would hold. It reads the cap on its automatic versions through the
   # composed-policy reader it shares with the integrator (../composed). Its
   # unit tests cover request association, outcome currency and capacity,
-  # and go vet runs after them. Go, standard library only — hence
-  # vendorHash = null and no module fetch.
+  # and, against real git, its scratch repository's identity, its state
+  # directory's lock and binding, and the deadline on what it runs. go vet
+  # runs after them. Go, standard library only — hence vendorHash = null
+  # and no module fetch.
   restack-unwrapped = pkgs.buildGoModule {
     pname = "valley-restacker";
     version = "0";
@@ -404,8 +406,11 @@ rec {
       ../rebase
     ];
     modRoot = "restack";
+    # The program alone: e2e/transport is a module of the tests' own.
+    subPackages = [ "." ];
     vendorHash = null;
     preBuild = readsGoMod;
+    nativeCheckInputs = [ pkgs.git ];
     postCheck = ''
       go vet ./...
     '';

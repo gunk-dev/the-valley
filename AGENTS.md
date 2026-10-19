@@ -76,7 +76,8 @@ change, and the knot links that change.
    `services.valley`, `policy/`, and `identity/`.
 5. **Carry a claim-to-code checklist.** Every documentation slice brief and change description must
    list each factual claim added or modified, its kind, and an exact `file:line` citation verified
-   against HEAD before review.
+   against HEAD before review. The checklist lives in a slice brief and the change description, not
+   in the docs themselves.
 6. **Present tense, no transition narration.** Describe what HEAD does today. Live plans and open
    questions belong in `valley plan` (`refs/the-valley/knots`), not in prose docs. Do not compare
    the-valley to other platforms; positioning is the operator's to write.

@@ -1412,9 +1412,9 @@ configuration.
   `current` that `valley-status/v1` gives it.
 - `knots` lists the knots the change does: every knot in its repository's plan graph whose `changes`
   lists `valley:<repo>/<change ID>`, with its ID, type, status and title. Active knots come first,
-  then terminal ones, each group in ID order. Links to other projects or to pull requests are
-  ignored. Each repository's graph is read once per command. When the graph is missing or
-  unreadable, every change gets `[]`, and `-v` says why on stderr.
+  then terminal ones, each group in ID order. Links to other projects or to GitHub are ignored. Each
+  repository's graph is read once per command. When the graph is missing or unreadable, every change
+  gets `[]`, and `-v` says why on stderr.
 - `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
   no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
@@ -1578,18 +1578,18 @@ graph. `blocked_by`, on outcomes and bugs, names knots in the graph, or another 
 `<project>:<id>`, which only a reader resolves. Neither kind of edge forms a cycle.
 `graduated_into`, on a graduated idea, names an outcome in the graph, when the idea is taken on as
 work, or a question, when it needs settling. `changes`, on outcomes, bugs and questions, links
-changes, each as `valley:<project>/<change ID>` or as a GitHub pull request URL. On an outcome or a
-bug, they are the changes that do its work. On a question, it is the change that records its answer
-in the source's docs. `valley review`, `valley pending`, `valley changes` and `valley status --json`
-read these links to show the knots each change does (see [Listing changes](#listing-changes)). A
-question may link none, when its answer is a comment or an outcome that does the work. An idea links
-none, because it graduates into an outcome or a question. A knot is never deleted, and its `id`,
-`type`, `created` and `created_by` never change. A comment is only ever added. A new knot's
-`created_by`, and a new comment's `author`, name the principal that writes it. The module and the
-CUE schema with the knowledge lint are two validators of one documented schema, and `knot-agree`
-runs both over shared fixtures and generated graphs and fails on any disagreement about the rules
-they share. The canonical form, the layout, cycles and transitions are the module's alone, and
-`knot-unit` covers them.
+changes, each as `valley:<project>/<change ID>` or as `https://github.com/<owner>/<repo>/pull/<n>`.
+On an outcome or a bug, they are the changes that do its work. On a question, it is the change that
+records its answer in the source's docs. `valley review`, `valley pending`, `valley changes` and
+`valley status --json` read these links to show the knots each change does (see
+[Listing changes](#listing-changes)). A question may link none, when its answer is a comment or an
+outcome that does the work. An idea links none, because it graduates into an outcome or a question.
+A knot is never deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is
+only ever added. A new knot's `created_by`, and a new comment's `author`, name the principal that
+writes it. The module and the CUE schema with the knowledge lint are two validators of one
+documented schema, and `knot-agree` runs both over shared fixtures and generated graphs and fails on
+any disagreement about the rules they share. The canonical form, the layout, cycles and transitions
+are the module's alone, and `knot-unit` covers them.
 
 `valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
 `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project

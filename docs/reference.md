@@ -93,7 +93,7 @@ unset GIT_REPLACE_REF_BASE GIT_GRAFT_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJ
 
 | Exit code | Meaning                                                                                                                                                                                                                               |
 | :-------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `0`       | Command succeeded (`self-update` also exits `0` when already up to date, when another run holds the lock, when pinned, or when the current branch tip already failed previously without `--retry`).                                   |
+| `0`       | Command succeeded (`self-update` also exits `0` when already up to date, when another run holds the lock, when pinned, or when the current branch tip already failed and `--retry` is not given).                                     |
 | `1`       | Command refused or failed (invalid state, failed check, rejected push, missing git config, runtime error, or invalid CLI flags in `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `plan`, or `bin/valley`). |
 | `2`       | Invalid `valley knot` or `valley self-update` CLI usage, bad `VALLEY_NOW` timestamp in `knot` or `plan`, or unknown `valley-go` verb.                                                                                                 |
 | `3`       | Plan graph compare-and-set or precondition conflict in `valley knot` (such as concurrent modification of a field without `--force`, a failed `--if <field>=<value>` check, or a claim held by another run).                           |
@@ -487,8 +487,8 @@ valley help [self-update]
   - `--branch <name>`: Branch to track, overriding `git config valley.selfUpdate.branch` (default
     `main`).
   - `-v`, `--verbose`: Prints status even when the installed `valley` is already at the branch tip.
-  - `--retry`: Retries building the branch tip even if that exact commit previously failed its build
-    or smoke test.
+  - `--retry`: Retries building the branch tip even if that exact commit already failed its build or
+    smoke test.
   - `--rollback`: Reinstalls the previous store path recorded in
     `$XDG_STATE_HOME/valley/self-update.json` (running `--rollback` again switches back).
   - `--pin` / `--unpin`: Freezes or unfreezes the installed `valley` in

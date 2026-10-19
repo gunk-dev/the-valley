@@ -27,7 +27,7 @@ are under Further work below. The plan gives them no position in the sequence.
 This step closes particular paths from an agent to a host:
 
 - M0, containment: klaus does not merge on approval, unifi-sync runs only by hand, and the update
-  workflows open pull requests.
+  workflows open GitHub pull requests. <!-- prose-allow: vocabulary -->
 - M0-H, credentials: two YubiKeys are enrolled, and every cosmo secret is encrypted to the YubiKeys
   and the hosts only. Credential rotation is deferred.
 - M1-A, converge: a host health-checks each new generation, rolls back on failure, and holds the bad
@@ -37,7 +37,8 @@ This step closes particular paths from an agent to a host:
 - The ref policy: the valley's push hook is default-deny, and filing an integration request needs
   the `request` grant.
 - The CI runners' root helpers run with a clean environment, which closes the known path from a pull
-  request job to root on the CI host. Isolating the runners (M2) is the durable fix.
+  request job <!-- prose-allow: vocabulary --> to root on the CI host. Isolating the runners (M2) is
+  the durable fix.
 
 **Unlocks:** an agent's approval does not merge a change by itself, and a failed activation rolls
 back or holds. A merge to cosmo's `main` on GitHub still deploys, and `patflynn-agent` can make one

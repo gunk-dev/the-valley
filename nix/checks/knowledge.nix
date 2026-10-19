@@ -44,11 +44,13 @@
   } (builtins.readFile ./knowledge-lint-rejects.sh);
 
   # Markdown prose format (ida-1ec03b1): formatter idempotence —
-  # formatting the tree must change nothing — and relative link and
-  # heading-anchor integrity across README.md, AGENTS.md and docs/*.md.
+  # formatting the tree must change nothing — and, across README.md,
+  # AGENTS.md and docs/*.md, relative link and heading-anchor integrity
+  # and the style rules of AGENTS.md that a pattern can catch.
   # On formatting failure, fix with `nix run .#fmt`.
   prose-format = pkgs.runCommand "valley-prose-format" {
     nativeBuildInputs = [
+      pkgs.gawk
       pkgs.prettier
       pkgs.python3
     ];

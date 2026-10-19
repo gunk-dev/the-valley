@@ -83,10 +83,17 @@ change, and the knot links that change.
    the-valley to other platforms; positioning is the operator's to write.
 7. **Use the project's vocabulary.** A change's recorded state is `draft`, `ready`, or `withdrawn`.
    A version is `approved` when an integration request names it, and `submitted` once it has landed.
-   Never call a change a PR, pull request, or branch; a git branch may carry a change. A change
-   **requires** checks; it never owes them. A plan item is a **knot** in the **plan graph**, never
-   an issue, ticket, or knowledgebase entry. Operational refs (`refs/the-valley/*`) are **project
-   storage**, distinct from **the source** (`main` and release tags).
+   Never call a change a PR, <!-- prose-allow: vocabulary --> pull request, or branch; a git branch
+   may carry a change. A change **requires** checks; it never owes <!-- prose-allow: vocabulary -->
+   them. A plan item is never an issue, ticket, <!-- prose-allow: vocabulary --> or knowledgebase
+   entry; it is a **knot** in the **plan graph**. Operational refs (`refs/the-valley/*`) are
+   **project storage**, distinct from **the source** (`main` and release tags).
 8. **Keep the Taoist wink at thresholds.** One light sentence can introduce the valley as the low
    place where streams of work converge, or knots as records named for knotted cords before writing.
    Keep metaphor out of procedures, error messages, and security invariants.
+
+The `prose-format` check enforces the parts of rules 5, 6 and 7 that a pattern can catch: it fails
+on a source path followed by a line number anywhere, and, outside fenced code blocks, on common
+transition phrases and on the words rule 7 bans. To allow a legitimate use, such as quoting a banned
+word, put `<!-- prose-allow: <rule> -->` on its line, where the rule is `line-number`, `narration`
+or `vocabulary`; the marker allows that one rule on that line only.

@@ -317,8 +317,8 @@ help.
 
 ### A stale or rejected request
 
-A `stale` result means the change conflicts with `main` or required evidence is missing or no longer
-transfers. Read the reason in `status`. If the base moved,
+A `stale` result means the change conflicts with `main` or required evidence is missing or does not
+transfer across `main` movement. Read the reason in `status`. If the base moved,
 [revoke the outstanding request](#withdraw-or-revoke-an-approval), restack the ready change, then
 ask for a fresh review and approval:
 
@@ -686,7 +686,7 @@ done
 ```
 
 Run a single Nix check by name. For documentation, format first, then check formatting, links, and
-the policy that selects checks:
+the style rules, then the policy that selects checks:
 
 ```sh
 nix run .#fmt

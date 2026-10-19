@@ -61,3 +61,31 @@ Design decisions are recorded directly in [docs/architecture.md](./docs/architec
 still open lives in the project's plan graph as a `question` knot, owned by whoever has to answer
 it. When its answer settles something about the design, the answer enters these docs through a
 change, and the knot links that change.
+
+## Documentation style and verification
+
+1. **Simple language, one new idea per sentence.** Lead every section with a plain statement of what
+   the thing is in ordinary words before qualifying it. Split sentences that stack abstractions.
+2. **Meaning before mechanism.** Say what a concept or command accomplishes for the reader before
+   explaining git refs, CUE unification, or Nix derivations.
+3. **Example before abstraction.** In guides and reference material, show a concrete command or a
+   short snippet before edge-case rules or schema tables.
+4. **Separate three kinds of claim.** Label code guarantees `implemented`, instance configuration
+   `deployment choice`, and mechanisms that do not work yet `not built`. Never present a deployment
+   choice or an unbuilt plan as a code guarantee. Configuration includes `valley.cue`,
+   `services.valley`, `policy/`, and `identity/`.
+5. **Carry a claim-to-code checklist.** Every documentation slice brief and change description must
+   list each factual claim added or modified, its kind, and an exact `file:line` citation verified
+   against HEAD before review.
+6. **Present tense, no transition narration.** Describe what HEAD does today. Live plans and open
+   questions belong in `valley plan` (`refs/the-valley/knots`), not in prose docs. Do not compare
+   the-valley to other platforms; positioning is the operator's to write.
+7. **Use the project's vocabulary.** A change's recorded state is `draft`, `ready`, or `withdrawn`.
+   A version is `approved` when an integration request names it, and `submitted` once it has landed.
+   Never call a change a PR, pull request, or branch; a git branch may carry a change. A change
+   **requires** checks; it never owes them. A plan item is a **knot** in the **plan graph**, never
+   an issue, ticket, or knowledgebase entry. Operational refs (`refs/the-valley/*`) are **project
+   storage**, distinct from **the source** (`main` and release tags).
+8. **Keep the Taoist wink at thresholds.** One light sentence can introduce the valley as the low
+   place where streams of work converge, or knots as records named for knotted cords before writing.
+   Keep metaphor out of procedures, error messages, and security invariants.

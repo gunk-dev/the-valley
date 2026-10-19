@@ -48,6 +48,8 @@ valley review kqxm              # inspect the diff (and interactively approve)
 ## Documentation
 
 - **[Concepts and glossary](./docs/concepts.md)** — Core concepts and every term defined.
+- **[Guide](./docs/guide.md)** — Setup and everyday journeys for authors, reviewers, planners,
+  administrators, and contributors.
 - **[Architecture](./docs/architecture.md)** — Component design, policy, identity, and checks.
 - **[Security](./docs/security.md)** — Threat model, trust boundaries, and rollout gates.
 - **[Archive](./archive/)** and **[Research](./research/)** — Historical nodes and research notes.

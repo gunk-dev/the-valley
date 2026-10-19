@@ -27,7 +27,7 @@ An operator lists ready changes with `valley pending` and inspects one with
 `valley review <change>`, which offers an interactive prompt. So a reviewer does not have to re-read
 an entire change from scratch after a rebase or revision, `valley review` compares the active
 version against its earlier **approved version** when one can be compared
-([status/compare.go:1-46](../status/compare.go), [bin/valley:968-1033](../bin/valley)): if the file
+([status/compare.go:1-46](../status/compare.go), [bin/valley:976-1059](../bin/valley)): if the file
 delta is unchanged (a clean restack), it prints a short summary with any landings between the two
 bases and pages nothing; if the version changed files, it pages the comparison (the files whose
 change differs, the range-diff between the two versions, and the shown version's diff of those
@@ -92,7 +92,7 @@ carry an approval across a rebase, each path class can also declare a `carry` mo
 `same-class`, or `exact`); `valley checks` reports the composed carry mode, while acting on `carry`
 to carry approval automatically across restacks is **not built yet**
 ([schema/verification.cue:300-308](../schema/verification.cue),
-[docs/architecture.md:1808](./architecture.md#policy)).
+[docs/architecture.md:629-653](./architecture.md#policy)).
 
 Checks come in two kinds: **pure checks**, which build Nix flake check targets via `nix build`
 (`runner: "nix"`, `<root>#checks.<system>.<attr>`; [attest/check.go:138](../attest/check.go), with
@@ -118,14 +118,17 @@ policy sets a non-zero `validity` window, and the attestation age is strictly wi
 
 _How git realizes this:_ Signed notes live under
 `refs/the-valley/attestations/<tree-digest>/<key-hash>`. So readers can verify that `main`'s new
-tree satisfied policy even when a landing was merged onto a newer `main`, after `git update-ref`
-advances `main` on a landing — whether fast-forward or merged — the integrator countersigns the
-contributor's notes and writes a signed **transfer statement**
-(`the-valley/integration/transfer/v1`) recording the landed tree, the attested base tree, the policy
-digest, and the per-check verdicts ([integrator/refs.go:465-515](../integrator/refs.go),
-[integrator/transfer.go:43-97](../integrator/transfer.go)). Because those writes follow `update-ref`
-rather than sharing an atomic multi-ref transaction, a failure after `update-ref` leaves `main`
-advanced and causes the landing to report as `uncertain` until reconciled.
+tree satisfied policy even when a landing was merged onto a newer `main`, on a landing — whether
+fast-forward or merged — the integrator signs a **transfer statement**
+(`the-valley/integration/transfer/v1`, recording the landed tree, the attested base tree, the policy
+digest, and the per-check verdicts) and countersigns the contributor's notes before `git update-ref`
+advances `main`, then stores that signed evidence afterward
+([integrator/refs.go:466-518](../integrator/refs.go),
+[integrator/transfer.go:43-97](../integrator/transfer.go)). Because storing the evidence, consuming
+the request, and writing the outcome follow `update-ref` rather than sharing an atomic multi-ref
+transaction, a failure after `update-ref` can leave `main` advanced with incomplete records
+(fast-forward landings still report `landed`, while merged landings can report `uncertain` when the
+required evidence is missing).
 
 ## The host, the hook, and the integrator
 
@@ -144,19 +147,20 @@ components guard it:
   `refs/heads/main` and `protection.writers` is empty, no SSH push may update `main`, whereas a
   project with no `protection` block leaves all branches open
   ([valleyhook/policy.go:12-16](../valleyhook/policy.go), [186-188](../valleyhook/policy.go)).
-  Unprotected topic branches (`refs/heads/*`) are open to any authorized key; refs outside
-  `refs/heads/*` and the four open `refs/the-valley/*` namespaces (including `refs/tags/*`) are
-  closed by default unless authorized by a project-level ref grant (`grants.<name>: {refs, writers}`
-  in `valley.cue`; [valleyhook/policy.go:18-24](../valleyhook/policy.go),
-  [139-145](../valleyhook/policy.go), [199-219](../valleyhook/policy.go)). On `refs/the-valley/*`,
-  the hook enforces schema and permission rules: any named principal may create a change record
-  (becoming its `owner`); only the change's `owner` or a `request` grant holder may update a change
-  record, except that a `restack` grant holder may add a single version to a `ready` change keeping
-  its active branch and title ([valleyhook/record.go:160-198](../valleyhook/record.go),
-  [264-272](../valleyhook/record.go)); only a `request` holder may delete a change record or
-  write/delete integration requests ([valleyhook/policy.go:151-158](../valleyhook/policy.go),
+  Unprotected topic branches (`refs/heads/*`) are open to any authorized key; outside
+  `refs/heads/*`, the four admitted `refs/the-valley/*` namespaces, and the exact
+  `refs/the-valley/knots` ref, refs (including `refs/tags/*`) require a project-level ref grant
+  (`grants.<name>: {refs, writers}` in `valley.cue`) unless categorically forbidden
+  ([valleyhook/policy.go:18-24](../valleyhook/policy.go), [124-225](../valleyhook/policy.go)). On
+  `refs/the-valley/*`, the hook enforces schema and permission rules: any named principal may create
+  a change record (becoming its `owner`); only the change's `owner` or a `request` grant holder may
+  update a change record, except that a `restack` grant holder may add a single version to a `ready`
+  change keeping its active branch and title
+  ([valleyhook/record.go:160-198](../valleyhook/record.go), [264-272](../valleyhook/record.go));
+  only a `request` holder may delete a change record or write/delete integration requests
+  ([valleyhook/policy.go:151-158](../valleyhook/policy.go),
   [valleyhook/record.go:361-370](../valleyhook/record.go)); and nobody may push to
-  `integration-outcomes` or `projects` ([valleyhook/policy.go:147-150](../valleyhook/policy.go)).
+  `integration-outcomes` or `projects` ([valleyhook/policy.go:129-133](../valleyhook/policy.go)).
 - **The integrator** verifies approved changes and lands them onto `main`; it runs as an optional
   host service (`services.valley.integrator.enable`) on a configurable timer
   (`services.valley.integrator.interval`, default `15s`;
@@ -308,7 +312,7 @@ nor the integrator enforces `registry` grants on pushes or landings.
 | **Ready**                    | The change state set by `valley ready`, declaring that the active version is complete and awaiting operator review and approval.                                                                                                                                                                                                                                                                    | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Change records](./architecture.md#change-records)                                                                 |
 | **Restack report**           | A record of an automated restack outcome for a change, displayed by `valley status` and `valley pending` and validated by `valleyhook` (`valley-restack-report/v1`, stored as `report.json` in a commit at `refs/the-valley/restack/<target>/<id>`; the read-only planner `valley-restacker once --report-only` is implemented, while the write pass and host restacker service are not built yet). | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator), [Restack reports](./architecture.md#restack-reports)                                                        |
 | **Submitted**                | A change version that has been integrated into `main` (either `landed` or `landed-recorded`).                                                                                                                                                                                                                                                                                                       | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [The integrator](./architecture.md#the-integrator)                                                                 |
-| **Transfer statement**       | A signed attestation (`the-valley/integration/transfer/v1`) written by the integrator after `update-ref` on a completed landing (both fast-forward and merged), binding the landed tree and commit to the attested base tree, policy digest, and per-check verdicts.                                                                                                                                | [Checks and evidence](#checks-and-evidence), [The integrator](./architecture.md#the-integrator)                                                                                              |
+| **Transfer statement**       | A signed attestation (`the-valley/integration/transfer/v1`) signed by the integrator before `update-ref` and stored afterward on a completed landing (both fast-forward and merged), binding the landed tree and commit to the attested base tree, policy digest, and per-check verdicts.                                                                                                           | [Checks and evidence](#checks-and-evidence), [The integrator](./architecture.md#the-integrator)                                                                                              |
 | **Uncertain**                | The landing state reported when neither `landed` nor `landed-recorded` holds and either the outcome record says `failed`, or it says `land` while the request ref was consumed (or signer verification environment variables are unset for a merged landing).                                                                                                                                       | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Listing changes](./architecture.md#listing-changes)                                                               |
 | **`valley-tree-v1`**         | A content digest of a source tree independent of git commit metadata (remaining identical across commit amends or rebases only when the resulting tree's contents, paths, and modes are unchanged), computed with SHA-256 over a canonical manifest of files, executable bits, and symlinks (`<mode> <sha256> <path-len> <path>`).                                                                  | [Checks and evidence](#checks-and-evidence), [attest/digest.go:5-18](../attest/digest.go)                                                                                                    |
 | **`valleyhook`**             | The Go pre-receive hook binary that validates every SSH push to a valley host against ref protection, grants, and record/knot schemas.                                                                                                                                                                                                                                                              | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator), [What a push may write](./architecture.md#what-a-push-may-write)                                            |

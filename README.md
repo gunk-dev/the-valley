@@ -11,15 +11,16 @@ settle into `main`.
    [change](./docs/concepts.md#a-change-ready-approve-submitted) **requires** (`valley checks`), and
    marks it **ready** (`valley ready`).
 2. **Review** — An operator lists ready changes (`valley pending`) and inspects one
-   (`valley review <change>`), comparing it with its **approved** version when available.
-3. **Approve** — A [principal](./docs/concepts.md#principals-and-grants) with the `request` grant
-   approves the change (`valley approve <change>`, or `[a]pprove` in `valley review`), running and
-   signing the required checks and writing an integration request for that commit.
+   (`valley review <change>`).
+3. **Approve** — A [principal](./docs/concepts.md#principals-and-grants) allowed to approve approves
+   the change (`valley approve <change>`, or `[a]pprove` in `valley review`), running and signing
+   the required checks and writing an integration request for that commit.
 4. **Integrate** — When enabled on the
    [host](./docs/concepts.md#the-host-the-hook-and-the-integrator), the **integrator** checks each
    request, verifies a ready change's signed check evidence against the verification policy, and
    records an outcome. When the change passes and integrates cleanly into `main`, the integrator
-   updates `main` and signs the transfer so the change is **submitted**.
+   signs the transfer, advances `main`, and stores the signed evidence so the change is
+   **submitted**.
 
 ## Quick tour
 
@@ -33,14 +34,16 @@ valley review kqxm              # inspect the diff (and interactively approve)
 
 ## Configuration and current status
 
-- **Configuration vs. guarantees:** Sealing `main` against direct SSH pushes, restricting `request`,
-  and enabling the integrator or identity compiler are host choices (`valley.cue`,
-  `services.valley`); push mirrors receive only `main` and tags, not
+- **Configuration vs. guarantees:** Sealing `main` against direct SSH pushes, choosing which
+  principals may approve, and enabling the integrator or identity compiler are host choices
+  (`valley.cue`, `services.valley`); push mirrors receive only `main` and tags, not
   [project storage](./docs/concepts.md#records-project-storage-the-plan-graph-and-knots).
-- **Not built yet:** Automatic host restacking (authors use `valley rebase`; `restack` report
-  validation and `valley-restacker once --report-only` exist), automatic approval carry across
+- **Not built yet:** For restacking, the rebase library behind `valley rebase` and `[b]ase` in
+  `valley review`, the host's `restack` grant and report validation, and the read-only planner
+  (`valley-restacker once --report-only`) are built, while the service that rebases ready changes
+  automatically after each landing is not built or running yet. Automatic approval carry across
   restacks, skipping already-attested checks in `valley approve`, hardware-key (`sk-*`) touch-bound
-  approval envelopes, and atomic multi-ref landing transactions.
+  approval envelopes, and atomic multi-ref landing transactions are also not built yet.
 
 ## Documentation
 

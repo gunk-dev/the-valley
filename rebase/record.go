@@ -314,9 +314,12 @@ type Appended struct {
 
 // PendingVersion is a version written into a record commit and not yet
 // pushed. A caller that has to know after a crash whether origin took the
-// commit keeps Commit and Old somewhere durable before it calls Push.
-// Origin's record ref at Commit then means the push was taken, and at Old
-// that it was not.
+// commit keeps the whole PendingVersion somewhere durable before it calls
+// Push, in the form MarshalJSON writes, which names the mode it was built
+// in (pending.go). Origin's record ref at Commit then means the push was
+// taken, and at Old that it was not. A PendingVersion restored from that
+// form pushes as the one kept would have: a restack's push still reads
+// the branch first.
 type PendingVersion struct {
 	ID      string         // the change
 	Handle  string         // its handle on origin
@@ -327,7 +330,7 @@ type PendingVersion struct {
 	Version int            // the version it adds
 	Head    string         // the head that version records
 	Branch  string         // the branch that version names
-	restack bool
+	restack bool           // built by BuildRestack, so Push reads the branch first
 }
 
 // AppendVersion adds a.Head to the change's record as its next version,

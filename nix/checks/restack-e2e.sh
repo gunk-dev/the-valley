@@ -519,4 +519,28 @@ if pass --timeout 2s > "$w/out" 2> "$w/err"; then fail 'a pass held at the barri
 grep -q 'ran past its --timeout of 2s' "$w/err" || fail "the pass did not end at its timeout: $(cat "$w/err")"
 disarm
 
+# A pass whose output nobody reads ends at its --timeout too, and lets go
+# of the lock on its state, so the next pass takes it. Its stdout is a
+# fifo that is held open, filled, and never read, so the pass's first
+# write to it blocks. The outer timeout only bounds this check: it kills
+# a pass that outlives the stop it sends.
+mkfifo "$w/unread"
+exec 7<> "$w/unread"
+dd if=/dev/zero of="$w/unread" bs=4096 count=1024 oflag=nonblock 2> /dev/null || true
+dd if=/dev/zero of="$w/unread" bs=1 count=4096 oflag=nonblock 2> /dev/null || true
+status=0
+start=$SECONDS
+timeout -k 5 60 valley-restacker once --report-only --repo "$(url restacker "$served")" --state "$w/served-state" \
+  --principal restacker --instance "$w/floor" --timeout 15s > "$w/unread" 2> "$w/err" || status=$?
+took=$((SECONDS - start))
+exec 7<&-
+case "$status" in
+  0) fail 'a pass whose output nobody read finished' ;;
+  124 | 137) fail 'a pass whose output nobody read did not end at its timeout' ;;
+esac
+[ "$took" -lt 45 ] || fail "a pass with a timeout of 15s took ${took}s"
+grep -q 'ran past its --timeout of 15s: the plan was not written' "$w/err" \
+  || fail "the pass did not end at its timeout while writing: $(cat "$w/err")"
+pass > "$w/out" 2> "$w/err" || fail "the next pass did not take the lock: $(cat "$w/err")"
+
 touch "$out"

@@ -40,6 +40,8 @@ import (
 // or it has none when old is "" and the change has no report yet. Nothing
 // is pushed, so a caller can keep the commit's ID and old before
 // PushReport, and compare origin's report ref with them after a crash.
+// BuildReport does the same, and returns a write the caller can keep
+// whole.
 func WriteReport(ctx context.Context, g Git, r *change.RestackReport, message, old string) (string, error) {
 	data, err := change.EncodeRestackReport(r)
 	if err != nil {
@@ -73,6 +75,33 @@ func ReportMessage(handle string, r *change.RestackReport) string {
 // leased on old, as PushRecord moves a record ref.
 func PushReport(ctx context.Context, g Git, id, old, commit string) RecordWrite {
 	return pushLeased(ctx, g, RestackPrefix+id, old, commit)
+}
+
+// PendingReport is a report written into a report commit and not yet
+// pushed. A caller keeps it whole before it calls Push, in the form
+// MarshalJSON writes (pending.go), as it keeps a PendingVersion.
+type PendingReport struct {
+	ID     string                // the change the report is about
+	Ref    string                // its report ref
+	Old    string                // the report commit the push is leased on; "" when the change had none
+	Commit string                // the report commit written
+	Report *change.RestackReport // the report Commit holds
+}
+
+// BuildReport writes the report commit holding r, replacing old, as
+// WriteReport does, and pushes nothing.
+func BuildReport(ctx context.Context, g Git, r *change.RestackReport, message, old string) (*PendingReport, error) {
+	commit, err := WriteReport(ctx, g, r, message, old)
+	if err != nil {
+		return nil, err
+	}
+	return &PendingReport{ID: r.ChangeID, Ref: RestackPrefix + r.ChangeID, Old: old, Commit: commit, Report: r}, nil
+}
+
+// Push moves the change's report ref on origin from Old to Commit, leased
+// on Old, as PushReport does.
+func (p *PendingReport) Push(ctx context.Context, g Git) RecordWrite {
+	return PushReport(ctx, g, p.ID, p.Old, p.Commit)
 }
 
 // Report is a change's latest restack report.

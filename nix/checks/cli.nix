@@ -192,7 +192,10 @@ in
   # branches moved, a branch push and a record push that origin takes and
   # never acknowledges, a cancellation before the push, and a cancellation
   # while a hook or a filter blocks, each over real repositories and real
-  # pushes. valley-ready and integrator-e2e drive it through valley rebase.
+  # pushes. A restack append kept and restored still reads the branch
+  # before its push, and is refused once the owner has moved it; a kept
+  # write that is malformed does not restore. valley-ready and
+  # integrator-e2e drive it through valley rebase.
   rebase-unit = packages.rebase;
 
   # The Go verbs' tests (status/), run in valley-go's checkPhase: the

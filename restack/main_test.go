@@ -220,6 +220,47 @@ func TestScratchCommitsAsTheController(t *testing.T) {
 	}
 }
 
+// Configuration the environment injects reaches no git the restacker
+// runs. An author and a committer given in GIT_CONFIG_COUNT entries and in
+// GIT_CONFIG_PARAMETERS would beat the scratch repository's user.name and
+// user.email. They are not inherited: the restacker is the committer of
+// each commit it rebases, whose author stays the change's, and the author
+// and the committer of each record commit.
+func TestInheritedConfigurationDoesNotCommit(t *testing.T) {
+	withoutIdentity(t)
+	f := newFixture(t, "")
+	f.readied("author", "a", "A title")
+	f.moveMain()
+	for name, value := range map[string]string{
+		"GIT_CONFIG_COUNT": "2",
+		"GIT_CONFIG_KEY_0": "author.name", "GIT_CONFIG_VALUE_0": "Inherited",
+		"GIT_CONFIG_KEY_1": "author.email", "GIT_CONFIG_VALUE_1": "inherited@example.invalid",
+		"GIT_CONFIG_PARAMETERS": "'committer.name'='Inherited' 'committer.email'='inherited@example.invalid'",
+	} {
+		t.Setenv(name, value)
+	}
+	c := config{repo: f.origin, state: t.TempDir(), principal: "restacker",
+		commitName: "The Restacker", commitEmail: "restacker@example.invalid"}
+	ctx := context.Background()
+	g, err := scratchRepo(ctx, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	fam, head := restacked(t, g)
+	const restacker = "The Restacker <restacker@example.invalid>"
+	if got := logged(t, g, "%an <%ae>|%cn <%ce>", head); got != "A. Author <author@example.invalid>|"+restacker {
+		t.Errorf("the rebased commit is authored and committed as %q", got)
+	}
+	p, err := rebase.BuildRestack(ctx, g, rebase.RestackAppend{ID: idA, Head: head, IfActive: fam.Bottom().Head, Principal: "restacker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := logged(t, g, "%an <%ae>|%cn <%ce>", p.Commit); got != restacker+"|"+restacker {
+		t.Errorf("the record commit is authored and committed as %q", got)
+	}
+}
+
 // A pass locks its state directory. A second lock fails at once, saying
 // another pass holds it, and succeeds once the first is let go.
 func TestAPassLocksItsState(t *testing.T) {

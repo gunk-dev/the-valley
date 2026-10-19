@@ -59,7 +59,9 @@ in
   # release a family, the arithmetic of each capacity limit, and how the
   # policy's cap is counted, one larger than any int included. Its scratch
   # repository commits as its flags say with no identity in the
-  # environment, a pass locks its state directory, the directory belongs to
+  # environment, and with an author and a committer the environment
+  # injects as git configuration, a pass locks its state directory, the
+  # directory belongs to
   # one repository, target and principal, and a cue or an ssh that never
   # returns is killed at the deadline. Given the fixture host's rendered
   # hook, the restack append is pushed through it as the restacker
@@ -101,7 +103,8 @@ in
   # taken; a dropped answer leaves origin holding a push its client
   # reports as failed. A second pass on a state directory fails while a
   # barrier holds the first, and a pass for another principal is refused
-  # it. In a repository served with the integrator's evidence fixtures
+  # it. A pass whose output nobody reads ends at its --timeout, and the
+  # next pass takes the lock. In a repository served with the integrator's evidence fixtures
   # (integrator/e2e: the nix stand-in and a policy of pure checks), the
   # real integrator lands one change and rejects another whose signed
   # evidence lies about its kind. The planner, reading the shared verifier

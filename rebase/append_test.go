@@ -2,9 +2,11 @@ package rebase
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -145,6 +147,147 @@ func TestRestackAppendNeedsTheBranchAtItsHead(t *testing.T) {
 	}
 	if after := w.refs(); after != before {
 		t.Errorf("a refused restack push moved something")
+	}
+}
+
+// A restack append is kept and restored as recovery will keep and restore
+// it, and the restored write is the one kept, in the same mode. Once the
+// owner pushes past the head it records, the restored write's push is
+// refused, as the kept one's would be, and nothing moves. Restored while
+// the branch is still at that head, it pushes.
+func TestRestoredRestackStillNeedsTheBranchAtItsHead(t *testing.T) {
+	w := newWorld(t)
+	w.layer("a", "main")
+	w.layer("b", "main")
+	w.ready(idA, "a")
+	w.ready(idB, "b")
+	w.moveMain("main.txt", "main\n")
+	ctx := context.Background()
+	keep := func(id string) []byte {
+		t.Helper()
+		f := w.capture(Selection{ID: id})
+		p, err := BuildRestack(ctx, w.g, RestackAppend{ID: id, Head: w.moveBranches(f)[id], IfActive: f.Bottom().Head, Principal: "restacker"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var q PendingVersion
+		if err := json.Unmarshal(data, &q); err != nil || !reflect.DeepEqual(&q, p) {
+			t.Fatalf("%s restores as %+v, %v; it was kept as %+v", data, q, err, *p)
+		}
+		return data
+	}
+	restored := func(data []byte) *PendingVersion {
+		t.Helper()
+		var p PendingVersion
+		if err := json.Unmarshal(data, &p); err != nil {
+			t.Fatal(err)
+		}
+		return &p
+	}
+
+	keptA, keptB := keep(idA), keep(idB)
+	w.ownerPushes("a")
+	before := w.refs()
+	ap := restored(keptA).Push(ctx, w.g)
+	if ap.Err == nil || ap.Version != 0 || ap.Write.Push != Unpushed {
+		t.Fatalf("a restored restack push to a branch the owner moved: %+v", ap)
+	}
+	if after := w.refs(); after != before {
+		t.Errorf("a refused restored restack push moved something")
+	}
+	p := restored(keptB)
+	if ap := p.Push(ctx, w.g); ap.Err != nil || ap.Version != 2 || w.at(change.Ref(Target, idB)) != p.Commit {
+		t.Fatalf("a restored restack push to a branch still at its head: %+v", ap)
+	}
+}
+
+// Only the form a write is kept in restores. A form missing anything the
+// push checks, holding something else, or not agreeing with itself is
+// refused, and so is a field named twice, which would otherwise let a
+// second mode overrule the first.
+func TestRestoreRefusesAMalformedWrite(t *testing.T) {
+	w := newWorld(t)
+	w.layer("a", "main")
+	w.ready(idA, "a")
+	w.moveMain("main.txt", "main\n")
+	ctx := context.Background()
+	f := w.capture(Selection{ID: idA})
+	p, err := BuildRestack(ctx, w.g, RestackAppend{ID: idA, Head: w.moveBranches(f)[idA], IfActive: f.Bottom().Head, Principal: "restacker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kept := string(data)
+	field := func(name, value string) string { return `"` + name + `":"` + value + `"` }
+	for what, form := range map[string]string{
+		"no mode":              strings.Replace(kept, field("mode", "restack")+",", "", 1),
+		"an unknown mode":      strings.Replace(kept, field("mode", "restack"), field("mode", "rebase"), 1),
+		"the mode twice":       strings.Replace(kept, field("mode", "restack"), field("mode", "restack")+","+field("mode", "manual"), 1),
+		"an unknown field":     strings.Replace(kept, `{"schema"`, `{"lease":"none","schema"`, 1),
+		"no record read":       strings.Replace(kept, field("old", p.Old), field("old", ""), 1),
+		"no branch":            strings.Replace(kept, field("branch", "a"), field("branch", ""), 1),
+		"a head it is not at":  strings.Replace(kept, field("head", p.Head), field("head", p.Old), 1),
+		"another change's ref": strings.Replace(kept, field("ref", p.Ref), field("ref", change.Ref(Target, idB)), 1),
+		"a report's schema":    strings.Replace(kept, pendingVersionSchema, pendingReportSchema, 1),
+		"a second form":        kept + " " + kept,
+	} {
+		if form == kept {
+			t.Fatalf("%s: the edit changed nothing", what)
+		}
+		var q PendingVersion
+		if err := json.Unmarshal([]byte(form), &q); err == nil {
+			t.Errorf("%s restored: %+v", what, q)
+		}
+	}
+	var r PendingReport
+	if err := json.Unmarshal(data, &r); err == nil {
+		t.Errorf("a pending version restored as a report: %+v", r)
+	}
+}
+
+// A report kept and restored is the report written, and its push moves
+// the report ref to it. A kept report about another change than the one
+// whose ref it names is refused.
+func TestRestoredReportPushes(t *testing.T) {
+	w := newWorld(t)
+	w.layer("a", "main")
+	w.ready(idA, "a")
+	ctx := context.Background()
+	tip := change.HeadPrefix + w.at("refs/heads/a")
+	r := &change.RestackReport{
+		Schema: change.RestackSchema, ChangeID: idA, Target: Target,
+		TargetTip: change.HeadPrefix + w.at("refs/heads/main"), Operation: "test-1", Result: change.RestackBlocked,
+		Layers: []change.RestackLayer{{
+			ChangeID: idA, Record: change.HeadPrefix + w.at(change.Ref(Target, idA)), Version: 1,
+			Head: tip, Branch: "a", BranchTip: &tip,
+		}},
+	}
+	p, err := BuildReport(ctx, w.g, r, ReportMessage("kkkk", r), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q PendingReport
+	if err := json.Unmarshal(data, &q); err != nil || !reflect.DeepEqual(&q, p) {
+		t.Fatalf("%s restores as %+v, %v", data, q, err)
+	}
+	if wr := q.Push(ctx, w.g); wr.Push != Pushed || w.at(RestackPrefix+idA) != p.Commit {
+		t.Fatalf("the restored report's push: %+v", wr)
+	}
+	other := strings.Replace(string(data), `"change_id":"`+idA+`","ref":"`+RestackPrefix+idA+`"`,
+		`"change_id":"`+idB+`","ref":"`+RestackPrefix+idB+`"`, 1)
+	if err := json.Unmarshal([]byte(other), &q); err == nil || !strings.Contains(err.Error(), "is about "+idA) {
+		t.Errorf("a report kept under another change's ref: %v", err)
 	}
 }
 

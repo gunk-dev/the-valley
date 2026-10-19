@@ -9,20 +9,23 @@
 // It talks to origin only over git, as a client, from a scratch repository
 // under its state directory. Hooks and external filters are off there:
 // the scratch repository's hooks path is /dev/null, and git reads neither
-// the system's nor the user's configuration, so no filter driver is
-// defined. A service that needs ssh settings passes them in
-// GIT_SSH_COMMAND. The scratch repository commits under the identity its
-// flags give, and never under one inherited from the environment.
+// the system's nor the user's configuration, nor any the environment
+// injects, so no filter driver is defined. A service that needs ssh
+// settings passes them in GIT_SSH_COMMAND. The scratch repository commits
+// under the identity its flags give, and never under one inherited from
+// the environment, whether as an identity variable or as configuration.
 //
 // A pass holds a lock on its state directory from start to end, so a
 // second pass on the same directory fails while one runs. The directory
 // belongs to one repository, target and principal, the first a pass used
 // it for, and a pass for any other is refused. Every git, cue and attest a
 // pass runs is killed, with what it started, once the pass's --timeout
-// passes.
+// passes. A pass whose output nobody reads ends then too, and lets go of
+// the lock.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,8 +65,8 @@ flags:
                         principal)
   --commit-email EMAIL  the email it commits under
                         (default: restacker@the-valley.invalid)
-  --timeout DURATION    the longest a pass may run; what it runs is killed
-                        then (default 10m)
+  --timeout DURATION    the longest a pass may run, writing its output
+                        included; what it runs is killed then (default 10m)
   --known-signers FILE  verifier keys, for landings proved by integrator evidence
   --integrator-name N   the name the integrator signs under
   --attest PATH         the attest helper that checks a note (default: attest on PATH)
@@ -199,13 +202,38 @@ func once(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return timedOut(ctx, c, err)
 	}
+	var plan bytes.Buffer
 	if c.json {
-		enc := json.NewEncoder(out)
+		enc := json.NewEncoder(&plan)
 		enc.SetIndent("", "  ")
-		return enc.Encode(p)
+		if err := enc.Encode(p); err != nil {
+			return err
+		}
+	} else {
+		printPlan(&plan, p)
 	}
-	printPlan(out, p)
+	if err := writeOut(ctx, out, plan.Bytes()); err != nil {
+		return timedOut(ctx, c, err)
+	}
 	return nil
+}
+
+// writeOut writes data to out, and gives up once ctx is done. A reader
+// that stops reading holds the write, and would otherwise hold the pass,
+// and the lock on its state, past its --timeout. The write given up on
+// ends with the process.
+func writeOut(ctx context.Context, out io.Writer, data []byte) error {
+	done := make(chan error, 1)
+	go func() {
+		_, err := out.Write(data)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("the plan was not written: %w", ctx.Err())
+	}
 }
 
 // timedOut says so when a pass failed because it ran past its timeout.
@@ -231,19 +259,33 @@ func checkIdentity(name, email string) error {
 
 // identityVariables are the environment variables git reads an author or a
 // committer from ahead of its configuration. The scratch repository's git
-// never inherits them, so the identity its flags give is the one it
-// commits under.
+// never inherits them: it is given its own author and committer, the
+// identity its flags give.
 var identityVariables = map[string]bool{
 	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_AUTHOR_DATE": true,
 	"GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true, "GIT_COMMITTER_DATE": true,
 	"EMAIL": true,
 }
 
+// injectsConfiguration reports whether git reads configuration from the
+// environment variable named. GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n> and
+// GIT_CONFIG_VALUE_<n>, and GIT_CONFIG_PARAMETERS, add configuration that
+// beats the repository's own: an inherited author.name would beat
+// user.name, and an inherited core.hooksPath would turn hooks back on. The
+// others name configuration files. The scratch repository's git inherits
+// none of them.
+func injectsConfiguration(name string) bool {
+	return strings.HasPrefix(name, "GIT_CONFIG")
+}
+
 // scratchRepo makes, or reuses, the repository a pass reads origin into,
 // and returns git run in it with hooks and configured filters off,
-// committing under the restacker's identity. git there is unattended: it
-// never asks a question, and every git it runs is killed whole once ctx is
-// done.
+// committing under the restacker's identity. git there reads no
+// configuration but the repository's, and is given its author and
+// committer explicitly. A commit it rebases keeps its own author: a
+// rebase takes the author from the commit it picks. git there is
+// unattended: it never asks a question, and every git it runs is killed
+// whole once ctx is done.
 //
 // The repository has a work tree, though nothing is ever checked out in
 // it: attest, which digests a version's tree and verifies the
@@ -253,7 +295,7 @@ func scratchRepo(ctx context.Context, c config) (rebase.Git, error) {
 	dir := filepath.Join(c.state, "scratch")
 	var env []string
 	for _, kv := range os.Environ() {
-		if name, _, _ := strings.Cut(kv, "="); !identityVariables[name] {
+		if name, _, _ := strings.Cut(kv, "="); !identityVariables[name] && !injectsConfiguration(name) {
 			env = append(env, kv)
 		}
 	}
@@ -262,6 +304,10 @@ func scratchRepo(ctx context.Context, c config) (rebase.Git, error) {
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_ATTR_NOSYSTEM=1",
 		"GIT_TERMINAL_PROMPT=0",
+		"GIT_AUTHOR_NAME="+c.commitName,
+		"GIT_AUTHOR_EMAIL="+c.commitEmail,
+		"GIT_COMMITTER_NAME="+c.commitName,
+		"GIT_COMMITTER_EMAIL="+c.commitEmail,
 	)
 	g := rebase.Git{Dir: dir, Env: env, Stderr: os.Stderr, Unattended: true}
 	if _, err := os.Stat(filepath.Join(dir, ".git", "HEAD")); err != nil {

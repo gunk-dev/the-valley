@@ -537,16 +537,23 @@ integrator's transfer statements, reads only a repository that has one. Its flag
 project layer is read from `main`'s tip.
 
 git in the scratch repository commits under the identity that `--commit-name` and `--commit-email`
-give. By default that is the principal's name and `restacker@the-valley.invalid`. It never takes an
-identity from `GIT_AUTHOR_*`, `GIT_COMMITTER_*` or `EMAIL` in the restacker's environment, and git
-is told not to guess one. A `--report-only` pass commits nothing.
+give. By default that is the principal's name and `restacker@the-valley.invalid`. The restacker sets
+that identity as git's author and committer explicitly. It never takes an identity from
+`GIT_AUTHOR_*`, `GIT_COMMITTER_*` or `EMAIL` in its environment, and git is told not to guess one.
+git there also inherits no configuration from the environment: `GIT_CONFIG_COUNT` with its
+`GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, `GIT_CONFIG_PARAMETERS`, and the other
+`GIT_CONFIG*` variables are dropped. Such configuration would beat the scratch repository's own, so
+an inherited `author.name` would replace the restacker's identity. A commit the restacker rebases
+keeps its author, and the restacker is its committer. A `--report-only` pass commits nothing.
 
 A pass locks its state directory from start to end, so a second pass on the same directory fails at
 once while one runs. The directory belongs to the repository, target and principal of the first pass
 that used it, recorded in its `binding.json`. A pass for any other is refused, and needs its own
 `--state`. A pass runs for at most `--timeout`, 10 minutes by default. When the timeout passes, or
 the pass is interrupted or stopped, every git, cue and attest it started is killed, with whatever
-each of them started, ssh included. Checked by `restack-unit` and `restack-e2e`.
+each of them started, ssh included. Writing the plan is bounded the same way. A pass whose output
+nobody reads ends at its timeout and lets go of the lock, so the next pass can take it. Checked by
+`restack-unit` and `restack-e2e`.
 
 A family is the connected layers of one snapshot, as the rebase engine captures them
 (`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family

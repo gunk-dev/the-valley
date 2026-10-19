@@ -1,7 +1,8 @@
 # A guide to working in the valley
 
 This guide follows the jobs people do in a valley. Start with the [README](../README.md) for a short
-tour and [Concepts and glossary](./concepts.md) for the terms used here.
+tour, [Concepts and glossary](./concepts.md) for the terms used here, and
+[Reference](./reference.md) for every command flag, environment variable, ref rule, and schema.
 
 - [Client setup](#client-setup) gets an author or reviewer connected.
 - [Authoring a change](#authoring-a-change) takes a local commit to review.
@@ -65,7 +66,9 @@ to the valley host, and Nix with flakes enabled.
    ```
 
    The host must trust that signing key. Your SSH principal must also be allowed to approve. These
-   are separate parts of [identity](./concepts.md#principals-and-grants).
+   are separate parts of [identity](./concepts.md#principals-and-grants); see
+   [Environment variables and configuration](./reference.md#environment-variables-and-configuration)
+   for every client setting.
 
 To install updates into your user Nix profile, name the-valley's source repository:
 
@@ -235,7 +238,8 @@ git merge --ff-only origin/main
 
 To inspect all recorded changes, including submitted and withdrawn ones, use
 `valley changes --json`. For changes across the instance, use `valley pending --all` or
-`valley changes --json --all`. These need access to the instance and project repositories.
+`valley changes --json --all`; see [CLI JSON outputs](./reference.md#cli-json-outputs) for their
+output schemas. These need access to the instance and project repositories.
 
 ### Watch activity and inspect results
 
@@ -302,6 +306,7 @@ valley plan
 
 Use `valley knot schema` to see each type's fields and allowed statuses. Knot writes validate the
 resulting graph and push it directly; they do not go through change approval. See
+[`valley knot`](./reference.md#valley-knot) for every subcommand and flag, and
 [the plan graph](./architecture.md#the-plan-graph) for validation and concurrent edits.
 
 ## Recovering from failure
@@ -352,7 +357,8 @@ A refusal means the host did not accept that ref update. The message identifies 
   valid records and `valley knot schema` to inspect the knot model. Reduce oversized content before
   retrying.
 
-The [push rules](./architecture.md#what-a-push-may-write) explain each boundary.
+The [push rules](./architecture.md#what-a-push-may-write) and
+[ref layout table](./reference.md#project-storage-ref-layout-and-bounds) explain each boundary.
 
 ### An uncertain landing
 
@@ -371,7 +377,9 @@ to resolve this state.
 
 A valley host serves repositories over SSH and runs the integrator on NixOS. This recipe creates an
 instance repository named `instance` and a project named `demo`. It uses static keys and grants
-first. All names, keys, checks, mirrors, and backup destinations are deployment choices.
+first. All names, keys, checks, mirrors, and backup destinations are deployment choices; see
+[NixOS host options](./reference.md#nixos-host-options) and
+[CUE configuration schemas](./reference.md#cue-configuration-schemas) for the full option tables.
 
 ### Declare the host
 
@@ -693,5 +701,5 @@ flake suite is invoked with `nix flake check` when your task permits it and the 
 its checks.
 
 The [architecture](./architecture.md) explains component invariants and the checks that cover them.
-Wire formats live in [schema](../schema/) and the relevant Go readers. Use those alongside the
-[concept glossary](./concepts.md#glossary) when a field or term is unfamiliar.
+The [reference](./reference.md) documents CLI flags, ref bounds, wire formats, JSON outputs, and
+[schema](../schema/) definitions alongside the [concept glossary](./concepts.md#glossary).

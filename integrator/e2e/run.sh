@@ -199,18 +199,23 @@ holds "main moved $(git rev-parse --short "$before") -> $(git -C "$origin" rev-p
 
 # The decision is followed by one timing line: JSON after a fixed label,
 # naming the request and what was decided, with the time each stage took.
+# Every stage a landing reaches is there, as a whole number of
+# milliseconds, and the stages add up to no more than the whole.
 [ "$(grep -c '^  timing   ' "$work/last.out")" = 1 ] || die "one decision did not print exactly one timing line"
 timing="$(sed -n 's/^  timing   //p' "$work/last.out")"
-for field in \
-  '"request":"refs/the-valley/integration-requests/main/c1"' '"change":"c1"' \
-  "\"head\":\"$(git rev-parse c1)\"" '"target":"refs/heads/main"' "\"tip\":\"$before\"" \
-  '"outcome":"land"' '"duration_ms":' \
-  '"refusal":' '"checkout":' '"evidence":' '"policy":' '"sign":' '"land":' '"record":' '"publish":'; do
-  case "$timing" in
-    *"$field"*) ;;
-    *) die "c1's timing line has no $field: $timing" ;;
-  esac
-done
+jq -e --arg head "$(git rev-parse c1)" --arg tip "$before" '
+  keys == ["change", "duration_ms", "head", "outcome", "project", "request", "stages_ms", "target", "time", "tip"]
+  and .request == "refs/the-valley/integration-requests/main/c1" and .change == "c1"
+  and .head == $head and .target == "refs/heads/main" and .tip == $tip and .outcome == "land"
+  and (.project | type == "string" and length > 0)
+  and (.time | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$"))
+  and (.duration_ms | type == "number" and . >= 0 and . == floor)
+  and (.stages_ms | type == "object"
+    and (keys - ["refusal", "checkout", "evidence", "policy", "apply", "closures", "sign", "land", "record", "publish"] == [])
+    and all(.refusal, .checkout, .evidence, .policy, .sign, .land, .record, .publish; type == "number")
+    and all(.[]; type == "number" and . >= 0 and . == floor))
+  and ([.stages_ms[]] | add) <= .duration_ms' <<< "$timing" > /dev/null \
+  || die "c1's timing line does not say what a landing's should: $timing"
 holds "the landing is timed: $timing"
 
 # The landed note carries both signatures, under one text, and verifies.
@@ -828,6 +833,50 @@ reports="$(grep -c 'no instance policy layer' "$work/repeat.out" || true)"
   || die "the same refusal was reported $reports times over five ticks: $(cat "$work/repeat.out")"
 forget c13
 holds "a failure a pass cannot get past is reported once and then backs off"
+
+# ----------------------------------------------------------------------
+say "14b. a failure is recorded before its timing line, which nobody has to read"
+
+# The timing line is printed after the outcome is recorded, and is dropped
+# when it cannot be written. A pass that cannot act on its verdict prints
+# nothing before its timing line, so with standard output a pipe whose
+# reader has gone, the timing line is the first write to fail. The failure
+# is recorded all the same. The line the integrator prints after it, naming
+# the failure, is its own output rather than timing, and may still end the
+# pass there.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c14b
+echo "a change judged with nobody reading" > docs/readme.md
+git add -A
+git commit --quiet -m "a change judged with nobody reading the integrator"
+attest_change c14b "" "" --check prose-format
+request c14b main "$(git rev-parse c14b)"
+
+# A pipe with no reader. The FIFO is opened to read and write, so opening it
+# to write does not wait; closing the first leaves the writer alone.
+mkfifo "$work/unread"
+exec 3<> "$work/unread"
+exec 4> "$work/unread"
+exec 3<&-
+status=0
+timeout 120 integrator reconcile \
+  --repo "$origin" \
+  --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" \
+  --instance-repo "$origin" --instance-policy policy \
+  --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" \
+  --event-schema "$SCHEMA_EVENTS" \
+  ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
+  >&4 2> "$work/unread.err" || status=$?
+exec 4>&-
+[ "$status" != 124 ] || die "the pass did not finish with nobody reading its output"
+recorded="$(git -C "$origin" cat-file blob refs/the-valley/integration-outcomes/main/c14b 2> /dev/null || true)"
+[ "$(echo "$recorded" | cut -d' ' -f4)" = failed ] \
+  || die "with nobody reading its output, the pass did not record its failure (exit $status): ${recorded:-no record} $(cat "$work/unread.err")"
+forget c14b
+holds "with nobody reading its output, the pass recorded its failure before its timing line (exit $status)"
 
 # ----------------------------------------------------------------------
 say "15. a target that carries no project layer of its own is judged under the floor alone"

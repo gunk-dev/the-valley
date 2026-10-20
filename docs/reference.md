@@ -647,13 +647,17 @@ $ tail -n 1 ~/.local/state/valley/timings.jsonl
 
 `attest run --timings` appends one line to
 `${XDG_STATE_HOME:-$HOME/.local/state}/valley/timings.jsonl` as each check finishes, whether it
-passed or failed. It creates the file and its directory when they are missing. `valley approve`
-passes `--timings` whenever it runs checks. Without the flag, `attest run` prints its `time` lines
-and writes no log.
+passed or failed. It creates the file and its directory when they are missing, readable by their
+owner alone. Anything at the path that is not a regular file, such as a FIFO, is refused.
+`valley approve` passes `--timings` whenever it runs checks. Without the flag, `attest run` prints
+its `time` lines, writes no log, and does not ask the nix store whether an output is already there.
 
 - `time` (`string`): When the check started, in UTC, to the millisecond.
-- `repository` (`string`): The URL of the repository's `origin` remote with any user name and
-  password removed, or the directory of its main working tree when it has no `origin`.
+- `repository` (`string`): The repository's `origin` remote, reduced to what names it. A URL keeps
+  its scheme, host and path, and loses any user name, password, query and fragment. The scp-like
+  form `user@host:path` keeps `host:path`. A local path is kept as it is. An `origin` in any other
+  form is withheld. In its place, and when there is no `origin`, the field is the directory of the
+  main working tree.
 - `change` (`string`) and `version` (`integer`): The change ID and the version being approved.
   Omitted for a branch no record is on.
 - `head` (`string`): The commit the check ran over.
@@ -663,12 +667,14 @@ and writes no log.
   flake check that does not evaluate.
 - `satisfied` (`string`): `ran` when the command ran or nix built or fetched the output, `cached`
   when the output was already in the local nix store so nix built nothing, and `unknown` when the
-  store could not be asked. `attest run` runs every check it is given, so it never reuses evidence
-  that already exists.
+  store could not be asked or did not answer within five seconds. `attest run` runs every check it
+  is given, so it never reuses evidence that already exists.
 - `duration_ms` (`integer`): The check's wall time in milliseconds, from evaluation to the end of
   the build or command.
 
-A log that cannot be written produces one warning on standard error, and the run continues.
+A log that cannot be written produces one warning on standard error, and the run continues. Each
+`time` line, warning and log line has one second to be written. One that fails or takes longer is
+dropped, and the run continues without it.
 
 ### NixOS host options
 

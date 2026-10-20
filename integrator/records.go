@@ -438,10 +438,11 @@ func (in *integrator) void(r request, ref string) bool {
 	}
 	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, verdict.Short(tip), voidedWithdrawn)
 	fmt.Fprintf(in.out, "  change %s is withdrawn, which voids its requests; the request is deleted, and the change needs a fresh approval once it is ready again\n", rec.ChangeID)
-	in.reportTiming(r, tip, string(voidedWithdrawn), watch)
+	printTiming := in.timing(r, tip, string(voidedWithdrawn), watch)
 	if err := in.writeMemo(r, fmt.Sprintf("%s %s %s %s", r.head, tip, evidence, voidedWithdrawn)); err != nil {
 		fmt.Fprintf(in.out, "  the outcome was not recorded: %v\n", err)
 	}
+	printTiming()
 	return true
 }
 

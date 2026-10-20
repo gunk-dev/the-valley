@@ -11,6 +11,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -75,8 +76,10 @@ func nix(dir string, args ...string) (string, string, error) {
 	return out.String(), errb.String(), err
 }
 
-func nixStore(args ...string) (string, string, error) {
-	cmd := exec.Command("nix-store", args...)
+// nixStore runs nix-store, and stops it when ctx is done.
+func nixStore(ctx context.Context, args ...string) (string, string, error) {
+	cmd := exec.CommandContext(ctx, "nix-store", args...)
+	cmd.WaitDelay = time.Second
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -137,15 +140,19 @@ func evalClosure(tree, system string, spec checkSpec) (closure, error) {
 // runPure builds one flake check over the exported tree and digests what
 // the build named: the derivation's inputs, the derivation, and its
 // output. Building from the derivation path rather than the attribute a
-// second time guarantees the thing built is the thing recorded.
-func runPure(tree, system string, spec checkSpec) (checkOutcome, error) {
+// second time guarantees the thing built is the thing recorded. With
+// probe, it first asks the nix store whether the output is already there,
+// for the check's timing; without, it asks nothing.
+func runPure(tree, system string, spec checkSpec, probe bool) (checkOutcome, error) {
 	out := checkOutcome{spec: spec}
 	c, err := evalClosure(tree, system, spec)
 	if err != nil {
 		return out, err
 	}
 	out.derivation, out.inputs = c.derivation, c.inputs
-	out.satisfied = outputsCached(c.drv)
+	if probe {
+		out.satisfied = outputsCached(c.drv)
+	}
 
 	built, buildLog, err := nix(tree, "build", "--no-link", "--print-out-paths", c.drv+"^*")
 	out.log = strings.TrimSpace(buildLog)
@@ -171,7 +178,7 @@ func runPure(tree, system string, spec checkSpec) (checkOutcome, error) {
 // lines — a shape that has not changed in the lifetime of nix, unlike the
 // versioned JSON of `nix derivation show`.
 func drvInputs(drv string) ([]string, error) {
-	out, errb, err := nixStore("--query", "--references", drv)
+	out, errb, err := nixStore(context.Background(), "--query", "--references", drv)
 	if err != nil {
 		return nil, fmt.Errorf("querying the inputs of %s: %w: %s", drv, err, strings.TrimSpace(errb))
 	}

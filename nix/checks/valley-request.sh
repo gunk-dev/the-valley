@@ -205,6 +205,10 @@ if [ "$(wc -l < "$timings")" != 1 ] || ! jq -e \
   cat "$timings" >&2
   exit 1
 fi
+if [ "$(stat -c %a "$timings")" != 600 ]; then
+  echo "valley-request: the timing log was created $(stat -c %a "$timings"), not 600" >&2
+  exit 1
+fi
 
 # What origin holds now. The attestation is keyed by the digest of the
 # BRANCH's tree, which is what says the checks ran over the right tree and
@@ -1178,6 +1182,64 @@ if valley approve topic/no-such-change < /dev/null > "$w/verb-missing.out" 2> "$
   exit 1
 fi
 grep -q 'no such branch on origin: topic/no-such-change' "$w/verb-missing.err"
+
+# ----------------------------------------------------------------------
+# 17b. Timing never stands in the way of approval. A FIFO nobody reads,
+#      sitting at the timing log's path, would hold an open for writing
+#      forever: the log is refused with a warning, and approval goes on.
+#      With standard error a pipe nobody reads as well, the warning is
+#      dropped rather than ending the run. Both runs keep a state
+#      directory of their own, so the log the other cases read is not
+#      touched.
+fifostate="$w/fifo-state"
+mkdir -p "$fifostate/valley"
+mkfifo "$fifostate/valley/timings.jsonl"
+approved_past_fifo() {
+  if [ "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/topic-$1")" \
+    != "$(git rev-parse "topic/$1")" ]; then
+    echo "valley-request: approving past a FIFO at the timing log filed no request ($2)" >&2
+    exit 1
+  fi
+  git -C "$origin" rev-parse --verify --quiet \
+    "refs/the-valley/attestations/$(attest digest --rev "topic/$1" | cut -d: -f2)/$keyhash" > /dev/null || {
+    echo "valley-request: approving past a FIFO at the timing log published no evidence ($2)" >&2
+    exit 1
+  }
+}
+for branch in fifo unread; do
+  git checkout --quiet -b "topic/$branch" origin/main
+  echo "a readme approved past a FIFO, $branch" > docs/readme.md
+  git commit --quiet -am "a readme approved past a FIFO, $branch"
+  git push --quiet origin "topic/$branch"
+  git checkout --quiet main
+done
+
+XDG_STATE_HOME="$fifostate" timeout 120 valley approve origin/topic/fifo \
+  < /dev/null > "$w/fifo.out" 2> "$w/fifo.err" || {
+  echo "valley-request: approve did not finish past a FIFO at the timing log (exit $?):" >&2
+  cat "$w/fifo.out" "$w/fifo.err" >&2
+  exit 1
+}
+grep -qE '^time    tree-ok +passed +[0-9][0-9.hms]* \(ran\)$' "$w/fifo.out"
+grep -qx "attest: warning: timings not logged: $fifostate/valley/timings.jsonl is not a regular file" "$w/fifo.err"
+approved_past_fifo fifo "standard error read"
+
+# A pipe with no reader. The FIFO is opened to read and write, so opening it
+# to write does not wait; closing the first leaves the writer alone.
+mkfifo "$w/unread"
+exec 3<> "$w/unread"
+exec 4> "$w/unread"
+exec 3<&-
+status=0
+XDG_STATE_HOME="$fifostate" timeout 120 valley approve origin/topic/unread \
+  < /dev/null > "$w/unread.out" 2>&4 || status=$?
+exec 4>&-
+if [ "$status" != 0 ]; then
+  echo "valley-request: approve with nobody reading standard error exited $status:" >&2
+  cat "$w/unread.out" >&2
+  exit 1
+fi
+approved_past_fifo unread "standard error unread"
 
 # ----------------------------------------------------------------------
 # 18. The rebase verb: [b]ase without the pager. A stale branch is

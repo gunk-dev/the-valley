@@ -30,6 +30,7 @@
       pkgs.findutils
       pkgs.gnused
       pkgs.gnugrep
+      pkgs.jq # the timing line's JSON
       pkgs.cue
       packages.attest
       packages.valley-script

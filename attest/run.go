@@ -93,12 +93,12 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("no checks to run")
 	}
 
-	log := &timingLog{warn: os.Stderr}
+	log := &timingLog{warn: timingStderr()}
 	repository := ""
 	if *timings {
 		path, pathErr := timingsPath()
 		if pathErr != nil {
-			fmt.Fprintf(os.Stderr, "attest: warning: timings not logged: %v\n", pathErr)
+			fmt.Fprintf(timingStderr(), "attest: warning: timings not logged: %v\n", pathErr)
 		}
 		log.path = path
 		repository = repositoryName(root)
@@ -112,7 +112,7 @@ func cmdRun(args []string) error {
 		var out checkOutcome
 		var runErr error
 		if spec.runner() == "nix" {
-			out, runErr = runPure(tree, *system, spec)
+			out, runErr = runPure(tree, *system, spec, *timings)
 		} else {
 			out = runEffectful(tree, spec)
 		}
@@ -143,11 +143,11 @@ func cmdRun(args []string) error {
 		}
 		log.append(t)
 		if runErr != nil {
-			fmt.Println(timingLine(t, took))
+			fmt.Fprintln(timingStdout(), timingLine(t, took))
 			return runErr
 		}
 		fmt.Printf("check   %-24s %-8s %s\n", spec.name, spec.runner(), result)
-		fmt.Println(timingLine(t, took))
+		fmt.Fprintln(timingStdout(), timingLine(t, took))
 		outcomes = append(outcomes, out)
 	}
 	if failed > 0 {

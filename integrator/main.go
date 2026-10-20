@@ -14,11 +14,13 @@ import (
 
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -111,6 +113,7 @@ type integrator struct {
 	repo    string
 	project string
 	out     *os.File
+	timings io.Writer // where timing lines go (timing.go); nil prints none
 
 	// The programs it drives. Every judgement about a statement or a note
 	// is attest's, and every judgement about what a policy says is the
@@ -198,6 +201,7 @@ func run(args []string, loop bool) error {
 		repo:         *repo,
 		project:      *project,
 		out:          os.Stdout,
+		timings:      newDroppable(duplicate(syscall.Stdout, "stdout")),
 		attestSchema: *attestSchema,
 		eventSchema:  *eventSchema,
 		key:          *key,

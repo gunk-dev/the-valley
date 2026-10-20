@@ -128,8 +128,9 @@ func (in *integrator) reconcile() error {
 }
 
 // handle judges one request and acts on the verdict. A decision it
-// reports is timed, and its timing line follows the report; a refusal said
-// before, and so not said again, is not timed again either.
+// reports is timed, and its timing line follows the report and the
+// recorded outcome; a refusal said before, and so not said again, is not
+// timed again either.
 func (in *integrator) handle(r request, idx *recordIndex) error {
 	watch := newStopwatch()
 	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
@@ -164,8 +165,10 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 		outcome, err = in.act(r, tip, watch)
 	}
 	if err != nil {
-		in.reportTiming(r, tip, failedMemo, watch)
-		if memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339)); memoErr != nil {
+		printTiming := in.timing(r, tip, failedMemo, watch)
+		memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339))
+		printTiming()
+		if memoErr != nil {
 			return fmt.Errorf("%v (and the failure could not be recorded: %v)", err, memoErr)
 		}
 		return err
@@ -173,8 +176,10 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	if last == memo+" "+string(outcome) {
 		return nil
 	}
-	in.reportTiming(r, tip, string(outcome), watch)
-	return in.writeMemo(r, memo+" "+string(outcome))
+	printTiming := in.timing(r, tip, string(outcome), watch)
+	err = in.writeMemo(r, memo+" "+string(outcome))
+	printTiming()
+	return err
 }
 
 // refuse applies the rules that refuse a request before it is judged

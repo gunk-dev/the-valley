@@ -8,10 +8,19 @@ package main
 // after a fixed label, so it can be read out of the journal without
 // parsing the rest. It is output and nothing else: no ref, record or event
 // carries it, and nothing the integrator decides reads it.
+//
+// Nor may it stand in the way of a decision. The line is printed only
+// after the decision's outcome is recorded, and it is dropped when it
+// cannot be written within timingDeadline.
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
+	"syscall"
 	"time"
 )
 
@@ -65,8 +74,12 @@ type decisionTiming struct {
 	StagesMS   map[string]int64 `json:"stages_ms"`
 }
 
-// reportTiming prints the timing line for one decision about a request.
-func (in *integrator) reportTiming(r request, tip, outcome string, s *stopwatch) {
+// timing composes the timing line for one decision about a request, and
+// returns what prints it. The line is composed as the decision is made and
+// printed once its outcome is recorded, so recording is not part of the
+// time it reports, and printing it cannot keep the outcome from being
+// recorded.
+func (in *integrator) timing(r request, tip, outcome string, s *stopwatch) func() {
 	t := decisionTiming{
 		Time:       s.began.UTC().Format("2006-01-02T15:04:05.000Z"),
 		Project:    in.project,
@@ -83,8 +96,71 @@ func (in *integrator) reportTiming(r request, tip, outcome string, s *stopwatch)
 		t.StagesMS[name] = d.Milliseconds()
 	}
 	line, err := json.Marshal(t)
-	if err != nil {
-		return
+	if err != nil || in.timings == nil {
+		return func() {}
 	}
-	fmt.Fprintf(in.out, "  timing   %s\n", line)
+	return func() { fmt.Fprintf(in.timings, "  timing   %s\n", line) }
+}
+
+// timingDeadline is how long printing one timing line may take.
+const timingDeadline = time.Second
+
+// errDropped is what a timing line that was dropped says.
+var errDropped = errors.New("dropped: not written within " + timingDeadline.String())
+
+// droppable writes timing lines, which may be lost. Each write is made
+// apart from the caller, which waits for it at most timingDeadline. A
+// write that fails or takes longer is dropped. While one is still stuck,
+// every later one is dropped at once rather than queued behind it.
+type droppable struct {
+	w    io.Writer
+	busy chan struct{} // holds a token while a write is in flight
+}
+
+func newDroppable(w io.Writer) *droppable {
+	return &droppable{w: w, busy: make(chan struct{}, 1)}
+}
+
+func (d *droppable) Write(p []byte) (int, error) {
+	select {
+	case d.busy <- struct{}{}:
+	default:
+		return 0, errDropped
+	}
+	line := bytes.Clone(p)
+	done := make(chan error, 1)
+	go func() {
+		_, err := d.w.Write(line)
+		<-d.busy
+		done <- err
+	}()
+	timer := time.NewTimer(timingDeadline)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			return 0, err
+		}
+		return len(p), nil
+	case <-timer.C:
+		return 0, errDropped
+	}
+}
+
+// duplicate duplicates the descriptor of standard output, for timing
+// lines. Go ends a process whose write to its own standard output fails
+// because nobody reads it, as SIGPIPE would. Through a duplicate, the same
+// write fails with EPIPE and nothing more. Output that cannot be
+// duplicated gets no timing lines.
+func duplicate(fd int, name string) io.Writer {
+	syscall.ForkLock.RLock()
+	dup, err := syscall.Dup(fd)
+	if err == nil {
+		syscall.CloseOnExec(dup)
+	}
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		return io.Discard
+	}
+	return os.NewFile(uintptr(dup), name)
 }

@@ -51,7 +51,8 @@ run flags:
   --branch REF        branch pushed alongside (default: the current branch)
   --timings           also append one JSON line per check to the timing
                       log, $XDG_STATE_HOME/valley/timings.jsonl
-                      (default ~/.local/state/valley/timings.jsonl)
+                      (default ~/.local/state/valley/timings.jsonl), a
+                      regular file only its owner can read
   --change ID         the change ID each timing names
   --change-version N  the change version each timing names
   --cost NAME=CLASS   the cost class the policy declares for a check, for
@@ -60,9 +61,11 @@ run flags:
 run prints one time line per check after it finishes: its name, its
 result, how long it took, and how it was satisfied. "ran" means the
 command ran or nix built or fetched the output; "cached" means the output
-was already in the local nix store; "unknown" means the store could not
-be asked. A timing is not evidence: nothing signs, stores or pushes it,
-and a timing log that cannot be written is a warning, never a failure.
+was already in the local nix store; "unknown" means the store was not
+asked, which only a run with --timings does, or did not answer within 5s.
+A timing is not evidence: nothing signs, stores or pushes it. Timing
+output that cannot be written within a second is dropped, and a timing
+log that cannot be written is a warning, never a failure.
 
 verify flags:
   --note FILE         the signed note, as stored

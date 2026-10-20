@@ -517,7 +517,9 @@ the stages the decision reached: `refusal` (step 4, and the second reading of th
 transfer statement), `land` (the commit point's ref write), `record` (the steps after it), and
 `publish` (the bus). A voided request gets a timing line too. A refusal that repeats is not reported
 again, so it is not timed again either. The line is output only: no ref, record or event carries it.
-Checked by `integrator-unit` and `integrator-e2e`.
+The line is printed after the decision's outcome is recorded. It is dropped when it cannot be
+written within a second, so a journal that stalls or goes away cannot keep an outcome from being
+recorded. Checked by `integrator-unit` and `integrator-e2e`.
 
 The security invariant is the operator's approval: only content the operator approved lands. The
 request names the exact head that was approved, and the integrator lands only what a request names.
@@ -853,7 +855,9 @@ each check, with its result, its duration, and whether nix found its output alre
 `$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
 names the repository, the change and version, the head, the check, its runner and declared cost, its
 result, and `duration_ms`. The log stays local and is not evidence: nothing signs it or pushes it. A
-log that cannot be written is a warning, and approval continues. The reference describes
+log that cannot be written is a warning, and approval continues. Timing never holds approval up:
+anything at the log's path that is not a regular file is refused at once, and a `time` line, warning
+or log line that cannot be written within a second is dropped. The reference describes
 [the timing log](reference.md#the-timing-log) field by field.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A

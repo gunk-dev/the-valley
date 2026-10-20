@@ -26,6 +26,7 @@ The parts are:
 - `attest`, which runs checks and signs the evidence (`attest/`, `note/`);
 - the identity compiler, which turns a registry into keys and grants (`identity/`);
 - the `valley` command line tool (`bin/valley`);
+- `valley-restacker`, the restacker's read-only planner, which nothing deploys yet (`restack/`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
 
 ## The source and project storage
@@ -523,9 +524,10 @@ read, so corrupt storage is the only way to get one.
 ## The restacker
 
 The restacker rebases ready changes onto `main` when `main` moves under them, as its own principal,
-so their evidence stays fresh without their owners rebasing and approving again. Today it is only a
-planner. `valley-restacker once --report-only` (`restack/`) reads one snapshot of origin, prints
-what a pass would do, and pushes nothing. Nothing deploys it yet.
+so their evidence stays fresh without their owners rebasing and approving again.
+`valley-restacker once --report-only` (`restack/`) is the read-only planner: it reads one snapshot
+of origin, prints what a pass would do, and pushes nothing. The write pass and host service are not
+built yet, and nothing deploys it.
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
 off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
@@ -594,32 +596,30 @@ integrator, which does not read the cap, composes any policy the schema admits. 
 cap larger than a Go `int` holds as the largest `int`. That is no practical cap, since no record
 holds that many versions. Checked by `integrator-unit`, `restack-unit` and `restack-e2e`.
 
-The plan prints as a summary, or with `--json` for tests and for the next slice. The JSON is not a
-published format. `restack-unit` covers request association, outcome currency and the capacity
-arithmetic. `restack-e2e` runs the planner over a repository wired with the rendered hook and checks
-that no ref on origin moves.
+The plan prints as a summary, or with `--json`. The JSON is not a published format. `restack-unit`
+covers request association, outcome currency and the capacity arithmetic. `restack-e2e` runs the
+planner over a repository wired with the rendered hook and checks that no ref on origin moves.
 
 ## Policy
 
 A project's required checks come from three CUE layers, unified as
 `floor & templates[type] & project` (`schema/verification.cue`):
 
-- **The schema**, `schema/verification.cue`, ships inside the `valley` and integrator packages
-  (`nix/packages.nix`).
+- **The schema**, `schema/verification.cue`, ships inside the `valley`, integrator and
+  `valley-restacker` packages (`nix/packages.nix`).
 - **The floor and templates** come from the owning valley's instance repository, at
   `policy/instance/*.cue` on its `main`. `policy/valley` names that repository. A value the floor
   writes as `true` is mandatory. A template value written `bool | *true` is a default a project may
-  turn off. Every `*.cue` document directly in that directory is read, whatever its name. A name
-  with non-ASCII characters in it, such as `naïve.cue`, is read like any other, as a materialized
-  `--instance` directory already read it. The integrator once skipped such a document, because it
-  listed the tree one name a line and git quotes those names. Checked by `integrator-unit`.
+  turn off. Every `*.cue` document directly in that directory is read, whatever its name, from a
+  NUL-separated tree listing so git never quotes a non-ASCII name such as `naïve.cue`
+  (`composed/composed.go`). Checked by `integrator-unit`.
 - **The project layer** is `policy/project/*.cue`, read at the tip of the target branch.
 
 Both layers are read from integrated tips, never from the change being judged
-(`integrator/policy.go`). A path class maps path globs to checks. A change requires the union of the
-checks of every class one of its paths matches. A path no class matches requires the `unclassified`
-checks. The integrator gets this answer by running `valley checks`, which diffs with renames counted
-on both sides. Checked by `policy-deriver` and `cue-vet`.
+(`integrator/policy.go`, `composed/composed.go`). A path class maps path globs to checks. A change
+requires the union of the checks of every class one of its paths matches. A path no class matches
+requires the `unclassified` checks. The integrator gets this answer by running `valley checks`,
+which diffs with renames counted on both sides. Checked by `policy-deriver` and `cue-vet`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
 policy makes `valley checks` exit non-zero and print no report. Without that, the failure would read
@@ -670,8 +670,10 @@ layer sets it. The restacker rebases a ready change when its target moves, and a
 the change as a new version. The cap is how many of those versions it adds to one change. A host may
 impose a lower ceiling of its own, outside the policy. The carry modes and the cap are part of the
 composed policy, so the integrator's policy digest, a SHA-256 of the whole composition, changes when
-either does. Approval carry reads the carry modes, and the restacker reads the cap. Neither is
-built, so nothing acts on either setting. Checked by `cue-vet` and `integrator-unit`.
+either does. Approval carry reads the carry modes, and is not built yet, so nothing acts on them.
+The restacker's planner reads the cap (`composed/composed.go`, `restack/plan.go`), while the write
+pass that adds versions is not built yet. Checked by `cue-vet`, `integrator-unit`, `restack-unit`
+and `restack-e2e`.
 
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
 a class that requires the checks reading that part. A Go module requires its unit tests, and its
@@ -680,11 +682,13 @@ schemas and the policy require their evaluations and vets. The NixOS module also
 end-to-end checks that run what it renders, and two of those boot NixOS machines. A change to
 `flake.nix` or `flake.lock` does not require them, so a nixpkgs bump boots no machine. A check's own
 files, such as its script under `nix/checks/`, require that check. A change to documentation alone
-requires the floor's `prose-format` and nothing else. A project layer that stopped composing would
-stop every derivation once it landed, including the derivation of its own fix. So the `own-policy`
-check composes the layer with the example floor before it lands. It fails if the layer names a check
-this flake does not define, if a script under `nix/checks/` requires no check of its own, or if a
-docs-only change would require more than `prose-format`.
+requires the floor's `prose-format` and nothing else, which checks Markdown formatting and relative
+links and heading anchors across `README.md`, `AGENTS.md` and `docs/*.md`
+(`nix/checks/prose-format.sh`). A project layer that stopped composing would stop every derivation
+once it landed, including the derivation of its own fix. So the `own-policy` check composes the
+layer with the example floor before it lands. It fails if the layer names a check this flake does
+not define, if a script under `nix/checks/` requires no check of its own, or if a docs-only change
+would require more than `prose-format`.
 
 In the-valley's layer, four parts are `same-class`: the hook, the integrator, the signature
 verifier, and the identity compiler with `schema/identity.cue`. The policy is `exact`: `policy/` and
@@ -783,11 +787,11 @@ Nothing in the-valley or cosmo calls `sigverify` yet.
 ## The valley command
 
 `bin/valley` is a shell script, also packaged with its schema (`nix/packages.nix`). Its `status`,
-`ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot` and `plan` verbs are a Go
-program, `valley-go` (`status/`), which the package puts on the script's `PATH`. `valley-go` rebases
-with the rebase engine, a Go module of its own (`rebase/`), which also reads how far each version
-has landed for its listings. The package stamps its version on the script, and `valley self-update`
-keeps a user's `valley` at the tip of a branch (see
+`ready`, `unready`, `withdraw`, `rebase`, `changes`, `pending`, `knot`, `plan` and `self-update`
+verbs are a Go program, `valley-go` (`status/`), which the package puts on the script's `PATH`.
+`valley-go` rebases with the rebase engine, a Go module of its own (`rebase/`), which also reads how
+far each version has landed for its listings. The package stamps its version on the script, and
+`valley self-update` keeps a user's `valley` at the tip of a branch (see
 [Version and self-update](#version-and-self-update)).
 
 | Command                      | What it does                                                                                          |
@@ -1919,17 +1923,17 @@ provisioning, so the run logs a failure until it is set up.
 
 ## Not deployed or not wired yet
 
-| What                                        | State                                                                            |
-| ------------------------------------------- | -------------------------------------------------------------------------------- |
-| `sigverify`                                 | On `main` and tested. Nothing calls it.                                          |
-| Hardware-backed keys in the registry        | `schema/identity.cue` accepts `ssh-ed25519` keys only.                           |
-| SSHSIG evidence                             | Attestations use the signed-note format.                                         |
-| Approvals                                   | The integrator checks evidence only. No approval is required for any path class. |
-| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.               |
-| The restacker                               | The policy sets its cap. There is no restacker.                                  |
-| A crash-safe landing ledger                 | Landing is several separate ref updates.                                         |
-| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                 |
-| Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                    |
-| Bus authentication                          | The bus listens on localhost with no authentication.                             |
-| Other projects on the valley                | cosmo and klaus are not hosted on the valley.                                    |
-| Self-update in the agent guest              | The home-manager module exists. cosmo does not enable it yet.                    |
+| What                                        | State                                                                                              |
+| ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                            |
+| Hardware-backed keys in the registry        | `schema/identity.cue` accepts `ssh-ed25519` keys only.                                             |
+| SSHSIG evidence                             | Attestations use the signed-note format.                                                           |
+| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
+| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
+| The restacker                               | `valley-restacker once --report-only` plans a pass (`restack/`). Nothing writes or deploys it yet. |
+| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
+| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |
+| Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                                      |
+| Bus authentication                          | The bus listens on localhost with no authentication.                                               |
+| Other projects on the valley                | cosmo and klaus are not hosted on the valley.                                                      |
+| Self-update in the agent guest              | The home-manager module exists. cosmo does not enable it yet.                                      |

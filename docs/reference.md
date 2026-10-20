@@ -16,8 +16,8 @@ and [A guide to working in the valley](./guide.md) for step-by-step workflows.
 - [Project storage ref layout and bounds](#project-storage-ref-layout-and-bounds) — ref namespaces,
   push permissions, object types, and size limits.
 - [Wire formats and JSON schemas](#wire-formats-and-json-schemas) — change records, restack reports,
-  signed notes, digest manifests, transfer statements, outcome records, knots, and CLI JSON
-  contracts.
+  review records, signed notes, digest manifests, transfer statements, outcome records, knots, and
+  CLI JSON contracts.
 - [CUE configuration schemas](#cue-configuration-schemas) — `schema/valley.cue`,
   `schema/verification.cue`, `schema/attestation.cue`, `schema/identity.cue`, `schema/node.cue`, and
   `schema/events.cue`.
@@ -756,6 +756,7 @@ any protected pattern matches a ref in **any** namespace (`refs/heads/*`, `refs/
 | Any symbolic ref                                                                                          | Symbolic ref target                                                      | **Nobody.** Categorically refused on all SSH pushes (`implemented`).                                                                                                                                                                                                                                                                                                                                                               | —                                                                                                                                                                                | Always refused.                                                                                                                                                                                                                                                                                                                    |
 | `refs/the-valley/changes/main/<change-id>`                                                                | Change record (`valley-change-record/v1`)                                | **Create:** Any named principal (becomes `owner`).<br>**Add version / `unready` / `re-ready` / `withdraw`:** Change `owner` or an `approve` grant holder.<br>**Add restacked version (`ready` → `ready`, same `branch` & `title`):** `restack` grant holder.<br>**Delete:** `approve` grant holder only.<br>(`valleyhook` accepts target `main` only; `<change-id>` is `[k-z]{32}`).                                               | **Commit** whose root **tree** contains a single regular file (`100644`) named `record.json`.                                                                                    | Commit `<= 4 KiB` (`4,096` bytes);<br>Tree `<= 1 KiB` (`1,024` bytes, 1 entry `100644 record.json`);<br>Blob `record.json` `<= 64 KiB` (`65,536` bytes);<br>`<= 1,000` versions, `seq <= 100,000`.                                                                                                                                 |
 | `refs/the-valley/restack/main/<change-id>`                                                                | Restack report (`valley-restack-report/v1`)                              | **Create / extend (`P = []` or `P = [old]`):** Principals holding the `restack` grant, only for a `<change-id>` that already has a change record on `main`.<br>**Delete or history rewrite:** Refused.                                                                                                                                                                                                                             | **Commit** whose root **tree** contains a single regular file (`100644`) named `report.json`.                                                                                    | Commit `<= 4 KiB` (`4,096` bytes);<br>Tree `<= 1 KiB` (`1,024` bytes, 1 entry `100644 report.json`);<br>Blob `report.json` `<= 64 KiB` (`65,536` bytes);<br>`<= 64` layers, `<= 100` conflict paths, `<= 64` blocking requests.                                                                                                    |
+| `refs/the-valley/reviews/<target>/<change-id>`                                                            | Review history (`the-valley/review/v1`)                                  | **SSH push:** Nobody (`implemented`): the hook has no rule for the namespace and refuses it. Admitting appends is `not built`; see [Review record](#review-record-the-valleyreviewv1).                                                                                                                                                                                                                                             | **Commit** whose root **tree** contains a single regular file (`100644`) named `review.json`.                                                                                    | Commit `<= 4 KiB`;<br>Tree `<= 1 KiB`;<br>Blob `review.json` `<= 64 KiB`;<br>`<= 512` reviews per history.                                                                                                                                                                                                                         |
 | `refs/the-valley/attestations/<tree-digest>/<key-hash>`                                                   | Signed check attestations and integrator transfer statements             | **Create over SSH:** Any pusher, provided `--known-signers` is configured and every note in the tree verifies under a known signer with key hash `<key-hash>` (`[0-9a-f]{8}`) for `<tree-digest>` (`[0-9a-f]{64}`).<br>**Update or delete over SSH:** Refused (create-only).<br>**Local host write:** `valley-integrator` writes countersigned `<check>/statement.note` and `transfer.note` under its own `<key-hash>` on landing. | **Tree** object (not a commit) containing `100644` note blobs (such as `<check>/statement.note` and `transfer.note`).                                                            | Tree depth `<= 3` (root tree is depth 1);<br>`<= 64` entries per tree object;<br>`<= 256` total entries visited across walk (`>= 1` note blob required);<br>Each tree object `<= 16 KiB` (`16,384` bytes);<br>Each note blob (`100644`) `<= 64 KiB` (`65,536` bytes);<br>Total bytes read in walk `<= 1 MiB` (`1,048,576` bytes).  |
 | `refs/the-valley/integration-requests/<target>/<request>`                                                 | Integration request (approval of a commit)                               | **Create / replace / delete over SSH:** Principals holding the `approve` grant, also accepted as `request` (`valleyhook` checks the `refs/the-valley/integration-requests/` prefix and the `approve` grant).<br>**Local host delete:** `valley-integrator` deletes the ref (CAS on request head) when a change lands or when voiding a `withdrawn` change's request.                                                               | **Commit** object (written by `valley approve` and required by `valley-integrator` at `refs/the-valley/integration-requests/main/<request>`, where `<request>` contains no `/`). | Must resolve to a commit object in the repository for the integrator to consider it.                                                                                                                                                                                                                                               |
 | `refs/the-valley/integration-outcomes/<target>/<request>`                                                 | Integrator outcome record                                                | **SSH push:** Nobody (`implemented`).<br>**Local host write:** `valley-integrator` writes after judging a request.                                                                                                                                                                                                                                                                                                                 | **Blob** object (single line of space-separated fields).                                                                                                                         | 4 or 5 whitespace-separated fields terminated by `\n`.                                                                                                                                                                                                                                                                             |
@@ -922,6 +923,108 @@ A restack report records what an automated restack attempt observed and publishe
   `published` is non-null, else `branch_tip`, or still absent when `branch_tip == null`). Otherwise
   `current` is `false` (historical).
 
+### Review record (`the-valley/review/v1`)
+
+A review records one reviewer's judgment of one version of a change as `review.json` inside a commit
+at `refs/the-valley/reviews/<target>/<change-id>` ([`review/review.go`](../review/review.go),
+[`review/binding.go`](../review/binding.go), [`review/history.go`](../review/history.go)). The
+module is `implemented`. Admitting a review over SSH is `not built`: the push hook refuses every
+push to `refs/the-valley/reviews/`.
+
+```json
+{
+  "schema": "the-valley/review/v1",
+  "review_id": "0123456789abcdef0123456789abcdef",
+  "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
+  "target": "main",
+  "review": "docs-style",
+  "reviewer": "klaus-env",
+  "verdict": "request-changes",
+  "withdraws": null,
+  "binding": {
+    "record": "git-sha1:4444444444444444444444444444444444444444",
+    "version": 2,
+    "head": "git-sha1:2222222222222222222222222222222222222222",
+    "target_tip": "git-sha1:3333333333333333333333333333333333333333",
+    "base": "git-sha1:1111111111111111111111111111111111111111",
+    "delta": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+  },
+  "summary": "Two sentences carry two new ideas each.",
+  "notes": [
+    {
+      "side": "after",
+      "path": "docs/guide.md",
+      "blob": "git-sha1:5555555555555555555555555555555555555555",
+      "lines": { "start": 12, "end": 14 },
+      "body": "Split this sentence."
+    }
+  ],
+  "provenance": {
+    "harness": "klaus 0.9.1",
+    "model": "claude-opus-5-5",
+    "settings": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "inputs": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "input_tokens": 1200,
+    "output_tokens": null
+  }
+}
+```
+
+- **Strict JSON rules:** The change record's: valid UTF-8, no duplicate keys in any object, no
+  unknown fields (a key in another case is unknown), every field present with its exact type, no
+  trailing tokens, and plain digit integers only. The whole file is `<= 64 KiB` (`MaxRecord`).
+- **Fields:**
+  - `schema` (`string`): Must be `"the-valley/review/v1"`.
+  - `review_id` (`string`): 32 lowercase hex digits, unique within the history (`review.NewID`).
+  - `change_id` (`string`): `[k-z]{32}`, matching the ref's `<change-id>`.
+  - `target` (`string`): Valid UTF-8 branch name matching the ref's `<target>`.
+  - `review` (`string`): The review's name, `^[a-z][a-z0-9-]*$`, `1..64` bytes.
+  - `reviewer` (`string`): Principal name (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`).
+  - `verdict` (`string`): `"approve"`, `"request-changes"`, or `"withdraw"`.
+  - `withdraws` (`string` or `null`): The `review_id` a withdrawal takes back; `null` for any other
+    verdict. A review never withdraws itself.
+  - `binding` (`object` or `null`): Required for `approve` and `request-changes`; `null` for
+    `withdraw`. Its fields are `record`, `head`, `target_tip` and `base`, each
+    `"git-sha1:<40-hex>"`; `version` (`int`, `1..1000`); and `delta`, 64 lowercase hex digits.
+  - `summary` (`string`): `1..8192` bytes of UTF-8 with no control characters but newline and tab.
+  - `notes` (`array` of objects): `0..256` items; always empty for `withdraw`. Each has `side`
+    (`"before"` or `"after"`), `path` (`1..4095` bytes, no empty, `.`, `..` or `.git` component, no
+    component over 255 bytes, no control character), `blob` (`"git-sha1:<40-hex>"`), `lines` (`null`
+    or `{ "start": <int>, "end": <int> }` with `1 <= start <= end <= 16777216`), and `body`
+    (`1..8192` bytes, as `summary`).
+  - `provenance` (`object` or `null`): `null` for a human's review. Otherwise `harness` and `model`
+    (`1..256` bytes, no control characters), `settings` and `inputs` (64 lowercase hex digits, the
+    SHA-256 of the generation settings and of the input manifest), and `input_tokens` and
+    `output_tokens` (`null` or an `int` in `0..1000000000000`).
+- **Binding:** `record` is the change record commit the reviewer read, and it names `version` with
+  `head`. `target_tip` is the commit the version was judged against. `base` is the one merge base of
+  `target_tip` and `head`. `delta` is the SHA-256 of the `valley-delta-v1` encoding from `base` to
+  `head`. When `target_tip` and `head` have no merge base, or more than one, no binding exists and
+  no review is made (`review.ErrNoBase`, `review.ErrAmbiguousBase`).
+- **Verification (`review.Verify`):** Recomputes every part of the binding: the record names the
+  version and head, and is the record of its own `seq` on the change's record ref when that ref is
+  given; `target_tip` is a commit, on the target's history when the target's tip is given; `base` is
+  the one merge base; the delta has the bound digest; and each note's `path` holds its `blob` on its
+  side (`base` for `before`, `head` for `after`), with `lines` inside the file. It reads within a
+  `delta.Budget` of bytes, tree entries and a deadline. An error wrapping `delta.ErrBudget` means
+  the budget ran out, not that the binding is wrong.
+- **History and parents:** The ref points at the newest review commit. The first review commit's
+  parents are `[record]`; a later review that judges a version has `[previous, record]`; a
+  withdrawal has `[previous]`. `previous` is the history's head when the review was appended, and
+  `record` is `binding.record`. A history holds at most 512 reviews (`MaxHistory`). A withdrawal
+  names an earlier review of the same history and review name that is neither a withdrawal nor
+  withdrawn already.
+- **Appending (`review.Build`, `review.Publish`, `review.CheckAppend`):** `Build` writes the commit
+  that appends a review to a given head, and returns `review.ErrRecorded` with the existing commit
+  when the history holds the review already. `Publish` pushes it with
+  `--force-with-lease=<ref>:<old>` and returns `review.ErrStale` when another append came first.
+  `CheckAppend` decides one ref update for the push hook, which does not call it (`not built`). It
+  admits exactly one new review commit on the old head, whose `reviewer` is the pusher, under a
+  review name the caller says the pusher may write. A withdrawal must be of the pusher's own review,
+  or the pusher an operator, who may withdraw any review under any name. A review that judges a
+  version must be about a change the repository records, and its binding must verify. It refuses
+  every delete.
+
 ### Signed notes and attestation statement (`the-valley/attestation/v1`)
 
 An attestation note wraps canonical line-oriented `the-valley/attestation/v1` statement text in a
@@ -1028,6 +1131,12 @@ valley-tree-v1
      Both trees are validated for Linux checkout safety (modes in `{100644, 100755, 120000, 40000}`,
      no empty/`.`/`..`/case-insensitive `.git` segments, component names `<= 255` bytes, non-empty
      symlink targets `<= 4,095` bytes without NUL).
+   - **Bounded reading:** `delta.BetweenWithin` gives the same delta as `delta.Between` within a
+     `delta.Budget`: bytes read and paths built, tree entries visited (a shared subtree once per
+     path that names it), and a deadline, all required. It asks for each object's type and size
+     before its content, kills git at the deadline, and fails with an error wrapping
+     `delta.ErrBudget` at the first bound crossed. `review.Verify` recomputes a review's binding
+     with it.
 4. **Evidence fingerprint:**
    - **Purpose:** 16-hex-character fingerprint of all attestation refs in a repository, recorded in
      outcome records so the integrator and `valley status` know whether new evidence has arrived

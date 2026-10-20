@@ -438,6 +438,31 @@ rec {
     '';
   };
 
+  # Review records (review/): the-valley/review/v1's strict reading, a
+  # review's binding to the version it judged, recomputed from git within a
+  # budget, and the append-only history a review is kept in, with the check
+  # an append is held to. It reads change records with the one reading of a
+  # record the push hook shares (../change), and the delta with
+  # valley-delta-v1's bounded reading (../delta). Its checkPhase runs go
+  # test, which builds every repository it reads with real git, its fuzz
+  # target's seed corpus, and then go vet. Go, standard library only —
+  # hence vendorHash = null and no module fetch.
+  review = pkgs.buildGoModule {
+    pname = "valley-review";
+    version = "0";
+    src = withLocal ../review [
+      ../change
+      ../delta
+    ];
+    modRoot = "review";
+    vendorHash = null;
+    preBuild = readsGoMod;
+    nativeCheckInputs = [ pkgs.git ];
+    postCheck = ''
+      go vet ./...
+    '';
+  };
+
   # The restacker (restack/): `valley-restacker once --report-only` reads
   # one snapshot of origin through the rebase engine (../rebase), says
   # which families it would restack and which it would hold, and builds the

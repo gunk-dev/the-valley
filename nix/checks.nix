@@ -19,6 +19,8 @@
 #                    and the trees it reads and refuses
 #   derive.nix       derive-unit — the Go deriver of required checks, held
 #                    to bin/valley's
+#   review.nix       review-unit — review records, their binding to the
+#                    version judged, and their append-only history
 #   attest.nix       attest-unit, attest-conformance, attest-e2e — the
 #                    helper's unit tests, the written form as a fixed
 #                    contract, and the helper driven end to end
@@ -89,6 +91,7 @@ import ./checks/host-module.nix args
 // import ./checks/knot.nix args
 // import ./checks/delta.nix args
 // import ./checks/derive.nix args
+// import ./checks/review.nix args
 // import ./checks/attest.nix args
 // import ./checks/integrator.nix args
 // import ./checks/restack.nix args

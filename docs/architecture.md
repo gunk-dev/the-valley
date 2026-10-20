@@ -28,6 +28,7 @@ The parts are:
 - the `valley` command line tool (`bin/valley`);
 - `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
   which nothing deploys yet (`restack/`);
+- the review record and its history, which nothing writes or admits yet (`review/`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
 
 ## The source and project storage
@@ -163,7 +164,7 @@ the plan graph by `knots-e2e`.
 | `refs/the-valley/restack/main/<change-id>`          | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
 | `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
-| Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`.                                                                      |
+| Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, and review histories (see [Reviews](#reviews)).                      |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
 | Tags and every other ref                            | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
@@ -946,6 +947,106 @@ Check definitions come from the change being judged. `attest` builds the flake c
 exported tree, so a change can edit the check it is judged by
 ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md),
 [ida-a9e274c](../archive/.the-valley/ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md)).
+
+## Reviews
+
+A review is a reviewer's judgment of one version of a change. It approves the version or requests
+changes to it, with a summary and notes on the files the reviewer read. Human and agent reviewers
+write the same record. An agent's review also records how its judgment was produced. A review grants
+nothing: only an integration request lands a change.
+
+The `review/` module defines the record, how a review is bound to what its reviewer read, and the
+history reviews are kept in. Host admission is **not built**. The push hook has no rule for
+`refs/the-valley/reviews/`, so it refuses every push there, and no `valley` verb writes or reads a
+review. Checked by `review-unit`.
+
+**The record.** A review is one JSON file, `review.json`, in the schema `the-valley/review/v1`
+(`review/review.go`). It holds:
+
+- `review_id`, 32 lowercase hex digits. The reviewer makes it once and keeps it through every retry
+  of publishing the review.
+- The change ID, the target, the review's name, such as `docs-style` or `operator`, and the
+  reviewer, a principal.
+- The `verdict`: `approve`, `request-changes` or `withdraw`.
+- The binding, below, a summary, and notes.
+- For an agent, its provenance: the harness, the model, digests of the generation settings and of
+  the inputs, and the tokens the run reported.
+
+A note is anchored to a file the reviewer read. The anchor is the side (`before` for the base,
+`after` for the head), the path, the blob the path held on that side, and an optional range of
+lines, numbered from 1. A note on deleted lines is anchored to the before side.
+
+A `withdraw` review takes back an earlier review of the same change, named by its ID. It judges no
+version, so it has no binding and no notes, and its summary gives the reason. Only the review's
+reviewer or an operator may withdraw it. The project's rule for a blocking review is that a request
+for changes stops counting only when it is withdrawn, or when a version with a different delta needs
+a fresh review. A later approval does not clear it. Evaluating reviews by that rule is **not
+built**.
+
+The parser is as strict as the change record's. It refuses invalid UTF-8, a key given twice, a field
+the schema does not have (a key in another case among them), a field of another type, a string or
+list past its bound, and anything after the object. A review is at most 64 KiB.
+
+**The binding.** A review records exactly what its reviewer read, so anyone with the objects can
+recompute it (`review/binding.go`). It names:
+
+- the change record commit the reviewer read, and the version number and head that commit names;
+- the target tip the version was judged against;
+- the merge base of that tip and the head;
+- the digest of the `valley-delta-v1` delta from the base to the head: the files the version
+  changes, whole.
+
+When the tip and the head have no merge base, or more than one, there is no single base to compare
+from. Then there is no binding, and so no review. `review.Bind` refuses to make one, and
+`review.Verify` refuses a binding that names a base there.
+
+`review.Verify` recomputes every part. The record commit must name the version with the head. Given
+the change's record ref, the record commit must be the record of its own `seq` on that ref's
+first-parent history, so a review cannot bind a record written to look like one. Given the target's
+tip, the bound tip must be on its history. The base must be the one merge base, and the delta must
+have the bound digest. Each note's path must hold its blob on its side, with its lines inside the
+file.
+
+Recomputing reads trees a pusher chose, so it runs within a budget of bytes, tree entries and time.
+`delta.BetweenWithin` is the bounded form of `delta.Between`, which is unbounded. It asks git for
+each object's type and size before its content. It counts every entry it visits, so a subtree that
+two directories name counts twice, and it counts the bytes of every path it builds. git is killed at
+the deadline. The first bound crossed ends the reading with an error that wraps `delta.ErrBudget`,
+so a caller can tell a version too large to recompute from a binding that is wrong.
+
+**The history.** A change's reviews are kept at `refs/the-valley/reviews/<target>/<change-id>`
+(`review/history.go`). Each commit holds one review, as the single file `review.json`, with these
+parents:
+
+| Review                               | Parents                                                             |
+| ------------------------------------ | ------------------------------------------------------------------- |
+| The first review                     | The change record commit it binds                                   |
+| A later review that judges a version | The review commit before it, then the change record commit it binds |
+| A withdrawal                         | The review commit before it                                         |
+
+The first-parent chain lists every review in order. The last parent keeps each judged record
+reachable, with the heads it names, after the change's record ref is deleted and the repository
+pruned.
+
+A history is append-only. Each review ID in it is unique. A withdrawal names an earlier review of
+the history, under the same review name, that is not itself a withdrawal and is not withdrawn
+already. A history holds at most 512 reviews. Each review commit is at most 4 KiB and its tree at
+most 1 KiB.
+
+An append is a compare-and-swap. `review.Build` writes the commit that appends a review to the head
+the client read. `review.Publish` pushes it with `--force-with-lease`, so the push fails if another
+review arrived first. The client then reads the new head and builds again, with the same review.
+`review.Build` reports a review the history holds already, so a retry after an unconfirmed push
+publishes nothing twice.
+
+`review.CheckAppend` decides one update of a history's ref, for the push hook to call; the hook does
+not call it. It refuses a delete, and any update that is not one new review commit on the old head
+by the table above. The review must name the pusher as its reviewer. The caller says, from its
+grants, which review names the pusher may write under, and whether the pusher is an operator. A
+review under any other name is refused before its binding is read. A withdrawal must be of the
+pusher's own review, unless the pusher is an operator, who may withdraw any review under any name. A
+review that judges a version must be about a change the repository records, and its binding must
+verify.
 
 ## Identity
 
@@ -2161,6 +2262,7 @@ provisioning, so the run logs a failure until it is set up.
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
 | The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
+| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                 |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |
 | Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                                      |

@@ -7,6 +7,7 @@ package delta
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Repo is a git repository Between reads, and how git is run to read it.
@@ -43,7 +45,47 @@ const modeTree = "40000"
 // a NUL, or is longer than Linux's limit of 4095 bytes. Every entry of
 // both trees is checked, the ones the delta leaves out included.
 func Between(r Repo, pre, post string) (Delta, error) {
-	rd, err := r.open()
+	return between(r, pre, post, nil)
+}
+
+// Budget is what BetweenWithin may spend reading two trees. Every bound
+// must be set.
+//
+// Bytes bounds the bytes the reading takes in: the content of every tree
+// and blob it reads from git, and every path it builds on the way. Entries
+// bounds the tree entries it visits: each entry once when its tree is read,
+// and once more each time the comparison walks it, so a subtree that two
+// directories name counts twice. Deadline is when the reading must be
+// done. git is killed then, and the reading fails.
+type Budget struct {
+	Bytes    int64
+	Entries  int64
+	Deadline time.Time
+}
+
+// ErrBudget is wrapped by every error BetweenWithin returns for a bound of
+// its budget, so a caller can tell trees too large to read within the
+// budget from trees that are refused.
+var ErrBudget = errors.New("the budget for reading the trees is spent")
+
+// BetweenWithin is Between held to a budget. It reads what Between reads,
+// refuses what Between refuses, and gives the same delta. It also stops at
+// the first bound it would cross, and returns an error that wraps
+// ErrBudget. An object's type and size are asked for before its content,
+// so git never produces an object that would cross the budget. Between
+// itself is unbounded.
+func BetweenWithin(r Repo, pre, post string, b Budget) (Delta, error) {
+	if b.Bytes <= 0 || b.Entries <= 0 || b.Deadline.IsZero() {
+		return nil, errors.New("a budget bounds bytes, entries and time, and this one leaves one of them unset")
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), b.Deadline)
+	defer cancel()
+	return between(r, pre, post, &limit{budget: b, ctx: ctx})
+}
+
+// between is Between, held to l when l is not nil.
+func between(r Repo, pre, post string, l *limit) (Delta, error) {
+	rd, err := r.open(l)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +110,52 @@ func Between(r Repo, pre, post string) (Delta, error) {
 	return d, nil
 }
 
+// limit is a reading's budget and what it has spent of it.
+type limit struct {
+	budget         Budget
+	ctx            context.Context // ends at the budget's deadline
+	bytes, entries int64
+}
+
+// spend counts bytes and entries against the budget, and refuses them
+// once either would cross its bound or the deadline has passed. A nil
+// limit spends nothing and refuses nothing.
+func (l *limit) spend(bytes, entries int64) error {
+	if l == nil {
+		return nil
+	}
+	if err := l.late(); err != nil {
+		return err
+	}
+	if l.bytes+bytes > l.budget.Bytes {
+		return fmt.Errorf("%w: the trees take more than the %d bytes it allows", ErrBudget, l.budget.Bytes)
+	}
+	if l.entries+entries > l.budget.Entries {
+		return fmt.Errorf("%w: the trees have more than the %d entries it allows", ErrBudget, l.budget.Entries)
+	}
+	l.bytes += bytes
+	l.entries += entries
+	return nil
+}
+
+// late is the error for a reading whose deadline has passed, or nil.
+func (l *limit) late() error {
+	if l != nil && l.ctx.Err() != nil {
+		return fmt.Errorf("%w: the trees could not be read by its deadline, %s", ErrBudget, l.budget.Deadline.Format(time.RFC3339Nano))
+	}
+	return nil
+}
+
+// failed is the error for a read from git that failed: the deadline's,
+// when it has passed, since passing it is what kills git, and otherwise
+// err.
+func (l *limit) failed(err error) error {
+	if late := l.late(); late != nil {
+		return late
+	}
+	return err
+}
+
 // treeEntry is one entry of a tree object.
 type treeEntry struct {
 	mode, name, oid string
@@ -76,6 +164,7 @@ type treeEntry struct {
 // reader holds one `git cat-file --batch` open, and what it has read.
 type reader struct {
 	repo   Repo
+	limit  *limit // the budget the reading is held to; nil for none
 	cmd    *exec.Cmd
 	in     io.WriteCloser
 	out    *bufio.Reader
@@ -90,19 +179,34 @@ type reader struct {
 // bytes, less the NUL that ends it.
 const maxTarget = 4095
 
-func (r Repo) command(args ...string) *exec.Cmd {
+// command runs git in the repository. With a limit, git is killed when the
+// limit's deadline passes.
+func (r Repo) command(l *limit, args ...string) *exec.Cmd {
 	program := r.Git
 	if program == "" {
 		program = "git"
 	}
-	cmd := exec.Command(program, append([]string{"--no-replace-objects"}, args...)...)
+	args = append([]string{"--no-replace-objects"}, args...)
+	var cmd *exec.Cmd
+	if l == nil {
+		cmd = exec.Command(program, args...)
+	} else {
+		cmd = exec.CommandContext(l.ctx, program, args...)
+	}
 	cmd.Dir = r.Dir
 	cmd.Env = r.Env
 	return cmd
 }
 
-func (r Repo) open() (*reader, error) {
-	cmd := r.command("cat-file", "--batch")
+// open starts git cat-file. An unbounded reading asks for each object
+// whole, with --batch. A bounded one asks for its type and size first,
+// with --batch-command, and for its content only once they fit.
+func (r Repo) open(l *limit) (*reader, error) {
+	mode := "--batch"
+	if l != nil {
+		mode = "--batch-command"
+	}
+	cmd := r.command(l, "cat-file", mode)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -112,18 +216,25 @@ func (r Repo) open() (*reader, error) {
 		return nil, err
 	}
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("could not run git cat-file: %v", err)
+		return nil, l.failed(fmt.Errorf("could not run git cat-file: %v", err))
 	}
 	return &reader{
-		repo: r, cmd: cmd, in: in, out: bufio.NewReader(out),
+		repo: r, limit: l, cmd: cmd, in: in, out: bufio.NewReader(out),
 		trees: map[string][]treeEntry{}, leaves: map[string]string{}, links: map[string]string{},
 		sums: map[string][32]byte{},
 	}, nil
 }
 
+// close ends the reading. An unbounded one lets git finish. A bounded one
+// kills it, since a reading stopped at a bound may have left an object
+// unread that git would otherwise write out whole.
 func (rd *reader) close() {
 	rd.in.Close()
-	io.Copy(io.Discard, rd.out)
+	if rd.limit != nil {
+		rd.cmd.Process.Kill()
+	} else {
+		io.Copy(io.Discard, rd.out)
+	}
 	rd.cmd.Wait()
 }
 
@@ -136,32 +247,75 @@ func (rd *reader) validID(oid string) bool {
 	return (len(oid) == 40 || len(oid) == 64) && lowerHex([]byte(oid))
 }
 
-// read reads one object whole, and its type.
+// read reads one object whole, and its type. A bounded reading spends the
+// object's size before asking for its content.
 func (rd *reader) read(oid string) (kind string, data []byte, err error) {
 	if !rd.validID(oid) {
 		return "", nil, fmt.Errorf("%q is not a full object ID", oid)
 	}
-	if _, err := io.WriteString(rd.in, oid+"\n"); err != nil {
-		return "", nil, fmt.Errorf("could not read the object %s: %v", oid, err)
+	if rd.limit != nil {
+		kind, size, err := rd.ask("info", oid)
+		if err != nil {
+			return "", nil, err
+		}
+		if err := rd.limit.spend(size, 0); err != nil {
+			return "", nil, err
+		}
+		again, confirmed, err := rd.ask("contents", oid)
+		if err != nil {
+			return "", nil, err
+		}
+		if again != kind || confirmed != size {
+			return "", nil, fmt.Errorf("the object %s changed between being sized and being read", oid)
+		}
+		data, err := rd.content(oid, size)
+		return kind, data, err
+	}
+	kind, size, err := rd.ask("", oid)
+	if err != nil {
+		return "", nil, err
+	}
+	data, err = rd.content(oid, size)
+	return kind, data, err
+}
+
+// ask sends one request for oid, with the command given or none, and reads
+// the header git answers it with: the object's type and size.
+func (rd *reader) ask(command, oid string) (kind string, size int64, err error) {
+	if err := rd.limit.late(); err != nil {
+		return "", 0, err
+	}
+	request := oid + "\n"
+	if command != "" {
+		request = command + " " + request
+	}
+	if _, err := io.WriteString(rd.in, request); err != nil {
+		return "", 0, rd.limit.failed(fmt.Errorf("could not read the object %s: %v", oid, err))
 	}
 	header, err := rd.out.ReadString('\n')
 	if err != nil {
-		return "", nil, fmt.Errorf("could not read the object %s: %v", oid, err)
+		return "", 0, rd.limit.failed(fmt.Errorf("could not read the object %s: %v", oid, err))
 	}
 	fields := strings.Fields(header)
 	if len(fields) != 3 || fields[0] != oid {
-		return "", nil, fmt.Errorf("the object %s is not in the repository", oid)
+		return "", 0, fmt.Errorf("the object %s is not in the repository", oid)
 	}
-	size, err := strconv.ParseInt(fields[2], 10, 64)
+	size, err = strconv.ParseInt(fields[2], 10, 64)
 	if err != nil || size < 0 {
-		return "", nil, fmt.Errorf("git gave the size of %s as %q", oid, fields[2])
+		return "", 0, fmt.Errorf("git gave the size of %s as %q", oid, fields[2])
 	}
-	data = make([]byte, size+1)
+	return fields[1], size, nil
+}
+
+// content reads the size bytes of an object git is writing, and the
+// newline that closes them.
+func (rd *reader) content(oid string, size int64) ([]byte, error) {
+	data := make([]byte, size+1)
 	if _, err := io.ReadFull(rd.out, data); err != nil || data[size] != '\n' {
-		return "", nil, fmt.Errorf("could not read the object %s whole", oid)
+		return nil, rd.limit.failed(fmt.Errorf("could not read the object %s whole", oid))
 	}
 	rd.hexLen = len(oid)
-	return fields[1], data[:size], nil
+	return data[:size], nil
 }
 
 // treeOf is the tree an object ID names: the tree itself, or a commit's.
@@ -212,6 +366,9 @@ func (rd *reader) check(oid, at string) error {
 	rd.trees[oid] = entries
 	for _, e := range entries {
 		path := join(at, e.name)
+		if err := rd.limit.spend(int64(len(path)), 0); err != nil {
+			return err
+		}
 		if e.mode == modeTree {
 			if err := rd.check(e.oid, path); err != nil {
 				return err
@@ -244,6 +401,9 @@ func (rd *reader) parseTree(data []byte, at string) ([]treeEntry, error) {
 		e.oid = hex.EncodeToString(data[nul+1 : nul+1+size])
 		data = data[nul+1+size:]
 		path := join(at, e.name)
+		if err := rd.limit.spend(int64(len(path)), 1); err != nil {
+			return nil, err
+		}
 		if err := checkName(e.name); err != nil {
 			return nil, fmt.Errorf("the tree at %s %w", described(at), err)
 		}
@@ -286,11 +446,11 @@ func (rd *reader) checkLeaves() error {
 		oids = append(oids, oid)
 	}
 	sort.Strings(oids)
-	cmd := rd.repo.command("cat-file", "--batch-check=%(objectname) %(objecttype)")
+	cmd := rd.repo.command(rd.limit, "cat-file", "--batch-check=%(objectname) %(objecttype)")
 	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
 	out, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("could not read the trees' entries: %v", err)
+		return rd.limit.failed(fmt.Errorf("could not read the trees' entries: %v", err))
 	}
 	lines := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	if len(lines) != len(oids) {
@@ -354,6 +514,9 @@ func (rd *reader) diff(pre, post, at string, d *Delta) error {
 	}
 	for name, pair := range byName {
 		path := join(at, name)
+		if err := rd.limit.spend(int64(len(path)), 1); err != nil {
+			return err
+		}
 		var sub [2]string
 		var leaf [2]*treeEntry
 		for side, e := range pair {

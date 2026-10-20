@@ -33,6 +33,7 @@ project: {
 		"knot-agree",
 		"delta-unit",
 		"derive-unit",
+		"review-unit",
 		"attest-unit",
 		"attest-conformance",
 		"attest-e2e",
@@ -102,11 +103,13 @@ project: {
 	}
 
 	// The change record, which the hook guards, the CLI's Go verbs and the
-	// rebase engine write, and the integrator reads. Each reads a record
-	// through it, so a change to it requires their tests as well as its own.
+	// rebase engine write, and the integrator and the review module read.
+	// Each reads a record through it, so a change to it requires their tests
+	// as well as its own.
 	classes: change: {
 		paths: "change/**":          true
 		requires: "change-unit":     true
+		requires: "review-unit":     true
 		requires: "valleyhook-unit": true
 		requires: "protect-e2e":     true
 		requires: "rebase-unit":     true
@@ -134,15 +137,25 @@ project: {
 	}
 
 	// valley-delta-v1, which the CLI's Go verbs compare a version with its
-	// approved version through. delta-unit holds it to its conformance
-	// vectors, valley-go-unit builds the verbs with it, and valley-ready and
-	// review-notes drive review over the comparison.
+	// approved version through, and which the review module recomputes a
+	// review's binding with. delta-unit holds it to its conformance vectors,
+	// valley-go-unit builds the verbs with it, valley-ready and review-notes
+	// drive review over the comparison, and review-unit binds reviews with
+	// its bounded reading.
 	classes: delta: {
 		paths: "delta/**":          true
 		requires: "delta-unit":     true
 		requires: "valley-go-unit": true
 		requires: "valley-ready":   true
 		requires: "review-notes":   true
+		requires: "review-unit":    true
+	}
+
+	// Review records: the record, its binding to the version it judged, and
+	// its append-only history. review-unit runs its tests against real git.
+	classes: review: {
+		paths: "review/**":      true
+		requires: "review-unit": true
 	}
 
 	// The deriver of required checks, and the composed-policy reader it reads
@@ -358,6 +371,7 @@ project: {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
 		"delta.nix": ["delta-unit"]
 		"derive.nix": ["derive-unit"]
+		"review.nix": ["review-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]

@@ -32,11 +32,15 @@ const (
 
 // Plan is what one pass would do, from one snapshot of origin.
 type Plan struct {
-	Target   string       `json:"target"`
-	Tip      string       `json:"tip"`
-	Evidence string       `json:"evidence"`             // change.EvidenceFingerprint of every attestation ref
-	Cap      int          `json:"maxAutomaticVersions"` // the policy's cap as CapOf counts it
-	Families []FamilyPlan `json:"families"`
+	Target    string       `json:"target"`
+	Tip       string       `json:"tip"`
+	Evidence  string       `json:"evidence"`             // change.EvidenceFingerprint of every attestation ref
+	Cap       int          `json:"maxAutomaticVersions"` // the policy's cap as CapOf counts it
+	Operation string       `json:"operation"`            // the name the pass's writes are built under
+	Recovery  *Recovery    `json:"recovery"`             // what recovery decided of the journal in the state directory; null for none
+	Families  []FamilyPlan `json:"families"`
+
+	families []*rebase.Family // each family as captured, as Families
 }
 
 // FamilyPlan is one family of layers, bottom first, and what would become
@@ -47,6 +51,7 @@ type FamilyPlan struct {
 	Reasons  []string      `json:"reasons"`
 	Notes    []string      `json:"notes"`
 	Requests []RequestPlan `json:"requests"`
+	Writes   *Writes       `json:"writes,omitempty"` // what a pass would push for it; absent for a family left alone or current
 }
 
 // LayerPlan is one layer as the snapshot shows it, with the capacity of
@@ -94,8 +99,10 @@ type Request struct {
 }
 
 // Members is what a request may be related to a family by: the request
-// names of its changes, the head of every layer, and every head in turn
-// for the range test.
+// names of its changes, and its heads. A change's heads are every version
+// head it has ever had, not only the active one, so a request filed for an
+// older version under any name still holds the family. A plain branch's
+// head is its tip.
 type Members struct {
 	Names map[string]bool
 	Heads []string
@@ -107,21 +114,36 @@ type Members struct {
 // still about the change. A plain branch's name is its own.
 func membersOf(f *rebase.Family) Members {
 	m := Members{Names: map[string]bool{}}
+	seen := map[string]bool{}
+	head := func(h string) {
+		if h != "" && !seen[h] {
+			seen[h] = true
+			m.Heads = append(m.Heads, h)
+		}
+	}
 	for _, l := range f.Layers {
-		m.Heads = append(m.Heads, l.Head)
 		if l.ID == "" {
 			m.Names[rebase.ChangeName(l.Branch)] = true
+			head(l.Head)
 			continue
 		}
 		m.Names[change.RequestName(l.ID)] = true
+		head(l.Head)
 		for _, v := range l.Record.Versions {
 			if v.Branch != "" {
 				m.Names[rebase.ChangeName(v.Branch)] = true
 			}
+			head(rebase.HeadOf(v))
 		}
 	}
 	return m
 }
+
+// Incoming is the commits a request's head would bring to the target: the
+// commits it reaches that the target's tip does not. An error is a head
+// whose commits could not be read, as for an object that is missing or is
+// not a commit.
+type Incoming func(head string) (map[string]bool, error)
 
 // Ancestry answers whether a is an ancestor of b, or b itself. An error is
 // an answer that could not be had, as for an object that is missing or is
@@ -129,11 +151,10 @@ func membersOf(f *rebase.Family) Members {
 type Ancestry func(a, b string) (bool, error)
 
 // Relate says how a request is related to a family: by name, by an exact
-// head, and by an incoming range — the commits the request's head reaches
-// and the tip does not — that contains a layer's head. No answer and a nil
-// error is unrelated. An error is a relation that could not be determined,
-// which the caller must treat as related.
-func Relate(r Request, m Members, tip string, is Ancestry) ([]string, error) {
+// head, and by an incoming range that contains a head of the family. No
+// answer and a nil error is unrelated. An error is a relation that could
+// not be determined, which the caller must treat as related.
+func Relate(r Request, m Members, in Incoming) ([]string, error) {
 	var by []string
 	if m.Names[r.Name] {
 		by = append(by, "name")
@@ -147,19 +168,12 @@ func Relate(r Request, m Members, tip string, is Ancestry) ([]string, error) {
 	if len(by) > 0 {
 		return by, nil
 	}
+	commits, err := in(r.Head)
+	if err != nil {
+		return nil, err
+	}
 	for _, h := range m.Heads {
-		in, err := is(h, r.Head)
-		if err != nil {
-			return nil, err
-		}
-		if !in {
-			continue
-		}
-		onMain, err := is(h, tip)
-		if err != nil {
-			return nil, err
-		}
-		if !onMain {
+		if commits[h] {
 			return []string{"range"}, nil
 		}
 	}

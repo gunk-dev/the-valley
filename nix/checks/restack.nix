@@ -55,18 +55,30 @@ let
 in
 {
   # The restacker's own tests (restack/), run in its checkPhase: how a
-  # request relates to a family, which outcomes are current and which
-  # release a family, the arithmetic of each capacity limit, and how the
-  # policy's cap is counted, one larger than any int included. Its scratch
-  # repository commits as its flags say with no identity in the
+  # request relates to a family, by every version head a change has had,
+  # which outcomes are current and which release a family, the arithmetic
+  # of each capacity limit, and how the policy's cap is counted, one larger
+  # than any int included. A report that holds more than the format allows
+  # falls back within every bound, and two reports are the same by what
+  # they say, whatever operation wrote them. Against real git: every write
+  # is built and kept in the journal before any push, with origin
+  # untouched; recovery decides each write against origin as a test makes
+  # the pushes, author movement, withdrawal, unreadying, a deleted record,
+  # a moved or rewritten main and a request each stop what they must; a
+  # lost, foreign or malformed journal is never decided; and
+  # once --report-only decides a journal of pending writes and pushes none
+  # of them. A conflict on more than 100 paths keeps them all in the
+  # journal. No inherited git variable, nor the user's attributes file,
+  # reaches a pass, and a process whose stderr nobody reads still ends. Its
+  # scratch repository commits as its flags say with no identity in the
   # environment, and with an author and a committer the environment
   # injects as git configuration, a pass locks its state directory, the
-  # directory belongs to
-  # one repository, target and principal, and a cue or an ssh that never
-  # returns is killed at the deadline. Given the fixture host's rendered
-  # hook, the restack append is pushed through it as the restacker
-  # principal: the hook takes the active title and refuses a forged one,
-  # and takes a report from the restacker and not from the change's owner.
+  # directory belongs to one repository, target and principal, and a cue
+  # or an ssh that never returns is killed at the deadline. Given the
+  # fixture host's rendered hook, the restack append is pushed through it
+  # as the restacker principal: the hook takes the active title and
+  # refuses a forged one, and takes a report from the restacker and not
+  # from the change's owner.
   restack-unit = packages.restack-unwrapped.overrideAttrs {
     inherit initScript;
     passAsFile = [ "initScript" ];
@@ -91,9 +103,14 @@ in
   # Requests by exact head and by range hold, the range's head fetched by
   # the planner, and a request whose head is no commit holds every family.
   # A cap larger than any int composes and is no practical cap, so the
-  # change the cap of 2 held is planned to restack. Every ref on origin is
-  # compared before and after each pass. Outcomes are injected on the
-  # server side, since no push may write one.
+  # change the cap of 2 held is planned to restack. Its writes are built
+  # as a complete restack, and a held family's as a blocked report. A
+  # request at an older version's head, and one on top of it, each hold
+  # that change's family whatever their names. With git variables that
+  # point git at a decoy inherited, the pass plans and builds the same and
+  # leaves the decoy untouched, and a pass whose stderr nobody reads still
+  # ends. Every ref on origin is compared before and after each pass.
+  # Outcomes are injected on the server side, since no push may write one.
   #
   # Then the fixtures the publishing slice's tests stand on, each proved
   # by a small test. The restacker principal pushes through the transport

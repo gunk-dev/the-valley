@@ -19,28 +19,27 @@ var (
 	ev   = "0123456789abcdef"
 )
 
-// graph is an ancestry over a few named commits: each maps to its
-// ancestors, itself included. A commit it does not know is an error.
-func graph(g map[string][]string) Ancestry {
-	return func(a, b string) (bool, error) {
-		anc, ok := g[b]
+// commits is what each request head would bring to the target, for a
+// few named commits. A head it does not know is an error.
+func commits(in map[string][]string) Incoming {
+	return func(head string) (map[string]bool, error) {
+		list, ok := in[head]
 		if !ok {
-			return false, errors.New("missing " + b)
+			return nil, errors.New("missing " + head)
 		}
-		for _, x := range anc {
-			if x == a {
-				return true, nil
-			}
+		set := map[string]bool{}
+		for _, c := range list {
+			set[c] = true
 		}
-		return false, nil
+		return set, nil
 	}
 }
 
 func TestARequestIsRelatedByNameHeadOrRange(t *testing.T) {
 	m := Members{Names: map[string]bool{"c-abc": true, "alice-topic": true}, Heads: []string{low, high}}
-	g := graph(map[string][]string{
-		tip: {tip},
-		req: {req, high, low, tip}, // a commit on top of the family's top
+	in := commits(map[string][]string{
+		tip: {},
+		req: {req, high, low}, // a commit on top of the family's top
 	})
 	for _, tc := range []struct {
 		what string
@@ -53,7 +52,7 @@ func TestARequestIsRelatedByNameHeadOrRange(t *testing.T) {
 		{"by a range holding a layer head", Request{"other", req}, "range"},
 		{"not at all", Request{"other", tip}, ""},
 	} {
-		by, err := Relate(tc.r, m, tip, g)
+		by, err := Relate(tc.r, m, in)
 		if err != nil || strings.Join(by, ",") != tc.want {
 			t.Errorf("%s: related by %v, %v; want %q", tc.what, by, err, tc.want)
 		}
@@ -64,21 +63,46 @@ func TestARangeOnMainDoesNotRelate(t *testing.T) {
 	// A layer head the tip already reaches is not in the request's
 	// incoming range.
 	m := Members{Names: map[string]bool{}, Heads: []string{low}}
-	g := graph(map[string][]string{tip: {tip, low}, req: {req, tip, low}})
-	if by, err := Relate(Request{"other", req}, m, tip, g); by != nil || err != nil {
+	if by, err := Relate(Request{"other", req}, m, commits(map[string][]string{req: {req}})); by != nil || err != nil {
 		t.Errorf("related by %v, %v; want unrelated", by, err)
 	}
 }
 
 func TestAnUnreadableRequestCannotBeRelatedOrNot(t *testing.T) {
 	m := Members{Names: map[string]bool{}, Heads: []string{low}}
-	if _, err := Relate(Request{"other", req}, m, tip, graph(map[string][]string{tip: {tip}})); err == nil {
+	if _, err := Relate(Request{"other", req}, m, commits(nil)); err == nil {
 		t.Error("a request whose head cannot be read was judged unrelated")
 	}
 	// A name match needs no ancestry, so it answers even then.
 	m.Names["c-abc"] = true
-	if by, err := Relate(Request{"c-abc", req}, m, tip, graph(nil)); err != nil || len(by) != 1 {
+	if by, err := Relate(Request{"c-abc", req}, m, commits(nil)); err != nil || len(by) != 1 {
 		t.Errorf("related by %v, %v; want by name", by, err)
+	}
+}
+
+// A request for an older version of a change holds the change's family,
+// whatever its name: by that version's exact head, and by a range that
+// holds it and not the active head. The older head is no layer's head.
+func TestARequestForAnOlderVersionIsRelated(t *testing.T) {
+	id := strings.Repeat("k", 32)
+	older, active, above := strings.Repeat("e", 40), strings.Repeat("f", 40), strings.Repeat("9", 40)
+	r := &change.Record{Schema: change.Schema, ChangeID: id, Target: "main", Owner: "alice", State: change.Ready, Seq: 2, Active: 2,
+		Versions: []change.Version{
+			{N: 1, Head: change.HeadPrefix + older, Title: "t", Branch: "topic", Uploader: "alice"},
+			{N: 2, Head: change.HeadPrefix + active, Title: "t", Branch: "topic", Uploader: "alice"},
+		}}
+	m := membersOf(&rebase.Family{Layers: []*rebase.Layer{{Name: "kkkk", ID: id, Branch: "topic", Head: active, Record: r}}})
+	in := commits(map[string][]string{above: {above, older}})
+	for _, tc := range []struct {
+		r    Request
+		want string
+	}{
+		{Request{"arbitrary", older}, "head"},
+		{Request{"arbitrary", above}, "range"},
+	} {
+		if by, err := Relate(tc.r, m, in); err != nil || strings.Join(by, ",") != tc.want {
+			t.Errorf("a request at %s: related by %v, %v; want %q", short(tc.r.Head), by, err, tc.want)
+		}
 	}
 }
 

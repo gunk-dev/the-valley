@@ -438,16 +438,17 @@ rec {
     '';
   };
 
-  # The restacker's planner (restack/): `valley-restacker once
-  # --report-only` reads one snapshot of origin through the rebase engine
-  # (../rebase) and says which families it would restack and which it
-  # would hold. It reads the cap on its automatic versions through the
-  # composed-policy reader it shares with the integrator (../composed). Its
-  # unit tests cover request association, outcome currency and capacity,
-  # and, against real git, its scratch repository's identity, its state
-  # directory's lock and binding, and the deadline on what it runs. go vet
-  # runs after them. Go, standard library only — hence vendorHash = null
-  # and no module fetch.
+  # The restacker (restack/): `valley-restacker once --report-only` reads
+  # one snapshot of origin through the rebase engine (../rebase), says
+  # which families it would restack and which it would hold, and builds the
+  # writes a pass would push, pushing none. It reads the cap on its
+  # automatic versions through the composed-policy reader it shares with
+  # the integrator (../composed). Its unit tests cover request association,
+  # outcome currency, capacity and report bounds, and, against real git,
+  # the journal of writes and recovery's decisions, its environment, its
+  # scratch repository's identity, its state directory's lock and binding,
+  # and the deadline on what it runs. go vet runs after them. Go, standard
+  # library only — hence vendorHash = null and no module fetch.
   restack-unwrapped = pkgs.buildGoModule {
     pname = "valley-restacker";
     version = "0";

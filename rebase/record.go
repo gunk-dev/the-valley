@@ -433,15 +433,8 @@ func buildVersion(ctx context.Context, g Git, a Append, restack bool) (*PendingV
 	if err != nil || remote == "" || !g.succeeds(ctx, true, "merge-base", "--is-ancestor", head, remote) {
 		return p, errors.New(a.Head + " is not on origin's " + a.Branch + "; push it there first")
 	}
-	if err := CheckRange(ctx, g, tip, head); err != nil {
+	if err := checkHead(ctx, g, tip, head); err != nil {
 		return p, err
-	}
-	header, trailer, err := HeadIDs(ctx, g, head)
-	if err != nil {
-		return p, err
-	}
-	if header != "" && trailer != "" && header != trailer {
-		return p, fmt.Errorf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer)
 	}
 	var title string
 	if restack {
@@ -460,19 +453,87 @@ func buildVersion(ctx context.Context, g Git, a Append, restack bool) (*PendingV
 		}
 		title = change.Title(subject)
 	}
+	return p, p.write(ctx, g, before, head, title, a.Branch, a.Principal)
+}
+
+// checkHead refuses a head no version may record: one whose commits from
+// the target are not one line, or whose change-id header and Change-Id
+// trailer disagree.
+func checkHead(ctx context.Context, g Git, tip, head string) error {
+	if err := CheckRange(ctx, g, tip, head); err != nil {
+		return err
+	}
+	header, trailer, err := HeadIDs(ctx, g, head)
+	if err != nil {
+		return err
+	}
+	if header != "" && trailer != "" && header != trailer {
+		return fmt.Errorf("%s has the change-id header %s and the Change-Id trailer %s, and they must agree", short(head), header, trailer)
+	}
+	return nil
+}
+
+// write writes the record commit that adds head to before as its next
+// version, with the title, branch and uploader given, on p.Old, and fills
+// in what p adds.
+func (p *PendingVersion) write(ctx context.Context, g Git, before *change.Record, head, title, branch, principal string) error {
 	after, err := NextRecord(p.Handle, before, change.Version{
-		Head: change.HeadPrefix + head, Title: title, Branch: a.Branch, Uploader: a.Principal,
+		Head: change.HeadPrefix + head, Title: title, Branch: branch, Uploader: principal,
 	})
 	if err != nil {
-		return p, err
+		return err
 	}
-	commit, err := WriteRecord(ctx, g, after, ReadyMessage(p.Handle, a.ID, after.Active, head), p.Old, head)
+	commit, err := WriteRecord(ctx, g, after, ReadyMessage(p.Handle, p.ID, after.Active, head), p.Old, head)
 	if err != nil {
-		return p, err
+		return err
 	}
-	p.Commit, p.Record, p.Version, p.Head, p.Branch = commit, after, after.Active, head, a.Branch
-	return p, nil
+	p.Commit, p.Record, p.Version, p.Head, p.Branch = commit, after, after.Active, head, branch
+	return nil
 }
+
+// BuildAppends writes, for each change layer of a prepared family, lower
+// layers first, the record commit that adds the layer's prepared head as
+// the change's next version under the restack grant, and pushes nothing.
+// Each version keeps the active version's branch and title, and names
+// principal as its uploader, as BuildRestack's does.
+//
+// Each is written from the record the capture read, not from origin, so
+// all of them can be kept before the branches are pushed. Its push is
+// leased on the record commit the capture read, and, as a restack's
+// always does, reads origin's branch first and pushes nothing unless the
+// branch is at the prepared head.
+func (p *Prepared) BuildAppends(ctx context.Context, g Git, principal string) ([]*PendingVersion, error) {
+	if !change.ValidPrincipal(principal) {
+		return nil, fmt.Errorf("%q is not a principal's name", principal)
+	}
+	var built []*PendingVersion
+	for _, l := range p.Family.Layers {
+		if l.ID == "" {
+			continue
+		}
+		v := &PendingVersion{ID: l.ID, Handle: l.Name, Ref: l.Ref, Old: l.Commit, restack: true}
+		if err := CheckActive(l.Name, l.Record, l.Head); err != nil {
+			return nil, err
+		}
+		active := l.Record.ActiveVersion()
+		if active.Branch == "" {
+			return nil, fmt.Errorf("%s v%d names no branch, so no restack moved one and no version is added", l.Name, active.N)
+		}
+		head := p.Heads[l]
+		if err := checkHead(ctx, g, p.Family.Tip, head); err != nil {
+			return nil, err
+		}
+		if err := v.write(ctx, g, l.Record, head, active.Title, active.Branch, principal); err != nil {
+			return nil, err
+		}
+		built = append(built, v)
+	}
+	return built, nil
+}
+
+// Restack reports whether the version was built under the restack grant,
+// so its push reads origin's branch first.
+func (p *PendingVersion) Restack() bool { return p.restack }
 
 // readBefore reads the record a record commit on origin holds, or nil for
 // none.

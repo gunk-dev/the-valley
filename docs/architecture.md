@@ -26,7 +26,8 @@ The parts are:
 - `attest`, which runs checks and signs the evidence (`attest/`, `note/`);
 - the identity compiler, which turns a registry into keys and grants (`identity/`);
 - the `valley` command line tool (`bin/valley`);
-- `valley-restacker`, the restacker's read-only planner, which nothing deploys yet (`restack/`);
+- `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
+  which nothing deploys yet (`restack/`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
 
 ## The source and project storage
@@ -550,9 +551,10 @@ read, so corrupt storage is the only way to get one.
 
 The restacker rebases ready changes onto `main` when `main` moves under them, as its own principal,
 so their evidence stays fresh without their owners rebasing and approving again.
-`valley-restacker once --report-only` (`restack/`) is the read-only planner: it reads one snapshot
-of origin, prints what a pass would do, and pushes nothing. The write pass and host service are not
-built yet, and nothing deploys it.
+`valley-restacker once --report-only` (`restack/`) reads one snapshot of origin and prints what a
+pass would do. It plans each family, builds every write a pass would push for it, and decides the
+journal of an earlier operation if the state directory holds one. It pushes nothing and writes no
+journal. Publishing, the loop and the host service are not built, and nothing deploys it.
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
 off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
@@ -571,7 +573,18 @@ git there also inherits no configuration from the environment: `GIT_CONFIG_COUNT
 `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>`, `GIT_CONFIG_PARAMETERS`, and the other
 `GIT_CONFIG*` variables are dropped. Such configuration would beat the scratch repository's own, so
 an inherited `author.name` would replace the restacker's identity. A commit the restacker rebases
-keeps its author, and the restacker is its committer. A `--report-only` pass commits nothing.
+keeps its author, and the restacker is its committer. A `--report-only` pass writes commits only in
+its scratch repository: the rebased commits, and the record and report commits it builds.
+
+No git variable that points git somewhere else reaches anything a pass runs. That covers another
+repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_GRAFT_FILE`), other programs
+(`GIT_EXEC_PATH`, `GIT_TEMPLATE_DIR`), other attributes (`GIT_ATTR_SOURCE`) and another object
+format (`GIT_DEFAULT_HASH`). A pass removes every `GIT_*` variable from its own environment as it
+starts, except `GIT_SSH`, `GIT_SSH_COMMAND` and `GIT_SSH_VARIANT`, so cue, attest and the git that
+composes the policy run without them too. The scratch repository's `core.attributesFile` is
+`/dev/null`. git would otherwise read the user's own attributes file under `XDG_CONFIG_HOME` or
+`HOME`, and an attribute such as `merge=union` there would change how a rebase merges.
 
 A pass locks its state directory from start to end, so a second pass on the same directory fails at
 once while one runs. The directory belongs to the repository, target and principal of the first pass
@@ -579,8 +592,9 @@ that used it, recorded in its `binding.json`. A pass for any other is refused, a
 `--state`. A pass runs for at most `--timeout`, 10 minutes by default. When the timeout passes, or
 the pass is interrupted or stopped, every git, cue and attest it started is killed, with whatever
 each of them started, ssh included. Writing the plan is bounded the same way. A pass whose output
-nobody reads ends at its timeout and lets go of the lock, so the next pass can take it. Checked by
-`restack-unit` and `restack-e2e`.
+nobody reads ends at its timeout and lets go of the lock, so the next pass can take it. A message of
+the program's own, such as the error it ends with, is given up on after 5 seconds, so a stderr
+nobody reads cannot hold the process either. Checked by `restack-unit` and `restack-e2e`.
 
 A family is the connected layers of one snapshot, as the rebase engine captures them
 (`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family
@@ -595,12 +609,13 @@ one of four answers:
 
 A family is also held while a related integration request might still land. A request is related by
 its name (`c-<change-id>`, or the branch-derived name of any version the change has had), by a head
-equal to a layer's head, or by an incoming range (what the request's head reaches and `main`'s tip
-does not) that contains a layer's head. The snapshot lists request heads without fetching them, so
-the planner fetches them before it reads any ancestry. A request whose relation cannot be determined
-holds every family it might be about. A related request releases the family only with a current
-outcome of `stale` or `reject`; a `reject` is noted. Current means the outcome's head, target tip
-and evidence fingerprint all equal what the planner sees. The fingerprint is
+equal to any version head a layer's change has had, or by an incoming range (what the request's head
+reaches and `main`'s tip does not) that contains such a head. A request filed for an older version
+therefore holds the family whatever its name. The snapshot lists request heads without fetching
+them, so the planner fetches them before it reads any ancestry. A request whose relation cannot be
+determined holds every family it might be about. A related request releases the family only with a
+current outcome of `stale` or `reject`; a `reject` is noted. Current means the outcome's head,
+target tip and evidence fingerprint all equal what the planner sees. The fingerprint is
 `change.EvidenceFingerprint`, which the integrator writes and `valley status` reads.
 
 A family is held when any record it would change is over a limit, counted with the version the
@@ -624,6 +639,87 @@ holds that many versions. Checked by `integrator-unit`, `restack-unit` and `rest
 The plan prints as a summary, or with `--json`. The JSON is not a published format. `restack-unit`
 covers request association, outcome currency and the capacity arithmetic. `restack-e2e` runs the
 planner over a repository wired with the rendered hook and checks that no ref on origin moves.
+
+### What a pass builds
+
+For each family it would restack, a pass prepares the family in a throwaway worktree and builds its
+writes in the scratch repository (`restack/build.go`):
+
+1. the one atomic branch push, each branch leased on the tip the capture read;
+2. each change's next version, lower layers first, built from the record the capture read and leased
+   on that record commit. It keeps the active version's branch and title, and names the restacker's
+   principal as its uploader. Its push reads origin's branch first, and pushes nothing unless the
+   branch is at the prepared head;
+3. a report for each recorded change in the family, saying `complete`.
+
+A family whose rebase conflicts gets reports that say `conflict` and name the failing layer. A
+family the engine refuses to prepare, or that the planner holds, gets reports that say `blocked`,
+with the refusal or the planner's reasons. Neither gets a branch push or a version. A family left
+alone or already current gets nothing. A plain branch is no report layer. A report that says what
+the change's current report on origin says is not built again: two reports are the same when their
+observations and result are, whatever operation wrote each. `--json` shows each family's writes
+under `writes`.
+
+A conflict keeps every path that conflicted, whatever bytes the name holds (`rebase/prepare.go`). A
+report holds what the report format allows, and when the observation holds more, the report is a
+fallback (`restack/report.go`):
+
+- With more than 64 recorded changes in the family, it keeps the change's own layer and the failing
+  one.
+- It keeps each conflict path and each blocking request that fits on its own, up to 100 paths and 64
+  requests. A path fits at up to 1,024 bytes of UTF-8 with no control character. A request fits when
+  its ref is at most 256 bytes and its name is a branch name.
+- Its refusal has each run of control characters made one space, and is cut to fit 2,048 bytes.
+- Its refusal ends by saying what the report leaves out, with the digest of the whole observation,
+  so two fallbacks that show the same are told apart.
+- If the report is still over 64 KiB, it sheds its conflict paths, then its blocking requests, then
+  every layer but the two it keeps.
+
+A family over 64 recorded changes is not held for its size: each change's report keeps its own
+layer. Checked by `restack-unit` and `restack-e2e`.
+
+### The journal
+
+The journal is every write one operation intends, kept in the state directory as `journal.json`
+before the first of them is pushed (`restack/journal.go`). Its format is
+`valley-restack-journal/v1`, local to the restacker. It names the repository, target and principal,
+the operation, and `main`'s tip and the evidence fingerprint as captured. For each family it holds
+the whole observation (every layer, plain branches included, the related requests, every conflict
+path and the full refusal), the branch push, each version and each report, in the kept forms the
+rebase engine defines (`rebase/pending.go`). Every object those writes would push is kept reachable
+in the scratch repository under `refs/valley-restack/<operation>/`. The journal is written through a
+synced temporary file and renamed into place, and the scratch repository syncs each object and ref
+it writes.
+
+A journal is read as strictly as it is written. A field missing, unknown or named twice, a form that
+does not agree with itself, and a journal for another repository, target or principal are refused,
+and nothing in a refused journal is decided. A lost journal is never inferred. A change whose branch
+a pass moved with no journal to say so is held by the planner, because its branch is not at its
+recorded head. Checked by `restack-unit`.
+
+### Recovery
+
+Recovery reads origin and the journal, and decides each write in the order a pass makes them: the
+branch push, then the versions, lower layers first, then the reports (`restack/recover.go`). Each
+write is `done` when origin holds it or has moved on from it, `finish` when it is still valid to
+push, or `stop` when it must not be pushed. A stop is final when no later pass could push it, and
+terminal when it is also a local failure the journal keeps the diagnostics of.
+
+| Write           | `finish` while                                                                                                                                            | `stop` (final) on                                                                                                                                             |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The branch push | `main` is at the tip the family was rebased onto, every branch is at its lease, every record is at the record commit read, and nothing has been submitted | a branch moved, `main` moved, a record moved (an unready, a withdrawal, a new version), a submission, or a prepared head missing from the scratch repository  |
+| A version       | its branch is at the prepared head, or the branch push is still to finish, and its record is the record commit read                                       | the author moving the branch or the record, a withdrawal, an unready, a submission, a deleted branch, or a `main` that does not descend from the captured tip |
+| A report        | origin's report is the one it was built on, and what it says was published is on origin or is still to finish                                             | a version it says was added stopped, or origin's report moved                                                                                                 |
+
+A related integration request that might still land is a stop that is not final: the branch push
+waits, and the versions pause. Requests are related as the planner relates them, by every version
+head the changes have had, the prepared heads included. A deleted change record is a terminal stop
+for its version and its report, since the hook takes no report about a change the repository does
+not record. A family whose writes stop does not stop another's. A `main` that has moved on, and
+still descends from the captured tip, does not stop a version whose branch was pushed.
+
+In `--report-only` mode recovery decides and pushes nothing, and leaves the journal as it is. The
+decisions are printed, and under `recovery` with `--json`. Checked by `restack-unit`.
 
 ## Policy
 
@@ -775,9 +871,9 @@ the change as a new version. The cap is how many of those versions it adds to on
 impose a lower ceiling of its own, outside the policy. The carry modes and the cap are part of the
 composed policy, so the integrator's policy digest, a SHA-256 of the whole composition, changes when
 either does. Approval carry reads the carry modes, and is not built yet, so nothing acts on them.
-The restacker's planner reads the cap (`composed/composed.go`, `restack/plan.go`), while the write
-pass that adds versions is not built yet. Checked by `cue-vet`, `integrator-unit`, `restack-unit`
-and `restack-e2e`.
+The restacker's planner reads the cap (`composed/composed.go`, `restack/plan.go`). The restacker
+builds the versions it would add and pushes none of them. Checked by `cue-vet`, `integrator-unit`,
+`restack-unit` and `restack-e2e`.
 
 the-valley's own project layer is `policy/project/policy.cue`. It gives each part of this repository
 a class that requires the checks reading that part. A Go module requires its unit tests, and its
@@ -2049,7 +2145,7 @@ provisioning, so the run logs a failure until it is set up.
 | SSHSIG evidence                             | Attestations use the signed-note format.                                                           |
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
-| The restacker                               | `valley-restacker once --report-only` plans a pass (`restack/`). Nothing writes or deploys it yet. |
+| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |
 | Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                                      |

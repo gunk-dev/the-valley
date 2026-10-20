@@ -4,6 +4,8 @@
 // caller can keep the write somewhere durable first. After a crash, the
 // caller restores it and compares origin's ref with it: at Commit, origin
 // took the push; at Old, it did not, and the write may be pushed again.
+// A prepared family's branch push is kept the same way, as each branch's
+// old tip and prepared head, keyed by the branch's name.
 //
 // A kept write restores to the same write, or not at all. Its form names
 // everything its push checks, and a version's mode is part of that: a
@@ -17,6 +19,7 @@ package rebase
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,8 +30,9 @@ import (
 
 // The schemas of the forms a write is kept in.
 const (
-	pendingVersionSchema = "valley-pending-version/v1"
-	pendingReportSchema  = "valley-pending-report/v1"
+	pendingVersionSchema  = "valley-pending-version/v1"
+	pendingReportSchema   = "valley-pending-report/v1"
+	pendingBranchesSchema = "valley-pending-branches/v1"
 )
 
 // The modes a version is built in. The mode decides what its push checks.
@@ -177,6 +181,120 @@ func (p *PendingReport) check() error {
 	}
 	if p.Report.ChangeID != p.ID {
 		return fmt.Errorf("its report is about %s, not %s", p.Report.ChangeID, p.ID)
+	}
+	return nil
+}
+
+// PendingBranches is a prepared family's branch push, kept: the target tip
+// the family was rebased onto, and each branch the one atomic push moves,
+// from the tip the capture read, which the push is leased on, to its
+// prepared head. It names branches, never a layer in memory, so it
+// restores whole after a crash. Origin holding every New then means the
+// push was taken, and holding every Old that it was not.
+type PendingBranches struct {
+	Tip     string         // the target tip the family was rebased onto
+	Updates []BranchUpdate // bottom first, one for each layer
+}
+
+// BranchUpdate is one branch a family's push moves.
+type BranchUpdate struct {
+	Branch string // the branch
+	Old    string // its tip as captured, which the push is leased on
+	New    string // the prepared head the push moves it to
+}
+
+// Branches is the prepared family's branch push, kept.
+func (p *Prepared) Branches() *PendingBranches {
+	b := &PendingBranches{Tip: p.Family.Tip}
+	for _, l := range p.Family.Layers {
+		b.Updates = append(b.Updates, BranchUpdate{Branch: l.Branch, Old: l.Tip, New: p.Heads[l]})
+	}
+	return b
+}
+
+// Push moves every branch at once, each leased on its Old: either every
+// branch moves or none does. It does not read origin first; Publish does.
+func (b *PendingBranches) Push(ctx context.Context, g Git) (Push, []RefusedRef) {
+	args := []string{"--atomic"}
+	for _, u := range b.Updates {
+		args = append(args, "--force-with-lease=refs/heads/"+u.Branch+":"+u.Old)
+	}
+	args = append(args, "origin")
+	for _, u := range b.Updates {
+		args = append(args, u.New+":refs/heads/"+u.Branch)
+	}
+	return push(ctx, g, args...)
+}
+
+// branchesForm is the form a PendingBranches is kept in.
+type branchesForm struct {
+	Schema  string       `json:"schema"`
+	Tip     string       `json:"tip"`
+	Updates []updateForm `json:"updates"`
+}
+
+type updateForm struct {
+	Branch string `json:"branch"`
+	Old    string `json:"old"`
+	New    string `json:"new"`
+}
+
+// MarshalJSON writes b in the form it is kept in. It refuses a b that
+// UnmarshalJSON would refuse, so what it writes always restores.
+func (b PendingBranches) MarshalJSON() ([]byte, error) {
+	if err := b.check(); err != nil {
+		return nil, fmt.Errorf("the pending branch push cannot be kept: %w", err)
+	}
+	f := branchesForm{Schema: pendingBranchesSchema, Tip: b.Tip, Updates: []updateForm{}}
+	for _, u := range b.Updates {
+		f.Updates = append(f.Updates, updateForm(u))
+	}
+	return json.Marshal(f)
+}
+
+// UnmarshalJSON restores a PendingBranches that MarshalJSON wrote.
+func (b *PendingBranches) UnmarshalJSON(data []byte) error {
+	var f branchesForm
+	if err := restore(data, &f); err != nil {
+		return fmt.Errorf("the pending branch push does not restore: %w", err)
+	}
+	if f.Schema != pendingBranchesSchema {
+		return fmt.Errorf("the pending branch push does not restore: its schema is %q, where %q is expected", f.Schema, pendingBranchesSchema)
+	}
+	q := PendingBranches{Tip: f.Tip}
+	for _, u := range f.Updates {
+		q.Updates = append(q.Updates, BranchUpdate(u))
+	}
+	if err := q.check(); err != nil {
+		return fmt.Errorf("the pending branch push does not restore: %w", err)
+	}
+	*b = q
+	return nil
+}
+
+// check refuses a branch push that does not agree with itself: it moves at
+// least one branch, no branch twice, and each from one full object ID to
+// another.
+func (b *PendingBranches) check() error {
+	if !IsObjectID(b.Tip) {
+		return fmt.Errorf("its tip %q is not a full object ID", b.Tip)
+	}
+	if len(b.Updates) == 0 {
+		return errors.New("it moves no branch")
+	}
+	seen := map[string]bool{}
+	for _, u := range b.Updates {
+		switch {
+		case !change.ValidBranch(u.Branch):
+			return fmt.Errorf("%q is not a branch name", u.Branch)
+		case seen[u.Branch]:
+			return fmt.Errorf("it moves %s twice", u.Branch)
+		case !IsObjectID(u.Old) || !IsObjectID(u.New):
+			return fmt.Errorf("the old tip and the new head of %s are not each a full object ID", u.Branch)
+		case u.Old == u.New:
+			return fmt.Errorf("it moves %s to the tip it is at", u.Branch)
+		}
+		seen[u.Branch] = true
 	}
 	return nil
 }

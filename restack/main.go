@@ -2,18 +2,25 @@
 // them, as its own principal, so their evidence stays fresh without their
 // owners rebasing and approving again by hand.
 //
-// This slice is the planner: `valley-restacker once --report-only` reads
-// one snapshot of origin and says which families it would restack, which
-// it would hold and why, and what capacity allows. It pushes nothing.
+// `valley-restacker once --report-only` reads one snapshot of origin and
+// says which families it would restack, which it would hold and why, and
+// what capacity allows. For each family it would restack or hold, it
+// builds every write a pass would make, in its scratch repository, and
+// shows them: the one branch push, each change's next version and each
+// recorded change's report (build.go). It decides the journal of an
+// earlier operation, if the state directory holds one, as recovery would
+// (recover.go). It pushes nothing, and writes no journal.
 //
 // It talks to origin only over git, as a client, from a scratch repository
 // under its state directory. Hooks and external filters are off there:
 // the scratch repository's hooks path is /dev/null, and git reads neither
 // the system's nor the user's configuration, nor any the environment
-// injects, so no filter driver is defined. A service that needs ssh
-// settings passes them in GIT_SSH_COMMAND. The scratch repository commits
-// under the identity its flags give, and never under one inherited from
-// the environment, whether as an identity variable or as configuration.
+// injects, so no filter driver is defined. No git variable that points git
+// at another repository, program or configuration reaches anything a pass
+// runs (passes). A service that needs ssh settings passes them in
+// GIT_SSH_COMMAND. The scratch repository commits under the identity its
+// flags give, and never under one inherited from the environment, whether
+// as an identity variable or as configuration.
 //
 // A pass holds a lock on its state directory from start to end, so a
 // second pass on the same directory fails while one runs. The directory
@@ -21,7 +28,8 @@
 // it for, and a pass for any other is refused. Every git, cue and attest a
 // pass runs is killed, with what it started, once the pass's --timeout
 // passes. A pass whose output nobody reads ends then too, and lets go of
-// the lock.
+// the lock. A message of its own that nobody reads, such as the error it
+// ends with, is given up on after a few seconds.
 package main
 
 import (
@@ -51,8 +59,13 @@ usage: valley-restacker once --report-only [flags]
 
   once --report-only
         read one snapshot of origin and print what a pass would do: each
-        family, restack or hold with the reason, its capacity, and the
-        integration requests it considered. Pushes nothing.
+        family, restack or hold with the reason, its capacity, the
+        integration requests it considered, and the writes a pass would
+        make for it, built in the scratch repository and not pushed: the
+        branch push, each change's next version, and each change's
+        report. If the state directory holds a journal of an earlier
+        operation, print what recovery decides of each write it names.
+        Pushes nothing, and writes no journal.
 
 flags:
   --repo URL            origin: the repository the restacker serves (required)
@@ -81,7 +94,7 @@ flags:
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Fprint(os.Stderr, usage)
+		say(os.Stderr, usage)
 		os.Exit(2)
 	}
 	switch os.Args[1] {
@@ -89,18 +102,32 @@ func main() {
 		// An interrupt or a stop ends the pass as its timeout does: what it
 		// runs is killed, and the lock on its state is let go.
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err := once(ctx, os.Args[2:], os.Stdout)
+		err := once(ctx, os.Args[2:], os.Stdout, os.Stderr)
 		stop()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "valley-restacker: %v\n", err)
+			say(os.Stderr, fmt.Sprintf("valley-restacker: %v\n", err))
 			os.Exit(1)
 		}
 	case "help", "-h", "--help":
-		fmt.Print(usage)
+		say(os.Stdout, usage)
 	default:
-		fmt.Fprintf(os.Stderr, "valley-restacker: unknown command %q\n\n%s", os.Args[1], usage)
+		say(os.Stderr, fmt.Sprintf("valley-restacker: unknown command %q\n\n%s", os.Args[1], usage))
 		os.Exit(2)
 	}
+}
+
+// sayBound is the longest the process waits to write a message of its
+// own, such as the error it ends with.
+const sayBound = 5 * time.Second
+
+// say writes a message of the process's own, and gives up after sayBound.
+// A stderr nobody reads would otherwise hold the process after its pass
+// has ended and let go of its lock. The write given up on ends with the
+// process.
+func say(w io.Writer, message string) {
+	ctx, cancel := context.WithTimeout(context.Background(), sayBound)
+	defer cancel()
+	_ = writeOut(ctx, w, []byte(message))
 }
 
 // config is a pass's configuration, from flags.
@@ -120,9 +147,13 @@ type config struct {
 // address names no mailbox, as the integrator's does not.
 const defaultEmail = "restacker@the-valley.invalid"
 
-func once(ctx context.Context, args []string, out io.Writer) error {
+func once(ctx context.Context, args []string, out, errOut io.Writer) error {
+	// What the pass runs inherits no git variable that points git
+	// elsewhere or gives it configuration (passes).
+	controlEnvironment()
 	fs := flag.NewFlagSet("valley-restacker once", flag.ContinueOnError)
-	fs.Usage = func() { fmt.Fprint(os.Stderr, usage) }
+	fs.SetOutput(io.Discard)
+	fs.Usage = func() { say(errOut, usage) }
 	var c config
 	reportOnly := fs.Bool("report-only", false, "")
 	fs.StringVar(&c.repo, "repo", "", "")
@@ -198,6 +229,7 @@ func once(ctx context.Context, args []string, out io.Writer) error {
 	if err != nil {
 		return timedOut(ctx, c, err)
 	}
+	g.Stderr = errOut
 	p, err := planOnce(ctx, g, c)
 	if err != nil {
 		return timedOut(ctx, c, err)
@@ -257,25 +289,55 @@ func checkIdentity(name, email string) error {
 	return nil
 }
 
-// identityVariables are the environment variables git reads an author or a
-// committer from ahead of its configuration. The scratch repository's git
-// never inherits them: it is given its own author and committer, the
-// identity its flags give.
-var identityVariables = map[string]bool{
-	"GIT_AUTHOR_NAME": true, "GIT_AUTHOR_EMAIL": true, "GIT_AUTHOR_DATE": true,
-	"GIT_COMMITTER_NAME": true, "GIT_COMMITTER_EMAIL": true, "GIT_COMMITTER_DATE": true,
-	"EMAIL": true,
+// What a pass passes on to the programs it runs. A git variable can point
+// git at another repository (GIT_DIR, GIT_WORK_TREE, GIT_COMMON_DIR,
+// GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
+// GIT_NAMESPACE, GIT_GRAFT_FILE, GIT_REPLACE_REF_BASE), at other programs
+// (GIT_EXEC_PATH, GIT_TEMPLATE_DIR), at other attributes (GIT_ATTR_SOURCE)
+// or at another format (GIT_DEFAULT_HASH). It can inject configuration
+// that beats the repository's own: GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n>
+// and GIT_CONFIG_VALUE_<n>, and GIT_CONFIG_PARAMETERS, so an inherited
+// author.name would beat user.name and an inherited core.hooksPath would
+// turn hooks back on. The other GIT_CONFIG* variables name configuration
+// files. And GIT_AUTHOR_*, GIT_COMMITTER_* and EMAIL give an identity
+// ahead of the configuration. So a pass passes on no GIT_* variable but
+// the ones that say how to reach origin over ssh, and no EMAIL. It drops
+// them from its own environment as it starts (controlEnvironment), so
+// cue, attest and the git that composes the policy run without them too.
+var passedOn = map[string]bool{"GIT_SSH": true, "GIT_SSH_COMMAND": true, "GIT_SSH_VARIANT": true}
+
+// passes reports whether a pass passes on the environment variable named.
+func passes(name string) bool {
+	switch {
+	case name == "EMAIL":
+		return false
+	case strings.HasPrefix(name, "GIT_"):
+		return passedOn[name]
+	}
+	return true
 }
 
-// injectsConfiguration reports whether git reads configuration from the
-// environment variable named. GIT_CONFIG_COUNT with GIT_CONFIG_KEY_<n> and
-// GIT_CONFIG_VALUE_<n>, and GIT_CONFIG_PARAMETERS, add configuration that
-// beats the repository's own: an inherited author.name would beat
-// user.name, and an inherited core.hooksPath would turn hooks back on. The
-// others name configuration files. The scratch repository's git inherits
-// none of them.
-func injectsConfiguration(name string) bool {
-	return strings.HasPrefix(name, "GIT_CONFIG")
+// gitSettings are what a pass sets for every git it runs, scratch
+// repository or not: no system or user configuration, no system
+// attributes, and no question asked at a terminal.
+var gitSettings = [][2]string{
+	{"GIT_CONFIG_NOSYSTEM", "1"},
+	{"GIT_CONFIG_GLOBAL", "/dev/null"},
+	{"GIT_ATTR_NOSYSTEM", "1"},
+	{"GIT_TERMINAL_PROMPT", "0"},
+}
+
+// controlEnvironment leaves the process's own environment holding only
+// what a pass passes on, and gitSettings.
+func controlEnvironment() {
+	for _, kv := range os.Environ() {
+		if name, _, _ := strings.Cut(kv, "="); !passes(name) {
+			os.Unsetenv(name)
+		}
+	}
+	for _, kv := range gitSettings {
+		os.Setenv(kv[0], kv[1])
+	}
 }
 
 // scratchRepo makes, or reuses, the repository a pass reads origin into,
@@ -295,15 +357,14 @@ func scratchRepo(ctx context.Context, c config) (rebase.Git, error) {
 	dir := filepath.Join(c.state, "scratch")
 	var env []string
 	for _, kv := range os.Environ() {
-		if name, _, _ := strings.Cut(kv, "="); !identityVariables[name] && !injectsConfiguration(name) {
+		if name, _, _ := strings.Cut(kv, "="); passes(name) {
 			env = append(env, kv)
 		}
 	}
+	for _, kv := range gitSettings {
+		env = append(env, kv[0]+"="+kv[1])
+	}
 	env = append(env,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_ATTR_NOSYSTEM=1",
-		"GIT_TERMINAL_PROMPT=0",
 		"GIT_AUTHOR_NAME="+c.commitName,
 		"GIT_AUTHOR_EMAIL="+c.commitEmail,
 		"GIT_COMMITTER_NAME="+c.commitName,
@@ -319,11 +380,19 @@ func scratchRepo(ctx context.Context, c config) (rebase.Git, error) {
 		}
 	}
 	// user.useConfigOnly stops git guessing an identity from the host's
-	// name and the user's account. The state directory is bound to one
-	// repository (bindState), so origin's URL is the same every pass.
+	// name and the user's account. core.attributesFile is set, since git
+	// otherwise reads the user's own attributes file under
+	// XDG_CONFIG_HOME or HOME whatever configuration it reads, and an
+	// attribute such as merge=union there would change how a rebase
+	// merges. core.fsync makes each object and ref a pass writes durable
+	// before git reports it written, as a journal of writes relies on. The
+	// state directory is bound to one repository (bindState), so origin's
+	// URL is the same every pass.
 	for _, kv := range [][2]string{
 		{"core.hooksPath", "/dev/null"},
 		{"core.fsmonitor", "false"},
+		{"core.attributesFile", "/dev/null"},
+		{"core.fsync", "objects,reference"},
 		{"user.name", c.commitName},
 		{"user.email", c.commitEmail},
 		{"user.useConfigOnly", "true"},
@@ -374,6 +443,36 @@ func ancestry(ctx context.Context, g rebase.Git) Ancestry {
 	}
 }
 
+// incoming reads, once for each head asked about, the commits it reaches
+// that tip does not. A head that is not a commit, or is missing, is an
+// error, asked about again as the same error.
+func incoming(ctx context.Context, g rebase.Git, tip string) Incoming {
+	type read struct {
+		commits map[string]bool
+		err     error
+	}
+	seen := map[string]read{}
+	return func(head string) (map[string]bool, error) {
+		if r, ok := seen[head]; ok {
+			return r.commits, r.err
+		}
+		var r read
+		out, err := gitOut(ctx, g, "rev-list", head+"^{commit}", "--not", tip)
+		if err != nil {
+			r.err = fmt.Errorf("could not read the commits %s would bring to %s", short(head), rebase.Target)
+		} else {
+			r.commits = map[string]bool{}
+			for _, c := range strings.Fields(out) {
+				r.commits[c] = true
+			}
+		}
+		if ctx.Err() == nil {
+			seen[head] = r
+		}
+		return r.commits, r.err
+	}
+}
+
 // policyCap composes the policy at the target tip and reads the cap on
 // automatic versions: the floor from the instance repository's tip, read
 // over git into the scratch repository, or from --instance; the project
@@ -411,7 +510,10 @@ func policyCap(ctx context.Context, g rebase.Git, c config, tip string) (int, er
 	return CapOf(pol.MaxAutomaticVersions)
 }
 
-// planOnce reads one snapshot and plans every family in it.
+// planOnce reads one snapshot and the cap at its tip, decides the journal
+// in the state directory if there is one, plans every family, and builds
+// the writes a pass would make. It pushes nothing, writes no journal, and
+// lets go of what it prepared.
 func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 	s, err := rebase.ReadSnapshot(ctx, g, c.verify)
 	if err != nil {
@@ -424,6 +526,27 @@ func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	p, err := plan(ctx, g, c, s, cap)
+	if err != nil {
+		return nil, err
+	}
+	// --report-only: what is built is shown, and neither kept nor pushed.
+	out, err := build(ctx, g, s, p, c.binding(), p.Operation)
+	if err != nil {
+		return nil, err
+	}
+	out.releasePrepared(ctx, g)
+	return p, nil
+}
+
+// binding is what a pass's state directory and journal belong to.
+func (c config) binding() binding {
+	return binding{Repository: c.repo, Target: c.target, Principal: c.principal}
+}
+
+// plan decides the journal in the state directory, if there is one, and
+// plans every family in the snapshot, with the cap given.
+func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap int) (*Plan, error) {
 	var attestations []string
 	var requests []Request
 	for ref, oid := range s.Refs {
@@ -434,7 +557,10 @@ func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 			requests = append(requests, Request{Name: strings.TrimPrefix(ref, rebase.RequestPrefix), Head: oid})
 		}
 	}
-	p := &Plan{Target: rebase.Target, Tip: s.Tip, Evidence: change.EvidenceFingerprint(attestations), Cap: cap}
+	p := &Plan{
+		Target: rebase.Target, Tip: s.Tip, Evidence: change.EvidenceFingerprint(attestations), Cap: cap,
+		Operation: newOperation(time.Now()),
+	}
 
 	// The snapshot lists request heads and does not fetch them. They are
 	// fetched here, before any ancestry is read, all at once and then one
@@ -448,6 +574,20 @@ func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 		for _, h := range heads {
 			_ = rebase.Fetch(ctx, g, h)
 		}
+	}
+	in := incoming(ctx, g, s.Tip)
+
+	j, err := loadJournal(c.state, c.binding())
+	switch {
+	case err != nil:
+		p.Recovery = &Recovery{Journal: filepath.Join(c.state, journalFile), Error: err.Error(), Decisions: []Decision{}}
+	case j != nil:
+		p.Recovery = decide(j, reading{
+			s: s, requests: requests, evidence: p.Evidence, in: in, is: ancestry(ctx, g),
+			have:   func(oid string) bool { return run(ctx, g, "cat-file", "-e", oid) == nil },
+			landed: s.IsLanded,
+		})
+		p.Recovery.Journal = filepath.Join(c.state, journalFile)
 	}
 
 	seen := map[string]bool{}
@@ -464,13 +604,14 @@ func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 				seen[l.ID] = true
 			}
 		}
-		p.Families = append(p.Families, judge(f, s, c.principal, p, requests, ancestry(ctx, g)))
+		p.Families = append(p.Families, judge(f, s, c.principal, p, requests, in))
+		p.families = append(p.families, f)
 	}
 	return p, nil
 }
 
 // judge decides what a pass would do with one family.
-func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requests []Request, is Ancestry) FamilyPlan {
+func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requests []Request, in Incoming) FamilyPlan {
 	fp := FamilyPlan{Reasons: []string{}, Notes: []string{}, Requests: []RequestPlan{}}
 	ready := false
 	for _, l := range f.Layers {
@@ -499,7 +640,7 @@ func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requ
 
 	m := membersOf(f)
 	for _, r := range requests {
-		by, err := Relate(r, m, p.Tip, is)
+		by, err := Relate(r, m, in)
 		if err != nil {
 			fp.Requests = append(fp.Requests, RequestPlan{Name: r.Name, Head: r.Head, By: []string{}, Why: err.Error()})
 			fp.Reasons = append(fp.Reasons, fmt.Sprintf("request %s: whether it is related cannot be determined: %v", r.Name, err))
@@ -541,6 +682,9 @@ func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requ
 
 func printPlan(w io.Writer, p *Plan) {
 	fmt.Fprintf(w, "%s at %s, evidence %s, at most %d automatic versions a change\n", p.Target, short(p.Tip), p.Evidence, p.Cap)
+	if r := p.Recovery; r != nil {
+		printRecovery(w, r)
+	}
 	if len(p.Families) == 0 {
 		fmt.Fprintln(w, "no change to restack")
 	}
@@ -566,5 +710,63 @@ func printPlan(w io.Writer, p *Plan) {
 		for _, n := range f.Notes {
 			fmt.Fprintf(w, "  note: %s\n", n)
 		}
+		if f.Writes != nil {
+			printWrites(w, f.Writes)
+		}
+	}
+}
+
+// printWrites prints what a pass would push for a family.
+func printWrites(w io.Writer, ws *Writes) {
+	fmt.Fprintf(w, "  would write, as %s:\n", ws.Result)
+	for _, b := range ws.Branches {
+		fmt.Fprintf(w, "    push %s %s -> %s\n", b.Branch, short(b.Old), short(b.New))
+	}
+	for _, v := range ws.Versions {
+		fmt.Fprintf(w, "    add %s v%d at %s: record %s, leased on %s\n", v.ID, v.Version, short(v.Head), short(v.Record), short(v.Lease))
+	}
+	for _, r := range ws.Reports {
+		switch {
+		case r.Error != "":
+			fmt.Fprintf(w, "    report %s: none fits: %s\n", r.ID, r.Error)
+		case r.Unchanged:
+			fmt.Fprintf(w, "    report %s %s: not written, as the current report says the same\n", r.ID, r.Result)
+		default:
+			lease := "none"
+			if r.Lease != "" {
+				lease = short(r.Lease)
+			}
+			fmt.Fprintf(w, "    report %s %s: %s, replacing %s\n", r.ID, r.Result, short(r.Commit), lease)
+		}
+		if len(r.Omitted) > 0 {
+			fmt.Fprintf(w, "      leaves out %s\n", strings.Join(r.Omitted, ", "))
+		}
+	}
+}
+
+// printRecovery prints what recovery decided of the journal.
+func printRecovery(w io.Writer, r *Recovery) {
+	if r.Error != "" {
+		fmt.Fprintf(w, "recovery: %s\n", r.Error)
+		return
+	}
+	state := "settled"
+	if !r.Settled {
+		state = "not settled"
+	}
+	fmt.Fprintf(w, "recovery: %s, operation %s, %s; nothing is pushed in --report-only\n", r.Journal, r.Operation, state)
+	for _, d := range r.Decisions {
+		what := d.Write
+		if d.ID != "" {
+			what += " " + d.ID
+		}
+		action := d.Action
+		switch {
+		case d.Terminal:
+			action += " (terminal)"
+		case d.Final:
+			action += " (final)"
+		}
+		fmt.Fprintf(w, "  family %d %s: %s: %s\n", d.Family, what, action, d.Why)
 	}
 }

@@ -128,7 +128,8 @@ func (f *fixture) at(ref string) string {
 // as a service may run.
 func withoutIdentity(t *testing.T) {
 	t.Helper()
-	for name := range identityVariables {
+	for _, name := range []string{"GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+		"GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE", "EMAIL"} {
 		t.Setenv(name, "")
 		os.Unsetenv(name)
 	}

@@ -281,6 +281,84 @@ grep -q '"maxAutomaticVersions": 9223372036854775807,' "$w/plan.json" \
   || fail "the plan does not count the cap as the largest int: $(cat "$w/plan.json")"
 action "$k" restack
 
+# ----------------------------------------------------------------------
+# The writes a pass would make, built and not pushed: k's branch push, its
+# fourth version and its report, as complete, and e's report alone, as
+# blocked, since its family is held. plan has held every ref on origin
+# still across every pass.
+family "$k" | jq -e --arg id "$k" '.writes.result == "complete"
+    and (.writes.branches | map(.branch)) == ["k"]
+    and (.writes.versions | map([.change_id, .version])) == [[$id, 4]]
+    and (.writes.reports | map([.change_id, .result])) == [[$id, "complete"]]' > /dev/null \
+  || fail "k's writes are not a complete restack: $(family "$k")"
+family "$e" | jq -e --arg id "$e" '.writes.result == "blocked" and .writes.branches == [] and .writes.versions == []
+    and (.writes.reports | map([.change_id, .result])) == [[$id, "blocked"]]' > /dev/null \
+  || fail "e's writes are not a blocked report: $(family "$e")"
+
+# A request for an older version of a change holds its family, whatever
+# its name: by that version's exact head, and by a range that holds it and
+# not the active head. k's first version is no layer's head now.
+k1="$(git -C "$origin" cat-file blob "refs/the-valley/changes/main/$k:record.json" | jq -r '.versions[0].head | ltrimstr("git-sha1:")')"
+[ "$k1" != "$(git rev-parse k)" ] || fail "k's first version is its active head"
+request zz-old "$k1"
+plan
+action "$k" hold
+family "$k" | jq -e '.requests[] | select(.name == "zz-old") | .by == ["head"]' > /dev/null \
+  || fail "a request at k's first version head was not related by head: $(family "$k")"
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/zz-old
+git checkout --quiet -B scratch "$k1"
+echo "on k's first version" > on-k1
+git add on-k1
+git commit --quiet -m 'on k v1'
+request zz-old-range "$(git rev-parse HEAD)"
+git checkout --quiet main
+git branch --quiet -D scratch
+plan
+action "$k" hold
+family "$k" | jq -e '.requests[] | select(.name == "zz-old-range") | .by == ["range"]' > /dev/null \
+  || fail "a request on k's first version was not related by range: $(family "$k")"
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/zz-old-range
+
+# No git variable that points git elsewhere, or gives it configuration,
+# reaches the restacker. With each pointing at a decoy, the pass plans and
+# builds what it does without, and the decoy is untouched.
+shape() { jq -S 'del(.operation) | .families |= map(.writes |= (if . then .result else . end))' "$w/plan.json"; }
+plan
+shape > "$w/without"
+decoy="$w/decoy"
+git init --quiet --bare "$decoy/repo.git"
+mkdir -p "$decoy/wt" "$decoy/objects/info" "$decoy/objects/pack"
+digest() { find "$decoy" -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum; }
+before_decoy="$(digest)"
+before="$(refs)"
+env GIT_DIR="$decoy/repo.git" GIT_WORK_TREE="$decoy/wt" GIT_INDEX_FILE="$decoy/index" \
+  GIT_OBJECT_DIRECTORY="$decoy/objects" GIT_ALTERNATE_OBJECT_DIRECTORIES="$decoy/no-objects" \
+  GIT_COMMON_DIR="$decoy/repo.git" GIT_NAMESPACE=decoy GIT_DEFAULT_HASH=sha256 \
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.$decoy/repo.git.insteadOf" GIT_CONFIG_VALUE_0="$origin" \
+  GIT_CONFIG_PARAMETERS="'url.$decoy/repo.git.insteadof'='$origin'" \
+  valley-restacker once --report-only --json --repo "$origin" --state "$w/state" \
+  --principal restacker --instance "$smokePolicy/instance" > "$w/plan.json" 2> "$w/err" \
+  || fail "the planner failed with git variables inherited"
+[ "$(refs)" = "$before" ] || fail 'a --report-only pass changed a ref on origin'
+shape > "$w/with"
+diff "$w/without" "$w/with" > /dev/null || fail "with git variables inherited, the plan differs: $(diff "$w/without" "$w/with")"
+[ "$(digest)" = "$before_decoy" ] || fail 'with git variables inherited, the pass changed the decoy'
+! grep -qF "$decoy" "$w/err" || fail "with git variables inherited, the pass printed: $(cat "$w/err")"
+
+# A pass whose stderr nobody reads still ends, with the error it could not
+# print. Its stderr is a fifo that is held open, filled, and never read.
+mkfifo "$w/unread-err"
+exec 8<> "$w/unread-err"
+dd if=/dev/zero of="$w/unread-err" bs=4096 count=1024 oflag=nonblock 2> /dev/null || true
+dd if=/dev/zero of="$w/unread-err" bs=1 count=4096 oflag=nonblock 2> /dev/null || true
+status=0
+start=$SECONDS
+timeout -k 5 60 valley-restacker once --report-only --no-such-flag 2> "$w/unread-err" > /dev/null || status=$?
+took=$((SECONDS - start))
+exec 8<&-
+[ "$status" = 1 ] || fail "a pass whose stderr nobody read ended with $status, not 1"
+[ "$took" -lt 30 ] || fail "a pass whose stderr nobody read took ${took}s to end"
+
 
 # ======================================================================
 # The fixtures the publishing slice's tests stand on, each proved here.

@@ -448,12 +448,9 @@ type Refusal struct {
 	Handle string // the handle of Change
 
 	Commit string   // HeadMoved, Merge, ForeignHead: the commit concerned
-	Paths  []string // Conflict: the paths that conflicted, at most maxConflictPaths of them
+	Paths  []string // Conflict: every path that conflicted, in git's order
 	Below  string   // Conflict and EmptyLayer: what the layer was rebased onto, by name
 }
-
-// maxConflictPaths is the most paths a conflict names.
-const maxConflictPaths = 20
 
 func (r *Refusal) Error() string {
 	l := r.Layer

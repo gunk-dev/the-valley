@@ -80,15 +80,7 @@ func Publish(ctx context.Context, g Git, p *Prepared) (*Publication, error) {
 	if err := revalidate(ctx, g, f); err != nil {
 		return pub, err
 	}
-	args := []string{"--atomic"}
-	for _, l := range f.Layers {
-		args = append(args, "--force-with-lease=refs/heads/"+l.Branch+":"+l.Tip)
-	}
-	args = append(args, "origin")
-	for _, l := range f.Layers {
-		args = append(args, p.Heads[l]+":refs/heads/"+l.Branch)
-	}
-	pub.Push, pub.Refused = push(ctx, g, args...)
+	pub.Push, pub.Refused = p.Branches().Push(ctx, g)
 	for _, r := range pub.Results {
 		r.Branch = pub.Push
 	}

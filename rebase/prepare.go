@@ -138,8 +138,9 @@ func Prepare(ctx context.Context, g Git, f *Family) (*Prepared, error) {
 	return p, nil
 }
 
-// conflicted is the paths a stopped rebase left unmerged, at most
-// maxConflictPaths of them.
+// conflicted is every path a stopped rebase left unmerged, as git names
+// it, whatever bytes the name holds. None is left out: a caller that
+// shows them within a bound, as a restack report does, cuts its own view.
 func conflicted(ctx context.Context, wt Git) []string {
 	out, err := wt.output(ctx, true, "diff", "--name-only", "--diff-filter=U", "-z")
 	if err != nil {
@@ -147,7 +148,7 @@ func conflicted(ctx context.Context, wt Git) []string {
 	}
 	var paths []string
 	for _, p := range strings.Split(out, "\x00") {
-		if p != "" && len(paths) < maxConflictPaths {
+		if p != "" {
 			paths = append(paths, p)
 		}
 	}

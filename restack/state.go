@@ -17,7 +17,8 @@ import (
 // principal, so the directory belongs to those three, the first a pass
 // used it for (bindState).
 
-// The files in a state directory beside the scratch repository.
+// The files in a state directory beside the scratch repository, and the
+// journal (journal.go).
 const (
 	lockFile    = "lock"         // what a pass holds a lock on while it runs
 	bindingFile = "binding.json" // the repository, target and principal the directory belongs to
@@ -54,20 +55,8 @@ func bindState(dir string, b binding) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, bindingFile+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	_, err = tmp.Write(append(data, '\n'))
-	if serr := tmp.Sync(); err == nil {
-		err = serr
-	}
-	if cerr := tmp.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
+	if err := writeDurably(dir, bindingFile, append(data, '\n')); err != nil {
 		return fmt.Errorf("writing what the state directory %s belongs to: %w", dir, err)
 	}
-	return os.Rename(tmp.Name(), path)
+	return nil
 }

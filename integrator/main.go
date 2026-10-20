@@ -26,9 +26,11 @@ import (
 
 const usage = `usage: integrator <command> [flags]
 
-  reconcile  judge every pending integration request once, and act
-  watch      reconcile on an interval until interrupted
-  help       print this message
+  reconcile        judge every pending integration request once, and act
+  watch            reconcile on an interval until interrupted
+  publish-signers  publish what clients verify transfer statements with
+                   (integrator publish-signers --help)
+  help             print this message
 
 The integrator polls, deliberately. Integration requests are durable in
 git — refs/the-valley/integration-requests/<target>/<change>, whose commit
@@ -159,6 +161,8 @@ func main() {
 		err = run(os.Args[2:], false)
 	case "watch":
 		err = run(os.Args[2:], true)
+	case "publish-signers":
+		err = publishSigners(os.Args[2:])
 	case "help", "-h", "--help":
 		fmt.Print(usage)
 		return

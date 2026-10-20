@@ -84,6 +84,8 @@ _valley() {
       '--all:every project the serving host publishes'
       '--owner:read this principal as the operator'
       '--json:print valley-plan/v1 JSON'
+      '--known-signers:the known-signers file a transfer statement is verified with'
+      '--integrator-name:the name the integrator signs transfer statements under'
     )
     _describe -t options 'valley plan option' opts
   elif [[ ${words[2]} == checks && ${words[CURRENT-1]} == --cost ]]; then
@@ -119,6 +121,8 @@ _valley() {
       '--checks:the checks each change requires, by cost'
       '--json:print valley-pending/v1 JSON'
       '-v:say why no change shows a knot'
+      '--known-signers:the known-signers file a transfer statement is verified with'
+      '--integrator-name:the name the integrator signs transfer statements under'
     )
     _describe -t options 'valley pending option' opts
   elif [[ ${words[2]} == changes && ${words[CURRENT]} == -* ]]; then
@@ -127,14 +131,24 @@ _valley() {
       '--all:every project the serving host publishes'
       '--repo:that one project'
       '-v:say why no change shows a knot'
+      '--known-signers:the known-signers file a transfer statement is verified with'
+      '--integrator-name:the name the integrator signs transfer statements under'
     )
     _describe -t options 'valley changes option' opts
   elif [[ ${words[2]} == status && ${words[CURRENT]} == -* ]]; then
     local -a opts=(
       '--json:print the status as one valley-status/v1 JSON object'
       '-v:say why the object lists no knot'
+      '--known-signers:the known-signers file a transfer statement is verified with'
+      '--integrator-name:the name the integrator signs transfer statements under'
     )
     _describe -t options 'valley status option' opts
+  elif [[ ${words[2]} == rebase && ${words[CURRENT]} == -* ]]; then
+    local -a opts=(
+      '--known-signers:the known-signers file a transfer statement is verified with'
+      '--integrator-name:the name the integrator signs transfer statements under'
+    )
+    _describe -t options 'valley rebase option' opts
   elif [[ ${words[2]} == review && ${words[CURRENT]} == -* ]]; then
     local -a opts=('-v:say why no knot is shown')
     _describe -t options 'valley review option' opts

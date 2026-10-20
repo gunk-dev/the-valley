@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"os"
 	"sort"
 
 	"the-valley/change"
@@ -35,22 +34,14 @@ var inventoryPatterns = rebase.InventoryPatterns
 // verifier is what a transfer statement is checked with: the verifier
 // keys of the identity registry's known-signers file, the name the
 // integrator signs under, and the attest helper that checks a note.
-// VALLEY_KNOWN_SIGNERS and VALLEY_INTEGRATOR_SIGNER name the first two.
-// Without both, no transfer statement is believed, and a version that
-// only one could show landed reads as uncertain or not-landed.
+// newVerifier finds the first two (signers.go). Without both, no transfer
+// statement is believed, and a version that only one could show landed
+// reads as uncertain or not-landed.
 type verifier = rebase.Verifier
 
 // verifierHint says what a transfer statement is verified with, for a
 // command that could not verify one.
-const verifierHint = "Set VALLEY_KNOWN_SIGNERS to the known-signers file and VALLEY_INTEGRATOR_SIGNER to the integrator's signing name, with attest on PATH"
-
-func verifierFromEnv() verifier {
-	return verifier{
-		Keys:   os.Getenv("VALLEY_KNOWN_SIGNERS"),
-		Signer: os.Getenv("VALLEY_INTEGRATOR_SIGNER"),
-		Attest: "attest",
-	}
-}
+const verifierHint = "Verifying one takes attest on PATH, the known-signers file and the integrator's signing name. The serving host publishes the file and the name at " + signersRef + " in its instance repository, and --known-signers and --integrator-name, or VALLEY_KNOWN_SIGNERS and VALLEY_INTEGRATOR_SIGNER, give them instead"
 
 // snapshot is one read of a repository's origin: the engine's snapshot,
 // which decides each landing, with the records as this program holds them.

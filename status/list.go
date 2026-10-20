@@ -197,32 +197,11 @@ func contains(list []string, s string) bool {
 }
 
 // discover finds the serving host's instance repository and the projects
-// it publishes. The instance is named at policy/valley on main's tip on
-// origin, which is read fresh; a repository whose main carries
-// policy/instance is its own instance. On an error the instance is still
-// returned when it was found, with names nil.
+// it publishes. On an error the instance is still returned when it was
+// found, with names nil.
 func discover(g git) (instance string, names []string, err error) {
-	tip, err := remoteRef(g, "origin", "refs/heads/"+recordTarget)
+	instance, err = instanceOf(g)
 	if err != nil {
-		return "", nil, errors.New("could not read origin")
-	}
-	if tip == "" {
-		return "", nil, errors.New("origin has no main branch to read policy/valley from")
-	}
-	if err := fetch(g, tip); err != nil {
-		return "", nil, err
-	}
-	if pointer, err := g.output(true, "cat-file", "blob", tip+":"+valleyPointer); err == nil {
-		instance = pointerURL(pointer)
-		if instance == "" {
-			return "", nil, fmt.Errorf("%s on main names no repository", valleyPointer)
-		}
-	} else if g.succeeds(true, "cat-file", "-e", tip+":"+instanceLayer) {
-		instance, _ = g.output(true, "remote", "get-url", "origin")
-	} else {
-		return "", nil, fmt.Errorf("main on origin names no owning valley at %s", valleyPointer)
-	}
-	if err := checkURL(instance); err != nil {
 		return "", nil, err
 	}
 	g = g.restricted()
@@ -233,19 +212,8 @@ func discover(g git) (instance string, names []string, err error) {
 	if oid == "" {
 		return instance, nil, fmt.Errorf("the instance repository %s publishes no %s", instance, projectsRef)
 	}
-	if !g.succeeds(true, "cat-file", "-e", oid) {
-		// The project and the instance share no history, so git warns
-		// "no common commits". The warning is kept for the error alone.
-		var diag bytes.Buffer
-		quiet := g
-		quiet.stderr = &diag
-		if _, err := quiet.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", instance, oid); err != nil {
-			msg := fmt.Sprintf("could not fetch %s from %s", projectsRef, instance)
-			if d := strings.TrimSpace(diag.String()); d != "" {
-				msg += ": " + d
-			}
-			return instance, nil, errors.New(msg)
-		}
+	if err := fetchFrom(g, instance, projectsRef, oid); err != nil {
+		return instance, nil, err
 	}
 	list, err := g.output(true, "cat-file", "blob", oid)
 	if err != nil {
@@ -262,6 +230,65 @@ func discover(g git) (instance string, names []string, err error) {
 	}
 	sort.Strings(names)
 	return instance, names, nil
+}
+
+// noInstance is the error of a repository whose main names no instance
+// repository at all, as opposed to one that names an instance that cannot
+// be read.
+type noInstance string
+
+func (e noInstance) Error() string { return string(e) }
+
+// instanceOf is the serving host's instance repository. It is named at
+// policy/valley on main's tip on origin, which is read fresh; a repository
+// whose main carries policy/instance is its own instance.
+func instanceOf(g git) (string, error) {
+	tip, err := remoteRef(g, "origin", "refs/heads/"+recordTarget)
+	if err != nil {
+		return "", errors.New("could not read origin")
+	}
+	if tip == "" {
+		return "", noInstance("origin has no main branch to read policy/valley from")
+	}
+	if err := fetch(g, tip); err != nil {
+		return "", err
+	}
+	var instance string
+	if pointer, err := g.output(true, "cat-file", "blob", tip+":"+valleyPointer); err == nil {
+		instance = pointerURL(pointer)
+		if instance == "" {
+			return "", fmt.Errorf("%s on main names no repository", valleyPointer)
+		}
+	} else if g.succeeds(true, "cat-file", "-e", tip+":"+instanceLayer) {
+		instance, _ = g.output(true, "remote", "get-url", "origin")
+	} else {
+		return "", noInstance(fmt.Sprintf("main on origin names no owning valley at %s", valleyPointer))
+	}
+	if err := checkURL(instance); err != nil {
+		return "", err
+	}
+	return instance, nil
+}
+
+// fetchFrom fetches an object the instance repository's ref names, unless
+// it is here already. g must be restricted.
+func fetchFrom(g git, instance, ref, oid string) error {
+	if g.succeeds(true, "cat-file", "-e", oid) {
+		return nil
+	}
+	// The project and the instance share no history, so git warns "no
+	// common commits". The warning is kept for the error alone.
+	var diag bytes.Buffer
+	quiet := g
+	quiet.stderr = &diag
+	if _, err := quiet.output(false, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options", instance, oid); err != nil {
+		msg := fmt.Sprintf("could not fetch %s from %s", ref, instance)
+		if d := strings.TrimSpace(diag.String()); d != "" {
+			msg += ": " + d
+		}
+		return errors.New(msg)
+	}
+	return nil
 }
 
 // remoteRef is the object a remote's ref names, or "" when it has no such
@@ -670,7 +697,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	repos := readSources(list, verifierFromEnv())
+	repos := readSources(list, newVerifier())
 	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)

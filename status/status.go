@@ -282,7 +282,7 @@ func readRecorded(g git, o origin, n recorded, stderr io.Writer) (*status, error
 	if err := fetch(g, want...); err != nil {
 		return nil, err
 	}
-	snap := newSnapshot(g, o, nil, verifierFromEnv())
+	snap := newSnapshot(g, o, nil, newVerifier())
 	s.recorded.landing, _ = snap.landing(n.id, v)
 	if r, found := snap.report(n.id); found {
 		s.restack = restackView(r, found)

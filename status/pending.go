@@ -113,7 +113,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	repos := readSources(list, verifierFromEnv())
+	repos := readSources(list, newVerifier())
 	readKnots(repos, l.verbose, stderr)
 	h := handles(repos)
 	writeHandleCache(g, repos, h)

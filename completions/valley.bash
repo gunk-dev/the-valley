@@ -37,14 +37,16 @@ _valley() {
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = review ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '-v' -- "$cur")
+  elif [ "${COMP_WORDS[1]}" = rebase ] && [ "${cur:0:1}" = - ]; then
+    mapfile -t COMPREPLY < <(compgen -W '--known-signers --integrator-name' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [[ "${COMP_WORDS[1]}" =~ ^(review|rebase)$ ]]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = pending ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--all --repo --checks --json -v' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--all --repo --checks --json -v --known-signers --integrator-name' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = changes ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--json --all --repo -v' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--json --all --repo -v --known-signers --integrator-name' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = status ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--json -v' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--json -v --known-signers --integrator-name' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = status ]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches)" -- "$cur")
   elif [ "${COMP_WORDS[1]}" = ready ] && [ "${cur:0:1}" = - ]; then
@@ -58,7 +60,7 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = knot ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--project --json --parent --blocked-by --owner --target --body --type --status --ready --if --force --change -m --run' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = plan ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--project --all --owner --json' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--project --all --owner --json --known-signers --integrator-name' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = replay ]; then
     mapfile -t COMPREPLY < <(compgen -d -- "$cur")
   elif [ "${COMP_WORDS[1]}" = self-update ] && [ "${cur:0:1}" = - ]; then

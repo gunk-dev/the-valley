@@ -61,7 +61,13 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
        valley-go plan [--project <name> | --all] [--owner <name>] [--json]
-       valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]`
+       valley-go self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]
+
+status, stack, rebase, brings, changes, pending and plan read how far a
+version has landed, and also take --known-signers <file> and
+--integrator-name <name>: what an integrator's transfer statement is
+verified with, ahead of VALLEY_KNOWN_SIGNERS, VALLEY_INTEGRATOR_SIGNER and
+what the serving host publishes at refs/the-valley/signers.`
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
@@ -79,6 +85,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 	verb := ""
 	if len(args) > 0 {
 		verb, args = args[0], args[1:]
+	}
+	// What this run verifies a transfer statement with (signers.go). Only
+	// the verbs that read how far a version has landed take the flags.
+	verification = &signerSource{g: g, stderr: stderr}
+	defer verification.done()
+	if signerVerbs[verb] {
+		var err error
+		if args, verification.keys, verification.name, err = takeSignerFlags(args); err != nil {
+			fmt.Fprintf(stderr, "valley: %s\n", err)
+			return 1
+		}
 	}
 	var err error
 	switch verb {

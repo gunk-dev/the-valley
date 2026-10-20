@@ -12,6 +12,7 @@ require (
 	the-valley/delta v0.0.0
 	the-valley/derive v0.0.0
 	the-valley/knot v0.0.0
+	the-valley/note v0.0.0
 	the-valley/rebase v0.0.0
 	the-valley/selfupdate v0.0.0
 )
@@ -21,18 +22,21 @@ require (
 // plan graph (../knot), so this program writes a graph exactly the way the
 // hook validates it. valley-delta-v1 (../delta) is the one reading of a
 // delta between two trees. The rebase engine (../rebase) rebases a family
-// of stacked changes and reads how far each version has landed. Self-update
-// (../selfupdate) installs the tip of a branch of the-valley. The deriver
-// (../derive) says which checks a change requires, from the policy the
-// composed-policy reader (../composed) reads, the reader the integrator and
-// the restacker share. All seven live in this repository and are never
-// fetched.
+// of stacked changes and reads how far each version has landed. The
+// signed-note format (../note) is the one reading of a verifier key, which
+// the signers a transfer statement is verified with are held to.
+// Self-update (../selfupdate) installs the tip of a branch of the-valley.
+// The deriver (../derive) says which checks a change requires, from the
+// policy the composed-policy reader (../composed) reads, the reader the
+// integrator and the restacker share. All eight live in this repository and
+// are never fetched.
 replace (
 	the-valley/change => ../change
 	the-valley/composed => ../composed
 	the-valley/delta => ../delta
 	the-valley/derive => ../derive
 	the-valley/knot => ../knot
+	the-valley/note => ../note
 	the-valley/rebase => ../rebase
 	the-valley/selfupdate => ../selfupdate
 )

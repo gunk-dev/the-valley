@@ -240,7 +240,7 @@ func (o origin) resolution(n recorded) resolution {
 // the rebase engine reads it (rebase.UnlandedOn). o must list
 // inventoryPatterns.
 func unlandedOn(g git, o origin, branch string) ([]recorded, error) {
-	found, err := rebase.UnlandedOn(context.Background(), g.engine(), o.engine(), branch, verifierFromEnv())
+	found, err := rebase.UnlandedOn(context.Background(), g.engine(), o.engine(), branch, newVerifier())
 	return fromEngine(found), err
 }
 

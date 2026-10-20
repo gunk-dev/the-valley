@@ -66,8 +66,14 @@ const (
 // integrator signs under, and the attest helper that checks a note.
 // Without the first two, no transfer statement is believed, and a version
 // that only one could show landed reads as uncertain or not-landed.
+//
+// Resolve, when set, finds the keys and the name when they are first
+// needed: a snapshot calls it once, before it verifies its first
+// statement, and checks with what it returns in place of Keys and Signer.
+// A snapshot that verifies no statement never calls it.
 type Verifier struct {
 	Keys, Signer, Attest string
+	Resolve              func() (keys, signer string)
 }
 
 // transferStatement is one transfer statement found under an attestation
@@ -443,6 +449,10 @@ func (s *Snapshot) digest(oid string) (string, bool) {
 // must be the integrator's, by a key the known-signers file holds, and
 // its subject must be the tree of the commit it says landed.
 func (s *Snapshot) verified(t transferStatement) bool {
+	if s.verify.Resolve != nil {
+		s.verify.Keys, s.verify.Signer = s.verify.Resolve()
+		s.verify.Resolve = nil
+	}
 	if s.verify.Keys == "" || s.verify.Signer == "" {
 		s.unverified = true
 		return false

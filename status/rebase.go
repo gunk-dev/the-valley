@@ -155,7 +155,7 @@ func rebaseStack(g git, args []string, stdout, stderr io.Writer) error {
 		return failure(fmt.Sprintf("change %s v%d records no branch, and rebase acts on a change's branch. Approve its head alone: valley approve --head %s %s",
 			res.handle, res.version, res.head, res.handle))
 	}
-	s, err := readSnapshot(g, verifierFromEnv())
+	s, err := readSnapshot(g, newVerifier())
 	if err != nil {
 		return err
 	}
@@ -565,7 +565,7 @@ func runBrings(g git, args []string, w io.Writer) error {
 	if !g.succeeds(true, "cat-file", "-e", head+"^{commit}") {
 		return failure("no commit " + head + " here")
 	}
-	s, err := readSnapshot(g, verifierFromEnv())
+	s, err := readSnapshot(g, newVerifier())
 	if err != nil {
 		return err
 	}

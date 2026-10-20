@@ -5,7 +5,9 @@
 # update-ref under its own user, and post-receive never runs. The mirror is
 # missing at first. The landing's event has to reach the bus anyway, at
 # once, and the landing has to stay queued through the failed mirror push
-# until systemd's retry publishes it.
+# until systemd's retry publishes it. The host also publishes, in its
+# instance repository, the signers a client verifies the landing with, and
+# publishes them again when the signers file is replaced.
 {
   pkgs,
   lib,
@@ -31,6 +33,7 @@ let
           ssh-keygen -q -t ed25519 -N "" -C "$who" -f "$out/$who"
         done
         attest key --key "$out/contributor" --name contributor/attestations > "$out/known_signers"
+        attest key --key "$out/integrator" --name host/attestations > "$out/integrator_signer"
       '';
 
   declaration = pkgs.writeText "valley-publish-e2e.cue" ''
@@ -68,6 +71,12 @@ in
         pkgs.natscli
         pkgs.jq
       ];
+      # The signers file is a copy made at boot, at a path the test
+      # replaces as the registry compiler replaces its own file.
+      systemd.tmpfiles.rules = [
+        "d /var/lib/valley-signers-file 0755 root root - -"
+        "C /var/lib/valley-signers-file/known_signers 0644 root root - ${keys}/known_signers"
+      ];
       services.valley = {
         enable = true;
         config = declaration;
@@ -76,7 +85,7 @@ in
         integrator = {
           enable = true;
           signingKeyFile = "${keys}/integrator";
-          knownSignersFile = "${keys}/known_signers";
+          knownSignersFile = "/var/lib/valley-signers-file/known_signers";
           instanceProject = "instance";
           interval = "2s";
         };
@@ -202,6 +211,27 @@ in
           ], moved
           landed = [e for e in events() if e["event"] == "integration-succeeded"]
           assert len(landed) == 1 and landed[0]["new"] == change, landed
+
+      # What a client verifies the landing with, in the instance repository:
+      # the controllers' signers file, and the name they sign under, which
+      # this host leaves to the default, the machine's own name. The file
+      # replaced by a rename, as the registry compiler replaces its own, is
+      # published again with no activation.
+      with subtest("the host publishes the controllers' signers, and again when the file changes"):
+          ref = "refs/the-valley/signers"
+          instance = f"{git} -C /srv/git/instance.git"
+          signers = "/var/lib/valley-signers-file/known_signers"
+          host.succeed(
+              f"test \"$({instance} cat-file -t {ref})\" = tree",
+              f"test \"$({instance} cat-file blob {ref}:integrator-name)\" = host/attestations",
+              f"{instance} cat-file blob {ref}:known-signers | cmp - {signers}",
+          )
+          host.succeed(
+              f"cat {signers} ${keys}/integrator_signer > /var/lib/valley-signers-file/next",
+              f"mv -f /var/lib/valley-signers-file/next {signers}",
+          )
+          host.wait_until_succeeds(f"{instance} cat-file blob {ref}:known-signers | cmp - {signers}", timeout=60)
+          host.succeed(f"{instance} cat-file blob {ref}:known-signers | grep -q '^host/attestations+'")
     '';
   };
 }

@@ -181,9 +181,10 @@ EOF
 
 help_pending() {
   cat <<'EOF'
-usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v]
+usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
 
   pending [--all] [--repo <name>] [--checks] [--json] [-v]
+          [--known-signers <file>] [--integrator-name <name>]
                    list what is waiting to land, in three sections: ready,
                    the ready changes whose active version has not landed;
                    branches, each branch on origin that main does not
@@ -226,6 +227,9 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v]
                                   drafts in drafts
                      -v           warn on stderr when a plan graph is
                                   missing or unreadable
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with (see changes below)
                    needs the valley-go helper.
 EOF
   help_runtime
@@ -233,9 +237,10 @@ EOF
 
 help_changes() {
   cat <<'EOF'
-usage: valley changes --json [--all] [--repo <name>] [-v]
+usage: valley changes --json [--all] [--repo <name>] [-v] [--known-signers <file>] [--integrator-name <name>]
 
   changes --json [--all] [--repo <name>] [-v]
+          [--known-signers <file>] [--integrator-name <name>]
                    print every change origin holds a record of, in every
                    state, as one JSON object, valley-changes/v1, for front
                    ends to read (docs/architecture.md): each version's
@@ -267,10 +272,17 @@ usage: valley changes --json [--all] [--repo <name>] [-v]
                    the integrator's outcome record for that name saying
                    land at the version's head; and the integrator's merge
                    of the head onto the landed commit's parent giving the
-                   landed tree. the statement is verified with these:
-                   VALLEY_KNOWN_SIGNERS names the registry's known-signers
-                   file and VALLEY_INTEGRATOR_SIGNER the integrator's
-                   signing name, and attest checks the note.
+                   landed tree. attest verifies the statement with the
+                   registry's known-signers file and the integrator's
+                   signing name. each is taken from the first of these
+                   that gives it: --known-signers FILE or
+                   --integrator-name NAME; VALLEY_KNOWN_SIGNERS or
+                   VALLEY_INTEGRATOR_SIGNER; what the serving host
+                   publishes at refs/the-valley/signers in its instance
+                   repository, read only when a statement needs
+                   verifying. a file that does not read, or holds no key
+                   under the name, is reported on stderr, and then no
+                   statement is verified.
                    needs the valley-go helper.
 EOF
   help_runtime
@@ -540,9 +552,10 @@ EOF
 
 help_rebase() {
   cat <<'EOF'
-usage: valley rebase <change>
+usage: valley rebase [--known-signers <file>] [--integrator-name <name>] <change>
 
-  rebase <change>  rebase the change's whole stack onto origin/main, as
+  rebase [--known-signers <file>] [--integrator-name <name>] <change>
+                   rebase the change's whole stack onto origin/main, as
                    review's [b]ase does: the layers valley-go stack lists
                    under the change, and the change itself. in a throwaway
                    worktree, bottom first, each layer's own commits go onto
@@ -550,8 +563,9 @@ usage: valley rebase <change>
                    origin/main, so each layer keeps its own diff. commits
                    under the bottom that a lower change landed through the
                    integrator drop out, since main holds them; that landing
-                   is read as changes reads it, with VALLEY_KNOWN_SIGNERS
-                   and VALLEY_INTEGRATOR_SIGNER. one atomic
+                   is read as changes reads it, with the signers its two
+                   flags, VALLEY_KNOWN_SIGNERS and VALLEY_INTEGRATOR_SIGNER,
+                   or the host's publication give. one atomic
                    push then moves every layer's branch, each leased on the
                    tip read: every branch moves, or none does. last, bottom
                    first, each change gains its rebased head as a new
@@ -589,9 +603,10 @@ EOF
 
 help_status() {
   cat <<'EOF'
-usage: valley status [--json] [-v] <change>
+usage: valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] <change>
 
-  status [--json] [-v] <change>
+  status [--json] [-v] [--known-signers <file>] [--integrator-name <name>]
+         <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
                    attention, and a change integrated into origin/main.
@@ -612,6 +627,9 @@ usage: valley status [--json] [-v] <change>
                                   stderr and the exit status is non-zero.
                      -v           with --json, warn on stderr when the plan
                                   graph is missing or unreadable
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with, as changes reads them
                    needs the valley-go helper.
 EOF
   help_naming
@@ -774,9 +792,10 @@ EOF
 
 help_plan() {
   cat <<'EOF'
-usage: valley plan [--project NAME | --all] [--owner P] [--json]
+usage: valley plan [--project NAME | --all] [--owner P] [--json] [--known-signers <file>] [--integrator-name <name>]
 
   plan [--project NAME | --all] [--owner P] [--json]
+       [--known-signers <file>] [--integrator-name <name>]
                    show the project's plan graph as a tree, to see where
                    things stand. the roots are the outcomes with no
                    parent, the milestones, each with its progress: its
@@ -813,6 +832,10 @@ usage: valley plan [--project NAME | --all] [--owner P] [--json]
                      --json       print valley-plan/v1: every knot with
                                   what the graph derives of it, and the
                                   three sections (docs/architecture.md)
+                     --known-signers FILE, --integrator-name NAME
+                                  what a transfer statement is verified
+                                  with, for the changes ready for
+                                  approval, as changes reads them
                    needs the valley-go helper.
 EOF
   help_runtime
@@ -2749,13 +2772,35 @@ cmd_approve() {
   approve "$branch" || exit 1
 }
 
+# The two flags that say what a transfer statement is verified with are
+# valley-go's, and pass through to it untouched.
 cmd_rebase() {
-  case "${1:-}" in -*) die "usage: valley rebase <change>" ;; esac
-  [ $# -eq 1 ] || die "usage: valley rebase <change>"
+  local usage="usage: valley rebase [--known-signers <file>] [--integrator-name <name>] <change>"
+  local name="" verify=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --known-signers | --integrator-name)
+        [ $# -ge 2 ] || die "$usage"
+        verify+=("$1" "$2")
+        shift 2
+        ;;
+      --known-signers=* | --integrator-name=*)
+        verify+=("$1")
+        shift
+        ;;
+      -*) die "$usage" ;;
+      *)
+        [ -z "$name" ] || die "$usage"
+        name="$1"
+        shift
+        ;;
+    esac
+  done
+  [ -n "$name" ] || die "$usage"
   command -v valley-go > /dev/null 2>&1 \
     || die "review, approve and rebase read the change's record with the valley-go helper; nix run .#valley bundles it"
   fetch_origin
-  exec valley-go rebase "$1"
+  exec valley-go rebase "${verify[@]}" "$name"
 }
 
 # tail and replay are thin wrappers over the nats CLI — anything they do,

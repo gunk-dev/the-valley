@@ -196,7 +196,7 @@ func runPlan(g git, args []string, stdout, stderr io.Writer) error {
 			sourced = append(sourced, source{name: p.name, url: p.url, g: p.g})
 		}
 	}
-	repos := readSources(sourced, verifierFromEnv())
+	repos := readSources(sourced, newVerifier())
 	h := handles(repos)
 	for _, l := range repos {
 		for _, p := range projects {

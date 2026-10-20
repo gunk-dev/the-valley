@@ -213,6 +213,23 @@ let
   knownSigners =
     if cfg.identity.enable then identityKnownSigners else toString cfg.integrator.knownSignersFile;
 
+  # What a client verifies this host's transfer statements with, published
+  # in the instance repository: the known-signers file the controllers read,
+  # whichever wrote it, and the name they sign under. Unset, the name is the
+  # integrator's own default, and the publisher computes it with the same
+  # code on the same host, so what is published is what the controllers use.
+  # A host publishes it while the integrator runs and the host serves the
+  # instance repository; any other host publishes nothing.
+  publishesSigners = cfg.integrator.enable && instanceRepo != null;
+  signersCommand = lib.concatStringsSep " " (
+    [
+      "${integratorPackage}/bin/integrator publish-signers"
+      "--instance-repo ${toString instanceRepo}"
+      "--known-signers ${knownSigners}"
+    ]
+    ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
+  );
+
   # The paths the consumer must supply once the integrator is enabled,
   # with what each names — for the assertion message. The signers file is
   # among them only while the registry does not compile one.
@@ -1673,6 +1690,75 @@ in
         OnBootSec = "1m";
         OnUnitActiveSec = cfg.identity.interval;
       };
+    };
+
+    # The signers publication, refs/the-valley/signers, is written by a
+    # oneshot of its own. It runs as the git user, which owns the instance
+    # repository, and its sandbox lets it write that repository and nothing
+    # else. It is not part of valley-init, which runs only on activation,
+    # nor of the registry compiler, whose sandbox writes only its state
+    # directory.
+    #
+    # What starts it: every boot and every activation, after valley-init,
+    # which covers a changed signing name or signers path; and the path
+    # unit below, whenever the known-signers file changes, which covers
+    # each compilation that changed it and a hand-provisioned file being
+    # replaced. A run reads the current file and name and writes the ref
+    # only when the tree it makes differs, so a run with nothing new is
+    # free. Both values are in one tree under one ref, so a client never
+    # reads one value without the other. The ref moves with a
+    # compare-and-swap, so two runs cannot interleave.
+    #
+    # A run that cannot read the file, or reads one that is not a list of
+    # verifier keys, fails and leaves the last publication in place. That
+    # is the file the controllers were given before it changed, and the
+    # journal says why.
+    systemd.services.valley-signers = lib.mkIf publishesSigners {
+      description = "Publish what clients verify the valley integrator's transfer statements with";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "valley-init.service" ] ++ lib.optional cfg.identity.enable "valley-identity.service";
+      requires = [ "valley-init.service" ];
+      unitConfig.RequiresMountsFor = cfg.dataDir;
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = signersCommand;
+        User = cfg.user;
+        Group = cfg.group;
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ReadWritePaths = [ instanceRepo ];
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [ "AF_UNIX" ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        # The instance repository is always one the integrator serves, since
+        # it has to be protected, so it is group-shared and its directories
+        # are setgid. With the default umask, git would chmod each directory
+        # it makes to add group write, setgid bit included, and
+        # RestrictSUIDSGID refuses that chmod. Group write from the start
+        # leaves git nothing to chmod, as for the controllers.
+        UMask = "0002";
+      };
+    };
+
+    systemd.paths.valley-signers = lib.mkIf publishesSigners {
+      description = "Watch the known-signers file the valley integrator reads";
+      wantedBy = [ "multi-user.target" ];
+      pathConfig.PathChanged = knownSigners;
     };
 
     # One controller per served project, as instances of a single template:

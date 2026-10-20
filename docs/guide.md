@@ -49,15 +49,23 @@ to the valley host, and Nix with flakes enabled.
    It does not grant permission. The host checks the principal associated with the key you actually
    use.
 
-3. Get the trusted signers file and the integrator's signing name from your administrator:
+3. Check that the client can verify merged landings. You do not need to configure anything. The host
+   publishes its trusted signers file and the integrator's signing name in the instance repository,
+   and the client reads them when it needs them. This command shows the publication:
+
+   ```sh
+   git ls-remote git@valley.example:instance refs/the-valley/signers
+   ```
+
+   Use the instance repository your project's `policy/valley` names. If it prints nothing, the host
+   publishes nothing, and some submitted versions appear `uncertain`; see
+   [recovery](#an-uncertain-landing). To use other values than the host's, set them yourself. A
+   setting wins over the publication:
 
    ```sh
    export VALLEY_KNOWN_SIGNERS="$HOME/.config/valley/known-signers"
    export VALLEY_INTEGRATOR_SIGNER=integrator
    ```
-
-   These let the client verify merged landings. Set both together. Without them, some submitted
-   versions appear `uncertain`; see [recovery](#an-uncertain-landing).
 
 4. If you approve changes, configure your Ed25519 attestation key and its registered signing name:
 
@@ -364,9 +372,12 @@ The [push rules](./architecture.md#what-a-push-may-write) and
 ### An uncertain landing
 
 An `uncertain` result means the client cannot prove whether the version was submitted. It can follow
-a `failed` outcome, incomplete landing evidence, or missing signer settings. Set both
-`VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` to the administrator's values, then rerun
-`valley status <handle>`.
+a `failed` outcome or incomplete landing evidence. It can also mean the client had no signers to
+verify the landing with. In that case the command says on stderr that a transfer statement could not
+be verified, and why. Check that the host publishes its signers (step 3 of
+[Client setup](#client-setup)). If it does not, ask the administrator for the signers file and the
+integrator's signing name, set `VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` to them, and
+rerun `valley status <handle>`.
 
 If it remains uncertain, ask the administrator to inspect `main`, the outcome record, and the
 integrator logs together. Do not assume that a consumed request means a successful landing. Resolve
@@ -535,13 +546,16 @@ instance's `main` to be protected. `instancePolicy` instead names a directory of
 a host that does not serve the instance repository. Set `signingName` explicitly to the name
 published in the signers file.
 
-Distribute the public `known-signers` file to clients and configure their signer settings. Follow
+The host publishes the `known-signers` file and the integrator's signing name for clients, at
+`refs/the-valley/signers` in the instance repository. `valley-signers` writes it at boot, on
+activation, and whenever the file changes, so clients need no signer settings. Follow
 [Authoring a change](#authoring-a-change) in a clone of `demo`, then approve it as `operator`.
 Verify that `valley status <handle>` reports the landing. On the host, inspect:
 
 ```sh
 sudo systemctl status valley-integrator@demo --no-pager
 sudo journalctl -u valley-integrator@demo -n 50 --no-pager
+sudo journalctl -u valley-signers -n 20 --no-pager
 ```
 
 ### Use a governed identity registry

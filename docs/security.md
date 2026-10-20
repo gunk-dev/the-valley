@@ -190,6 +190,29 @@ converge, and cosmo's ROADMAP D11 carries them as the acceptance criteria of a G
   `sigverify` has a `tkey-signer` class for it.
 - **Host ssh keys**, which agenix uses to decrypt each host's secrets (cosmo `secrets/keys.nix`).
 
+## What a client trusts to read a landing
+
+A client decides that a version landed through an integrator merge (`landed-recorded`) by verifying
+the integrator's transfer statement. It verifies the statement with a known-signers file and the
+integrator's signing name. By default it reads both from the host's publication at
+`refs/the-valley/signers` in the instance repository (`implemented`; see
+[the signers publication](./architecture.md#the-signers-publication)).
+
+That publication is project storage, not source. No change, review or check governs it. The client
+trusts it for a different reason: only the host writes it. The push hook refuses every push to it,
+and the host's publisher writes it from the file and the name the controllers use (`implemented`,
+checked by `signers-e2e`). So a client that reads it trusts the host's disk and the host's
+configuration. It already trusts the same host to serve `main`.
+
+The client finds the instance repository through `policy/valley` at `main`'s tip on origin, which is
+integrated source. A change that lands a new `policy/valley` points clients at another repository's
+publication. A flag or a variable set on the client replaces the publication for the value it gives.
+The restacker reads neither the publication nor the variables, only its own flags.
+
+A wrong publication cannot by itself make a version read `landed-recorded`. That also takes the
+integrator's outcome record for the version, saying it landed at the version's head, and no push may
+write an outcome record. A wrong publication can make a real landing read `uncertain`.
+
 ## Secrets
 
 cosmo keeps its secrets in agenix (cosmo `secrets/secrets.nix`, `docs/secrets-management.md`). Every

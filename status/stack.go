@@ -57,7 +57,7 @@ func runStack(g git, args []string, w io.Writer) error {
 	if err != nil {
 		return err
 	}
-	s, err := readSnapshot(g, verifierFromEnv())
+	s, err := readSnapshot(g, newVerifier())
 	if err != nil {
 		return err
 	}

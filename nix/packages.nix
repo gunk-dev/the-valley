@@ -143,6 +143,7 @@ rec {
       ../delta
       ../derive
       ../knot
+      ../note
       ../rebase
       ../selfupdate
       ../schema/verification.cue
@@ -523,7 +524,8 @@ rec {
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
   # same trade as attest — hence vendorHash = null and no module fetch. It
   # reads change records with the one reading of a record the push hook
-  # shares (../change).
+  # shares (../change), and verifier keys with the one reading of a key the
+  # note format defines (../note).
   integrator-unwrapped = pkgs.buildGoModule {
     pname = "valley-integrator";
     version = "0";
@@ -532,6 +534,7 @@ rec {
     src = withLocal ../integrator [
       ../change
       ../composed
+      ../note
       ../schema/verification.cue
     ];
     modRoot = "integrator";

@@ -43,6 +43,7 @@ project: {
 		"integrator-e2e",
 		"restack-unit",
 		"restack-e2e",
+		"signers-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
 		"rebase-unit",
@@ -273,6 +274,21 @@ project: {
 		requires: "restack-e2e":  true
 	}
 
+	// What a client verifies an integrator's transfer statement with: the
+	// host's publisher and the default name it publishes, the unit that
+	// runs it, the client's reading of the signers, the instance discovery
+	// it reads them through, and the snapshot that asks for them.
+	// signers-e2e drives them together over the real integrator.
+	classes: signers: {
+		paths: "integrator/signers.go": true
+		paths: "integrator/main.go":    true
+		paths: "nix/valley-host.nix":   true
+		paths: "status/signers.go":     true
+		paths: "status/list.go":        true
+		paths: "rebase/snapshot.go":    true
+		requires: "signers-e2e":        true
+	}
+
 	// The verification policy: this layer, the pointer to the owning
 	// valley, the schema a policy is written in, and the example policies
 	// the derivers and cue-vet read.
@@ -374,6 +390,7 @@ project: {
 		"review.nix": ["review-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
+		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]

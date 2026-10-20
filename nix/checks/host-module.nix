@@ -310,6 +310,52 @@ let
       identityHost.config.systemd.services."valley-integrator@".after
     );
 
+  # The signers publication. A host whose integrator runs and which serves
+  # the instance repository publishes there what a client verifies its
+  # transfer statements with. What it publishes has to be what the
+  # controllers use: the same signers file and the same --name, or none on
+  # either, in which case both take the binary's default. The publisher
+  # writes as the git user, which owns the instance repository, may write
+  # that repository and nothing else, runs after the compilation when there
+  # is one, and runs again whenever the signers file changes.
+  flagValue =
+    flag: command:
+    let
+      m = builtins.match ".*--${flag} ([^ ]+).*" command;
+    in
+    if m == null then null else lib.head m;
+
+  signersPublisher =
+    host: repo:
+    let
+      unit = host.config.systemd.services.valley-signers;
+      publish = unit.serviceConfig.ExecStart;
+      controller = host.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+    in
+    !(lib.hasInfix "/bin/integrator publish-signers " publish)
+    || flagValue "instance-repo" publish != repo
+    || flagValue "known-signers" publish != flagValue "known-signers" controller
+    || flagValue "name" publish != flagValue "name" controller
+    || unit.serviceConfig.User or null != "git"
+    || unit.serviceConfig.ReadWritePaths or [ ] != [ repo ]
+    || !(builtins.elem "valley-init.service" unit.after)
+    || !(builtins.elem "multi-user.target" unit.wantedBy)
+    || host.config.systemd.paths.valley-signers.pathConfig.PathChanged or null
+      != flagValue "known-signers" controller
+    || !(builtins.elem "multi-user.target" host.config.systemd.paths.valley-signers.wantedBy);
+
+  signersRenderedWithoutIntegrator =
+    protectedHost.config.systemd.services ? valley-signers
+    || protectedHost.config.systemd.paths ? valley-signers;
+
+  signersUnpublished =
+    signersPublisher integratorHost "/srv/git/sealed.git"
+    || signersPublisher integratorSelfHost "/srv/git/guarded.git"
+    || signersPublisher identityHost "/srv/git/sealed.git"
+    || flagValue "name" identityHost.config.systemd.services.valley-signers.serviceConfig.ExecStart
+      != "integrator"
+    || !(builtins.elem "valley-identity.service" identityHost.config.systemd.services.valley-signers.after);
+
   # The declared keys stay authorized beside the compiled ones. A compiled
   # file that replaced them would make a bad compilation — or a first boot
   # before the first one — a locked-out git user, which is the one failure
@@ -383,6 +429,10 @@ in
       throw "valley module-eval: the compiler must run as the git user, write only its own 0755 state directory, read the registry from the instance repository, write the grants the pre-receive hook reads, and have its authorized_keys added to what sshd reads under the %u token — sshd refuses a keys file owned by anyone but root or the account it authorizes, and a fixed path in that global list would authorize every registry key for every account on the host"
     else if identityIntegrator then
       throw "valley module-eval: a controller under a compiled registry must read the compiled signers file, start after the compilation, and sign under the name the registry publishes its key under"
+    else if signersRenderedWithoutIntegrator then
+      throw "valley module-eval: a signers publication rendered for a host whose integrator is off — there is no transfer statement to verify"
+    else if signersUnpublished then
+      throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever the signers file changes"
     else if identityKeepsDeclaredKeys then
       throw "valley module-eval: the declared authorized keys must stay authorized beside the compiled ones — a compiled file that replaced them would make a bad compilation a locked-out git user"
     else

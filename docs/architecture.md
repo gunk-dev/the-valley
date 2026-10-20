@@ -145,6 +145,34 @@ repository publishes nothing. A list that cannot be written is a warning, not a 
 The hold file belongs to the operator, who creates it to pause all pushes. `valley-init` never
 touches it.
 
+### The signers publication
+
+The host publishes what a client verifies the integrator's transfer statements with. The publication
+is a tree at `refs/the-valley/signers` in the instance repository. It holds two files:
+`known-signers`, the known-signers file the controllers read, and `integrator-name`, the name they
+sign under, on one line. Both are in one tree under one ref, so a client reads both values or
+neither.
+
+The publisher is `integrator publish-signers` (`integrator/signers.go`). The oneshot service
+`valley-signers` runs it as git (`nix/valley-host.nix`). A host renders the service when the
+integrator is enabled and the host serves the instance repository (`integrator.instanceProject`).
+The publisher is given the same signers file and the same `--name` as the controllers. When
+`integrator.signingName` is unset, neither is given a name. Both then take the integrator's default,
+`<hostname>/attestations`, computed by the same code on the same host. The service's sandbox lets it
+write the instance repository and nothing else.
+
+The service runs at boot and on activation, after `valley-init` and after the registry compiler when
+there is one. A path unit, `valley-signers.path`, runs it again whenever the signers file changes,
+as it does when a compilation replaces the file. A run that would publish what is already there
+writes nothing. A run that changes the publication moves the ref with a compare-and-swap. A run that
+cannot read the signers file, or reads one that is not a list of verifier keys, fails and leaves the
+last publication in place. A file that holds no key under the signing name is published anyway,
+because it is what the controllers use. The run then warns that no client can verify a statement
+with it.
+
+No push may write the ref, because the hook refuses every `refs/the-valley/*` ref it does not name.
+Checked by `module-eval`, `signers-e2e` and `publish-e2e`.
+
 ## What a push may write
 
 Every repository's `pre-receive` hook runs `valleyhook pre-receive` (`valleyhook/main.go`,
@@ -164,6 +192,7 @@ the plan graph by `knots-e2e`.
 | `refs/the-valley/restack/main/<change-id>`          | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
 | `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
+| `refs/the-valley/signers` (instance repository)     | Nobody                                                                                           | `valley-signers` writes it on disk: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                             |
 | Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, and review histories (see [Reviews](#reviews)).                      |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |
@@ -1074,7 +1103,8 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 
 - `authorized_keys.git`: one line per key of a principal with a `git-push` grant, tagged
   `environment="VALLEY_PRINCIPAL=<principal>"`. sshd reads it after the host's declared keys.
-- `known-signers`: the keys that may sign attestations, for the hook and the integrator.
+- `known-signers`: the keys that may sign attestations, for the hook and the integrator. The host
+  also publishes it for clients (see [The signers publication](#the-signers-publication)).
 - `grants`: one `request <principal>` line per holder of an `approve` grant, at a boundary of kind
   `approve` or `request`, and one `restack <principal>` line per holder of a `restack` grant. A
   principal holding both kinds is written once. The line keeps the name `request`, and the hook
@@ -1281,8 +1311,8 @@ layers `valley-go stack` lists under it. A change with nothing under it is a sta
 throwaway worktree, bottom first, each layer's own commits are rebased onto the rebased layer below
 it, and the bottom's onto `main`. So each layer keeps its own delta. Commits under the bottom that a
 lower change landed through an integrator merge drop out, since their content is on `main`. The
-rebase reads that landing as `valley changes` does, so it needs `VALLEY_KNOWN_SIGNERS` and
-`VALLEY_INTEGRATOR_SIGNER` to verify the transfer statement.
+rebase reads that landing as `valley changes` does, and verifies the transfer statement with the
+same signers (see [Listing changes](#listing-changes)).
 
 The rebase refuses, and changes nothing, when the stack cannot move whole:
 
@@ -1671,11 +1701,24 @@ they decide its landing evidence (`status/inventory.go`). The first rule that ap
 The outcome record alone is never proof of a landing, because a later pass can overwrite it. A
 landing whose outcome record a later pass overwrote reads `uncertain`, never `landed-recorded`.
 
-The client checks a transfer statement with `attest verify`. The signature must be by the name in
-`VALLEY_INTEGRATOR_SIGNER`, under a key in the file `VALLEY_KNOWN_SIGNERS` names, which is the
-identity registry's compiled known-signers file. Without both, no transfer statement is believed: a
-version that only a statement could show landed reads as `uncertain` or `not-landed`, and the
-command says so on stderr.
+The client checks a transfer statement with `attest verify`. The signature must be by the
+integrator's signing name, under a key in a known-signers file. The client takes each of these two
+values from the first source that gives it (`status/signers.go`):
+
+1. a flag: `--known-signers <file>` or `--integrator-name <name>`;
+2. the environment: `VALLEY_KNOWN_SIGNERS` or `VALLEY_INTEGRATOR_SIGNER`;
+3. the serving host's publication at `refs/the-valley/signers` in its instance repository (see
+   [The signers publication](#the-signers-publication)). The client finds the instance repository
+   the way `--all` does, below.
+
+The client reads the publication only when a statement needs verifying, and only for a value that no
+flag or variable gives. A value from a flag or a variable is used whatever the host publishes.
+Before the two values are used, the client checks that the file reads as verifier keys and holds a
+key under the name. When it does not, the command says so on stderr, naming where each value came
+from, and verifies no statement. Without both values, no transfer statement is believed: a version
+that only a statement could show landed reads as `uncertain` or `not-landed`, and the command says
+so on stderr. `status`, `stack`, `rebase`, `brings`, `pending` and `plan` read a landing the same
+way. Checked by `signers-e2e`.
 
 Without `--all`, the commands list the current repository. With `--all`, they list every project the
 serving host publishes at `refs/the-valley/projects`. The client reads the instance repository's URL

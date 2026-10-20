@@ -353,6 +353,12 @@ usage: valley <verb> [args]
                    the bottom layer of a stack or a change alone, is
                    approved as it is, and the integrator merges it onto
                    main.
+                   approve prints how long each required check took, and
+                   appends one JSON line per check to the timing log,
+                   $XDG_STATE_HOME/valley/timings.jsonl (default
+                   ~/.local/state/valley/timings.jsonl). the log stays on
+                   this machine and is not evidence; a log that cannot be
+                   written is a warning, and approving goes on.
   rebase <change>  rebase the change's whole stack onto origin/main, as
                    review's [b]ase does: the layers valley-go stack lists
                    under the change, and the change itself. in a throwaway
@@ -1323,7 +1329,7 @@ diagnose_request_push() {
 approve() {
   local branch="$1" target=main tip change head base digest root ref check spec what
   local key
-  local -a signer=() required=() run=() evidence=()
+  local -a signer=() required=() run=() timing=() evidence=()
 
   root="$(git rev-parse --show-toplevel)" || {
     refuse "not a git repository; nothing published"
@@ -1436,6 +1442,12 @@ approve() {
     signer=(--key "$key")
     [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
 
+    # attest logs how long each check took, on this machine and outside
+    # the evidence. What it cannot know itself is passed in: the change,
+    # and each check's declared cost.
+    timing=(--timings)
+    [ -z "$CHANGE_ID" ] || timing+=(--change "$CHANGE_ID")
+    [ -z "$APPROVE_VERSION" ] || timing+=(--change-version "$APPROVE_VERSION")
     for check in "${required[@]}"; do
       case "${CHECK_RUNNER[$check]:-}" in
         nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
@@ -1445,6 +1457,7 @@ approve() {
           return 1
           ;;
       esac
+      [ -z "${CHECK_COST[$check]:-}" ] || timing+=(--cost "$check=${CHECK_COST[$check]}")
     done
 
     cleanup_approve_wt
@@ -1460,7 +1473,7 @@ approve() {
 
     printf '\nchecking %s at %s: %s\n' "$what" "$(git rev-parse --short "$head")" \
       "$(printf '%s\n' "${required[@]}" | join_lines)"
-    if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${run[@]}"; then
+    if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${timing[@]}" "${run[@]}"; then
       cleanup_approve_wt
       CHECKS_FAILED_AT="$head"
       refuse "the checks did not pass; nothing published, main untouched"

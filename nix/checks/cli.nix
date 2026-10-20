@@ -177,6 +177,7 @@ in
     nativeBuildInputs = [
       pkgs.git
       pkgs.cue
+      pkgs.jq # the timing log's lines
       pkgs.openssh
       packages.attest
       packages.valley-script

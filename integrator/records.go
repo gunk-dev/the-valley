@@ -413,7 +413,10 @@ func withdrawnFor(r request, idx *recordIndex) string {
 // still withdrawn and the request still at the head the pass found, and
 // records the outcome voided-withdrawn. It reports whether it deleted it.
 func (in *integrator) void(r request, ref string) bool {
+	watch := newStopwatch()
+	done := watch.stage(stageRefusal)
 	rec, err := in.readRecord(ref)
+	done()
 	if err != nil || rec.State != change.Withdrawn {
 		return false
 	}
@@ -435,6 +438,7 @@ func (in *integrator) void(r request, ref string) bool {
 	}
 	fmt.Fprintf(in.out, "%s -> %s @ %s: %s\n", r.change, r.target, verdict.Short(tip), voidedWithdrawn)
 	fmt.Fprintf(in.out, "  change %s is withdrawn, which voids its requests; the request is deleted, and the change needs a fresh approval once it is ready again\n", rec.ChangeID)
+	in.reportTiming(r, tip, string(voidedWithdrawn), watch)
 	if err := in.writeMemo(r, fmt.Sprintf("%s %s %s %s", r.head, tip, evidence, voidedWithdrawn)); err != nil {
 		fmt.Fprintf(in.out, "  the outcome was not recorded: %v\n", err)
 	}

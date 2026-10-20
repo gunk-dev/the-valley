@@ -34,11 +34,13 @@ func (c checkSpec) runner() string {
 }
 
 // checkOutcome is what running one check produced: whether it passed, the
-// output a reader needs when it did not, and the digests of a pure run.
+// output a reader needs when it did not, how it was satisfied, and the
+// digests of a pure run.
 type checkOutcome struct {
-	spec   checkSpec
-	passed bool
-	log    string
+	spec      checkSpec
+	passed    bool
+	log       string
+	satisfied string
 
 	inputs     string
 	derivation string
@@ -66,6 +68,15 @@ func nixSystem() string {
 func nix(dir string, args ...string) (string, string, error) {
 	cmd := exec.Command("nix", args...)
 	cmd.Dir = dir
+	var out, errb bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	return out.String(), errb.String(), err
+}
+
+func nixStore(args ...string) (string, string, error) {
+	cmd := exec.Command("nix-store", args...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -134,6 +145,7 @@ func runPure(tree, system string, spec checkSpec) (checkOutcome, error) {
 		return out, err
 	}
 	out.derivation, out.inputs = c.derivation, c.inputs
+	out.satisfied = outputsCached(c.drv)
 
 	built, buildLog, err := nix(tree, "build", "--no-link", "--print-out-paths", c.drv+"^*")
 	out.log = strings.TrimSpace(buildLog)
@@ -159,14 +171,11 @@ func runPure(tree, system string, spec checkSpec) (checkOutcome, error) {
 // lines — a shape that has not changed in the lifetime of nix, unlike the
 // versioned JSON of `nix derivation show`.
 func drvInputs(drv string) ([]string, error) {
-	cmd := exec.Command("nix-store", "--query", "--references", drv)
-	var out, errb bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &errb
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("querying the inputs of %s: %w: %s", drv, err, strings.TrimSpace(errb.String()))
+	out, errb, err := nixStore("--query", "--references", drv)
+	if err != nil {
+		return nil, fmt.Errorf("querying the inputs of %s: %w: %s", drv, err, strings.TrimSpace(errb))
 	}
-	inputs := strings.Fields(out.String())
+	inputs := strings.Fields(out)
 	if len(inputs) == 0 {
 		return nil, fmt.Errorf("%s has no inputs at all", drv)
 	}
@@ -177,7 +186,7 @@ func drvInputs(drv string) ([]string, error) {
 // observed. No digests: there is nothing to re-derive, which is exactly
 // what the effectful predicate type says.
 func runEffectful(tree string, spec checkSpec) checkOutcome {
-	out := checkOutcome{spec: spec}
+	out := checkOutcome{spec: spec, satisfied: satisfiedRan}
 	cmd := exec.Command("sh", "-c", spec.command)
 	cmd.Dir = tree
 	log, err := cmd.CombinedOutput()

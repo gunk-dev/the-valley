@@ -325,6 +325,10 @@ valley approve [--head <sha>] <change>
     `git push --atomic`. Skipping checks that are already attested on `origin` is `not built`
     (re-attesting the same tree with the same signer is refused by the create-only attestation
     namespace).
+  - Prints a `time` line after each check's `check` line: the check's name, its result, how long it
+    took, and how it was satisfied. It passes `--timings` to `attest run`, so each check is also
+    logged to the local [timing log](#the-timing-log). The log is not evidence, and a log that
+    cannot be written is a warning: approval continues.
 
 ### `valley rebase`
 
@@ -512,7 +516,10 @@ attest key --key ~/.ssh/valley-attest --name operator
 - **`attest`** ([`attest/main.go`](../attest/main.go)): Composes, signs, stores, and verifies
   `the-valley/attestation/v1` notes and computes canonical digests. Exits `0` on success, `1` on
   verification or runtime failure, `2` on invalid flags.
-  - `attest run [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--command <name>=<cmd>]... [--environment <name>] --key <path> [--name <name>] [--provenance <file>] [--schema <file>] [--system <system>] [--push <remote>] [--branch <ref>]`
+  - `attest run [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--command <name>=<cmd>]... [--environment <name>] --key <path> [--name <name>] [--provenance <file>] [--schema <file>] [--system <system>] [--push <remote>] [--branch <ref>] [--timings] [--change <id>] [--change-version <n>] [--cost <name>=<class>]...`
+    — prints a `time` line per check. `--timings` appends each check's timing to the
+    [timing log](#the-timing-log); `--change`, `--change-version` and `--cost` supply the fields
+    `attest` cannot read itself.
   - `attest verify --note <file> --known-keys <file> [--signer <name>]... [--schema <file>] [--repo <dir>] [--rev <rev>]`
   - `attest digest [--repo <dir>] [--rev <rev>]` — prints `valley-tree-v1:<64-hex>`.
   - `attest inputs [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--system <system>]` —
@@ -601,7 +608,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_VERSION`             | `bin/valley`, `self-update`                                     | Package stamp (`<version>-<rev>`) baked into the Nix-wrapped `valley` script, captured into `VALLEY_STAMP` and unset on startup so child processes do not inherit it, and passed explicitly to `valley-go self-update`.                                                                  |
 | `VALLEY_PRINCIPAL`           | `valleyhook shell`, host `pre-receive` wrapper                  | Host-side environment variable set by `valleyhook shell` after looking up the key named in `SSH_USER_AUTH` against the host's `authorized_keys` files. Any client-supplied `VALLEY_PRINCIPAL` or `GIT_*` environment variable is stripped by `valleyhook shell` before `git-shell` runs. |
 | `SSH_USER_AUTH`              | `valleyhook shell`                                              | Path to the file written by OpenSSH `sshd` (`ExposeAuthInfo yes`) containing the public key that authenticated the SSH session.                                                                                                                                                          |
-| `XDG_STATE_HOME`             | `review`, `self-update`                                         | Base directory for persistent client state (defaults to `~/.local/state`).                                                                                                                                                                                                               |
+| `XDG_STATE_HOME`             | `review`, `approve` (via `attest run --timings`), `self-update` | Base directory for persistent client state (defaults to `~/.local/state`).                                                                                                                                                                                                               |
 | `XDG_CACHE_HOME`             | `pending`, `changes`, `plan`, `knot`                            | Base directory for cached cross-project clones (defaults to `~/.cache`).                                                                                                                                                                                                                 |
 | `EDITOR`                     | `review` (via `less`)                                           | Editor invoked when pressing `v` while paging a diff in `valley review`.                                                                                                                                                                                                                 |
 | `GIT_PAGER`, `PAGER`, `LESS` | `review`                                                        | Pager and diff-renderer environment variables read by `valley review` (`LESS` defaults to `FRX` when unset).                                                                                                                                                                             |
@@ -610,12 +617,14 @@ export VALLEY_ATTEST_NAME=operator
 
 ### Client state and cache files
 
-The client stores review notes and `self-update` state under `$XDG_STATE_HOME`, cached
-multi-repository clones under `$XDG_CACHE_HOME`, and tab-completion handles inside the local git
-directory:
+The client stores review notes, check timings and `self-update` state under `$XDG_STATE_HOME`,
+cached multi-repository clones under `$XDG_CACHE_HOME`, and tab-completion handles inside the local
+git directory:
 
 - `${XDG_STATE_HOME:-$HOME/.local/state}/valley/notes/<branch>.md`: Markdown review notes captured
   by `v` in `valley review`.
+- `${XDG_STATE_HOME:-$HOME/.local/state}/valley/timings.jsonl`: How long each check took when
+  `valley approve` ran it, one JSON line per check (see [The timing log](#the-timing-log)).
 - `${XDG_STATE_HOME:-$HOME/.local/state}/valley/self-update.json` and `self-update.lock`: Installed
   store paths, commits, pin flag, last failure record, and lock file for `valley self-update`.
 - `${XDG_CACHE_HOME:-$HOME/.cache}/valley/repos/<16-hex-url-hash>-<project>`: Cached non-bare git
@@ -624,6 +633,42 @@ directory:
 - `<git-common-dir>/valley/handles`: Tab-separated list (`<handle>\t<state>\t<branch>\t<title>`) of
   unlanded `ready` and `draft` changes in the current repository, written by `valley pending` and
   `valley changes` and read by [`completions/_valley`](../completions/_valley).
+
+### The timing log
+
+The timing log records how long each check took when `valley approve` ran it. It is a local
+measurement for the operator, and it is not evidence: nothing signs it, stores it at a ref, or
+pushes it, and nothing reads it to decide anything (`implemented`).
+
+```text
+$ tail -n 1 ~/.local/state/valley/timings.jsonl
+{"time":"2026-10-20T12:01:43.601Z","repository":"ssh://valley.example/the-valley.git","change":"kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz","version":2,"head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","check":"prose-format","runner":"nix","cost":"quick","result":"passed","satisfied":"cached","duration_ms":1234}
+```
+
+`attest run --timings` appends one line to
+`${XDG_STATE_HOME:-$HOME/.local/state}/valley/timings.jsonl` as each check finishes, whether it
+passed or failed. It creates the file and its directory when they are missing. `valley approve`
+passes `--timings` whenever it runs checks. Without the flag, `attest run` prints its `time` lines
+and writes no log.
+
+- `time` (`string`): When the check started, in UTC, to the millisecond.
+- `repository` (`string`): The URL of the repository's `origin` remote with any user name and
+  password removed, or the directory of its main working tree when it has no `origin`.
+- `change` (`string`) and `version` (`integer`): The change ID and the version being approved.
+  Omitted for a branch no record is on.
+- `head` (`string`): The commit the check ran over.
+- `check` (`string`) and `runner` (`string`): The check's name, and its runner, `nix` or `command`.
+- `cost` (`string`): The cost class the policy declares for the check, `quick` or `slow`.
+- `result` (`string`): `passed`, `failed`, or `error` when the check could not run at all, such as a
+  flake check that does not evaluate.
+- `satisfied` (`string`): `ran` when the command ran or nix built or fetched the output, `cached`
+  when the output was already in the local nix store so nix built nothing, and `unknown` when the
+  store could not be asked. `attest run` runs every check it is given, so it never reuses evidence
+  that already exists.
+- `duration_ms` (`integer`): The check's wall time in milliseconds, from evaluation to the end of
+  the build or command.
+
+A log that cannot be written produces one warning on standard error, and the run continues.
 
 ### NixOS host options
 

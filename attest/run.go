@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 // cmdRun is the whole protocol in order: digest the subject tree, run the
@@ -13,7 +14,9 @@ import (
 // write each out and sign it as a note, store the notes at one ref keyed
 // by the subject digest, and publish with a single atomic push. Any step
 // failing stops the run before the next — a failed check publishes
-// nothing, and neither does a statement the schema rejects.
+// nothing, and neither does a statement the schema rejects. How long each
+// check took is printed, and logged with --timings (timing.go), whatever
+// the check's result.
 func cmdRun(args []string) error {
 	fs := newFlagSet("run")
 	repo := fs.String("repo", "", "repository")
@@ -26,10 +29,18 @@ func cmdRun(args []string) error {
 	system := fs.String("system", nixSystem(), "flake system")
 	push := fs.String("push", "", "remote to publish to")
 	branch := fs.String("branch", "", "branch pushed alongside")
-	var checks, commands repeatable
+	timings := fs.Bool("timings", false, "append each check's timing to the timing log")
+	changeID := fs.String("change", "", "the change ID a timing names")
+	changeVersion := fs.Int("change-version", 0, "the change version a timing names")
+	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
+	fs.Var(&costs, "cost", "a check's declared cost class, for its timing")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	classes, err := costClasses(costs)
+	if err != nil {
 		return err
 	}
 
@@ -82,24 +93,61 @@ func cmdRun(args []string) error {
 		return fmt.Errorf("no checks to run")
 	}
 
+	log := &timingLog{warn: os.Stderr}
+	repository := ""
+	if *timings {
+		path, pathErr := timingsPath()
+		if pathErr != nil {
+			fmt.Fprintf(os.Stderr, "attest: warning: timings not logged: %v\n", pathErr)
+		}
+		log.path = path
+		repository = repositoryName(root)
+	}
+	commit := subj.Digest["git-sha1"] + subj.Digest["git-sha256"]
+
 	outcomes := make([]checkOutcome, 0, len(specs))
 	failed := 0
 	for _, spec := range specs {
+		began := time.Now()
 		var out checkOutcome
+		var runErr error
 		if spec.runner() == "nix" {
-			out, err = runPure(tree, *system, spec)
-			if err != nil {
-				return err
-			}
+			out, runErr = runPure(tree, *system, spec)
 		} else {
 			out = runEffectful(tree, spec)
 		}
+		took := time.Since(began)
 		result := "passed"
-		if !out.passed {
+		switch {
+		case runErr != nil:
+			result = "error"
+		case !out.passed:
 			result = "failed"
 			failed++
 		}
+		t := checkTiming{
+			Time:       began.UTC().Format("2006-01-02T15:04:05.000Z"),
+			Repository: repository,
+			Change:     *changeID,
+			Version:    *changeVersion,
+			Head:       commit,
+			Check:      spec.name,
+			Runner:     spec.runner(),
+			Cost:       classes[spec.name],
+			Result:     result,
+			Satisfied:  out.satisfied,
+			DurationMS: took.Milliseconds(),
+		}
+		if t.Satisfied == "" {
+			t.Satisfied = satisfiedUnknown
+		}
+		log.append(t)
+		if runErr != nil {
+			fmt.Println(timingLine(t, took))
+			return runErr
+		}
 		fmt.Printf("check   %-24s %-8s %s\n", spec.name, spec.runner(), result)
+		fmt.Println(timingLine(t, took))
 		outcomes = append(outcomes, out)
 	}
 	if failed > 0 {

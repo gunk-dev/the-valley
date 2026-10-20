@@ -501,6 +501,24 @@ conflict, stale evidence, tampered notes, retries, a moved target, requests name
 drafts under either kind of name, a child of a draft's head, merges, and a request voided by a
 withdrawal) and `integrator-unit`.
 
+Each decision the integrator reports is followed by one timing line in its output, which the unit's
+journal keeps (`integrator/timing.go`). The line is the label `timing` and a JSON object:
+
+```text
+$ journalctl -u valley-integrator@the-valley -o cat | sed -n 's/^  timing   //p' | tail -n 1
+{"time":"2026-10-20T12:00:00.000Z","project":"the-valley","request":"refs/the-valley/integration-requests/main/c1","change":"c1","head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","target":"refs/heads/main","tip":"9d1c0e2b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d","outcome":"land","duration_ms":2310,"stages_ms":{"checkout":40,"evidence":350,"land":3,"policy":1500,"publish":10,"record":30,"refusal":20,"sign":300}}
+```
+
+It names the request, the change, its head, the target and its tip, and the outcome. A decision that
+fails has the outcome `failed`. `duration_ms` is the whole decision. `stages_ms` divides it among
+the stages the decision reached: `refusal` (step 4, and the second reading of the records in step
+8), `checkout` (the worktree of the tip), `evidence` (verifying the notes), `policy` (step 6),
+`apply` (step 5's merge), `closures` (recomputing input closures for a moved tree), `sign` (the
+transfer statement), `land` (the commit point's ref write), `record` (the steps after it), and
+`publish` (the bus). A voided request gets a timing line too. A refusal that repeats is not reported
+again, so it is not timed again either. The line is output only: no ref, record or event carries it.
+Checked by `integrator-unit` and `integrator-e2e`.
+
 The security invariant is the operator's approval: only content the operator approved lands. The
 request names the exact head that was approved, and the integrator lands only what a request names.
 So a record that moves after the request is filed cannot change what lands.
@@ -828,6 +846,15 @@ request, with a lease on the request ref. When the request already names this he
 the request ref out. When nothing is required as well, there is no push. `[b]ase` rebases the
 change's whole stack in a temporary worktree, and pushes every layer's branch in one atomic push,
 with a lease on each. `[r]eject` deletes the remote branch after a prompt.
+
+Approval also measures how long each required check took. `attest run` prints a `time` line after
+each check, with its result, its duration, and whether nix found its output already built.
+`[a]pprove` passes `attest run --timings`, which appends one JSON line per check to
+`$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
+names the repository, the change and version, the head, the check, its runner and declared cost, its
+result, and `duration_ms`. The log stays local and is not evidence: nothing signs it or pushes it. A
+log that cannot be written is a warning, and approval continues. The reference describes
+[the timing log](reference.md#the-timing-log) field by field.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
 branch no record is on is requested under its name with each `/` replaced by `-`. A branch whose

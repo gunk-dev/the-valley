@@ -109,7 +109,13 @@ attest run --key "$TMPDIR/host" --name "$host" --command 'ok=true' \
   --provenance provenance.json > run.out
 grep -q "^subject valley-tree-v1:$digest\$" run.out
 grep -q '^check   ok  *command  passed$' run.out
+grep -qE '^time    ok +passed +[0-9][0-9.hms]* \(ran\)$' run.out
 grep -q "^signer  $host+" run.out
+# A timing is printed, and logged only when --timings asks.
+if [ -e "$HOME/.local/state/valley/timings.jsonl" ]; then
+  echo "attest-e2e: a run without --timings wrote the timing log" >&2
+  exit 1
+fi
 
 # Stored at a ref keyed by the subject digest, as one note
 # rather than a statement and a signature beside it.

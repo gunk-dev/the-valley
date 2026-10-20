@@ -127,8 +127,11 @@ func (in *integrator) reconcile() error {
 	return nil
 }
 
-// handle judges one request and acts on the verdict.
+// handle judges one request and acts on the verdict. A decision it
+// reports is timed, and its timing line follows the report; a refusal said
+// before, and so not said again, is not timed again either.
 func (in *integrator) handle(r request, idx *recordIndex) error {
+	watch := newStopwatch()
 	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
 	if err != nil {
 		return fmt.Errorf("no target %s to integrate onto", r.target)
@@ -154,11 +157,14 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	// From here on the request has been taken up, so whatever happens is
 	// this pass's answer to it — including a failure. Recording that is
 	// what keeps the next tick from asking the identical question.
+	done := watch.stage(stageRefusal)
 	outcome, err := in.refuse(r, idx, tip, last, memo)
+	done()
 	if err == nil && outcome == "" {
-		outcome, err = in.act(r, tip)
+		outcome, err = in.act(r, tip, watch)
 	}
 	if err != nil {
+		in.reportTiming(r, tip, failedMemo, watch)
 		if memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339)); memoErr != nil {
 			return fmt.Errorf("%v (and the failure could not be recorded: %v)", err, memoErr)
 		}
@@ -167,6 +173,7 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	if last == memo+" "+string(outcome) {
 		return nil
 	}
+	in.reportTiming(r, tip, string(outcome), watch)
 	return in.writeMemo(r, memo+" "+string(outcome))
 }
 
@@ -248,8 +255,8 @@ func (in *integrator) answered(last, memo string) bool {
 
 // act judges one request and does what the verdict says, returning the
 // outcome so the memo can record it.
-func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
-	ch, snap, landed, err := in.materialize(r, tip)
+func (in *integrator) act(r request, tip string, watch *stopwatch) (verdict.Outcome, error) {
+	ch, snap, landed, err := in.materialize(r, tip, watch)
 	if err != nil {
 		return "", err
 	}
@@ -261,7 +268,7 @@ func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 
 	switch v.Outcome {
 	case verdict.Land:
-		outcome, err := in.land(ch, v, r, tip, landed)
+		outcome, err := in.land(ch, v, r, tip, landed, watch)
 		if outcome != "" || err != nil {
 			if outcome == "" {
 				outcome = v.Outcome
@@ -269,7 +276,9 @@ func (in *integrator) act(r request, tip string) (verdict.Outcome, error) {
 			return outcome, err
 		}
 	case verdict.Stale:
+		done := watch.stage(stagePublish)
 		in.publishStale(ch, v, tip)
+		done()
 	case verdict.Reject:
 		// There is no rejection event. The failure model is unified on
 		// staleness (architecture.md), and a change whose evidence is
@@ -301,9 +310,11 @@ type landing struct {
 // materialize gathers everything the verdict is a function of: the applied
 // delta, the required checks, the recomputed closures, and what intervening
 // landings touched.
-func (in *integrator) materialize(r request, tip string) (verdict.Change, verdict.Snapshot, landing, error) {
+func (in *integrator) materialize(r request, tip string, watch *stopwatch) (verdict.Change, verdict.Snapshot, landing, error) {
 	var land landing
+	done := watch.stage(stageCheckout)
 	wt, err := addWorktree(in.repo, tip)
+	done()
 	if err != nil {
 		return verdict.Change{}, verdict.Snapshot{}, land, err
 	}
@@ -313,12 +324,16 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 	if err != nil {
 		return verdict.Change{}, verdict.Snapshot{}, land, fmt.Errorf("%s and %s share no history", verdict.Short(r.head), r.target)
 	}
+	done = watch.stage(stageEvidence)
 	attested, err := in.treeDigest(wt, r.head)
 	if err != nil {
+		done()
 		return verdict.Change{}, verdict.Snapshot{}, land, err
 	}
 	ch := verdict.Change{ID: r.change, Target: r.target, Base: base, Head: r.head, Attested: attested}
-	if ch.Evidence, land.notes, err = in.collectEvidence(wt, r.head, attested); err != nil {
+	ch.Evidence, land.notes, err = in.collectEvidence(wt, r.head, attested)
+	done()
+	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
 
@@ -326,22 +341,27 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 	// tree being gated: the project layer from this checkout of the target
 	// tip, the floor from the instance repository's integrated tip. Both
 	// are resolved once and held for the whole pass.
+	done = watch.stage(stagePolicy)
 	pol, closePolicy, err := in.policy.open(wt)
 	if err != nil {
+		done()
 		return ch, verdict.Snapshot{}, land, err
 	}
 	defer closePolicy()
 	land.composition = pol.note
 	cat, policyDigest, err := pol.catalogue()
 	if err != nil {
+		done()
 		return ch, verdict.Snapshot{}, land, err
 	}
 	land.policy = policyDigest
 	derived, err := pol.derive(wt, base, r.head)
 	if err != nil {
+		done()
 		return ch, verdict.Snapshot{}, land, err
 	}
 	required, err := pol.required(derived, cat)
+	done()
 	if err != nil {
 		return ch, verdict.Snapshot{}, land, err
 	}
@@ -356,18 +376,24 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 		land.digest = attested
 		snap.Apply = verdict.Applied{Clean: true, Tree: attested}
 	} else {
+		done = watch.stage(stageApply)
 		tree, conflict, err := mergeDelta(in.repo, base, tip, r.head)
 		if err != nil {
+			done()
 			return ch, snap, land, err
 		}
 		if conflict != "" {
+			done()
 			snap.Apply = verdict.Applied{Clean: false, Conflict: conflict}
 			return ch, snap, land, nil
 		}
 		if land.commit, err = in.commitTree(tree, tip, r); err != nil {
+			done()
 			return ch, snap, land, err
 		}
-		if land.digest, err = in.treeDigest(wt, tree); err != nil {
+		land.digest, err = in.treeDigest(wt, tree)
+		done()
+		if err != nil {
 			return ch, snap, land, err
 		}
 		snap.Apply = verdict.Applied{Clean: true, Tree: land.digest}
@@ -376,7 +402,9 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 		// the classes the deriver matches over base..tip. Asking the
 		// deriver rather than matching globs here keeps one implementation
 		// of what a class covers.
+		done = watch.stage(stagePolicy)
 		intervening, err := pol.derive(wt, base, tip)
+		done()
 		if err != nil {
 			return ch, snap, land, err
 		}
@@ -386,7 +414,9 @@ func (in *integrator) materialize(r request, tip string) (verdict.Change, verdic
 	// The closures only have to be recomputed when the tree moved: an
 	// unmoved tree presents the identical computation by construction.
 	if land.digest != attested {
+		done = watch.stage(stageClosures)
 		snap.Closures, snap.ClosureErrors = in.closures(wt, land.commit, required)
+		done()
 	}
 	return ch, snap, land, nil
 }
@@ -463,12 +493,15 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 // already in the stream is re-judged against an empty delta on every pass,
 // forever. So each step runs, each failure is reported, and the landing is
 // reported as having happened, because it did.
-func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing) (verdict.Outcome, error) {
+func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing, watch *stopwatch) (verdict.Outcome, error) {
+	done := watch.stage(stageSign)
 	transfer, err := in.composeTransfer(ch, v, l.digest, l.commit, tip, l.policy)
 	if err != nil {
+		done()
 		return "", err
 	}
 	evidence, err := in.countersign(ch, v, l, transfer)
+	done()
 	if err != nil {
 		return "", err
 	}
@@ -480,7 +513,10 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	// written between this read and the ref write is still missed: refs
 	// offer no way to make the two one step. What lands then is still the
 	// head the operator approved.
-	if outcome, why, err := in.finalRefusal(r, tip); err != nil || outcome != "" {
+	done = watch.stage(stageRefusal)
+	outcome, why, err := in.finalRefusal(r, tip)
+	done()
+	if err != nil || outcome != "" {
 		if outcome != "" {
 			in.reportRefusal(r, tip, outcome, why)
 		}
@@ -488,10 +524,14 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	}
 
 	// The commit point.
-	if _, err := git(in.repo, "update-ref", ch.Target, l.commit, tip); err != nil {
+	done = watch.stage(stageLand)
+	_, err = git(in.repo, "update-ref", ch.Target, l.commit, tip)
+	done()
+	if err != nil {
 		return "", fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
 	}
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
+	done = watch.stage(stageRecord)
 	in.queueRefUpdate(ch.Target, tip, l.commit)
 
 	var unrecorded []string
@@ -516,11 +556,14 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 			unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
 		}
 	}
+	done()
 	// The bus comes last. Everything above is the landing's own record; an
 	// event is a best-effort notice of it, and a bus that fails or hangs
 	// must not leave any of that record undone.
+	done = watch.stage(stagePublish)
 	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)
+	done()
 	if len(unrecorded) > 0 {
 		return "", fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",
 			ch.ID, verdict.Short(l.commit), strings.Join(unrecorded, "; "))

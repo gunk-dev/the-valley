@@ -187,6 +187,25 @@ grep -qx '  checks   tree-ok' "$w/approve.out"
 grep -qx 'Your local checkout has not changed.' "$w/approve.out"
 grep -qx 'Check the result: valley status topic/one' "$w/approve.out"
 
+# How long the check took is printed after it, and logged on this machine:
+# one JSON line per required check, in the state directory, outside the
+# repository and the evidence. A branch no record is on names no change.
+grep -qE '^time    tree-ok +passed +[0-9][0-9.hms]* \(ran\)$' "$w/approve.out"
+timings="$XDG_STATE_HOME/valley/timings.jsonl"
+if [ "$(wc -l < "$timings")" != 1 ] || ! jq -e \
+  --arg head "$(git rev-parse topic/one)" --arg origin "$origin" '
+    keys == ["check", "cost", "duration_ms", "head", "repository", "result", "runner", "satisfied", "time"]
+    and .check == "tree-ok" and .runner == "command" and .cost == "quick"
+    and .result == "passed" and .satisfied == "ran"
+    and .head == $head and .repository == $origin
+    and (.duration_ms | type == "number" and . >= 0)
+    and (.time | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$"))' \
+  "$timings" > /dev/null; then
+  echo "valley-request: approve did not log one timing for its one required check:" >&2
+  cat "$timings" >&2
+  exit 1
+fi
+
 # What origin holds now. The attestation is keyed by the digest of the
 # BRANCH's tree, which is what says the checks ran over the right tree and
 # not over the operator's working copy.
@@ -1271,6 +1290,13 @@ if [ "$pushes" != 1 ] \
   || ! grep -q "refs/the-valley/integration-requests/main/c-$bareid" "$pushlog"; then
   echo "valley-request: the evidence and request for a change with no branch did not go in one push" >&2
   cat "$pushlog" >&2
+  exit 1
+fi
+# A change with a record is timed under its ID and the version approved.
+if ! tail -n 1 "$timings" | jq -e --arg id "$bareid" --arg head "$barehead" \
+  '.change == $id and .version == 1 and .head == $head and .check == "tree-ok"' > /dev/null; then
+  echo "valley-request: the timing of a change with a record does not name the change and version:" >&2
+  tail -n 1 "$timings" >&2
   exit 1
 fi
 

@@ -197,6 +197,22 @@ git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests
   && die "the request ref outlived the landing"
 holds "main moved $(git rev-parse --short "$before") -> $(git -C "$origin" rev-parse --short refs/heads/main)"
 
+# The decision is followed by one timing line: JSON after a fixed label,
+# naming the request and what was decided, with the time each stage took.
+[ "$(grep -c '^  timing   ' "$work/last.out")" = 1 ] || die "one decision did not print exactly one timing line"
+timing="$(sed -n 's/^  timing   //p' "$work/last.out")"
+for field in \
+  '"request":"refs/the-valley/integration-requests/main/c1"' '"change":"c1"' \
+  "\"head\":\"$(git rev-parse c1)\"" '"target":"refs/heads/main"' "\"tip\":\"$before\"" \
+  '"outcome":"land"' '"duration_ms":' \
+  '"refusal":' '"checkout":' '"evidence":' '"policy":' '"sign":' '"land":' '"record":' '"publish":'; do
+  case "$timing" in
+    *"$field"*) ;;
+    *) die "c1's timing line has no $field: $timing" ;;
+  esac
+done
+holds "the landing is timed: $timing"
+
 # The landed note carries both signatures, under one text, and verifies.
 # The integrator writes under its own key hash, so its ref never races the
 # contributor's over the same subject.

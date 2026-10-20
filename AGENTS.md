@@ -29,16 +29,21 @@ back?
 
 The docs are layered. Each document stays at its altitude:
 
-1. **Premise** — [README.md](./README.md). What this is and why it matters. No mechanisms.
+1. **Premise** — [README.md](./README.md). What this is, how a change moves, and where to read next.
+   No mechanisms.
 2. **Purpose and principles** — [docs/purpose.md](./docs/purpose.md). The operator's goals, the
    principles that govern the system, ownership boundaries, and what makes a change fitting or
    unfitting.
-3. **Architecture and security** — [docs/architecture.md](./docs/architecture.md) and
+3. **Concepts and glossary** — [docs/concepts.md](./docs/concepts.md). Core concepts and every
+   project term defined before mechanism.
+4. **Guide** — [docs/guide.md](./docs/guide.md). Setup and everyday workflows for authors,
+   reviewers, planners, administrators, and contributors.
+5. **Reference** — [docs/reference.md](./docs/reference.md). CLI commands, environment variables,
+   ref layout, wire formats, JSON outputs, and CUE schemas.
+6. **Architecture and security** — [docs/architecture.md](./docs/architecture.md) and
    [docs/security.md](./docs/security.md). What runs in production, how each gate along the path of
    a change protects the hosts, and which executable check verifies each guarantee.
-4. **Roadmap** — [docs/roadmap.md](./docs/roadmap.md). Sequenced milestones, what each step unlocks,
-   deliberately deferred ideas, and open decisions.
-5. **Archive** — [archive/design/](./archive/design/) and
+7. **Archive** — [archive/design/](./archive/design/) and
    [archive/.the-valley/](./archive/.the-valley/). Read-only historical exploration and
    knowledge-graph nodes kept so stable node IDs (`dcr-*`, `ida-*`, `bd-*`, `oc-*`) cited in code,
    schemas, and commit history continue to resolve.
@@ -56,11 +61,10 @@ paragraph stating the idea, decision, bug, or outcome, followed by context, impl
 questions.
 
 `archive/.the-valley/` is frozen, read-only history, and nothing checks it against today's schema.
-Design decisions are recorded directly in [docs/architecture.md](./docs/architecture.md),
-[docs/security.md](./docs/security.md), and [docs/roadmap.md](./docs/roadmap.md). A question that is
-still open lives in the project's plan graph as a `question` knot, owned by whoever has to answer
-it. When its answer settles something about the design, the answer enters these docs through a
-change, and the knot links that change.
+Design decisions are recorded directly in [docs/architecture.md](./docs/architecture.md) and
+[docs/security.md](./docs/security.md). A question that is still open lives in the project's plan
+graph as a `question` knot, owned by whoever has to answer it. When its answer settles something
+about the design, the answer enters these docs through a change, and the knot links that change.
 
 ## Documentation style and verification
 

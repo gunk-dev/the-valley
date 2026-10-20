@@ -2,7 +2,12 @@
 
 This document describes how the-valley and cosmo protect the operator's hosts. It follows the path a
 change takes, and names the gate at each step and its status. The components are described in
-[architecture.md](./architecture.md), and the planned gates are in [roadmap.md](./roadmap.md).
+[architecture.md](./architecture.md), and the planned gates live in
+[the plan graph](./concepts.md#records-project-storage-the-plan-graph-and-knots) (`valley plan`).
+
+Deployment records and host configuration below describe the reference deployment (**deployment
+choice**): `cosmo` is the reference NixOS fleet, `klaus` is the agent runner, `classic-laddie` is
+the primary valley host, and `qinling` is the instance repository.
 
 The document makes three kinds of statement:
 

@@ -6,9 +6,9 @@ follows, with the reason for it; the code that carries it out is cited like any 
 Behaviour is what the code does, cited to the files that do it. A deployment record reports an
 observation of a host, and names the record and its date. A guarantee names the flake check
 (`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement of behaviour with no named
-check is unchecked. Security and rollouts are in [security.md](./security.md), planned work is in
-[roadmap.md](./roadmap.md), and the project's purpose and principles are in
-[purpose.md](./purpose.md).
+check is unchecked. Security and rollouts are in [security.md](./security.md), planned work lives in
+[the plan graph](./concepts.md#records-project-storage-the-plan-graph-and-knots) (`valley plan`),
+and the project's purpose and principles are in [purpose.md](./purpose.md).
 
 ## Overview
 
@@ -2135,6 +2135,10 @@ exit status is 1.
 A branch no record is on is approved by its name and requested under it.
 
 ## How cosmo deploys it
+
+This section describes the reference deployment (**deployment choice**): `cosmo` is the reference
+NixOS fleet, `klaus` is the agent runner, `classic-laddie` is the primary valley host, and `qinling`
+is the instance repository.
 
 cosmo's `hosts/classic-laddie/default.nix` imports `the-valley.nixosModules.valley-host` and points
 `services.valley.config` at `hosts/classic-laddie/valley.cue`. It turns on the bus, the integrator

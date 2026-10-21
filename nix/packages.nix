@@ -125,21 +125,27 @@ rec {
   # view. compare reads a version's file delta and its approved version's
   # with the one reading of valley-delta-v1 (../delta), for review.
   # self-update installs the tip of a branch of the-valley into the user's
-  # nix profile (../selfupdate). Go,
+  # nix profile (../selfupdate). checks prints which checks a change
+  # requires, as the deriver (../derive) derives them from the policy the
+  # composed-policy reader (../composed) reads. Go,
   # standard library only — hence vendorHash = null and no module fetch. It
-  # runs whatever git is on PATH, which inside the CLI's package is the
-  # CLI's own. Its unit tests hold its shell quoting to the bash it
-  # replaced, so they need bash, and lay pending out over real repositories,
-  # so they need git.
+  # runs whatever git and cue are on PATH, which inside the CLI's package
+  # are the CLI's own. Its unit tests hold its shell quoting to the bash it
+  # replaced, so they need bash, lay pending out over real repositories,
+  # so they need git, and derive a change's checks under the verification
+  # schema, so they need cue and the schema.
   valley-go = pkgs.buildGoModule {
     pname = "valley-go";
     version = "0";
     src = withLocal ../status [
       ../change
+      ../composed
       ../delta
+      ../derive
       ../knot
       ../rebase
       ../selfupdate
+      ../schema/verification.cue
     ];
     modRoot = "status";
     vendorHash = null;
@@ -147,7 +153,12 @@ rec {
     nativeCheckInputs = [
       pkgs.bash
       pkgs.git
+      pkgs.cue
     ];
+    # A test that cannot find a tool it needs fails rather than skipping.
+    preCheck = ''
+      export VALLEY_TEST_TOOLS=required
+    '';
     meta.mainProgram = "valley-go";
   };
 
@@ -351,6 +362,43 @@ rec {
     src = ../selfupdate;
     vendorHash = null;
     nativeCheckInputs = [ pkgs.git ];
+    postCheck = ''
+      go vet ./...
+    '';
+  };
+
+  # The deriver of required checks (derive/): a change's paths read from
+  # git diff -z, globs matched byte by byte, and the required checks, pins,
+  # carry mode and unclassified paths derived from the whole composed
+  # policy (../composed). Building valley-go does not run the tests of a
+  # module it only imports, so this package runs them, and go vet. They
+  # hold it to bin/valley's deriver, run over the repository's own policy,
+  # the example policies and paths drawn from a fixed seed, so the source
+  # carries bin/valley, the schema and those policies, and the tests need
+  # bash, git and cue. Go, standard library only — hence vendorHash = null
+  # and no module fetch.
+  derive = pkgs.buildGoModule {
+    pname = "valley-derive";
+    version = "0";
+    src = withLocal ../derive [
+      ../composed
+      ../bin/valley
+      ../schema/verification.cue
+      ../examples/policy
+      ../policy/project
+    ];
+    modRoot = "derive";
+    vendorHash = null;
+    preBuild = readsGoMod;
+    nativeCheckInputs = [
+      pkgs.bash
+      pkgs.git
+      pkgs.cue
+    ];
+    # A test that cannot find a tool it needs fails rather than skipping.
+    preCheck = ''
+      export VALLEY_TEST_TOOLS=required
+    '';
     postCheck = ''
       go vet ./...
     '';

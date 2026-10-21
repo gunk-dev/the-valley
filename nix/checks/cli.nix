@@ -201,9 +201,10 @@ in
 
   # The Go verbs' tests (status/), run in valley-go's checkPhase: the
   # outcome records status accepts, the names its JSON refuses, its shell
-  # quoting held to the bash it replaced, and a rebase ended by a SIGTERM
-  # while a hook blocks it. valley-status and valley-ready drive the verbs
-  # through the CLI over real repositories.
+  # quoting held to the bash it replaced, a rebase ended by a SIGTERM
+  # while a hook blocks it, and the valley-checks/v1 document checks prints
+  # over a real repository, a path that is not UTF-8 in base64. valley-status
+  # and valley-ready drive the verbs through the CLI over real repositories.
   valley-go-unit = packages.valley-go;
 
   # Read origin's request/outcome refs and distinguish a pending request,

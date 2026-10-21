@@ -663,6 +663,70 @@ line for anything the policy states once, such as a class's carry mode or a clas
 check. The integrator refuses a report that states one thing twice, such as two carry modes or two
 rows for one check. Checked by `cue-vet`, `policy-deriver` and `integrator-unit`.
 
+A second deriver is written in Go (`derive/`). No caller runs it: `valley checks`, approval and the
+integrator use the one in `bin/valley`. It reads the whole composed policy through `composed.Read`
+(`composed/model.go`): every class's paths, requirements and carry mode, the `unclassified` set, and
+each check's runner, cost and validity. It asks cue whether each requirement is mandatory the way
+`valley checks` asks: it vets the layers with a document setting that requirement to `false`. It
+reads a diff as `valley checks` does, with renames counted on both sides, and keeps every path
+whole, whatever bytes it holds. It matches globs byte by byte, as `valley checks` does in the C
+locale. Checked by `derive-unit`.
+
+`derive-unit` holds the two derivers to the same answer. It runs both over this repository's own
+policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. They
+differ in three places, where `valley checks` is wrong:
+
+- `valley checks` splits a path holding a newline into two paths.
+- A class added by refining `policy` may require a check no layer defines, because the schema's
+  cross-check reads only the layers. `valley checks` derives under it, and fails on an unbound
+  variable when a change touches that class. The Go deriver refuses the policy.
+- `valley checks` merges a class named `unclassified` with the `unclassified` set, so each requires
+  the other's checks. When both require one check, it refuses every derivation. The Go deriver keeps
+  them apart.
+
+`valley-go checks` prints the Go deriver's answer as the `valley-checks/v1` JSON document. It takes
+the schema, the floor's directory and the project layer's directory, and two commits:
+
+```sh
+valley-go checks --schema schema/verification.cue \
+  --instance policy/instance --project policy/project <base> <head>
+```
+
+```json
+{
+  "schema": "valley-checks/v1",
+  "base": "<sha>",
+  "head": "<sha>",
+  "policy_digest": "<sha256>",
+  "paths": [{ "path": "docs/guide.md" }, { "base64": "c3JjL2NhZukucnM=" }],
+  "classes": ["docs"],
+  "unclassified_paths": [],
+  "carry": "same-paths",
+  "required": [
+    {
+      "name": "prose-format",
+      "classes": ["docs"],
+      "unclassified": false,
+      "pin": "mandatory",
+      "cost": "quick",
+      "runner": "nix",
+      "attribute": "prose-format"
+    }
+  ]
+}
+```
+
+- `paths` is every side of the diff, sorted bytewise. A path that is UTF-8 is `{"path": ...}`. Any
+  other is `{"base64": ...}`, in standard base64, because JSON holds only UTF-8.
+- `classes` is the classes a path matched. `unclassified_paths` is the paths no class covers.
+- `policy_digest` is the integrator's policy digest of the same layers.
+- Each required check lists the classes requiring it. `unclassified` is `true` when the
+  `unclassified` set requires it. `pin` is `mandatory` or `default`. `attribute` is given for the
+  `nix` runner, `command` for the `command` runner, and `validity` when the policy declares one.
+
+A failure prints nothing on stdout and exits 1. The document is a contract with a version, so a
+change to the name or meaning of any field is a new version. Checked by `valley-go-unit`.
+
 A check also declares a `cost`, `quick` by default. A `slow` check takes minutes, or needs special
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
 report it prints two lines, `quick:` and `slow:`, each listing the required checks of that cost.

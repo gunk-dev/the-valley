@@ -5,6 +5,11 @@
 // does, so no second copy of the composition can disagree with the one the
 // deriver runs.
 //
+// Compose reads what the integrator and the restacker read: the check
+// definitions, the restacker's cap and the policy's digest. Read reads the
+// whole policy the deriver (../derive) derives required checks from: every
+// class, the unclassified set, and whether each requirement is mandatory.
+//
 // The floor is read from the instance repository's tip, or from a
 // materialized directory for a host that serves no instance repository.
 // The project layer is read from the target tip. A layer that is not there
@@ -167,13 +172,14 @@ func readLayer(ctx context.Context, repo, treeish, dir, prefix string) (string, 
 	return out, present, done, nil
 }
 
-// Check is one check as the composed policy defines it: how it is run, and
-// how long an observation of it stays good.
+// Check is one check as the composed policy defines it: how it is run, how
+// long an observation of it stays good, and what running it costs.
 type Check struct {
-	Runner    string `json:"runner"`
-	Attribute string `json:"attribute"`
-	Command   string `json:"command"`
-	Validity  string `json:"validity"`
+	Runner    string `json:"runner"`    // nix or command
+	Attribute string `json:"attribute"` // the flake check attribute, for the nix runner
+	Command   string `json:"command"`   // the command line, for the command runner
+	Validity  string `json:"validity"`  // how long an observation stays good; "" for no window
+	Cost      string `json:"cost"`      // quick or slow
 }
 
 // Policy is the composed policy, as far as its readers read it.
@@ -199,21 +205,20 @@ type Policy struct {
 // template is the one the policy's `type` names, which the schema selects
 // as it composes.
 func Compose(ctx context.Context, cue, schema, instance, project string) (*Policy, error) {
-	args := []string{"export", "--out", "json", "-e", "policy", schema}
-	for _, dir := range []string{instance, project} {
-		docs, err := filepath.Glob(filepath.Join(dir, "*.cue"))
-		if err != nil || len(docs) == 0 {
-			return nil, fmt.Errorf("no policy layer at %s", dir)
-		}
-		args = append(args, docs...)
-	}
-	cmd := command(ctx, cue, args...)
-	var combined bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &combined, &combined
-	err := cmd.Run()
-	out := combined.Bytes()
+	docs, err := documents(schema, instance, project)
 	if err != nil {
-		return nil, fmt.Errorf("composing the policy: %w\n%s", err, strings.TrimSpace(string(out)))
+		return nil, err
+	}
+	pol, _, err := compose(ctx, cue, docs)
+	return pol, err
+}
+
+// compose exports `policy` over docs and reads the policy from it. It
+// returns the export too, for a reader that reads more of it.
+func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, error) {
+	out, err := export(ctx, cue, docs, "policy")
+	if err != nil {
+		return nil, nil, fmt.Errorf("composing the policy: %w", err)
 	}
 	var read struct {
 		Checks  map[string]Check `json:"checks"`
@@ -222,14 +227,46 @@ func Compose(ctx context.Context, cue, schema, instance, project string) (*Polic
 		} `json:"restack"`
 	}
 	if err := json.Unmarshal(out, &read); err != nil {
-		return nil, fmt.Errorf("reading the composed policy: %w", err)
+		return nil, nil, fmt.Errorf("reading the composed policy: %w", err)
 	}
 	sum := sha256.Sum256(out)
 	return &Policy{
 		Checks:               read.Checks,
 		MaxAutomaticVersions: read.Restack.MaxAutomaticVersions,
 		Digest:               hex.EncodeToString(sum[:]),
-	}, nil
+	}, out, nil
+}
+
+// documents is what a policy is composed from: the schema, then every
+// *.cue directly in the floor's directory and in the project layer's.
+func documents(schema, instance, project string) ([]string, error) {
+	docs := []string{schema}
+	for _, dir := range []string{instance, project} {
+		found, err := filepath.Glob(filepath.Join(dir, "*.cue"))
+		if err != nil || len(found) == 0 {
+			return nil, fmt.Errorf("no policy layer at %s", dir)
+		}
+		docs = append(docs, found...)
+	}
+	return docs, nil
+}
+
+// export runs `cue export` of one expression over docs and returns what
+// cue printed. A failure returns what cue said, so the caller can say what
+// it was doing.
+//
+// Its output and its diagnostics are read as one stream, and
+// Policy.Digest is of those bytes. Reading them apart would change every
+// digest with no change to any policy.
+func export(ctx context.Context, cue string, docs []string, expr string) ([]byte, error) {
+	args := append([]string{"export", "--out", "json", "-e", expr}, docs...)
+	cmd := command(ctx, cue, args...)
+	var combined bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &combined, &combined
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("%w\n%s", err, strings.TrimSpace(combined.String()))
+	}
+	return combined.Bytes(), nil
 }
 
 // waitDelay is how long a wait for a program's output may go on after it

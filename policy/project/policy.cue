@@ -32,6 +32,7 @@ project: {
 		"knot-unit",
 		"knot-agree",
 		"delta-unit",
+		"derive-unit",
 		"attest-unit",
 		"attest-conformance",
 		"attest-e2e",
@@ -144,6 +145,16 @@ project: {
 		requires: "review-notes":   true
 	}
 
+	// The deriver of required checks, and the composed-policy reader it reads
+	// the whole policy through. derive-unit holds the deriver to bin/valley's,
+	// and valley-go-unit builds the verb that prints its answer with both.
+	classes: derive: {
+		paths: "derive/**":         true
+		paths: "composed/**":       true
+		requires: "derive-unit":    true
+		requires: "valley-go-unit": true
+	}
+
 	// The note envelope. The hook and attest both read notes through it, so
 	// a change to it requires their tests as well as its own.
 	classes: note: {
@@ -196,7 +207,7 @@ project: {
 	// change's handle, valley-changes drives changes and pending,
 	// valley-plan drives plan against the golden files under
 	// status/testdata/plan/, and valley-self-update drives --version and
-	// self-update.
+	// self-update. derive-unit holds the script's deriver to the Go one.
 	classes: cli: {
 		paths: "bin/valley":            true
 		paths: "status/**":             true
@@ -213,6 +224,7 @@ project: {
 		requires: "valley-plan":        true
 		requires: "valley-self-update": true
 		requires: "policy-deriver":     true
+		requires: "derive-unit":        true
 	}
 
 	// Self-update: its module (selfupdate/), the policy the package ships
@@ -250,12 +262,13 @@ project: {
 
 	// The verification policy: this layer, the pointer to the owning
 	// valley, the schema a policy is written in, and the example policies
-	// the deriver and cue-vet read.
+	// the derivers and cue-vet read.
 	classes: policy: {
 		paths: "policy/**":               true
 		paths: "schema/verification.cue": true
 		paths: "examples/policy/**":      true
 		requires: "policy-deriver":       true
+		requires: "derive-unit":          true
 		requires: "cue-vet":              true
 		requires: "own-policy":           true
 	}
@@ -344,6 +357,7 @@ project: {
 	let checkFiles = {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
 		"delta.nix": ["delta-unit"]
+		"derive.nix": ["derive-unit"]
 		"identity.nix": ["identity-unit", "identity-e2e"]
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]

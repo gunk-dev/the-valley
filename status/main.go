@@ -13,7 +13,9 @@
 // shows that graph as a view (plan.go), for compare, which sets a
 // version review shows against the change's approved version
 // (compare.go), and for self-update, which installs the tip of a branch of
-// the-valley into the user's nix profile (selfupdate.go).
+// the-valley into the user's nix profile (selfupdate.go). checks prints
+// which checks a change requires, as the Go deriver derives them
+// (checks.go); no verb of bin/valley runs it.
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -54,6 +56,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
        valley-go compare --tip <commit> <change ID> <version> <head>
+       valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
@@ -101,6 +104,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runVersions(g, args, stdout)
 	case "compare":
 		err = runCompare(g, args, stdout)
+	case "checks":
+		err = runChecks(g, args, stdout)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":

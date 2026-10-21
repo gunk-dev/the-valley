@@ -534,7 +534,9 @@ attest key --key ~/.ssh/valley-attest --name operator
   `bin/valley` for `status`, `ready`, `unready`, `withdraw`, `changes`, `pending`, `rebase`, `knot`,
   `plan`, and `self-update`, plus internal plumbing verbs (`resolve <change>`, `stack <change>`,
   `does [-v] <change-id>...`, `brings [--change <id>] <head>`, `versions <change-id>`,
-  `compare --tip <commit> <change-id> <version> <head>`).
+  `compare --tip <commit> <change-id> <version> <head>`), and
+  `checks [--schema <file>] --instance <dir> --project <dir> <base> <head>`, which prints the Go
+  deriver's `valley-checks/v1` document and which `bin/valley` does not run.
 - **`valleyhook`** ([`valleyhook/main.go`](../valleyhook/main.go),
   [`valleyhook/shell.go`](../valleyhook/shell.go)):
   - `valleyhook pre-receive --project <name> --policy <json-file> [--grants <file>]... [--known-signers <file>]... [--principal <name>] [--then <hook-file>]`

@@ -2,11 +2,12 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"syscall"
 
 	"the-valley/note"
 )
@@ -14,13 +15,22 @@ import (
 // signersRef is where the host publishes what a client verifies this
 // integrator's transfer statements with: a tree holding the known-signers
 // file the integrator reads, as signersKeys, and the name it signs under,
-// as signersName, one line. No push may write it, because the push hook
-// refuses every refs/the-valley/* ref it does not name, so the host is its
-// only writer.
+// as signersName, one line.
+//
+// Only the host's own machinery writes it, never a push. The push hook
+// refuses every push to a refs/the-valley/* ref it does not name. On the
+// host, this publisher writes it. The integrator can write it too: the
+// instance repository is group-writable, and the integrator is in the
+// group because it lands code there. A client already trusts the
+// integrator with what lands, so the publication is not kept from it.
+//
+// signersLock is the file in the instance repository that a run holds a
+// lock on, from reading the signers file to moving the ref.
 const (
 	signersRef  = "refs/the-valley/signers"
 	signersKeys = "known-signers"
 	signersName = "integrator-name"
+	signersLock = "valley-signers.lock"
 )
 
 const signersUsage = `usage: integrator publish-signers --instance-repo DIR --known-signers F [--name NAME]
@@ -37,11 +47,17 @@ refs/the-valley/signers, so a client reads both from one ref or neither.
                       to watch (default: this host's, as watch defaults)
 
 A publication that would not change is not written. One that would is
-written with a compare-and-swap on the ref, so two runs at once cannot
-interleave. The file must read as verifier keys, and the name must be one
-a verifier key can carry. A file that holds no key under the name is
-published all the same, because it is what the controller uses, and the
-run says on stderr that no client can verify a statement with it.
+written with a compare-and-swap on the ref. Two runs at once take turns:
+each holds a lock in the instance repository from reading the file to
+moving the ref, so a run that read an older file cannot publish it over
+a newer one.
+
+The file must read as verifier keys, and the name must be one a verifier
+key can carry. A file that holds no key under the name, or no key at all,
+is published all the same, because it is what the controller uses. So
+when every signing key is revoked, the publication drops the old keys
+too, and clients stop verifying with them. The run says on stderr that
+no client can verify a statement with the file.
 `
 
 // publishSigners writes the publication, and says what it did on stdout.
@@ -65,6 +81,11 @@ func publishSigners(args []string) error {
 			return fmt.Errorf("%s is required", missing.flag)
 		}
 	}
+	unlock, err := lockSigners(*repo)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	keys, err := os.ReadFile(*known)
 	if err != nil {
 		return fmt.Errorf("reading the known-signers file: %w", err)
@@ -80,7 +101,9 @@ func publishSigners(args []string) error {
 	}
 	// The value the ref is expected to hold: the one just read, or none at
 	// all. An empty old value makes update-ref require that the ref does
-	// not exist.
+	// not exist. The lock keeps other runs out, and the compare-and-swap
+	// keeps this run from writing over anything else on the host that
+	// moved the ref since.
 	if _, err := git(*repo, "update-ref", "-m", "publish-signers", signersRef, tree, old); err != nil {
 		return err
 	}
@@ -94,12 +117,11 @@ func signersTree(repo string, keys []byte, name string) (string, error) {
 	if err := note.CheckName(name); err != nil {
 		return "", fmt.Errorf("--name: %w", err)
 	}
+	// A file with no key at all reads, and is published: it is what the
+	// registry compiles to once every signing key is revoked.
 	parsed, err := note.ParseVerifierKeys(keys)
 	if err != nil {
 		return "", fmt.Errorf("the known-signers file does not read: %w", err)
-	}
-	if len(parsed) == 0 {
-		return "", errors.New("the known-signers file holds no verifier key")
 	}
 	signs := false
 	for _, k := range parsed {
@@ -122,6 +144,23 @@ func signersTree(repo string, keys []byte, name string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// lockSigners takes the publication's lock and returns what lets it go. A
+// run that asks while another holds it waits its turn. The lock is
+// flock's, on signersLock, so the kernel lets it go when the run ends
+// however it ends, and a run that dies leaves nothing to clear.
+func lockSigners(repo string) (func(), error) {
+	path := filepath.Join(repo, signersLock)
+	f, err := os.OpenFile(path, os.O_RDONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("could not open the publication's lock: %w", err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("could not lock %s: %w", path, err)
+	}
+	return func() { f.Close() }, nil // close lets the flock go
 }
 
 func hashObject(repo string, body []byte) (string, error) {

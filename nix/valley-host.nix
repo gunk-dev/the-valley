@@ -1697,7 +1697,10 @@ in
     # repository, and its sandbox lets it write that repository and nothing
     # else. It is not part of valley-init, which runs only on activation,
     # nor of the registry compiler, whose sandbox writes only its state
-    # directory.
+    # directory. Only the host's machinery writes the ref, never a push:
+    # the hook refuses every push to it. This unit writes it, and the
+    # integrator can, being in the group the repository is shared with
+    # because it lands code there.
     #
     # What starts it: every boot and every activation, after valley-init,
     # which covers a changed signing name or signers path; and the path
@@ -1706,13 +1709,17 @@ in
     # replaced. A run reads the current file and name and writes the ref
     # only when the tree it makes differs, so a run with nothing new is
     # free. Both values are in one tree under one ref, so a client never
-    # reads one value without the other. The ref moves with a
-    # compare-and-swap, so two runs cannot interleave.
+    # reads one value without the other. A run holds a lock in the
+    # instance repository from reading the file to moving the ref, so two
+    # runs take turns, and one that read an older file cannot publish it
+    # over a newer one. The ref also moves with a compare-and-swap.
     #
     # A run that cannot read the file, or reads one that is not a list of
     # verifier keys, fails and leaves the last publication in place. That
     # is the file the controllers were given before it changed, and the
-    # journal says why.
+    # journal says why. A file with no key in it, as the compiler writes
+    # once every signing key is revoked, is published, so clients stop
+    # verifying with the revoked keys.
     systemd.services.valley-signers = lib.mkIf publishesSigners {
       description = "Publish what clients verify the valley integrator's transfer statements with";
       wantedBy = [ "multi-user.target" ];

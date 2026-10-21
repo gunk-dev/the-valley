@@ -53,7 +53,11 @@ in
   # under the name, is reported. No push can replace or delete the
   # publication. After the integrator's key is rotated, a landing signed
   # with the new key reads uncertain until the publisher runs again, and
-  # landed-recorded after.
+  # landed-recorded after. A run that read the file before the rotation,
+  # and is still running when the host's run starts, makes that run wait
+  # for it, so the old keys are not published last. Once the registry
+  # revokes every signing key, the compiler's file with no key is
+  # published, and both merged landings read uncertain.
   signers-e2e = pkgs.runCommand "valley-signers-e2e" {
     nativeBuildInputs = [
       pkgs.git
@@ -61,6 +65,7 @@ in
       pkgs.cue
       pkgs.openssh
       packages.attest
+      packages.identity
       packages.integrator
       packages.valley-script
       packages.valley-go

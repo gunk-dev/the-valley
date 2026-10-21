@@ -6,9 +6,10 @@
 # one, driving the nix stand-in of integrator/e2e, and it signs under its
 # default name, as a host that sets no signing name has it do.
 #
-# Two things are written on disk rather than pushed, as the host writes
-# them: valley-init's project list, and the publication itself. No push
-# may write either. Each is marked where it is made.
+# Two things are written on disk rather than pushed, as the host's
+# machinery writes them: valley-init's project list, and the publication
+# itself. The hook refuses a push to either. Each is marked where it is
+# made.
 # Paths and fixtures come from the derivation environment.
 # shellcheck disable=SC2154
 set -euo pipefail
@@ -340,6 +341,7 @@ cd "$w/fixture"
 # under the same name, and the next landing is signed with it. Until the
 # publisher runs again, a fresh client cannot verify that landing. After
 # it, the client reads it landed-recorded.
+cp "$signers" "$w/before-rotation"
 signers_for "$w/keys/rotated"
 git fetch --quiet origin
 git checkout --quiet -b second origin/main
@@ -360,5 +362,102 @@ git -C "$instance" cat-file blob "$rotated:known-signers" | cmp -s - "$signers" 
 client
 changes
 expect "$second" landed-recorded 'after the rotated signers are published'
+
+# ----------------------------------------------------------------------
+# Two runs at once take turns, so an older run cannot undo the rotation.
+# The older run reads the signers file as it was before the rotation. It
+# reads it from a FIFO, so it stops mid-read, holding the lock, until the
+# test writes the file and closes the FIFO. The newer run, the host's,
+# reads the rotated file. It must wait for the older run's lock rather
+# than publish first, so it publishes last and the rotation stands.
+# Without the lock, the newer run would publish while the older one
+# reads, and the older one would then put the old keys back.
+#
+# flocked <pid> <holds|waits>: /proc/locks shows the process holding a
+# flock, or waiting for one.
+flocked() {
+  local arrow=''
+  if [ "$2" = waits ]; then arrow='-> '; fi
+  grep -Eq "^[0-9]+: ${arrow}FLOCK +ADVISORY +WRITE +$1 " /proc/locks
+}
+# running <pid>: the process has not ended.
+running() { [ -e "/proc/$1" ] && [ "$(sed 's/.*) //' "/proc/$1/stat" | cut -d' ' -f1)" != Z ]; }
+# until_flocked <pid> <holds|waits> <what>: waits a minute at most for
+# flocked to say so, and fails if the process ends first.
+until_flocked() {
+  for _ in $(seq 600); do
+    if flocked "$1" "$2"; then return 0; fi
+    running "$1" || fail "$3"
+    sleep 0.1
+  done
+  fail "$3, after a minute"
+}
+mkfifo "$w/stale"
+integrator publish-signers --instance-repo "$instance" --known-signers "$w/stale" > "$w/older.out" 2>&1 &
+older=$!
+until_flocked "$older" holds "the older run held no lock while it read the signers file: $(cat "$w/older.out")"
+# This returns once the older run has opened the FIFO to read it. The
+# newer run is not given the FIFO, which would keep the older run's read
+# from ending.
+exec 3> "$w/stale"
+"${publish[@]}" > "$w/newer.out" 2>&1 3>&- &
+newer=$!
+until_flocked "$newer" waits "the newer run did not wait for the older run: $(cat "$w/newer.out")"
+cat "$w/before-rotation" >&3
+exec 3>&-
+wait "$older" || fail "the older run failed: $(cat "$w/older.out")"
+wait "$newer" || fail "the newer run failed: $(cat "$w/newer.out")"
+grep -q 'now publishes' "$w/newer.out" || fail "the newer run did not publish after the older run: $(cat "$w/newer.out")"
+git -C "$instance" cat-file blob refs/the-valley/signers:known-signers | cmp -s - "$signers" \
+  || fail 'an older run put back the signers the rotation replaced'
+client
+changes
+expect "$second" landed-recorded 'after two runs at once'
+
+# ----------------------------------------------------------------------
+# Every signing key is revoked. The registry in the instance repository
+# keeps the integrator's key but no longer lets it sign, and nobody else
+# signs either, so the compiler renders a known-signers file with no key
+# in it. The host publishes that file all the same. A fresh client then
+# verifies no transfer statement, so both landings proved only by one
+# read uncertain, not landed-recorded.
+public() { cut -d' ' -f1,2 < "$keys/$1.pub"; }
+mkdir -p "$w/seed/identity"
+cat > "$w/seed/identity/registry.cue" << CUE
+package identity
+
+boundaries: "registry": kind: "registry"
+genesis: "operator"
+principals: {
+	"operator": {
+		kind: "human"
+		keys: [{class: "ssh-ed25519", bound: "host", public: "$(public contributor)"}]
+		grants: govern: boundary: "registry"
+	}
+	"integrator": {
+		kind: "service"
+		keys: [{class: "ssh-ed25519", bound: "host", public: "$(public rotated)"}]
+		expires: "2099-01-01"
+	}
+}
+CUE
+git -C "$w/seed" add -A
+git -C "$w/seed" commit --quiet -m 'revoke every signing key'
+git -C "$w/seed" push --quiet "$instance" main
+identity compile --repo "$instance" --known-signers "$signers" --authorized-keys "$w/authorized_keys" \
+  --grants "$w/grants" --now 2026-10-21 > "$w/out" 2> "$w/err" || fail 'the registry did not compile'
+if grep -v '^#' "$signers" > "$w/out"; then fail 'the compiled signers file still holds a key'; fi
+"${publish[@]}" > "$w/out" 2> "$w/err" || fail 'the publisher refused a signers file with no key'
+said "holds no key under $name"
+revoked="$(git -C "$instance" rev-parse refs/the-valley/signers)"
+[ "$revoked" != "$rotated" ] || fail 'the signers file with no key was not published'
+git -C "$instance" cat-file blob "$revoked:known-signers" | cmp -s - "$signers" \
+  || fail 'the publication does not hold the signers file with no key'
+client
+changes
+expect "$second" uncertain 'after every signing key is revoked'
+expect "$lands" uncertain 'after every signing key is revoked'
+expect "$quick" landed 'a fast-forward, after every signing key is revoked'
+said "holds no key under the integrator name $name"
 
 touch "$out"

@@ -164,14 +164,22 @@ write the instance repository and nothing else.
 The service runs at boot and on activation, after `valley-init` and after the registry compiler when
 there is one. A path unit, `valley-signers.path`, runs it again whenever the signers file changes,
 as it does when a compilation replaces the file. A run that would publish what is already there
-writes nothing. A run that changes the publication moves the ref with a compare-and-swap. A run that
-cannot read the signers file, or reads one that is not a list of verifier keys, fails and leaves the
-last publication in place. A file that holds no key under the signing name is published anyway,
-because it is what the controllers use. The run then warns that no client can verify a statement
-with it.
+writes nothing. A run that changes the publication moves the ref with a compare-and-swap.
 
-No push may write the ref, because the hook refuses every `refs/the-valley/*` ref it does not name.
-Checked by `module-eval`, `signers-e2e` and `publish-e2e`.
+Two runs at once take turns. Each run holds a lock in the instance repository from reading the
+signers file to moving the ref. So the later run reads the file after the earlier one has published,
+and a run that read an older file cannot publish it over a newer one.
+
+A run that cannot read the signers file, or reads one that is not a list of verifier keys, fails and
+leaves the last publication in place. A file that holds no key under the signing name is published
+anyway, because it is what the controllers use. That includes a file with no key at all, which is
+what the registry compiles to once every signing key is revoked. Clients then stop verifying with
+the revoked keys. The run warns that no client can verify a statement with the file.
+
+Only the host's machinery writes the ref, never a push. The hook refuses every push to a
+`refs/the-valley/*` ref it does not name. On the host, the publisher writes the ref. The integrator
+can write it too: the instance repository is group-writable, and the integrator is in that group
+because it lands code there. Checked by `module-eval`, `signers-e2e` and `publish-e2e`.
 
 ## What a push may write
 
@@ -192,7 +200,7 @@ the plan graph by `knots-e2e`.
 | `refs/the-valley/restack/main/<change-id>`          | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
 | `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
-| `refs/the-valley/signers` (instance repository)     | Nobody                                                                                           | `valley-signers` writes it on disk: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                             |
+| `refs/the-valley/signers` (instance repository)     | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).     |
 | Every other `refs/the-valley/*`                     | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, and review histories (see [Reviews](#reviews)).                      |
 | `refs/replace/*`, `refs/notes/*`                    | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
 | Symbolic refs                                       | Nobody                                                                                           |                                                                                                                                                                         |

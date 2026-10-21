@@ -7,7 +7,8 @@
 # once, and the landing has to stay queued through the failed mirror push
 # until systemd's retry publishes it. The host also publishes, in its
 # instance repository, the signers a client verifies the landing with, and
-# publishes them again when the signers file is replaced.
+# publishes them again when the signers file is replaced. No push over ssh
+# replaces that publication or deletes it.
 {
   pkgs,
   lib,
@@ -18,7 +19,8 @@
 let
   # Throwaway keys, made once at build time, and the signers file the
   # controller is given. They hold no authority anywhere: the machine that
-  # trusts them exists for one test run.
+  # trusts them exists for one test run. forged_signer is the contributor's
+  # key under the integrator's name, what a forged publication would hold.
   keys =
     pkgs.runCommand "valley-publish-e2e-keys"
       {
@@ -34,6 +36,7 @@ let
         done
         attest key --key "$out/contributor" --name contributor/attestations > "$out/known_signers"
         attest key --key "$out/integrator" --name host/attestations > "$out/integrator_signer"
+        attest key --key "$out/contributor" --name host/attestations > "$out/forged_signer"
       '';
 
   declaration = pkgs.writeText "valley-publish-e2e.cue" ''
@@ -232,6 +235,32 @@ in
           )
           host.wait_until_succeeds(f"{instance} cat-file blob {ref}:known-signers | cmp - {signers}", timeout=60)
           host.succeed(f"{instance} cat-file blob {ref}:known-signers | grep -q '^host/attestations+'")
+
+      # Only the host's machinery writes the publication. A push over ssh,
+      # by a key the host authorizes, cannot replace it with a well-formed
+      # publication of a key the pusher holds, and cannot delete it.
+      with subtest("no push over ssh replaces or deletes the publication"):
+          host.wait_for_unit("sshd.service")
+          published = host.succeed(f"{instance} rev-parse {ref}").strip()
+          host.succeed(
+              "mkdir -p /root/keys",
+              "install -m 600 ${keys}/contributor /root/keys/contributor",
+              "git init --quiet --bare /root/forged.git",
+          )
+          forged = host.succeed(
+              "cd /root/forged.git"
+              " && name=$(echo host/attestations | git hash-object -w --stdin)"
+              " && file=$(git hash-object -w ${keys}/forged_signer)"
+              " && printf '100644 blob %s\\tintegrator-name\\n100644 blob %s\\tknown-signers\\n' $name $file | git mktree"
+          ).strip()
+          ssh = (
+              "GIT_SSH_COMMAND='ssh -i /root/keys/contributor -o IdentitiesOnly=yes -o BatchMode=yes"
+              " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'"
+          )
+          for refspec in [f"+{forged}:{ref}", f":{ref}"]:
+              out = host.fail(f"cd /root/forged.git && {ssh} git push git@localhost:instance.git {refspec} 2>&1")
+              assert f"{ref} is written only by the machinery on the host, and no push may write it" in out, out
+              assert host.succeed(f"{instance} rev-parse {ref}").strip() == published, refspec
     '';
   };
 }

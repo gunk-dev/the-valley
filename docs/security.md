@@ -199,10 +199,19 @@ integrator's signing name. By default it reads both from the host's publication 
 [the signers publication](./architecture.md#the-signers-publication)).
 
 That publication is project storage, not source. No change, review or check governs it. The client
-trusts it for a different reason: only the host writes it. The push hook refuses every push to it,
-and the host's publisher writes it from the file and the name the controllers use (`implemented`,
-checked by `signers-e2e`). So a client that reads it trusts the host's disk and the host's
-configuration. It already trusts the same host to serve `main`.
+trusts it for a different reason: only the host's machinery writes it, never a push. The push hook
+refuses every push to it (`implemented`, checked by `signers-e2e` and `publish-e2e`). On the host,
+the publisher writes it from the file and the name the controllers use (`implemented`, checked by
+`signers-e2e`). The integrator can write it too, because the instance repository is group-writable
+and the integrator is in that group to land code there (`implemented`, `nix/valley-host.nix`). So a
+client that reads it trusts the host's disk, the host's configuration and the integrator. It already
+trusts the same host to serve `main`, and the same integrator to decide what lands on it.
+
+A revocation reaches clients through the publication. Once the registry lets no key sign, the
+compiler writes a known-signers file with no key in it, and the host publishes that file. A client
+then verifies no transfer statement with the revoked keys (`implemented`, checked by `signers-e2e`).
+Two runs of the publisher take turns under a lock, so a run that read the file before a rotation
+cannot publish it over a run that read it after (`implemented`, checked by `signers-e2e`).
 
 The client finds the instance repository through `policy/valley` at `main`'s tip on origin, which is
 integrated source. A change that lands a new `policy/valley` points clients at another repository's

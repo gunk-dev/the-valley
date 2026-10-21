@@ -9,7 +9,9 @@
 //  2. the environment: VALLEY_KNOWN_SIGNERS or VALLEY_INTEGRATOR_SIGNER;
 //  3. the serving host's publication: a tree at refs/the-valley/signers in
 //     its instance repository, holding the file as known-signers and the
-//     name as integrator-name. The host writes it, and no push may.
+//     name as integrator-name. Only the host's machinery writes it, never
+//     a push: its publisher does, and its integrator, which lands code in
+//     that repository, can.
 //
 // The instance repository is the one --all reads the project list from
 // (list.go). Nothing is read until a snapshot verifies its first

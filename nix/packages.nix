@@ -375,8 +375,9 @@ rec {
   # hold it to bin/valley's deriver, run over the repository's own policy,
   # the example policies and paths drawn from a fixed seed, so the source
   # carries bin/valley, the schema and those policies, and the tests need
-  # bash, git and cue. Go, standard library only — hence vendorHash = null
-  # and no module fetch.
+  # bash, git and cue. bin/valley is run under C.UTF-8 and en_US.UTF-8 as
+  # well as C, so the tests read the UTF-8 locales' archive. Go, standard
+  # library only — hence vendorHash = null and no module fetch.
   derive = pkgs.buildGoModule {
     pname = "valley-derive";
     version = "0";
@@ -395,9 +396,11 @@ rec {
       pkgs.git
       pkgs.cue
     ];
-    # A test that cannot find a tool it needs fails rather than skipping.
+    # A test that cannot find a tool it needs, or a locale, fails rather
+    # than skipping.
     preCheck = ''
       export VALLEY_TEST_TOOLS=required
+      export LOCALE_ARCHIVE=${pkgs.glibcLocalesUtf8}/lib/locale/locale-archive
     '';
     postCheck = ''
       go vet ./...

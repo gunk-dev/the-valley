@@ -621,6 +621,9 @@ usage: valley <verb> [args]
                    with that unset, as when this script runs straight from
                    a the-valley checkout, it is schema/verification.cue in
                    the checkout.
+                   a class's globs match bytes, in the C locale whatever
+                   yours is: `?` is one byte, so `?.md` does not match
+                   é.md, whose é is two.
                    after the report, two lines group the required checks
                    by the cost the policy declares, `quick` or `slow`. a
                    slow check takes minutes or needs special hardware. the
@@ -3040,10 +3043,12 @@ join_or_none() {
   if [ $# -eq 0 ]; then echo none; else printf '%s\n' "$@" | join_lines; fi
 }
 
-# The remaining arguments, sorted, into the array the first one names. The
-# sort is captured and its status returned: a sort read through a process
-# substitution that fails reads as a sort of nothing, and for a list of
-# required checks that is a change that requires none.
+# The remaining arguments, sorted bytewise, into the array the first one
+# names. The order is the C locale's whatever the caller's is, as it is
+# throughout the derivation (derive_required). The sort is captured and its
+# status returned: a sort read through a process substitution that fails
+# reads as a sort of nothing, and for a list of required checks that is a
+# change that requires none.
 #
 # The destination is a nameref, so what is assigned is the caller's array,
 # and the linter cannot see that array being read.
@@ -3054,7 +3059,7 @@ sort_into() {
   shift
   sort_into_dest=()
   [ $# -gt 0 ] || return 0
-  sorted="$(printf '%s\n' "$@" | sort)" || return 1
+  sorted="$(printf '%s\n' "$@" | LC_ALL=C sort)" || return 1
   mapfile -t sort_into_dest <<<"$sorted"
 }
 
@@ -3092,6 +3097,17 @@ target_ref() {
 # condition, which suspends `set -e` for the whole call, so every step is
 # checked by hand.
 #
+# The derivation runs in the C locale, whatever locale its caller runs in,
+# so a glob matches bytes and every list sorts bytewise. Under a UTF-8
+# locale bash's regular expressions read characters instead: `?` matches é,
+# and a path holding a byte that is not UTF-8 matches no pattern at all,
+# not even `**`, so it would fall to `unclassified`. sort -u under
+# en_US.UTF-8 also merges distinct paths that collate equally. Which checks
+# a change requires would then depend on the locale of whoever derives it:
+# an operator's shell for approve, the integrator's unit for the integrator.
+# The Go deriver (derive/) matches bytes too, and its tests hold the two to
+# the same answer under UTF-8 locales.
+#
 # Every producer — git, cue, sort — writes a file or a variable, and its
 # status is checked before anything reads what it wrote. A producer read
 # through a process substitution loses its status, and a failed one then
@@ -3112,6 +3128,9 @@ declare -A CHECK_COST=()       # check -> quick | slow
 
 derive_required() {
   local schema="$1" instance="$2" project="$3" base="$4" head="$5"
+  # Exported, so sort and every other program the derivation runs reads
+  # bytes too; bash restores the caller's locale when this returns.
+  local -x LC_ALL=C
 
   need_cue
   [ -f "$schema" ] || {

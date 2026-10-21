@@ -395,7 +395,9 @@ valley checks [--schema <file>] [--instance <dir>] [--project <dir>] [--names] [
   `policy.classes` (and `policy.unclassified` when any path matches no class), probes whether each
   required check is `mandatory` (pinned by the floor) or `default`, resolves the strictest `carry`
   mode (`exact`, `same-class`, or `same-paths`) across matched classes, and prints the report
-  without running any check.
+  without running any check. A layer's documents are the `*.cue` entries directly in its directory
+  whose names do not begin with a dot. The derivation runs in the C locale whatever the caller's
+  locale: a glob matches bytes, so `?` matches one byte, and lists sort bytewise.
 
 ### `valley plan`
 

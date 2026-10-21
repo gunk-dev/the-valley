@@ -12,10 +12,11 @@ import "strings"
 // and a last `**` matches the rest of the path, whatever it is. Every
 // other segment matches exactly one segment.
 //
-// This is bin/valley's reading (glob_ere) as the C locale gives it, down
-// to its edges. One trailing `/` is dropped, as `read -a` drops the empty
-// field after it, so `docs/` matches the path `docs`. `**` is special only
-// as a whole segment, so `a**b` is two `*` in one segment.
+// This is bin/valley's reading (glob_ere) in the C locale, which its
+// derive_required runs in whatever its caller's locale, down to its edges.
+// One trailing `/` is dropped, as `read -a` drops the empty field after
+// it, so `docs/` matches the path `docs`. `**` is special only as a whole
+// segment, so `a**b` is two `*` in one segment.
 func Match(glob, path string) bool {
 	return compile(glob).match(path)
 }

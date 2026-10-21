@@ -46,6 +46,11 @@ type Class struct {
 type Model struct {
 	Policy
 
+	// Documents are the files the policy was composed from, in the order
+	// cue was given them: the schema, then the floor's documents and the
+	// project layer's.
+	Documents []string
+
 	Classes map[string]Class
 
 	// Unclassified are the checks a path no class covers requires: each
@@ -125,7 +130,7 @@ func Read(ctx context.Context, cue, schema, instance, project string) (*Model, e
 			return nil, fmt.Errorf("check %s has no cost this deriver knows (%q)", name, c.Cost)
 		}
 	}
-	m := &Model{Policy: *pol, Classes: map[string]Class{}, Unclassified: map[string]Pin{}}
+	m := &Model{Policy: *pol, Documents: docs, Classes: map[string]Class{}, Unclassified: map[string]Pin{}}
 	var probes []probe
 	for name, c := range read.Classes {
 		mode := resolved[name]

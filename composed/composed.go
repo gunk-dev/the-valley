@@ -61,7 +61,7 @@ func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) 
 		// The materialized layer is held to the same minimum as the one a
 		// repository carries: a directory with no documents in it is a floor
 		// nobody wrote.
-		if docs, err := filepath.Glob(filepath.Join(f.Path, "*.cue")); err != nil || len(docs) == 0 {
+		if _, err := layer(f.Path); err != nil {
 			return "", noop, fmt.Errorf("no instance policy layer: %s holds no *.cue: %s", f.Path, Floorless)
 		}
 		return f.Path, noop, nil
@@ -237,16 +237,46 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 	}, out, nil
 }
 
-// documents is what a policy is composed from: the schema, then every
-// *.cue directly in the floor's directory and in the project layer's.
+// documents is what a policy is composed from: the schema, then the
+// floor's documents and the project layer's (layer).
 func documents(schema, instance, project string) ([]string, error) {
 	docs := []string{schema}
 	for _, dir := range []string{instance, project} {
-		found, err := filepath.Glob(filepath.Join(dir, "*.cue"))
-		if err != nil || len(found) == 0 {
-			return nil, fmt.Errorf("no policy layer at %s", dir)
+		found, err := layer(dir)
+		if err != nil {
+			return nil, err
 		}
 		docs = append(docs, found...)
+	}
+	return docs, nil
+}
+
+// layer is the documents of one policy layer: the entries directly in dir
+// that bin/valley's `"$dir"/*.cue` names, in its order.
+//
+// dir is a name and never a pattern, as it is quoted there, so a directory
+// named policy[1] is that directory and not policy1. Its entries are
+// listed, and an entry is a document when its name ends in .cue and does
+// not begin with a dot, because bash's glob leaves a dotfile out. They are
+// sorted bytewise, as bash sorts them in the C locale bin/valley derives
+// in. The first must be a regular file, as bin/valley's `[ -f ]` asks, or
+// the layer holds no documents.
+func layer(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, fmt.Errorf("no policy layer at %s: %w", dir, err)
+	}
+	var docs []string
+	for _, e := range entries {
+		if name := e.Name(); strings.HasSuffix(name, ".cue") && !strings.HasPrefix(name, ".") {
+			docs = append(docs, filepath.Join(dir, name))
+		}
+	}
+	if len(docs) == 0 {
+		return nil, fmt.Errorf("no policy layer at %s", dir)
+	}
+	if info, err := os.Stat(docs[0]); err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("no policy layer at %s: %s is not a file", dir, docs[0])
 	}
 	return docs, nil
 }

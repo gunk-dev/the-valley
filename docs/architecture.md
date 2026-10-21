@@ -635,9 +635,9 @@ A project's required checks come from three CUE layers, unified as
 - **The floor and templates** come from the owning valley's instance repository, at
   `policy/instance/*.cue` on its `main`. `policy/valley` names that repository. A value the floor
   writes as `true` is mandatory. A template value written `bool | *true` is a default a project may
-  turn off. Every `*.cue` document directly in that directory is read, whatever its name, from a
-  NUL-separated tree listing so git never quotes a non-ASCII name such as `naïve.cue`
-  (`composed/composed.go`). Checked by `integrator-unit`.
+  turn off. Every `*.cue` document directly in that directory is read, from a NUL-separated tree
+  listing so git never quotes a non-ASCII name such as `naïve.cue` (`composed/composed.go`). Checked
+  by `integrator-unit`.
 - **The project layer** is `policy/project/*.cue`, read at the tip of the target branch.
 
 Both layers are read from integrated tips, never from the change being judged
@@ -645,6 +645,17 @@ Both layers are read from integrated tips, never from the change being judged
 requires the union of the checks of every class one of its paths matches. A path no class matches
 requires the `unclassified` checks. The integrator gets this answer by running `valley checks`,
 which diffs with renames counted on both sides. Checked by `policy-deriver` and `cue-vet`.
+
+A layer's documents are the entries bash's glob `"$dir"/*.cue` names. The directory is a name and
+never a pattern, so a directory named `policy[1]` is read, and `policy1` is not. A name beginning
+with a dot is not a document. Checked by `derive-unit`.
+
+A glob matches bytes. `valley checks` derives in the C locale, whatever locale it is run in. So `?`
+matches one byte, and `?.md` does not match `é.md`, whose `é` is two bytes. A path holding a byte
+that is not UTF-8 matches a glob like any other path. Under a UTF-8 locale, bash's regular
+expressions would match characters, and such a path would match no glob, not even `**`. The checks a
+change requires would then depend on the locale of the operator's shell or the integrator's unit.
+Checked by `derive-unit`.
 
 The derivation fails closed. A failed read of the diff, the target, a policy layer or the composed
 policy makes `valley checks` exit non-zero and print no report. Without that, the failure would read
@@ -669,12 +680,16 @@ integrator use the one in `bin/valley`. It reads the whole composed policy throu
 each check's runner, cost and validity. It asks cue whether each requirement is mandatory the way
 `valley checks` asks: it vets the layers with a document setting that requirement to `false`. It
 reads a diff as `valley checks` does, with renames counted on both sides, and keeps every path
-whole, whatever bytes it holds. It matches globs byte by byte, as `valley checks` does in the C
-locale. Checked by `derive-unit`.
+whole, whatever bytes it holds. It matches globs byte by byte, as `valley checks` does. It reads a
+layer's documents as `valley checks` does. Checked by `derive-unit`.
 
 `derive-unit` holds the two derivers to the same answer. It runs both over this repository's own
-policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. They
-differ in three places, where `valley checks` is wrong:
+policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. It runs
+`valley checks` under the C, `C.UTF-8` and `en_US.UTF-8` locales, with the layers in directories
+named like glob patterns. Every global of the Bash derivation must equal the Go answer: the
+documents composed, the changed paths, the classes matched, the carry mode, the unclassified paths,
+and each required check's classes, pin, runner, attribute, command and cost. The two derivers differ
+in three places, where `valley checks` is wrong:
 
 - `valley checks` splits a path holding a newline into two paths.
 - A class added by refining `policy` may require a check no layer defines, because the schema's

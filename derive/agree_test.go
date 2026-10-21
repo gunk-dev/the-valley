@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -43,8 +45,11 @@ func fixtures(t *testing.T, r *rig) []fixture {
 
 // TestDeriversAgree runs both derivers over every fixture policy and cases
 // drawn from a fixed seed, and requires the same answer from each: the
-// same changed paths, classes, carry mode and unclassified paths, and the
-// same required checks with the same classes, pins and costs.
+// same documents composed, the same changed paths in the same order, the
+// same classes, carry mode and unclassified paths, and the same required
+// checks with the same classes, pins, runners, attributes, commands and
+// costs. bin/valley is run under every locale (locales), and the fixtures'
+// layer directories are named in turn as each of namings names them.
 //
 // A case is a change from one base tree: files modified, added, deleted,
 // renamed and turned into symbolic links, at paths drawn from instances of
@@ -53,9 +58,10 @@ func fixtures(t *testing.T, r *rig) []fixture {
 // bin/valley splits such a path in two (TestKnownDivergences).
 func TestDeriversAgree(t *testing.T) {
 	r := newRig(t)
+	locs := r.locales(t)
 	for i, f := range fixtures(t, r) {
 		t.Run(f.name, func(t *testing.T) {
-			l := newLayers(t, f.instance, f.project, nil)
+			l := newLayersAt(t, namings[i%len(namings)], f.instance, f.project, nil)
 			m, err := r.read(l)
 			if err != nil {
 				t.Fatalf("the Go deriver cannot read the policy: %v", err)
@@ -72,16 +78,18 @@ func TestDeriversAgree(t *testing.T) {
 			for n, head := range heads {
 				t.Run(fmt.Sprintf("case-%02d", n), func(t *testing.T) {
 					t.Parallel()
-					rep, err := r.valley(t, rp.dir, r.schema, l, baseCommit, head)
-					if err != nil {
-						t.Fatalf("bin/valley refused: %v", err)
-					}
 					res, err := r.derive(m, rp.dir, baseCommit, head)
 					if err != nil {
 						t.Fatalf("the Go deriver refused: %v", err)
 					}
-					if diffs := agree(rep, res); len(diffs) > 0 {
-						t.Errorf("the derivers disagree over %q:\n  %s", res.Paths, strings.Join(diffs, "\n  "))
+					for _, loc := range locs {
+						rep, err := r.valleyIn(t, loc, rp.dir, r.schema, l, baseCommit, head)
+						if err != nil {
+							t.Fatalf("bin/valley refused in %s: %v", loc.name, err)
+						}
+						if diffs := agree(rep, m, res); len(diffs) > 0 {
+							t.Errorf("the derivers disagree in %s over %q:\n  %s", loc.name, res.Paths, strings.Join(diffs, "\n  "))
+						}
 					}
 				})
 			}
@@ -116,11 +124,142 @@ func TestReplacementRefsChangeNothing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if diffs := agree(rep, res); len(diffs) > 0 {
+	if diffs := agree(rep, m, res); len(diffs) > 0 {
 		t.Errorf("the derivers disagree:\n  %s", strings.Join(diffs, "\n  "))
 	}
 	if got := names(res); !sameSet(got, []string{"c-uncovered"}) {
 		t.Errorf("a replacement ref changed what is required: %q", got)
+	}
+}
+
+// TestLocaleChangesNothing holds both derivers to one answer in every
+// locale, for the paths a locale reads differently, and holds that answer
+// to bytes. A glob matches bytes: `?` is one byte, so `?.md` covers x.md
+// and not é.md, whose é is two, and `**` and `*` cover bytes that are not
+// UTF-8, which a UTF-8 locale's regular expressions match nothing of. Two
+// paths that differ in one such byte are two paths, which sort -u under
+// en_US.UTF-8 would merge.
+func TestLocaleChangesNothing(t *testing.T) {
+	r := newRig(t)
+	l := newLayers(t, r.glob(t, "examples/policy/deriver/[ft]*.cue"), []string{r.path("examples/policy/deriver/project.cue")},
+		map[string]string{"bytes.cue": "package verification\n" +
+			`project: classes: one: {paths: "?.md": true, requires: "c-notes": true}` + "\n" +
+			`project: classes: raw: {paths: "raw/**": true, requires: "c-nested": true}` + "\n"})
+	m, err := r.read(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := newRepo(t, r)
+	base := rp.commit("", tree{"Makefile": file("seed\n")})
+	head := rp.commit(base, tree{
+		"Makefile": file("seed\n"), "x.md": file("x\n"), "\xc3\xa9.md": file("e\n"),
+		"raw/\xff.bin": file("ff\n"), "src/caf\xe9.rs": file("latin-1\n"),
+		"a\xffb": file("ff\n"), "a\xfeb": file("fe\n"),
+	})
+	res, err := r.derive(m, rp.dir, base, head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"deep", "flat", "one", "raw"}; !slices.Equal(res.Classes, want) {
+		t.Errorf("the Go deriver matched %q; bytes match %q", res.Classes, want)
+	}
+	if want := []string{"a\xfeb", "a\xffb", "\xc3\xa9.md"}; !slices.Equal(res.Unclassified, want) {
+		t.Errorf("the Go deriver left %q unclassified; bytes leave %q", res.Unclassified, want)
+	}
+	locs := r.locales(t)
+	if len(locs) < 2 {
+		t.Skip("no UTF-8 locale takes here, so this case proves nothing")
+	}
+	for _, loc := range locs {
+		rep, err := r.valleyIn(t, loc, rp.dir, r.schema, l, base, head)
+		if err != nil {
+			t.Fatalf("bin/valley refused in %s: %v", loc.name, err)
+		}
+		if diffs := agree(rep, m, res); len(diffs) > 0 {
+			t.Errorf("the derivers disagree in %s:\n  %s", loc.name, strings.Join(diffs, "\n  "))
+		}
+	}
+}
+
+// TestLayerDiscovery holds both derivers to reading a layer as bin/valley's
+// `"$dir"/*.cue` does. The directory is a name, so one named like a pattern
+// is read and the directories the pattern names are not. A name beginning
+// with a dot is not a document. And a layer whose first document is not a
+// file holds none, so both refuse it.
+func TestLayerDiscovery(t *testing.T) {
+	r := newRig(t)
+	floor := r.glob(t, "examples/policy/deriver/[ft]*.cue")
+	project := []string{r.path("examples/policy/deriver/project.cue")}
+	rp := newRepo(t, r)
+	base := rp.commit("", tree{"docs/a.md": file("seed\n")})
+	head := rp.commit(base, tree{"docs/a.md": file("edit\n"), "src/b.rs": file("new\n")})
+
+	for _, n := range namings {
+		t.Run(n.instance+" and "+n.project, func(t *testing.T) {
+			l := newLayersAt(t, n, floor, project, nil)
+			m, err := r.read(l)
+			if err != nil {
+				t.Fatalf("the Go deriver cannot read the policy: %v", err)
+			}
+			want := []string{r.schema, filepath.Join(l.instance, "floor.cue"), filepath.Join(l.instance, "template.cue"), filepath.Join(l.project, "project.cue")}
+			if !slices.Equal(m.Documents, want) {
+				t.Errorf("the Go deriver composed %q; the layers' documents are %q", m.Documents, want)
+			}
+			rep, err := r.valley(t, rp.dir, r.schema, l, base, head)
+			if err != nil {
+				t.Fatalf("bin/valley refused: %v", err)
+			}
+			res, err := r.derive(m, rp.dir, base, head)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if diffs := agree(rep, m, res); len(diffs) > 0 {
+				t.Errorf("the derivers disagree:\n  %s", strings.Join(diffs, "\n  "))
+			}
+		})
+	}
+
+	refuse := func(t *testing.T, l layers) {
+		t.Helper()
+		if rep, err := r.valley(t, rp.dir, r.schema, l, base, head); err == nil || !strings.Contains(err.Error(), "no project policy layer") {
+			t.Errorf("bin/valley did not refuse the project layer: %v, %+v", err, rep)
+		}
+		if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), "no policy layer at "+l.project) {
+			t.Errorf("the Go deriver did not refuse the project layer: %v, %q", err, m.Documents)
+		}
+	}
+	t.Run("a dotfile alone", func(t *testing.T) {
+		l := newLayers(t, floor, nil, map[string]string{".only.cue": "package verification\n"})
+		refuse(t, l)
+	})
+	t.Run("a directory first", func(t *testing.T) {
+		l := newLayers(t, floor, project, nil)
+		if err := os.Mkdir(filepath.Join(l.project, "a.cue"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		refuse(t, l)
+	})
+}
+
+// TestEveryDerivationGlobal holds the globals agree compares to the ones
+// bin/valley declares for its derivation, so a global added there is one
+// these tests compare.
+func TestEveryDerivationGlobal(t *testing.T) {
+	r := newRig(t)
+	script, err := os.ReadFile(r.script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declared := []string{"POLICY_LAYER"}
+	for _, m := range regexp.MustCompile(`(?m)^(?:declare -A )?((?:DERIVED|CHECK)_[A-Z_]+)=`).FindAllSubmatch(script, -1) {
+		declared = append(declared, string(m[1]))
+	}
+	var compared []string
+	for _, g := range derivation {
+		compared = append(compared, g.name)
+	}
+	if !sameSet(declared, compared) {
+		t.Errorf("bin/valley declares %q, and the tests compare %q", sortedSet(declared), sortedSet(compared))
 	}
 }
 
@@ -305,9 +444,9 @@ func TestBothRefuse(t *testing.T) {
 }
 
 // TestGlobsAgree holds Match to bin/valley's glob_ere, run by bash in the
-// C locale, over every glob the fixture policies name, globs drawn from the
-// characters a glob or a regular expression treats specially, and paths
-// drawn for each.
+// C locale that derive_required derives in, over every glob the fixture
+// policies name, globs drawn from the characters a glob or a regular
+// expression treats specially, and paths drawn for each.
 func TestGlobsAgree(t *testing.T) {
 	r := newRig(t)
 	rng := rand.New(rand.NewPCG(20261021, 1000))

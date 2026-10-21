@@ -64,7 +64,7 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = self-update ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--verbose --retry --rollback --pin --unpin --repo --branch' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = help ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'self-update' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay self-update' -- "$cur")
   fi
 }
 

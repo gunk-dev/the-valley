@@ -56,9 +56,132 @@ die() {
 
 usage() {
   cat <<'EOF'
-valley — S1 integrator verbs for a valley project
-
 usage: valley <verb> [args]
+
+valley — S1 integrator verbs for a valley project: author, review, approve, and
+track changes and the plan graph.
+
+Authoring and updating changes:
+  ready        mark a branch head ready as a new version of its change
+  unready      pause a ready change by marking it a draft
+  withdraw     mark a ready or draft change withdrawn
+  rebase       rebase a change and its stack onto origin/main
+  checks       print the checks the composed policy requires of a diff
+
+Reviewing, approving, and inspecting changes:
+  pending      list ready changes, unrecorded branches, and drafts
+  review       page through a change or stack to approve, rebase, or reject
+  approve      run required checks and file an integration request
+  status       read a change's integration request and last outcome
+  changes      print every recorded change as valley-changes/v1 JSON
+
+Planning work:
+  plan         show the project's plan graph as a milestone tree
+  knot         read and write knots in the plan graph at refs/the-valley/knots
+
+Bus and client maintenance:
+  tail         watch NATS bus events scroll by
+  replay       publish ref-updated events for the current refs of a repo
+  self-update  build, test, and install the tip of a branch of the-valley
+
+A change is named by its 32-letter change id, its handle (shortest unique
+prefix, at least 4 letters, or <repo>:<handle>), or its branch name.
+Runs from any checkout; nix run .#valley bundles git, valley-go, attest, cue,
+less, and natscli (self-update also needs nix). Judgment stays with the human:
+nothing here writes main.
+
+`valley --version` prints the package's version and commit (e.g. 0.1.0-97db597,
+with -dirty for uncommitted changes, -unknown when nix knew no commit, or
+unstamped when run straight from a checkout).
+Run `valley help <verb>` (or `valley <verb> --help`) for a verb's flags and
+rules. See docs/reference.md for the full CLI, ref, and schema reference.
+EOF
+}
+
+help_naming() {
+  cat <<'EOF'
+
+A change is named by its full change id, by its handle — the shortest
+prefix of the id, four letters at least, that no other change recorded on
+origin shares, written <repo>:<handle> too, with this repository's name —
+or by its branch. A name written origin/<branch> is always
+a branch. A handle that is also a branch on origin is refused unless the
+change is on that branch. review, approve and rebase read a branch name,
+written either way, against every record on origin: when exactly one
+record's active version is on the branch, the name is that change, as if
+its id were given, and when more than one's is, the verb refuses and lists
+their ids. A change whose active version has landed — its head is on
+main's first-parent history with no merge above it, or the integrator's
+outcome record and verified transfer statement record that exact head
+landing — is skipped, so a branch can be used again once its change has
+landed. unready, withdraw and status read a branch the same way. A
+branch no record's active version is on is acted on as a branch. A
+change with a record is reviewed, approved and rebased at the
+head its active version records, never at its branch's tip: review shows
+that head and its [a]pprove approves it, and rebase and review's
+[r]eject refuse, naming both, when the branch's tip on origin is another
+commit. approve approves the head bound to it, wherever the branch is.
+[r]eject deletes the branch under a lease on the recorded head. approve,
+rebase, and review's [a]pprove and [b]ase refuse a change whose record is
+not ready, naming its state, and review offers none of them for a change
+that is not ready when it shows it. Each reads the record again just before it
+acts, and again before approve files or rebase pushes, and refuses when
+the change is not ready. rebase also refuses when the change's
+record has changed at all since it began, and approve when the head it
+approves is not a version's. A name that read as a plain branch is
+read again before approve files or rebase pushes. If it names a change by
+then, rebase refuses, and approve files only while the change is ready at
+the head it began with. An approval already past that last check can
+still file if the change is unreadied or withdrawn in the moment before
+its push; the integrator refuses to land it, since it lands no request
+that would bring a version of a change that is not ready, whatever the
+request is named.
+The integrator reads the records last just before it moves main, so a
+change paused in that moment can still land at the head the operator
+approved, and never at any other.
+EOF
+}
+
+help_runtime() {
+  cat <<'EOF'
+
+Runs from any checkout of the project; needs only git and coreutils,
+except tail and replay, which also need the nats CLI (natscli), checks,
+which also needs the cue CLI, review's notes, which need less, approve
+and review's [a]pprove, which need both the cue CLI and the attest
+helper, and status, ready, unready, withdraw, review, approve and rebase,
+which need the valley-go helper, as pending, changes, knot, plan and
+self-update do. nix run .#valley bundles all of them. self-update also
+needs nix. Deriving a policy fetches the owning valley's repository, so
+checks and approving also need whatever reaching it takes.
+No config but valley.principal, which ready, rebase, knot and plan read,
+and valley.selfUpdate.repo and .branch, which self-update reads; no batch
+mode; and no state but the notes file, the handle cache pending and
+changes write for completion, and self-update's record of what it
+installed — the judgment stays with the human.
+EOF
+}
+
+help_unready_withdraw_requests() {
+  cat <<'EOF'
+                   the integrator lands no request that would bring a
+                   version of a change that is not ready, so unready and
+                   withdraw both stop a
+                   pending integration request, under c-<change id> or a
+                   branch's request name. each says so when origin holds
+                   one. a draft's request stands and lands once the change
+                   is ready again. withdrawing voids the request: the
+                   integrator deletes it on its next pass while the change
+                   is still withdrawn. withdraw warns, since a ready before
+                   then leaves the request standing: only a holder of the
+                   approve grant (also accepted as request) may touch a
+                   request ref, so the operator must drop it then.
+EOF
+}
+
+help_pending() {
+  cat <<'EOF'
+usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v]
 
   pending [--all] [--repo <name>] [--checks] [--json] [-v]
                    list what is waiting to land, in three sections: ready,
@@ -92,7 +215,7 @@ usage: valley <verb> [args]
                    set.
                      --all        every project the serving host
                                   publishes, each headed by its name (see
-                                  changes below)
+                                  valley help changes)
                      --repo NAME  that one project
                      --checks     add a line to each change with the
                                   checks the policy requires of it, by
@@ -104,6 +227,14 @@ usage: valley <verb> [args]
                      -v           warn on stderr when a plan graph is
                                   missing or unreadable
                    needs the valley-go helper.
+EOF
+  help_runtime
+}
+
+help_changes() {
+  cat <<'EOF'
+usage: valley changes --json [--all] [--repo <name>] [-v]
+
   changes --json [--all] [--repo <name>] [-v]
                    print every change origin holds a record of, in every
                    state, as one JSON object, valley-changes/v1, for front
@@ -141,6 +272,14 @@ usage: valley <verb> [args]
                    file and VALLEY_INTEGRATOR_SIGNER the integrator's
                    signing name, and attest checks the note.
                    needs the valley-go helper.
+EOF
+  help_runtime
+}
+
+help_review() {
+  cat <<'EOF'
+usage: valley review [-v] <change>
+
   review [-v] <change>
                    page through the change's branch: its log and diff vs
                    origin/main, or a stack layer by layer (below). above
@@ -160,8 +299,8 @@ usage: valley <verb> [args]
                                   update your local checkout. use status
                                   to read the result. the policy comes
                                   from the target's tip and the owning
-                                  valley's, as checks describes below,
-                                  so your checkout
+                                  valley's, as checks describes (valley
+                                  help checks), so your checkout
                                   can be on any branch. a change the policy
                                   requires no check of is filed too, as a
                                   request with no evidence, and says so.
@@ -214,15 +353,15 @@ usage: valley <verb> [args]
                    is on too: it refuses, naming both heads, when the
                    branch on origin has moved off that head since.
                    [a]pprove is the only way a change reaches main from
-                   here, and approve below is the same act without the
-                   pager.
+                   here, and approve (valley help approve) is the same act
+                   without the pager.
                    Nothing in this script writes the protected ref: the
                    integrator does, having judged the request.
                    a stale branch (won't fast-forward from main) is first
                    offered:
                      [b]ase       rebase it onto origin/main, as rebase
-                                  does below, then re-review the diff that
-                                  would actually land
+                                  does (valley help rebase), then re-review
+                                  the diff that would actually land
                    [a]pprove is offered there too: a stale branch is nothing
                    the integrator cannot apply, so it need not be rebased
                    first.
@@ -269,9 +408,9 @@ usage: valley <verb> [args]
                    does not fast-forward from main:`:
                      [b]ase all <n>
                                   rebase the whole stack onto origin/main,
-                                  as rebase does below, then list it again
-                                  and page the rebased layers, so the
-                                  heads paged are the heads approved
+                                  as rebase does (valley help rebase), then
+                                  list it again and page the rebased layers,
+                                  so the heads paged are the heads approved
                      [s]top       end the review; nothing done
                    a rebase that is refused or left unfinished says what
                    happened, and then only [s]top is offered.
@@ -316,6 +455,15 @@ usage: valley <verb> [args]
                    withdrawn) in its place. a top that is not ready is not
                    offered [r]eject either. every layer's notes are printed
                    at the end.
+EOF
+  help_naming
+  help_runtime
+}
+
+help_approve() {
+  cat <<'EOF'
+usage: valley approve [--head <sha>] <change>
+
   approve [--head <sha>] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
@@ -339,6 +487,32 @@ usage: valley <verb> [args]
                    each / replaced by -. a branch whose request name would
                    be c-<change id> is refused, since that name is the
                    change's.
+                   approve runs the checks the composed policy requires of
+                   this change over a throwaway worktree of that head,
+                   signs each result as an attestation, and publishes the
+                   evidence and the request ref to origin in ONE atomic
+                   push. this files the request; it does not wait for
+                   integration or update your local checkout. use status to
+                   read the result. the policy comes from the target's tip
+                   and the owning valley's, as checks describes (valley help
+                   checks), so your checkout can be on any branch. a change
+                   the policy requires no check of is filed too, as a
+                   request with no evidence, and says so. approving a
+                   change already requested is how it is filed again: at a
+                   head rebased onto a moved main it replaces the request
+                   ref under a lease and names the head it replaced; at the
+                   same head it leaves the ref alone and publishes only the
+                   new evidence, which the create-only attestation
+                   namespace refuses when this signer has already attested
+                   that tree (bd-7b7d58f). every write of the request ref
+                   is leased, filing included, so an approval that lost a
+                   race is refused rather than clobbering the one that won.
+                   needs the attest helper and VALLEY_ATTEST_KEY, the
+                   ed25519 key this host signs with, whenever a check is
+                   required; VALLEY_ATTEST_NAME is the name it signs under,
+                   defaulting to this host's. Nothing in this script writes
+                   the protected ref: the integrator does, having judged
+                   the request.
                    approve refuses, before any check runs, a head that does
                    not fast-forward from main and would bring a version of
                    another change that has not landed: a layer above the
@@ -359,6 +533,15 @@ usage: valley <verb> [args]
                    ~/.local/state/valley/timings.jsonl). the log stays on
                    this machine and is not evidence; a log that cannot be
                    written is a warning, and approving goes on.
+EOF
+  help_naming
+  help_runtime
+}
+
+help_rebase() {
+  cat <<'EOF'
+usage: valley rebase <change>
+
   rebase <change>  rebase the change's whole stack onto origin/main, as
                    review's [b]ase does: the layers valley-go stack lists
                    under the change, and the change itself. in a throwaway
@@ -399,6 +582,15 @@ usage: valley <verb> [args]
                    layer, with the rebase that moves it; it does not move
                    it. rebase does not re-review the result. a stack that
                    already fast-forwards from main is left as it is.
+EOF
+  help_naming
+  help_runtime
+}
+
+help_status() {
+  cat <<'EOF'
+usage: valley status [--json] [-v] <change>
+
   status [--json] [-v] <change>
                    read the request and the integrator's last decision from
                    origin. distinguish waiting, a decision that needs
@@ -421,6 +613,15 @@ usage: valley <verb> [args]
                      -v           with --json, warn on stderr when the plan
                                   graph is missing or unreadable
                    needs the valley-go helper.
+EOF
+  help_naming
+  help_runtime
+}
+
+help_ready() {
+  cat <<'EOF'
+usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
+
   ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]
                    mark a head of the branch ready, as a new version of its
                    change, in the change's record on origin:
@@ -466,12 +667,31 @@ usage: valley <verb> [args]
                    records only to refuse: it lands no request that would
                    bring a version of a change that is not ready.
                    needs the valley-go helper.
+EOF
+  help_naming
+  help_runtime
+}
+
+help_unready() {
+  cat <<'EOF'
+usage: valley unready <change>
+
   unready <change>
                    make a ready change a draft in its record on origin, as
                    its owner or the operator. a draft is a pause: it voids
                    nothing, and approvals of its active version stand when
                    it is readied again. ready brings it back. prints e.g.
                    `cosmo nxvp v2 draft`. needs the valley-go helper.
+EOF
+  help_unready_withdraw_requests
+  help_naming
+  help_runtime
+}
+
+help_withdraw() {
+  cat <<'EOF'
+usage: valley withdraw <change>
+
   withdraw <change>
                    mark a ready change or a draft withdrawn in its record
                    on origin, as its owner or the operator. withdrawing
@@ -481,18 +701,16 @@ usage: valley <verb> [args]
                    approvals. ready brings it back, at the same version
                    or a new one. prints e.g. `cosmo nxvp v2 withdrawn`.
                    needs the valley-go helper.
-                   the integrator lands no request that would bring a
-                   version of a change that is not ready, so unready and
-                   withdraw both stop a
-                   pending integration request, under c-<change id> or a
-                   branch's request name. each says so when origin holds
-                   one. a draft's request stands and lands once the change
-                   is ready again. withdrawing voids the request: the
-                   integrator deletes it on its next pass while the change
-                   is still withdrawn. withdraw warns, since a ready before
-                   then leaves the request standing: only a holder of the
-                   approve grant (also accepted as request) may touch a
-                   request ref, so the operator must drop it then.
+EOF
+  help_unready_withdraw_requests
+  help_naming
+  help_runtime
+}
+
+help_knot() {
+  cat <<'EOF'
+usage: valley knot <verb> [args]
+
   knot <verb> [args]
                    read and write the project's plan graph: knots, at
                    refs/the-valley/knots on origin. a knot is an outcome,
@@ -550,6 +768,14 @@ usage: valley <verb> [args]
                                   a conflict.
                      schema [--json]
                                   print the model
+EOF
+  help_runtime
+}
+
+help_plan() {
+  cat <<'EOF'
+usage: valley plan [--project NAME | --all] [--owner P] [--json]
+
   plan [--project NAME | --all] [--owner P] [--json]
                    show the project's plan graph as a tree, to see where
                    things stand. the roots are the outcomes with no
@@ -588,6 +814,14 @@ usage: valley <verb> [args]
                                   what the graph derives of it, and the
                                   three sections (docs/architecture.md)
                    needs the valley-go helper.
+EOF
+  help_runtime
+}
+
+help_checks() {
+  cat <<'EOF'
+usage: valley checks [--schema FILE] [--instance DIR] [--project DIR] [--names [--cost COST]] [<base> [<head>]]
+
   checks [<base> [<head>]]
                    print the check names the composed verification policy
                    (dcr-f41f718) requires of the change between two
@@ -635,12 +869,44 @@ usage: valley <verb> [args]
                      --cost COST      with --names, only the quick or
                                       the slow ones, e.g.
                                       `valley checks --names --cost slow`
+EOF
+  help_runtime
+}
+
+help_tail() {
+  cat <<'EOF'
+usage: valley tail [subject]
+
   tail [subject]   watch bus events scroll by (default subject: valley.>);
                    the server comes from the nats CLI's own config
                    (NATS_URL or a nats context; default localhost)
+EOF
+  help_runtime
+}
+
+help_replay() {
+  cat <<'EOF'
+usage: valley replay [dir]
+
   replay [dir]     publish one ref-updated event per current ref of the
                    repo at dir (default: .) — rebuilds the stream's
                    projection, e.g. after nats stream purge valley
+EOF
+  help_runtime
+}
+
+help_self_update() {
+  if command -v valley-go > /dev/null 2>&1; then
+    valley-go self-update --help
+    printf '\n'
+  else
+    cat <<'EOF'
+usage: valley self-update [-v] [--retry | --rollback | --pin | --unpin]
+                          [--repo <url>] [--branch <name>]
+
+EOF
+  fi
+  cat <<'EOF'
   self-update [-v] [--retry | --rollback | --pin | --unpin]
               [--repo <url>] [--branch <name>]
                    install the tip of a branch of the-valley into your
@@ -652,70 +918,16 @@ usage: valley <verb> [args]
                    repository; the branch is valley.selfUpdate.branch,
                    or main. --rollback reinstalls the previous build, and
                    --pin and --unpin freeze and release the install.
-                   `valley help self-update` gives every step. needs the
-                   valley-go helper and nix.
+                   `valley-go self-update --help` gives every step. needs
+                   the valley-go helper and nix.
+
   --version        print this valley's version: the package's version and
                    the commit it was built from, e.g. 0.1.0-97db597, with
                    -dirty after it for a tree with uncommitted changes and
                    -unknown in its place when nix knew no commit. run
                    straight from a checkout, it says it is unstamped.
-  help [self-update]
-                   show this help, or self-update's
-
-A change is named by its full change id, by its handle — the shortest
-prefix of the id, four letters at least, that no other change recorded on
-origin shares, written <repo>:<handle> too, with this repository's name —
-or by its branch. A name written origin/<branch> is always
-a branch. A handle that is also a branch on origin is refused unless the
-change is on that branch. review, approve and rebase read a branch name,
-written either way, against every record on origin: when exactly one
-record's active version is on the branch, the name is that change, as if
-its id were given, and when more than one's is, the verb refuses and lists
-their ids. A change whose active version has landed — its head is on
-main's first-parent history with no merge above it, or the integrator's
-outcome record and verified transfer statement record that exact head
-landing — is skipped, so a branch can be used again once its change has
-landed. unready, withdraw and status read a branch the same way. A
-branch no record's active version is on is acted on as a branch. A
-change with a record is reviewed, approved and rebased at the
-head its active version records, never at its branch's tip: review shows
-that head and its [a]pprove approves it, and rebase and review's
-[r]eject refuse, naming both, when the branch's tip on origin is another
-commit. approve approves the head bound to it, wherever the branch is.
-[r]eject deletes the branch under a lease on the recorded head. approve,
-rebase, and review's [a]pprove and [b]ase refuse a change whose record is
-not ready, naming its state, and review offers none of them for a change
-that is not ready when it shows it. Each reads the record again just before it
-acts, and again before approve files or rebase pushes, and refuses when
-the change is not ready. rebase also refuses when the change's
-record has changed at all since it began, and approve when the head it
-approves is not a version's. A name that read as a plain branch is
-read again before approve files or rebase pushes. If it names a change by
-then, rebase refuses, and approve files only while the change is ready at
-the head it began with. An approval already past that last check can
-still file if the change is unreadied or withdrawn in the moment before
-its push; the integrator refuses to land it, since it lands no request
-that would bring a version of a change that is not ready, whatever the
-request is named.
-The integrator reads the records last just before it moves main, so a
-change paused in that moment can still land at the head the operator
-approved, and never at any other.
-
-Runs from any checkout of the project; needs only git and coreutils,
-except tail and replay, which also need the nats CLI (natscli), checks,
-which also needs the cue CLI, review's notes, which need less, approve
-and review's [a]pprove, which need both the cue CLI and the attest
-helper, and status, ready, unready, withdraw, review, approve and rebase,
-which need the valley-go helper, as pending, changes, knot, plan and
-self-update do. nix run .#valley bundles all of them. self-update also
-needs nix. Deriving a policy fetches the owning valley's repository, so
-checks and approving also need whatever reaching it takes.
-No config but valley.principal, which ready, rebase, knot and plan read,
-and valley.selfUpdate.repo and .branch, which self-update reads; no batch
-mode; and no state but the notes file, the handle cache pending and
-changes write for completion, and self-update's record of what it
-installed — the judgment stays with the human.
 EOF
+  help_runtime
 }
 
 fetch_origin() {
@@ -3470,10 +3682,28 @@ cmd_version() {
 }
 
 cmd_help() {
+  [ $# -le 1 ] || die "usage: valley help [<verb>]"
+  local out
   case "${1:-}" in
-    self-update) cmd_go self-update --help ;;
-    *) usage ;;
+    '' | help | -h | --help) out="$(usage)" ;;
+    pending) out="$(help_pending)" ;;
+    changes) out="$(help_changes)" ;;
+    review) out="$(help_review)" ;;
+    approve) out="$(help_approve)" ;;
+    rebase) out="$(help_rebase)" ;;
+    status) out="$(help_status)" ;;
+    ready) out="$(help_ready)" ;;
+    unready) out="$(help_unready)" ;;
+    withdraw) out="$(help_withdraw)" ;;
+    knot) out="$(help_knot)" ;;
+    plan) out="$(help_plan)" ;;
+    checks) out="$(help_checks)" ;;
+    tail) out="$(help_tail)" ;;
+    replay) out="$(help_replay)" ;;
+    self-update) out="$(help_self_update)" ;;
+    *) die "unknown help topic: $1 (try 'valley help')" ;;
   esac
+  printf '%s\n' "$out" 2> /dev/null || true
 }
 
 main() {
@@ -3481,6 +3711,14 @@ main() {
   if [ $# -gt 0 ]; then shift; fi
   # The verb set is mirrored in completions/ (valley.bash, _valley) —
   # update both when it changes.
+  case "$verb" in
+    pending | changes | review | approve | rebase | status | ready | unready | withdraw | knot | plan | checks | tail | replay | self-update)
+      if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then
+        cmd_help "$verb"
+        return
+      fi
+      ;;
+  esac
   case "$verb" in
     pending) cmd_pending "$@" ;;
     review) cmd_review "$@" ;;

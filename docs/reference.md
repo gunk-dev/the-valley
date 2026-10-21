@@ -483,7 +483,7 @@ into the user's default Nix profile, while `--version` and `help` report the CLI
 ```sh
 valley self-update [-v] [--retry | --rollback | --pin | --unpin] [--repo <url>] [--branch <name>]
 valley --version
-valley help [self-update]
+valley help [<verb>]
 ```
 
 - **`valley self-update` flags:**
@@ -503,8 +503,11 @@ valley help [self-update]
 - **`valley --version`:** Prints `valley <version>-<short-rev>` (with `-dirty` for a dirty build
   tree or `-unknown` when Nix had no commit rev) when built by Nix (`nix/packages.nix`), or
   `valley unstamped (run from a checkout, not built by nix)` when run directly from a checkout.
-- **`valley help [self-update]`** (also `-h`, `--help`): Prints general `valley` usage, or detailed
-  `self-update` usage when given `self-update`.
+- **`valley help [<verb>]`** (also `valley -h`, `valley --help`, or `valley` with no arguments):
+  Prints a one-screen command summary when called with no `<verb>`, or detailed usage for `<verb>`
+  (`pending`, `changes`, `review`, `approve`, `rebase`, `status`, `ready`, `unready`, `withdraw`,
+  `knot`, `plan`, `checks`, `tail`, `replay`, or `self-update`). `valley <verb> --help` and
+  `valley <verb> -h` print the same per-verb help.
 
 ### Helper and host commands
 

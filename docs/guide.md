@@ -32,7 +32,8 @@ to the valley host, and Nix with flakes enabled.
    ```
 
    `nix run` runs one command. `nix shell` puts the packaged `valley` on your path for the rest of
-   this guide. The package supplies the helpers its commands need.
+   this guide. `valley help` prints a command summary; `valley help <verb>` prints help for one
+   verb. The package supplies the helpers its commands need.
 
 2. Clone the project you will work on and name the principal associated with your SSH key:
 

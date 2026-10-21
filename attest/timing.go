@@ -101,7 +101,8 @@ func (l *timingLog) append(t checkTiming) {
 // is refused before it is opened, and again after, since the path can
 // change in between. The open does not wait: opening a FIFO to write would
 // wait for a reader, which may never come. The file and its directory are
-// created readable by their owner alone.
+// created readable by their owner alone, and a log others can read, such
+// as one an earlier attest created, is made so before a line is added.
 func appendLine(path string, v any) error {
 	line, err := json.Marshal(v)
 	if err != nil {
@@ -117,9 +118,16 @@ func appendLine(path string, v any) error {
 	if err != nil {
 		return err
 	}
-	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
 		f.Close()
 		return fmt.Errorf("%s is not a regular file", path)
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		if err := f.Chmod(perm &^ 0o077); err != nil {
+			f.Close()
+			return err
+		}
 	}
 	if _, err := f.Write(append(line, '\n')); err != nil {
 		f.Close()

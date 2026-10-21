@@ -648,9 +648,10 @@ $ tail -n 1 ~/.local/state/valley/timings.jsonl
 `attest run --timings` appends one line to
 `${XDG_STATE_HOME:-$HOME/.local/state}/valley/timings.jsonl` as each check finishes, whether it
 passed or failed. It creates the file and its directory when they are missing, readable by their
-owner alone. Anything at the path that is not a regular file, such as a FIFO, is refused.
-`valley approve` passes `--timings` whenever it runs checks. Without the flag, `attest run` prints
-its `time` lines, writes no log, and does not ask the nix store whether an output is already there.
+owner alone. A log that others can read is made readable by its owner alone before a line is added.
+Anything at the path that is not a regular file, such as a FIFO, is refused. `valley approve` passes
+`--timings` whenever it runs checks. Without the flag, `attest run` prints its `time` lines, writes
+no log, and does not ask the nix store whether an output is already there.
 
 - `time` (`string`): When the check started, in UTC, to the millisecond.
 - `repository` (`string`): The repository's `origin` remote, reduced to what names it. A URL keeps

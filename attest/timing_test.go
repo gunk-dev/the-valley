@@ -79,6 +79,36 @@ func TestTimingLogAppendsOneLinePerCheck(t *testing.T) {
 	}
 }
 
+// A log others can read, such as one an earlier attest created, is made
+// readable by its owner alone before a line is added, and keeps the lines
+// it held.
+func TestATimingLogOthersCanReadIsMadePrivate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "timings.jsonl")
+	if err := os.WriteFile(path, []byte("{\"check\":\"earlier\"}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var warned bytes.Buffer
+	log := &timingLog{path: path, warn: &warned}
+	log.append(checkTiming{Check: "later", Result: "passed"})
+	if warned.Len() != 0 {
+		t.Fatalf("a log others can read warned: %s", warned.String())
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("a log others could read is now %v, want %v", info.Mode().Perm(), os.FileMode(0o600))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n"); len(lines) != 2 ||
+		!strings.Contains(lines[0], "earlier") || !strings.Contains(lines[1], "later") {
+		t.Errorf("the log holds:\n%s", data)
+	}
+}
+
 // A log that cannot be written says so once and goes on: the run it
 // belongs to is not failed by it, and is not made to repeat the warning
 // for every check after the first.

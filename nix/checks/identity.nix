@@ -7,8 +7,12 @@
 # accepted as request, and restack, whose holder adds a version to another
 # principal's ready change and writes its restack report. A registry naming
 # the approve grant under either name compiles the same grants, and the
-# hook reads a grants file naming either. The registry is read past a
-# replacement ref planted to forge it.
+# hook reads a grants file naming either: a holder under either name, or
+# both, files a request and updates and deletes another principal's change
+# record, and a principal holding neither, including one named approve,
+# does none of that. A grant named approve at a boundary of another kind
+# compiles to nothing. The registry is read past a replacement ref planted
+# to forge it.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {

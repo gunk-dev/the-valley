@@ -163,14 +163,17 @@ done
 
 # The hook reads a grants file naming the grant approve exactly as one
 # naming it request. approver is named under approve, requester under
-# request, both under each, and stoned-flynn under neither. Each holder
-# files a request, replaces it with a head that does not descend from it,
-# and deletes it, and stoned-flynn can do none of that in between.
+# request, both under each, and stoned-flynn under neither. A principal
+# named approve is in the file too, holding only push, a grant the hook
+# does not check: a principal's name is not a grant. Each holder files a
+# request, replaces it with a head that does not descend from it, and
+# deletes it. stoned-flynn and approve can do none of that in between.
 cat > "$TMPDIR/grants" << 'EOF'
 approve approver
 request requester
 approve both
 request both
+push approve
 EOF
 for holder in approver requester both; do
   hook_as "$holder" "main:$request"
@@ -183,18 +186,108 @@ for holder in approver requester both; do
     exit 1
   }
   for refused in "main:$request" "--delete $request"; do
-    # shellcheck disable=SC2086  # the push arguments are two words, split on purpose
-    if hook_as stoned-flynn --force $refused 2> refused.err; then
-      echo "identity-e2e: a principal holding neither name of the approve grant wrote $holder's request" >&2
-      exit 1
-    fi
-    grep -q 'approve grant (also accepted as request)' refused.err
+    for lacking in stoned-flynn approve; do
+      # shellcheck disable=SC2086  # the push arguments are two words, split on purpose
+      if hook_as "$lacking" --force $refused 2> refused.err; then
+        echo "identity-e2e: $lacking, holding neither name of the approve grant, wrote $holder's request" >&2
+        exit 1
+      fi
+      grep -q 'approve grant (also accepted as request)' refused.err
+    done
   done
   hook_as "$holder" --delete "$request"
   if git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null; then
     echo "identity-e2e: $holder could not delete its request" >&2
     exit 1
   fi
+done
+
+# Change records, through the same hook and the same grants file. patrick
+# owns the change and holds nothing in this file. A holder of the approve
+# grant under either name, or both, may update another principal's change
+# record, here by withdrawing the change, and may delete the record.
+# stoned-flynn and approve may do neither, and each refusal leaves the
+# record where it was. The record is created afresh for each holder.
+owned_ref=refs/the-valley/changes/main/klmnopqrstuvwxyzklmnopqrstuvwxyz
+# owned_record <state> <seq> <parent>: a record commit of patrick's change,
+# at one version whose head is owned_head.
+owned_record() {
+  local blob tree
+  blob="$(printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "patrick", "state": "%s", "seq": %s, "versions": [{"n": 1, "head": "git-sha1:%s", "title": "the change", "branch": "topic", "uploader": "patrick"}], "active": 1}\n' \
+    "${owned_ref##*/}" "$1" "$2" "$owned_head" | git -C work hash-object -w --stdin)"
+  tree="$(printf '100644 blob %s\trecord.json\n' "$blob" | git -C work mktree)"
+  git -C work commit-tree "$tree" -p "$3" -m "a change record"
+}
+# owned_at <commit> <what>: the record is at the commit, or gone for "".
+owned_at() {
+  if [ "$(git -C guarded.git rev-parse --verify --quiet "$owned_ref")" != "$1" ]; then
+    echo "identity-e2e: $2" >&2
+    exit 1
+  fi
+}
+# owned_refused <principal> <commit>: the principal may neither move the
+# record to the commit nor delete it, for holding neither name of the
+# approve grant.
+owned_refused() {
+  local who="$1" before
+  before="$(git -C guarded.git rev-parse "$owned_ref")"
+  if hook_as "$who" "$2:$owned_ref" 2> refused.err; then
+    echo "identity-e2e: $who, holding neither name of the approve grant, updated another principal's change record" >&2
+    exit 1
+  fi
+  grep -q "only the change's owner, patrick, or a principal holding the approve grant (also accepted as request) may update its record" refused.err
+  if hook_as "$who" --delete "$owned_ref" 2> refused.err; then
+    echo "identity-e2e: $who, holding neither name of the approve grant, deleted another principal's change record" >&2
+    exit 1
+  fi
+  grep -q "only a principal holding the approve grant (also accepted as request) may delete a change record, and $who holds none" refused.err
+  owned_at "$before" "a refused write by $who moved the change record"
+}
+# owned_commits: patrick's change, and the two records of it pushed below,
+# written into work. filed creates the change, and retired withdraws it.
+# serve replaces work, so they are written again after it.
+owned_commits() {
+  owned_head="$(git -C work commit-tree "main^{tree}" -p main -m "patrick's change")"
+  filed="$(owned_record ready 1 "$owned_head")"
+  retired="$(owned_record withdrawn 2 "$filed")"
+}
+owned_commits
+for holder in approver requester both; do
+  hook_as patrick "$filed:$owned_ref"
+  owned_at "$filed" "patrick could not create a change record"
+  owned_refused stoned-flynn "$retired"
+  owned_refused approve "$retired"
+  hook_as "$holder" "$retired:$owned_ref"
+  owned_at "$retired" "$holder could not withdraw another principal's change"
+  hook_as "$holder" --delete "$owned_ref"
+  owned_at "" "$holder could not delete another principal's change record"
+done
+
+# A grant's name is not its kind. A registry granting stoned-flynn a grant
+# named approve at a boundary of another kind compiles exactly the grants
+# the worked registry does, so the hook refuses stoned-flynn the approve
+# grant's writes.
+for boundary in classic-laddie-push registry; do
+  mkdir -p "mislabelled-$boundary"
+  sed "s/^\t\tgrants: push: boundary: \"classic-laddie-push\"$/\t\tgrants: {push: boundary: \"classic-laddie-push\", approve: boundary: \"$boundary\"}/" \
+    "$registry/registry.cue" > "mislabelled-$boundary/registry.cue"
+  if ! grep -q "approve: boundary: \"$boundary\"" "mislabelled-$boundary/registry.cue"; then
+    echo "identity-e2e: the registry granting approve at $boundary was not written, so the check below proves nothing" >&2
+    exit 1
+  fi
+  serve instance "mislabelled-$boundary"
+  compile --now 2026-08-09 || exit 1
+  diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+  owned_commits
+  if hook_as stoned-flynn "main:$request" 2> refused.err; then
+    echo "identity-e2e: a grant named approve at $boundary let its holder file a request" >&2
+    exit 1
+  fi
+  grep -q 'approve grant (also accepted as request)' refused.err
+  hook_as patrick "$filed:$owned_ref"
+  owned_refused stoned-flynn "$retired"
+  hook_as patrick --delete "$owned_ref"
+  owned_at "" "patrick could not delete its own change record, holding the approve grant"
 done
 
 # The worked registry again, for what follows.

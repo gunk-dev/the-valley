@@ -35,7 +35,7 @@ This step closes particular paths from an agent to a host:
 - M1-B, the verifier: `sigverify` checks OpenSSH signatures, including the hardware key's presence
   bit. It is on `main` and not wired to anything yet.
 - The ref policy: the valley's push hook is default-deny, and filing an integration request needs
-  the `request` grant.
+  the `approve` grant (also accepted as `request`).
 - The CI runners' root helpers run with a clean environment, which closes the known path from a pull
   request job <!-- prose-allow: vocabulary --> to root on the CI host. Isolating the runners (M2) is
   the durable fix.
@@ -49,10 +49,10 @@ back or holds. A merge to cosmo's `main` on GitHub still deploys, and `patflynn-
 Per the cutover record of 2026-10-04 (plan Status), the coordinator and all agents run in the
 `klaus-env` VM on classic-laddie, and the operator's Unix account runs no agents. On GitHub they act
 as the `patflynn-agent` account. On the valley they push as the `klaus-env` principal, which holds a
-push grant and no `request` grant.
+push grant and no `approve` grant.
 
 **Unlocks:** the valley's server-side gates bind agents whether or not the agents follow the rules.
-An agent cannot file an integration request, because its principal does not hold `request`.
+An agent cannot file an integration request, because its principal does not hold `approve`.
 
 ### 3. M5: cosmo on the valley (next)
 
@@ -75,7 +75,7 @@ This step is rebuilt on `sigverify`. It has two halves.
   PIN and a touch. Each host verifies the tag with trust roots from its running system, refuses an
   older or replayed release, and ignores unsigned pushes to `main`. Hosts never track `main`. The
   same check covers the hosts on `system.autoUpgrade` and the work profiles, or those paths retire.
-- **Approvals.** The identity schema and compiler accept hardware-backed keys. The `request` grant
+- **Approvals.** The identity schema and compiler accept hardware-backed keys. The `approve` grant
   moves to the operator's `ssh:valley-approve` YubiKey keys, so filing a request takes a touch. A Go
   `valley approve` signs the repository, the change, the candidate commit, the target and the policy
   snapshot, with batching. The integrator enforces approvals per path class. By default the
@@ -83,7 +83,7 @@ This step is rebuilt on `sigverify`. It has two halves.
   approval-required class by plan decision 10, and this rework is where that is enforced.
 
 **Unlocks:** landing on `main` and deploying to a host become separate acts, each signed by the
-operator. Agents can then hold `request` for low-risk paths, while infrastructure changes still need
+operator. Agents can then hold `approve` for low-risk paths, while infrastructure changes still need
 a touch.
 
 ### 5. M6: klaus on the valley

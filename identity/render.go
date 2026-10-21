@@ -42,9 +42,12 @@ const grantsHeader = `# Compiled from the identity registry — do not edit (dcr
 # principal holding it. A principal not named here holds none.
 `
 
-// The lines a holder of a grant at a hook boundary is written under, one
-// per boundary kind: the grant the hook checks. request is the verb of
-// dcr-e544f20; restack is the host restacker's.
+// The lines a holder of a grant at a hook boundary is written under: the
+// grant the hook checks. grantRequest is the approve grant, the verb of
+// dcr-e544f20. A holder at a boundary of kind approve or of kind request
+// is written under the name request, which every deployed hook reads, and
+// the hook takes a line naming either name as the approve grant.
+// grantRestack is the host restacker's.
 const (
 	grantRequest = "request"
 	grantRestack = "restack"
@@ -103,7 +106,7 @@ func render(r registry, day time.Time, declared map[string]string) (artifacts, e
 		}
 		governed = governed || held[boundaryRegistry]
 		pushes := held[boundaryGitPush]
-		if held[boundaryRequest] {
+		if held[boundaryApprove] || held[boundaryRequest] {
 			granted = append(granted, grantRequest+" "+name)
 		}
 		if held[boundaryRestack] {

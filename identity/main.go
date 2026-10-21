@@ -40,12 +40,15 @@ key sshd authenticated and hands it to the pre-receive hook, which is the
 only thing that can tell one pusher from another over a shared git user.
 
 The grants file is every grant the pre-receive hook checks, one line per
-holder: "request <principal>" for each principal holding a grant at a
-boundary of kind "request", and "restack <principal>" for each holding one
-at a boundary of kind "restack". The hook takes writes to the integration
-request namespace only from a principal named under request. It takes a
-version added to another principal's ready change, and a restack report,
-only from one named under restack.
+holder: "request <principal>" for each principal holding the approve grant,
+at a boundary of kind "approve" or of kind "request", and "restack
+<principal>" for each holding one at a boundary of kind "restack". The two
+kinds are one grant: the approve grant, also accepted as request. A
+principal holding both is written once, and a registry using either kind
+compiles the same file. The hook takes writes to the integration request
+namespace only from a holder of the approve grant. It takes a version
+added to another principal's ready change, and a restack report, only from
+one named under restack.
 
 The registry is read with git's replacement refs off and with no GIT_
 variable or user or system configuration inherited, so the registry

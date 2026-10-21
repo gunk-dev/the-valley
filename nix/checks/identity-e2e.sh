@@ -107,12 +107,99 @@ if VALLEY_PRINCIPAL=stoned-flynn git -C work push --quiet "$TMPDIR/guarded.git" 
   echo "identity-e2e: a principal the registry grants push and not request filed a request" >&2
   exit 1
 fi
-grep -q 'request grant' refused.err
+grep -q 'approve grant (also accepted as request)' refused.err
 VALLEY_PRINCIPAL=patrick git -C work push --quiet "$TMPDIR/guarded.git" "main:$request"
 git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null || {
   echo "identity-e2e: the principal the registry grants request could not file one" >&2
   exit 1
 }
+VALLEY_PRINCIPAL=patrick git -C work push --quiet "$TMPDIR/guarded.git" --delete "$request"
+
+# The approve grant goes by two names, approve and request, and a registry
+# may use either. A registry whose hook boundary is of kind approve, and one
+# granting patrick at a boundary of each kind, compile exactly the artifacts
+# the worked registry does, with patrick written once.
+mkdir -p approve-registry both-registry
+sed 's/kind: "request"/kind: "approve"/' "$registry/registry.cue" > approve-registry/registry.cue
+sed -e 's/^\t"classic-laddie-request": kind: "request"$/&\n\t"classic-laddie-approve": kind: "approve"/' \
+  -e 's/^\t\t\trequest: boundary: "classic-laddie-request"$/&\n\t\t\tapprove: boundary: "classic-laddie-approve"/' \
+  "$registry/registry.cue" > both-registry/registry.cue
+if grep -q 'kind: "request"' approve-registry/registry.cue ||
+  [ "$(grep -c 'classic-laddie-approve' both-registry/registry.cue)" != 2 ]; then
+  echo "identity-e2e: the registries naming the grant approve were not written, so the checks below prove nothing" >&2
+  exit 1
+fi
+# hook_as <principal> <git push arguments…>: a push through the rendered
+# hook, as the principal.
+hook_as() {
+  local who="$1"
+  shift
+  VALLEY_PRINCIPAL="$who" git -C work push --quiet "$TMPDIR/guarded.git" "$@"
+}
+for variant in approve-registry both-registry; do
+  serve instance "$variant"
+  compile --now 2026-08-09 || exit 1
+  diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
+  diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
+  diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+  # And through the hook: patrick files and deletes a request, and
+  # stoned-flynn, holding push alone, does neither.
+  if hook_as stoned-flynn "main:$request" 2> refused.err; then
+    echo "identity-e2e: under $variant, a principal holding push alone filed a request" >&2
+    exit 1
+  fi
+  grep -q 'approve grant (also accepted as request)' refused.err
+  hook_as patrick "main:$request"
+  if hook_as stoned-flynn --delete "$request" 2> refused.err; then
+    echo "identity-e2e: under $variant, a principal holding push alone deleted a request" >&2
+    exit 1
+  fi
+  hook_as patrick --delete "$request"
+  if git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null; then
+    echo "identity-e2e: under $variant, the approve holder could not delete its request" >&2
+    exit 1
+  fi
+done
+
+# The hook reads a grants file naming the grant approve exactly as one
+# naming it request. approver is named under approve, requester under
+# request, both under each, and stoned-flynn under neither. Each holder
+# files a request, replaces it with a head that does not descend from it,
+# and deletes it, and stoned-flynn can do none of that in between.
+cat > "$TMPDIR/grants" << 'EOF'
+approve approver
+request requester
+approve both
+request both
+EOF
+for holder in approver requester both; do
+  hook_as "$holder" "main:$request"
+  git -C work commit --quiet --allow-empty -m "replaced by $holder"
+  replacement="$(git -C work rev-parse HEAD)"
+  git -C work reset --quiet --hard HEAD~1
+  hook_as "$holder" --force "$replacement:$request"
+  [ "$(git -C guarded.git rev-parse "$request")" = "$replacement" ] || {
+    echo "identity-e2e: $holder could not replace its request" >&2
+    exit 1
+  }
+  for refused in "main:$request" "--delete $request"; do
+    # shellcheck disable=SC2086  # the push arguments are two words, split on purpose
+    if hook_as stoned-flynn --force $refused 2> refused.err; then
+      echo "identity-e2e: a principal holding neither name of the approve grant wrote $holder's request" >&2
+      exit 1
+    fi
+    grep -q 'approve grant (also accepted as request)' refused.err
+  done
+  hook_as "$holder" --delete "$request"
+  if git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null; then
+    echo "identity-e2e: $holder could not delete its request" >&2
+    exit 1
+  fi
+done
+
+# The worked registry again, for what follows.
+serve instance "$registry"
+compile --now 2026-08-09 || exit 1
 
 # Level-triggered: compiling again converges on the same bytes and touches
 # nothing.

@@ -39,14 +39,14 @@ cosmo `modules/klaus-env/` and `hosts/classic-laddie/klaus-env.nix`.
   host's KVM. It has no host directory shares and no operator secrets. It runs its own Nix daemon.
   Root inside the guest is accepted.
 - **Its own identities.** On GitHub the guest acts as `patflynn-agent`. On the valley, the cutover
-  record registers the guest's key as the `klaus-env` principal, with a push grant and no `request`
+  record registers the guest's key as the `klaus-env` principal, with a push grant and no `approve`
   grant. Like any admitted key, it can push topic branches and create attestation refs. The hook
   accepts an attestation ref only when every note in it verifies under a known signer
   (`valleyhook/policy.go`, `valleyhook/attestation.go`). It can also create change records, which
   makes it the owner of every agent change, and add versions to them (`valleyhook/record.go`). A
   record never makes anything land. The integrator reads records only to refuse a request, and to
   void a withdrawn change's requests (`integrator/records.go`). So any principal that may create a
-  record can hold back a head, by recording it in a change it then unreadies. Only a `request`
+  record can hold back a head, by recording it in a change it then unreadies. Only an `approve`
   holder may delete that record, and deleting it releases the head.
 - **Caps.** The VM has 8 vCPUs and 10 GiB of memory. Its systemd slice caps CPU at 900% and memory
   at 12 GiB, and gives it a low I/O weight. The source notes the I/O weighting is advisory on ZFS.
@@ -72,10 +72,11 @@ passed 54 of 54 probes.
 
 ### 2. Only the operator can file an integration request
 
-The push hook refuses an integration-request ref unless the pushing principal holds the `request`
-grant (`valleyhook/policy.go`). The principal comes from the key that logged in, and a client cannot
-set it (`valleyhook/shell.go`). Checks: `protect-e2e` and `ssh-e2e`, which use test identities, a
-grant holder and a non-holder, behind a real sshd.
+The push hook refuses an integration-request ref unless the pushing principal holds the `approve`
+grant (`valleyhook/policy.go`). The grant is also accepted as `request`: a principal holding either
+name holds it (`valleyhook/grants.go`). The principal comes from the key that logged in, and a
+client cannot set it (`valleyhook/shell.go`). Checks: `protect-e2e`, `identity-e2e`, and `ssh-e2e`,
+which uses test identities, a grant holder and a non-holder, behind a real sshd.
 
 Who holds the grant on the live host is a deployment record. The ref-policy deployment record of
 2026-10-04 (plan Status) shows the compiled grants file naming only the operator's principal. Every
@@ -87,7 +88,7 @@ request names the exact head that was approved, and the integrator lands only wh
 (`integrator/refs.go`). Checks: `integrator-e2e` and `valley-ready`.
 
 The `restack` grant is the host restacker's, and it files nothing. The hook lets a holder that
-neither owns a change nor holds `request` add exactly one version to the change's record, while the
+neither owns a change nor holds `approve` add exactly one version to the change's record, while the
 change is `ready`. The version keeps the branch and title of the active one, and names the holder as
 its uploader. A holder may also write restack reports (`refs/the-valley/restack/main/*`). The grant
 authorises no other record write, no record delete, and nothing on integration requests
@@ -120,7 +121,7 @@ signed approval statements of M1-C.
 
 ### 3. Filing takes a touch (queued)
 
-The `request` grant moves to the operator's `ssh:valley-approve` YubiKey keys, verified with
+The `approve` grant moves to the operator's `ssh:valley-approve` YubiKey keys, verified with
 `sigverify`. Until then, filing a request needs the operator's principal and no touch. `sigverify`
 itself is checked by `sigverify-unit` and `sigverify-e2e`, including a touchless-signature negative
 test. The registry schema does not accept hardware-backed keys yet.
@@ -231,7 +232,7 @@ themselves when to deploy.
   agents could once read. Rotation is deferred.
 - **A guest escape lands on classic-laddie.** The guest has its own kernel. An escape through KVM or
   cloud-hypervisor reaches classic-laddie, which also runs the valley.
-- **Every key of the operator's principal holds `request`.** Filing needs no touch until step 3
+- **Every key of the operator's principal holds `approve`.** Filing needs no touch until step 3
   lands.
 - **Check definitions come from the change.** A change can edit the flake check it is judged by
   ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md)).

@@ -244,38 +244,41 @@ lacks_ref released refs/tags/v1
 
 # ----------------------------------------------------------------------
 # Integration requests take writes only from a holder of the
-# request grant. Pushing topic branches does not make a
+# approve grant. Pushing topic branches does not make a
 # principal one, and neither does being a declared writer.
 request=refs/the-valley/integration-requests/main/idea
 for who in contributor integrator anonymous; do
-  refused request.err "$who filed a request without the request grant" \
+  refused request.err "$who filed a request without the approve grant" \
     as "$who" git push --quiet guarded "idea/one:$request"
   grep -q 'refs/the-valley/integration-requests/' request.err
-  grep -q 'request grant' request.err
+  grep -q 'approve grant (also accepted as request)' request.err
   lacks_ref guarded "$request"
 done
 
-# The holder files one, replaces it with a head that does not
-# descend from the first, and withdraws it. In between, a
-# principal without the grant can neither replace nor
-# withdraw what the holder filed.
-git commit --quiet --allow-empty -m "first request"
-as requester git push --quiet guarded "HEAD:$request"
-filed="$(git rev-parse HEAD)"
-git reset --quiet --hard HEAD~1
-git commit --quiet --allow-empty -m "second request"
-refused replaced.err "a principal without the grant replaced a request" \
-  as contributor git push --quiet --force guarded "HEAD:$request"
-grep -q 'request grant' replaced.err
-refused withdrawn.err "a principal without the grant withdrew a request" \
-  as contributor git push --quiet --delete guarded "$request"
-grep -q 'request grant' withdrawn.err
-[ "$(git -C "$TMPDIR/guarded.git" rev-parse "$request")" = "$filed" ]
-as requester git push --quiet --force guarded "HEAD:$request"
-[ "$(git -C "$TMPDIR/guarded.git" rev-parse "$request")" = "$(git rev-parse HEAD)" ]
-as requester git push --quiet --delete guarded "$request"
-lacks_ref guarded "$request"
-git reset --quiet --hard HEAD~1
+# Each holder files one, replaces it with a head that does not
+# descend from the first, and withdraws it: requester, declared
+# under both names of the approve grant, and approver, declared
+# under approve alone. In between, a principal without the grant
+# can neither replace nor withdraw what the holder filed.
+for holder in requester approver; do
+  git commit --quiet --allow-empty -m "first request"
+  as "$holder" git push --quiet guarded "HEAD:$request"
+  filed="$(git rev-parse HEAD)"
+  git reset --quiet --hard HEAD~1
+  git commit --quiet --allow-empty -m "second request"
+  refused replaced.err "a principal without the grant replaced $holder's request" \
+    as contributor git push --quiet --force guarded "HEAD:$request"
+  grep -q 'approve grant (also accepted as request)' replaced.err
+  refused withdrawn.err "a principal without the grant withdrew $holder's request" \
+    as contributor git push --quiet --delete guarded "$request"
+  grep -q 'approve grant (also accepted as request)' withdrawn.err
+  [ "$(git -C "$TMPDIR/guarded.git" rev-parse "$request")" = "$filed" ]
+  as "$holder" git push --quiet --force guarded "HEAD:$request"
+  [ "$(git -C "$TMPDIR/guarded.git" rev-parse "$request")" = "$(git rev-parse HEAD)" ]
+  as "$holder" git push --quiet --delete guarded "$request"
+  lacks_ref guarded "$request"
+  git reset --quiet --hard HEAD~1
+done
 
 # Where protection covers the request namespace too, each rule
 # still applies and neither stands in for the other: released's
@@ -283,8 +286,8 @@ git reset --quiet --hard HEAD~1
 # released's writer.
 refused overlap-writer.err "a writer filed a request without the grant" \
   as integrator git push --quiet released "idea/one:$request"
-grep -q 'request grant' overlap-writer.err
-refused overlap-holder.err "a request holder wrote a protected request ref" \
+grep -q 'approve grant (also accepted as request)' overlap-writer.err
+refused overlap-holder.err "an approve holder wrote a protected request ref" \
   as requester git push --quiet released "idea/one:$request"
 grep -q 'a protected ref of released' overlap-holder.err
 lacks_ref released "$request"
@@ -299,7 +302,7 @@ has_ref open "$request"
 # ----------------------------------------------------------------------
 # A change record moves only by the rows of the hook's table
 # (valleyhook/record.go), here the rows that change its state. Each is
-# pushed as the change's owner or the holder of the request grant, and
+# pushed as the change's owner or the holder of the approve grant, and
 # each refusal leaves the record where it was. A principal that is
 # neither may not move it at all.
 change_id=nxvpwlkmqtsrzyoukklnpmqrstuvwxyz
@@ -411,9 +414,22 @@ revived="$(record_commit "$(record_json ready 8 2 "$h1" "$h2")" "$gone")"
 as contributor git push --quiet open "$revived:$record_ref"
 record_at "$revived" "a re-ready from withdrawn at the same version"
 
+# approver, declared under the approve grant's new name alone, moves
+# another's record as requester does: it withdraws the change, and deletes
+# the record, which the change's owner may not.
+refused owner-delete.err "the owner deleted a change record" \
+  as contributor git push --quiet --delete open "$record_ref"
+grep -q 'only a principal holding the approve grant (also accepted as request) may delete' owner-delete.err
+record_at "$revived" "a refused delete"
+retired="$(record_commit "$(record_json withdrawn 9 2 "$h1" "$h2")" "$revived")"
+as approver git push --quiet open "$retired:$record_ref"
+record_at "$retired" "a withdrawal under the approve grant"
+as approver git push --quiet --delete open "$record_ref"
+lacks_ref open "$record_ref"
+
 # ----------------------------------------------------------------------
 # The restack grant: the host restacker's one record write. restacker holds
-# it alone, and requester holds it beside the request grant. Neither owns
+# it alone, and requester holds it beside the approve grant. Neither owns
 # the change, which contributor does. A holder may add exactly one version
 # to the change while it is ready, on the active version's branch and under
 # its title, naming itself as the uploader. Every other write the grant
@@ -467,7 +483,7 @@ done
 grep -q 'a key that names no principal' nogrant.err
 refused nogrant.err "integrator added a version without the grant" \
   as integrator git push --quiet open "$appended:$restack_ref"
-grep -q "only the change's owner, contributor, or a principal holding the request grant" nogrant.err
+grep -q "only the change's owner, contributor, or a principal holding the approve grant (also accepted as request)" nogrant.err
 
 # Each way to write more than the one version is refused.
 two="$(record_commit "$(restack_json ready 2 3 "$v1" "$at_r2" "$r3|restacker|the change|topic")" "$rcreated" "$r3")"
@@ -517,17 +533,17 @@ back_r="$(record_commit "$(restack_json ready 5 2 "$v1" "$at_r2")" "$gone_r")"
 as contributor git push --quiet open "$back_r:$restack_ref"
 restack_at "$back_r" "the owner's re-ready"
 
-# Deleting stays the request grant's alone.
+# Deleting stays the approve grant's alone.
 refused rdelete.err "a holder of restack alone deleted a record" \
   as restacker git push --quiet --delete open "$restack_ref"
-grep -q 'only a principal holding the request grant may delete' rdelete.err
+grep -q 'only a principal holding the approve grant (also accepted as request) may delete' rdelete.err
 restack_at "$back_r" "a refused delete"
 
-# Holding restack beside request leaves request's powers as they were:
+# Holding restack beside approve leaves approve's powers as they were:
 # requester unreadies the change, which restack alone may not.
 held="$(record_commit "$(restack_json draft 6 2 "$v1" "$at_r2")" "$back_r")"
 as requester git push --quiet open "$held:$restack_ref"
-restack_at "$held" "an unready under the request grant"
+restack_at "$held" "an unready under the approve grant"
 
 # A holder keeps a named principal's own powers: it creates its own
 # record, and unreadies it.
@@ -547,15 +563,15 @@ as restacker git push --quiet open "$own_draft:$own_ref"
 # and neither replaces nor withdraws the one requester filed.
 refused rrequest.err "a holder of restack alone filed a request" \
   as restacker git push --quiet open "$r2:refs/the-valley/integration-requests/main/c-$restack_id"
-grep -q 'request grant' rrequest.err
+grep -q 'approve grant (also accepted as request)' rrequest.err
 lacks_ref open "refs/the-valley/integration-requests/main/c-$restack_id"
 filed_request="$(git -C "$TMPDIR/open.git" rev-parse "$request")"
 refused rreplace.err "a holder of restack alone replaced a request" \
   as restacker git push --quiet --force open "$r2:$request"
-grep -q 'request grant' rreplace.err
+grep -q 'approve grant (also accepted as request)' rreplace.err
 refused rwithdraw.err "a holder of restack alone withdrew a request" \
   as restacker git push --quiet --delete open "$request"
-grep -q 'request grant' rwithdraw.err
+grep -q 'approve grant (also accepted as request)' rwithdraw.err
 [ "$(git -C "$TMPDIR/open.git" rev-parse "$request")" = "$filed_request" ]
 
 # ----------------------------------------------------------------------

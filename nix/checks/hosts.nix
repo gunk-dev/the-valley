@@ -84,11 +84,13 @@ in
   };
 
   # The protection declaration, plus the machine half it needs: keys
-  # bound to the principal names it uses, and the request and restack
+  # bound to the principal names it uses, and the approve and restack
   # grants held by hand. requester holds both grants, so the hook checks
-  # read a principal whose request grant the restack grant leaves as it
-  # is. The baseline key above is anonymous and stays in the list, so this
-  # host also renders the two forms of key side by side.
+  # read a principal whose approve grant the restack grant leaves as it
+  # is. The approve grant is declared under both its names: requester is
+  # named under both, and approver under approve alone. The baseline key
+  # above is anonymous and stays in the list, so this host also renders
+  # the two forms of key side by side.
   protectedHost = mkHost {
     services.valley = {
       config = ../../examples/hosts/protected.cue;
@@ -109,8 +111,16 @@ in
           principal = "restacker";
           key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck4 restacker";
         }
+        {
+          principal = "approver";
+          key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPlaceholderKeyForEvalOnlyCheck5 approver";
+        }
       ];
       grants.request = [ "requester" ];
+      grants.approve = [
+        "approver"
+        "requester"
+      ];
       grants.restack = [
         "restacker"
         "requester"

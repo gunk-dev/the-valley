@@ -485,8 +485,8 @@ usage: valley <verb> [args]
                    integrator deletes it on its next pass while the change
                    is still withdrawn. withdraw warns, since a ready before
                    then leaves the request standing: only a holder of the
-                   request grant may touch a request ref, so the operator
-                   must drop it then.
+                   approve grant (also accepted as request) may touch a
+                   request ref, so the operator must drop it then.
   knot <verb> [args]
                    read and write the project's plan graph: knots, at
                    refs/the-valley/knots on origin. a knot is an outcome,

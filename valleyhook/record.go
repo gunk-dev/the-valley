@@ -164,12 +164,12 @@ func (gitRepository) records() (int, error) {
 // version names.
 //
 //	create       any named principal     P = [h]
-//	new version  owner or request holder P = [old, h]
-//	unready      owner or request holder P = [old]   ready → draft
-//	re-ready     owner or request holder P = [old]   draft or withdrawn → ready
-//	withdraw     owner or request holder P = [old]   ready or draft → withdrawn
+//	new version  owner or approve holder P = [old, h]
+//	unready      owner or approve holder P = [old]   ready → draft
+//	re-ready     owner or approve holder P = [old]   draft or withdrawn → ready
+//	withdraw     owner or approve holder P = [old]   ready or draft → withdrawn
 //	restack      restack holder          P = [old, h] ready → ready
-//	delete       request holder          —
+//	delete       approve holder          —
 //
 // A new version always leaves the change ready, from whatever state it
 // was in. A record whose one parent is old changes the state and the seq
@@ -177,10 +177,10 @@ func (gitRepository) records() (int, error) {
 // one, and never as a draft. Every other combination is refused.
 //
 // The restack row is the one write the restack grant authorises: a
-// principal that neither owns the change nor holds the request grant adds
+// principal that neither owns the change nor holds the approve grant adds
 // one version to a change that is ready, on the branch and under the title
 // of the version that was active. It changes no state. A restack holder
-// that owns the change, or holds the request grant too, writes by those
+// that owns the change, or holds the approve grant too, writes by those
 // rows instead, unrestricted by this one.
 func (p policy) checkRecord(principal string, u update) (verb, why string) {
 	target, id, ok := change.ParseRef(u.ref)
@@ -192,8 +192,8 @@ func (p policy) checkRecord(principal string, u update) (verb, why string) {
 	}
 	switch {
 	case isZero(u.new):
-		if !p.grants.holds(principal, grantRequest) {
-			return "delete", fmt.Sprintf("only a principal holding the %s grant may delete a change record, and %s holds none", grantRequest, principal)
+		if !p.grants.holds(principal, grantApprove) {
+			return "delete", fmt.Sprintf("only a principal holding the %s may delete a change record, and %s holds none", approveGrant, principal)
 		}
 		return "delete", ""
 	case isZero(u.old):
@@ -261,9 +261,9 @@ func (p policy) checkUpdate(principal, target, id, old, commit string) string {
 	// restack is whether the restack grant is what authorises the write,
 	// which holds it to the restack row alone.
 	restack := false
-	if principal != before.Owner && !p.grants.holds(principal, grantRequest) {
+	if principal != before.Owner && !p.grants.holds(principal, grantApprove) {
 		if !p.grants.holds(principal, grantRestack) {
-			return fmt.Sprintf("only the change's owner, %s, or a principal holding the %s grant may update its record", before.Owner, grantRequest)
+			return fmt.Sprintf("only the change's owner, %s, or a principal holding the %s may update its record", before.Owner, approveGrant)
 		}
 		if before.State != change.Ready {
 			return fmt.Sprintf("the change is %s, and the %s grant adds a version only to a change that is %s", before.State, grantRestack, change.Ready)

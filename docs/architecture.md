@@ -157,8 +157,8 @@ the plan graph by `knots-e2e`.
 | `refs/heads/*` (topic branches)                     | Any key                                                                                          | Create, update and delete.                                                                                                                                              |
 | Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
-| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `request` grant                                                              | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
-| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner, `request` or `restack` holders update; `request` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
+| `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
+| `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
 | `refs/the-valley/restack/main/<change-id>`          | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
 | `refs/the-valley/knots`                             | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
 | `refs/the-valley/projects` (instance repository)    | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
@@ -170,12 +170,17 @@ the plan graph by `knots-e2e`.
 Branches and tags hold the source. The namespaces under `refs/the-valley/` are project storage, as
 [The source and project storage](#the-source-and-project-storage) describes.
 
-The `request` and `restack` grants each come from two places: the host's declared
-`services.valley.grants.request` and `services.valley.grants.restack`, and the identity compiler's
-`grants` file. The two sources add up. The `restack` grant is the host restacker's. It authorises
-two writes and nothing else: one version added to another principal's ready change, and the change's
-restack report. It grants nothing on integration requests. Why replace refs are closed is recorded
-in [bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
+The `approve` and `restack` grants each come from two places: the host's declared
+`services.valley.grants.approve` and `services.valley.grants.restack`, and the identity compiler's
+`grants` file. The two sources add up. The `approve` grant is also accepted as `request`, and the
+two names are one grant. Its holders are the principals named under either name, in
+`services.valley.grants.approve`, in `services.valley.grants.request`, or in the registry. Both
+writers write each holder as a `request <principal>` line, and the hook reads a line naming either
+name as the `approve` grant (`valleyhook/grants.go`). The `restack` grant is the host restacker's.
+It authorises two writes and nothing else: one version added to another principal's ready change,
+and the change's restack report. It grants nothing on integration requests. Why replace refs are
+closed is recorded in
+[bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
 
 ### Change records
 
@@ -204,8 +209,8 @@ The integrator also voids a withdrawn change's requests. On each pass it deletes
 change again needs a fresh approval. A withdrawal followed by a ready within one pass is not seen,
 and can leave an old request in place. So `valley withdraw` warns when origin holds a request for
 the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
-under the name a branch's request has, for the branch of each of the change's versions. Only a
-`request` holder may touch a request ref, so the warning says the operator must drop it if the
+under the name a branch's request has, for the branch of each of the change's versions. Only an
+`approve` holder may touch a request ref, so the warning says the operator must drop it if the
 change is readied first. Approvals are not records yet either; they become records with M1-C.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
@@ -241,23 +246,23 @@ is 1 to 200 bytes with no control characters. `state` is `ready`, `draft` or `wi
 The record commit's parents tie it to what it records. In the table, `P` is the record commit's
 parents, `old` is the ref's value before the push, and `h` is the head of the version being added.
 
-| Transition                | Who                             | `P`        | What the record must say                                                                                                                                                                            |
-| ------------------------- | ------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Create                    | Any named principal             | `[h]`      | One version: `n` 1, `head` `h`, and the pusher as `uploader`. The pusher as `owner`, `seq` 1, `active` 1, `state` `ready`. `target` and `change_id` are the ref's.                                  |
-| New version               | The owner or a `request` holder | `[old, h]` | `old`'s versions unchanged, plus one with the next `n`, `head` `h` other than the active head, and the pusher as `uploader`. `active` is the new `n`, `state` `ready`, `seq` one more than `old`'s. |
-| Unready                   | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` to `draft` and `seq` goes up by one. `active` stays.                                                                                       |
-| Withdraw                  | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` or `draft` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                        |
-| Ready again, same version | The owner or a `request` holder | `[old]`    | Everything as in `old`, except `state` goes from `draft` or `withdrawn` to `ready` and `seq` goes up by one. `active` stays.                                                                        |
-| Ready again, new version  | The owner or a `request` holder | `[old, h]` | As for a new version, from `draft` or `withdrawn`.                                                                                                                                                  |
-| Restack                   | A `restack` holder              | `[old, h]` | As for a new version, from `ready` only. The new version keeps the `branch` and `title` of the version that was active.                                                                             |
-| Delete                    | A `request` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
+| Transition                | Who                              | `P`        | What the record must say                                                                                                                                                                            |
+| ------------------------- | -------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Create                    | Any named principal              | `[h]`      | One version: `n` 1, `head` `h`, and the pusher as `uploader`. The pusher as `owner`, `seq` 1, `active` 1, `state` `ready`. `target` and `change_id` are the ref's.                                  |
+| New version               | The owner or an `approve` holder | `[old, h]` | `old`'s versions unchanged, plus one with the next `n`, `head` `h` other than the active head, and the pusher as `uploader`. `active` is the new `n`, `state` `ready`, `seq` one more than `old`'s. |
+| Unready                   | The owner or an `approve` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` to `draft` and `seq` goes up by one. `active` stays.                                                                                       |
+| Withdraw                  | The owner or an `approve` holder | `[old]`    | Everything as in `old`, except `state` goes from `ready` or `draft` to `withdrawn` and `seq` goes up by one. `active` stays.                                                                        |
+| Ready again, same version | The owner or an `approve` holder | `[old]`    | Everything as in `old`, except `state` goes from `draft` or `withdrawn` to `ready` and `seq` goes up by one. `active` stays.                                                                        |
+| Ready again, new version  | The owner or an `approve` holder | `[old, h]` | As for a new version, from `draft` or `withdrawn`.                                                                                                                                                  |
+| Restack                   | A `restack` holder               | `[old, h]` | As for a new version, from `ready` only. The new version keeps the `branch` and `title` of the version that was active.                                                                             |
+| Delete                    | An `approve` holder              | —          | Allowed, to keep storage tidy.                                                                                                                                                                      |
 
 The restack row applies only when the `restack` grant is what authorises the write: the pusher
-neither owns the change nor holds `request`. Such a pusher may write that row and no other. The hook
+neither owns the change nor holds `approve`. Such a pusher may write that row and no other. The hook
 refuses its write when the change is `draft` or `withdrawn`, when the record changes the state with
 one parent, and when it adds more than one version. It also refuses a changed earlier version,
 owner, target, change ID, branch or title, and an uploader other than the pusher. A `restack` holder
-may not delete a record. A `restack` holder that owns the change, or also holds `request`, writes by
+may not delete a record. A `restack` holder that owns the change, or also holds `approve`, writes by
 the other rows. The hook cannot tell a submitted change from a ready one, because a landed change
 can stay `ready`; leaving submitted changes alone is the restacker's own selection.
 
@@ -743,7 +748,9 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 
 - A principal has a kind (`human`, `machine` or `service`), one or more `ssh-ed25519` keys, and
   grants. A key may also sign attestations, under a name it declares.
-- A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `request` or `restack`.
+- A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `approve` or `restack`.
+  The kind `approve` is also accepted as `request`. A registry using either name compiles the same
+  files.
 - A machine, service or external principal must declare `expires`. From that day on, a successful
   compile leaves the principal out of every file. A compile that is refused keeps the previous
   files, expired entries included. Keys the host declares statically are outside the registry and do
@@ -756,8 +763,10 @@ The identity registry is CUE under `identity/` in the instance repository, read 
 - `authorized_keys.git`: one line per key of a principal with a `git-push` grant, tagged
   `environment="VALLEY_PRINCIPAL=<principal>"`. sshd reads it after the host's declared keys.
 - `known-signers`: the keys that may sign attestations, for the hook and the integrator.
-- `grants`: one `request <principal>` line per holder of a `request` grant, and one
-  `restack <principal>` line per holder of a `restack` grant.
+- `grants`: one `request <principal>` line per holder of an `approve` grant, at a boundary of kind
+  `approve` or `request`, and one `restack <principal>` line per holder of a `restack` grant. A
+  principal holding both kinds is written once. The line keeps the name `request`, and the hook
+  reads it as the `approve` grant.
 
 The compiler refuses a registry where no principal holds a registry grant, where one key pushes for
 two principals, or where a pushing key matches a host-declared key under a different tag or none.
@@ -1098,7 +1107,7 @@ reads each plain branch in the stack again, and refuses when one names a change 
 
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
 (`status/ready.go`). Either may be run by the change's owner or by the operator, who holds the
-`request` grant; the hook refuses anyone else. They take a change by any of its names, and print the
+`approve` grant; the hook refuses anyone else. They take a change by any of its names, and print the
 handle, the active version and the new state, such as `cosmo nxvp v2 draft`. Each says when a
 request for the change is pending, and `withdraw` warns, as [Change records](#change-records)
 describes. `valley pending` lists the changes whose record says they are drafts in a section of
@@ -1896,7 +1905,7 @@ exit status is 1.
    with `valley approve <handle> --head <sha>` from a front end. The required checks run over that
    head, and one push files the evidence and the integration request
    `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The hook verifies each
-   note and the `request` grant.
+   note and the `approve` grant.
 4. On its next pass the integrator reads the records. It refuses a request that would bring a
    version of a change that is not `ready`, and one whose commits hold a merge. Otherwise it builds
    the candidate, derives the policy, judges the evidence, and lands or refuses. If the author

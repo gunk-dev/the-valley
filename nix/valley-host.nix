@@ -620,12 +620,17 @@ let
   valleyhookPackage = (import ./packages.nix { inherit pkgs lib; }).valleyhook;
 
   # The grants declared by hand, in the format the compiler writes, so the
-  # hook reads one format whichever wrote it.
+  # hook reads one format whichever wrote it. The holders of the approve
+  # grant are one set under either option, written under the name request
+  # the way the compiler writes them, and a principal named in both is
+  # written once.
   declaredGrants = pkgs.writeText "valley-grants" (
     ''
       # Declared in services.valley.grants — do not edit.
     ''
-    + lib.concatMapStrings (principal: "request ${principal}\n") cfg.grants.request
+    + lib.concatMapStrings (principal: "request ${principal}\n") (
+      lib.unique (cfg.grants.approve ++ cfg.grants.request)
+    )
     + lib.concatMapStrings (principal: "restack ${principal}\n") cfg.grants.restack
   );
 
@@ -659,7 +664,7 @@ let
   # refs, notes and the valley's own namespace take no push, but for the
   # four namespaces below; a symbolic ref takes none; topic branches are
   # open; an attestation ref may only be created, and only holding what its
-  # name says; an integration request takes the request grant; a change
+  # name says; an integration request takes the approve grant; a change
   # record moves only by the transitions the hook allows; the plan graph,
   # refs/the-valley/knots, takes any named principal's write of one commit
   # on its tip that keeps the graph valid; every other ref, tags included,
@@ -985,17 +990,23 @@ in
     # form of what it compiles, beside it the way the declared keys sit
     # beside the compiled ones.
     grants = {
-      request = lib.mkOption {
+      approve = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
         default = [ ];
         example = [ "operator" ];
         description = ''
-          Principals holding the request grant: the ones whose pushes may
-          file, replace and withdraw an integration request
+          Principals holding the approve grant (also accepted as
+          {option}`services.valley.grants.request`): the ones whose pushes
+          may file, replace and withdraw an integration request
           (`refs/the-valley/integration-requests/*`) on a protected
           project. The pre-receive hook refuses every other write to that
-          namespace, so a principal named neither here nor in the
-          registry cannot file an integration request.
+          namespace, so a principal named neither here, nor in
+          {option}`services.valley.grants.request`, nor in the registry
+          cannot file an integration request.
+
+          The two options are one grant. The holders are the principals
+          named in either list, and a principal named in both holds the
+          grant once.
 
           The grant rides on push. Only a key sshd admits reaches the hook,
           so a principal named here also needs a key, declared in
@@ -1004,9 +1015,21 @@ in
 
           With {option}`services.valley.identity.enable` on, the holders
           the registry names are added to these, and a compiled file can
-          only ever add. The list is therefore how a host grants request
+          only ever add. The list is therefore how a host grants approve
           before its registry does — including to the operator who has to
           file the registry change that grants it.
+        '';
+      };
+
+      request = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
+        default = [ ];
+        example = [ "operator" ];
+        description = ''
+          Principals holding the approve grant, under the name it had
+          first. A principal named here holds exactly what one named in
+          {option}`services.valley.grants.approve` holds, and the holders
+          are the principals named in either list.
         '';
       };
 
@@ -1016,7 +1039,7 @@ in
         example = [ "valley-restacker" ];
         description = ''
           Principals holding the restack grant: the host restacker's. A
-          holder that neither owns a change nor holds the request grant may
+          holder that neither owns a change nor holds the approve grant may
           add exactly one version to the change's record while the change
           is ready, on the branch and under the title of its active version,
           with itself as the uploader. It may also write restack reports
@@ -1024,7 +1047,7 @@ in
           no other record write and nothing on integration requests, and a
           holder keeps every ordinary power of a named principal.
 
-          The grant rides on push, like request: a principal named here also
+          The grant rides on push, like approve: a principal named here also
           needs a key. With {option}`services.valley.identity.enable` on,
           the holders the registry names are added to these. The list is
           how a host grants restack before its registry does; remove an

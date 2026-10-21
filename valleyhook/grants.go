@@ -12,7 +12,13 @@ import (
 // grants maps a principal to the grants it holds.
 type grants map[string]map[string]bool
 
+// holds reports whether principal holds grant. The approve grant is held
+// under either of its names, so a line naming request grants exactly what
+// a line naming approve does, and holding both is holding it once.
 func (g grants) holds(principal, grant string) bool {
+	if grant == grantApprove && g[principal][grantRequest] {
+		return true
+	}
 	return g[principal][grant]
 }
 

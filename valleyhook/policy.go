@@ -41,9 +41,15 @@ const (
 	requestPrefix     = "refs/the-valley/integration-requests/"
 	branchPrefix      = "refs/heads/"
 
-	// grantRequest is the grant that opens the integration-request
-	// namespace (dcr-e544f20).
+	// grantApprove is the grant that opens the integration-request
+	// namespace (dcr-e544f20). It is also accepted under grantRequest, the
+	// name it had first: a principal holding either holds it (grants.go).
+	grantApprove = "approve"
 	grantRequest = "request"
+
+	// approveGrant is how a refusal names the approve grant, with the
+	// other name it is accepted under.
+	approveGrant = grantApprove + " grant (also accepted as " + grantRequest + ")"
 
 	// grantRestack is the host restacker's grant: it adds one version to
 	// another principal's ready change (record.go), and it opens the
@@ -100,7 +106,7 @@ type update struct {
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
 //     Attestations are create-only and must be what their name says.
-//     Integration requests take the request grant. A change record moves
+//     Integration requests take the approve grant. A change record moves
 //     only by the transitions checkRecord allows. A restack report takes
 //     the restack grant, and moves only by the writes checkReport allows.
 //     The plan graph takes a named principal, and moves only by the writes
@@ -110,7 +116,7 @@ type update struct {
 //  4. A protected ref also takes a declared writer.
 //
 // Protection only ever adds a requirement. A writer of a pattern that
-// covers integration requests still needs the request grant, and a writer
+// covers integration requests still needs the approve grant, and a writer
 // of a tag pattern still needs a grant that opens the tag.
 func (p policy) decide(principal string, u update) string {
 	who := principal
@@ -149,12 +155,12 @@ func (p policy) decide(principal string, u update) string {
 		}
 
 	case strings.HasPrefix(u.ref, requestPrefix):
-		if principal == "" || !p.grants.holds(principal, grantRequest) {
+		if principal == "" || !p.grants.holds(principal, grantApprove) {
 			holder := who + " holds none"
 			if principal == "" {
 				holder = "a key that names no principal holds no grant"
 			}
-			return refuse("write", fmt.Sprintf("%s takes writes only from a principal holding the %s grant, and %s", requestPrefix, grantRequest, holder))
+			return refuse("write", fmt.Sprintf("%s takes writes only from a principal holding the %s, and %s", requestPrefix, approveGrant, holder))
 		}
 
 	case strings.HasPrefix(u.ref, change.RefPrefix):

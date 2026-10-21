@@ -92,9 +92,9 @@ func TestNoRuleStandsInForAnother(t *testing.T) {
 		{"writer", "refs/the-valley/integration-outcomes/main/c", false, "written only by the machinery"},
 		// A symbolic ref is refused whoever writes it.
 		{"writer", "refs/heads/alias", false, "symbolic ref"},
-		// The request grant is needed whatever else is declared, and
+		// The approve grant is needed whatever else is declared, and
 		// protection is needed on top of it.
-		{"writer", "refs/the-valley/integration-requests/main/c", false, "request grant"},
+		{"writer", "refs/the-valley/integration-requests/main/c", false, "approve grant (also accepted as request)"},
 		{"requester", "refs/the-valley/integration-requests/main/c", false, "a protected ref"},
 		// A tag takes a grant, and protection on top: being opened the
 		// ref does not make a principal its writer.

@@ -412,15 +412,16 @@ input, start with:
       principal = "operator";
       key = "ssh-ed25519 REPLACE_WITH_OPERATOR_PUBLIC_KEY";
     }];
-    grants.request = [ "operator" ];
+    grants.approve = [ "operator" ];
   };
 }
 ```
 
 Pass the input through `specialArgs = { inherit valley; };` in `nixpkgs.lib.nixosSystem` if using
 this module's argument. Replace the key with the public SSH key that the operator uses to push. The
-`request` grant is the grant that lets a principal approve. Keep administrative SSH access separate
-from this git account.
+`approve` grant is the grant that lets a principal approve. It is also accepted as `request`, and
+`grants.request` declares the same grant as `grants.approve`. Keep administrative SSH access
+separate from this git account.
 
 Apply your configuration using your normal NixOS deployment command. For a local flake with a host
 named `valley-host`, run this on the host from that configuration directory:

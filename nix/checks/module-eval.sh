@@ -153,9 +153,18 @@ fi
 
 # The grants it reads. A grant declared by hand renders into
 # a file in the format the compiler writes, and a host that
-# compiles no registry reads that file alone.
+# compiles no registry reads that file alone. The approve grant's
+# holders are one set under either of its names, written under
+# request the way the compiler writes them: approver, named under
+# approve alone, holds it, and requester, named under both, is
+# written once.
 grants="$(grep -o '/nix/store/[^ ]*-valley-grants' "$guardedHook" | head -n1)"
-grep -qx 'request requester' "$grants"
+grep -qx 'request approver' "$grants"
+[ "$(grep -cx 'request requester' "$grants")" = 1 ] || {
+  echo "module-eval: a principal declared under both names of the approve grant is not written once" >&2
+  cat "$grants" >&2
+  exit 1
+}
 grep -qx 'restack restacker' "$grants"
 grep -qx 'restack requester' "$grants"
 if grep -q '/var/lib/valley-identity' "$guardedHook"; then

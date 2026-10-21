@@ -103,7 +103,7 @@ package identity
 	// per-project access is not honestly enforceable over a shared git user
 	// (dcr-0f5d9b1). A stream list here would be a scope nothing checks. It
 	// arrives with the first boundary that checks one — the bus's
-	// per-subject authorization (bd-d853d9c), or the request boundary once
+	// per-subject authorization (bd-d853d9c), or the approve boundary once
 	// its compiled grants name a project.
 }
 
@@ -123,14 +123,17 @@ package identity
 	// here, and the required checks of that path class include human
 	// approval (ida-b7025b5).
 	//
-	// "request" — the pre-receive hook (valleyhook/) on a host serving the
+	// "approve" — the pre-receive hook (valleyhook/) on a host serving the
 	// instance's repositories, checking writes to the integration-request
 	// namespace (refs/the-valley/integration-requests/*). This is the
-	// request verb of dcr-e544f20. The compiler writes each holder into the
-	// grants file the hook reads, and the hook refuses a principal it does
-	// not name there: it cannot file, replace or withdraw a request. The
-	// grant rides on push — only a key sshd admits reaches the hook — so a
-	// principal that files requests holds a "git-push" grant too.
+	// approve grant, the request verb of dcr-e544f20. "request" is the same
+	// kind under the name it had first, and is also accepted: a grant at a
+	// boundary of either kind is the approve grant. The compiler writes
+	// each holder into the grants file the hook reads, and the hook refuses
+	// a principal it does not name there: it cannot file, replace or
+	// withdraw a request. The grant rides on push — only a key sshd admits
+	// reaches the hook — so a principal that files requests holds a
+	// "git-push" grant too.
 	//
 	// "restack" — the same pre-receive hook, checking the two writes the
 	// host restacker needs beyond an ordinary push: adding one version to
@@ -140,7 +143,7 @@ package identity
 	// grants file as "restack <principal>". The grant opens nothing else:
 	// no other record transition, and no integration request. It rides on
 	// push too.
-	kind: "git-push" | "registry" | "request" | "restack"
+	kind: "git-push" | "registry" | "approve" | "request" | "restack"
 }
 
 // An identity the registry cites rather than mints.

@@ -98,7 +98,8 @@ package valley
 //     may be created by anyone, never updated or deleted, and only
 //     pointing at notes about that digest signed under that key hash;
 //   - integration requests (refs/the-valley/integration-requests/*) take
-//     writes only from a principal holding the request grant (dcr-e544f20);
+//     writes only from a principal holding the approve grant, also
+//     accepted as request (dcr-e544f20);
 //   - change records (refs/the-valley/changes/main/<change ID>) move only
 //     by the transitions the hook allows;
 //   - the plan graph (refs/the-valley/knots, that name exactly) takes a
@@ -113,7 +114,7 @@ package valley
 // fixed by the contributor protocol (archive/design/contribute.md), and the closed
 // ones change what every reader of the repository sees. Protection only
 // adds a requirement — a writer of a pattern covering integration requests
-// still needs the request grant. All policy beyond the invariant lives in
+// still needs the approve grant. All policy beyond the invariant lives in
 // the integrator, never here (archive/design/architecture.md, _a pull-based
 // integrator_).
 #Protection: {

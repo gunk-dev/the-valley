@@ -255,7 +255,7 @@ func TestAddingAVersion(t *testing.T) {
 
 	// Who.
 	update("a principal that is neither owner nor operator", "mallory", encode(t, next(v1, "mallory", h2)),
-		"only the change's owner, alice, or a principal holding the request grant", old, h2)
+		"only the change's owner, alice, or a principal holding the approve grant (also accepted as request)", old, h2)
 	update("an untagged key", "", good, "a key that names no principal", old, h2)
 
 	// Parent structure.
@@ -426,7 +426,7 @@ func TestOnlyTheOperatorDeletesARecord(t *testing.T) {
 	h := r.source("one")
 	old := r.write(encode(t, first("alice", h)), h)
 	r.expect("the delete row", "operator", recordRef, old, zeroID, "")
-	r.expect("a delete by the owner", "alice", recordRef, old, zeroID, "only a principal holding the request grant may delete")
+	r.expect("a delete by the owner", "alice", recordRef, old, zeroID, "only a principal holding the approve grant (also accepted as request) may delete")
 	r.expect("a delete by an untagged key", "", recordRef, old, zeroID, "a key that names no principal")
 }
 

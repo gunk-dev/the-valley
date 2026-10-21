@@ -56,7 +56,7 @@ type request struct {
 // deterministic, along with the refs under the namespace that are not
 // requests at all.
 //
-// Any holder of the request grant can write this namespace, and anyone at all
+// Any holder of the approve grant can write this namespace, and anyone at all
 // where a repository is served without the pre-receive hook, so a name that
 // does not parse is an ordinary thing to find there and not a reason to stop: one
 // unreadable ref must not hold up every readable one. It is reported and

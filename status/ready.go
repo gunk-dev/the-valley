@@ -349,7 +349,7 @@ func warnPending(w io.Writer, o origin, n recorded, handle string, to string) {
 	switch {
 	case !pending:
 	case to == change.Withdrawn:
-		fmt.Fprintln(w, "valley: withdrawing voids the request, and the integrator deletes it on its next pass while the change is still withdrawn. If the change is readied again before then, the request stands and can land. Only a holder of the request grant may touch a request ref, so the operator must drop it then")
+		fmt.Fprintln(w, "valley: withdrawing voids the request, and the integrator deletes it on its next pass while the change is still withdrawn. If the change is readied again before then, the request stands and can land. Only a holder of the approve grant (also accepted as request) may touch a request ref, so the operator must drop it then")
 	default:
 		fmt.Fprintln(w, "valley: the integrator lands nothing for a draft. The request stands, and lands once the change is ready again")
 	}

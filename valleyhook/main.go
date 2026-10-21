@@ -50,17 +50,18 @@ A write is allowed only if every rule that applies to its ref allows it:
                     the way attest verify opens it, with a verified
                     signature under that key hash.
   refs/the-valley/integration-requests/*
-                    principals holding the request grant. They may file,
-                    replace and withdraw a request.
+                    principals holding the approve grant (also accepted as
+                    request). They may file, replace and withdraw a
+                    request.
   refs/the-valley/changes/main/<change ID>
                     a change record: a commit whose tree holds one file,
                     record.json. Any named principal may create one, and
                     owns it; its first version's head is the commit's one
-                    parent. The owner or a holder of the request grant may
+                    parent. The owner or a holder of the approve grant may
                     add a version, whose head is the commit's second parent
                     after the record it replaces, or withdraw the change,
                     with that record as the one parent. Only a holder of
-                    the request grant may delete one. A holder of the
+                    the approve grant may delete one. A holder of the
                     restack grant that is neither may add one version to a
                     ready change, on the active version's branch and under
                     its title, and nothing more. Every other write is
@@ -111,7 +112,8 @@ flags:
                         writers, and its named grants
   --grants FILE         grants, one "<grant> <principal>" per line. Repeat
                         the flag to read more than one file; what they
-                        grant adds up.
+                        grant adds up. A line naming request grants the
+                        approve grant, exactly as one naming approve does.
   --known-signers FILE  verifier keys, one per line, that an attestation's
                         signature is checked against. Repeatable. With no
                         key named, no attestation is accepted.

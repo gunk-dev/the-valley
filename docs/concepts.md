@@ -139,16 +139,16 @@ components guard it:
   `refs/tags/*`) require a project-level ref grant (`grants.<name>: {refs, writers}` in
   `valley.cue`) unless categorically forbidden. On `refs/the-valley/*`, the hook enforces schema and
   permission rules: any named principal may create a change record (becoming its `owner`); only the
-  change's `owner` or a `request` grant holder may update a change record, except that a `restack`
+  change's `owner` or an `approve` grant holder may update a change record, except that a `restack`
   grant holder may add a single version to a `ready` change keeping its active branch and title;
-  only a `request` holder may delete a change record or write/delete integration requests; and
+  only an `approve` holder may delete a change record or write/delete integration requests; and
   nobody may push to `integration-outcomes` or `projects`.
 - **The integrator** verifies approved changes and lands them onto `main`; it runs as an optional
   host service (`services.valley.integrator.enable`) that polls at a configurable interval
   (`services.valley.integrator.interval`, default `15s`). On each pass, it deletes pending requests
   for changes that are currently `withdrawn` and records `voided-withdrawn` (if a withdrawn change
   is readied again before that pass runs, the old request remains standing and can land; to revoke
-  an approval immediately, a `request` holder must delete the request ref). For each remaining
+  an approval immediately, an `approve` holder must delete the request ref). For each remaining
   request, the integrator refuses if the request's commits include a merge (`refused-merge`) or a
   version head of a `draft` or `withdrawn` change, or if a `c-<id>` request's change is not `ready`
   or does not list the requested head among its versions (`refused-not-ready`). Otherwise it
@@ -219,10 +219,11 @@ branches and attestations as an anonymous pusher, but cannot write change record
 integration requests, or knots. A **grant** is a capability assigned to a principal at a named
 **boundary**. Two boundary grants govern `valleyhook` on `refs/the-valley/*`:
 
-- **`request`** — allows a principal to write or delete integration requests
-  (`refs/the-valley/integration-requests/<target>/<change>`), update any change record, and delete
-  change records. Who holds `request` is a **deployment choice** (for example, in the reference
-  deployment only the human operator holds `request`).
+- **`approve`** (also accepted as `request`) — allows a principal to write or delete integration
+  requests (`refs/the-valley/integration-requests/<target>/<change>`), update any change record, and
+  delete change records. The two names are one grant. A principal holding either holds it, and a
+  principal holding both holds it once. Who holds `approve` is a **deployment choice** (for example,
+  in the reference deployment only the human operator holds it).
 - **`restack`** — allows a principal to push restack reports
   (`refs/the-valley/restack/<target>/<id>`) and add a single restacked version to another owner's
   `ready` change while keeping its active branch and title. (The restack report schema, hook
@@ -237,12 +238,13 @@ NixOS (`services.valley.authorizedKeys`, `services.valley.grants`,
 `services.valley.integrator.knownSignersFile`; compiled `authorized_keys` and `grants` supplement
 any static `authorizedKeys` and `grants`, while compiled `known-signers` replaces
 `services.valley.integrator.knownSignersFile`, which must be unset when both `identity.enable` and
-`integrator.enable` are true). In `identity/*.cue`, boundaries use four kinds
+`integrator.enable` are true). In `identity/*.cue`, a boundary has one of four kinds
 ([`schema/identity.cue`](../schema/identity.cue)): `git-push` authorizes SSH pushes (compiled into
-`authorized_keys`), `request` and `restack` authorize integration requests and restack updates
-(compiled into `grants`), and `registry` is checked by the identity compiler, which rejects
-compiling a registry with no unexpired principal holding a `registry` grant (`governanceOrphaned`) —
-neither `valleyhook` nor the integrator enforces `registry` grants on pushes or landings.
+`authorized_keys`), `approve` (also accepted as `request`) and `restack` authorize integration
+requests and restack updates (compiled into `grants`), and `registry` is checked by the identity
+compiler, which rejects compiling a registry with no unexpired principal holding a `registry` grant
+(`governanceOrphaned`) — neither `valleyhook` nor the integrator enforces `registry` grants on
+pushes or landings.
 
 Follow [Running a valley host](./guide.md#running-a-valley-host) to configure a deployment, or
 [CUE configuration schemas](./reference.md#cue-configuration-schemas) for the host and identity
@@ -264,12 +266,12 @@ schema definitions.
 | **Draft**                    | A change state meaning work is in progress or paused (`valley unready`) and not currently up for integration.                                                                                                                                                                                                                                                                                   | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Change records](./architecture.md#change-records)                                                                |
 | **Effectful check**          | A check (`runner: "command"`) that may depend on external state; its evidence transfers across `main` movement (`untouched`) only if the net diff on `main` (`base..tip`) touches none of the path classes that required that check for this change and the observation age is strictly within the policy's `validity` window.                                                                  | [Checks and evidence](#checks-and-evidence), [Policy](./architecture.md#policy)                                                                                                             |
 | **Evidence**                 | Signed check attestations stored in project storage that prove a change's required checks passed.                                                                                                                                                                                                                                                                                               | [Checks and evidence](#checks-and-evidence), [Evidence: attest and notes](./architecture.md#evidence-attest-and-notes)                                                                      |
-| **Grant**                    | A capability (`request` or `restack` in `valleyhook`, `git-push` for SSH key authorization, or `registry` for the identity compiler's orphan check) assigned to a principal statically in NixOS or compiled from the identity registry, or a project-level ref grant (`grants.<name>`) in `valley.cue`.                                                                                         | [Principals and grants](#principals-and-grants), [Host configuration](./reference.md#host-configuration-schemavalleycue)                                                                    |
+| **Grant**                    | A capability (`approve`, also accepted as `request`, or `restack` in `valleyhook`, `git-push` for SSH key authorization, or `registry` for the identity compiler's orphan check) assigned to a principal statically in NixOS or compiled from the identity registry, or a project-level ref grant (`grants.<name>`) in `valley.cue`.                                                            | [Principals and grants](#principals-and-grants), [Host configuration](./reference.md#host-configuration-schemavalleycue)                                                                    |
 | **Handle**                   | The shortest prefix of a Change ID (at least 4 letters) unique among changes currently recorded on `origin`; it can lengthen if a colliding Change ID is recorded later.                                                                                                                                                                                                                        | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Naming rules](./reference.md#naming-changes-handles-branches-and-requests)                                       |
 | **Identity registry**        | The declarative source of principals, keys, and boundary grants (`identity/*.cue` in the instance repository) that a host can compile (`services.valley.identity.enable`) into SSH `authorized_keys`, `known-signers`, and `grants`.                                                                                                                                                            | [Principals and grants](#principals-and-grants), [Identity registry](./reference.md#identity-registry-schemaidentitycue)                                                                    |
 | **Instance**                 | A deployment of one or more projects governed by a shared floor verification policy and identity configuration.                                                                                                                                                                                                                                                                                 | [Checks and evidence](#checks-and-evidence), [Policy](./architecture.md#policy)                                                                                                             |
 | **Instance floor**           | The mandatory baseline verification policy (`policy/instance/`) that the integrator and CLI check tools require every project in an instance to satisfy; project policy (`policy/project/`) is optional and can only narrow (strengthen) the floor.                                                                                                                                             | [Checks and evidence](#checks-and-evidence), [Verification policy](./reference.md#verification-policy-schemaverificationcue)                                                                |
-| **Integration request**      | The record written by a `request` grant holder (`valley approve`) authorizing the integrator to verify and land one exact commit onto `<target>` (such as `main`), stored as a commit ref at `refs/the-valley/integration-requests/<target>/<change>`.                                                                                                                                          | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Ref layout](./reference.md#project-storage-ref-layout-and-bounds)                                                |
+| **Integration request**      | The record written by an `approve` grant holder (`valley approve`) authorizing the integrator to verify and land one exact commit onto `<target>` (such as `main`), stored as a commit ref at `refs/the-valley/integration-requests/<target>/<change>`.                                                                                                                                         | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Ref layout](./reference.md#project-storage-ref-layout-and-bounds)                                                |
 | **Integrator**               | The optional host service (`services.valley.integrator.enable`) that polls integration requests (default every `15s`), verifies policy and check evidence, lands passing ready changes onto `main`, writes transfer statements, and records outcomes.                                                                                                                                           | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator), [The integrator](./architecture.md#the-integrator)                                                         |
 | **Knot**                     | A single item in a project's plan graph — typed as `outcome` (`oc-*`), `bug` (`bd-*`), `idea` (`ida-*`), or `question` (`qn-*`) — stored as `<type-dir>/<id>-<slug>.md` under `refs/the-valley/knots`.                                                                                                                                                                                          | [Records, project storage, the plan graph, and knots](#records-project-storage-the-plan-graph-and-knots), [Plan graph and knots](./reference.md#plan-graph-and-knots-refsthe-valleyknots)   |
 | **Landed / Landed-recorded** | The two states of a submitted change version: `landed` when its commit is on `main`'s first-parent history with no merge commit above it; `landed-recorded` when a single-parent commit on `main` carries a verified transfer statement and `land` outcome record for that version's head and merges to the same tree.                                                                          | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [The integrator](./architecture.md#the-integrator)                                                                |

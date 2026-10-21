@@ -50,9 +50,11 @@ const (
 	// registry document itself. A render leaving nobody there is refused.
 	boundaryRegistry = "registry"
 
-	// boundaryRequest is a boundary kind the grants artifact is rendered
+	// boundaryApprove is a boundary kind the grants artifact is rendered
 	// from: the pre-receive hook's check of writes to the integration
-	// request namespace (valleyhook/).
+	// request namespace (valleyhook/). boundaryRequest is the same kind
+	// under the name it had first, and a registry may use either.
+	boundaryApprove = "approve"
 	boundaryRequest = "request"
 
 	// boundaryRestack is the other: the pre-receive hook's check of the

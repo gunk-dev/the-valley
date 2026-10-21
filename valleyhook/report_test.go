@@ -11,7 +11,7 @@ import (
 var reportRef = change.RestackRef("main", changeID)
 
 // restackers is a repository where restacker holds the restack grant and
-// both holds it beside the request grant.
+// both holds it beside the approve grant, under its name request.
 func restackers(t *testing.T) *records {
 	r := newRecords(t)
 	r.p.grants["restacker"] = map[string]bool{grantRestack: true}
@@ -50,7 +50,7 @@ func TestRestackingAVersion(t *testing.T) {
 	// Who. A principal without the grant is refused as before, and the
 	// grant opens nothing to a key that names no principal.
 	update("a principal without the grant", "mallory", ready, encode(t, restacked(v1, "mallory", h2)),
-		"only the change's owner, alice, or a principal holding the request grant", ready, h2)
+		"only the change's owner, alice, or a principal holding the approve grant (also accepted as request)", ready, h2)
 	update("an untagged key", "", ready, good, "a key that names no principal", ready, h2)
 
 	// The state before and after.
@@ -94,18 +94,18 @@ func TestRestackingAVersion(t *testing.T) {
 	update("another title", "restacker", ready, mutate(func(c *change.Record) { c.Versions[1].Title = "retitled" }),
 		`is titled "retitled"`, ready, h2)
 
-	// Deleting is the request grant's alone.
-	r.expect("a delete", "restacker", recordRef, ready, zeroID, "only a principal holding the request grant may delete")
+	// Deleting is the approve grant's alone.
+	r.expect("a delete", "restacker", recordRef, ready, zeroID, "only a principal holding the approve grant (also accepted as request) may delete")
 
-	// A holder that owns the change, or holds the request grant beside
+	// A holder that owns the change, or holds the approve grant beside
 	// it, writes by those rows, unrestricted by this one.
 	own := first("restacker", h1)
 	mine := r.write(encode(t, own), h1)
 	r.expect("its own record, created", "restacker", recordRef, zeroID, mine, "")
 	update("its own record, unreadied", "restacker", mine, encode(t, moved(own, change.Draft)), "", mine)
 	update("its own record, retitled", "restacker", mine, encode(t, next(own, "restacker", h2)), "", mine, h2)
-	update("another's record, unreadied with the request grant", "both", ready, encode(t, moved(v1, change.Draft)), "", ready)
-	r.expect("another's record, deleted with the request grant", "both", recordRef, ready, zeroID, "")
+	update("another's record, unreadied with the approve grant", "both", ready, encode(t, moved(v1, change.Draft)), "", ready)
+	r.expect("another's record, deleted with the approve grant", "both", recordRef, ready, zeroID, "")
 }
 
 // report is a well-formed report about the change, of a conflict

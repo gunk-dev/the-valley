@@ -204,3 +204,100 @@ func TestHostileTreesHitTheBudget(t *testing.T) {
 		})
 	}
 }
+
+// A deadline that passes after the last read from git, while the delta is
+// hashed, fails Bind and Verify as a budget's refusal. Neither returns a
+// result computed late, and a note looked up after the deadline is not
+// taken for a note on a file that is not there.
+func TestTheDeadlineHoldsAfterTheLastRead(t *testing.T) {
+	w := newWorld(t)
+	s := w.story()
+	var deadline time.Time
+	reached := false
+	digested = func() {
+		reached = true
+		time.Sleep(time.Until(deadline) + 10*time.Millisecond)
+	}
+	defer func() { digested = func() {} }()
+	tight := func() delta.Budget {
+		b := budget()
+		deadline = time.Now().Add(2 * time.Second)
+		b.Deadline = deadline
+		reached = false
+		return b
+	}
+	withNotes := w.verdict(s, "reviewer", Approve)
+	noNotes := w.verdict(s, "reviewer", Approve)
+	noNotes.Notes = nil
+	for _, c := range []struct {
+		name string
+		run  func(delta.Budget) error
+	}{
+		{"Bind", func(b delta.Budget) error {
+			_, _, err := Bind(w.repo(), s.rec2, 2, s.tip, b)
+			return err
+		}},
+		{"Verify, with notes to look up", func(b delta.Budget) error {
+			a := w.against()
+			a.Budget = b
+			return Verify(w.repo(), withNotes, a)
+		}},
+		{"Verify, with no notes", func(b delta.Budget) error {
+			a := w.against()
+			a.Budget = b
+			return Verify(w.repo(), noNotes, a)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.run(tight())
+			if !reached {
+				t.Fatalf("it did not reach the digest within two seconds: %v", err)
+			}
+			if !errors.Is(err, delta.ErrBudget) || !strings.Contains(err.Error(), "deadline") {
+				t.Fatalf("a deadline passed while hashing: %v", err)
+			}
+		})
+	}
+}
+
+// A file a note names has no bound of its own, only the budget's bytes. A
+// note on an unchanged file too large for them, which the delta never
+// reads, is refused as the budget's, so the caller can tell a review too
+// large to check from one that is wrong. Within a larger budget it
+// verifies.
+func TestANoteOnAFileTooLargeForTheBudget(t *testing.T) {
+	w := newWorld(t)
+	large := strings.Repeat("0123456789abcdef\n", 1<<16)
+	base := w.commit(map[string]string{"large.txt": large, "README.md": "hello\n"})
+	head := w.commit(map[string]string{"large.txt": large, "README.md": "hello, world\n"}, base)
+	cr := &change.Record{
+		Schema: change.Schema, ChangeID: otherID, Target: "main", Owner: "author", State: change.Ready, Seq: 1,
+		Versions: []change.Version{{N: 1, Head: change.HeadPrefix + head, Title: "Greet the world", Uploader: "author"}},
+		Active:   1,
+	}
+	record := w.record(cr, head)
+	_, b, err := Bind(w.repo(), record, 1, base, budget())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := &Record{
+		Schema: Schema, ReviewID: id1, ChangeID: otherID, Target: "main", Review: "operator", Reviewer: "reviewer",
+		Verdict: Approve, Binding: &b, Summary: "Fine.",
+		Notes: []Note{{Side: After, Path: "large.txt", Blob: change.HeadPrefix + w.git(nil, "rev-parse", head+":large.txt"),
+			Lines: &Lines{Start: 1, End: 2}, Body: "These lines are fine."}},
+	}
+	against := Against{RecordTip: record, TargetTip: base, Budget: budget()}
+	if err := Verify(w.repo(), rec, against); err != nil {
+		t.Fatalf("within a budget of 64 MiB: %v", err)
+	}
+	against.Budget.Bytes = 1 << 20
+	err = Verify(w.repo(), rec, against)
+	if !errors.Is(err, delta.ErrBudget) || !strings.Contains(err.Error(), `notes[0] names lines of "large.txt"`) {
+		t.Fatalf("a note on a file of %d bytes within 1 MiB: %v", len(large), err)
+	}
+	rec.Notes[0].Path = "missing.txt"
+	err = Verify(w.repo(), rec, against)
+	if errors.Is(err, delta.ErrBudget) || err == nil || !strings.Contains(err.Error(), "where there is no such file") {
+		t.Fatalf("a note on a file that is not there: %v", err)
+	}
+}

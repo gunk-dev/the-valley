@@ -162,3 +162,26 @@ func TestTheDeadlineEndsTheReading(t *testing.T) {
 		t.Fatalf("a deadline already passed: %v", err)
 	}
 }
+
+// A deadline that passes after git's last answer, while the delta is
+// sorted, fails the reading too: no delta comes back late.
+func TestTheDeadlineHoldsAfterTheLastRead(t *testing.T) {
+	r := newRepo(t)
+	pre := r.tree([]file{{"a", ModeFile, []byte("a\n")}})
+	post := r.tree([]file{{"a", ModeFile, []byte("b\n")}})
+	b := plenty()
+	b.Deadline = time.Now().Add(time.Second)
+	reached := false
+	sorted = func() {
+		reached = true
+		time.Sleep(time.Until(b.Deadline) + 10*time.Millisecond)
+	}
+	defer func() { sorted = func() {} }()
+	_, err := BetweenWithin(r.repo(), pre, post, b)
+	if !reached {
+		t.Fatalf("the reading did not reach the sort within a second: %v", err)
+	}
+	if !errors.Is(err, ErrBudget) || !strings.Contains(err.Error(), "deadline") {
+		t.Fatalf("a deadline passed while sorting: %v", err)
+	}
+}

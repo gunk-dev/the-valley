@@ -988,10 +988,10 @@ push to `refs/the-valley/reviews/`.
     `"git-sha1:<40-hex>"`; `version` (`int`, `1..1000`); and `delta`, 64 lowercase hex digits.
   - `summary` (`string`): `1..8192` bytes of UTF-8 with no control characters but newline and tab.
   - `notes` (`array` of objects): `0..256` items; always empty for `withdraw`. Each has `side`
-    (`"before"` or `"after"`), `path` (`1..4095` bytes, no empty, `.`, `..` or `.git` component, no
-    component over 255 bytes, no control character), `blob` (`"git-sha1:<40-hex>"`), `lines` (`null`
-    or `{ "start": <int>, "end": <int> }` with `1 <= start <= end <= 16777216`), and `body`
-    (`1..8192` bytes, as `summary`).
+    (`"before"` or `"after"`), `path` (`1..4095` bytes of UTF-8, no empty, `.`, `..` or `.git`
+    component, no component over 255 bytes, no control character), `blob` (`"git-sha1:<40-hex>"`),
+    `lines` (`null` or `{ "start": <int>, "end": <int> }` with `1 <= start <= end <= 16777216`), and
+    `body` (`1..8192` bytes, as `summary`).
   - `provenance` (`object` or `null`): `null` for a human's review. Otherwise `harness` and `model`
     (`1..256` bytes, no control characters), `settings` and `inputs` (64 lowercase hex digits, the
     SHA-256 of the generation settings and of the input manifest), and `input_tokens` and
@@ -1007,7 +1007,8 @@ push to `refs/the-valley/reviews/`.
   the one merge base; the delta has the bound digest; and each note's `path` holds its `blob` on its
   side (`base` for `before`, `head` for `after`), with `lines` inside the file. It reads within a
   `delta.Budget` of bytes, tree entries and a deadline. An error wrapping `delta.ErrBudget` means
-  the budget ran out, not that the binding is wrong.
+  the budget ran out, not that the binding is wrong. That includes a note's file larger than the
+  budget's bytes, and a deadline that passes after the last read from git.
 - **History and parents:** The ref points at the newest review commit. The first review commit's
   parents are `[record]`; a later review that judges a version has `[previous, record]`; a
   withdrawal has `[previous]`. `previous` is the history's head when the review was appended, and
@@ -1019,11 +1020,11 @@ push to `refs/the-valley/reviews/`.
   when the history holds the review already. `Publish` pushes it with
   `--force-with-lease=<ref>:<old>` and returns `review.ErrStale` when another append came first.
   `CheckAppend` decides one ref update for the push hook, which does not call it (`not built`). It
-  admits exactly one new review commit on the old head, whose `reviewer` is the pusher, under a
-  review name the caller says the pusher may write. A withdrawal must be of the pusher's own review,
-  or the pusher an operator, who may withdraw any review under any name. A review that judges a
-  version must be about a change the repository records, and its binding must verify. It refuses
-  every delete.
+  admits exactly one new review commit on the old head, whose `reviewer` is the pusher. A review
+  that judges a version must be under a review name the caller says the pusher may write, must be
+  about a change the repository records, and its binding must verify. A withdrawal needs no grant of
+  its name. It must be of the pusher's own review, or the pusher an operator, who may withdraw any
+  review. It refuses every delete.
 
 ### Signed notes and attestation statement (`the-valley/attestation/v1`)
 

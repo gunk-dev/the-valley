@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -81,15 +82,24 @@ func Bind(r Repo, record string, n int, tip string, b delta.Budget) (*change.Rec
 	if err != nil {
 		return nil, Binding{}, fmt.Errorf("the delta from %s to %s: %w", base, head, err)
 	}
+	digest := d.Digest()
+	digested()
+	if ctx.Err() != nil {
+		return nil, Binding{}, late(ctx)
+	}
 	return rec, Binding{
 		Record:    change.HeadPrefix + record,
 		Version:   n,
 		Head:      v.Head,
 		TargetTip: change.HeadPrefix + tip,
 		Base:      change.HeadPrefix + base,
-		Delta:     d.Digest(),
+		Delta:     digest,
 	}, nil
 }
+
+// digested is called once Bind or Verify has the delta's digest. Tests
+// make it slow, to pass the deadline there.
+var digested = func() {}
 
 // Against is what a binding is verified against, past the objects it
 // names: refs as they stand now, and what the verification may spend.
@@ -173,11 +183,13 @@ func Verify(r Repo, rec *Record, a Against) error {
 		return fmt.Errorf("its binding.base is %s, and the merge base of its target_tip and its head is %s", base, found)
 	}
 	d, err := delta.BetweenWithin(r, base, head, a.Budget)
-	switch {
-	case err != nil:
+	if err != nil {
 		return fmt.Errorf("the delta from its base to its head: %w", err)
-	case d.Digest() != b.Delta:
-		return fmt.Errorf("its binding.delta is %s, and the delta from its base to its head has the digest %s", b.Delta, d.Digest())
+	}
+	digest := d.Digest()
+	digested()
+	if digest != b.Delta {
+		return fmt.Errorf("its binding.delta is %s, and the delta from its base to its head has the digest %s", b.Delta, digest)
 	}
 	for i, n := range rec.Notes {
 		on := head
@@ -187,6 +199,11 @@ func Verify(r Repo, rec *Record, a Against) error {
 		if err := o.anchor(on, n); err != nil {
 			return fmt.Errorf("its notes[%d] %w", i, err)
 		}
+	}
+	// Hashing the delta and counting a note's lines ask nothing of git, so
+	// a deadline that passes while they run is caught only here.
+	if ctx.Err() != nil {
+		return late(ctx)
 	}
 	return nil
 }
@@ -251,12 +268,16 @@ func (o *objects) onRecordHistory(ctx context.Context, r Repo, tip, record strin
 }
 
 // anchor refuses a note whose path does not hold its blob in the commit
-// given, or whose lines run past the blob's last line.
+// given, or whose lines run past the blob's last line. A file a note names
+// has no bound of its own: only the budget's bytes bound reading it, so a
+// file too large for them is the budget's refusal, not the note's.
 func (o *objects) anchor(commit string, n Note) error {
 	id, kind, _, err := o.info(commit + ":" + n.Path)
 	switch {
-	case err != nil:
+	case errors.Is(err, errMissing):
 		return fmt.Errorf("names %q on the %s side, where there is no such file", n.Path, n.Side)
+	case err != nil:
+		return fmt.Errorf("names %q on the %s side, which could not be looked up: %w", n.Path, n.Side, err)
 	case kind != "blob":
 		return fmt.Errorf("names %q on the %s side, where it is a %s, not a file", n.Path, n.Side, kind)
 	case change.HeadPrefix+id != n.Blob:
@@ -264,7 +285,7 @@ func (o *objects) anchor(commit string, n Note) error {
 	case n.Lines == nil:
 		return nil
 	}
-	content, err := o.read(id, "blob", o.bytes)
+	content, err := o.read(id, "blob", math.MaxInt64)
 	if err != nil {
 		return fmt.Errorf("names lines of %q, which %w", n.Path, err)
 	}

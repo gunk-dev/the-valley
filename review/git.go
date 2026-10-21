@@ -119,6 +119,9 @@ func (o *objects) failed(err error) error {
 	return err
 }
 
+// errMissing is ask's error for a name git finds no object for.
+var errMissing = errors.New("is no object in the repository")
+
 // ask sends one command and reads git's answer: the object's ID, type and
 // size, or that it is missing.
 func (o *objects) ask(command, name string) (id, kind string, size int64, err error) {
@@ -132,10 +135,12 @@ func (o *objects) ask(command, name string) (id, kind string, size int64, err er
 	if err != nil {
 		return "", "", 0, o.failed(fmt.Errorf("could not be read: %v", err))
 	}
-	fields := strings.Fields(header)
-	if len(fields) == 2 && fields[1] == "missing" {
-		return "", "", 0, errors.New("is no object in the repository")
+	// git answers a name it finds nothing for with the name as asked, which
+	// may hold spaces, and then "missing".
+	if strings.TrimSuffix(header, "\n") == name+" missing" {
+		return "", "", 0, errMissing
 	}
+	fields := strings.Fields(header)
 	if len(fields) != 3 {
 		return "", "", 0, fmt.Errorf("could not be read: git answered %q", strings.TrimSpace(header))
 	}

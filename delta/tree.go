@@ -107,8 +107,19 @@ func between(r Repo, pre, post string, l *limit) (Delta, error) {
 		return nil, err
 	}
 	sort.Slice(d, func(i, j int) bool { return d[i].Path < d[j].Path })
+	sorted()
+	// Sorting asks nothing of git, so a deadline that passes while it runs
+	// is caught only here.
+	if err := l.late(); err != nil {
+		return nil, err
+	}
 	return d, nil
 }
+
+// sorted is called once a delta is sorted, just before the reading checks
+// its deadline for the last time. Tests make it slow, to pass the deadline
+// there.
+var sorted = func() {}
 
 // limit is a reading's budget and what it has spent of it.
 type limit struct {

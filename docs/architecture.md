@@ -1013,6 +1013,10 @@ each object's type and size before its content. It counts every entry it visits,
 two directories name counts twice, and it counts the bytes of every path it builds. git is killed at
 the deadline. The first bound crossed ends the reading with an error that wraps `delta.ErrBudget`,
 so a caller can tell a version too large to recompute from a binding that is wrong.
+`delta.BetweenWithin`, `review.Bind` and `review.Verify` check the deadline once more before they
+succeed, so none of them returns a result finished after it. A note's file has no size bound of its
+own. It is read within the budget's bytes, and a file too large for them is the budget's refusal,
+not the note's.
 
 **The history.** A change's reviews are kept at `refs/the-valley/reviews/<target>/<change-id>`
 (`review/history.go`). Each commit holds one review, as the single file `review.json`, with these
@@ -1043,10 +1047,11 @@ publishes nothing twice.
 not call it. It refuses a delete, and any update that is not one new review commit on the old head
 by the table above. The review must name the pusher as its reviewer. The caller says, from its
 grants, which review names the pusher may write under, and whether the pusher is an operator. A
-review under any other name is refused before its binding is read. A withdrawal must be of the
-pusher's own review, unless the pusher is an operator, who may withdraw any review under any name. A
-review that judges a version must be about a change the repository records, and its binding must
-verify.
+review that judges a version under any other name is refused before its binding is read. A
+withdrawal needs no grant of its name. It must be of the pusher's own review, unless the pusher is
+an operator, who may withdraw any review. So a reviewer whose grant is revoked can still take back
+their own judgment. A review that judges a version must be about a change the repository records,
+and its binding must verify.
 
 ## Identity
 

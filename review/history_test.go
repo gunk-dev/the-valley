@@ -154,7 +154,6 @@ func TestCheckAppendRefusesWhatIsNoAppend(t *testing.T) {
 		{name: "a key that names no principal", update: Update{ref, c2, commit(edited(func(r *Record) {}), c2, s.rec2)}, pusher: Pusher{}, says: "named principal"},
 		{name: "a review under a name the pusher may not write", update: Update{ref, c2, commit(edited(func(r *Record) {}), c2, s.rec2)}, pusher: Pusher{Principal: "carol", MayReview: func(name string) bool { return name == "operator" }}, says: "carol may not write reviews under that name"},
 		{name: "a review by a pusher who may write none", update: Update{ref, c2, commit(edited(func(r *Record) {}), c2, s.rec2)}, pusher: Pusher{Principal: "carol"}, says: "carol may not write reviews under that name"},
-		{name: "a withdrawal under a name the pusher may not write", update: Update{ref, c2, commit(withdrawal(r2, "bob"), c2)}, pusher: Pusher{Principal: "bob"}, says: "bob may not write reviews under that name"},
 		{name: "a review by someone else", update: Update{ref, c2, commit(edited(func(r *Record) {}), c2, s.rec2)}, pusher: as("dave"), says: "names carol as the reviewer, and dave is pushing it"},
 		{name: "an ID the history holds", update: Update{ref, c2, commit(edited(func(r *Record) { r.ReviewID = r1.ReviewID }), c2, s.rec2)}, says: "is the ID of the review in " + c1},
 		{name: "a review of another change", update: Update{ref, c2, commit(edited(func(r *Record) { r.ChangeID = otherID }), c2, s.rec2)}, says: "a review of the change " + otherID},
@@ -213,6 +212,51 @@ func TestCheckAppendRefusesWhatIsNoAppend(t *testing.T) {
 	err = CheckAppend(w.repo(), Update{ref, w.refAt(ref), commit(judged, w.refAt(ref), s.rec2)}, Pusher{Principal: "operator", Operator: true}, w.against())
 	if err == nil || !strings.Contains(err.Error(), "operator may not write reviews under that name") {
 		t.Fatalf("an operator's judgment under a name they may not write: %v", err)
+	}
+}
+
+// A judgment needs the grant of its review name, and a withdrawal does
+// not. A reviewer whose grant is revoked can still take back their own
+// judgment, and an operator can take back anyone's. Nobody else can take
+// one back, with the grant or without it.
+func TestAWithdrawalNeedsNoGrantOfItsName(t *testing.T) {
+	w := newWorld(t)
+	s := w.story()
+	r1 := w.verdict(s, "alice", RequestChanges)
+	r2 := w.verdict(s, "bob", RequestChanges)
+	w.appendAs(r1, as("alice"))
+	head := w.appendAs(r2, as("bob"))
+	revoked := func(principal string) Pusher {
+		return Pusher{Principal: principal, MayReview: func(string) bool { return false }}
+	}
+	check := func(rec *Record, p Pusher) error {
+		t.Helper()
+		c, err := Build(w.repo(), head, rec, soon())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return CheckAppend(w.repo(), Update{ref, head, c}, p, w.against())
+	}
+
+	if err := check(w.verdict(s, "alice", Approve), revoked("alice")); err == nil || !strings.Contains(err.Error(), "alice may not write reviews under that name") {
+		t.Fatalf("a judgment under a revoked grant: %v", err)
+	}
+	for _, p := range []Pusher{as("carol"), revoked("carol"), {Principal: "carol"}} {
+		if err := check(withdrawal(r1, "carol"), p); err == nil || !strings.Contains(err.Error(), "only its reviewer or an operator") {
+			t.Fatalf("a withdrawal of alice's review by carol: %v", err)
+		}
+	}
+
+	w.appendAs(withdrawal(r1, "alice"), revoked("alice"))
+	w.appendAs(withdrawal(r2, "operator"), Pusher{Principal: "operator", Operator: true})
+	h, err := ReadHistory(w.repo(), ref, w.refAt(ref), soon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []*Record{r1, r2} {
+		if _, ok := h.Withdrawal(r.ReviewID); !ok {
+			t.Fatalf("%s's review is not withdrawn", r.Reviewer)
+		}
 	}
 }
 

@@ -243,6 +243,23 @@ func TestAReviewIsBounded(t *testing.T) {
 	}
 }
 
+// A note's path that is not UTF-8 is refused before it is written. JSON
+// cannot carry it, and encoding it anyway would name another file, with
+// U+FFFD in place of the invalid byte.
+func TestAPathThatIsNotUTF8IsRefused(t *testing.T) {
+	r, err := Parse([]byte(text()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Notes[0].Path = "docs/gu\xffide.md"
+	if err := r.Check(); err == nil || !strings.Contains(err.Error(), "notes[0].path is not UTF-8") {
+		t.Fatalf("Check of a path that is not UTF-8: %v", err)
+	}
+	if data, err := Encode(r); err == nil {
+		t.Fatalf("a path that is not UTF-8 was written as %s", data)
+	}
+}
+
 func TestReviewIDsAndRefs(t *testing.T) {
 	a, err := NewID()
 	if err != nil {

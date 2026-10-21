@@ -271,12 +271,13 @@ type Pusher struct {
 	// Principal is the authenticated principal pushing, or "" for a key
 	// that names none.
 	Principal string
-	// MayReview reports whether the principal may write reviews under a
-	// review's name. Nil allows no name.
+	// MayReview reports whether the principal may write reviews that
+	// judge a version under a review's name. Nil allows no name. A
+	// withdrawal needs no grant of its name.
 	MayReview func(name string) bool
 	// Operator reports whether the principal may withdraw any review,
 	// whoever wrote it and under whatever name. A reviewer may always
-	// withdraw their own.
+	// withdraw their own, even once MayReview no longer allows its name.
 	Operator bool
 }
 
@@ -290,10 +291,14 @@ type Pusher struct {
 //   - the new commit is a review commit of the ref's change and target
 //     whose first parent is the old commit, by the table above, and the
 //     history at the old commit reads;
-//   - the review names the pusher as its reviewer, under a review name
-//     the pusher may write, and the review may follow the history: its ID
-//     is new to it, and a withdrawal names a review the pusher wrote, or
-//     any review when the pusher is an operator, who needs no name;
+//   - the review names the pusher as its reviewer, and may follow the
+//     history: its ID is new to it, and a withdrawal names a review of it,
+//     under the same review name, that may be withdrawn;
+//   - a review that judges a version is under a review name the pusher
+//     may write, and a withdrawal names a review the pusher wrote, or any
+//     review when the pusher is an operator. A withdrawal needs no grant
+//     of its name, so a reviewer whose grant is revoked can still take
+//     back their own judgment;
 //   - a review that judges a version is about a change the repository
 //     records, Against.RecordTip, and its binding verifies against a
 //     (Verify).
@@ -340,12 +345,14 @@ func CheckAppend(r Repo, u Update, p Pusher, a Against) error {
 	if err := h.follows(rec); err != nil {
 		return err
 	}
-	if rec.Judges() || !p.Operator {
+	// A judgment needs the grant of its name. A withdrawal does not: its
+	// reviewer may take it back after losing the grant, and an operator
+	// may take back any.
+	if rec.Judges() {
 		if p.MayReview == nil || !p.MayReview(rec.Review) {
 			return fmt.Errorf("it is a review named %s, and %s may not write reviews under that name", rec.Review, p.Principal)
 		}
-	}
-	if !rec.Judges() {
+	} else {
 		withdrawn, _ := h.Find(*rec.Withdraws)
 		if withdrawn.Review.Reviewer != p.Principal && !p.Operator {
 			return fmt.Errorf("it withdraws a review %s wrote, and only its reviewer or an operator may withdraw it", withdrawn.Review.Reviewer)

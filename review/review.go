@@ -449,12 +449,16 @@ func (n Note) check(where string) error {
 // and a checkout could make: an empty one, one longer than MaxPath, one
 // with an empty component, a component that is . or .., .git in any case,
 // or longer than 255 bytes, and one holding a control character, which no
-// line of git's batch reading can carry. A file whose path is not UTF-8
-// takes no note; the summary can speak of it.
+// line of git's batch reading can carry. It refuses a path that is not
+// UTF-8 too, which JSON cannot carry: encoding it would put U+FFFD in
+// place of each invalid byte, and so name another path. A file whose path
+// is not UTF-8 takes no note; the summary can speak of it.
 func checkPath(p string) error {
 	switch {
 	case p == "" || len(p) > MaxPath:
 		return fmt.Errorf("is not 1 to %d bytes", MaxPath)
+	case !utf8.ValidString(p):
+		return errors.New("is not UTF-8")
 	case strings.ContainsFunc(p, unicode.IsControl):
 		return errors.New("holds a control character")
 	}

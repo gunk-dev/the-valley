@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -305,10 +304,4 @@ func stateLine(l *rebase.Layer) string {
 	default:
 		return fmt.Sprintf("%s is %s", l.Name, s)
 	}
-}
-
-// sortRequests puts requests in name order, so a plan reads the same each
-// time.
-func sortRequests(rs []RequestPlan) {
-	sort.Slice(rs, func(i, j int) bool { return rs[i].Name < rs[j].Name })
 }

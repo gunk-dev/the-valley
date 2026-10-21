@@ -616,7 +616,9 @@ them, so the planner fetches them before it reads any ancestry. A request whose 
 determined holds every family it might be about. A related request releases the family only with a
 current outcome of `stale` or `reject`; a `reject` is noted. Current means the outcome's head,
 target tip and evidence fingerprint all equal what the planner sees. The fingerprint is
-`change.EvidenceFingerprint`, which the integrator writes and `valley status` reads.
+`change.EvidenceFingerprint`, which the integrator writes and `valley status` reads. The planner
+judges requests in name order. One snapshot therefore gives the same reasons, notes and reports
+every time it is planned.
 
 A family is held when any record it would change is over a limit, counted with the version the
 restack would add:
@@ -686,16 +688,25 @@ before the first of them is pushed (`restack/journal.go`). Its format is
 the operation, and `main`'s tip and the evidence fingerprint as captured. For each family it holds
 the whole observation (every layer, plain branches included, the related requests, every conflict
 path and the full refusal), the branch push, each version and each report, in the kept forms the
-rebase engine defines (`rebase/pending.go`). Every object those writes would push is kept reachable
-in the scratch repository under `refs/valley-restack/<operation>/`. The journal is written through a
-synced temporary file and renamed into place, and the scratch repository syncs each object and ref
-it writes.
+rebase engine defines (`rebase/pending.go`). Each conflict path is kept in base64. JSON holds only
+UTF-8, and base64 keeps a file name that is not UTF-8 byte for byte. Every object those writes would
+push is kept reachable in the scratch repository under `refs/valley-restack/<operation>/`. The
+journal is written through a synced temporary file and renamed into place, and the scratch
+repository syncs each object and ref it writes.
 
 A journal is read as strictly as it is written. A field missing, unknown or named twice, a form that
 does not agree with itself, and a journal for another repository, target or principal are refused,
-and nothing in a refused journal is decided. A lost journal is never inferred. A change whose branch
-a pass moved with no journal to say so is held by the planner, because its branch is not at its
-recorded head. Checked by `restack-unit`.
+and nothing in a refused journal is decided. A refused journal is an error that recovery reports,
+never a crash. A family's writes must agree with each other:
+
+- A family that would restack adds exactly one version of each of its changes.
+- Each report gives the family's result: complete, conflict or blocked.
+- A report says a version was published exactly when the family adds that version, and then names
+  that version's head, number and record commit.
+
+The restacker does not keep a journal that would not read back as written. A lost journal is never
+inferred. A change whose branch a pass moved with no journal to say so is held by the planner,
+because its branch is not at its recorded head. Checked by `restack-unit`.
 
 ### Recovery
 

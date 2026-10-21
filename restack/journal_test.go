@@ -595,3 +595,100 @@ func keepEnvironment(t *testing.T) {
 		}
 	})
 }
+
+// A journal in its form whose writes do not agree with each other is
+// refused, and nothing in it is decided: a version that is null, a family
+// that would restack with one change's version left out and its reports
+// kept, a report that says a version was published other than as the
+// family adds it, and a report whose result is not the family's. Planning
+// with any of them is an error of recovery, never a crash.
+func TestAJournalWhoseWritesDisagreeIsRefused(t *testing.T) {
+	f := newFixture(t, "")
+	f.readyAs(idB, "bob", "b", "main", "B's title")
+	f.readyAs(idC, "bob", "c", "b", "C's title")
+	f.readyAs(idE, "alice", "e", "main", "E's title")
+	f.plainBranch("e-plain", "e")
+	f.moveMain()
+	r := newRestacker(t, f)
+	r.journal()
+	path := filepath.Join(r.c.state, journalFile)
+	kept, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	family := func(j *Journal, id string) *JournalFamily {
+		for i := range j.Families {
+			if j.Families[i].Observed.Layers[0].ID == id {
+				return &j.Families[i]
+			}
+		}
+		t.Fatalf("the journal has no family on %s", id)
+		return nil
+	}
+	other := change.HeadPrefix + strings.Repeat("0", 40)
+
+	for _, c := range []struct {
+		what, refused string
+		edit          func(j *Journal)
+	}{
+		{"a null version", "holds an empty version", func(j *Journal) { family(j, idB).Versions[1] = nil }},
+		{"a change's version left out", "adds a version to 1 of them", func(j *Journal) {
+			bc := family(j, idB)
+			bc.Versions = bc.Versions[:1]
+		}},
+		{"a report naming another record", "says " + idC + " was published as other than v2", func(j *Journal) {
+			family(j, idB).Reports[0].Pending.Report.Layers[1].Published.Record = &other
+		}},
+		{"a report of another result", "says blocked, and the family's result is conflict", func(j *Journal) {
+			family(j, idE).Observed.Result = change.RestackConflict
+		}},
+	} {
+		var j Journal
+		if err := strictly(kept, &j); err != nil {
+			t.Fatal(err)
+		}
+		c.edit(&j)
+		data, err := json.MarshalIndent(&j, "", "  ")
+		if err != nil {
+			t.Fatalf("%s: %v", c.what, err)
+		}
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		p, _ := r.plan()
+		if p.Recovery == nil || !strings.Contains(p.Recovery.Error, c.refused) || len(p.Recovery.Decisions) != 0 {
+			t.Errorf("a journal with %s was decided: %+v", c.what, p.Recovery)
+		}
+	}
+}
+
+// A journal that would not read back as written is not kept: nothing is
+// kept for it in the scratch repository, and the journal before it stays.
+// JSON holds only UTF-8, so a reason in Latin-1 is such a journal.
+func TestAJournalThatWouldNotReadBackIsNotKept(t *testing.T) {
+	f := newFixture(t, "")
+	f.readyAs(idE, "alice", "e", "main", "E's title")
+	f.plainBranch("e-plain", "e")
+	f.moveMain()
+	r := newRestacker(t, f)
+	j := r.journal()
+	path := filepath.Join(r.c.state, journalFile)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := release(ctx, r.g, j.Operation); err != nil {
+		t.Fatal(err)
+	}
+	j.Families[0].Observed.Reasons = append(j.Families[0].Observed.Reasons, "a reason in Latin-1: caf\xe9")
+	if err := keep(ctx, r.g, r.c.state, j); err == nil || !strings.Contains(err.Error(), "would not read back") {
+		t.Fatalf("a journal that would not read back was kept: %v", err)
+	}
+	if now, _ := os.ReadFile(path); !bytes.Equal(now, before) {
+		t.Error("the journal before it was replaced")
+	}
+	if left := gitOutT(t, r.g, "for-each-ref", retainPrefix+j.Operation+"/"); left != "" {
+		t.Errorf("objects were kept for a journal that was not:\n%s", left)
+	}
+}

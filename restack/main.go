@@ -44,6 +44,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -557,6 +558,10 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 			requests = append(requests, Request{Name: strings.TrimPrefix(ref, rebase.RequestPrefix), Head: oid})
 		}
 	}
+	// The refs are a map, read in no fixed order. The requests are put in
+	// name order before anything judges them, so their reasons and notes,
+	// and the reports that carry them, are the same for the same snapshot.
+	sort.Slice(requests, func(i, j int) bool { return requests[i].Name < requests[j].Name })
 	p := &Plan{
 		Target: rebase.Target, Tip: s.Tip, Evidence: change.EvidenceFingerprint(attestations), Cap: cap,
 		Operation: newOperation(time.Now()),
@@ -610,7 +615,9 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 	return p, nil
 }
 
-// judge decides what a pass would do with one family.
+// judge decides what a pass would do with one family. It judges requests
+// in the order given, which plan makes name order, so the family's
+// requests, reasons and notes come in that order too.
 func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requests []Request, in Incoming) FamilyPlan {
 	fp := FamilyPlan{Reasons: []string{}, Notes: []string{}, Requests: []RequestPlan{}}
 	ready := false
@@ -663,7 +670,6 @@ func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requ
 		}
 		fp.Requests = append(fp.Requests, rp)
 	}
-	sortRequests(fp.Requests)
 
 	for i, l := range f.Layers {
 		if l.ID == "" || l.Record == nil {

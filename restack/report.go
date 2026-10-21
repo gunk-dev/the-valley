@@ -2,6 +2,7 @@ package main
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,9 @@ import (
 // change in the family, bottom first. A plain branch is no report layer.
 //
 // A report holds what the format allows and no more: 64 layers, 100
-// conflict paths of at most 1024 bytes, 64 blocking requests whose refs
-// are at most 256 bytes, a refusal of at most 2048 bytes, no control
-// character in any of them, and 64 KiB of JSON in all. When the
+// conflict paths of at most 1024 bytes of UTF-8, 64 blocking requests
+// whose refs are at most 256 bytes, a refusal of at most 2048 bytes, no
+// control character in any of them, and 64 KiB of JSON in all. When the
 // observation holds more, the report is a fallback. It keeps what fits, in
 // the observation's order:
 //
@@ -41,15 +42,54 @@ import (
 
 // Observation is a family as one attempt saw it, in full.
 type Observation struct {
-	Action    string          `json:"action"`         // the planner's: restack or hold
-	Result    string          `json:"result"`         // what the reports say came of it: complete, conflict or blocked
-	Layers    []ObservedLayer `json:"layers"`         // every layer, plain branches included, bottom first
-	Requests  []RequestPlan   `json:"requests"`       // every related request the planner considered
-	Reasons   []string        `json:"reasons"`        // why the planner held it
-	Notes     []string        `json:"notes"`          // what the planner noted
-	Failing   string          `json:"failing_layer"`  // the change ID of the layer that failed; "" for none
-	Conflicts []string        `json:"conflict_paths"` // every path that conflicted
-	Refusal   string          `json:"refusal"`        // why nothing was published, in full; "" for nothing
+	Action    string          `json:"action"`                // the planner's: restack or hold
+	Result    string          `json:"result"`                // what the reports say came of it: complete, conflict or blocked
+	Layers    []ObservedLayer `json:"layers"`                // every layer, plain branches included, bottom first
+	Requests  []RequestPlan   `json:"requests"`              // every related request the planner considered
+	Reasons   []string        `json:"reasons"`               // why the planner held it
+	Notes     []string        `json:"notes"`                 // what the planner noted
+	Failing   string          `json:"failing_layer"`         // the change ID of the layer that failed; "" for none
+	Conflicts rawPaths        `json:"conflict_paths_base64"` // every path that conflicted, as git gave it
+	Refusal   string          `json:"refusal"`               // why nothing was published, in full; "" for nothing
+}
+
+// rawPaths are file names as git gives them: bytes that need not be
+// UTF-8. JSON holds only UTF-8, and json.Marshal would write each byte
+// that is not as U+FFFD, so a path such as a Latin-1 file name would not
+// read back as git gave it. The journal therefore keeps each path in
+// standard base64, which reads back byte for byte. A report takes only
+// the paths that are UTF-8 as they stand (bound).
+type rawPaths []string
+
+func (ps rawPaths) MarshalJSON() ([]byte, error) {
+	var encoded []string
+	if ps != nil {
+		encoded = make([]string, len(ps))
+	}
+	for i, p := range ps {
+		encoded[i] = base64.StdEncoding.EncodeToString([]byte(p))
+	}
+	return json.Marshal(encoded)
+}
+
+func (ps *rawPaths) UnmarshalJSON(data []byte) error {
+	var encoded []string
+	if err := json.Unmarshal(data, &encoded); err != nil {
+		return err
+	}
+	var out rawPaths
+	if encoded != nil {
+		out = make(rawPaths, len(encoded))
+	}
+	for i, e := range encoded {
+		p, err := base64.StdEncoding.Strict().DecodeString(e)
+		if err != nil {
+			return fmt.Errorf("conflict path %d is not in base64: %w", i, err)
+		}
+		out[i] = string(p)
+	}
+	*ps = out
+	return nil
 }
 
 // ObservedLayer is one layer as the attempt read it.

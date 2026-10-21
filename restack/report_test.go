@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -196,6 +200,64 @@ func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
 	}
 }
 
+// A conflict on a file whose name is not UTF-8 keeps the name in the
+// journal byte for byte, in base64, and the journal reads back as kept,
+// so recovery decides it. The report, which holds only UTF-8, leaves the
+// name out and says so.
+func TestAConflictOnAFileNameNotInUTF8KeepsItByteForByte(t *testing.T) {
+	f := newFixture(t, "")
+	latin1 := "caf\xe9.txt"
+	names := []string{latin1, "plain.txt"}
+	write := func(content string) {
+		for _, n := range names {
+			if err := os.WriteFile(filepath.Join(f.work, n), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		f.git("add", "-A")
+	}
+	f.git("checkout", "--quiet", "-b", "a", "main")
+	write("a\n")
+	f.git("commit", "--quiet", "-m", "layer a")
+	f.git("push", "--quiet", "origin", "a")
+	head := f.git("rev-parse", "HEAD")
+	f.writeRecord(idA, &change.Record{
+		Schema: change.Schema, ChangeID: idA, Target: rebase.Target, Owner: "alice", State: change.Ready, Seq: 1, Active: 1,
+		Versions: []change.Version{{N: 1, Head: change.HeadPrefix + head, Title: "A", Branch: "a", Uploader: "alice"}},
+	}, "", head)
+	f.git("checkout", "--quiet", "main")
+	write("main\n")
+	f.git("commit", "--quiet", "-m", "main has its own")
+	f.git("push", "--quiet", "origin", "main")
+
+	r := newRestacker(t, f)
+	j := r.journal()
+	a := of(t, j, idA)
+	if a.Observed.Result != change.RestackConflict || !reflect.DeepEqual([]string(a.Observed.Conflicts), names) {
+		t.Fatalf("the journal keeps the conflict paths %q, as %s", a.Observed.Conflicts, a.Observed.Result)
+	}
+	kept, err := loadJournal(r.c.state, r.c.binding())
+	if err != nil {
+		t.Fatalf("the restacker refuses its own journal: %v", err)
+	}
+	if !reflect.DeepEqual(kept, j) || of(t, kept, idA).Observed.Conflicts[0] != latin1 {
+		t.Errorf("the journal reads back with the conflict paths %q", of(t, kept, idA).Observed.Conflicts)
+	}
+	data, err := os.ReadFile(filepath.Join(r.c.state, journalFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(base64.StdEncoding.EncodeToString([]byte(latin1)))) {
+		t.Error("the journal does not keep the name in base64")
+	}
+	rep := a.Reports[0]
+	if !reflect.DeepEqual(rep.Pending.Report.Conflicts, []string{"plain.txt"}) ||
+		!strings.Contains(strings.Join(rep.Omitted, " "), "1 of its 2 conflict paths") {
+		t.Errorf("the report names %q and leaves out %v", rep.Pending.Report.Conflicts, rep.Omitted)
+	}
+	r.recovery()
+}
+
 // A report that says what the change's current report on origin says is
 // not built again, under a new operation: a held family whose report has
 // been pushed has nothing left to write.
@@ -220,5 +282,58 @@ func TestAnUnchangedReportIsNotBuiltAgain(t *testing.T) {
 	}
 	if w := p.Families[0].Writes; w == nil || len(w.Reports) != 1 || !w.Reports[0].Unchanged {
 		t.Errorf("the plan's writes are %+v", w)
+	}
+}
+
+// One snapshot gives the same reports however often it is planned. A
+// family that several requests hold is planned again and again from the
+// same snapshot, and each time its observation, and so its report, holds
+// those requests and the reasons they give in one order.
+func TestOneSnapshotGivesTheSameReports(t *testing.T) {
+	f := newFixture(t, "")
+	head := f.readyAs(idA, "alice", "a", "main", "A's title")
+	f.moveMain()
+	for _, name := range []string{"q-delta", "q-alpha", "q-echo", "q-charlie", "q-bravo", "q-foxtrot"} {
+		f.onOrigin("update-ref", rebase.RequestPrefix+name, head)
+	}
+	r := newRestacker(t, f)
+	ctx := context.Background()
+	s, err := rebase.ReadSnapshot(ctx, r.g, r.c.verify)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var first []byte
+	for i := 0; i < 20; i++ {
+		p, err := plan(ctx, r.g, r.c, s, 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := build(ctx, r.g, s, p, r.c.binding(), "20261021T000000Z-00000000")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a := of(t, out.journal, idA)
+		if len(a.Reports) != 1 || a.Observed.Result != change.RestackBlocked {
+			t.Fatalf("the held family's writes are %+v", a)
+		}
+		report, err := change.EncodeRestackReport(a.Reports[0].Pending.Report)
+		if err != nil {
+			t.Fatal(err)
+		}
+		observed, err := json.Marshal(a.Observed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		now := append(report, observed...)
+		if first == nil {
+			first = now
+			if !strings.Contains(*a.Reports[0].Pending.Report.Refusal, "request q-alpha might still land") {
+				t.Fatalf("the report does not say what holds the family: %q", *a.Reports[0].Pending.Report.Refusal)
+			}
+			continue
+		}
+		if !bytes.Equal(now, first) {
+			t.Fatalf("plan %d of the same snapshot gives another report or observation:\n%s\nwhere the first gave:\n%s", i, now, first)
+		}
 	}
 }

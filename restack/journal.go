@@ -47,10 +47,15 @@ import (
 // The journal is read as strictly as it is written: a field missing,
 // unknown or named twice, a form that does not agree with itself, or a
 // journal another repository, target or principal wrote is refused, and
-// nothing it names is decided (loadJournal). A journal that is missing is
-// never inferred: what origin shows of a write no journal names is left
-// for the planner, which holds a change whose branch is not at its
-// recorded head.
+// nothing it names is decided (loadJournal). A family agrees with itself
+// only when every write it holds is about one of its layers. A family
+// that would restack adds exactly one version of each of its changes.
+// Each report gives the family's result, and says published exactly what
+// the family's versions add: nothing, for a family that adds none. A
+// journal that would not read back as written is never kept (keep). A
+// journal that is missing is never inferred: what origin shows of a write
+// no journal names is left for the planner, which holds a change whose
+// branch is not at its recorded head.
 
 // journalSchema names the journal's format.
 const journalSchema = "valley-restack-journal/v1"
@@ -180,7 +185,11 @@ func (f *JournalFamily) check(j *Journal) error {
 		}
 	}
 	last := -1
+	written := map[string]*rebase.PendingVersion{} // each version by change ID
 	for _, v := range f.Versions {
+		if v == nil {
+			return errors.New("it holds an empty version")
+		}
 		l, ok := layers[v.ID]
 		switch {
 		case !ok:
@@ -193,6 +202,10 @@ func (f *JournalFamily) check(j *Journal) error {
 			return fmt.Errorf("its versions are not lower layers first")
 		}
 		last = order[v.ID]
+		written[v.ID] = v
+	}
+	if f.Branches != nil && len(written) != len(layers) {
+		return fmt.Errorf("it would restack %d changes and adds a version to %d of them, where each change gets exactly one", len(layers), len(written))
 	}
 	reported := map[string]bool{}
 	for _, r := range f.Reports {
@@ -206,8 +219,36 @@ func (f *JournalFamily) check(j *Journal) error {
 			return fmt.Errorf("it reports on %s twice", p.ID)
 		case p.Report.Operation != j.Operation || p.Report.Target != j.Target || p.Report.TargetTip != change.HeadPrefix+j.Tip:
 			return fmt.Errorf("its report on %s is not this operation's, on %s at %s", p.ID, j.Target, j.Tip)
+		case p.Report.Result != o.Result:
+			return fmt.Errorf("its report on %s says %s, and the family's result is %s", p.ID, p.Report.Result, o.Result)
+		}
+		if err := checkClaims(p.Report, layers, written); err != nil {
+			return fmt.Errorf("its report on %s %w", p.ID, err)
 		}
 		reported[p.ID] = true
+	}
+	return nil
+}
+
+// checkClaims refuses a report that says something was published other
+// than what the family's versions add. Each of the report's layers is one
+// of the family's changes. A layer says it was published exactly when the
+// family adds a version of that change, and then names that version's
+// head, number and record commit.
+func checkClaims(r *change.RestackReport, layers map[string]ObservedLayer, written map[string]*rebase.PendingVersion) error {
+	for _, l := range r.Layers {
+		v, p := written[l.ChangeID], l.Published
+		switch {
+		case layers[l.ChangeID].ID == "":
+			return fmt.Errorf("has a layer for %s, which is none of the family's changes", l.ChangeID)
+		case v == nil && p != nil:
+			return fmt.Errorf("says %s was published, and the family adds no version of it", l.ChangeID)
+		case v != nil && p == nil:
+			return fmt.Errorf("says nothing was published for %s, and the family adds v%d of it", l.ChangeID, v.Version)
+		case v != nil && (p.Head != change.HeadPrefix+v.Head || p.Version == nil || *p.Version != v.Version ||
+			p.Record == nil || *p.Record != change.HeadPrefix+v.Commit):
+			return fmt.Errorf("says %s was published as other than v%d at %s, record %s, which the family adds", l.ChangeID, v.Version, short(v.Head), short(v.Commit))
+		}
 	}
 	return nil
 }
@@ -284,10 +325,19 @@ func (j *Journal) objects() []string {
 // keep makes the journal durable before any of its writes is pushed: it
 // keeps every object the writes would push reachable in the scratch
 // repository, under refs/valley-restack/<operation>/, and then writes the
-// journal to the state directory, synced, in place of any before it.
+// journal to the state directory, synced, in place of any before it. A
+// journal that would not read back as written is refused before anything
+// is kept, since a later pass would refuse it in turn.
 func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 	if err := j.check(binding{Repository: j.Repository, Target: j.Target, Principal: j.Principal}); err != nil {
 		return fmt.Errorf("the journal cannot be kept: %w", err)
+	}
+	data, err := json.MarshalIndent(j, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := strictly(data, &Journal{}); err != nil {
+		return fmt.Errorf("the journal cannot be kept, since it would not read back as written: %w", err)
 	}
 	var stdin strings.Builder
 	for i, oid := range j.objects() {
@@ -297,10 +347,6 @@ func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 	cmd.Stdin = strings.NewReader(stdin.String())
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("could not keep the objects of operation %s: %v: %s", j.Operation, err, strings.TrimSpace(string(out)))
-	}
-	data, err := json.MarshalIndent(j, "", "  ")
-	if err != nil {
-		return err
 	}
 	return writeDurably(dir, journalFile, append(data, '\n'))
 }

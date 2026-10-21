@@ -220,6 +220,8 @@ func (rd reading) family(i int, j *Journal, f JournalFamily) []Decision {
 		at := rd.s.Refs[p.Ref]
 		current, found := rd.s.Report(p.ID)
 		// What the report says was published, against what became of it.
+		// The journal was checked as it was read (loadJournal), so each
+		// version the report names is one the family adds, decided above.
 		claims, claimFinal, pending := "", false, false
 		for _, l := range p.Report.Layers {
 			if l.Published == nil {

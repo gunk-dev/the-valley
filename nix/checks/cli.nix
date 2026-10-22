@@ -249,8 +249,9 @@ in
   # two changes holding one tree try one push. A pass over another project
   # keeps this project's waits. A pass killed mid-batch leaves attest
   # holding the lock, so the next pass waits for it, then publishes what
-  # it stored. A cache clone whose making a killed pass interrupted is
-  # repaired.
+  # it stored. A cache clone whose making was interrupted by git dying with
+  # its config.lock held is made again, and a half-made clone with a stale
+  # config.lock in the cache's place is set aside and made again.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git

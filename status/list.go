@@ -438,29 +438,50 @@ func cacheRepo(g git, url, name string) (git, error) {
 	sum := sha256.Sum256([]byte(url))
 	dir := filepath.Join(base, "valley", "repos", hex.EncodeToString(sum[:8])+"-"+name)
 	c := git{env: cacheEnvironment(g.env), stderr: g.stderr, dir: dir}
-	// The clone is repaired on every use rather than trusted once .git
-	// exists. A run killed inside init leaves a repository half made, and
-	// one killed after it leaves a repository with no origin. init
-	// reinitializes an existing repository without touching what it
-	// holds, and fills in what a killed init left out. Then origin is set
-	// when it is missing, and set again when it names another URL.
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if c.cacheComplete(url) {
+		return c, nil
+	}
+	// A clone is made whole in a directory of its own beside the cache's
+	// place, and renamed into place only then, so a run killed while it is
+	// made, git included, leaves no clone behind, only that directory. A
+	// clone already in the place that is not whole was left by an older
+	// version, and is set aside first.
+	parent := filepath.Dir(dir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
 	}
-	if _, err := c.output(false, "init", "--quiet"); err != nil {
-		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
-	}
-	set := []string{"remote", "add", "--end-of-options", "origin", url}
-	if got, err := c.output(true, "config", "--get", "remote.origin.url"); err == nil {
-		if got == url {
-			return c, nil
+	if _, err := os.Lstat(dir); err == nil {
+		aside, err := os.MkdirTemp(parent, "."+filepath.Base(dir)+".old-")
+		if err != nil || os.Rename(dir, filepath.Join(aside, "repo")) != nil {
+			return git{}, fmt.Errorf("could not set aside the incomplete cache repository %s", dir)
 		}
-		set = []string{"remote", "set-url", "--end-of-options", "origin", url}
+		_ = os.RemoveAll(aside)
 	}
-	if _, err := c.output(false, set...); err != nil {
+	made, err := os.MkdirTemp(parent, "."+filepath.Base(dir)+".new-")
+	if err != nil {
+		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
+	}
+	defer os.RemoveAll(made) // gone once it is renamed into place
+	m := git{env: c.env, stderr: c.stderr, dir: made}
+	if _, err := m.output(false, "init", "--quiet"); err != nil {
+		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
+	}
+	if _, err := m.output(false, "remote", "add", "--end-of-options", "origin", url); err != nil {
 		return git{}, fmt.Errorf("could not set origin in %s", dir)
 	}
+	if err := os.Rename(made, dir); err != nil && !c.cacheComplete(url) {
+		return git{}, fmt.Errorf("could not move the cache repository into %s", dir)
+	}
 	return c, nil
+}
+
+// cacheComplete reports whether the cache repository at c.dir is whole:
+// its configuration names url as origin. It reads the file and writes
+// nothing, so a lock a killed git left beside it does not stand in the
+// way.
+func (c git) cacheComplete(url string) bool {
+	got, err := c.output(true, "config", "--file", ".git/config", "--get", "remote.origin.url")
+	return err == nil && got == url
 }
 
 // cacheEnvironment is env without the variables that would point git at

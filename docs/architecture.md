@@ -1902,10 +1902,11 @@ from `policy/valley` at `main`'s tip on origin, never from a checked-out or push
 repository whose `main` carries `policy/instance` is its own instance. Each project's URL is the
 instance's URL with its last path segment replaced, so the transport, user and host are kept. A
 repository other than the current one is read through a clone under `$XDG_CACHE_HOME/valley/repos`.
-Each use repairs a clone whose making was interrupted: it initializes the repository again, which
-fills in what a killed `git init` left out, and sets a missing origin. When discovery is
-unavailable, `--all` says so and lists the current repository alone. `--repo <name>` limits either
-command to one project.
+A clone is made in a temporary directory beside its place and renamed into place once its origin is
+set, so a run killed while making it, git included, leaves no clone behind. A clone already in place
+is used as it is when its configuration names its origin. One that does not was left half made by an
+older version, and is set aside and made again. When discovery is unavailable, `--all` says so and
+lists the current repository alone. `--repo <name>` limits either command to one project.
 
 `policy/valley` is data that anyone who can land on `main` controls, so the client is careful with
 the URL it names. It refuses a URL that starts with `-`, which git would read as an option. It

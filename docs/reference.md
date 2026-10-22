@@ -758,9 +758,10 @@ git directory:
   which it is not tried again.
 - `${XDG_CACHE_HOME:-$HOME/.cache}/valley/repos/<16-hex-url-hash>-<project>`: Cached non-bare git
   repositories (`git init --quiet` with no working tree checkout) fetched when `--all`, `--repo`, or
-  `--project` reads another project on the host. Each use repairs a clone whose making was
-  interrupted, and sets its origin when it is missing. The check worker keeps the attestation refs
-  it stores in the clone it reads a project through.
+  `--project` reads another project on the host. A clone is made in a temporary directory beside it
+  and renamed into place, so a making that is interrupted leaves no clone. A clone whose
+  configuration names no origin is set aside and made again. The check worker keeps the attestation
+  refs it stores in the clone it reads a project through.
 - `${TMPDIR:-/tmp}/valley-known-signers-*`: A copy of the `known-signers` file the host publishes,
   for `attest verify` to read. It exists only while a command that verifies a transfer statement
   runs.

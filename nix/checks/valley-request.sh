@@ -2459,19 +2459,21 @@ said killed-2 "$line: published $killedref"
 built prose-format
 pushed "$killedref"
 
-# 21l. A cache clone whose making was interrupted. A stand-in for git kills
-#      the worker as it sets the clone's origin, which leaves a repository
-#      with no origin. The next pass repairs the clone and reads the
-#      project through it. The worker runs as valley-go here, since the
-#      package's wrapper puts its own git ahead of the stand-in.
+# 21l. A cache clone whose making was interrupted. A stand-in for git takes
+#      the clone's config.lock as it sets the origin, kills the worker, and
+#      dies holding the lock, as git killed mid-write does. The next pass
+#      makes the clone again and reads the project through it. The worker
+#      runs as valley-go here, since the package's wrapper puts its own git
+#      ahead of the stand-in.
 cachehome="$r/interrupted-cache"
 interrupted="$cachehome/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
 mkdir -p "$r/killing-git"
 cat > "$r/killing-git/git" <<EOF
 #!$(command -v bash)
 if [ "\${1:-} \${2:-}" = "remote add" ]; then
+  : > .git/config.lock
   kill -9 "\$PPID"
-  exit 1
+  kill -9 "\$\$"
 fi
 exec "$(command -v git)" "\$@"
 EOF
@@ -2480,25 +2482,36 @@ status=0
 (cd "$r/worker-home" && VALLEY_PRINCIPAL=worker XDG_CACHE_HOME="$cachehome" PATH="$r/killing-git:$PATH" \
   VALLEY_VERIFICATION_SCHEMA="$schemaFile" valley-go work --repo project \
   --key "$r/keys/worker" --name "$workername" --state "$wstate") > "$r/interrupted-1.log" 2>&1 || status=$?
-[ "$status" = 137 ] && [ -d "$interrupted/.git" ] || {
-  echo "valley-request: the stand-in did not interrupt the clone's making ($status)" >&2
+if [ "$status" != 137 ] || [ -z "$(find "$cachehome" -name config.lock)" ]; then
+  echo "valley-request: the stand-in did not interrupt the clone's making while holding its config.lock ($status)" >&2
   cat "$r/interrupted-1.log" >&2
   exit 1
-}
-if git -C "$interrupted" config --get remote.origin.url; then
-  echo "valley-request: the interrupted clone has an origin already" >&2
-  exit 1
 fi
-fresh
-working interrupted-2 XDG_CACHE_HOME="$cachehome" || {
-  echo "valley-request: the pass after an interrupted clone failed" >&2
-  cat "$r/interrupted-2.log" >&2
-  exit 1
+# recovered <name>: a pass over the cache at $cachehome succeeds, and the
+# clone it reads the project through names origin.
+recovered() {
+  fresh
+  working "$1" XDG_CACHE_HOME="$cachehome" || {
+    echo "valley-request: the pass after an interrupted clone failed" >&2
+    cat "$r/$1.log" >&2
+    exit 1
+  }
+  [ "$(git -C "$interrupted" config --get remote.origin.url)" = "$served" ]
+  said "$1" "$livelyline: requires no nix check"
+  built nothing
 }
-[ "$(git -C "$interrupted" config --get remote.origin.url)" = "$served" ]
-said interrupted-2 "$livelyline: requires no nix check"
-built nothing
+recovered interrupted-2
 
+# 21m. A clone left half made in its place, as an older version left one:
+#      a repository with no origin, and a stale config.lock beside its
+#      configuration. The next pass sets it aside, makes the clone again,
+#      and reads the project through it.
+cachehome="$r/half-made-cache"
+interrupted="$cachehome/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
+git init --quiet "$interrupted"
+: > "$interrupted/.git/config.lock"
+recovered half-made
+[ ! -e "$interrupted/.git/config.lock" ]
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"
 if [ "$worktrees" != 1 ]; then

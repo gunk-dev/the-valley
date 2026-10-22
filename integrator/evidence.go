@@ -13,6 +13,7 @@ package main
 // sound only in that order: verify first, read second.
 
 import (
+	"the-valley/change"
 	"the-valley/integrator/verdict"
 
 	"bytes"
@@ -44,17 +45,21 @@ const unknownSigner = "no signature on this note is by a key the verifier holds"
 
 // collectEvidence finds every attestation stored for a subject digest and
 // classifies it. Attestations are stored one ref per signer
-// (dcr-0de694f), so a subject may carry several notes for one check; the
-// first admissible one is the evidence, and a note that does not verify at
-// all is reported so the verdict can reject rather than quietly look past
-// it.
+// (dcr-0de694f), so a subject may carry several notes for one check.
+// Which one a check is judged by is change.SelectNotes's choice, the one
+// approve makes too: the first admissible note, whatever it records, or
+// else the last note read, so a note that does not verify is reported and
+// the verdict can reject rather than quietly look past it.
 func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[string]verdict.Evidence, map[string][]byte, error) {
 	refs, err := git(in.repo, "for-each-ref", "--format=%(refname)", attestationPrefix+"/"+subject)
 	if err != nil {
 		return nil, nil, err
 	}
-	found := map[string]verdict.Evidence{}
-	notes := map[string][]byte{}
+	type read struct {
+		ev   verdict.Evidence
+		note []byte
+	}
+	var all []read
 	for _, ref := range strings.Fields(refs) {
 		listing, err := git(in.repo, "ls-tree", "-r", "--name-only", ref)
 		if err != nil {
@@ -72,14 +77,16 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 			if err != nil {
 				return nil, nil, err
 			}
-			// A check with an admissible note keeps it; otherwise the
-			// first thing found stands, so a forgery is never hidden by a
-			// good note arriving after it.
-			if old, seen := found[ev.Check]; seen && old.Admissible == verdict.Admissible {
-				continue
-			}
-			found[ev.Check], notes[ev.Check] = ev, []byte(note)
+			all = append(all, read{ev, []byte(note)})
 		}
+	}
+	picked := change.SelectNotes(all,
+		func(r read) string { return r.ev.Check },
+		func(r read) bool { return r.ev.Admissible == verdict.Admissible })
+	found := map[string]verdict.Evidence{}
+	notes := map[string][]byte{}
+	for check, r := range picked {
+		found[check], notes[check] = r.ev, r.note
 	}
 	return found, notes, nil
 }

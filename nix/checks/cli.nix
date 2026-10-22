@@ -217,7 +217,14 @@ in
   # missing, is refused before anything runs (bd-7b7d58f). A listing or a
   # fetch of origin's evidence that fails is refused, and nothing runs or
   # is published. A request filed while a fully covered approval is
-  # prepared wins the lease.
+  # prepared wins the lease. Then evidence approve must not reuse, each
+  # judged by approve and by the real integrator from the same refs: a
+  # worker the host has revoked and a local known-signers file still
+  # trusts, a local file that trusts less than the host, a failure and an
+  # observation that sit before a pass in ref order, a note without its
+  # last newline, a signer nobody knows, a note about another tree, an
+  # expired observation, and a note for another flake attribute. Notes the
+  # hook would refuse are planted past it.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git

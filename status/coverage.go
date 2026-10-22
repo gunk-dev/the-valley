@@ -5,26 +5,30 @@ package main
 // the rest. A check worker publishes such evidence, and so does an earlier
 // approval.
 //
-// Only what origin holds counts. coverage lists origin's attestation refs
-// for the head's tree, fetches the objects they name by ID, and reads the
-// notes from those objects. It never reads a local ref, so a note that
-// was stored here and never published is not mistaken for evidence the
-// integrator will see. A listing or a fetch that fails is an error, never
-// an empty answer.
+// Approve skips a check only where the integrator will accept the same
+// evidence. So coverage judges each check by the note the integrator
+// judges it by, read the way the integrator reads it:
 //
-// A check is covered when one of those refs holds a note for it that
-// meets every one of these:
+//   - Only what origin holds counts. coverage lists origin's attestation
+//     refs for the head's tree, fetches the objects they name by ID, and
+//     reads every note in them, byte for byte. It never reads a local ref,
+//     so a note stored here and never published is not mistaken for
+//     evidence the integrator will see. A listing or a fetch that fails is
+//     an error, never an empty answer.
+//   - Of the notes about a check, the one judged is change.SelectNotes's
+//     choice, in the order the integrator reads them: the first that
+//     verifies, whatever it records.
+//   - It verifies when attest verify accepts it under the known-signers
+//     file the serving host publishes (signers.go), which is the host's
+//     current authorization as far as a client can read it. With no
+//     publication, nothing is reused.
 //
-//   - attest verify accepts it: the note is in the one written form, it
-//     satisfies the schema, a key in the known-signers file signed it, and
-//     its subject is the head's tree;
+// The note judged is reused only when it also meets every one of these:
+//
 //   - it is pure evidence, from the nix runner, for this check's name and
-//     this check's flake attribute;
-//   - it records the check as passed.
-//
-// The known-signers file is the one a transfer statement is verified with
-// (signers.go): VALLEY_KNOWN_SIGNERS or the serving host's publication.
-// With none, nothing is covered and every check runs.
+//     this check's flake attribute, and it records the check as passed;
+//   - when VALLEY_KNOWN_SIGNERS is set, attest verify accepts it under that
+//     file too. An override can narrow what is reused, never widen it.
 //
 // The attribute test is stricter than the integrator's rule for an
 // unmoved tree, which compares no attribute. A command check is never
@@ -43,14 +47,19 @@ package main
 // order asked.
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"regexp"
 	"sort"
 	"strings"
+
+	"the-valley/change"
+	"the-valley/note"
 )
 
 const coverageUsage = "usage: valley-go coverage --head <sha> [--check <name>=<attribute>]..."
@@ -118,7 +127,7 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 	listed := o.refs
 	var stored []string
 	for ref := range listed {
-		if signer, ok := strings.CutPrefix(ref, prefix); ok && signer != "" && !strings.Contains(signer, "/") {
+		if rest, ok := strings.CutPrefix(ref, prefix); ok && rest != "" {
 			stored = append(stored, ref)
 		}
 	}
@@ -144,7 +153,7 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 	return err
 }
 
-// cover is the checks the stored refs hold acceptable evidence for, each
+// cover is the checks the stored refs hold reusable evidence for, each
 // mapped to "<ref> <signer>". It fetches the refs' objects only when there
 // are checks to look for.
 func cover(g git, repo, head string, stored []string, listed map[string]string, checks []nixCheck, stderr io.Writer) (map[string]string, error) {
@@ -159,48 +168,143 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 	if err := fetch(g, oids...); err != nil {
 		return nil, failure("could not fetch the evidence origin holds for this tree")
 	}
-	keys, _ := verification.resolve()
-	if keys == "" {
-		fmt.Fprintf(stderr, "valley: no known-signers file to verify the evidence on origin with, so none of it is reused\n")
+	keys, why := hostKeys(g)
+	if why != "" {
+		fmt.Fprintf(stderr, "valley: %s, so none of the evidence on origin is reused\n", why)
 		return covered, nil
 	}
+	defer os.Remove(keys)
+
+	asked := map[string]bool{}
 	for _, c := range checks {
-		for _, ref := range stored {
-			blob, err := g.output(true, "rev-parse", "--verify", "--quiet", listed[ref]+":"+c.name+"/statement.note")
-			if err != nil {
-				continue // this signer attested no such check
-			}
-			note, err := g.output(true, "cat-file", "blob", blob)
-			if err != nil {
-				return nil, fmt.Errorf("could not read %s from %s", c.name, ref)
-			}
-			signer, why, err := accept(g, repo, head, keys, c, note+"\n")
-			if err != nil {
-				return nil, err
-			}
-			if why != "" {
-				fmt.Fprintf(stderr, "valley: not reusing %s from %s: %s\n", c.name, ref, why)
-				continue
-			}
-			covered[c.name] = ref + " " + signer
-			break
+		asked[c.name] = true
+	}
+	notes, why, err := readNotes(g, stored, listed, asked)
+	if err != nil {
+		return nil, err
+	}
+	if why != "" {
+		fmt.Fprintf(stderr, "valley: %s, so the integrator cannot judge this tree's evidence, and none of it is reused\n", why)
+		return covered, nil
+	}
+	for i := range notes {
+		if notes[i].signer, notes[i].refusal, err = verify(g, repo, head, keys, notes[i].note); err != nil {
+			return nil, err
 		}
+	}
+	picked := change.SelectNotes(notes,
+		func(n storedNote) string { return n.check },
+		func(n storedNote) bool { return n.refusal == "" })
+
+	local := os.Getenv("VALLEY_KNOWN_SIGNERS")
+	for _, c := range checks {
+		n, ok := picked[c.name]
+		if !ok {
+			continue // origin holds no note about this check
+		}
+		why, err := reusable(g, repo, head, local, c, n)
+		if err != nil {
+			return nil, err
+		}
+		if why != "" {
+			fmt.Fprintf(stderr, "valley: not reusing %s: the integrator judges it by %s:%s, and %s\n", c.name, n.ref, n.path, why)
+			continue
+		}
+		covered[c.name] = n.ref + " " + n.signer
 	}
 	return covered, nil
 }
 
-// accept judges one note for one check. It returns the signer when the
-// note is acceptable evidence for the check, and why not when it is not.
-// The note is verified before anything is read out of its text, since
-// statementValue is a lookup that is sound only over text attest verify
-// has established is the written form of what it says.
-func accept(g git, repo, head, keys string, c nixCheck, note string) (signer, why string, err error) {
+// storedNote is one note an attestation ref on origin holds, as read: where
+// it is, its bytes, the check its text says it is about, and what attest
+// verify said of it under the host's signers.
+type storedNote struct {
+	ref, path string
+	note      []byte
+	check     string
+	signer    string // the signer attest verify accepted, when it did
+	refusal   string // why attest verify refused it; "" when it accepted it
+}
+
+// readNotes reads every note the stored refs hold about a check asked
+// about, in the order the integrator reads them (integrator/evidence.go):
+// the refs in byte order, and each ref's notes in the order git ls-tree -r
+// lists them. A note is any file named statement.note, at any depth. The
+// integrator reads every note under the tree, and a note it cannot split
+// into a text and signatures stops it judging the tree's evidence at all,
+// so why names the first such note.
+func readNotes(g git, stored []string, listed map[string]string, asked map[string]bool) (notes []storedNote, why string, err error) {
+	for _, ref := range stored {
+		listing, err := g.output(true, "ls-tree", "-r", "--name-only", listed[ref])
+		if err != nil {
+			return nil, "", fmt.Errorf("could not list %s", ref)
+		}
+		for _, file := range strings.Fields(listing) {
+			if path.Base(file) != "statement.note" {
+				continue
+			}
+			note, err := blob(g, listed[ref]+":"+file)
+			if err != nil {
+				return nil, "", fmt.Errorf("could not read %s:%s", ref, file)
+			}
+			split := bytes.LastIndex(note, []byte("\n\n"))
+			if split < 0 {
+				return nil, fmt.Sprintf("%s:%s is not a note: no blank line separates its text from its signatures", ref, file), nil
+			}
+			check := statementValue(string(note[:split+1]), "predicate.check.name")
+			if check == "" {
+				check = "(unnamed)"
+			}
+			if asked[check] {
+				notes = append(notes, storedNote{ref: ref, path: file, note: note, check: check})
+			}
+		}
+	}
+	return notes, "", nil
+}
+
+// reusable says why the note a check is judged by is not evidence approve
+// may skip the check on, or "" when it is.
+func reusable(g git, repo, head, local string, c nixCheck, n storedNote) (string, error) {
+	if n.refusal != "" {
+		return "attest verify refuses it under the host's signers: " + n.refusal, nil
+	}
+	text := string(n.note[:bytes.LastIndex(n.note, []byte("\n\n"))+1])
+	for _, want := range [][2]string{
+		{"predicateType", predicatePure},
+		{"predicate.check.runner", "nix"},
+		{"predicate.check.attribute", c.attribute},
+		{"predicate.result", "passed"},
+	} {
+		if got := statementValue(text, want[0]); got != want[1] {
+			return fmt.Sprintf("its %s is %q, not %q", want[0], got, want[1]), nil
+		}
+	}
+	if local != "" {
+		_, refusal, err := verify(g, repo, head, local, n.note)
+		if err != nil {
+			return "", err
+		}
+		if refusal != "" {
+			return "attest verify refuses it under VALLEY_KNOWN_SIGNERS: " + refusal, nil
+		}
+	}
+	// The serving host's list of which projects each restricted signer
+	// may attest in (oc-a415f3a) is one more test of n.signer here, once
+	// the host publishes it.
+	return "", nil
+}
+
+// verify runs attest verify over a note's exact bytes, under a
+// known-signers file. It returns the signer whose signature checked out,
+// or the sentence attest refused the note with.
+func verify(g git, repo, head, keys string, note []byte) (signer, refusal string, err error) {
 	file, err := os.CreateTemp("", "valley-coverage-*.note")
 	if err != nil {
 		return "", "", err
 	}
 	defer os.Remove(file.Name())
-	_, err = file.WriteString(note)
+	_, err = file.Write(note)
 	if cerr := file.Close(); err == nil {
 		err = cerr
 	}
@@ -213,30 +317,53 @@ func accept(g git, repo, head, keys string, c nixCheck, note string) (signer, wh
 		if !errors.As(err, &exit) {
 			return "", "", fmt.Errorf("could not run attest verify: %v", err)
 		}
-		return "", "attest verify refused it: " + refusal(out), nil
+		return "", refusalOf(out), nil
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if f := strings.Fields(line); len(f) == 3 && f[0] == "signature" && f[1] == "ok" {
-			signer = f[2]
-			break
+			return f[2], "", nil
 		}
 	}
-	text := note[:strings.LastIndex(note, "\n\n")+1] // verified, so it holds the blank line
-	for _, want := range [][2]string{
-		{"predicateType", predicatePure},
-		{"predicate.check.name", c.name},
-		{"predicate.check.runner", "nix"},
-		{"predicate.check.attribute", c.attribute},
-		{"predicate.result", "passed"},
-	} {
-		if got := statementValue(text, want[0]); got != want[1] {
-			return "", fmt.Sprintf("its %s is %q, not %q", want[0], got, want[1]), nil
-		}
+	return "", "attest verify named no signer", nil
+}
+
+// hostKeys writes out the known-signers file the serving host publishes,
+// for attest verify to read, and returns its path. why says why there is
+// none.
+func hostKeys(g git) (keys, why string) {
+	p, err := readSigners(g)
+	switch {
+	case err != nil:
+		return "", err.Error()
+	case p == nil:
+		return "", "the serving host publishes no signers at " + signersRef
 	}
-	if signer == "" {
-		return "", "attest verify named no signer", nil
+	if _, err := note.ParseVerifierKeys(p.keys); err != nil {
+		return "", fmt.Sprintf("the known-signers file published at %s does not read as verifier keys: %v", p.where, err)
 	}
-	return signer, "", nil
+	f, err := os.CreateTemp("", "valley-host-signers-*")
+	if err != nil {
+		return "", err.Error()
+	}
+	_, err = f.Write(p.keys)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(f.Name())
+		return "", err.Error()
+	}
+	return f.Name(), ""
+}
+
+// blob is an object's content exactly as git stores it. g.output trims
+// trailing newlines, and a note's last newline is part of its envelope
+// (note.Split), so a note is never read through it.
+func blob(g git, object string) ([]byte, error) {
+	cmd := exec.Command("git", "cat-file", "blob", object)
+	cmd.Env = g.env
+	cmd.Dir = g.dir
+	return cmd.Output()
 }
 
 // attestTool runs the attest helper in g's repository and environment,
@@ -260,9 +387,9 @@ func statementValue(text, key string) string {
 	return ""
 }
 
-// refusal is the sentence attest refused with: the line it prefixes with
-// its own name, or else the last line it printed.
-func refusal(out string) string {
+// refusalOf is the sentence attest refused with: the line it prefixes
+// with its own name, or else the last line it printed.
+func refusalOf(out string) string {
 	last := ""
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
 		if why, ok := strings.CutPrefix(line, "attest: "); ok {

@@ -500,15 +500,17 @@ usage: valley approve [--head <sha>] <change>
                    be c-<change id> is refused, since that name is the
                    change's.
                    approve first reads the evidence origin holds for that
-                   head's tree, refs/the-valley/attestations/<tree>/*, and
-                   reuses it for each required nix check it verifies: a
-                   note that attest verify accepts under the known-signers
-                   file (VALLEY_KNOWN_SIGNERS, or the one the host
-                   publishes), that is pure evidence for that check's name
-                   and flake attribute, and that says it passed. it prints
-                   each check it reuses and who signed it. for a note it
-                   found and does not reuse, it says why on stderr. a
-                   command check is never reused. a listing or a fetch of
+                   head's tree, refs/the-valley/attestations/<tree>/*, byte
+                   for byte. it judges each required nix check by the note
+                   the integrator judges it by: the first, in ref order,
+                   that attest verify accepts under the known-signers file
+                   the host publishes. it reuses that note when it is pure
+                   evidence for the check's name and flake attribute and
+                   says it passed. VALLEY_KNOWN_SIGNERS, when set, must
+                   accept it too: it can narrow what is reused, never widen
+                   it. approve prints each check it reuses and who signed
+                   it, and says on stderr why it does not reuse a note it
+                   judged. a command check is never reused. a listing or a fetch of
                    origin's evidence that fails is refused, and nothing is
                    run.
                    approve runs every other required check over a

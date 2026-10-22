@@ -1414,10 +1414,15 @@ cp "$r/floor/floor.cue" "$r/seed/policy/instance/"
 git -C "$r/seed" add -A
 git -C "$r/seed" commit --quiet -m 'the floor'
 git -C "$r/seed" push --quiet "$instance" main
-keysblob="$(git -C "$instance" hash-object -w "$r/known-signers")"
-nameblob="$(printf '%s\n' "$integratorname" | git -C "$instance" hash-object -w --stdin)"
-git -C "$instance" update-ref refs/the-valley/signers "$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n' \
-  "$nameblob" "$keysblob" | git -C "$instance" mktree)"
+# published <file>: the instance publishes the known-signers file.
+published() {
+  local keysblob nameblob
+  keysblob="$(git -C "$instance" hash-object -w "$1")"
+  nameblob="$(printf '%s\n' "$integratorname" | git -C "$instance" hash-object -w --stdin)"
+  git -C "$instance" update-ref refs/the-valley/signers "$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n' \
+    "$nameblob" "$keysblob" | git -C "$instance" mktree)"
+}
+published "$r/known-signers"
 
 served="$r/project.git"
 hook="$(grep -o '/nix/store/[^ ]*-valley-protect-open' "$reuseInitScriptPath" | head -n1)"
@@ -1435,10 +1440,11 @@ proj="$r/project"
 git init --quiet "$proj"
 cd "$proj" || exit 1
 git remote add origin "$served"
-mkdir -p docs src checks policy/project
+mkdir -p docs src live checks policy/project
 echo "$instance" > policy/valley
 echo "the readme" > docs/readme.md
 echo "the source" > src/main.txt
+echo "the state" > live/state.txt
 echo docs > checks/prose-format.inputs
 echo src > checks/code-build.inputs
 cat > policy/project/policy.cue <<'EOF'
@@ -1448,10 +1454,12 @@ project: {
 	checks: {
 		"prose-format": {runner: "nix", attribute: "prose-format"}
 		"code-build": {runner: "nix", attribute: "code-build"}
+		"live-ok": {runner: "command", command: "true", validity: "1h"}
 	}
 	classes: {
 		prose: {paths: "docs/**": true, requires: "prose-format": true}
 		code: {paths: "src/**": true, requires: "code-build": true}
+		live: {paths: "live/**": true, requires: "live-ok": true}
 	}
 	unclassified: {}
 }
@@ -1590,7 +1598,7 @@ partialdigest="$(attest digest --rev partial | cut -d: -f2)"
 worker "$partialhead" --check prose-format --check code-build=prose-format
 approving partial valley approve origin/partial
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out"
-grep -qxF "valley: not reusing code-build from refs/the-valley/attestations/$partialdigest/$workerhash: its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
+grep -qxF "valley: not reusing code-build: the integrator judges it by refs/the-valley/attestations/$partialdigest/$workerhash:code-build/statement.note, and its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
 grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
 grep -qE '^check   code-build +nix +passed$' "$w/partial.out"
 if ! grep -q '^nix eval .*#checks\.[^.]*\.code-build\.drvPath$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
@@ -1691,6 +1699,178 @@ done
 VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread bash "$cliScript" approve origin/unread
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/unread.out"
 [ "$(requested unread)" = "$unreadhead" ]
+integrated unread
+
+# 20g. approve skips a check only where the integrator accepts the same
+#      evidence. Each case below stores one set of evidence on origin.
+#      Approve, with no signing key, reuses nothing for it and so refuses,
+#      naming the note the integrator judges the check by and why it is not
+#      reused. Then the request is filed by hand, and one pass of the real
+#      integrator decides it from the same refs. A note the hook would
+#      refuse is planted past it, straight into origin's storage. Two cases
+#      land: there approve is stricter than the integrator, on purpose.
+#
+# noted <file> <key> <name> <rev> <check> <attest run flag…>: attest the
+# revision in the worker's clone under the key, and copy the note it stored
+# for the check to the file, byte for byte. Nothing pushes the ref it
+# stored.
+noted() {
+  local file="$1" key="$2" name="$3" rev="$4" check="$5" digest hash
+  shift 5
+  git -C "$r/worker" fetch --quiet origin
+  digest="$(attest digest --repo "$r/worker" --rev "$rev" | cut -d: -f2)"
+  hash="$(attest key --key "$key" --name "$name" | cut -d+ -f2)"
+  attest run --repo "$r/worker" --rev "$rev" --key "$key" --name "$name" "$@" > "$r/noted.out" 2>&1 || {
+    echo "valley-request: attesting $rev for a planted note failed" >&2
+    cat "$r/noted.out" >&2
+    exit 1
+  }
+  git -C "$r/worker" cat-file blob "refs/the-valley/attestations/$digest/$hash:$check/statement.note" > "$file"
+}
+# resigned <file> <sed expression>: the note's text, edited by the
+# expression, signed again by the worker.
+resigned() {
+  sed -n '/^$/q;p' "$1" | sed "$2" > "$r/text"
+  attest sign --key "$r/keys/worker" --name "$workername" "$r/text" > "$1"
+}
+# planted <ref> <check> <file>: the note stored at the ref on origin, in a
+# tree shaped as attest shapes one, straight into storage.
+planted() {
+  local blob sub
+  blob="$(git -C "$served" hash-object -w "$3")"
+  sub="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git -C "$served" mktree)"
+  git -C "$served" update-ref "$1" "$(printf '040000 tree %s\t%s\n' "$sub" "$2" | git -C "$served" mktree)"
+}
+# unreused <branch> <reason>: approve, with no signing key, reuses nothing
+# for prose-format, says why, and refuses for want of a key.
+unreused() {
+  if approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"; then
+    echo "valley-request: approve reused evidence for $1 that the integrator would not accept" >&2
+    cat "$w/$1.out" >&2
+    exit 1
+  fi
+  if ! grep -qF "valley: not reusing prose-format: the integrator judges it by " "$w/$1.err" \
+    || ! grep -qF -- "$2" "$w/$1.err" || ! grep -q 'no signing key' "$w/$1.err" \
+    || [ -n "$(requested "$1")" ] || [ -s "$nixlog" ]; then
+    echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
+    cat "$w/$1.err" >&2
+    exit 1
+  fi
+}
+# judged <branch> <outcome> <reason> [<known-signers>]: the branch's head is
+# filed by hand, and one pass of the real integrator, verifying with the
+# known-signers file, decides it as the outcome, giving the reason. A
+# request it does not land is taken away again.
+judged() {
+  git -C "$served" update-ref "refs/the-valley/integration-requests/main/$1" "$(git rev-parse "$1")"
+  integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
+    --known-signers "${4:-$r/known-signers}" --instance "$r/floor" --schema "$schemaFile" \
+    --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/integrator.out" 2>&1 || {
+    echo "valley-request: the integrator failed" >&2
+    cat "$r/integrator.out" >&2
+    exit 1
+  }
+  if ! grep -q "^$1 -> refs/heads/main @ [0-9a-f]*: $2\$" "$r/integrator.out" \
+    || ! grep -qF -- "$3" "$r/integrator.out"; then
+    echo "valley-request: the integrator did not decide $1 as $2, saying: $3" >&2
+    cat "$r/integrator.out" >&2
+    exit 1
+  fi
+  [ "$2" = land ] || git -C "$served" update-ref -d "refs/the-valley/integration-requests/main/$1"
+}
+under() { printf 'refs/the-valley/attestations/%s/%s' "$(attest digest --rev "$1" | cut -d: -f2)" "$2"; }
+
+# Stale trust: the host revokes the worker, and this operator's own
+# known-signers file still trusts it. The override does not widen what the
+# host publishes.
+{
+  attest key --key "$r/keys/operator" --name "$operatorname"
+  attest key --key "$r/keys/integrator" --name "$integratorname"
+} > "$r/revoked-signers"
+edited revoked docs/readme.md
+worker "$(git rev-parse revoked)" --check prose-format
+published "$r/revoked-signers"
+VALLEY_KNOWN_SIGNERS="$r/known-signers" unreused revoked \
+  "attest verify refuses it under the host's signers: no signature on this note is by a key the verifier holds"
+judged revoked stale 'signed by no signer the integrator holds' "$r/revoked-signers"
+published "$r/known-signers"
+
+# Narrowed trust: an override that does not trust the worker keeps approve
+# from reusing what the host would accept.
+edited narrowed docs/readme.md
+worker "$(git rev-parse narrowed)" --check prose-format
+VALLEY_KNOWN_SIGNERS="$r/revoked-signers" unreused narrowed \
+  'attest verify refuses it under VALLEY_KNOWN_SIGNERS: no signature on this note is by a key the verifier holds'
+judged narrowed land 'transferred (unmoved)'
+
+# Conflicting notes: the integrator judges a check by the first note that
+# verifies, in ref order. A failure the worker signed sits first, so the
+# pass the worker published after it does not count.
+edited failed docs/readme.md
+noted "$r/failed.note" "$r/keys/worker" "$workername" "$(git rev-parse failed)" prose-format --check prose-format
+resigned "$r/failed.note" 's/^predicate.result passed$/predicate.result failed/'
+attest verify --note "$r/failed.note" --known-keys "$r/known-signers" --repo . --rev failed > /dev/null
+planted "$(under failed 00000000)" prose-format "$r/failed.note"
+worker "$(git rev-parse failed)" --check prose-format
+unreused failed 'its predicate.result is "failed", not "passed"'
+judged failed stale 'the attestation records the check as failed'
+
+# The same, with an observation first: a note of the wrong kind.
+edited kind docs/readme.md
+noted "$r/kind.note" "$r/keys/worker" "$workername" "$(git rev-parse kind)" prose-format --command prose-format=true
+planted "$(under kind 00000000)" prose-format "$r/kind.note"
+worker "$(git rev-parse kind)" --check prose-format
+unreused kind 'its predicateType is "the-valley/check/effectful/v1", not "the-valley/check/pure/v1"'
+judged kind reject 'the policy requires a pure check and the attestation claims an effectful check'
+
+# A malformed envelope: a note the worker signed, without its last newline.
+# approve reads it byte for byte, as the integrator does.
+edited envelope docs/readme.md
+noted "$r/envelope.note" "$r/keys/worker" "$workername" "$(git rev-parse envelope)" prose-format --check prose-format
+head -c -1 "$r/envelope.note" > "$r/envelope.cut"
+planted "$(under envelope "$workerhash")" prose-format "$r/envelope.cut"
+unreused envelope 'the signature block is empty or does not end with a newline'
+judged envelope reject 'the attestation does not verify as the statement it claims to be'
+
+# An unknown signature: a key neither the host nor the hook knows.
+ssh-keygen -q -t ed25519 -N "" -C stranger -f "$r/keys/stranger"
+strangername=stranger.valley.invalid/attestations
+edited stranger docs/readme.md
+noted "$r/stranger.note" "$r/keys/stranger" "$strangername" "$(git rev-parse stranger)" prose-format --check prose-format
+planted "$(under stranger "$(attest key --key "$r/keys/stranger" --name "$strangername" | cut -d+ -f2)")" \
+  prose-format "$r/stranger.note"
+unreused stranger 'no signature on this note is by a key the verifier holds'
+judged stranger stale 'signed by no signer the integrator holds'
+
+# A wrong tree: the worker's note about main, stored under this head's tree.
+edited tree docs/readme.md
+noted "$r/tree.note" "$r/keys/worker" "$workername" origin/main prose-format --check prose-format
+planted "$(under tree "$workerhash")" prose-format "$r/tree.note"
+unreused tree 'tree digest mismatch'
+judged tree reject 'tree digest mismatch'
+
+# An expired observation of a command check. approve never reuses one, so
+# with no key it refuses; the integrator refuses the observation as too old.
+edited expired live/state.txt
+noted "$r/expired.note" "$r/keys/worker" "$workername" "$(git rev-parse expired)" live-ok --command live-ok=true
+resigned "$r/expired.note" 's/^predicate.observedAt .*/predicate.observedAt 2020-01-01T00:00:00Z/'
+planted "$(under expired "$workerhash")" live-ok "$r/expired.note"
+if approving expired env -u VALLEY_ATTEST_KEY valley approve origin/expired \
+  || ! grep -q 'no signing key' "$w/expired.err" || grep -q 'reusing' "$w/expired.out"; then
+  echo "valley-request: approve reused an observation of a command check" >&2
+  cat "$w/expired.out" "$w/expired.err" >&2
+  exit 1
+fi
+judged expired stale 'the observation is '
+
+# The attribute: the worker's note for prose-format names another flake
+# attribute. The integrator's rule for an unmoved tree compares none, so it
+# lands; approve compares it, and builds rather than reuse.
+edited attribute docs/readme.md
+worker "$(git rev-parse attribute)" --check prose-format=code-build
+unreused attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
+judged attribute land 'transferred (unmoved)'
+
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"
 if [ "$worktrees" != 1 ]; then

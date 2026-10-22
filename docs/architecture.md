@@ -967,8 +967,12 @@ observation. The envelope is a signed note: the `sumdb/note` format with Ed25519
 `note/note.go`. Checked by `attest-e2e`, `attest-conformance`, `attest-schema` and `note-unit`.
 
 The integrator reads evidence at the head's tree and verifies each note with `attest verify`
-(`integrator/evidence.go`). It does not run the checks itself. A required check is met when its note
-is signed by a known signer, says the check `passed`, and one of these holds
+(`integrator/evidence.go`). It does not run the checks itself. A tree may hold several notes about
+one check, one per signer. The integrator judges the check by one of them: the first note that
+verifies, with the refs in byte order, whatever that note records. Until a note verifies, the last
+one read stands, so a refusal is reported. This choice is `change.SelectNotes`
+(`change/evidence.go`), and approval makes the same choice. A required check is met when its note is
+signed by a known signer, says the check `passed`, and one of these holds
 (`integrator/verdict/verdict.go`):
 
 - **A pure check, unmoved tree.** The landed tree is the attested tree. No inputs are compared.
@@ -1180,17 +1184,22 @@ out. When there is no new evidence as well, there is no push. `[b]ase` rebases t
 stack in a temporary worktree, and pushes every layer's branch in one atomic push, with a lease on
 each. `[r]eject` deletes the remote branch after a prompt.
 
-Evidence on `origin` comes from a check worker or from an earlier approval. Approval reads it with
+Evidence on `origin` comes from a check worker or from an earlier approval. Approval skips a check
+only when the integrator will accept the same evidence. Approval reads the evidence with
 `valley-go coverage` (`status/coverage.go`). It lists `origin`'s attestation refs for the head's
-tree and fetches the objects they name. It reads notes only from those objects, so a local ref that
-was never published does not count. A listing or a fetch that fails ends the approval, and nothing
-runs. A required `nix` check is covered when one of those refs holds a note for it that meets all of
-these:
+tree and fetches the objects they name. It reads the notes from those objects byte for byte, as the
+integrator reads them. A local ref that was never published does not count. A listing or a fetch
+that fails ends the approval, and nothing runs.
 
-- `attest verify` accepts it under the `known-signers` file, found as `valley status` finds it: from
-  `VALLEY_KNOWN_SIGNERS` or the host's publication (see [Listing changes](#listing-changes)).
+Approval judges each required `nix` check by the note the integrator judges it by: the first note
+for the check that verifies under the `known-signers` file the host publishes (see
+[The signers publication](#the-signers-publication)). With no publication, nothing is reused. The
+check is covered when that note also meets all of these:
+
 - It is pure evidence for the check's name and its flake attribute.
 - It records the check as `passed`.
+- When `VALLEY_KNOWN_SIGNERS` is set, `attest verify` accepts it under that file too. A local file
+  can narrow what approval reuses, never widen it beyond what the host publishes.
 
 Comparing the attribute is stricter than the integrator's rule for an unmoved tree, which compares
 none. Coverage decides only what approval runs. The integrator judges every note again when it

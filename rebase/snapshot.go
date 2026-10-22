@@ -69,9 +69,9 @@ const (
 //
 // SignerProjects is the signer projects file the host's controllers
 // read (note/signerprojects.go): each signer it names, and the projects
-// that signer's check evidence counts in. A signer it names signs check
-// evidence and is never the integrator, so while it names Signer no
-// transfer statement is believed, in any project.
+// that signer's check evidence counts in. A signer it names, a worker or
+// another controller, is never this host's integrator, so while it names
+// Signer no transfer statement is believed, in any project.
 //
 // Resolve, when set, finds the keys, the name and the signer projects
 // file when they are first needed: a snapshot calls it once, before it

@@ -567,9 +567,9 @@ served_plan
 action "$lands" leave
 family "$lands" | jq -e '.layers[0].state == "uncertain"' > /dev/null \
   || fail "without the keys, the landing is not uncertain: $(family "$lands")"
-# A signer projects file that restricts the integrator name makes that
-# name a signer of check evidence, never the integrator's, so with the keys
-# the same landing is again only uncertain. A file that does not read
+# A signer projects file that restricts the integrator name says that
+# name is not the integrator's, so with the keys the same landing is again
+# only uncertain. A file that does not read
 # stops the pass.
 printf '%s served\n' "$integrator_name" > "$w/restricts-the-integrator"
 served_plan --known-signers "$signers" --integrator-name "$integrator_name" \

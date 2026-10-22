@@ -337,10 +337,10 @@ done
 cd "$w/fixture"
 
 # ----------------------------------------------------------------------
-# A signer the signer projects file names signs check evidence and is
-# never the integrator. The publisher refuses a list that names the name it
-# publishes. A client refuses one too, however it came to be published, and
-# a published list that does not read: it verifies no transfer statement.
+# A signer the signer projects file names is never this host's integrator.
+# The publisher refuses a list that names the name it publishes. A client
+# refuses one too, however it came to be published, and a published list
+# that does not read or is not a file: it verifies no transfer statement.
 # A list naming only a worker leaves the landing as it was. Each list is
 # written on disk beside the published signers, as no publisher writes it.
 printf '%s served\n' "$name" > "$w/restricts-the-integrator"
@@ -369,6 +369,16 @@ client
 changes
 expect "$lands" uncertain 'with a published list that does not read'
 said "signer-projects in refs/the-valley/signers in $instance does not read"
+# An entry that is a tree, not a file, would restrict nobody if it were
+# read as absent.
+{ git -C "$instance" ls-tree "$published" \
+  && printf '040000 tree %s\tsigner-projects\n' "$(git -C "$instance" mktree < /dev/null)"; } \
+  | git -C "$instance" mktree > "$w/tree"
+git -C "$instance" update-ref refs/the-valley/signers "$(cat "$w/tree")"
+client
+changes
+expect "$lands" uncertain 'with a published signer-projects that is a tree'
+said "signer-projects in refs/the-valley/signers in $instance is not a file"
 printf 'worker.valley.invalid/attestations served\n' > "$w/worker-list"
 with_list "$w/worker-list"
 client

@@ -149,7 +149,10 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.E
 		// vouches for that landing, in the project it landed in, and is
 		// never the check's own signer: a countersigned note copied into
 		// another project counts there only through the signer who made
-		// the claim.
+		// the claim. Nothing in a note marks another controller's
+		// signature as a countersignature, so the host declares each
+		// other controller whose key it holds: the signer projects file
+		// names it with no project, and it counts nowhere.
 		ev.Admissible = verdict.UnknownSigner
 		for _, signer := range verifiedSigners(string(out)) {
 			name, _, _ := strings.Cut(signer, "+")

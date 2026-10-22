@@ -153,9 +153,9 @@ is a tree at `refs/the-valley/signers` in the instance repository. It holds two 
 sign under, on one line. Both are in one tree under one ref, so a client reads both values or
 neither. A host that restricts signers to projects (see
 [Evidence: attest and notes](#evidence-attest-and-notes)) adds a third file, `signer-projects`, the
-signer projects file the controllers read. A signer that file names signs check evidence and is
-never the integrator. So while it names the integrator name a client uses, the client verifies no
-transfer statement, and a publication whose `signer-projects` does not read is not used
+signer projects file the controllers read. A signer that file names, a worker or another controller,
+is never this host's integrator. So while it names the integrator name a client uses, the client
+verifies no transfer statement, and a publication whose `signer-projects` does not read is not used
 (`status/signers.go`, `rebase/snapshot.go`). The restacker applies the same rule to the file it is
 given as `--signer-projects`.
 
@@ -1002,10 +1002,17 @@ stranger's note (`integrator/evidence.go`). A signer the file does not name is n
 push hook does not read the file, so it admits a restricted signer's evidence in every project, and
 only the controllers refuse it.
 
-The controller's own signature never makes a check's attestation count. When a change lands, the
-controller countersigns the attestations it carried (`integrator/transfer.go`). That
-countersignature vouches for the landing in the controller's own project. Copied into another
-project, a countersigned attestation counts there only through the signer who made the check claim.
+A controller's own signature never makes a check's attestation count (`implemented`). When a change
+lands, the controller countersigns the attestations it carried (`integrator/transfer.go`). That
+countersignature vouches for the landing in the controller's own project, not for the check.
+
+Another controller's signature is known to be an integrator's only by declaration. Nothing in a note
+marks a signature as a countersignature, and anyone can drop or reorder a note's signature lines. So
+a host declares each other controller whose key its known-signers file holds, by listing that
+controller's name in `integrator.signerProjects` with no project (`deployment choice`). A listed
+name counts nowhere. A countersigned attestation copied in from that controller's project then
+counts only through the signer who made the check claim. A host that leaves another controller's key
+undeclared lets that controller's signature count as check evidence.
 
 A controller reads the file once, at start. Every name and project in it is printable ASCII with no
 space, and the host module holds the list it renders to the same rule. A file that cannot be read,

@@ -23,11 +23,11 @@
 // came from, and verifies no statement.
 //
 // When the publication is read, its signer projects file is read too, if
-// it holds one (note/signerprojects.go). A signer that file names signs
-// check evidence and is never the integrator, so while it names the
-// integrator name no statement is verified (rebase/snapshot.go). A
-// publication whose signer projects file does not read is not used at
-// all.
+// it holds one (note/signerprojects.go). A signer that file names, a
+// worker or another controller, is never this host's integrator, so while
+// it names the integrator name no statement is verified
+// (rebase/snapshot.go). A publication whose signer projects file is not a
+// file, or does not read, is not used at all.
 
 package main
 
@@ -167,7 +167,7 @@ func (s *signerSource) resolve() (keys, signer string, projects map[string]map[s
 		return "", "", nil
 	}
 	if s.projects.Restricts(n.value) {
-		fmt.Fprintf(s.stderr, "valley: %s is restricted to projects by the published %s, so it is a signer of check evidence and not the integrator, and no transfer statement is verified\n", n.named("the integrator name"), signersProjects)
+		fmt.Fprintf(s.stderr, "valley: %s is restricted to projects by the published %s, so it is not this host's integrator, and no transfer statement is verified\n", n.named("the integrator name"), signersProjects)
 	}
 	s.found, s.signer = k.value, n.value
 	return s.found, s.signer, s.projects
@@ -262,15 +262,25 @@ func readSigners(g git) (*publishedSigners, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s is not a tree", p.where)
 	}
-	blobs := map[string]string{}
+	blobs, kinds := map[string]string{}, map[string]string{}
 	for _, entry := range strings.Split(listing, "\x00") {
 		meta, file, _ := strings.Cut(entry, "\t")
-		if f := strings.Fields(meta); len(f) == 3 && f[1] == "blob" {
+		f := strings.Fields(meta)
+		if len(f) != 3 {
+			continue
+		}
+		kinds[file] = f[0] + " " + f[1]
+		if f[1] == "blob" {
 			blobs[file] = f[2]
 		}
 	}
 	if blobs[signersKeys] == "" || blobs[signersName] == "" {
 		return nil, fmt.Errorf("%s holds no %s or no %s", p.where, signersKeys, signersName)
+	}
+	// A signer projects entry that is there but is no file is refused,
+	// rather than read as absent, which would restrict nobody.
+	if kind, ok := kinds[signersProjects]; ok && kind != "100644 blob" {
+		return nil, fmt.Errorf("%s in %s is not a file", signersProjects, p.where)
 	}
 	keys, err := g.output(true, "cat-file", "blob", blobs[signersKeys])
 	if err != nil {

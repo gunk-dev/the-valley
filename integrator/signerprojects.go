@@ -8,16 +8,17 @@ import (
 )
 
 // readSignerProjects reads the signer projects file at path
-// (note/signerprojects.go), and returns what it says and the bytes it read.
-// An empty path is no file, and restricts nobody. A file that cannot be read, or does not read as a signer
-// projects file, is an error, so a controller given a broken file judges
-// nothing rather than judging without it.
+// (note/signerprojects.go), and returns what it says and the bytes it
+// read. An empty path is no file, and restricts nobody. A file that cannot
+// be read, or does not read as a signer projects file, is an error, so a
+// controller given a broken file judges nothing rather than judging
+// without it.
 //
 // The file may not name signer, the name the integrator signs under. A
-// signer the file names signs check evidence and is restricted to
-// projects; the integrator signs transfer statements, which clients
-// believe in every project it serves. A worker or attester restricted
-// under the integrator's own name would be both.
+// signer the file names is restricted to projects: a worker, or another
+// controller whose countersignatures must count nowhere. The integrator
+// signs transfer statements, which clients believe in every project it
+// serves, so a signer restricted under its name would be both.
 func readSignerProjects(path, signer string) (note.SignerProjects, []byte, error) {
 	if path == "" {
 		return nil, nil, nil

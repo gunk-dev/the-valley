@@ -606,7 +606,9 @@ attest key --key ~/.ssh/valley-attest --name operator
     signer twice, holds a word that is not printable ASCII, names a signer no verifier key can
     carry, or names the controller's own `--name` stops the controller before it judges anything.
     The controller's own signature never makes a check's attestation count. It countersigns the
-    attestations a landing carried, and that vouches for the landing, not for the check.
+    attestations a landing carried, and that vouches for the landing, not for the check. Another
+    controller's signature counts like any signer's, so a host whose `--known-signers` holds another
+    controller's key lists that controller's name in this file with no project.
   - `integrator publish-signers --instance-repo <dir> --known-signers <file> [--name <name>] [--signer-projects <file>]`
     — writes the signers publication, `refs/the-valley/signers`, into the instance repository: the
     known-signers file and the signing name (default `<hostname>/attestations`, as for `watch`).

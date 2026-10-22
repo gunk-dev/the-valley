@@ -1217,6 +1217,12 @@ in
           for the projects it builds. The push hook still admits the
           worker's evidence everywhere; only the controllers restrict it.
 
+          List every other controller whose key the known-signers file
+          holds, such as another host's integrator, with an empty list.
+          A controller countersigns the attestations a landing carried,
+          and its own signature never counts as check evidence here;
+          another controller's counts only until it is listed.
+
           The list is rendered into a file every controller reads at start.
           A host that publishes its signers publishes the file beside them,
           so a client can read the same restriction. Names and projects are

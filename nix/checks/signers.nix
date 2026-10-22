@@ -65,9 +65,9 @@ in
   # the publication; an override that does not read, or holds no key
   # under the name, is reported. No push can replace or delete the
   # publication. The publisher refuses a signer projects list that
-  # restricts the name it publishes; a client given one anyway, or one
-  # that does not read, verifies no transfer statement, and one naming
-  # only a worker changes nothing. After the integrator's key is rotated, a landing signed
+  # restricts the name it publishes; a client given one anyway, one that
+  # does not read, or an entry that is not a file, verifies no transfer
+  # statement, and one naming only a worker changes nothing. After the integrator's key is rotated, a landing signed
   # with the new key reads uncertain until the publisher runs again, and
   # landed-recorded after. A run that read the file before the rotation,
   # and is still running when the host's run starts, makes that run wait

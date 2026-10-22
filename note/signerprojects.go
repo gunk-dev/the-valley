@@ -84,8 +84,8 @@ func (s SignerProjects) Counts(name, project string) bool {
 	return !restricted || projects[project]
 }
 
-// Restricts says whether the file names name at all. A restricted signer
-// signs check evidence, so it is never an integrator's name.
+// Restricts says whether the file names name at all. The controllers that
+// read the file never sign under a name it names.
 func (s SignerProjects) Restricts(name string) bool {
 	_, restricted := s[name]
 	return restricted

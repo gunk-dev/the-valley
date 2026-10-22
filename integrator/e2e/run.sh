@@ -1499,6 +1499,17 @@ attest key --key "$work/worker" --name "$worker" >> "$work/worker_signers"
 attest key --key "$work/integrator" --name "$integrator_name" >> "$work/worker_signers"
 printf '# the check worker builds for this project alone\n%s project\n' "$worker" > "$work/signer_projects"
 restricted=(--known-signers "$work/worker_signers" --signer-projects "$work/signer_projects")
+# The second project's controller signs under a name and key of its own,
+# as a controller on another host sharing the registry does, and holds the
+# same known-signers file, the first controller's key included. Nothing in
+# a note marks the first controller's signature as a countersignature, so
+# this host declares it: its signer projects file names the first
+# controller with no project, and the worker with this project alone.
+ssh-keygen -q -t ed25519 -N "" -C second-integrator -f "$work/second_integrator"
+second_integrator=second-integrator.valley.invalid/attestations
+printf '%s project\n%s\n' "$worker" "$integrator_name" > "$work/second_signer_projects"
+second=(--repo "$work/elsewhere.git" --key "$work/second_integrator" --name "$second_integrator"
+  --known-signers "$work/worker_signers" --signer-projects "$work/second_signer_projects")
 
 git checkout --quiet main
 git pull --quiet --ff-only origin main
@@ -1519,7 +1530,7 @@ git init --quiet --bare "$elsewhere"
 git -C "$origin" push --quiet "$elsewhere" main c28 "$c28ref" refs/the-valley/integration-requests/main/c28
 [ "$(git -C "$elsewhere" rev-parse "$c28ref")" = "$(git -C "$origin" rev-parse "$c28ref")" ] \
   || die "the second project does not hold the same note"
-integrate --repo "$elsewhere" "${restricted[@]}"
+integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
   || die "the worker's evidence counted in a project not listed for it"
 grep -q "check    prose-format .*signed by no signer the integrator holds" "$work/last.out" \
@@ -1558,26 +1569,28 @@ grep -q "check    prose-format .*transferred" "$work/last.out" || die "prose-for
 [ "$(tip)" = "$c28" ] || die "main is not at c28's head"
 holds "in the project listed for it, the same note lands c28"
 
-# Landing countersigned the worker's note: the integrator stored it, with
-# its own signature added, under its own key hash. The second project's
-# controller holds the integrator's key. Copied there, the countersigned
-# note still counts only through the worker, who does not count there.
+# Landing countersigned the worker's note: the first controller stored it,
+# with its own signature added, under its own key hash. Copied into the
+# second project, the countersigned note still counts only through the
+# worker, who does not count there: the second controller holds the first
+# one's key, and its signer projects file lets that signature count
+# nowhere.
 countersigned="refs/the-valley/attestations/$c28digest/$ihash"
 git -C "$origin" cat-file blob "$countersigned:prose-format/statement.note" | grep -qF " $integrator_name " \
   || die "the landing did not countersign the worker's note"
 git -C "$origin" push --quiet "$elsewhere" "$countersigned"
-integrate --repo "$elsewhere" "${restricted[@]}"
+integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
-  || die "the integrator's countersignature made the worker's note count in a project not listed for it"
+  || die "another controller's countersignature made the worker's note count in a project not listed for it"
 [ "$(git -C "$elsewhere" rev-parse main)" != "$c28" ] || die "main moved in the second project"
-holds "the integrator's countersignature does not stand in for the worker in another project"
+holds "another controller's countersignature does not stand in for the worker"
 
 # A signer the file does not name still counts in the second project. The
 # contributor's note for the same tree arrives there, and replaces the
 # worker's as the evidence.
 attest run --repo "$repo" --key "$work/contributor" --name "$contributor" --check prose-format > /dev/null
 git push --quiet "$elsewhere" "refs/the-valley/attestations/$c28digest/$(cut -d+ -f2 < "$work/known_signers")"
-integrate --repo "$elsewhere" "${restricted[@]}"
+integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "an unrestricted signer's evidence did not count in the second project"
 [ "$(git -C "$elsewhere" rev-parse main)" = "$c28" ] || die "main in the second project is not at c28's head"

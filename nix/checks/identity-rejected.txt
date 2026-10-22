@@ -14,3 +14,4 @@ signing-name-with-plus	principals.root.keys.0.signs
 top-level-typo	unknown top-level field
 attested-key-bound-to-host	principals.root.keys.0.bound
 attestation-not-pem	principals.root.keys.0.attestation.slot
+attestation-with-root	principals.holder.keys.0.attestation.root

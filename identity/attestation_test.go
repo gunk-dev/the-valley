@@ -209,35 +209,156 @@ func TestOnlyTouchAlwaysIsHardware(t *testing.T) {
 	}
 }
 
-// What a stand-in device can attest that Yubico's would not: no policy at
-// all, a key that is not Ed25519, and a slot certificate that an
-// intermediate signed instead of the device's f9.
-func TestStandInAttestationsThatAreRefused(t *testing.T) {
+// Every signed fault fails the compilation, one fault at a time. Each case
+// is a stand-in attestation of the same key that a key holder could
+// present, correct in every respect but the one its name gives, and
+// signed by the keys its certificates name. The control case, with no
+// fault, compiles the key into the hardware file, so each failure is the
+// fault's alone.
+func TestEachSignedFaultFailsTheCompilation(t *testing.T) {
 	pki := newTestPKI(t)
-	pub, _ := testKey("approver")
-	on := day(t, "2026-10-22")
+	trustBoth(t, pki)
+	pub, line := testKey("approver")
 
-	if _, err := verifyAttestation(pki.attest(t, pub), pub, on, pki.trust); err == nil ||
-		!strings.Contains(err.Error(), "no PIN and touch policy") {
-		t.Errorf("no policy extension: error = %v", err)
+	// device is an f9 certificate the stand-in intermediate signs, with
+	// its template edited first.
+	device := func(edit func(*x509.Certificate)) (*x509.Certificate, ed25519.PrivateKey) {
+		f9Pub, f9Key, _ := ed25519.GenerateKey(rand.Reader)
+		template := f9Template()
+		edit(template)
+		return pki.issue(t, pki.intermediate, pki.intermediateKey, template, f9Pub), f9Key
 	}
+	// slot is f9's attestation of the key, touch policy always, with its
+	// template edited first. It is not parsed here, so it may be one Go
+	// refuses to read.
+	slot := func(f9 *x509.Certificate, f9Key ed25519.PrivateKey, edit func(*x509.Certificate)) attestation {
+		template := leafTemplate(policyExtension(3, 2))
+		edit(template)
+		return attestation{Slot: pemText(sign(t, template, f9, f9Key, pub)), F9: pemText(f9.Raw)}
+	}
+	under := func(edit func(*x509.Certificate)) attestation {
+		f9, f9Key := device(edit)
+		return slot(f9, f9Key, none)
+	}
+	stated := func(edit func(*x509.Certificate)) attestation {
+		return slot(pki.f9, pki.f9Key, edit)
+	}
+	// policy replaces the policy extension's value.
+	policy := func(value ...byte) func(*x509.Certificate) {
+		return func(c *x509.Certificate) { c.ExtraExtensions[2].Value = value }
+	}
+	expired := func(c *x509.Certificate) { c.NotAfter = time.Date(2026, 10, 21, 0, 0, 0, 0, time.UTC) }
+
+	// A slot certificate signed by f9's key under another issuer name.
+	renamed := *pki.f9
+	renamed.RawSubject = nil
+	renamed.Subject = pkix.Name{CommonName: "YubiKey PIV Attestation, another"}
+
+	// An f9 certificate the key holder made: self-signed, or signed by
+	// the holder's own key under the stand-in intermediate's name.
+	ownPub, ownKey, _ := ed25519.GenerateKey(rand.Reader)
+	ownF9 := pki.issue(t, nil, ownKey, f9Template(), ownPub)
+	forger := *pki.intermediate
+	forger.PublicKey = ownPub
+	forgedPub, forgedKey, _ := ed25519.GenerateKey(rand.Reader)
+	forgedF9 := pki.issue(t, &forger, ownKey, f9Template(), forgedPub)
+	// A slot certificate the attested key signed for itself.
+	selfSigned := pki.issue(t, nil, testPrivateKey("approver"), leafTemplate(policyExtension(3, 2)), pub)
 
 	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := verifyAttestation(pki.attest(t, &ec.PublicKey, policyExtension(3, 2)), pub, on, pki.trust); err == nil ||
-		!strings.Contains(err.Error(), "not an ed25519 one") {
-		t.Errorf("an ECDSA key: error = %v", err)
+	ecSlot := pki.issue(t, pki.f9, pki.f9Key, leafTemplate(policyExtension(3, 2)), &ec.PublicKey)
+	direct := pki.issue(t, pki.intermediate, pki.intermediateKey, leafTemplate(policyExtension(3, 2)), pub)
+
+	compile := func(a attestation) (artifacts, error) {
+		r := governedRegistry()
+		r.Boundaries["approve"] = boundary{Kind: boundaryApprove}
+		founder := r.Principals["founder"]
+		founder.Grants["approve"] = grant{Boundary: "approve"}
+		founder.Keys = append(founder.Keys, key{Class: sshEd25519, Bound: "hardware", Public: line, Attestation: &a})
+		r.Principals["founder"] = founder
+		return render(r, day(t, "2026-10-22"), nil)
 	}
 
-	direct := pki.issue(t, pki.intermediate, pki.intermediateKey, leafTemplate(policyExtension(3, 2)), pub)
-	a := attestation{Slot: pemText(direct.Raw), F9: pemText(pki.f9.Raw)}
-	if _, err := verifyAttestation(a, pub, on, pki.trust); err == nil ||
-		!strings.Contains(err.Error(), "without its f9 certificate") {
-		t.Errorf("a slot certificate the intermediate signed: error = %v", err)
+	// Three faults keep a signature f9's key made and only break the
+	// chain around it: f9 is no CA, f9 states no basic constraints, or the
+	// slot certificate names another issuer. Each slot certificate is
+	// checked here to verify under its f9 key, so the refusal below is the
+	// fault's and not a bad signature's.
+	nonCA := under(func(c *x509.Certificate) { c.IsCA, c.MaxPathLen, c.MaxPathLenZero = false, 0, false })
+	noConstraints := under(func(c *x509.Certificate) { c.BasicConstraintsValid = false })
+	misnamed := slot(&renamed, pki.f9Key, none)
+	for _, a := range []attestation{nonCA, noConstraints, misnamed} {
+		slotCert, err := x509.ParseCertificate(pemBytes(t, a.Slot))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f9Cert, err := x509.ParseCertificate(pemBytes(t, a.F9))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := f9Cert.CheckSignature(slotCert.SignatureAlgorithm, slotCert.RawTBSCertificate, slotCert.Signature); err != nil {
+			t.Fatalf("a slot certificate meant to be signed by its f9 key is not: %v", err)
+		}
+	}
+
+	control, err := compile(stated(none))
+	if err != nil {
+		t.Fatalf("the attestation with no fault: %v", err)
+	}
+	if !strings.Contains(string(control.approvalHardware), note.NewVerifierKey("founder", pub).String()) {
+		t.Fatalf("the attestation with no fault left the key out of the hardware file:\n%s", control.approvalHardware)
+	}
+
+	for _, c := range []struct {
+		name string
+		a    attestation
+		want string
+	}{
+		// The chain.
+		{"an expired slot certificate", stated(expired), "has expired"},
+		{"an expired f9 certificate", under(expired), "has expired"},
+		{"an f9 certificate that is not a CA", nonCA, "parent certificate cannot sign"},
+		{"an f9 certificate without basic constraints", noConstraints, "parent certificate cannot sign"},
+		{"an issuer name that is not f9's", misnamed, "signed by unknown authority"},
+		{"a slot certificate the intermediate signed", attestation{Slot: pemText(direct.Raw), F9: pemText(pki.f9.Raw)}, "without its f9 certificate"},
+		// Anchors the key holder supplies.
+		{"a self-signed f9 certificate", slot(ownF9, ownKey, none), "signed by unknown authority"},
+		{"an f9 certificate the holder signed under the intermediate's name", slot(forgedF9, forgedKey, none), "Ed25519 verification failure"},
+		{"a self-signed slot certificate", attestation{Slot: pemText(selfSigned.Raw), F9: pemText(pki.f9.Raw)}, "signed by unknown authority"},
+		// The key.
+		{"an ECDSA key", attestation{Slot: pemText(ecSlot.Raw), F9: pemText(pki.f9.Raw)}, "attests a key of type ECDSA, not Ed25519"},
+		// The policy extension.
+		{"no policy extension", stated(func(c *x509.Certificate) { c.ExtraExtensions = c.ExtraExtensions[:2] }), "states no PIN and touch policy"},
+		{"a critical policy extension", stated(func(c *x509.Certificate) { c.ExtraExtensions[2].Critical = true }), "unhandled critical extension"},
+		{"two policy extensions", stated(func(c *x509.Certificate) {
+			c.ExtraExtensions = append(c.ExtraExtensions, policyExtension(3, 3))
+		}), "duplicate extension"},
+		{"a policy of no bytes", stated(policy()), "PIN and touch policy"},
+		{"a policy of one byte", stated(policy(3)), "is 1 byte(s), not 2"},
+		{"a policy of three bytes", stated(policy(3, 2, 2)), "is 3 byte(s), not 2"},
+		{"PIN policy 0x00", stated(policy(0, 2)), "PIN policy 0x00, which Yubico does not specify"},
+		{"PIN policy 0x04", stated(policy(4, 2)), "PIN policy 0x04, which Yubico does not specify"},
+		{"PIN policy 0xff", stated(policy(0xff, 2)), "PIN policy 0xff, which Yubico does not specify"},
+		{"touch policy 0x00", stated(policy(3, 0)), "touch policy 0x00, which Yubico does not specify"},
+		{"touch policy 0x04", stated(policy(3, 4)), "touch policy 0x04, which Yubico does not specify"},
+		{"touch policy 0xff", stated(policy(3, 0xff)), "touch policy 0xff, which Yubico does not specify"},
+	} {
+		a, err := compile(c.a)
+		if err == nil {
+			t.Errorf("%s: compiled, with hardware file\n%s", c.name, a.approvalHardware)
+			continue
+		}
+		if want := "founder: key 1: "; !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error = %v, want one naming founder's key 1 and saying %q", c.name, err, c.want)
+		}
 	}
 }
+
+// none edits nothing.
+func none(*x509.Certificate) {}
 
 // approvalRegistry exercises every reason a key is or is not in the
 // approval files. founder governs and approves with three keys: an
@@ -514,9 +635,7 @@ func newTestPKI(t *testing.T) testPKI {
 	p.intermediate = p.issue(t, p.root, rootKey, caTemplate("Test PIV Attestation", 1), interPub)
 	p.intermediateKey = interKey
 	f9Pub, f9Key, _ := ed25519.GenerateKey(rand.Reader)
-	f9 := caTemplate("YubiKey PIV Attestation", 0)
-	f9.MaxPathLenZero = true
-	p.f9 = p.issue(t, p.intermediate, interKey, f9, f9Pub)
+	p.f9 = p.issue(t, p.intermediate, interKey, f9Template(), f9Pub)
 	p.f9Key = f9Key
 	p.trust = trust{roots: x509.NewCertPool(), intermediates: x509.NewCertPool()}
 	p.trust.roots.AddCert(p.root)
@@ -533,6 +652,17 @@ func (p testPKI) attest(t *testing.T, pub any, extensions ...pkix.Extension) att
 
 func (testPKI) issue(t *testing.T, parent *x509.Certificate, parentKey ed25519.PrivateKey, template *x509.Certificate, pub any) *x509.Certificate {
 	t.Helper()
+	cert, err := x509.ParseCertificate(sign(t, template, parent, parentKey, pub))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cert
+}
+
+// sign makes a certificate and returns its DER unparsed. A nil parent
+// makes it self-signed.
+func sign(t *testing.T, template, parent *x509.Certificate, parentKey ed25519.PrivateKey, pub any) []byte {
+	t.Helper()
 	if parent == nil {
 		parent = template
 	}
@@ -540,11 +670,7 @@ func (testPKI) issue(t *testing.T, parent *x509.Certificate, parentKey ed25519.P
 	if err != nil {
 		t.Fatal(err)
 	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cert
+	return der
 }
 
 func caTemplate(name string, pathLen int) *x509.Certificate {
@@ -558,6 +684,14 @@ func caTemplate(name string, pathLen int) *x509.Certificate {
 		MaxPathLen:            pathLen,
 		KeyUsage:              x509.KeyUsageCertSign,
 	}
+}
+
+// f9Template is a device's f9 certificate: a CA that signs slot
+// certificates and nothing beneath them.
+func f9Template() *x509.Certificate {
+	f9 := caTemplate("YubiKey PIV Attestation", 0)
+	f9.MaxPathLenZero = true
+	return f9
 }
 
 // leafTemplate is a slot certificate as a YubiKey writes one: firmware
@@ -594,14 +728,19 @@ func trustBoth(t *testing.T, p testPKI) {
 // testKey is an Ed25519 public key made from a seed, and its registry
 // line.
 func testKey(seed string) (ed25519.PublicKey, string) {
-	s := sha256.Sum256([]byte(seed))
-	pub := ed25519.NewKeyFromSeed(s[:]).Public().(ed25519.PublicKey)
+	pub := testPrivateKey(seed).Public().(ed25519.PublicKey)
 	var blob []byte
 	for _, f := range [][]byte{[]byte(sshEd25519), pub} {
 		blob = binary.BigEndian.AppendUint32(blob, uint32(len(f)))
 		blob = append(blob, f...)
 	}
 	return pub, sshEd25519 + " " + base64.StdEncoding.EncodeToString(blob)
+}
+
+// testPrivateKey is the private half of testKey's key.
+func testPrivateKey(seed string) ed25519.PrivateKey {
+	s := sha256.Sum256([]byte(seed))
+	return ed25519.NewKeyFromSeed(s[:])
 }
 
 func pemText(der []byte) string {

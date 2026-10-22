@@ -76,8 +76,11 @@ var (
 	extPolicy   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 41482, 3, 8}
 )
 
-// The touch policy a slot certificate states, in the second byte of its
-// policy extension. The first byte is the PIN policy.
+// The policies a slot certificate may state, in the two bytes of its
+// policy extension: the PIN policy first, then the touch policy. These are
+// the values Yubico specifies, and the only ones read. Any other value
+// fails the compilation, because a policy this program cannot interpret
+// says nothing about whether a signature needed a touch.
 const touchAlways = 2
 
 var (
@@ -117,14 +120,7 @@ func (a attested) String() string {
 		serial = a.serial.String()
 	}
 	return fmt.Sprintf("YubiKey serial %s, firmware %s, PIN policy %s, touch policy %s",
-		serial, firmware, policyName(pinPolicies, a.pin), policyName(touchPolicies, a.touch))
-}
-
-func policyName(names map[byte]string, b byte) string {
-	if name, ok := names[b]; ok {
-		return name
-	}
-	return fmt.Sprintf("%#02x", b)
+		serial, firmware, pinPolicies[a.pin], touchPolicies[a.touch])
 }
 
 // verifyAttestation verifies a key's attestation as of one day, and
@@ -167,17 +163,26 @@ func verifyAttestation(a attestation, pub ed25519.PublicKey, day time.Time, t tr
 
 	attestedKey, ok := slot.PublicKey.(ed25519.PublicKey)
 	if !ok {
-		return out, fmt.Errorf("the slot certificate attests a %s key, not an ed25519 one", slot.PublicKeyAlgorithm)
+		return out, fmt.Errorf("the slot certificate attests a key of type %s, not Ed25519", slot.PublicKeyAlgorithm)
 	}
 	if !attestedKey.Equal(pub) {
 		return out, fmt.Errorf("the slot certificate attests a different key from the entry's public key")
 	}
 
 	policy := extension(slot.Extensions, extPolicy)
-	if len(policy) != 2 {
+	switch {
+	case policy == nil:
 		return out, fmt.Errorf("the slot certificate states no PIN and touch policy")
+	case len(policy) != 2:
+		return out, fmt.Errorf("the slot certificate's PIN and touch policy is %d byte(s), not 2", len(policy))
 	}
 	out.pin, out.touch = policy[0], policy[1]
+	if _, ok := pinPolicies[out.pin]; !ok {
+		return out, fmt.Errorf("the slot certificate states PIN policy 0x%02x, which Yubico does not specify", out.pin)
+	}
+	if _, ok := touchPolicies[out.touch]; !ok {
+		return out, fmt.Errorf("the slot certificate states touch policy 0x%02x, which Yubico does not specify", out.touch)
+	}
 	out.firmware = extension(slot.Extensions, extFirmware)
 	if der := extension(slot.Extensions, extSerial); der != nil {
 		var serial *big.Int

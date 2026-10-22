@@ -24,7 +24,7 @@ func compile(args []string) error {
 	approvalSignersFile := fs.String("approval-signers", "", "where the verifier keys of every approval key are written")
 	approvalHardwareFile := fs.String("approval-signers-hardware", "", "where the verifier keys of the hardware approval keys are written")
 	declaredKeys := fs.String("declared-keys", "", "the authorized_keys lines the host declares by hand")
-	now := fs.String("now", "", "the day expiry is judged against")
+	now := fs.String("now", "", "the day expiry and certificate validity are judged against")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

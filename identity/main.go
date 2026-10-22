@@ -67,9 +67,11 @@ signed it. It verifies when the slot certificate chains through the f9
 certificate and Yubico's PIV intermediates to Yubico Attestation Root 1,
 and the key it names is the entry's public key. This program carries that
 root and those intermediates, and a registry cannot add others. An
-attestation that does not verify fails the render. Each one that verifies
-is reported on stderr with the YubiKey's serial number, firmware, PIN
-policy and touch policy, for whoever reviews the enrollment.
+attestation that does not verify fails the render. So does one stating a
+PIN or touch policy other than the values Yubico specifies: 1, 2 and 3.
+Each attestation that verifies is reported on stderr with the YubiKey's
+serial number, firmware, PIN policy and touch policy, for whoever reviews
+the enrollment.
 
 A key that approves belongs to one principal: one also listed under
 another principal fails the render.
@@ -123,8 +125,9 @@ flags:
                          another tag, or untagged, fails the render: sshd
                          reads the declared entry first, so the key would
                          never push as its registry principal.
-  --now YYYY-MM-DD       the day expiry is judged against (default: today,
-                         UTC)
+  --now YYYY-MM-DD       the day expiry, and the validity of an
+                         attestation's certificates, are judged against
+                         (default: today, UTC)
 `
 
 func main() {

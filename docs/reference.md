@@ -1852,8 +1852,11 @@ An `attestation` verifies when all of these hold:
    to Yubico Attestation Root 1, on the day the compilation is for (`--now`, default today).
 2. The `f9` certificate is the one that signed the `slot` certificate.
 3. The key in the `slot` certificate is the entry's `public` key.
-4. The `slot` certificate states a PIN and touch policy, in Yubico's extension
-   `1.3.6.1.4.1.41482.3.8`. Its second byte is the touch policy: 1 never, 2 always, 3 cached.
+4. The `slot` certificate states a PIN and touch policy, in two bytes of Yubico's extension
+   `1.3.6.1.4.1.41482.3.8`. The first byte is the PIN policy: 1 never, 2 once per session, 3 always.
+   The second byte is the touch policy: 1 never, 2 always, 3 cached. These are the values Yubico
+   specifies. An extension of any other length, or a byte with any other value, fails the
+   compilation.
 
 The compiler carries that root and those intermediates, in
 [`identity/yubico/`](../identity/yubico/attestation-root-1.pem), and a registry cannot add others.
@@ -1878,8 +1881,9 @@ Who can do what, and what stops them:
   an intermediate. It needs an attestation that Yubico's chain signs, for that exact key, with touch
   policy `always`. `bound: "hardware"` without an attestation does not make a hardware approval key.
 - **Evidence that does not verify stops the compilation.** An attestation naming another key,
-  altered, missing its `f9` certificate, or chaining to another root fails the whole compilation,
-  and the last good files stay as they were. The key is never compiled as a software key instead.
+  altered, missing its `f9` certificate, chaining to another root, or stating a policy Yubico does
+  not specify fails the whole compilation, and the last good files stay as they were. The key is
+  never compiled as a software key instead.
 - **A cached or never touch policy is not hardware.** Such a key is in `approval-signers` and not in
   `approval-signers-hardware`. With a cached policy, one touch allows further signatures for 15
   seconds.

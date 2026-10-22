@@ -5,10 +5,11 @@
 // does, so no second copy of the composition can disagree with the one the
 // deriver runs.
 //
-// Compose reads what the integrator and the restacker read: the check
-// definitions, the restacker's cap and the policy's digest. Read reads the
-// whole policy the deriver (../derive) derives required checks from: every
-// class, the unclassified set, and whether each requirement is mandatory.
+// Compose reads the check definitions the integrator reads, the
+// restacker's cap, whether an approval must be signed with a hardware key,
+// and the policy's digest. Read reads the whole policy the deriver
+// (../derive) derives required checks from: every class, the unclassified
+// set, and whether each requirement is mandatory.
 //
 // The floor is read from the instance repository's tip, or from a
 // materialized directory for a host that serves no instance repository.
@@ -194,9 +195,16 @@ type Policy struct {
 	// it where it counts.
 	MaxAutomaticVersions json.Number
 
+	// HardwareApproval says whether an approval of a change must be signed
+	// with a key the identity registry enrolled as a hardware key
+	// (approval.hardware). It selects which keys may sign an approval. It
+	// does not decide whether a change needs one. A policy that leaves the
+	// field out does not require a hardware key.
+	HardwareApproval bool
+
 	// Digest is the SHA-256 of the whole export, so everything the policy
 	// composes is in it: every check, every class's paths, requirements and
-	// carry mode, and the restacker's cap.
+	// carry mode, the restacker's cap, and the hardware requirement.
 	Digest string
 }
 
@@ -225,6 +233,9 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 		Restack struct {
 			MaxAutomaticVersions json.Number `json:"maxAutomaticVersions"`
 		} `json:"restack"`
+		Approval struct {
+			Hardware bool `json:"hardware"`
+		} `json:"approval"`
 	}
 	if err := json.Unmarshal(out, &read); err != nil {
 		return nil, nil, fmt.Errorf("reading the composed policy: %w", err)
@@ -233,6 +244,7 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 	return &Policy{
 		Checks:               read.Checks,
 		MaxAutomaticVersions: read.Restack.MaxAutomaticVersions,
+		HardwareApproval:     read.Approval.Hardware,
 		Digest:               hex.EncodeToString(sum[:]),
 	}, out, nil
 }

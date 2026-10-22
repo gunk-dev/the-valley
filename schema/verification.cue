@@ -30,9 +30,10 @@ import "list"
 
 // #Policy is one layer's contribution to a verification policy: the checks
 // it can require, the path classes that require them, what a path no class
-// covers costs, and the restacker's cap. Both layers are the same shape,
-// because the composition is unification and unification needs both sides
-// to agree on structure.
+// covers costs, the restacker's cap, and whether an approval must be signed
+// with a hardware key. Both layers are the same shape, because the
+// composition is unification and unification needs both sides to agree on
+// structure.
 #Policy: {
 	// checks maps a check's name to how that check is run. Classes
 	// require checks by name; a name that is not a key here fails vet
@@ -75,6 +76,30 @@ import "list"
 	// number. A second default would leave the cap with no default, and vet
 	// would fail.
 	restack: {maxAutomaticVersions: int & >=1 | *64}
+
+	// approval.hardware says whether an approval of a change must be signed
+	// with a hardware key: one whose enrollment in the identity registry
+	// proved that the key is held on a device and that every signature
+	// takes a touch. `true` requires one. Left out, any enrolled approval
+	// key may sign.
+	//
+	// It chooses which keys an approval may be signed with. It never
+	// decides whether a change needs an approval.
+	//
+	// The layers compose the way #Requires does, and the value's form is
+	// the mandatory bit:
+	//
+	//   - The floor writes a concrete `true`, which no project can drop: a
+	//     project writing `false` conflicts, and `cue vet` names the field.
+	//   - A template writes `bool | *true`, a default a project may turn off.
+	//   - A project may always write `true`.
+	//
+	// A floor's concrete `false` would stop a project from writing `true`,
+	// so a floor writes `true` or leaves the field out.
+	//
+	// Both levels are optional, so a policy that leaves the requirement out
+	// exports no `approval` field, and the field adds nothing to its digest.
+	approval?: {hardware?: bool}
 }
 
 // #Class is one path class and what touching it requires.

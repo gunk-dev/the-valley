@@ -89,6 +89,49 @@ func TestReadRefuses(t *testing.T) {
 	}
 }
 
+// TestTheHardwareRequirementIsRead holds Compose and Read to
+// approval.hardware as cue composes it, over the fixtures under
+// examples/policy/approval/. A floor's `true` and a project's `true` both
+// require a hardware key. A template default the project turned off and a
+// policy that never mentions approval do not. A project's `false` against
+// the floor's `true` is refused, rather than read as either.
+func TestTheHardwareRequirementIsRead(t *testing.T) {
+	r := newRig(t)
+	fixture := func(name string) layers {
+		return newLayers(t, []string{r.path("examples/policy/approval/" + name + ".cue")}, nil, nil)
+	}
+	for _, c := range []struct {
+		fixture string
+		want    bool
+	}{
+		{"floor-requires-hardware", true},
+		{"project-requires-hardware", true},
+		{"template-default-declined", false},
+		{"no-requirement", false},
+	} {
+		l := fixture(c.fixture)
+		pol, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project)
+		if err != nil {
+			t.Fatalf("%s: %v", c.fixture, err)
+		}
+		m, err := r.read(l)
+		if err != nil {
+			t.Fatalf("%s: %v", c.fixture, err)
+		}
+		if pol.HardwareApproval != c.want || m.HardwareApproval != c.want {
+			t.Errorf("%s: Compose reads HardwareApproval %v and Read %v, not %v", c.fixture, pol.HardwareApproval, m.HardwareApproval, c.want)
+		}
+	}
+
+	l := fixture("rejected/project-drops-floor-hardware")
+	if pol, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project); err == nil || !strings.Contains(err.Error(), "policy.approval.hardware") {
+		t.Errorf("a project dropping the floor's hardware requirement composed to %+v, %v", pol, err)
+	}
+	if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), "policy.approval.hardware") {
+		t.Errorf("a project dropping the floor's hardware requirement was read as %+v, %v", m, err)
+	}
+}
+
 // TestDeriveOverAModel holds Derive's own rules, over a policy written
 // here rather than composed: the strictest carry mode among the matched
 // classes, a pin that is mandatory where any requirement of it is, a

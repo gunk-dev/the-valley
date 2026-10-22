@@ -1732,6 +1732,44 @@ cue vet -c schema/verification.cue policy/instance/*.cue policy/project/*.cue
 | `#Policy.classes.<class>` (`#Class`)   | `[#Name]: #Class`                                 | Path classes: `paths` (`[#Pattern]: bool`, where `#Pattern` is relative to repo root with no leading `/`, `..` segment, or control characters), `requires` (`[#Name]: bool`), and `carry` (`["same-class" \| "exact"]: bool`, resolving to strictest of `exact`, `same-class`, or default `same-paths`). Concrete `true` in `floor` is mandatory; `bool \| *true` in `templates` is an overridable default. |
 | `#Policy.unclassified`                 | `[#Name]: bool` (`#Requires`)                     | Checks required when a changed path matches no class in `policy.classes`.                                                                                                                                                                                                                                                                                                                                   |
 | `#Policy.restack.maxAutomaticVersions` | `int & >=1 \| *64`                                | Cap on automatic restack versions in the policy schema (read by `valley-restacker once --report-only`, while automatic restack writes are `not built`).                                                                                                                                                                                                                                                     |
+| `#Policy.approval.hardware`            | optional `bool`                                   | Whether an approval must be signed with a hardware key. Left out, it is not required. See [Requiring a hardware approval key](#requiring-a-hardware-approval-key-approvalhardware).                                                                                                                                                                                                                         |
+
+#### Requiring a hardware approval key (`approval.hardware`)
+
+The floor writes this to require that approvals be signed with a hardware key:
+
+```cue
+floor: approval: hardware: true
+```
+
+A hardware key is an approval key that the identity registry enrolled with proof that the key is
+held on a device and that every signature takes a touch.
+
+- **What it decides.** It decides which keys may sign an approval. It does not decide whether a
+  change needs an approval.
+- **Left out.** Any enrolled approval key may sign. A policy that leaves the field out exports no
+  `approval` field, so the field adds nothing to its policy digest.
+- **The floor** writes `true`, and no project can remove it. A project that writes `hardware: false`
+  makes the policy fail to compose, and `cue vet` names `policy.approval.hardware`. A project cannot
+  edit the floor either: the integrator reads the floor from the instance repository or a host
+  directory, never from the project's tree ([Policy](./architecture.md#policy)).
+- **A template** may write `bool | *true`. That is a default, and a project may turn it off with
+  `false`.
+- **A project** may write `true`, which requires a hardware key even where the floor does not.
+- **A floor's `false`** would stop every project from writing `true`. A floor writes `true` or
+  leaves the field out.
+- **Unknown fields and other types** are refused: `approval` holds only `hardware`, and `hardware`
+  is a boolean.
+
+The schema rule and its Go reader, `HardwareApproval` in
+[`composed/composed.go`](../composed/composed.go), are `implemented`. Nothing acts on the value. Two
+parts are `not built`: enrolling hardware keys in the identity registry, and the approval gate that
+would check approvals against those keys alone. Whether a floor writes the field is a
+`deployment choice`.
+
+The schema travels with the tools: `valley`, the integrator and the restacker each compose under
+their own packaged copy. A tool with an older schema refuses a policy that writes `approval`, and
+derives no checks for it. Deploy the tools before a policy writes the field.
 
 ### Attestation statement (`schema/attestation.cue`)
 

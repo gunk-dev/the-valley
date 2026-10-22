@@ -262,10 +262,10 @@ func TestAReportOfNoChangedPathsIsCheckedAgainstGit(t *testing.T) {
 }
 
 // The policy digest is of the whole composed policy, so a class's carry
-// mode and the restacker's cap are in it as much as a check is. The layers
-// are composed by the real cue under the real schema, with the floor fixed
-// and the project layer varied.
-func TestThePolicyDigestCoversCarryAndTheCap(t *testing.T) {
+// mode, the restacker's cap and the hardware approval requirement are in it
+// as much as a check is. The layers are composed by the real cue under the
+// real schema, with the floor fixed and the project layer varied.
+func TestThePolicyDigestCoversCarryTheCapAndHardware(t *testing.T) {
 	cue, err := exec.LookPath("cue")
 	if err != nil {
 		t.Skip("no cue to compose a policy with; the nix check provides one")
@@ -313,6 +313,7 @@ floor: {
 		// The schema puts no upper bound on the cap. The integrator does
 		// not read the cap, so it composes and digests one no Go int holds.
 		{"a cap no int holds", "project: restack: maxAutomaticVersions: 9223372036854775808\n"},
+		{"a hardware approval requirement", "project: approval: hardware: true\n"},
 	} {
 		sum := digest(c.project)
 		if other, ok := seen[sum]; ok {

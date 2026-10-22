@@ -125,6 +125,56 @@ restack-outside-project restack: conflicting values "INVALID: unknown top-level 
 forged-carry-row policy.classes.injected.paths."unused\ncarry\tguarded\tsame-paths": field not allowed
 EOF
 
+# The hardware requirement, case by case. Each fixture under
+# examples/policy/approval/ composes the three layers in one document. Each
+# must vet, and the composed policy must say what the layers mean: true when
+# the floor or the project requires a hardware key, false when a project
+# turned a template's default off, and no `approval` field at all when no
+# layer wrote one.
+approval="$policies/approval"
+while read -r fixture hardware; do
+  cue vet -c "$verificationSchema" "$approval/$fixture.cue"
+  cue export --out json -e policy "$verificationSchema" "$approval/$fixture.cue" \
+    > "$fixture.json"
+  if [ "$hardware" = absent ]; then
+    if grep -q '"approval"' "$fixture.json"; then
+      echo "cue-vet: approval/$fixture.cue exports an approval field no layer wrote" >&2
+      exit 1
+    fi
+    continue
+  fi
+  got="$(cue export -e policy.approval.hardware "$verificationSchema" "$approval/$fixture.cue")"
+  [ "$got" = "$hardware" ] || {
+    echo "cue-vet: approval/$fixture.cue composes approval.hardware to '$got', not $hardware" >&2
+    exit 1
+  }
+done <<'EOF'
+floor-requires-hardware true
+project-requires-hardware true
+template-default-declined false
+no-requirement absent
+EOF
+
+# The hardware requirements the schema must reject, and the field each
+# rejection must name: a project dropping the floor's requirement, a field
+# `approval` does not have, and a requirement that is not a boolean.
+while read -r fixture names; do
+  if cue vet -c "$verificationSchema" "$approval/rejected/$fixture.cue" \
+    > "$fixture.err" 2>&1; then
+    echo "cue-vet: expected approval/rejected/$fixture.cue to be rejected" >&2
+    exit 1
+  fi
+  grep -qF -- "$names" "$fixture.err" || {
+    echo "cue-vet: approval/rejected/$fixture.cue was rejected without naming $names" >&2
+    cat "$fixture.err" >&2
+    exit 1
+  }
+done <<'EOF'
+project-drops-floor-hardware policy.approval.hardware: conflicting values false and true
+not-a-requirement policy.approval.touch: field not allowed
+not-a-bool policy.approval.hardware: conflicting values "yes" and bool
+EOF
+
 # No control character reaches a string `valley checks` renders as a field
 # of a line: a path pattern, a class name, a check name in the catalogue,
 # in a class's requirements or in the unclassified set, an attribute, or a

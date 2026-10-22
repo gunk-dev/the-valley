@@ -1,6 +1,10 @@
 package derive
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -129,6 +133,84 @@ func TestTheHardwareRequirementIsRead(t *testing.T) {
 	}
 	if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), "policy.approval.hardware") {
 		t.Errorf("a project dropping the floor's hardware requirement was read as %+v, %v", m, err)
+	}
+}
+
+// TestAReopenedDefinitionIsRefused holds Compose and Read to refusing an
+// export with a field the schema does not give. Every document of a policy
+// is in one package, so any of them may reopen a schema definition and add
+// a field to it. In the cross-family review's case, the floor writes
+// `hardware: true`, and a project adds `Hardware` to #Policy's approval and
+// writes it false. cue exports both keys, and a reader matching names
+// without regard to case would read whichever comes last.
+//
+// cue unifies the documents in any order, and cannot tell which layer a
+// field came from. The order changes only the order of the keys in the
+// export. So the three documents are composed in every order: the first
+// as the floor layer's document, the other two as the project layer's.
+func TestAReopenedDefinitionIsRefused(t *testing.T) {
+	r := newRig(t)
+	const floor = `package verification
+floor: checks: "c-build": {runner: "nix", attribute: "c-build"}
+floor: classes: code: {paths: "src/**": true, requires: "c-build": true}
+floor: approval: hardware: true
+`
+	docs := []string{floor, "package verification\n#Policy: approval: {Hardware?: bool}\n",
+		"package verification\nproject: approval: {hardware: true, Hardware: false}\n"}
+	layered := func(first string, rest ...string) layers {
+		extra := map[string]string{}
+		for i, doc := range rest {
+			extra[string(rune('a'+i))+".cue"] = doc
+		}
+		l := newLayers(t, nil, nil, extra)
+		if err := os.WriteFile(filepath.Join(l.instance, "a.cue"), []byte(first), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return l
+	}
+	refused := func(name string, l layers, says string) {
+		t.Helper()
+		if pol, err := composed.Compose(t.Context(), r.cue, r.schema, l.instance, l.project); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: Compose read %+v, %v, not %q", name, pol, err, says)
+		}
+		if m, err := r.read(l); err == nil || !strings.Contains(err.Error(), says) {
+			t.Errorf("%s: Read read %+v, %v, not %q", name, m, err, says)
+		}
+	}
+	for _, o := range [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}} {
+		refused("documents in order "+fmt.Sprint(o), layered(docs[o[0]], docs[o[1]], docs[o[2]]),
+			`policy.approval has a field "Hardware" the schema does not give it`)
+	}
+
+	// The same trick at the other objects the reader reads into a struct.
+	for _, c := range []struct{ name, doc, says string }{
+		{"an Approval beside approval", "#Policy: Approval?: {hardware?: bool}\nproject: Approval: hardware: false\n", `policy has a field "Approval"`},
+		{"a check's Runner", "#Check: Runner?: string\nproject: checks: \"c-build\": {runner: \"nix\", attribute: \"c-build\", Runner: \"command\"}\n", `policy.checks.c-build has a field "Runner"`},
+		{"a class's Requires", "#Class: Requires?: [string]: bool\nproject: classes: code: Requires: \"c-build\": false\n", `policy.classes.code has a field "Requires"`},
+	} {
+		refused(c.name, layered(floor, "package verification\n"+c.doc), c.says)
+	}
+
+	// cue cannot export a value of the wrong kind under the schema, so a
+	// stand-in for cue prints one. encoding/json would read the cap written
+	// as a string as a number.
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := layered(floor)
+	for _, c := range []struct{ name, export, says string }{
+		{"a requirement written as a string", `"approval":{"hardware":"false"}`, "policy.approval.hardware is not a bool"},
+		{"a cap written as a string", `"restack":{"maxAutomaticVersions":"64"}`, "policy.restack.maxAutomaticVersions is not a number"},
+	} {
+		cue := filepath.Join(t.TempDir(), "cue")
+		script := "#!" + bash + "\nprintf '%s' '{\"checks\":{},\"classes\":{},\"unclassified\":{}," + c.export + "}'\n"
+		if err := os.WriteFile(cue, []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if pol, err := composed.Compose(t.Context(), cue, r.schema, l.instance, l.project); err == nil || !strings.Contains(err.Error(), c.says) {
+			t.Errorf("%s: Compose read %+v, %v, not %q", c.name, pol, err, c.says)
+		}
 	}
 }
 

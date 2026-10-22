@@ -33,6 +33,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 )
@@ -228,6 +229,9 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 	if err != nil {
 		return nil, nil, fmt.Errorf("composing the policy: %w", err)
 	}
+	if err := exported.check(out); err != nil {
+		return nil, nil, fmt.Errorf("reading the composed policy: %w", err)
+	}
 	var read struct {
 		Checks  map[string]Check `json:"checks"`
 		Restack struct {
@@ -247,6 +251,96 @@ func compose(ctx context.Context, cue string, docs []string) (*Policy, []byte, e
 		HardwareApproval:     read.Approval.Hardware,
 		Digest:               hex.EncodeToString(sum[:]),
 	}, out, nil
+}
+
+// shape is what the reader expects of one value of the export: its kind,
+// and for an object either the exact names of its fields or what every
+// entry of it holds.
+//
+// The export is checked against it before it is decoded, because
+// encoding/json matches a field's name without regard to case and keeps
+// the last match. Any document of the policy may reopen a schema definition,
+// since they are all in one package. A project can therefore add
+// `Hardware: false` beside the floor's `hardware: true`, and cue exports
+// both keys. encoding/json would read whichever of the two comes last. So
+// an object read into a struct must hold the names the schema gives it,
+// exactly, and nothing else.
+type shape struct {
+	kind   string           // "object", "string", "number" or "bool"
+	fields map[string]shape // the fields of an object read into a struct
+	each   *shape           // every entry of an object read into a map
+}
+
+var (
+	text   = shape{kind: "string"}
+	number = shape{kind: "number"}
+	flag   = shape{kind: "bool"}
+	set    = shape{kind: "object", each: &flag}
+
+	// exported is the composed policy as schema/verification.cue exports
+	// it. Read reads `classes` and `unclassified` out of the same export.
+	exported = shape{kind: "object", fields: map[string]shape{
+		"checks": {kind: "object", each: &shape{kind: "object", fields: map[string]shape{
+			"runner": text, "attribute": text, "command": text, "validity": text, "cost": text,
+		}}},
+		"classes": {kind: "object", each: &shape{kind: "object", fields: map[string]shape{
+			"paths": set, "requires": set, "carry": set,
+		}}},
+		"unclassified": set,
+		"restack":      {kind: "object", fields: map[string]shape{"maxAutomaticVersions": number}},
+		"approval":     {kind: "object", fields: map[string]shape{"hardware": flag}},
+	}}
+)
+
+// check reads data as one JSON value and holds it to s.
+func (s shape) check(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return err
+	}
+	return s.holds("policy", v)
+}
+
+// holds says whether v, found at path, has the shape s.
+func (s shape) holds(path string, v any) error {
+	var ok bool
+	switch s.kind {
+	case "string":
+		_, ok = v.(string)
+	case "number":
+		_, ok = v.(json.Number)
+	case "bool":
+		_, ok = v.(bool)
+	case "object":
+		var obj map[string]any
+		if obj, ok = v.(map[string]any); !ok {
+			break
+		}
+		names := make([]string, 0, len(obj))
+		for name := range obj {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			entry := s.each
+			if entry == nil {
+				field, known := s.fields[name]
+				if !known {
+					return fmt.Errorf("%s has a field %q the schema does not give it, which a document reopening a schema definition can add", path, name)
+				}
+				entry = &field
+			}
+			if err := entry.holds(path+"."+name, obj[name]); err != nil {
+				return err
+			}
+		}
+	}
+	if !ok {
+		return fmt.Errorf("%s is not a %s", path, s.kind)
+	}
+	return nil
 }
 
 // documents is what a policy is composed from: the schema, then the

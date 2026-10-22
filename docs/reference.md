@@ -1759,7 +1759,9 @@ held on a device and that every signature takes a touch.
 - **A floor's `false`** would stop every project from writing `true`. A floor writes `true` or
   leaves the field out.
 - **Unknown fields and other types** are refused: `approval` holds only `hardware`, and `hardware`
-  is a boolean.
+  is a boolean. A document may reopen a schema definition to add a field, such as `Hardware` beside
+  `hardware`. The Go reader refuses any composed policy with a field the schema does not give it, or
+  a value of the wrong type.
 
 The schema rule and its Go reader, `HardwareApproval` in
 [`composed/composed.go`](../composed/composed.go), are `implemented`. Nothing acts on the value. Two

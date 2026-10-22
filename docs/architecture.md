@@ -157,7 +157,8 @@ signer projects file the controllers read. A signer that file names, a worker or
 is never this host's integrator. So while it names the integrator name a client uses, the client
 verifies no transfer statement, and a publication whose `signer-projects` does not read is not used
 (`status/signers.go`, `rebase/snapshot.go`). The restacker applies the same rule to the file it is
-given as `--signer-projects`.
+given as `--signer-projects`. Approval reads the published file too: it reuses a note only when one
+of its signers counts in the project (`status/coverage.go`).
 
 The publisher is `integrator publish-signers` (`integrator/signers.go`). The oneshot service
 `valley-signers` runs it as git (`nix/valley-host.nix`). A host renders the service when the
@@ -1000,7 +1001,8 @@ rendered from `integrator.signerProjects`) that names each restricted signer and
 only verified signers are restricted elsewhere as signed by an unknown signer, as it classifies a
 stranger's note (`integrator/evidence.go`). A signer the file does not name is not restricted. The
 push hook does not read the file, so it admits a restricted signer's evidence in every project, and
-only the controllers refuse it.
+only the controllers refuse it. Approval reads the file the host publishes, so it does not skip a
+check on such a note, and builds that check instead (see [The valley command](#the-valley-command)).
 
 A controller's own signature never makes a check's attestation count (`implemented`). When a change
 lands, the controller countersigns the attestations it carried (`integrator/transfer.go`). That
@@ -1233,13 +1235,24 @@ that fails ends the approval, and nothing runs.
 
 Approval judges each required `nix` check by the note the integrator judges it by: the first note
 for the check that verifies under the `known-signers` file the host publishes (see
-[The signers publication](#the-signers-publication)). With no publication, nothing is reused. The
-check is covered when that note also meets all of these:
+[The signers publication](#the-signers-publication)). With no publication, nothing is reused.
+
+A note verifies here only when one of the signers `attest verify` accepts counts in this project, by
+the rule the controllers apply (see [Evidence: attest and notes](#evidence-attest-and-notes)). The
+publication's `signer-projects` file must let that signer count in the project. The signer must not
+be the publication's integrator name, since the integrator's signature on a note is its
+countersignature. Approval names the project after `origin`'s URL. The host's controllers name it
+after their repository's directory, so the two agree when the URL ends in that directory's name. A
+publication whose `signer-projects` is not a file, or does not read, is not used, so nothing is
+reused.
+
+The check is covered when that note also meets all of these:
 
 - It is pure evidence for the check's name and its flake attribute.
 - It records the check as `passed`.
-- When `VALLEY_KNOWN_SIGNERS` is set, `attest verify` accepts it under that file too. A local file
-  can narrow what approval reuses, never widen it beyond what the host publishes.
+- When `VALLEY_KNOWN_SIGNERS` is set, `attest verify` accepts it under that file too, by a signer
+  that counts in this project. A local file can narrow what approval reuses, never widen it beyond
+  what the host publishes.
 
 Comparing the attribute is stricter than the integrator's rule for an unmoved tree, which compares
 none. Coverage decides only what approval runs. The integrator judges every note again when it

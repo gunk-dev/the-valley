@@ -224,7 +224,13 @@ in
   # observation that sit before a pass in ref order, a note without its
   # last newline, a signer nobody knows, a note about another tree, an
   # expired observation, and a note for another flake attribute. Notes the
-  # hook would refuse are planted past it.
+  # hook would refuse are planted past it. Last, the host publishes a
+  # signer projects file, and each integrator pass is given it: a note
+  # whose only signer counts in another project is not reused, the
+  # integrator does not accept it, and approve builds that check; the same
+  # note countersigned by the integrator is not reused either; a published
+  # list that does not read, or is no file, reuses nothing; and a note
+  # from a signer restricted to this project is reused and lands.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git

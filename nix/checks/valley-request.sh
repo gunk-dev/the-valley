@@ -1414,13 +1414,15 @@ cp "$r/floor/floor.cue" "$r/seed/policy/instance/"
 git -C "$r/seed" add -A
 git -C "$r/seed" commit --quiet -m 'the floor'
 git -C "$r/seed" push --quiet "$instance" main
-# published <file>: the instance publishes the known-signers file.
+# published <file> [<mode> <type> <object>]: the instance publishes the
+# known-signers file, and, given an entry, that entry as signer-projects.
 published() {
-  local keysblob nameblob
+  local keysblob nameblob entries
   keysblob="$(git -C "$instance" hash-object -w "$1")"
   nameblob="$(printf '%s\n' "$integratorname" | git -C "$instance" hash-object -w --stdin)"
-  git -C "$instance" update-ref refs/the-valley/signers "$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n' \
-    "$nameblob" "$keysblob" | git -C "$instance" mktree)"
+  entries="$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers' "$nameblob" "$keysblob")"
+  [ $# -lt 4 ] || entries+="$(printf '\n%s %s %s\tsigner-projects' "$2" "$3" "$4")"
+  git -C "$instance" update-ref refs/the-valley/signers "$(printf '%s\n' "$entries" | git -C "$instance" mktree)"
 }
 published "$r/known-signers"
 
@@ -1513,10 +1515,11 @@ approving() {
 requested() {
   git -C "$served" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/$1" || true
 }
-# integrated <request>: one pass of the real integrator lands the request.
+# integrated <request> [<signer projects file>]: one pass of the real
+# integrator, given the file when there is one, lands the request.
 integrated() {
   integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
-    --known-signers "$r/known-signers" --instance "$r/floor" --schema "$schemaFile" \
+    --known-signers "$r/known-signers" ${2:+--signer-projects "$2"} --instance "$r/floor" --schema "$schemaFile" \
     --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/integrator.out" 2>&1 || {
     echo "valley-request: the integrator failed" >&2
     cat "$r/integrator.out" >&2
@@ -1757,14 +1760,15 @@ unreused() {
     exit 1
   fi
 }
-# judged <branch> <outcome> <reason> [<known-signers>]: the branch's head is
-# filed by hand, and one pass of the real integrator, verifying with the
-# known-signers file, decides it as the outcome, giving the reason. A
+# judged <branch> <outcome> <reason> [<known-signers> [<signer projects>]]:
+# the branch's head is filed by hand, and one pass of the real integrator,
+# verifying with the known-signers file and given the signer projects file
+# when there is one, decides it as the outcome, giving the reason. A
 # request it does not land is taken away again.
 judged() {
   git -C "$served" update-ref "refs/the-valley/integration-requests/main/$1" "$(git rev-parse "$1")"
   integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
-    --known-signers "${4:-$r/known-signers}" --instance "$r/floor" --schema "$schemaFile" \
+    --known-signers "${4:-$r/known-signers}" ${5:+--signer-projects "$5"} --instance "$r/floor" --schema "$schemaFile" \
     --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/integrator.out" 2>&1 || {
     echo "valley-request: the integrator failed" >&2
     cat "$r/integrator.out" >&2
@@ -1870,6 +1874,103 @@ edited attribute docs/readme.md
 worker "$(git rev-parse attribute)" --check prose-format=code-build
 unreused attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
 judged attribute land 'transferred (unmoved)'
+
+# 20h. A signer can be restricted to projects. The host publishes its
+#      signer projects file beside the known-signers file, and approve
+#      reuses a note only when one of its signers counts in this project.
+#      The project is named project, after origin, as the integrator names
+#      it after its repository. Each integrator pass is given the file the
+#      host publishes.
+#
+# restricting <file>: the instance publishes the known-signers file with
+# this signer projects file.
+restricting() {
+  published "$r/known-signers" 100644 blob "$(git -C "$instance" hash-object -w "$1")"
+}
+# unpublished <branch> <reason>: the publication is not used, so approve,
+# with no signing key, reuses none of origin's evidence, says why, and
+# refuses for want of a key.
+unpublished() {
+  if approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"; then
+    echo "valley-request: approve reused evidence for $1 under a publication it cannot use" >&2
+    cat "$w/$1.out" >&2
+    exit 1
+  fi
+  if ! grep -qxF "valley: $2, so none of the evidence on origin is reused" "$w/$1.err" \
+    || grep -q 'reusing' "$w/$1.out" || ! grep -q 'no signing key' "$w/$1.err" \
+    || [ -n "$(requested "$1")" ] || [ -s "$nixlog" ]; then
+    echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
+    cat "$w/$1.err" >&2
+    exit 1
+  fi
+}
+
+# The worker restricted to another project: its note is a stranger's here.
+# approve does not reuse it, the integrator does not accept it, and an
+# approval with a signing key builds the check under the operator's key.
+printf '%s elsewhere\n' "$workername" > "$r/elsewhere.projects"
+restricting "$r/elsewhere.projects"
+edited elsewhere docs/readme.md
+elsewherehead="$(git rev-parse elsewhere)"
+worker "$elsewherehead" --check prose-format
+unreused elsewhere \
+  "none of its signers counts in project project: the published signer-projects lets $workername count only in elsewhere"
+judged elsewhere stale 'signed by no signer the integrator holds' "$r/known-signers" "$r/elsewhere.projects"
+approving elsewhere-built valley approve origin/elsewhere
+grep -qF "valley: not reusing prose-format: the integrator judges it by $(under elsewhere "$workerhash"):prose-format/statement.note, and none of its signers counts in project project" "$w/elsewhere-built.err"
+grep -qx "checking elsewhere at $(git rev-parse --short elsewhere): prose-format" "$w/elsewhere-built.out"
+grep -qx "  evidence $(under elsewhere "$operatorhash")" "$w/elsewhere-built.out"
+if ! grep -q '^nix eval .*#checks\.[^.]*\.prose-format\.drvPath$' "$nixlog" \
+  || grep -q '^  reused ' "$w/elsewhere-built.out"; then
+  echo "valley-request: approve did not build the check whose only signer counts elsewhere" >&2
+  cat "$w/elsewhere-built.out" "$nixlog" >&2
+  exit 1
+fi
+[ "$(requested elsewhere)" = "$elsewherehead" ]
+integrated elsewhere "$r/elsewhere.projects"
+
+# The same worker note, countersigned by the integrator. The integrator's
+# own signature never counts for a check, so the note still has no signer
+# who counts here.
+edited countersigned docs/readme.md
+noted "$r/countersigned.note" "$r/keys/worker" "$workername" "$(git rev-parse countersigned)" prose-format --check prose-format
+attest sign --key "$r/keys/integrator" --name "$integratorname" "$r/countersigned.note" > "$r/countersigned.both"
+planted "$(under countersigned "$workerhash")" prose-format "$r/countersigned.both"
+unreused countersigned \
+  "the published signer-projects lets $workername count only in elsewhere; $integratorname is the host's integrator, whose signature is a countersignature"
+judged countersigned stale 'signed by no signer the integrator holds' "$r/known-signers" "$r/elsewhere.projects"
+
+# A published list that does not read, and one that is no file: the
+# publication is not used, and nothing on origin is reused.
+edited listed docs/readme.md
+listedhead="$(git rev-parse listed)"
+worker "$listedhead" --check prose-format
+printf '%s project\n%s elsewhere\n' "$workername" "$workername" > "$r/twice.projects"
+restricting "$r/twice.projects"
+unpublished listed \
+  "signer-projects in refs/the-valley/signers in $instance does not read: line 2: $workername is named on an earlier line too"
+printf '%s project\n' "$workername" > "$r/here.projects"
+listblob="$(git -C "$instance" hash-object -w "$r/here.projects")"
+for entry in "040000 tree $(printf '100644 blob %s\tlist\n' "$listblob" | git -C "$instance" mktree)" "100755 blob $listblob"; do
+  # shellcheck disable=SC2086 # the entry is a mode, a type and an object
+  published "$r/known-signers" $entry
+  unpublished listed "signer-projects in refs/the-valley/signers in $instance is not a file"
+done
+
+# The worker restricted to this project and one more: the same note is
+# reused, nothing runs, and the integrator lands it.
+printf '# the projects the worker builds for\n%s elsewhere project\n' "$workername" > "$r/here.projects"
+restricting "$r/here.projects"
+approving listed env -u VALLEY_ATTEST_KEY valley approve origin/listed
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/listed.out"
+grep -qx "  reused   $(under listed "$workerhash")" "$w/listed.out"
+if [ -s "$nixlog" ] || [ "$(requested listed)" != "$listedhead" ]; then
+  echo "valley-request: approve did not reuse the note of a worker restricted to this project" >&2
+  cat "$w/listed.out" "$w/listed.err" "$nixlog" >&2
+  exit 1
+fi
+integrated listed "$r/here.projects"
+published "$r/known-signers"
 
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"

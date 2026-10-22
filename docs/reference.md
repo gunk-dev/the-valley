@@ -336,10 +336,15 @@ valley approve [--head <sha>] <change>
     check, with the refs in byte order, that `attest verify` accepts under the `known-signers` file
     the host publishes at `refs/the-valley/signers`. It reads each note byte for byte. With no
     publication, nothing is reused.
+  - Counts a note as accepted only when one of its verified signers counts in this project. That
+    signer is not the publication's `integrator-name`, and the publication's `signer-projects` file,
+    when there is one, lets it count in this project. The project is the last path segment of
+    `origin`'s URL, without `.git`. A publication whose `signer-projects` is not a file, or does not
+    read, is not used, so nothing is reused.
   - Reuses that note when it is pure evidence for the check's name and flake attribute, and records
     `passed`. When `VALLEY_KNOWN_SIGNERS` is set, `attest verify` must accept the note under that
-    file too, so a local file can narrow what is reused but never widen it. A `command` check is
-    never reused.
+    file too, by a signer that counts in this project, so a local file can narrow what is reused but
+    never widen it. A `command` check is never reused.
   - Prints `reusing the evidence origin holds for <change> at <head>:`, then one line per reused
     check naming its signer. For each check whose note it does not reuse, it prints the reason on
     `stderr`, for example

@@ -22,13 +22,26 @@ package main
 //     file the serving host publishes (signers.go), which is the host's
 //     current authorization as far as a client can read it. With no
 //     publication, nothing is reused.
+//   - And one of the signers attest verify accepted must count in this
+//     project, as the integrator's classify decides it: the signer
+//     projects file in the same publication (note/signerprojects.go) lets
+//     it count here, and it is not the publication's integrator name,
+//     since the integrator's signature on a note is its countersignature.
+//     A note no such signer signed is a stranger's to the integrator, so a
+//     later note may replace it. A publication whose signer projects file
+//     is not a file, or does not read, is not used, so nothing is reused.
+//   - The project is named as the other verbs name it, after origin's URL
+//     (changes.go). The host's controllers name it after their
+//     repository's directory, so the two agree when origin's URL ends in
+//     that directory's name.
 //
 // The note judged is reused only when it also meets every one of these:
 //
 //   - it is pure evidence, from the nix runner, for this check's name and
 //     this check's flake attribute, and it records the check as passed;
 //   - when VALLEY_KNOWN_SIGNERS is set, attest verify accepts it under that
-//     file too. An override can narrow what is reused, never widen it.
+//     file too, by a signer that counts in this project. An override can
+//     narrow what is reused, never widen it.
 //
 // The attribute test is stricter than the integrator's rule for an
 // unmoved tree, which compares no attribute. A command check is never
@@ -168,12 +181,13 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 	if err := fetch(g, oids...); err != nil {
 		return nil, failure("could not fetch the evidence origin holds for this tree")
 	}
-	keys, why := hostKeys(g)
+	keys, p, why := hostSigners(g)
 	if why != "" {
 		fmt.Fprintf(stderr, "valley: %s, so none of the evidence on origin is reused\n", why)
 		return covered, nil
 	}
 	defer os.Remove(keys)
+	here := counting{project: project(g), integrator: p.name, projects: p.projects}
 
 	asked := map[string]bool{}
 	for _, c := range checks {
@@ -188,9 +202,15 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		return covered, nil
 	}
 	for i := range notes {
-		if notes[i].signer, notes[i].refusal, err = verify(g, repo, head, keys, notes[i].note); err != nil {
+		signers, refusal, err := verify(g, repo, head, keys, notes[i].note)
+		if err != nil {
 			return nil, err
 		}
+		if refusal != "" {
+			notes[i].refusal = "attest verify refuses it under the host's signers: " + refusal
+			continue
+		}
+		notes[i].signer, notes[i].refusal = here.signer(signers)
 	}
 	picked := change.SelectNotes(notes,
 		func(n storedNote) string { return n.check },
@@ -202,7 +222,7 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		if !ok {
 			continue // origin holds no note about this check
 		}
-		why, err := reusable(g, repo, head, local, c, n)
+		why, err := reusable(g, repo, head, local, here, c, n)
 		if err != nil {
 			return nil, err
 		}
@@ -216,14 +236,55 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 }
 
 // storedNote is one note an attestation ref on origin holds, as read: where
-// it is, its bytes, the check its text says it is about, and what attest
-// verify said of it under the host's signers.
+// it is, its bytes, the check its text says it is about, and whether the
+// integrator would admit it under the host's signers.
 type storedNote struct {
 	ref, path string
 	note      []byte
 	check     string
-	signer    string // the signer attest verify accepted, when it did
-	refusal   string // why attest verify refused it; "" when it accepted it
+	signer    string // the first verified signer who counts here, when one does
+	refusal   string // why the integrator would not admit it; "" when it would
+}
+
+// counting is who counts as a check's signer in a project, by the rule the
+// integrator's classify applies (integrator/evidence.go): a signer the
+// signer projects file lets count in the project, other than the host's
+// integrator.
+type counting struct {
+	project, integrator string
+	projects            note.SignerProjects
+}
+
+// signer is the first of the verified signers, each name+hash in the order
+// attest verify reported them, who counts in the project, or why none
+// does.
+func (c counting) signer(verified []string) (signer, why string) {
+	var not []string
+	for _, s := range verified {
+		name, _, _ := strings.Cut(s, "+")
+		switch {
+		case name == c.integrator:
+			not = append(not, name+" is the host's integrator, whose signature is a countersignature")
+		case !c.projects.Counts(name, c.project):
+			not = append(not, fmt.Sprintf("the published %s lets %s count %s", signersProjects, name, c.only(name)))
+		default:
+			return s, ""
+		}
+	}
+	return "", fmt.Sprintf("none of its signers counts in project %s: %s", c.project, strings.Join(not, "; "))
+}
+
+// only is where the signer projects file lets a restricted signer count.
+func (c counting) only(name string) string {
+	var in []string
+	for p := range c.projects[name] {
+		in = append(in, p)
+	}
+	if len(in) == 0 {
+		return "in no project"
+	}
+	sort.Strings(in)
+	return "only in " + strings.Join(in, ", ")
 }
 
 // readNotes reads every note the stored refs hold about a check asked
@@ -265,9 +326,9 @@ func readNotes(g git, stored []string, listed map[string]string, asked map[strin
 
 // reusable says why the note a check is judged by is not evidence approve
 // may skip the check on, or "" when it is.
-func reusable(g git, repo, head, local string, c nixCheck, n storedNote) (string, error) {
+func reusable(g git, repo, head, local string, here counting, c nixCheck, n storedNote) (string, error) {
 	if n.refusal != "" {
-		return "attest verify refuses it under the host's signers: " + n.refusal, nil
+		return n.refusal, nil
 	}
 	text := string(n.note[:bytes.LastIndex(n.note, []byte("\n\n"))+1])
 	for _, want := range [][2]string{
@@ -281,27 +342,28 @@ func reusable(g git, repo, head, local string, c nixCheck, n storedNote) (string
 		}
 	}
 	if local != "" {
-		_, refusal, err := verify(g, repo, head, local, n.note)
+		signers, refusal, err := verify(g, repo, head, local, n.note)
 		if err != nil {
 			return "", err
 		}
 		if refusal != "" {
 			return "attest verify refuses it under VALLEY_KNOWN_SIGNERS: " + refusal, nil
 		}
+		if _, why := here.signer(signers); why != "" {
+			return "under VALLEY_KNOWN_SIGNERS, " + why, nil
+		}
 	}
-	// The serving host's list of which projects each restricted signer
-	// may attest in (oc-a415f3a) is one more test of n.signer here, once
-	// the host publishes it.
 	return "", nil
 }
 
 // verify runs attest verify over a note's exact bytes, under a
-// known-signers file. It returns the signer whose signature checked out,
-// or the sentence attest refused the note with.
-func verify(g git, repo, head, keys string, note []byte) (signer, refusal string, err error) {
+// known-signers file. It returns every signer whose signature checked
+// out, in the order attest reported them, or the sentence attest refused
+// the note with.
+func verify(g git, repo, head, keys string, note []byte) (signers []string, refusal string, err error) {
 	file, err := os.CreateTemp("", "valley-coverage-*.note")
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	defer os.Remove(file.Name())
 	_, err = file.Write(note)
@@ -309,41 +371,44 @@ func verify(g git, repo, head, keys string, note []byte) (signer, refusal string
 		err = cerr
 	}
 	if err != nil {
-		return "", "", err
+		return nil, "", err
 	}
 	out, err := attestTool(g, "verify", "--note", file.Name(), "--known-keys", keys, "--repo", repo, "--rev", head)
 	if err != nil {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) {
-			return "", "", fmt.Errorf("could not run attest verify: %v", err)
+			return nil, "", fmt.Errorf("could not run attest verify: %v", err)
 		}
-		return "", refusalOf(out), nil
+		return nil, refusalOf(out), nil
 	}
 	for _, line := range strings.Split(out, "\n") {
 		if f := strings.Fields(line); len(f) == 3 && f[0] == "signature" && f[1] == "ok" {
-			return f[2], "", nil
+			signers = append(signers, f[2])
 		}
 	}
-	return "", "attest verify named no signer", nil
+	if len(signers) == 0 {
+		return nil, "attest verify named no signer", nil
+	}
+	return signers, "", nil
 }
 
-// hostKeys writes out the known-signers file the serving host publishes,
-// for attest verify to read, and returns its path. why says why there is
-// none.
-func hostKeys(g git) (keys, why string) {
+// hostSigners writes out the known-signers file the serving host
+// publishes, for attest verify to read, and returns its path and the
+// publication it came from. why says why there is none.
+func hostSigners(g git) (keys string, p *publishedSigners, why string) {
 	p, err := readSigners(g)
 	switch {
 	case err != nil:
-		return "", err.Error()
+		return "", nil, err.Error()
 	case p == nil:
-		return "", "the serving host publishes no signers at " + signersRef
+		return "", nil, "the serving host publishes no signers at " + signersRef
 	}
 	if _, err := note.ParseVerifierKeys(p.keys); err != nil {
-		return "", fmt.Sprintf("the known-signers file published at %s does not read as verifier keys: %v", p.where, err)
+		return "", nil, fmt.Sprintf("the known-signers file published at %s does not read as verifier keys: %v", p.where, err)
 	}
 	f, err := os.CreateTemp("", "valley-host-signers-*")
 	if err != nil {
-		return "", err.Error()
+		return "", nil, err.Error()
 	}
 	_, err = f.Write(p.keys)
 	if cerr := f.Close(); err == nil {
@@ -351,9 +416,9 @@ func hostKeys(g git) (keys, why string) {
 	}
 	if err != nil {
 		os.Remove(f.Name())
-		return "", err.Error()
+		return "", nil, err.Error()
 	}
-	return f.Name(), ""
+	return f.Name(), p, ""
 }
 
 // blob is an object's content exactly as git stores it. g.output trims

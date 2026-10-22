@@ -2141,7 +2141,7 @@ if working flaky-1 VALLEY_NOW=2026-10-22T10:00:00Z VALLEY_E2E_DURING_PASS='exit 
 fi
 said flaky-1 "$line: the batch did not pass (exit status 1); it is not built again before 2026-10-22T10:15:00Z"
 pushed none
-jq -e '.batches | length == 1 and (.[] | .failures == 1)' "$wstate/failures.json" > /dev/null
+jq -e '.projects.project | length == 1 and (.[] | .failures == 1)' "$wstate/failures.json" > /dev/null
 fresh
 working flaky-2 VALLEY_NOW=2026-10-22T10:14:59Z
 said flaky-2 "$line: its batch prose-format failed 1 time in a row, so it is not built again before 2026-10-22T10:15:00Z"
@@ -2168,8 +2168,9 @@ pushed "$flakyref"
 #      exits 1 when it is done, so origin lands the ref and the worker hears
 #      a failure: the pass says so, and exits 1. The next pass finds the
 #      evidence on origin, and builds and pushes nothing. Then a push that
-#      never reaches origin: the next pass pushes the ref the first one
-#      stored, the same object, and builds nothing.
+#      never reaches origin: once its one-minute wait is over, the next
+#      pass pushes the ref the first one stored, the same object, and
+#      builds nothing.
 cat > "$r/lossy" <<EOF
 #!$(command -v bash)
 git-receive-pack "\$@"
@@ -2184,20 +2185,20 @@ EOF
 chmod +x "$r/lossy" "$r/unreached"
 readied landed docs/readme.md
 landedref="refs/the-valley/attestations/$(attest digest --rev landed | cut -d: -f2)/$workerhash"
-if working landed-1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/lossy"; then
+if working landed-1 VALLEY_NOW=2026-10-23T09:00:00Z GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/lossy"; then
   echo "valley-request: a pass that heard its push fail exited 0" >&2
   exit 1
 fi
-said landed-1 "$line: could not publish $landedref; the next pass publishes it again"
+said landed-1 "$line: could not publish $landedref; it is not pushed again before 2026-10-23T09:01:00Z"
 git -C "$served" cat-file -e "$landedref:prose-format/statement.note"
 fresh
-working landed-2
+working landed-2 VALLEY_NOW=2026-10-23T09:00:00Z
 said landed-2 "$line: origin holds evidence for every nix check it requires"
 built nothing
 pushed none
 readied unreached docs/readme.md
 unreachedref="refs/the-valley/attestations/$(attest digest --rev unreached | cut -d: -f2)/$workerhash"
-if working unreached-1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/unreached"; then
+if working unreached-1 VALLEY_NOW=2026-10-23T09:00:00Z GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/unreached"; then
   echo "valley-request: a pass whose push never arrived exited 0" >&2
   exit 1
 fi
@@ -2210,8 +2211,8 @@ fi
 cache="$HOME/.cache/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
 storedobject="$(git -C "$cache" rev-parse "$unreachedref")"
 fresh
-working unreached-2
-said unreached-2 "$line: publishing $unreachedref, which an earlier pass stored and origin does not hold"
+working unreached-2 VALLEY_NOW=2026-10-23T09:01:00Z
+said unreached-2 "$line: an earlier pass stored $unreachedref, and origin does not hold it"
 said unreached-2 "$line: published $unreachedref"
 built nothing
 pushed "$unreachedref"
@@ -2290,6 +2291,213 @@ built nothing
 fresh
 working unread-origin-again
 said unread-origin-again "$line: building prose-format"
+
+# await <file> <text>: wait up to a minute for the file to hold the text.
+await() {
+  for _ in $(seq 600); do
+    grep -qF -- "$2" "$1" 2> /dev/null && return
+    sleep 0.1
+  done
+  echo "valley-request: $1 never said: $2" >&2
+  exit 1
+}
+
+# 21h. The wait after a failed batch runs from when the batch ended. The
+#      clock is not fixed here. The stand-in takes 3 seconds and then
+#      fails, so the batch's wait ends at least 15 minutes after it ended,
+#      which is more than 15 minutes after the pass began. Past the wait,
+#      the batch is built and published.
+readied slow docs/readme.md
+slowdigest="$(attest digest --rev slow | cut -d: -f2)"
+began="$(date -u +%s)"
+fresh
+if working slow-1 VALLEY_E2E_DURING_PASS='sleep 3; exit 1'; then
+  echo "valley-request: a pass whose batch failed exited 0" >&2
+  exit 1
+fi
+retry="$(jq -r --arg key "build $slowdigest prose-format" '.projects.project[$key].retry' "$wstate/failures.json")"
+if [ "$(($(date -u -d "$retry" +%s) - began))" -lt 903 ]; then
+  echo "valley-request: the wait after a 3-second batch ends at $retry, less than 15 minutes after it ended; the pass began at $(date -u -d "@$began" +%FT%TZ)" >&2
+  exit 1
+fi
+fresh
+working slow-2 VALLEY_NOW=2099-01-01T00:00:00Z
+said slow-2 "$line: published refs/the-valley/attestations/$slowdigest/$workerhash"
+
+# 21i. A failed push waits too, by the object it would publish. Two changes
+#      whose heads hold the same tree share one attestation ref, and origin
+#      takes no push. The first pass builds once and tries one push, and the
+#      other change's push waits behind that failure. A pass within the
+#      minute tries no push. The next failure doubles the wait. Past it, the
+#      ref is published once, and the record of it is gone.
+cat > "$r/counted" <<EOF
+#!$(command -v bash)
+echo push >> "$r/push-attempts"
+echo "the connection dropped" >&2
+exit 1
+EOF
+chmod +x "$r/counted"
+refusing=(GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/counted")
+readied twin-a docs/readme.md
+git checkout --quiet -B twin-b origin/main
+git checkout --quiet twin-a -- docs/readme.md
+git commit --quiet -m twin-b
+VALLEY_PRINCIPAL=requester git push --quiet origin twin-b
+VALLEY_PRINCIPAL=requester valley ready twin-b > "$r/twin-b.ready" 2>&1
+[ "$(git rev-parse 'twin-a^{tree}')" = "$(git rev-parse 'twin-b^{tree}')" ]
+twinref="refs/the-valley/attestations/$(attest digest --rev twin-a | cut -d: -f2)/$workerhash"
+# attempts <n> <name> <failed> <waiting>: origin was offered n pushes in
+# all, and the pass's log says failed and waiting for the twins' ref that
+# many times each, with the wait ending at the time given last.
+attempts() {
+  local until="$5"
+  if [ "$(wc -l < "$r/push-attempts")" != "$1" ] \
+    || [ "$(grep -c ": could not publish $twinref; it is not pushed again before $until\$" "$r/$2.log")" != "$3" ] \
+    || [ "$(grep -c ": publishing $twinref failed [0-9]* times\? in a row, so it is not pushed again before $until\$" "$r/$2.log")" != "$4" ]; then
+    echo "valley-request: the pass $2 did not offer origin the twins' ref as often as expected" >&2
+    cat "$r/push-attempts" "$r/$2.log" >&2
+    exit 1
+  fi
+}
+: > "$r/push-attempts"
+fresh
+if working twins-1 VALLEY_NOW=2026-10-24T09:00:00Z "${refusing[@]}"; then
+  echo "valley-request: a pass whose push failed exited 0" >&2
+  exit 1
+fi
+built prose-format
+attempts 1 twins-1 1 1 2026-10-24T09:01:00Z
+working twins-2 VALLEY_NOW=2026-10-24T09:00:59Z "${refusing[@]}"
+attempts 1 twins-2 0 2 2026-10-24T09:01:00Z
+if working twins-3 VALLEY_NOW=2026-10-24T09:01:00Z "${refusing[@]}"; then
+  echo "valley-request: a pass whose push failed again exited 0" >&2
+  exit 1
+fi
+attempts 2 twins-3 1 1 2026-10-24T09:03:00Z
+fresh
+working twins-4 VALLEY_NOW=2026-10-24T09:03:00Z
+built nothing
+pushed "$twinref"
+[ ! -e "$wstate/failures.json" ] || {
+  echo "valley-request: the record of a push that went through was kept" >&2
+  cat "$wstate/failures.json" >&2
+  exit 1
+}
+
+# 21j. A pass forgets only the failures of the projects it read whole. The
+#      host serves a second project, other, with no ready change. A batch of
+#      this project fails. A pass over other alone leaves that wait as it
+#      is, so the next pass over this project does not build the batch.
+git init --quiet --bare "$r/other.git"
+git -C "$instance" update-ref refs/the-valley/projects \
+  "$(printf 'other\nproject\n' | git -C "$instance" hash-object -w --stdin)"
+readied flapping docs/readme.md
+flappingref="refs/the-valley/attestations/$(attest digest --rev flapping | cut -d: -f2)/$workerhash"
+if working flapping-1 VALLEY_NOW=2026-10-25T09:00:00Z VALLEY_E2E_DURING_PASS='exit 1'; then
+  echo "valley-request: a pass whose batch failed exited 0" >&2
+  exit 1
+fi
+(cd "$r/worker-home" && VALLEY_PRINCIPAL=worker VALLEY_NOW=2026-10-25T09:01:00Z valley-worker --repo other \
+  --key "$r/keys/worker" --name "$workername" --state "$wstate") > "$r/other.log" 2>&1 || {
+  echo "valley-request: a pass over other failed" >&2
+  cat "$r/other.log" >&2
+  exit 1
+}
+fresh
+working flapping-2 VALLEY_NOW=2026-10-25T09:02:00Z
+said flapping-2 "$line: its batch prose-format failed 1 time in a row, so it is not built again before 2026-10-25T09:15:00Z"
+built nothing
+fresh
+working flapping-3 VALLEY_NOW=2026-10-25T09:15:00Z
+said flapping-3 "$line: published $flappingref"
+
+# 21k. A pass killed while attest runs. attest holds the lock it was
+#      handed, so a second pass waits for attest to end rather than build
+#      the same batch beside it. Then the second pass finds the ref the
+#      orphaned attest stored, publishes it, and builds nothing.
+readied killed docs/readme.md
+killedref="refs/the-valley/attestations/$(attest digest --rev killed | cut -d: -f2)/$workerhash"
+cat > "$r/hold-kill" <<EOF
+#!$(command -v bash)
+[ -e "$r/kill-armed" ] || exit 0
+rm -f "$r/kill-armed"
+# The worker is the nearest process above this one named valley-go.
+p=\$\$
+while [ "\$p" -gt 1 ]; do
+  if [ "\$(cat "/proc/\$p/comm")" = valley-go ]; then
+    echo "\$p" > "$r/killed.pid"
+    break
+  fi
+  read -r _ _ _ p _ < "/proc/\$p/stat"
+done
+for _ in \$(seq 600); do
+  [ -e "$r/release" ] && exit 0
+  sleep 0.1
+done
+exit 1
+EOF
+chmod +x "$r/hold-kill"
+touch "$r/kill-armed"
+fresh
+working killed-1 VALLEY_E2E_DURING_PASS="$r/hold-kill" &
+killedpass=$!
+await "$r/killed.pid" ""
+kill -9 "$(cat "$r/killed.pid")"
+status=0
+wait "$killedpass" || status=$?
+[ "$status" = 137 ] || {
+  echo "valley-request: the killed pass ended with $status" >&2
+  exit 1
+}
+working killed-2 &
+secondpass=$!
+await "$r/killed-2.log" "valley: another pass holds $wstate/lock; waiting for it to end"
+touch "$r/release"
+wait "$secondpass"
+said killed-2 "$line: an earlier pass stored $killedref, and origin does not hold it"
+said killed-2 "$line: published $killedref"
+built prose-format
+pushed "$killedref"
+
+# 21l. A cache clone whose making was interrupted. A stand-in for git kills
+#      the worker as it sets the clone's origin, which leaves a repository
+#      with no origin. The next pass repairs the clone and reads the
+#      project through it. The worker runs as valley-go here, since the
+#      package's wrapper puts its own git ahead of the stand-in.
+cachehome="$r/interrupted-cache"
+interrupted="$cachehome/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
+mkdir -p "$r/killing-git"
+cat > "$r/killing-git/git" <<EOF
+#!$(command -v bash)
+if [ "\${1:-} \${2:-}" = "remote add" ]; then
+  kill -9 "\$PPID"
+  exit 1
+fi
+exec "$(command -v git)" "\$@"
+EOF
+chmod +x "$r/killing-git/git"
+status=0
+(cd "$r/worker-home" && VALLEY_PRINCIPAL=worker XDG_CACHE_HOME="$cachehome" PATH="$r/killing-git:$PATH" \
+  VALLEY_VERIFICATION_SCHEMA="$schemaFile" valley-go work --repo project \
+  --key "$r/keys/worker" --name "$workername" --state "$wstate") > "$r/interrupted-1.log" 2>&1 || status=$?
+[ "$status" = 137 ] && [ -d "$interrupted/.git" ] || {
+  echo "valley-request: the stand-in did not interrupt the clone's making ($status)" >&2
+  cat "$r/interrupted-1.log" >&2
+  exit 1
+}
+if git -C "$interrupted" config --get remote.origin.url; then
+  echo "valley-request: the interrupted clone has an origin already" >&2
+  exit 1
+fi
+fresh
+working interrupted-2 XDG_CACHE_HOME="$cachehome" || {
+  echo "valley-request: the pass after an interrupted clone failed" >&2
+  cat "$r/interrupted-2.log" >&2
+  exit 1
+}
+[ "$(git -C "$interrupted" config --get remote.origin.url)" = "$served" ]
+said interrupted-2 "$livelyline: requires no nix check"
+built nothing
 
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"

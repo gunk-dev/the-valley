@@ -615,18 +615,19 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       and no other project is read.
     - `--key <path>` and `--name <name>`: The worker's signing key and signing name, passed to
       `attest run`. The name defaults as `attest`'s does.
-    - `--state <dir>`: The directory holding the lock and the record of failed batches (default
-      `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
+    - `--state <dir>`: The directory holding the lock and the record of failed batches and pushes
+      (default `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
   - Prints one line per ready change, `<project>: <handle> v<n> at <short-head>: <what>`, where
     `<what>` is one of these:
     - `requires no nix check`
     - `origin holds evidence for every nix check it requires`
     - `building <check>, <check>`, then what `attest run` prints, then `published <ref>`
     - `origin already holds <ref>, this worker's evidence for its tree, and it does not cover <checks>. …`
-    - `publishing <ref>, which an earlier pass stored and origin does not hold`
+    - `an earlier pass stored <ref>, and origin does not hold it`, then the line for publishing it
     - `its batch <checks> failed <n> times in a row, so it is not built again before <time>`
     - `the batch did not pass (<reason>); it is not built again before <time>`
-    - `could not publish <ref>; the next pass publishes it again`
+    - `publishing <ref> failed <n> times in a row, so it is not pushed again before <time>`
+    - `could not publish <ref>; it is not pushed again before <time>`
   - A pass that finds the lock held prints
     `valley: another pass holds <state>/lock; waiting for it to end` on `stderr`, and waits.
   - Exits `0` when everything it tried succeeded, and `2` when `VALLEY_NOW` is not a time. It exits
@@ -751,12 +752,15 @@ git directory:
 - `${XDG_STATE_HOME:-$HOME/.local/state}/valley/self-update.json` and `self-update.lock`: Installed
   store paths, commits, pin flag, last failure record, and lock file for `valley self-update`.
 - `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker/lock` and `failures.json`: The check worker's
-  lock, and its record of failed batches, each with how many times in a row it failed and the time
-  before which it is not built again (`--state` names another directory).
+  lock, and its record of failed batches and pushes (`--state` names another directory). The record
+  holds `projects`, by project name, each a map from `build <tree digest> <check>,<check>` or
+  `push <object ID>` to `failures`, how many times in a row it failed, and `retry`, the time before
+  which it is not tried again.
 - `${XDG_CACHE_HOME:-$HOME/.cache}/valley/repos/<16-hex-url-hash>-<project>`: Cached non-bare git
   repositories (`git init --quiet` with no working tree checkout) fetched when `--all`, `--repo`, or
-  `--project` reads another project on the host. The check worker keeps the attestation refs it
-  stores in the clone it reads a project through.
+  `--project` reads another project on the host. Each use repairs a clone whose making was
+  interrupted, and sets its origin when it is missing. The check worker keeps the attestation refs
+  it stores in the clone it reads a project through.
 - `${TMPDIR:-/tmp}/valley-known-signers-*`: A copy of the `known-signers` file the host publishes,
   for `attest verify` to read. It exists only while a command that verifies a transfer statement
   runs.

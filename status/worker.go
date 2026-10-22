@@ -32,16 +32,27 @@ package main
 // not on origin, an earlier pass built it and its push was lost, so the
 // pass pushes that same ref again rather than building it again.
 //
-// A batch that fails is not run again at once. The pass records it in
-// failures.json in the state directory, and runs it again only after a
-// wait that starts at firstBackoff and doubles with each failure in a row,
-// up to longestBackoff. A batch is the project, the tree and the checks it
-// runs, so a new version is a new batch and runs at once. VALLEY_NOW, when
-// set, is the time a pass reads as now (main.go's clock). Deleting the
-// record lets every batch run again at once.
+// A batch that fails is not run again at once, and neither is a push that
+// fails. The pass records each failure in failures.json in the state
+// directory, under its project: a batch by the tree and the checks it
+// runs, and a push by the object it publishes. A failed batch waits
+// firstBuildWait before it runs again, and a failed push waits
+// firstPushWait. Each wait doubles with every failure in a row, up to
+// longestWait. The clock is read when the pass asks whether a wait is
+// over, and again when an attempt ends, so a long build does not use up
+// its own wait. A new version is a new batch, and runs at once. VALLEY_NOW,
+// when set, is the time the pass reads as now (main.go's clock). Deleting
+// the record lets everything run again at once.
+//
+// A pass forgets the failures it did not meet in a project, but only for
+// a project it read whole: every ready change's checks derived and its
+// evidence read. A pass over other projects, or one that could not read
+// this one, leaves this one's record as it is.
 //
 // Passes that share a state directory take turns: each holds the lock
 // file there while it runs, and a pass that finds it held waits for it.
+// attest is handed the lock too, so it stays held while a batch runs even
+// when the pass that started the batch is killed.
 //
 // A read of origin that fails stops the pass, because a read that did not
 // happen must not read as no changes or no evidence. Anything else that
@@ -70,19 +81,21 @@ const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
 
-// The wait after a batch fails before it runs again: the first, and the
-// longest it grows to by doubling.
+// The waits after a failure before the same thing is tried again: the
+// first after a failed batch, the first after a failed push, and the
+// longest either grows to by doubling.
 const (
-	firstBackoff   = 15 * time.Minute
-	longestBackoff = 24 * time.Hour
+	firstBuildWait = 15 * time.Minute
+	firstPushWait  = time.Minute
+	longestWait    = 24 * time.Hour
 )
 
-// worker is one pass: the signer it attests as, what it says, and what it
-// has found going wrong.
+// worker is one pass: the signer it attests as, the lock it holds, what it
+// says, and what it has found going wrong.
 type worker struct {
 	key, name string
-	keyhash   string // the key hash an attestation ref of this signer ends in
-	now       time.Time
+	keyhash   string   // the key hash an attestation ref of this signer ends in
+	lock      *os.File // the state directory's lock, held for the pass
 	failures  *failureRecord
 	stdout    io.Writer
 	stderr    io.Writer
@@ -128,7 +141,6 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 		return failure(fmt.Sprintf("--key %s: %v", key, err))
 	}
 	key = abs
-	now := clock()
 	if state == "" {
 		if state, err = stateDirectory(); err != nil {
 			return failure("no state directory: name one with --state")
@@ -138,11 +150,11 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 		return failure(fmt.Sprintf("could not make the state directory %s", state))
 	}
 
-	unlock, err := lockState(filepath.Join(state, "lock"), stderr)
+	lock, err := lockState(filepath.Join(state, "lock"), stderr)
 	if err != nil {
 		return failure(fmt.Sprintf("could not take the lock in %s: %v", state, err))
 	}
-	defer unlock()
+	defer lock.Close() // close drops the flock; every attest handed it has ended by then
 
 	// The signer is read before anything else is done, so a pass that
 	// could only end in "no key" says so before it reads anything.
@@ -156,21 +168,14 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 		return failure(fmt.Sprintf("could not read the signing key at %s: %s", key, refusalOf(out)))
 	}
 
-	w := &worker{key: key, name: name, keyhash: fields[1], now: now, stdout: stdout, stderr: stderr}
+	w := &worker{key: key, name: name, keyhash: fields[1], lock: lock, stdout: stdout, stderr: stderr}
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
-	seen := map[string]bool{}
 	for _, repo := range repos {
-		if err := w.project(g, repo, seen); err != nil {
+		if err := w.project(g, repo); err != nil {
 			return err
 		}
 	}
-	// Only a whole pass knows which batches are still waiting to be built.
-	// The rest are forgotten, so the record stays as small as the work.
-	w.failures.keep(seen)
-	if err := w.failures.save(); err != nil {
-		fmt.Fprintf(stderr, "valley: could not write %s: %v\n", w.failures.path, err)
-		w.troubles++
-	}
+	w.save()
 	if w.troubles > 0 {
 		return failure(fmt.Sprintf("the pass finished, but %s went wrong in it; each is said above", counted(w.troubles, "thing")))
 	}
@@ -193,9 +198,11 @@ func stateDirectory() (string, error) {
 }
 
 // lockState takes the lock file at path, waiting for whoever holds it, and
-// returns what releases it. The lock is flock's, as self-update's is, so
-// it is released when the process ends, however it ends.
-func lockState(path string, stderr io.Writer) (func(), error) {
+// returns the open file, whose closing releases it. The lock is flock's,
+// as self-update's is. It belongs to the open file, so it is released when
+// every process holding that file has closed it or ended, however each
+// ends.
+func lockState(path string, stderr io.Writer) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err
@@ -209,12 +216,14 @@ func lockState(path string, stderr io.Writer) (func(), error) {
 		f.Close()
 		return nil, err
 	}
-	return func() { f.Close() }, nil // close drops the flock
+	return f, nil
 }
 
 // project works through one project's ready changes. It returns an error
-// only when a read of origin failed, which stops the pass.
-func (w *worker) project(g git, name string, seen map[string]bool) error {
+// only when a read of origin failed, which stops the pass. When it has
+// read the project whole, it forgets the project's failures it did not
+// meet.
+func (w *worker) project(g git, name string) error {
 	list, _, err := sources(g, listing{repo: name}, w.stderr)
 	if err != nil {
 		return failure(fmt.Sprintf("%s: %v; the pass stops here", name, err))
@@ -225,7 +234,9 @@ func (w *worker) project(g git, name string, seen map[string]bool) error {
 		return failure(fmt.Sprintf("%s: %v; the pass stops here", name, r.err))
 	}
 	view := r.pendingView(handles(repos))
+	met := map[string]bool{} // the failures this pass met, by key
 	if len(view.Changes) == 0 {
+		w.failures.keep(name, met)
 		return nil
 	}
 	if r.snap.tip == "" {
@@ -240,16 +251,24 @@ func (w *worker) project(g git, name string, seen map[string]bool) error {
 		w.troubles++
 		return nil
 	}
+	whole := true
 	for _, c := range view.Changes {
-		if err := w.change(r, instance, project, c, seen); err != nil {
+		read, err := w.change(r, instance, project, c, met)
+		if err != nil {
 			return err
 		}
+		whole = whole && read
+	}
+	if whole {
+		w.failures.keep(name, met)
 	}
 	return nil
 }
 
-// change builds and publishes what one ready change's head lacks.
-func (w *worker) change(r listed, instance, project string, c jsonChange, seen map[string]bool) error {
+// change builds and publishes what one ready change's head lacks. read
+// says whether it read the change through: derived its checks, and read
+// the evidence origin holds for them.
+func (w *worker) change(r listed, instance, project string, c jsonChange, met map[string]bool) (read bool, err error) {
 	v := c.Versions[c.Active-1]
 	head := v.Head
 	say := func(format string, args ...any) {
@@ -259,13 +278,13 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, seen m
 	if err != nil {
 		say("shares no history with main, so nothing is built")
 		w.troubles++
-		return nil
+		return false, nil
 	}
 	doc, err := derivedChecks(r.g, "", instance, project, base, head)
 	if err != nil {
 		say("its checks did not derive, so nothing is built: %v", err)
 		w.troubles++
-		return nil
+		return false, nil
 	}
 	var asked []nixCheck
 	for _, q := range doc.Required {
@@ -275,12 +294,12 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, seen m
 	}
 	if len(asked) == 0 {
 		say("requires no nix check")
-		return nil
+		return true, nil
 	}
 
 	e, err := coverageOf(r.g, head, asked, w.stderr)
 	if err != nil {
-		return failure(fmt.Sprintf("%s: %s v%d: %v; the pass stops here", r.name, c.Handle, v.N, err))
+		return false, failure(fmt.Sprintf("%s: %s v%d: %v; the pass stops here", r.name, c.Handle, v.N, err))
 	}
 	var missing []nixCheck
 	var names []string
@@ -292,45 +311,56 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, seen m
 	}
 	if len(missing) == 0 {
 		say("origin holds evidence for every nix check it requires")
-		return nil
+		return true, nil
 	}
 
 	own := attestationRefs + e.digest + "/" + w.keyhash
 	if _, ok := e.listed[own]; ok {
 		say("origin already holds %s, this worker's evidence for its tree, and it does not cover %s. "+
 			"That namespace admits creations only, so approve builds the rest (bd-7b7d58f)", own, strings.Join(names, ", "))
-		return nil
+		return true, nil
 	}
 	if stored, err := r.g.output(true, "rev-parse", "--verify", "--quiet", own); err == nil && stored != "" {
-		say("publishing %s, which an earlier pass stored and origin does not hold", own)
-		w.publish(r.g, own, say)
-		return nil
+		say("an earlier pass stored %s, and origin does not hold it", own)
+		w.publish(r, own, stored, met, say)
+		return true, nil
 	}
 
-	batch := r.name + " " + e.digest + " " + strings.Join(names, ",")
-	seen[batch] = true
-	if f, waiting := w.failures.waiting(batch, w.now); waiting {
+	batch := "build " + e.digest + " " + strings.Join(names, ",")
+	met[batch] = true
+	if f, waiting := w.failures.waiting(r.name, batch, clock()); waiting {
 		say("its batch %s failed %s in a row, so it is not built again before %s", strings.Join(names, ", "), counted(f.Failures, "time"), f.Retry.Format(time.RFC3339))
-		return nil
+		return true, nil
 	}
 	say("building %s", strings.Join(names, ", "))
 	if err := w.attest(r.g, head, missing); err != nil {
-		f := w.failures.failed(batch, w.now)
+		// The wait runs from when the batch ended, not from when it began.
+		f := w.failures.failed(r.name, batch, clock(), firstBuildWait)
 		say("the batch did not pass (%v); it is not built again before %s", err, f.Retry.Format(time.RFC3339))
 		w.troubles++
-		if err := w.failures.save(); err != nil {
-			fmt.Fprintf(w.stderr, "valley: could not write %s: %v\n", w.failures.path, err)
-		}
-		return nil
+		w.save()
+		return true, nil
 	}
-	w.failures.passed(batch)
-	w.publish(r.g, own, say)
-	return nil
+	w.failures.passed(r.name, batch)
+	stored, err := r.g.output(true, "rev-parse", "--verify", "--quiet", own)
+	if err != nil || stored == "" {
+		say("attest stored no %s, so nothing is published", own)
+		w.troubles++
+		return true, nil
+	}
+	w.publish(r, own, stored, met, say)
+	return true, nil
 }
 
 // attest runs one batch with attest run, which stores the notes at the
 // worker's attestation ref for the head's tree and publishes nothing.
 // What attest prints is passed on.
+//
+// attest is handed the lock file as well, and holds it until it ends. The
+// flock belongs to the open file, so the lock stays held while attest
+// runs, and while anything it started that inherited the file runs, even
+// when this pass is killed. A later pass waits for all of it, and then
+// finds the ref attest stored.
 func (w *worker) attest(g git, head string, checks []nixCheck) error {
 	repo := g.dir
 	if repo == "" {
@@ -347,19 +377,40 @@ func (w *worker) attest(g git, head string, checks []nixCheck) error {
 	cmd.Env = g.env
 	cmd.Dir = g.dir
 	cmd.Stdout, cmd.Stderr = w.stdout, w.stderr
+	cmd.ExtraFiles = []*os.File{w.lock}
 	return cmd.Run()
 }
 
 // publish pushes one attestation ref to origin, and nothing else. The hook
 // verifies the notes against the tree and the signer whoever pushes them.
-// A push that fails leaves the ref stored here for the next pass.
-func (w *worker) publish(g git, ref string, say func(string, ...any)) {
-	if _, err := g.output(false, "push", "--quiet", "origin", ref+":"+ref); err != nil {
-		say("could not publish %s; the next pass publishes it again", ref)
-		w.troubles++
+// A push that fails leaves the ref stored here, and the same object is not
+// pushed again until its wait is over: by any pass, and for any change
+// whose tree it is about.
+func (w *worker) publish(r listed, ref, object string, met map[string]bool, say func(string, ...any)) {
+	key := "push " + object
+	met[key] = true
+	if f, waiting := w.failures.waiting(r.name, key, clock()); waiting {
+		say("publishing %s failed %s in a row, so it is not pushed again before %s", ref, counted(f.Failures, "time"), f.Retry.Format(time.RFC3339))
 		return
 	}
+	if _, err := r.g.output(false, "push", "--quiet", "origin", object+":"+ref); err != nil {
+		f := w.failures.failed(r.name, key, clock(), firstPushWait)
+		say("could not publish %s; it is not pushed again before %s", ref, f.Retry.Format(time.RFC3339))
+		w.troubles++
+		w.save()
+		return
+	}
+	w.failures.passed(r.name, key)
 	say("published %s", ref)
+}
+
+// save writes the failure record, and counts a write that fails as
+// something that went wrong.
+func (w *worker) save() {
+	if err := w.failures.save(); err != nil {
+		fmt.Fprintf(w.stderr, "valley: could not write %s: %v\n", w.failures.path, err)
+		w.troubles++
+	}
 }
 
 // policyLayers resolves the two policy layers a project's changes are
@@ -419,73 +470,89 @@ func policyLayers(g git, tip string) (instance, project string, done func(), err
 	return instance, project, done, err
 }
 
-// failureRecord is the worker's record of the batches that failed: for
-// each, how many times in a row, and the time before which it is not
-// built again. It is kept as JSON at path.
+// failureRecord is the worker's record of what failed, project by
+// project: each batch, keyed "build <tree digest> <check>,<check>", and
+// each push, keyed "push <object ID>". For each it holds how many times in
+// a row it failed, and the time before which it is not tried again. It is
+// kept as JSON at path.
 type failureRecord struct {
-	path    string
-	Batches map[string]failedBatch `json:"batches"`
+	path     string
+	Projects map[string]map[string]backoff `json:"projects"`
 }
 
-type failedBatch struct {
+type backoff struct {
 	Failures int       `json:"failures"`
 	Retry    time.Time `json:"retry"`
 }
 
 // readFailures reads the record at path. A record that is not there is
 // empty. One that does not read is said, and started again empty: the
-// worst it costs is one more run of each batch it held.
+// worst it costs is one more try of each thing it held.
 func readFailures(path string, stderr io.Writer) *failureRecord {
-	r := &failureRecord{path: path, Batches: map[string]failedBatch{}}
+	r := &failureRecord{path: path}
 	data, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return r
-	}
 	if err == nil {
 		err = json.Unmarshal(data, r)
 	}
-	if err != nil || r.Batches == nil {
-		fmt.Fprintf(stderr, "valley: %s does not read, so every batch it held runs again\n", path)
-		r.Batches = map[string]failedBatch{}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(stderr, "valley: %s does not read, so everything it held is tried again\n", path)
+		r.Projects = nil
+	}
+	if r.Projects == nil {
+		r.Projects = map[string]map[string]backoff{}
 	}
 	return r
 }
 
-// waiting reports whether a batch failed and its wait is not over.
-func (r *failureRecord) waiting(batch string, now time.Time) (failedBatch, bool) {
-	f, ok := r.Batches[batch]
+// waiting reports whether something failed and its wait is not over.
+func (r *failureRecord) waiting(project, key string, now time.Time) (backoff, bool) {
+	f, ok := r.Projects[project][key]
 	return f, ok && now.Before(f.Retry)
 }
 
-// failed records one more failure of a batch in a row, and the time it
-// may run again.
-func (r *failureRecord) failed(batch string, now time.Time) failedBatch {
-	f := r.Batches[batch]
+// failed records one more failure in a row, and the time it may be tried
+// again: first after the first failure, doubled for each one after it, and
+// never more than longestWait.
+func (r *failureRecord) failed(project, key string, now time.Time, first time.Duration) backoff {
+	if r.Projects[project] == nil {
+		r.Projects[project] = map[string]backoff{}
+	}
+	f := r.Projects[project][key]
 	f.Failures++
-	wait := firstBackoff
-	for i := 1; i < f.Failures && wait < longestBackoff; i++ {
+	wait := first
+	for i := 1; i < f.Failures && wait < longestWait; i++ {
 		wait *= 2
 	}
-	f.Retry = now.Add(min(wait, longestBackoff))
-	r.Batches[batch] = f
+	f.Retry = now.Add(min(wait, longestWait))
+	r.Projects[project][key] = f
 	return f
 }
 
-func (r *failureRecord) passed(batch string) { delete(r.Batches, batch) }
+func (r *failureRecord) passed(project, key string) { delete(r.Projects[project], key) }
 
-// keep forgets every batch not in seen.
-func (r *failureRecord) keep(seen map[string]bool) {
-	for batch := range r.Batches {
-		if !seen[batch] {
-			delete(r.Batches, batch)
+// keep forgets every failure of the project that is not in met. Other
+// projects' failures are kept.
+func (r *failureRecord) keep(project string, met map[string]bool) {
+	for key := range r.Projects[project] {
+		if !met[key] {
+			delete(r.Projects[project], key)
 		}
+	}
+	if len(r.Projects[project]) == 0 {
+		delete(r.Projects, project)
 	}
 }
 
 // save writes the record whole, through a file renamed into place, so a
-// pass that is killed leaves the last record or the new one.
+// pass that is killed leaves the last record or the new one. An empty
+// record is no file.
 func (r *failureRecord) save() error {
-	if len(r.Batches) == 0 {
+	for project, failures := range r.Projects {
+		if len(failures) == 0 {
+			delete(r.Projects, project)
+		}
+	}
+	if len(r.Projects) == 0 {
 		if err := os.Remove(r.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}

@@ -818,17 +818,24 @@ check, the pass says so and builds nothing. Approval builds the rest under the o
 ([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
 
 A push whose reply is lost is not built again. If the push landed, the next pass finds the evidence
-on `origin`. If it did not land, the next pass finds the ref still stored in its own clone, and
+on `origin`. If it did not land, the ref is still stored in the worker's clone, and a later pass
 pushes that same object again.
 
-A batch that fails waits before it runs again. The first wait is 15 minutes, and each failure in a
-row doubles it, up to 24 hours. The waits are kept in `failures.json` in the worker's state
-directory. A batch is the project, the tree and the checks it runs, so a new version runs at once. A
-whole pass forgets every batch it did not meet.
+After a failure, the same thing waits before it is tried again. A batch that fails waits 15 minutes
+at first, and a push that fails waits one minute. Each failure in a row doubles the wait, up to 24
+hours. A wait is measured from when the attempt ended, so a long build does not use up its own wait.
+The waits are kept in `failures.json` in the worker's state directory, project by project. A batch
+is known by its tree and the checks it runs, so a new version runs at once. A push is known by the
+object it publishes, so changes whose heads hold the same tree wait together.
+
+A pass forgets the waits it did not meet in a project, but only for a project it read whole: every
+ready change's checks derived and its evidence read. A pass over other projects, or one that could
+not read this project, leaves its waits as they are.
 
 Passes that share a state directory take turns. Each holds an `flock` on the `lock` file there for
-the whole pass. A second pass waits for the first, and then reads `origin` after the first has
-published.
+the whole pass. The pass also hands that open file to `attest`, so the lock stays held while a batch
+runs, even when the pass that started the batch is killed. A second pass waits for all of it. Then
+it reads `origin` after the first has published, or finds the ref the batch stored and publishes it.
 
 A read of `origin` that fails stops the pass, because a read that did not happen must not read as no
 changes or no evidence. Anything else that goes wrong with one change is reported, and the pass goes
@@ -1895,8 +1902,10 @@ from `policy/valley` at `main`'s tip on origin, never from a checked-out or push
 repository whose `main` carries `policy/instance` is its own instance. Each project's URL is the
 instance's URL with its last path segment replaced, so the transport, user and host are kept. A
 repository other than the current one is read through a clone under `$XDG_CACHE_HOME/valley/repos`.
-When discovery is unavailable, `--all` says so and lists the current repository alone.
-`--repo <name>` limits either command to one project.
+Each use repairs a clone whose making was interrupted: it initializes the repository again, which
+fills in what a killed `git init` left out, and sets a missing origin. When discovery is
+unavailable, `--all` says so and lists the current repository alone. `--repo <name>` limits either
+command to one project.
 
 `policy/valley` is data that anyone who can land on `main` controls, so the client is careful with
 the URL it names. It refuses a URL that starts with `-`, which git would read as an option. It

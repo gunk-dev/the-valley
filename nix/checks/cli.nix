@@ -243,7 +243,14 @@ in
   # superseded while it is built still has its evidence published, and the
   # new version is built next. Origin holding the worker's own ref without a
   # required check is reported and nothing is built, and approve builds the
-  # rest. An origin the pass cannot read stops it before it builds.
+  # rest. An origin the pass cannot read stops it before it builds. On the
+  # real clock, a failed batch's wait runs from when the batch ended. A
+  # failed push waits a minute, then two, by the object it publishes, so
+  # two changes holding one tree try one push. A pass over another project
+  # keeps this project's waits. A pass killed mid-batch leaves attest
+  # holding the lock, so the next pass waits for it, then publishes what
+  # it stored. A cache clone whose making a killed pass interrupted is
+  # repaired.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git

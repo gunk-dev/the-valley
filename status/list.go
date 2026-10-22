@@ -422,8 +422,9 @@ func hostOf(url string) string {
 
 // cacheRepo is the clone a repository other than the current one is read
 // through: a repository under $XDG_CACHE_HOME/valley/repos, keyed by its
-// URL, with origin set to it. It holds no checkout. Only fetches by object
-// ID write to it, and main's tip is kept at refs/remotes/origin/main so
+// URL, with origin set to it. It holds no checkout. Fetches by object ID
+// write to it, and so does the check worker, which stores its attestation
+// refs there (worker.go). main's tip is kept at refs/remotes/origin/main so
 // valley checks can be run inside it.
 func cacheRepo(g git, url, name string) (git, error) {
 	base := os.Getenv("XDG_CACHE_HOME")
@@ -437,16 +438,27 @@ func cacheRepo(g git, url, name string) (git, error) {
 	sum := sha256.Sum256([]byte(url))
 	dir := filepath.Join(base, "valley", "repos", hex.EncodeToString(sum[:8])+"-"+name)
 	c := git{env: cacheEnvironment(g.env), stderr: g.stderr, dir: dir}
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return git{}, fmt.Errorf("could not make the cache repository %s", dir)
+	// The clone is repaired on every use rather than trusted once .git
+	// exists. A run killed inside init leaves a repository half made, and
+	// one killed after it leaves a repository with no origin. init
+	// reinitializes an existing repository without touching what it
+	// holds, and fills in what a killed init left out. Then origin is set
+	// when it is missing, and set again when it names another URL.
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
+	}
+	if _, err := c.output(false, "init", "--quiet"); err != nil {
+		return git{}, fmt.Errorf("could not make the cache repository %s", dir)
+	}
+	set := []string{"remote", "add", "--end-of-options", "origin", url}
+	if got, err := c.output(true, "config", "--get", "remote.origin.url"); err == nil {
+		if got == url {
+			return c, nil
 		}
-		if _, err := c.output(false, "init", "--quiet"); err != nil {
-			return git{}, fmt.Errorf("could not make the cache repository %s", dir)
-		}
-		if _, err := c.output(false, "remote", "add", "--end-of-options", "origin", url); err != nil {
-			return git{}, fmt.Errorf("could not set origin in %s", dir)
-		}
+		set = []string{"remote", "set-url", "--end-of-options", "origin", url}
+	}
+	if _, err := c.output(false, set...); err != nil {
+		return git{}, fmt.Errorf("could not set origin in %s", dir)
 	}
 	return c, nil
 }

@@ -1972,6 +1972,325 @@ fi
 integrated listed "$r/here.projects"
 published "$r/known-signers"
 
+# ----------------------------------------------------------------------
+# 21. The check worker builds what ready changes require before anyone
+#     approves them, and publishes it where approve reuses it. It runs as
+#     packaged, valley-worker, from a clone of the owning valley, which now
+#     publishes its project list, so the worker reads the project through
+#     its own cache clone, as valley pending --repo does. It signs with the
+#     worker's key and pushes as a principal that holds no grant, through
+#     the same protected hook. The host restricts the worker's key to this
+#     project, and each integrator pass is given that list. The worker's
+#     state directory holds its lock and its record of failed batches.
+printf '%s project\n' "$workername" > "$r/worker.projects"
+restricting "$r/worker.projects"
+git -C "$instance" update-ref refs/the-valley/projects \
+  "$(printf 'project\n' | git -C "$instance" hash-object -w --stdin)"
+git clone --quiet "$instance" "$r/worker-home"
+wstate="$r/worker-state"
+git config valley.principal requester
+# fresh: origin's pushes and the nix log start empty.
+fresh() {
+  : > "$nixlog"
+  : > "$reusepushes"
+}
+# working <name> [<env assignment>…]: one pass of the worker, with the
+# environment given, into $r/<name>.log. Its status is the pass's.
+working() {
+  local name="$1"
+  shift
+  (cd "$r/worker-home" && env VALLEY_PRINCIPAL=worker "$@" valley-worker --repo project \
+    --key "$r/keys/worker" --name "$workername" --state "$wstate") > "$r/$name.log" 2>&1
+}
+# readied <branch> <file…>: edited, then readied as a change by the
+# requester. It sets id, handle and head, and line, the start of each line
+# the worker prints about the change's active version.
+readied() {
+  local name="$1"
+  edited "$@"
+  VALLEY_PRINCIPAL=requester valley ready "$name" > "$r/$name.ready" 2>&1
+  id="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$r/$name.ready")"
+  handle="$(sed -n 's/^project \([^ ]*\) v1 ready$/\1/p' "$r/$name.ready")"
+  head="$(git rev-parse "$name")"
+  line="project: $handle v1 at ${head:0:7}"
+  [ -n "$id" ] && [ -n "$handle" ] || {
+    echo "valley-request: could not ready $name" >&2
+    cat "$r/$name.ready" >&2
+    exit 1
+  }
+}
+# pushed <ref>: origin received one push since fresh, carrying that ref
+# alone. pushed none: origin received no push.
+pushed() {
+  if [ "$1" = none ]; then
+    [ ! -s "$reusepushes" ] && return
+  elif [ "$(grep -c '^--- push' "$reusepushes")" = 1 ] \
+    && [ "$(grep -vc '^--- push' "$reusepushes")" = 1 ] \
+    && grep -q " $1\$" "$reusepushes"; then
+    return
+  fi
+  echo "valley-request: the worker's pushes were not what was expected ($1)" >&2
+  cat "$reusepushes" >&2
+  exit 1
+}
+# built <check…>: the nix log names a derivation of exactly these checks,
+# each once. built nothing: nix did not run.
+built() {
+  local check got
+  if [ "$1" = nothing ]; then
+    [ ! -s "$nixlog" ] && return
+    echo "valley-request: the worker ran nix when it had nothing to build" >&2
+    cat "$nixlog" >&2
+    exit 1
+  fi
+  got="$(sed -n 's/^nix eval .*#checks\.[^.]*\.\([^.]*\)\.drvPath$/\1/p' "$nixlog" | sort | paste -sd' ')"
+  [ "$got" = "$(printf '%s\n' "$@" | sort | paste -sd' ')" ] && return
+  echo "valley-request: the worker built '$got', not '$*'" >&2
+  cat "$nixlog" >&2
+  exit 1
+}
+# said <name> <line>: the pass's log holds the line.
+said() {
+  grep -qxF "$2" "$r/$1.log" && return
+  echo "valley-request: the pass $1 did not say: $2" >&2
+  cat "$r/$1.log" >&2
+  exit 1
+}
+
+# 21a. Evidence precedes approval. The worker builds the nix checks a ready
+#      change requires, together, and pushes the one attestation ref
+#      attest stored, before any request exists. A change whose only check
+#      is a command check is left to approve. The next pass finds the
+#      evidence on origin and does nothing. approve, with no signing key,
+#      reuses all of it and runs nothing, and the real integrator lands it.
+readied lively live/state.txt
+livelyline="$line"
+readied early docs/readme.md src/main.txt
+earlydigest="$(attest digest --rev early | cut -d: -f2)"
+earlyref="refs/the-valley/attestations/$earlydigest/$workerhash"
+fresh
+working early
+said early "$line: building code-build, prose-format"
+said early "$line: published $earlyref"
+said early "$livelyline: requires no nix check"
+built code-build prose-format
+pushed "$earlyref"
+git -C "$served" cat-file -e "$earlyref:code-build/statement.note"
+git -C "$served" cat-file -e "$earlyref:prose-format/statement.note"
+[ -z "$(requested "c-$id")" ] || {
+  echo "valley-request: a request existed before the worker's evidence" >&2
+  exit 1
+}
+fresh
+working early-again
+said early-again "$line: origin holds evidence for every nix check it requires"
+built nothing
+pushed none
+approving early env -u VALLEY_ATTEST_KEY valley approve --head "$head" "$handle"
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/early.out"
+grep -qE "^  code-build +signed by $workername\+$workerhash\$" "$w/early.out"
+built nothing
+[ "$(requested "c-$id")" = "$head" ]
+integrated "c-$id" "$r/worker.projects"
+
+# 21b. Concurrent passes take turns. The first holds the lock while it
+#      builds, and a stand-in hook keeps it building until the second says
+#      it is waiting. The second then reads origin after the first has
+#      published, and builds nothing.
+readied together src/main.txt
+togetherref="refs/the-valley/attestations/$(attest digest --rev together | cut -d: -f2)/$workerhash"
+cat > "$r/hold" <<EOF
+#!$(command -v bash)
+[ -e "$r/hold-armed" ] || exit 0
+rm -f "$r/hold-armed"
+for _ in \$(seq 600); do
+  grep -q 'waiting for it to end' "$r/together-second.log" 2> /dev/null && exit 0
+  sleep 0.1
+done
+echo "the second pass never waited for the first" >&2
+exit 1
+EOF
+chmod +x "$r/hold"
+touch "$r/hold-armed"
+fresh
+working together-first VALLEY_E2E_DURING_PASS="$r/hold" &
+first=$!
+for _ in $(seq 600); do
+  grep -q ': building ' "$r/together-first.log" 2> /dev/null && break
+  sleep 0.1
+done
+working together-second
+wait "$first"
+said together-second "valley: another pass holds $wstate/lock; waiting for it to end"
+said together-first "$line: published $togetherref"
+said together-second "$line: origin holds evidence for every nix check it requires"
+built code-build
+pushed "$togetherref"
+
+# 21c. A failed batch backs off. Every nix call fails while the stand-in
+#      is told to fail. The pass reports the failure, publishes nothing,
+#      and exits 1. The batch is not built again until its wait, 15
+#      minutes, is over, then it fails again and waits twice as long. Once
+#      it passes it is published, and the record of it is gone.
+readied flaky docs/readme.md
+flakyref="refs/the-valley/attestations/$(attest digest --rev flaky | cut -d: -f2)/$workerhash"
+fresh
+if working flaky-1 VALLEY_NOW=2026-10-22T10:00:00Z VALLEY_E2E_DURING_PASS='exit 1'; then
+  echo "valley-request: a pass whose batch failed exited 0" >&2
+  exit 1
+fi
+said flaky-1 "$line: the batch did not pass (exit status 1); it is not built again before 2026-10-22T10:15:00Z"
+pushed none
+jq -e '.batches | length == 1 and (.[] | .failures == 1)' "$wstate/failures.json" > /dev/null
+fresh
+working flaky-2 VALLEY_NOW=2026-10-22T10:14:59Z
+said flaky-2 "$line: its batch prose-format failed 1 time in a row, so it is not built again before 2026-10-22T10:15:00Z"
+built nothing
+pushed none
+if working flaky-3 VALLEY_NOW=2026-10-22T10:15:00Z VALLEY_E2E_DURING_PASS='exit 1'; then
+  echo "valley-request: a pass whose batch failed again exited 0" >&2
+  exit 1
+fi
+said flaky-3 "$line: the batch did not pass (exit status 1); it is not built again before 2026-10-22T10:45:00Z"
+fresh
+working flaky-4 VALLEY_NOW=2026-10-22T10:45:00Z
+said flaky-4 "$line: building prose-format"
+said flaky-4 "$line: published $flakyref"
+built prose-format
+pushed "$flakyref"
+[ ! -e "$wstate/failures.json" ] || {
+  echo "valley-request: the record of a batch that passed was kept" >&2
+  cat "$wstate/failures.json" >&2
+  exit 1
+}
+
+# 21d. A lost reply. The worker's push is taken by a receive-pack that
+#      exits 1 when it is done, so origin lands the ref and the worker hears
+#      a failure: the pass says so, and exits 1. The next pass finds the
+#      evidence on origin, and builds and pushes nothing. Then a push that
+#      never reaches origin: the next pass pushes the ref the first one
+#      stored, the same object, and builds nothing.
+cat > "$r/lossy" <<EOF
+#!$(command -v bash)
+git-receive-pack "\$@"
+echo "the connection dropped" >&2
+exit 1
+EOF
+cat > "$r/unreached" <<EOF
+#!$(command -v bash)
+echo "the connection dropped" >&2
+exit 1
+EOF
+chmod +x "$r/lossy" "$r/unreached"
+readied landed docs/readme.md
+landedref="refs/the-valley/attestations/$(attest digest --rev landed | cut -d: -f2)/$workerhash"
+if working landed-1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/lossy"; then
+  echo "valley-request: a pass that heard its push fail exited 0" >&2
+  exit 1
+fi
+said landed-1 "$line: could not publish $landedref; the next pass publishes it again"
+git -C "$served" cat-file -e "$landedref:prose-format/statement.note"
+fresh
+working landed-2
+said landed-2 "$line: origin holds evidence for every nix check it requires"
+built nothing
+pushed none
+readied unreached docs/readme.md
+unreachedref="refs/the-valley/attestations/$(attest digest --rev unreached | cut -d: -f2)/$workerhash"
+if working unreached-1 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.receivepack GIT_CONFIG_VALUE_0="$r/unreached"; then
+  echo "valley-request: a pass whose push never arrived exited 0" >&2
+  exit 1
+fi
+if git -C "$served" rev-parse --verify --quiet "$unreachedref" > /dev/null; then
+  echo "valley-request: a push that never arrived landed" >&2
+  exit 1
+fi
+# The clone the worker reads the project through: keyed by its URL, which
+# is the owning valley's with its last segment replaced (status/list.go).
+cache="$HOME/.cache/valley/repos/$(printf '%s' "$served" | sha256sum | cut -c1-16)-project"
+storedobject="$(git -C "$cache" rev-parse "$unreachedref")"
+fresh
+working unreached-2
+said unreached-2 "$line: publishing $unreachedref, which an earlier pass stored and origin does not hold"
+said unreached-2 "$line: published $unreachedref"
+built nothing
+pushed "$unreachedref"
+[ "$(git -C "$served" rev-parse "$unreachedref")" = "$storedobject" ]
+
+# 21e. A head superseded while it is built. A stand-in hook readies a new
+#      version of the change in the middle of the batch. The pass does not
+#      read the record again: it publishes the evidence for the head it
+#      pinned, which the hook admits, since it is true of that tree. The
+#      next pass builds the new version, which approve then reuses, and
+#      the real integrator lands.
+readied superseded docs/readme.md
+oldline="$line"
+oldref="refs/the-valley/attestations/$(attest digest --rev superseded | cut -d: -f2)/$workerhash"
+cat > "$r/supersede" <<EOF
+#!$(command -v bash)
+[ -e "$r/supersede-armed" ] || exit 0
+rm -f "$r/supersede-armed"
+cd "$proj"
+echo again >> docs/readme.md
+git commit --quiet -am 'superseded, again'
+VALLEY_PRINCIPAL=requester git push --quiet origin superseded
+VALLEY_PRINCIPAL=requester valley ready --change "$id" superseded > "$r/superseded-v2.ready" 2>&1
+# Its own pushes are not the worker's.
+: > "$reusepushes"
+EOF
+chmod +x "$r/supersede"
+touch "$r/supersede-armed"
+fresh
+working superseded-1 VALLEY_E2E_DURING_PASS="$r/supersede"
+grep -qx "project $handle v2 ready" "$r/superseded-v2.ready"
+said superseded-1 "$oldline: published $oldref"
+pushed "$oldref"
+newhead="$(git rev-parse superseded)"
+newref="refs/the-valley/attestations/$(attest digest --rev superseded | cut -d: -f2)/$workerhash"
+fresh
+working superseded-2
+said superseded-2 "project: $handle v2 at ${newhead:0:7}: published $newref"
+built prose-format
+approving superseded env -u VALLEY_ATTEST_KEY valley approve --head "$newhead" "$handle"
+built nothing
+[ "$(requested "c-$id")" = "$newhead" ]
+integrated "c-$id" "$r/worker.projects"
+
+# 21f. Origin already holds the worker's own ref for a tree, without one of
+#      the checks the change requires. The namespace admits creations
+#      only, so the pass says so and builds nothing. approve builds the
+#      rest under the operator's key, and the integrator lands it on the
+#      two signers' evidence.
+readied worker-occupied docs/readme.md src/main.txt
+occupiedref="refs/the-valley/attestations/$(attest digest --rev worker-occupied | cut -d: -f2)/$workerhash"
+attest run --rev worker-occupied --key "$r/keys/worker" --name "$workername" --check prose-format > "$r/worker-occupied-attest.out" 2>&1
+git push --quiet origin "$occupiedref:$occupiedref"
+fresh
+working worker-occupied
+said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. That namespace admits creations only, so approve builds the rest (bd-7b7d58f)"
+built nothing
+pushed none
+approving worker-occupied valley approve --head "$head" "$handle"
+built code-build
+integrated "c-$id" "$r/worker.projects"
+
+# 21g. A read of origin that fails stops the pass, before anything is
+#      built: with the project's origin away, the pass exits 1 and says
+#      so, and the ready change is left for a pass that can read it.
+readied unread-origin docs/readme.md
+mv "$served" "$served.away"
+fresh
+if working unread-origin; then
+  echo "valley-request: a pass went on past an origin it could not read" >&2
+  exit 1
+fi
+mv "$served.away" "$served"
+grep -q '^valley: project: .*; the pass stops here$' "$r/unread-origin.log"
+built nothing
+fresh
+working unread-origin-again
+said unread-origin-again "$line: building prose-format"
+
 
 worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"
 if [ "$worktrees" != 1 ]; then

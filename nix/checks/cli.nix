@@ -224,13 +224,26 @@ in
   # observation that sit before a pass in ref order, a note without its
   # last newline, a signer nobody knows, a note about another tree, an
   # expired observation, and a note for another flake attribute. Notes the
-  # hook would refuse are planted past it. Last, the host publishes a
+  # hook would refuse are planted past it. Then the host publishes a
   # signer projects file, and each integrator pass is given it: a note
   # whose only signer counts in another project is not reused, the
   # integrator does not accept it, and approve builds that check; the same
   # note countersigned by the integrator is not reused either; a published
   # list that does not read, or is no file, reuses nothing; and a note
   # from a signer restricted to this project is reused and lands.
+  #
+  # Then the check worker, as packaged, over the same origin and ready
+  # changes, with its key restricted to the project: it builds a change's nix checks and publishes the evidence
+  # before any request exists, and approve then reuses all of it with no
+  # key and the integrator lands it. Two passes at once take turns, and the
+  # second builds nothing. A failed batch waits 15 minutes, then twice as
+  # long, by VALLEY_NOW, and its record is gone once it passes. A push whose
+  # reply is lost, landed or not, is never built again: the next pass finds
+  # it on origin, or pushes the ref the first pass stored. A head
+  # superseded while it is built still has its evidence published, and the
+  # new version is built next. Origin holding the worker's own ref without a
+  # required check is reported and nothing is built, and approve builds the
+  # rest. An origin the pass cannot read stops it before it builds.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git
@@ -240,6 +253,7 @@ in
       packages.attest
       packages.valley-script
       packages.valley-go
+      packages.valley-worker
       packages.integrator
     ];
     schemaFile = ../../schema/verification.cue;

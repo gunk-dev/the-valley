@@ -115,9 +115,43 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 	if head == "" {
 		return failure(coverageUsage)
 	}
+	e, err := coverageOf(g, head, checks, stderr)
+	if err != nil {
+		return err
+	}
+	var lines []string
+	lines = append(lines, "digest "+e.digest)
+	for _, ref := range e.stored {
+		lines = append(lines, "stored "+ref+" "+e.listed[ref])
+	}
+	for _, c := range checks {
+		if by, ok := e.covered[c.name]; ok {
+			lines = append(lines, "covered "+c.name+" "+by)
+		} else {
+			lines = append(lines, "missing "+c.name)
+		}
+	}
+	_, err = io.WriteString(w, strings.Join(lines, "\n")+"\n")
+	return err
+}
+
+// evidence is what coverage reads of a head's tree on origin: the tree's
+// digest, every attestation ref origin holds for it, in order, with the
+// object each names, and each check covered, mapped to "<ref> <signer>".
+type evidence struct {
+	digest  string
+	stored  []string
+	listed  map[string]string
+	covered map[string]string
+}
+
+// coverageOf reads the evidence origin holds for a head's tree, and which
+// of the checks asked about it covers. The check worker (worker.go) calls
+// it as coverage does.
+func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (evidence, error) {
 	oid, err := g.output(true, "rev-parse", "--verify", "--quiet", "--end-of-options", head+"^{commit}")
 	if err != nil || !isObjectID(oid) {
-		return failure("no such commit: " + head)
+		return evidence{}, failure("no such commit: " + head)
 	}
 	head = oid
 	repo := g.dir
@@ -128,42 +162,24 @@ func runCoverage(g git, args []string, w, stderr io.Writer) error {
 	out, err := attestTool(g, "digest", "--repo", repo, "--rev", head)
 	digest, ok := strings.CutPrefix(strings.TrimSpace(out), "valley-tree-v1:")
 	if err != nil || !ok || digest == "" {
-		return failure("could not digest the tree of " + head)
+		return evidence{}, failure("could not digest the tree of " + head)
 	}
 
 	// Every attestation ref origin holds for the tree, signer by signer.
 	prefix := attestationRefs + digest + "/"
 	o, err := listOrigin(g, prefix+"*")
 	if err != nil {
-		return failure("could not list the evidence origin holds for this tree")
+		return evidence{}, failure("could not list the evidence origin holds for this tree")
 	}
-	listed := o.refs
-	var stored []string
-	for ref := range listed {
+	e := evidence{digest: digest, listed: o.refs}
+	for ref := range e.listed {
 		if rest, ok := strings.CutPrefix(ref, prefix); ok && rest != "" {
-			stored = append(stored, ref)
+			e.stored = append(e.stored, ref)
 		}
 	}
-	sort.Strings(stored)
-
-	var lines []string
-	lines = append(lines, "digest "+digest)
-	for _, ref := range stored {
-		lines = append(lines, "stored "+ref+" "+listed[ref])
-	}
-	covered, err := cover(g, repo, head, stored, listed, checks, stderr)
-	if err != nil {
-		return err
-	}
-	for _, c := range checks {
-		if by, ok := covered[c.name]; ok {
-			lines = append(lines, "covered "+c.name+" "+by)
-		} else {
-			lines = append(lines, "missing "+c.name)
-		}
-	}
-	_, err = io.WriteString(w, strings.Join(lines, "\n")+"\n")
-	return err
+	sort.Strings(e.stored)
+	e.covered, err = cover(g, repo, head, e.stored, e.listed, checks, stderr)
+	return e, err
 }
 
 // cover is the checks the stored refs hold reusable evidence for, each

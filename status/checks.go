@@ -61,8 +61,31 @@ func runChecks(g git, args []string, w io.Writer) error {
 	if len(rest) != 2 || instance == "" || project == "" {
 		return failure(checksUsage)
 	}
+	doc, err := derivedChecks(g, schema, instance, project, rest[0], rest[1])
+	if err != nil {
+		return err
+	}
+
+	// Encoded whole before anything is written, so a reader gets the
+	// document or nothing.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(doc); err != nil {
+		return fmt.Errorf("could not encode the checks: %w", err)
+	}
+	_, err = w.Write(buf.Bytes())
+	return err
+}
+
+// derivedChecks is the valley-checks/v1 document for the change between
+// two commits, under the schema and the two layers named. An empty schema
+// is the packaged one, or else the one in this repository's tree. The
+// check worker (worker.go) calls it as checks does.
+func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (jsonChecks, error) {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
-		return failure("not a git repository")
+		return jsonChecks{}, failure("not a git repository")
 	}
 	// The schema ships with the package, which names it in
 	// VALLEY_VERIFICATION_SCHEMA; only the-valley's own tree carries one,
@@ -73,48 +96,37 @@ func runChecks(g git, args []string, w io.Writer) error {
 	if schema == "" {
 		root, err := g.output(true, "rev-parse", "--show-toplevel")
 		if err != nil {
-			return failure("no schema: name one with --schema or VALLEY_VERIFICATION_SCHEMA")
+			return jsonChecks{}, failure("no schema: name one with --schema or VALLEY_VERIFICATION_SCHEMA")
 		}
 		schema = filepath.Join(root, "schema", "verification.cue")
 	}
 	var commits [2]string
-	for i, rev := range rest {
+	for i, rev := range []string{baseRev, headRev} {
 		oid, err := g.output(true, "rev-parse", "--verify", "--quiet", "--end-of-options", rev+"^{commit}")
 		if err != nil || !isObjectID(oid) {
-			return failure("no such commit: " + rev)
+			return jsonChecks{}, failure("no such commit: " + rev)
 		}
 		commits[i] = oid
 	}
 	base, head := commits[0], commits[1]
 	if _, err := exec.LookPath("cue"); err != nil {
-		return failure("this verb needs the cue CLI; nix run .#valley bundles it")
+		return jsonChecks{}, failure("this verb needs the cue CLI; nix run .#valley bundles it")
 	}
 
 	ctx := context.Background()
 	model, err := composed.Read(ctx, "cue", schema, instance, project)
 	if err != nil {
-		return failure(err.Error() + "; nothing derived")
+		return jsonChecks{}, failure(err.Error() + "; nothing derived")
 	}
 	paths, err := derive.Diff(ctx, g.dir, g.env, base, head)
 	if err != nil {
-		return failure(err.Error() + "; nothing derived")
+		return jsonChecks{}, failure(err.Error() + "; nothing derived")
 	}
 	res, err := derive.Derive(model, paths)
 	if err != nil {
-		return failure(err.Error() + "; nothing derived")
+		return jsonChecks{}, failure(err.Error() + "; nothing derived")
 	}
-
-	// Encoded whole before anything is written, so a reader gets the
-	// document or nothing.
-	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(checksDocument(base, head, model.Digest, res)); err != nil {
-		return fmt.Errorf("could not encode the checks: %w", err)
-	}
-	_, err = w.Write(buf.Bytes())
-	return err
+	return checksDocument(base, head, model.Digest, res), nil
 }
 
 // The valley-checks/v1 document. docs/architecture.md documents it, and a

@@ -779,6 +779,64 @@ still descends from the captured tip, does not stop a version whose branch was p
 In `--report-only` mode recovery decides and pushes nothing, and leaves the journal as it is. The
 decisions are printed, and under `recovery` with `--json`. Checked by `restack-unit`.
 
+## The check worker
+
+The check worker builds the checks a ready change requires before anyone approves it. It publishes
+the evidence on `origin`, where approval reuses it instead of building it (see
+[The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is
+`valley-go work` (`status/worker.go`), packaged with this flake's git, cue and `attest` and the
+verification schema (`nix/packages.nix`). It keeps no queue, lease or schedule, and nothing connects
+to it. Running it on a timer is **not built**: no host module unit runs it.
+
+A pass reads only the projects named with `--repo`. It reads each project as `valley pending --repo`
+does, so it can run from a clone of any project the host serves. For each project it follows
+approval's steps:
+
+1. It lists the ready changes whose active version has not landed, and pins each one's active head.
+2. It derives the checks the head requires with the Go deriver, as `valley-go checks` does, over the
+   head's merge base with `main`. Both policy layers come from `main`'s tip on `origin`, as approval
+   reads them, never from the change.
+3. It reads the evidence `origin` holds for the head's tree, with the coverage rules approval uses.
+   It leaves `command` checks to approval.
+4. It runs every `nix` check that is not covered in one batch, with `attest run --rev <head>` under
+   the worker's own key. Then it pushes the one ref `attest` stored,
+   `refs/the-valley/attestations/<tree>/<key-hash>`, and nothing else.
+
+The hook admits that ref as it admits any evidence. Every note must verify under the host's known
+signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the
+worker's notes like any other. Where the host restricts the worker's key to projects (see
+[Evidence: attest and notes](#evidence-attest-and-notes)), `--repo` names those projects and no
+others (**deployment choice**). The controllers count the worker's evidence nowhere else.
+
+The evidence is about the head's tree, so it stays true if the change moves on while the batch runs.
+The pass does not read the change's record again before it publishes. A superseded head's evidence
+is published, and the next pass builds the new version.
+
+The attestation namespace admits creations only, so the worker never builds what it could not
+publish. When `origin` already holds the worker's own ref for the tree and that ref lacks a required
+check, the pass says so and builds nothing. Approval builds the rest under the operator's key
+([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+
+A push whose reply is lost is not built again. If the push landed, the next pass finds the evidence
+on `origin`. If it did not land, the next pass finds the ref still stored in its own clone, and
+pushes that same object again.
+
+A batch that fails waits before it runs again. The first wait is 15 minutes, and each failure in a
+row doubles it, up to 24 hours. The waits are kept in `failures.json` in the worker's state
+directory. A batch is the project, the tree and the checks it runs, so a new version runs at once. A
+whole pass forgets every batch it did not meet.
+
+Passes that share a state directory take turns. Each holds an `flock` on the `lock` file there for
+the whole pass. A second pass waits for the first, and then reads `origin` after the first has
+published.
+
+A read of `origin` that fails stops the pass, because a read that did not happen must not read as no
+changes or no evidence. Anything else that goes wrong with one change is reported, and the pass goes
+on to the next. The pass exits 1 when anything went wrong.
+
+Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
+lands its evidence with the real integrator.
+
 ## Policy
 
 A project's required checks come from three CUE layers, unified as
@@ -1239,12 +1297,12 @@ out. When there is no new evidence as well, there is no push. `[b]ase` rebases t
 stack in a temporary worktree, and pushes every layer's branch in one atomic push, with a lease on
 each. `[r]eject` deletes the remote branch after a prompt.
 
-Evidence on `origin` comes from a check worker or from an earlier approval. Approval skips a check
-only when the integrator will accept the same evidence. Approval reads the evidence with
-`valley-go coverage` (`status/coverage.go`). It lists `origin`'s attestation refs for the head's
-tree and fetches the objects they name. It reads the notes from those objects byte for byte, as the
-integrator reads them. A local ref that was never published does not count. A listing or a fetch
-that fails ends the approval, and nothing runs.
+Evidence on `origin` comes from a check worker (see [The check worker](#the-check-worker)) or from
+an earlier approval. Approval skips a check only when the integrator will accept the same evidence.
+Approval reads the evidence with `valley-go coverage` (`status/coverage.go`). It lists `origin`'s
+attestation refs for the head's tree and fetches the objects they name. It reads the notes from
+those objects byte for byte, as the integrator reads them. A local ref that was never published does
+not count. A listing or a fetch that fails ends the approval, and nothing runs.
 
 Approval judges each required `nix` check by the note the integrator judges it by: the first note
 for the check that verifies under the `known-signers` file the host publishes (see
@@ -2421,6 +2479,7 @@ provisioning, so the run logs a failure until it is set up.
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
 | The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
+| The check worker                            | `valley-worker` publishes evidence for ready changes (`status/worker.go`). No host runs it.        |
 | Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                 |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |

@@ -163,6 +163,31 @@ rec {
     meta.mainProgram = "valley-go";
   };
 
+  # The check worker: one pass of `valley-go work` (status/worker.go), which
+  # builds the nix checks ready changes require and publishes the evidence
+  # before anyone approves them. It runs this flake's git, cue and attest,
+  # and the verification schema travels with it, as it does with the CLI.
+  # nix is the machine's own, for the reason attest gives.
+  valley-worker =
+    pkgs.runCommand "valley-worker"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley-worker";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe valley-go} $out/bin/valley-worker \
+          --add-flags work \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.cue
+              attest
+            ]
+          } \
+          --set-default VALLEY_VERIFICATION_SCHEMA ${../schema/verification.cue}
+      '';
+
   # `nix run .#fmt` — rewrap every tracked *.md in the repo to 100 columns.
   prose-fmt = pkgs.writeShellApplication {
     name = "valley-fmt";

@@ -17,7 +17,9 @@
 // which checks a change requires, as the Go deriver derives them
 // (checks.go); no verb of bin/valley runs it. coverage says which of a
 // head's required nix checks already have evidence on origin that approve
-// can reuse rather than build (coverage.go).
+// can reuse rather than build (coverage.go). work is one pass of a check
+// worker, which builds and publishes that evidence for ready changes
+// before they are approved (worker.go); no verb of bin/valley runs it.
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -60,6 +62,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go compare --tip <commit> <change ID> <version> <head>
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go coverage --head <sha> [--check <name>=<attribute>]...
+       valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
@@ -134,15 +137,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runPending(g, args, stdout, stderr)
 	case "self-update":
 		return runSelfUpdate(args, stdout, stderr)
-	case "knot", "plan":
+	case "knot", "plan", "work":
 		if _, err := clockSetting(); err != nil {
 			fmt.Fprintf(stderr, "valley: %s\n", err)
 			return 2
 		}
-		if verb == "knot" {
+		switch verb {
+		case "knot":
 			return runKnot(g, args, os.Stdin, stdout, stderr)
+		case "plan":
+			err = runPlan(g, args, stdout, stderr)
+		default:
+			err = runWork(g, args, stdout, stderr)
 		}
-		err = runPlan(g, args, stdout, stderr)
 	default:
 		fmt.Fprintln(stderr, usage)
 		return 2
@@ -223,7 +230,9 @@ func (g git) succeeds(quiet bool, args ...string) bool {
 // and a claim's age is read against it. Checks set it, so the dates a
 // graph records and the ages a view shows are the same on every run. It
 // grants nothing: the push hook holds none of those times to its own
-// clock, so a writer could record any of them by writing the file.
+// clock, so a writer could record any of them by writing the file. The
+// check worker measures its waits after a failed batch from it too
+// (worker.go).
 func clock() time.Time {
 	if t, err := clockSetting(); err == nil && !t.IsZero() {
 		return t

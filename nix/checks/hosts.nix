@@ -6,16 +6,21 @@
   pkgs,
   lib,
   self,
-  system,
 }:
 let
   # Each check host shares the machine baseline and supplies its own
   # declaration (and, where the declaration asks for backup, the secret
   # paths).
+  #
+  # Each host is also handed the package set the checks already use,
+  # rather than importing nixpkgs again for itself. It is the same nixpkgs
+  # with the same configuration, so every host renders the same
+  # derivations. module-eval evaluates every host here, and importing
+  # nixpkgs once per host was half of its evaluation time.
   mkHost =
     module:
     lib.nixosSystem {
-      inherit system;
+      inherit pkgs;
       modules = [
         self.nixosModules.default
         {

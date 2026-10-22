@@ -73,7 +73,6 @@ let
       pkgs
       lib
       self
-      system
       ;
   };
   args = {

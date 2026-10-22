@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -12,11 +13,12 @@ import (
 // cmdRun is the whole protocol in order: digest the subject tree, run the
 // checks, compose a statement per check, vet each against the schema,
 // write each out and sign it as a note, store the notes at one ref keyed
-// by the subject digest, and publish with a single atomic push. Any step
-// failing stops the run before the next — a failed check publishes
-// nothing, and neither does a statement the schema rejects. How long each
-// check took is printed, and logged with --timings (timing.go), whatever
-// the check's result.
+// by the subject digest, and publish with a single atomic push. Every
+// check runs whatever another's result, and then any step failing stops
+// the run before the next — a failed check publishes nothing, and neither
+// does a statement the schema rejects. How long each check took is
+// printed, and logged with --timings (timing.go), whatever the check's
+// result.
 func cmdRun(args []string) error {
 	fs := newFlagSet("run")
 	repo := fs.String("repo", "", "repository")
@@ -105,50 +107,64 @@ func cmdRun(args []string) error {
 	}
 	commit := subj.Digest["git-sha1"] + subj.Digest["git-sha256"]
 
-	outcomes := make([]checkOutcome, 0, len(specs))
-	failed := 0
+	// The pure checks are evaluated and built together first (runPure),
+	// and are reported in the order given once the build is over. The
+	// command checks then run one at a time, each reported as it ends. A
+	// check that fails or cannot run stops no other.
+	var pure, effectful []checkSpec
 	for _, spec := range specs {
-		began := time.Now()
-		var out checkOutcome
-		var runErr error
 		if spec.runner() == "nix" {
-			out, runErr = runPure(tree, *system, spec, *timings)
+			pure = append(pure, spec)
 		} else {
-			out = runEffectful(tree, spec)
+			effectful = append(effectful, spec)
 		}
-		took := time.Since(began)
+	}
+	outcomes := make([]checkOutcome, 0, len(specs))
+	var errs []error
+	failed := 0
+	report := func(r ranCheck) {
 		result := "passed"
 		switch {
-		case runErr != nil:
+		case r.err != nil:
 			result = "error"
-		case !out.passed:
+		case !r.out.passed:
 			result = "failed"
 			failed++
 		}
 		t := checkTiming{
-			Time:       began.UTC().Format("2006-01-02T15:04:05.000Z"),
+			Time:       r.began.UTC().Format("2006-01-02T15:04:05.000Z"),
 			Repository: repository,
 			Change:     *changeID,
 			Version:    *changeVersion,
 			Head:       commit,
-			Check:      spec.name,
-			Runner:     spec.runner(),
-			Cost:       classes[spec.name],
+			Check:      r.out.spec.name,
+			Runner:     r.out.spec.runner(),
+			Cost:       classes[r.out.spec.name],
 			Result:     result,
-			Satisfied:  out.satisfied,
-			DurationMS: took.Milliseconds(),
+			Satisfied:  r.out.satisfied,
+			DurationMS: r.took.Milliseconds(),
+			EvalMS:     r.eval.Milliseconds(),
 		}
 		if t.Satisfied == "" {
 			t.Satisfied = satisfiedUnknown
 		}
 		log.append(t)
-		if runErr != nil {
-			fmt.Fprintln(timingStdout(), timingLine(t, took))
-			return runErr
+		if r.err != nil {
+			fmt.Fprintln(timingStdout(), timingLine(t, r.took))
+			errs = append(errs, r.err)
+			return
 		}
-		fmt.Printf("check   %-24s %-8s %s\n", spec.name, spec.runner(), result)
-		fmt.Fprintln(timingStdout(), timingLine(t, took))
-		outcomes = append(outcomes, out)
+		fmt.Printf("check   %-24s %-8s %s\n", r.out.spec.name, r.out.spec.runner(), result)
+		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
+		outcomes = append(outcomes, r.out)
+	}
+	for _, r := range runPure(tree, *system, pure, *timings) {
+		report(r)
+	}
+	for _, spec := range effectful {
+		began := time.Now()
+		out := runEffectful(tree, spec)
+		report(ranCheck{out: out, began: began, took: time.Since(began)})
 	}
 	if failed > 0 {
 		for _, out := range outcomes {
@@ -156,6 +172,11 @@ func cmdRun(args []string) error {
 				fmt.Fprintf(os.Stderr, "\n--- %s ---\n%s\n", out.spec.name, out.log)
 			}
 		}
+	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	if failed > 0 {
 		return fmt.Errorf("%d of %d checks failed; nothing published", failed, len(specs))
 	}
 

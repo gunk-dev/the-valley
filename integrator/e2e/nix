@@ -61,14 +61,28 @@ case "${1:-}" in
     printf '%s' "$drv"
     ;;
   build)
-    # `nix build --no-link --print-out-paths <drv>^*`. The output is a
-    # function of the derivation, as a build's output ought to be.
-    drv=""
-    for a in "$@"; do case "$a" in *.drv^*) drv="${a%^*}" ;; esac; done
-    [ -f "$drv" ] || { echo "nix (stub): no such derivation: $drv" >&2; exit 1; }
-    out="$(mktemp -d "$store/out-XXXXXX")"
-    cp "$drv" "$out/result"
-    printf '%s\n' "$out"
+    # `nix build --no-link --keep-going <drv>^*...`: every derivation
+    # named, each to the one output beside it, where the nix-store stub
+    # finds it. The output is a function of the derivation, as a build's
+    # output ought to be.
+    status=0
+    for a in "$@"; do
+      case "$a" in
+        *.drv^*)
+          drv="${a%^*}"
+          if [ ! -f "$drv" ]; then
+            echo "nix (stub): no such derivation: $drv" >&2
+            status=1
+            continue
+          fi
+          out="${drv%.drv}.out"
+          mkdir -p "$out"
+          cp "$drv" "$out/result"
+          printf '%s\n' "$out"
+          ;;
+      esac
+    done
+    exit "$status"
     ;;
   *)
     echo "nix (stub): unsupported command: ${1:-}" >&2

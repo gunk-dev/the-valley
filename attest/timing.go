@@ -55,7 +55,13 @@ type checkTiming struct {
 	Cost       string `json:"cost,omitempty"`
 	Result     string `json:"result"` // passed, failed, or error
 	Satisfied  string `json:"satisfied"`
-	DurationMS int64  `json:"duration_ms"`
+	// DurationMS is the check's wall time. Pure checks are built together
+	// in one nix build, so for a pure check that evaluated it is the wall
+	// time of the whole nix stage: evaluation, build, and deciding every
+	// outcome. EvalMS is how long evaluating the check took, and a command
+	// check has none.
+	DurationMS int64 `json:"duration_ms"`
+	EvalMS     int64 `json:"eval_ms,omitempty"`
 }
 
 // timingsPath is the timing log: $XDG_STATE_HOME/valley/timings.jsonl,
@@ -300,20 +306,13 @@ var probeDeadline = 5 * time.Second
 func outputsCached(drv string) string {
 	ctx, cancel := context.WithTimeout(context.Background(), probeDeadline)
 	defer cancel()
-	outputs, _, err := nixStore(ctx, "--query", "--outputs", drv)
-	if err != nil {
+	_, present, err := storeOutputs(ctx, drv)
+	switch {
+	case err != nil:
 		return satisfiedUnknown
-	}
-	paths := strings.Fields(outputs)
-	if len(paths) == 0 {
-		return satisfiedUnknown
-	}
-	invalid, _, err := nixStore(ctx, append([]string{"--check-validity", "--print-invalid"}, paths...)...)
-	if err != nil {
-		return satisfiedUnknown
-	}
-	if strings.TrimSpace(invalid) != "" {
+	case present:
+		return satisfiedCached
+	default:
 		return satisfiedRan
 	}
-	return satisfiedCached
 }

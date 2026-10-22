@@ -2,7 +2,22 @@
 # The sibling of the nix stub: `nix-store --query --references <drv>` over
 # the derivations it writes. One opaque store path per input file, named by
 # the file's content, which is what makes the closure content-addressed.
+# It also names a derivation's one output, where the nix stub builds it,
+# and says which outputs are not built yet.
 set -euo pipefail
+
+case "${1:-} ${2:-}" in
+  "--query --outputs")
+    drv="${*: -1}"
+    printf '%s\n' "${drv%.drv}.out"
+    exit 0
+    ;;
+  "--check-validity --print-invalid")
+    shift 2
+    for path in "$@"; do [ -e "$path" ] || printf '%s\n' "$path"; done
+    exit 0
+    ;;
+esac
 
 drv="${*: -1}"
 [ -f "$drv" ] || { echo "nix-store (stub): no such derivation: $drv" >&2; exit 1; }

@@ -58,8 +58,17 @@ run flags:
   --cost NAME=CLASS   the cost class the policy declares for a check, for
                       its timing; repeatable
 
+run evaluates every flake check in one nix evaluation, then builds them
+all in one nix build --keep-going, so nix builds them side by side under
+the machine's max-jobs and cores. Each check passes when all its outputs
+are in the store after the build, and a check that fails keeps the log
+nix holds for it. A check that does not evaluate is an error for that
+check alone. The --command checks run after the build, one at a time.
+
 run prints one time line per check after it finishes: its name, its
-result, how long it took, and how it was satisfied. "ran" means the
+result, how long it took, and how it was satisfied. A flake check's time
+is the whole nix stage's, from evaluation to the end of the build, since
+nix gives no time for one build among many. "ran" means the
 command ran or nix built or fetched the output; "cached" means the output
 was already in the local nix store; "unknown" means the store was not
 asked, which only a run with --timings does, or did not answer within 5s.

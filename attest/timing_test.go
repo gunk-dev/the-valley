@@ -220,11 +220,13 @@ func TestTimingOutputNobodyReadsIsDropped(t *testing.T) {
 	}
 }
 
-// A run without --timings asks the nix store nothing beyond what its
-// statements need. A run with it asks whether each output is already
-// there; a store that does not answer in time makes the answer "unknown",
-// and the check is built all the same. nix and nix-store are stand-ins
-// that log what they are asked.
+// A run without --timings asks the nix store nothing before the build
+// beyond what its statements need. A run with it asks whether each output
+// is already there; a store that does not answer in time makes the answer
+// "unknown", and the check is built all the same. After the build, both
+// ask the store whether the outputs are there, since that is what decides
+// whether the check passed. nix and nix-store are stand-ins that log what
+// they are asked.
 func TestOnlyATimedRunAsksTheStoreAboutOutputs(t *testing.T) {
 	dir := t.TempDir()
 	calls := filepath.Join(dir, "calls")
@@ -236,16 +238,21 @@ func TestOnlyATimedRunAsksTheStoreAboutOutputs(t *testing.T) {
 		filepath.Join(built, "passed"): "",
 		filepath.Join(bin, "nix"): `#!/bin/sh
 echo "nix $*" >> "$STUB_CALLS"
-case "$1" in
-eval) echo "$STUB_DRV" ;;
-build) echo "$STUB_OUT" ;;
+case "$1 $2" in
+"eval --json") printf '{"tree-ok":"%s"}\n' "$STUB_DRV" ;;
+"eval "*) echo "$STUB_DRV" ;;
 esac
 `,
 		filepath.Join(bin, "nix-store"): `#!/bin/sh
 echo "nix-store $*" >> "$STUB_CALLS"
 case "$1 $2" in
 "--query --references") echo /nix/store/00000000000000000000000000000000-input ;;
-"--query --outputs") [ -z "$STUB_HANG" ] || exec sleep 30; echo "$STUB_OUT" ;;
+"--query --outputs")
+  [ -z "$STUB_HANG" ] || grep -q '^nix build' "$STUB_CALLS" || exec sleep 30
+  echo "$STUB_OUT" ;;
+"--check-validity --print-invalid")
+  shift 2
+  for p in "$@"; do [ -e "$p" ] || echo "$p"; done ;;
 esac
 `,
 	} {
@@ -267,7 +274,11 @@ esac
 	run := func(probe bool) (checkOutcome, string) {
 		t.Helper()
 		os.Remove(calls)
-		out, err := runPure(dir, "x86_64-linux", checkSpec{name: "tree-ok", attribute: "tree-ok"}, probe)
+		runs := runPure(dir, "x86_64-linux", []checkSpec{{name: "tree-ok", attribute: "tree-ok"}}, probe)
+		if len(runs) != 1 {
+			t.Fatalf("one check ran %d times", len(runs))
+		}
+		out, err := runs[0].out, runs[0].err
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -281,7 +292,8 @@ esac
 		return out, string(asked)
 	}
 	probed := func(asked string) bool {
-		return strings.Contains(asked, "--outputs") || strings.Contains(asked, "--check-validity")
+		before, _, _ := strings.Cut(asked, "nix build")
+		return strings.Contains(before, "--outputs") || strings.Contains(before, "--check-validity")
 	}
 
 	if out, asked := run(false); probed(asked) || out.satisfied != "" {

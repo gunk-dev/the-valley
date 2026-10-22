@@ -969,6 +969,17 @@ The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 shell command in the exported tree. If every check passes, `attest` writes a statement per check,
 signs it, and stores it under `refs/the-valley/attestations/<tree>/<key-hash>`.
 
+The `nix` checks are built together, so nix can build them side by side instead of one after
+another. One nix evaluation names every check's derivation. One `nix build --keep-going` builds all
+of them, and nix runs as many builds at once as the machine's own `max-jobs` and `cores` settings
+allow. Each check still has its own outcome. After the build, a check passed when every output of
+its derivation is in the nix store, and a check that failed keeps the log nix holds for its
+derivation. A check that does not evaluate is an error for that check alone, and the others are
+still built. The `command` checks run after the build, one at a time. The statements are the ones a
+check built alone would get, and nothing is published unless every check passed. No flake check
+covers this, because a nix build has no daemon to build with. The tests in `attest/run_test.go`
+build real flake checks when `go test` runs on a machine with a nix daemon, and skip otherwise.
+
 A statement is line-based text that opens with `the-valley/attestation/v1` (`attest/text.go`,
 `schema/attestation.cue`). Its subject is the tree digest. A pure statement records the derivation,
 its inputs digest and the output. An effectful statement records the environment and the time of the
@@ -1272,8 +1283,10 @@ each check, with its result, its duration, and whether nix found its output alre
 `[a]pprove` passes `attest run --timings`, which appends one JSON line per check to
 `$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
 names the repository, the change and version, the head, the check, its runner and declared cost, its
-result, and `duration_ms`. The log stays local and is not evidence: nothing signs it or pushes it. A
-log that cannot be written is a warning, and approval continues. Timing never holds approval up:
+result, and `duration_ms`. A `nix` check's line also gives its evaluation time, `eval_ms`. The `nix`
+checks are built together and nix gives no time for one of them, so each one's `duration_ms` is the
+whole nix stage's. The log stays local and is not evidence: nothing signs it or pushes it. A log
+that cannot be written is a warning, and approval continues. Timing never holds approval up:
 anything at the log's path that is not a regular file is refused at once, and a `time` line, warning
 or log line that cannot be written within a second is dropped. The reference describes
 [the timing log](reference.md#the-timing-log) field by field.

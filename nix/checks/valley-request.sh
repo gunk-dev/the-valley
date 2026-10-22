@@ -1363,6 +1363,344 @@ if ! tail -n 1 "$timings" | jq -e --arg id "$bareid" --arg head "$barehead" \
 fi
 
 # ----------------------------------------------------------------------
+# 20. Evidence origin already holds is reused, and only what is missing
+#     runs here. A check worker publishes evidence as this section's
+#     worker does: attest run under its own key, then a push of the
+#     attestation ref alone. This origin runs the protected host's real
+#     pre-receive hook, which admits a note only when a key it knows signed
+#     it, behind a wrapper that logs every push it receives. The project's
+#     owning valley publishes the signers a client verifies with, at
+#     refs/the-valley/signers, written on disk as the host's publisher
+#     writes it (signers-e2e drives the publisher itself). Both of the
+#     project's checks use the nix runner, through integrator-e2e's
+#     stand-in for nix, wrapped so that every call is logged: a check that
+#     ran is a check whose attribute the log names.
+r="$w/reuse"
+mkdir -p "$r/bin" "$r/keys"
+cp -r "$integratorE2e" "$r/stand-ins"
+chmod -R +w "$r/stand-ins"
+patchShebangs "$r/stand-ins" > /dev/null
+nixlog="$r/nix.log"
+for tool in nix nix-store; do
+  cat > "$r/bin/$tool" <<EOF
+#!$(command -v bash)
+printf '%s %s\n' "$tool" "\$*" >> "$nixlog"
+exec "$r/stand-ins/$tool" "\$@"
+EOF
+  chmod +x "$r/bin/$tool"
+done
+export PATH="$r/bin:$PATH" VALLEY_FAKE_STORE="$r/store"
+
+for who in worker operator integrator; do install -m 600 "$reuseKeys/$who" "$r/keys/$who"; done
+workername=worker.valley.invalid/attestations
+operatorname=operator.valley.invalid/attestations
+integratorname=integrator.valley.invalid/attestations
+workerhash="$(attest key --key "$r/keys/worker" --name "$workername" | cut -d+ -f2)"
+operatorhash="$(attest key --key "$r/keys/operator" --name "$operatorname" | cut -d+ -f2)"
+{
+  attest key --key "$r/keys/worker" --name "$workername"
+  attest key --key "$r/keys/operator" --name "$operatorname"
+  attest key --key "$r/keys/integrator" --name "$integratorname"
+} > "$r/known-signers"
+
+# The owning valley: the floor, which requires nothing, and the signers it
+# publishes.
+instance="$r/instance.git"
+git init --quiet --bare "$instance"
+git init --quiet "$r/seed"
+mkdir -p "$r/seed/policy/instance" "$r/floor"
+printf 'package verification\n\nfloor: {\n\tchecks: {}\n\tclasses: {}\n\tunclassified: {}\n}\n' > "$r/floor/floor.cue"
+cp "$r/floor/floor.cue" "$r/seed/policy/instance/"
+git -C "$r/seed" add -A
+git -C "$r/seed" commit --quiet -m 'the floor'
+git -C "$r/seed" push --quiet "$instance" main
+keysblob="$(git -C "$instance" hash-object -w "$r/known-signers")"
+nameblob="$(printf '%s\n' "$integratorname" | git -C "$instance" hash-object -w --stdin)"
+git -C "$instance" update-ref refs/the-valley/signers "$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n' \
+  "$nameblob" "$keysblob" | git -C "$instance" mktree)"
+
+served="$r/project.git"
+hook="$(grep -o '/nix/store/[^ ]*-valley-protect-open' "$reuseInitScriptPath" | head -n1)"
+test -x "$hook"
+git init --quiet --bare "$served"
+reusepushes="$r/pushlog"
+cat > "$served/hooks/pre-receive" <<EOF
+#!/bin/sh
+echo '--- push' >> "$reusepushes"
+tee -a "$reusepushes" | "$hook"
+EOF
+chmod +x "$served/hooks/pre-receive"
+
+proj="$r/project"
+git init --quiet "$proj"
+cd "$proj" || exit 1
+git remote add origin "$served"
+mkdir -p docs src checks policy/project
+echo "$instance" > policy/valley
+echo "the readme" > docs/readme.md
+echo "the source" > src/main.txt
+echo docs > checks/prose-format.inputs
+echo src > checks/code-build.inputs
+cat > policy/project/policy.cue <<'EOF'
+package verification
+
+project: {
+	checks: {
+		"prose-format": {runner: "nix", attribute: "prose-format"}
+		"code-build": {runner: "nix", attribute: "code-build"}
+	}
+	classes: {
+		prose: {paths: "docs/**": true, requires: "prose-format": true}
+		code: {paths: "src/**": true, requires: "code-build": true}
+	}
+	unclassified: {}
+}
+EOF
+git add -A
+git commit --quiet -m 'seed the project'
+git push --quiet origin main
+git clone --quiet "$served" "$r/worker"
+
+# edited <branch> <file…>: a branch off origin's main that adds a line to
+# each file, pushed.
+edited() {
+  local name="$1" f
+  shift
+  git fetch --quiet origin
+  git checkout --quiet -B "$name" origin/main
+  for f in "$@"; do echo "$name" >> "$f"; done
+  git add -A
+  git commit --quiet -m "$name"
+  git push --quiet origin "$name"
+}
+# worker <head> <attest run flag…>: the worker attests the head under its
+# own key and pushes the attestation ref alone.
+worker() {
+  local head="$1" digest ref
+  shift
+  git -C "$r/worker" fetch --quiet origin
+  digest="$(attest digest --repo "$r/worker" --rev "$head" | cut -d: -f2)"
+  ref="refs/the-valley/attestations/$digest/$workerhash"
+  attest run --repo "$r/worker" --rev "$head" --key "$r/keys/worker" --name "$workername" "$@" \
+    > "$r/worker.out" 2>&1 || {
+    echo "valley-request: the worker's attest run failed" >&2
+    cat "$r/worker.out" >&2
+    exit 1
+  }
+  git -C "$r/worker" push --quiet origin "$ref:$ref"
+}
+# approving <name> <command…>: run the command as the principal that holds
+# the approve grant, signing as the operator, into <name>.out and .err in
+# the scratch directory. Origin's pushes and the nix log start empty.
+approving() {
+  local name="$1"
+  shift
+  : > "$nixlog"
+  : > "$reusepushes"
+  VALLEY_PRINCIPAL=requester VALLEY_ATTEST_KEY="$r/keys/operator" VALLEY_ATTEST_NAME="$operatorname" \
+    "$@" < /dev/null > "$w/$name.out" 2> "$w/$name.err"
+}
+# requested <branch>: where origin's request for the branch stands, or
+# nothing.
+requested() {
+  git -C "$served" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/$1" || true
+}
+# integrated <request>: one pass of the real integrator lands the request.
+integrated() {
+  integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
+    --known-signers "$r/known-signers" --instance "$r/floor" --schema "$schemaFile" \
+    --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/integrator.out" 2>&1 || {
+    echo "valley-request: the integrator failed" >&2
+    cat "$r/integrator.out" >&2
+    exit 1
+  }
+  grep -q "^$1 -> refs/heads/main .*: land\$" "$r/integrator.out" || {
+    echo "valley-request: the integrator did not land $1" >&2
+    cat "$r/integrator.out" >&2
+    exit 1
+  }
+}
+
+# 20a. The worker covered every required check. approve reuses both, runs
+#      nothing, needs no signing key, and pushes the request alone.
+edited cover docs/readme.md src/main.txt
+coverhead="$(git rev-parse cover)"
+coverdigest="$(attest digest --rev cover | cut -d: -f2)"
+worker "$coverhead" --check prose-format --check code-build
+approving cover env -u VALLEY_ATTEST_KEY valley approve origin/cover
+grep -qx "reusing the evidence origin holds for cover at $(git rev-parse --short cover):" "$w/cover.out"
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/cover.out"
+grep -qE "^  code-build +signed by $workername\+$workerhash\$" "$w/cover.out"
+grep -qx "  reused   refs/the-valley/attestations/$coverdigest/$workerhash" "$w/cover.out"
+grep -qx '  checks   code-build, prose-format' "$w/cover.out"
+if grep -qE '^(checking|  evidence) ' "$w/cover.out" || [ -s "$nixlog" ]; then
+  echo "valley-request: approve ran checks that origin's evidence covered" >&2
+  cat "$w/cover.out" "$nixlog" >&2
+  exit 1
+fi
+[ "$(requested cover)" = "$coverhead" ] || {
+  echo "valley-request: a fully covered approval filed no request" >&2
+  exit 1
+}
+if [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
+  || ! grep -q ' refs/the-valley/integration-requests/main/cover$' "$reusepushes" \
+  || grep -q ' refs/the-valley/attestations/' "$reusepushes"; then
+  echo "valley-request: a fully covered approval did not push the request alone" >&2
+  cat "$reusepushes" >&2
+  exit 1
+fi
+
+# 20b. The same head again: the evidence is on origin and the request
+#      stands, so there is nothing to push and no push is made.
+approving cover-again env -u VALLEY_ATTEST_KEY valley approve origin/cover
+grep -qx '  the request already stood at this head and origin already held the evidence, so nothing needed publishing' "$w/cover-again.out"
+if [ -s "$reusepushes" ] || [ -s "$nixlog" ]; then
+  echo "valley-request: approving a covered head again pushed or ran something" >&2
+  cat "$reusepushes" "$nixlog" >&2
+  exit 1
+fi
+# The integrator verifies the worker's evidence itself, and lands it.
+integrated cover
+
+# 20c. The request write stays leased when nothing runs: a request filed
+#      while this approval is prepared wins, and nothing is published.
+edited raced docs/readme.md
+racedhead="$(git rev-parse raced)"
+worker "$racedhead" --check prose-format
+arm_race "git -C '$served' update-ref refs/the-valley/integration-requests/main/raced '$coverhead'"
+if approving raced env -u VALLEY_ATTEST_KEY valley approve origin/raced; then
+  echo "valley-request: a covered approval clobbered a request filed during it" >&2
+  exit 1
+fi
+disarm_race
+grep -q "a request for this change appeared while this one was being prepared, at $(git rev-parse --short "$coverhead")" "$w/raced.err"
+if [ "$(requested raced)" != "$coverhead" ] || [ -s "$reusepushes" ]; then
+  echo "valley-request: a covered approval that lost the lease published something" >&2
+  exit 1
+fi
+git -C "$served" update-ref -d refs/the-valley/integration-requests/main/raced
+
+# 20d. The worker covered one check. Its note for the other names another
+#      flake attribute, so it is not reused, and that check runs here:
+#      exactly that one, signed by the operator, in one push with the
+#      request. The integrator lands it on the two signers' evidence.
+edited partial docs/readme.md src/main.txt
+partialhead="$(git rev-parse partial)"
+partialdigest="$(attest digest --rev partial | cut -d: -f2)"
+worker "$partialhead" --check prose-format --check code-build=prose-format
+approving partial valley approve origin/partial
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out"
+grep -qxF "valley: not reusing code-build from refs/the-valley/attestations/$partialdigest/$workerhash: its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
+grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
+grep -qE '^check   code-build +nix +passed$' "$w/partial.out"
+if ! grep -q '^nix eval .*#checks\.[^.]*\.code-build\.drvPath$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
+  echo "valley-request: a partly covered approval did not run exactly the missing check" >&2
+  cat "$nixlog" >&2
+  exit 1
+fi
+grep -qx "  evidence refs/the-valley/attestations/$partialdigest/$operatorhash" "$w/partial.out"
+grep -qx "  reused   refs/the-valley/attestations/$partialdigest/$workerhash" "$w/partial.out"
+if [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
+  || ! grep -q " refs/the-valley/attestations/$partialdigest/$operatorhash\$" "$reusepushes" \
+  || ! grep -q ' refs/the-valley/integration-requests/main/partial$' "$reusepushes"; then
+  echo "valley-request: the remainder's evidence and the request did not go in one push" >&2
+  cat "$reusepushes" >&2
+  exit 1
+fi
+git cat-file -p "refs/the-valley/attestations/$partialdigest/$operatorhash:code-build/statement.note" > /dev/null
+if git cat-file -e "refs/the-valley/attestations/$partialdigest/$operatorhash:prose-format" 2> /dev/null; then
+  echo "valley-request: the operator signed a check the worker's evidence covered" >&2
+  exit 1
+fi
+integrated partial
+
+# 20e. Origin already holds the operator's own evidence for this tree, for
+#      one check alone. It is reused, and the other check has nowhere to
+#      go, since the namespace admits creations only: refused before
+#      anything runs (bd-7b7d58f).
+edited occupied docs/readme.md src/main.txt
+occupiedhead="$(git rev-parse occupied)"
+occupieddigest="$(attest digest --rev occupied | cut -d: -f2)"
+attest run --rev "$occupiedhead" --key "$r/keys/operator" --name "$operatorname" --check code-build \
+  > "$r/operator.out" 2>&1
+git push --quiet origin "refs/the-valley/attestations/$occupieddigest/$operatorhash:refs/the-valley/attestations/$occupieddigest/$operatorhash"
+if approving occupied valley approve origin/occupied; then
+  echo "valley-request: approve built evidence that origin could not take" >&2
+  exit 1
+fi
+grep -qE "^  code-build +signed by $operatorname\+$operatorhash\$" "$w/occupied.out"
+grep -qF "origin already holds refs/the-valley/attestations/$occupieddigest/$operatorhash, this signer's evidence for this tree, and it does not cover prose-format" "$w/occupied.err"
+grep -qF 'that is bd-7b7d58f, which approving again will not clear. Nothing run, nothing published' "$w/occupied.err"
+if [ -s "$nixlog" ] || [ -s "$reusepushes" ] || [ -n "$(requested occupied)" ]; then
+  echo "valley-request: an approval refused for an occupied ref ran or published something" >&2
+  exit 1
+fi
+
+# 20f. A listing of origin's evidence that fails, and a fetch of it that
+#      fails, are refusals, never an empty answer: nothing runs and nothing
+#      is published. A stand-in for git, first on PATH, fails the one call
+#      named. It needs bin/valley run straight, since the package's wrapper
+#      puts its own git ahead of anything on PATH.
+edited unread docs/readme.md
+unreadhead="$(git rev-parse unread)"
+unreaddigest="$(attest digest --rev unread | cut -d: -f2)"
+worker "$unreadhead" --check prose-format
+unreadoid="$(git -C "$served" rev-parse "refs/the-valley/attestations/$unreaddigest/$workerhash")"
+realgit="$(command -v git)"
+mkdir -p "$r/shim"
+cat > "$r/shim/git" <<EOF
+#!$(command -v bash)
+# git, failing the one call REUSE_FAIL names: the listing of origin's
+# evidence for one tree, or a fetch of the object one of its refs names.
+case "\${REUSE_FAIL:-}:\$*" in
+  inventory:ls-remote*"refs/the-valley/attestations/$unreaddigest/"*)
+    echo "git: injected failure" >&2
+    exit 128
+    ;;
+  fetch:fetch*--stdin*)
+    wanted="\$(cat)"
+    if grep -qF "$unreadoid" <<< "\$wanted"; then
+      echo "git: injected failure" >&2
+      exit 128
+    fi
+    printf '%s\n' "\$wanted" | exec "$realgit" "\$@"
+    ;;
+esac
+exec "$realgit" "\$@"
+EOF
+chmod +x "$r/shim/git"
+for failing in inventory fetch; do
+  if REUSE_FAIL="$failing" PATH="$r/shim:$PATH" VALLEY_VERIFICATION_SCHEMA="$schemaFile" \
+    approving "unread-$failing" bash "$cliScript" approve origin/unread; then
+    echo "valley-request: approve went on past a failed $failing of origin's evidence" >&2
+    exit 1
+  fi
+  case "$failing" in
+    inventory) says='valley: could not list the evidence origin holds for this tree' ;;
+    fetch) says='valley: could not fetch the evidence origin holds for this tree' ;;
+  esac
+  grep -qxF "$says" "$w/unread-$failing.err"
+  grep -qF 'valley: could not read the evidence origin holds for unread; nothing run, nothing published' "$w/unread-$failing.err"
+  if [ -s "$nixlog" ] || [ -s "$reusepushes" ] || [ -n "$(requested unread)" ]; then
+    echo "valley-request: approve ran or published something after a failed $failing" >&2
+    exit 1
+  fi
+done
+# And with origin answering, the same approval reuses the worker's
+# evidence: the stand-in failed only what it was told to.
+VALLEY_VERIFICATION_SCHEMA="$schemaFile" approving unread bash "$cliScript" approve origin/unread
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/unread.out"
+[ "$(requested unread)" = "$unreadhead" ]
+
+worktrees="$(git worktree list --porcelain | grep -c '^worktree ' || true)"
+if [ "$worktrees" != 1 ]; then
+  echo "valley-request: a throwaway worktree was left behind in the reuse project" >&2
+  git worktree list >&2
+  exit 1
+fi
+cd "$repo" || exit 1
+
+# ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
 # branch, so no path may offer one outside the set: [a]pprove, [b]ase,
 # [r]eject, [s]kip, and [v]iew full diff, which only shows. Every stream this check captured is scanned at the end,

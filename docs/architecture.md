@@ -1172,12 +1172,38 @@ far each version has landed for its listings. The package stamps its version on 
 | `valley self-update`         | Installs the tip of a branch of the-valley into the user's nix profile, once it passes a smoke test.  |
 | `valley --version`           | Prints the version stamp: the CLI's version and the commit its package was built from.                |
 
-`[a]pprove` is the operator's approval of a change. It runs the required checks with `attest` in a
-worktree of the head it approves. Then one atomic push carries the evidence refs and the integration
-request, with a lease on the request ref. When the request already names this head, the push leaves
-the request ref out. When nothing is required as well, there is no push. `[b]ase` rebases the
-change's whole stack in a temporary worktree, and pushes every layer's branch in one atomic push,
-with a lease on each. `[r]eject` deletes the remote branch after a prompt.
+`[a]pprove` is the operator's approval of a change. It reuses the evidence `origin` already holds
+for the head's tree, and runs the other required checks with `attest` in a worktree of the head it
+approves. Then one atomic push carries the new evidence refs and the integration request, with a
+lease on the request ref. When the request already names this head, the push leaves the request ref
+out. When there is no new evidence as well, there is no push. `[b]ase` rebases the change's whole
+stack in a temporary worktree, and pushes every layer's branch in one atomic push, with a lease on
+each. `[r]eject` deletes the remote branch after a prompt.
+
+Evidence on `origin` comes from a check worker or from an earlier approval. Approval reads it with
+`valley-go coverage` (`status/coverage.go`). It lists `origin`'s attestation refs for the head's
+tree and fetches the objects they name. It reads notes only from those objects, so a local ref that
+was never published does not count. A listing or a fetch that fails ends the approval, and nothing
+runs. A required `nix` check is covered when one of those refs holds a note for it that meets all of
+these:
+
+- `attest verify` accepts it under the `known-signers` file, found as `valley status` finds it: from
+  `VALLEY_KNOWN_SIGNERS` or the host's publication (see [Listing changes](#listing-changes)).
+- It is pure evidence for the check's name and its flake attribute.
+- It records the check as `passed`.
+
+Comparing the attribute is stricter than the integrator's rule for an unmoved tree, which compares
+none. Coverage decides only what approval runs. The integrator judges every note again when it
+decides the request.
+
+A `command` check is never covered, so approval runs it again. Every check that is not covered runs
+under the operator's own key, so its evidence goes to a ref of its own beside the worker's. When
+every required check is covered, nothing runs and no key is needed. When `origin` already holds the
+operator's own ref for the tree and a check still has to run, approval refuses before running
+anything. The namespace is create-only, so the new evidence would have nowhere to go
+([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+Checked by `valley-request`, which also lands a fully covered approval and a partly covered one with
+the real integrator.
 
 Approval also measures how long each required check took. `attest run` prints a `time` line after
 each check, with its result, its duration, and whether nix found its output already built.

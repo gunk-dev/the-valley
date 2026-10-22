@@ -499,11 +499,25 @@ usage: valley approve [--head <sha>] <change>
                    each / replaced by -. a branch whose request name would
                    be c-<change id> is refused, since that name is the
                    change's.
-                   approve runs the checks the composed policy requires of
-                   this change over a throwaway worktree of that head,
-                   signs each result as an attestation, and publishes the
-                   evidence and the request ref to origin in ONE atomic
-                   push. this files the request; it does not wait for
+                   approve first reads the evidence origin holds for that
+                   head's tree, refs/the-valley/attestations/<tree>/*, and
+                   reuses it for each required nix check it verifies: a
+                   note that attest verify accepts under the known-signers
+                   file (VALLEY_KNOWN_SIGNERS, or the one the host
+                   publishes), that is pure evidence for that check's name
+                   and flake attribute, and that says it passed. it prints
+                   each check it reuses and who signed it. for a note it
+                   found and does not reuse, it says why on stderr. a
+                   command check is never reused. a listing or a fetch of
+                   origin's evidence that fails is refused, and nothing is
+                   run.
+                   approve runs every other required check over a
+                   throwaway worktree of that head, signs each result as an
+                   attestation, and publishes the new evidence and the
+                   request ref to origin in ONE atomic push. when every
+                   required check is reused, nothing runs, no signing key
+                   is needed, and the push carries the request alone.
+                   this files the request; it does not wait for
                    integration or update your local checkout. use status to
                    read the result. the policy comes from the target's tip
                    and the owning valley's, as checks describes (valley help
@@ -514,14 +528,18 @@ usage: valley approve [--head <sha>] <change>
                    head rebased onto a moved main it replaces the request
                    ref under a lease and names the head it replaced; at the
                    same head it leaves the ref alone and publishes only the
-                   new evidence, which the create-only attestation
-                   namespace refuses when this signer has already attested
-                   that tree (bd-7b7d58f). every write of the request ref
+                   new evidence. origin already holding this signer's
+                   evidence for that tree, without a check that still has
+                   to run, is refused before anything runs: the
+                   attestation namespace is create-only, so the new
+                   evidence would have nowhere to go (bd-7b7d58f). every
+                   write of the request ref
                    is leased, filing included, so an approval that lost a
                    race is refused rather than clobbering the one that won.
-                   needs the attest helper and VALLEY_ATTEST_KEY, the
-                   ed25519 key this host signs with, whenever a check is
-                   required; VALLEY_ATTEST_NAME is the name it signs under,
+                   needs the attest helper whenever a check is required,
+                   and VALLEY_ATTEST_KEY, the ed25519 key this host signs
+                   with, whenever a check has to run here;
+                   VALLEY_ATTEST_NAME is the name it signs under,
                    defaulting to this host's. Nothing in this script writes
                    the protected ref: the integrator does, having judged
                    the request.
@@ -1663,7 +1681,54 @@ approve() {
   # exactly the changes the policy requires nothing of. Nothing is required,
   # so nothing is signed and no key is needed: what gets published is one
   # request ref and no evidence at all.
+  #
+  # A required check whose evidence origin already holds is reused, not
+  # built again: a check worker, or an earlier approval, may have published
+  # it. valley-go coverage (status/coverage.go) lists origin's attestation
+  # refs for the head's tree, fetches them, and says which required nix
+  # checks they hold acceptable evidence for. Every other check, and every
+  # command check, runs here. A read of origin that fails ends the approval
+  # rather than reading as no evidence. When every check is covered,
+  # nothing runs and no key is needed, as when nothing is required.
+  local -a missing=() reused=()
+  local -A stored=() covered=()
   if [ "${#required[@]}" -gt 0 ]; then
+    command -v attest > /dev/null 2>&1 || {
+      refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
+      return 1
+    }
+    local -a asked=()
+    for check in "${required[@]}"; do
+      [ "${CHECK_RUNNER[$check]:-}" != nix ] || asked+=(--check "$check=${CHECK_ATTRIBUTE[$check]}")
+    done
+    local coverage kind field value by
+    if ! coverage="$(valley-go coverage --head "$head" ${asked[@]+"${asked[@]}"})"; then
+      refuse "could not read the evidence origin holds for $what; nothing run, nothing published"
+      return 1
+    fi
+    while read -r kind field value by; do
+      case "$kind" in
+        digest) digest="$field" ;;
+        stored) stored["$field"]="$value" ;;
+        covered) covered["$field"]="$value $by" ;;
+      esac
+    done <<< "$coverage"
+    [ -n "$digest" ] || {
+      refuse "valley-go coverage named no tree for $what; nothing run, nothing published"
+      return 1
+    }
+    for check in "${required[@]}"; do
+      if [ -n "${covered[$check]:-}" ]; then reused+=("$check"); else missing+=("$check"); fi
+    done
+    if [ "${#reused[@]}" -gt 0 ]; then
+      printf '\nreusing the evidence origin holds for %s at %s:\n' "$what" "$(git rev-parse --short "$head")"
+      for check in "${reused[@]}"; do
+        printf '  %-24s signed by %s\n' "$check" "${covered[$check]#* }"
+      done
+    fi
+  fi
+
+  if [ "${#missing[@]}" -gt 0 ]; then
     key="${VALLEY_ATTEST_KEY:-}"
     [ -n "$key" ] || {
       refuse "no signing key: set VALLEY_ATTEST_KEY to the ed25519 key this host attests with. The host signs; nothing published"
@@ -1673,12 +1738,25 @@ approve() {
       refuse "no signing key at $key; nothing published"
       return 1
     }
-    command -v attest > /dev/null 2>&1 || {
-      refuse "this choice needs the attest helper; nix run .#valley bundles it. Nothing published"
-      return 1
-    }
     signer=(--key "$key")
     [ -z "${VALLEY_ATTEST_NAME:-}" ] || signer+=(--name "$VALLEY_ATTEST_NAME")
+
+    # The ref this run's evidence goes to is keyed by the tree and this
+    # signer's key hash, and the namespace admits creations only. When
+    # origin already holds it, evidence for the checks still missing has
+    # nowhere to go, so that is said before anything is built rather than
+    # after (bd-7b7d58f).
+    local verifier keyhash own
+    verifier="$(attest key "${signer[@]}")" || {
+      refuse "could not read the signing key at $key; nothing published"
+      return 1
+    }
+    keyhash="${verifier#*+}"
+    own="refs/the-valley/attestations/$digest/${keyhash%%+*}"
+    if [ -n "${stored[$own]:-}" ]; then
+      refuse "origin already holds $own, this signer's evidence for this tree, and it does not cover $(printf '%s\n' "${missing[@]}" | join_lines). That namespace admits creations only, so evidence for the rest has nowhere to go: that is bd-7b7d58f, which approving again will not clear. Nothing run, nothing published"
+      return 1
+    fi
 
     # attest logs how long each check took, on this machine and outside
     # the evidence. What it cannot know itself is passed in: the change,
@@ -1686,7 +1764,7 @@ approve() {
     timing=(--timings)
     [ -z "$CHANGE_ID" ] || timing+=(--change "$CHANGE_ID")
     [ -z "$APPROVE_VERSION" ] || timing+=(--change-version "$APPROVE_VERSION")
-    for check in "${required[@]}"; do
+    for check in "${missing[@]}"; do
       case "${CHECK_RUNNER[$check]:-}" in
         nix) run+=(--check "$check=${CHECK_ATTRIBUTE[$check]}") ;;
         command) run+=(--command "$check=${CHECK_COMMAND[$check]}") ;;
@@ -1710,22 +1788,16 @@ approve() {
     }
 
     printf '\nchecking %s at %s: %s\n' "$what" "$(git rev-parse --short "$head")" \
-      "$(printf '%s\n' "${required[@]}" | join_lines)"
+      "$(printf '%s\n' "${missing[@]}" | join_lines)"
     if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${timing[@]}" "${run[@]}"; then
       cleanup_approve_wt
       CHECKS_FAILED_AT="$head"
       refuse "the checks did not pass; nothing published, main untouched"
       return 1
     fi
-    digest="$(attest digest --repo "$APPROVE_WT")" || {
-      cleanup_approve_wt
-      refuse "could not digest the tree that was checked; nothing published"
-      return 1
-    }
     cleanup_approve_wt
-    digest="${digest#*:}"
 
-    # Every attestation stored for this tree, whoever signed it: the
+    # Every attestation stored here for this tree, whoever signed it: the
     # evidence for this change is what the subject digest is keyed by, not
     # what this run happened to add to it.
     mapfile -t evidence < <(git for-each-ref --format='%(refname)' \
@@ -1734,7 +1806,7 @@ approve() {
       refuse "no attestation is stored for $digest; nothing published"
       return 1
     }
-  else
+  elif [ "${#required[@]}" -eq 0 ]; then
     printf '\n%s requires no check under %s + %s; filing the request with no evidence\n' \
       "$what" "$POLICY_INSTANCE_LABEL" "$POLICY_PROJECT_LABEL"
   fi
@@ -1814,9 +1886,10 @@ approve() {
     return 1
   fi
 
-  # Nothing required and the request already standing at this head leaves
-  # nothing to push at all, and a push assembled with an empty refspec
-  # would fall back to origin's default one. So none is made.
+  # With no new evidence, because nothing was required or origin already
+  # held all of it, and the request already standing at this head, there
+  # is nothing to push. A push assembled with an empty refspec would fall
+  # back to origin's default one, so none is made.
   local made_push=no
   if [ "${#push[@]}" -gt 0 ]; then
     made_push=yes
@@ -1869,6 +1942,8 @@ approve() {
     fi
     if [ "$made_push" = yes ]; then
       standing+=("the request already stood at this head; the evidence is what was published")
+    elif [ "${#required[@]}" -gt 0 ]; then
+      standing+=("the request already stood at this head and origin already held the evidence, so nothing needed publishing")
     else
       standing+=("the request already stood at this head and nothing was required, so nothing needed publishing")
     fi
@@ -1883,11 +1958,19 @@ approve() {
   printf 'Check the result: valley status %q\n\n' "$named"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
   [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
-  if [ "${#evidence[@]}" -eq 0 ]; then
+  if [ "${#required[@]}" -eq 0 ]; then
     printf '  evidence none — nothing was required, so nothing was signed\n'
     printf '  checks   none — the policy requires no check of this change\n'
   else
-    printf '  evidence %s\n' "${evidence[@]}"
+    [ "${#evidence[@]}" -eq 0 ] || printf '  evidence %s\n' "${evidence[@]}"
+    # The refs on origin whose evidence was reused, each once.
+    local -A shown=()
+    for check in ${reused[@]+"${reused[@]}"}; do
+      spec="${covered[$check]%% *}"
+      [ -z "${shown[$spec]:-}" ] || continue
+      shown["$spec"]=1
+      printf '  reused   %s\n' "$spec"
+    done
     printf '  checks   %s\n' "$(printf '%s\n' "${required[@]}" | join_lines)"
   fi
 }

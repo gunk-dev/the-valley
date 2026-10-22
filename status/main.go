@@ -15,7 +15,9 @@
 // (compare.go), and for self-update, which installs the tip of a branch of
 // the-valley into the user's nix profile (selfupdate.go). checks prints
 // which checks a change requires, as the Go deriver derives them
-// (checks.go); no verb of bin/valley runs it.
+// (checks.go); no verb of bin/valley runs it. coverage says which of a
+// head's required nix checks already have evidence on origin that approve
+// can reuse rather than build (coverage.go).
 //
 // status reads one change's integration status (status.go). changes and
 // pending read every record and how far each version has landed
@@ -57,6 +59,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go versions <change ID>
        valley-go compare --tip <commit> <change ID> <version> <head>
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
+       valley-go coverage --head <sha> [--check <name>=<attribute>]...
        valley-go changes --json [--all] [--repo <name>] [-v]
        valley-go pending [--json] [--all] [--repo <name>] [--checks] [-v]
        valley-go knot <verb> [args]   (valley-go knot for its verbs)
@@ -123,6 +126,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runCompare(g, args, stdout)
 	case "checks":
 		err = runChecks(g, args, stdout)
+	case "coverage":
+		err = runCoverage(g, args, stdout, stderr)
 	case "changes":
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":

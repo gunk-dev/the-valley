@@ -47,6 +47,35 @@ let
         }
       ];
     }).config.systemd.user;
+
+  # Throwaway keys for valley-request's reuse scenarios, made once at build
+  # time: a check worker's and the operator's, which sign evidence, and the
+  # integrator's. They hold no authority anywhere. The protected host's
+  # hook, rendered with these as its known signers, admits evidence the
+  # worker and the operator sign.
+  reuseKeys =
+    pkgs.runCommand "valley-request-keys"
+      {
+        nativeBuildInputs = [
+          pkgs.openssh
+          packages.attest
+        ];
+      }
+      ''
+        mkdir $out
+        for who in worker operator integrator; do
+          ssh-keygen -q -t ed25519 -N "" -C "$who" -f "$out/$who"
+        done
+        {
+          attest key --key "$out/worker" --name worker.valley.invalid/attestations
+          attest key --key "$out/operator" --name operator.valley.invalid/attestations
+        } > "$out/hook_signers"
+      '';
+  reuseHost = hosts.protectedHost.extendModules {
+    modules = [
+      { services.valley.integrator.knownSignersFile = lib.mkForce "${reuseKeys}/hook_signers"; }
+    ];
+  };
 in
 {
   # The CLI must stay a lint-clean script whose help verb answers
@@ -173,6 +202,22 @@ in
   # carry no schema/. cliScript is bin/valley itself, for its other
   # shipping mode: run straight from a the-valley checkout, it reads the
   # schema there.
+  #
+  # Last, evidence a check worker already published, over a second origin
+  # that runs the protected host's rendered hook and a project whose two
+  # checks use the nix runner, through integrator-e2e's stand-in for nix.
+  # Its owning valley publishes the signers clients verify with. Evidence
+  # for every required check is reused: approve runs no nix, needs no
+  # signing key, and pushes the request alone, and approving that head
+  # again pushes nothing. Evidence for one check is reused and the other
+  # runs: the worker's note for it names another flake attribute, so it is
+  # not reused. The operator's evidence goes in one push with the request,
+  # and the real integrator lands it on the two signers' evidence. Origin
+  # holding the operator's own ref for a tree, without the check still
+  # missing, is refused before anything runs (bd-7b7d58f). A listing or a
+  # fetch of origin's evidence that fails is refused, and nothing runs or
+  # is published. A request filed while a fully covered approval is
+  # prepared wins the lease.
   valley-request = pkgs.runCommand "valley-request" {
     nativeBuildInputs = [
       pkgs.git
@@ -181,10 +226,17 @@ in
       pkgs.openssh
       packages.attest
       packages.valley-script
+      packages.valley-go
+      packages.integrator
     ];
     schemaFile = ../../schema/verification.cue;
     cliScript = ../../bin/valley;
-    inherit failNth;
+    inherit failNth reuseKeys;
+    reuseInitScript = reuseHost.config.systemd.services.valley-init.script;
+    passAsFile = [ "reuseInitScript" ];
+    integratorE2e = ../../integrator/e2e;
+    attestSchema = ../../schema/attestation.cue;
+    eventSchema = ../../schema/events.cue;
   } (builtins.readFile ./valley-request.sh);
 
   # The rebase engine's tests (rebase/), run in its package's checkPhase

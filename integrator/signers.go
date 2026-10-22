@@ -15,7 +15,9 @@ import (
 // signersRef is where the host publishes what a client verifies this
 // integrator's transfer statements with: a tree holding the known-signers
 // file the integrator reads, as signersKeys, and the name it signs under,
-// as signersName, one line.
+// as signersName, one line. When the integrator is given a signer projects
+// file, the tree holds that file too, as signersProjects, so a client can
+// tell which signers' evidence counts in which projects.
 //
 // Only the host's own machinery writes it, never a push. The push hook
 // refuses every push to a refs/the-valley/* ref it does not name. On the
@@ -27,24 +29,29 @@ import (
 // signersLock is the file in the instance repository that a run holds a
 // lock on, from reading the signers file to moving the ref.
 const (
-	signersRef  = "refs/the-valley/signers"
-	signersKeys = "known-signers"
-	signersName = "integrator-name"
-	signersLock = "valley-signers.lock"
+	signersRef      = "refs/the-valley/signers"
+	signersKeys     = "known-signers"
+	signersName     = "integrator-name"
+	signersProjects = "signer-projects"
+	signersLock     = "valley-signers.lock"
 )
 
-const signersUsage = `usage: integrator publish-signers --instance-repo DIR --known-signers F [--name NAME]
+const signersUsage = `usage: integrator publish-signers --instance-repo DIR --known-signers F [--name NAME] [--signer-projects F]
 
 Publishes, in the instance repository, the two values a client verifies
 this host's transfer statements with: the known-signers file a controller
 reads, and the name it signs under. Both go into one tree at
 refs/the-valley/signers, so a client reads both from one ref or neither.
+Given --signer-projects, the tree holds that file too, as signer-projects,
+so a client can tell which signers' evidence counts in which projects.
 
   --instance-repo DIR the bare repository clients read the host's
                       publications from
   --known-signers F   the file a controller is given as --known-signers
   --name NAME         the name a controller signs under, as it is given
                       to watch (default: this host's, as watch defaults)
+  --signer-projects F the file a controller is given as --signer-projects;
+                      without it, the publication holds none
 
 A publication that would not change is not written. One that would is
 written with a compare-and-swap on the ref. Two runs at once take turns:
@@ -52,12 +59,14 @@ each holds a lock in the instance repository from reading the file to
 moving the ref, so a run that read an older file cannot publish it over
 a newer one.
 
-The file must read as verifier keys, and the name must be one a verifier
-key can carry. A file that holds no key under the name, or no key at all,
-is published all the same, because it is what the controller uses. So
-when every signing key is revoked, the publication drops the old keys
-too, and clients stop verifying with them. The run says on stderr that
-no client can verify a statement with the file.
+The file must read as verifier keys, the name must be one a verifier key
+can carry, and a signer projects file must read as watch reads one. A
+file that holds no key under the name, or no key at all, is published
+all the same, because it is what the controller uses. So when every
+signing key is revoked, the publication drops the old keys too, and
+clients stop verifying with them. The run says on stderr that no client
+can verify a statement with the file. An empty signer projects file
+restricts nobody, as no file does, and is not published.
 `
 
 // publishSigners writes the publication, and says what it did on stdout.
@@ -67,6 +76,7 @@ func publishSigners(args []string) error {
 	repo := fs.String("instance-repo", "", "the instance repository")
 	known := fs.String("known-signers", "", "the file a controller is given as --known-signers")
 	name := fs.String("name", defaultSignerName(), "the name a controller signs under")
+	projects := fs.String("signer-projects", "", "the file a controller is given as --signer-projects")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -90,7 +100,16 @@ func publishSigners(args []string) error {
 	if err != nil {
 		return fmt.Errorf("reading the known-signers file: %w", err)
 	}
-	tree, err := signersTree(*repo, keys, *name)
+	var restrictions []byte
+	if *projects != "" {
+		if restrictions, err = os.ReadFile(*projects); err != nil {
+			return fmt.Errorf("reading the signer projects file: %w", err)
+		}
+		if _, err := parseSignerProjects(restrictions); err != nil {
+			return fmt.Errorf("the signer projects file %s does not read: %w", *projects, err)
+		}
+	}
+	tree, err := signersTree(*repo, keys, *name, restrictions)
 	if err != nil {
 		return err
 	}
@@ -112,8 +131,8 @@ func publishSigners(args []string) error {
 }
 
 // signersTree writes the publication's objects into repo and returns its
-// tree.
-func signersTree(repo string, keys []byte, name string) (string, error) {
+// tree. The tree holds a signer projects file when projects is not empty.
+func signersTree(repo string, keys []byte, name string, projects []byte) (string, error) {
 	if err := note.CheckName(name); err != nil {
 		return "", fmt.Errorf("--name: %w", err)
 	}
@@ -139,6 +158,13 @@ func signersTree(repo string, keys []byte, name string) (string, error) {
 		return "", err
 	}
 	entries := fmt.Sprintf("100644 blob %s\t%s\n100644 blob %s\t%s\n", nameBlob, signersName, keysBlob, signersKeys)
+	if len(projects) > 0 {
+		projectsBlob, err := hashObject(repo, projects)
+		if err != nil {
+			return "", err
+		}
+		entries += fmt.Sprintf("100644 blob %s\t%s\n", projectsBlob, signersProjects)
+	}
 	out, err := gitInput(repo, []byte(entries), "mktree")
 	if err != nil {
 		return "", err

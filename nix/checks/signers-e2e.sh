@@ -460,4 +460,60 @@ expect "$lands" uncertain 'after every signing key is revoked'
 expect "$quick" landed 'a fast-forward, after every signing key is revoked'
 said "holds no key under the integrator name $name"
 
+# ----------------------------------------------------------------------
+# A host that restricts a worker's signer to projects gives its publisher
+# the signer projects file it gives the controllers, and the publication
+# carries it beside the signers. The file is in the publisher's command, so
+# a changed list is a changed unit, which an activation runs again. Here
+# each host's command runs as an activation would run it.
+# publish_as <command>: the rendered publisher, pointed at this test's
+# instance repository and signers file.
+publish_as() {
+  local -a cmd
+  read -ra cmd <<< "$1"
+  cmd=("${cmd[@]//\/srv\/git\/sealed.git/$instance}")
+  cmd=("${cmd[@]//\/var\/lib\/valley-instance\/known_signers/$signers}")
+  "${cmd[@]}" > "$w/out" 2> "$w/err" || fail "the publisher failed: $1"
+}
+# list_of <command>: the signer projects file the command is given.
+list_of() { grep -o -- '--signer-projects [^ ]*' <<< "$1" | cut -d' ' -f2; }
+names() { git -C "$instance" ls-tree --name-only "$1" | tr '\n' ' '; }
+
+restricted_list="$(list_of "$restrictedPublishCommand")"
+[ -n "$restricted_list" ] || fail "the restricting host's publisher is given no signer projects file: $restrictedPublishCommand"
+[ "$(cat "$restricted_list")" = "$(printf '%s\n' 'retired.valley.invalid/attestations' 'worker.valley.invalid/attestations guarded sealed')" ] \
+  || fail "the rendered signer projects file holds: $(cat "$restricted_list")"
+publish_as "$restrictedPublishCommand"
+listed="$(git -C "$instance" rev-parse refs/the-valley/signers)"
+[ "$(names "$listed")" = "integrator-name known-signers signer-projects " ] \
+  || fail "the publication of a restricting host holds $(names "$listed")"
+git -C "$instance" cat-file blob "$listed:signer-projects" | cmp -s - "$restricted_list" \
+  || fail 'the publication does not hold the signer projects file the controllers read'
+git -C "$instance" cat-file blob "$listed:known-signers" | cmp -s - "$signers" \
+  || fail 'the signers file changed with the list'
+
+changed_list="$(list_of "$changedPublishCommand")"
+[ -n "$changed_list" ] && [ "$changed_list" != "$restricted_list" ] \
+  || fail 'a changed list renders the same publisher command, so no activation would run it again'
+publish_as "$changedPublishCommand"
+changed="$(git -C "$instance" rev-parse refs/the-valley/signers)"
+[ "$changed" != "$listed" ] || fail 'the changed list was not published'
+git -C "$instance" cat-file blob "$changed:signer-projects" | cmp -s - "$changed_list" \
+  || fail 'the publication does not hold the changed list'
+
+# A list that does not read publishes nothing, and the last publication
+# stands.
+printf '%s\n' 'worker.valley.invalid/attestations sealed' 'worker.valley.invalid/attestations guarded' > "$w/named-twice"
+if integrator publish-signers --instance-repo "$instance" --known-signers "$signers" \
+  --signer-projects "$w/named-twice" > "$w/out" 2> "$w/err"; then
+  fail 'the publisher published a signer projects file that names a signer twice'
+fi
+said "the signer projects file $w/named-twice does not read"
+[ "$(git -C "$instance" rev-parse refs/the-valley/signers)" = "$changed" ] || fail 'a refused run moved the publication'
+
+# A host that restricts nobody publishes no list.
+"${publish[@]}" > "$w/out" 2> "$w/err" || fail 'the publisher failed once the list was gone'
+[ "$(names refs/the-valley/signers)" = "integrator-name known-signers " ] \
+  || fail "the list outlived the restriction: the publication holds $(names refs/the-valley/signers)"
+
 touch "$out"

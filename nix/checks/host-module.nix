@@ -27,6 +27,8 @@ let
     mirrorHost
     integratorHost
     integratorSelfHost
+    restrictedHost
+    spacedSignerProjectsHost
     identityHost
     ;
 
@@ -38,6 +40,7 @@ let
     ++ protectedHost.config.assertions
     ++ integratorHost.config.assertions
     ++ integratorSelfHost.config.assertions
+    ++ restrictedHost.config.assertions
     ++ identityHost.config.assertions
   );
 
@@ -86,6 +89,11 @@ let
       host = permitUserEnvironmentHost;
       says = "PermitUserEnvironment";
       why = "a PermitUserEnvironment wider than the principal variable would let a key's entry or ~/.ssh/environment set what the push policy does not expect";
+    }
+    {
+      host = spacedSignerProjectsHost;
+      says = "services.valley.integrator.signerProjects holds";
+      why = "a project with a space in it would be read back as two projects the declaration never listed";
     }
     {
       host = conflictingKeysHost;
@@ -317,7 +325,8 @@ let
   # either, in which case both take the binary's default. The publisher
   # writes as the git user, which owns the instance repository, may write
   # that repository and nothing else, runs after the compilation when there
-  # is one, and runs again whenever the signers file changes.
+  # is one, and runs again whenever the signers file changes. The signer
+  # projects file is the controllers' too, or neither has one.
   flagValue =
     flag: command:
     let
@@ -336,6 +345,7 @@ let
     || flagValue "instance-repo" publish != repo
     || flagValue "known-signers" publish != flagValue "known-signers" controller
     || flagValue "name" publish != flagValue "name" controller
+    || flagValue "signer-projects" publish != flagValue "signer-projects" controller
     || unit.serviceConfig.User or null != "git"
     || unit.serviceConfig.ReadWritePaths or [ ] != [ repo ]
     || !(builtins.elem "valley-init.service" unit.after)
@@ -350,11 +360,20 @@ let
 
   signersUnpublished =
     signersPublisher integratorHost "/srv/git/sealed.git"
+    || signersPublisher restrictedHost "/srv/git/sealed.git"
     || signersPublisher integratorSelfHost "/srv/git/guarded.git"
     || signersPublisher identityHost "/srv/git/sealed.git"
     || flagValue "name" identityHost.config.systemd.services.valley-signers.serviceConfig.ExecStart
       != "integrator"
     || !(builtins.elem "valley-identity.service" identityHost.config.systemd.services.valley-signers.after);
+
+  # A host that restricts no signer gives its controllers no signer
+  # projects file, and one that restricts some gives them one.
+  signerProjectsMisrendered =
+    flagValue "signer-projects" integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
+      != null
+    || flagValue "signer-projects" restrictedHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
+      == null;
 
   # The declared keys stay authorized beside the compiled ones. A compiled
   # file that replaced them would make a bad compilation — or a first boot
@@ -433,6 +452,8 @@ in
       throw "valley module-eval: a signers publication rendered for a host whose integrator is off — there is no transfer statement to verify"
     else if signersUnpublished then
       throw "valley module-eval: the signers publisher must publish the controllers' own signers file and signing name into the instance repository, as the git user, writing nothing else, after valley-init and the compilation, at boot and whenever the signers file changes"
+    else if signerProjectsMisrendered then
+      throw "valley module-eval: a controller is given a signer projects file exactly when the host restricts a signer to projects"
     else if identityKeepsDeclaredKeys then
       throw "valley module-eval: the declared authorized keys must stay authorized beside the compiled ones — a compiled file that replaced them would make a bad compilation a locked-out git user"
     else

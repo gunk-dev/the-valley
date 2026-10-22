@@ -110,6 +110,7 @@ let
       "--interval ${cfg.integrator.interval}"
     ]
     ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
+    ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
     ++ (
       if cfg.integrator.instanceProject != null then
         [ "--instance-repo ${instanceRepo}" ]
@@ -213,6 +214,24 @@ let
   knownSigners =
     if cfg.identity.enable then identityKnownSigners else toString cfg.integrator.knownSignersFile;
 
+  # Which signers count in which projects, as the integrator reads it: one
+  # line per restricted signer, its name and then its projects. Null when
+  # the consumer restricts nobody, so a host that sets nothing passes no
+  # file to anything. The file is in the store, so a changed list is a
+  # changed command line for the controllers and the publisher alike, and
+  # an activation restarts the one and runs the other again.
+  signerProjects =
+    if cfg.integrator.signerProjects == { } then
+      null
+    else
+      pkgs.writeText "valley-signer-projects" (
+        lib.concatStrings (
+          lib.mapAttrsToList (
+            name: projects: lib.concatStringsSep " " ([ name ] ++ projects) + "\n"
+          ) cfg.integrator.signerProjects
+        )
+      );
+
   # What a client verifies this host's transfer statements with, published
   # in the instance repository: the known-signers file the controllers read,
   # whichever wrote it, and the name they sign under. Unset, the name is the
@@ -228,6 +247,7 @@ let
       "--known-signers ${knownSigners}"
     ]
     ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
+    ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
   );
 
   # The paths the consumer must supply once the integrator is enabled,
@@ -1178,6 +1198,32 @@ in
         '';
       };
 
+      signerProjects = lib.mkOption {
+        type = lib.types.attrsOf (lib.types.listOf lib.types.str);
+        default = { };
+        example = {
+          "laddie-worker/attestations" = [ "the-valley" ];
+        };
+        description = ''
+          Signers whose attestations count only in the projects listed for
+          them, by the name each signs under. A signer named here counts
+          in its listed projects alone; in any other project a controller
+          reports its evidence as signed by no signer it holds. An empty
+          list lets the signer count nowhere. A signer not named here
+          counts wherever the known-signers file lets it.
+
+          This is how a check worker's key, which every controller sharing
+          the known-signers file would otherwise accept, is trusted only
+          for the projects it builds. The push hook still admits the
+          worker's evidence everywhere; only the controllers restrict it.
+
+          The list is rendered into a file every controller reads at start.
+          A host that publishes its signers publishes the file beside them,
+          so a client can read the same restriction. Names and projects are
+          single words.
+        '';
+      };
+
       signingName = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
@@ -1392,6 +1438,12 @@ in
         {
           assertion = (cfg.integrator.instanceProject == null) != (cfg.integrator.instancePolicy == null);
           message = "exactly one of services.valley.integrator.instanceProject and services.valley.integrator.instancePolicy must be set: the floor is read from the instance repository this host serves, or supplied as a directory for a host that serves none, and two sources for one layer is a question about which one won.";
+        }
+        {
+          assertion = lib.all (word: builtins.match "[^[:space:]]+" word != null) (
+            lib.concatLists (lib.mapAttrsToList (name: projects: [ name ] ++ projects) cfg.integrator.signerProjects)
+          );
+          message = "services.valley.integrator.signerProjects holds an empty name or project, or one with a space in it. The list is rendered one signer per line, its name and projects separated by spaces, so such a word would be read back as some other signer or project. Write each as one word.";
         }
         {
           assertion =
@@ -1703,7 +1755,8 @@ in
     # because it lands code there.
     #
     # What starts it: every boot and every activation, after valley-init,
-    # which covers a changed signing name or signers path; and the path
+    # which covers a changed signing name, signers path or signer projects
+    # list; and the path
     # unit below, whenever the known-signers file changes, which covers
     # each compilation that changed it and a hand-provisioned file being
     # replaced. A run reads the current file and name and writes the ref

@@ -163,6 +163,27 @@ in
     };
   };
 
+  # The same controllers with a check worker's signer restricted to two of
+  # the projects they serve, and a retired signer restricted to none.
+  restrictedHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+        signerProjects = {
+          "worker.valley.invalid/attestations" = [
+            "guarded"
+            "sealed"
+          ];
+          "retired.valley.invalid/attestations" = [ ];
+        };
+      };
+    };
+  };
+
   # The registry machinery switched on, over the same declaration. The
   # signers file is not supplied: the compiler renders it, and a consumer
   # that also named one would be asking which of the two won. The
@@ -260,6 +281,22 @@ in
   permitUserEnvironmentHost = mkHost {
     services.valley.config = ../../examples/hosts/protected.cue;
     services.openssh.settings.PermitUserEnvironment = lib.mkForce "yes";
+  };
+
+  # Two projects written as one: rendered one signer per line, the worker
+  # would read back as restricted to guarded and sealed, two projects the
+  # declaration never listed for it.
+  spacedSignerProjectsHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+        signerProjects."worker.valley.invalid/attestations" = [ "guarded sealed" ];
+      };
+    };
   };
 
   # One key declared untagged and tagged: which principal it pushes as

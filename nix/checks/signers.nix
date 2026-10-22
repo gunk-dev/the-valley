@@ -37,6 +37,19 @@ let
       { services.valley.integrator.knownSignersFile = lib.mkForce "${keys}/hook_signers"; }
     ];
   };
+
+  # The host that restricts a worker's signer to projects, and the same host
+  # once its list has changed.
+  publisherOf = h: h.config.systemd.services.valley-signers.serviceConfig.ExecStart;
+  changedHost = hosts.restrictedHost.extendModules {
+    modules = [
+      {
+        services.valley.integrator.signerProjects = lib.mkForce {
+          "worker.valley.invalid/attestations" = [ "sealed" ];
+        };
+      }
+    ];
+  };
 in
 {
   # The real integrator lands a change by a commit that is no fast-forward,
@@ -57,7 +70,10 @@ in
   # and is still running when the host's run starts, makes that run wait
   # for it, so the old keys are not published last. Once the registry
   # revokes every signing key, the compiler's file with no key is
-  # published, and both merged landings read uncertain.
+  # published, and both merged landings read uncertain. A host that
+  # restricts signers to projects publishes its list beside the signers,
+  # a changed list is published again, a list that does not read publishes
+  # nothing, and a host that restricts nobody publishes no list.
   signers-e2e = pkgs.runCommand "valley-signers-e2e" {
     nativeBuildInputs = [
       pkgs.git
@@ -72,7 +88,9 @@ in
     ];
     inherit keys;
     initScript = host.config.systemd.services.valley-init.script;
-    publishCommand = hosts.integratorHost.config.systemd.services.valley-signers.serviceConfig.ExecStart;
+    publishCommand = publisherOf hosts.integratorHost;
+    restrictedPublishCommand = publisherOf hosts.restrictedHost;
+    changedPublishCommand = publisherOf changedHost;
     passAsFile = [ "initScript" ];
     integratorE2e = ../../integrator/e2e;
     SCHEMA_ATTESTATION = ../../schema/attestation.cue;

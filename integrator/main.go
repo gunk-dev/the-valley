@@ -70,6 +70,8 @@ flags:
   --key PATH          ed25519 private key the integrator signs with
   --name NAME         the name that key signs under (default: this host's)
   --known-signers F   verifier keys whose attestations count, one per line
+  --signer-projects F signers whose attestations count only in the projects
+                      listed beside them (see below); read once, at start
   --instance-repo DIR the bare repository carrying the group's floor; the
                       instance layer is read from its integrated tip
   --instance-ref REF  the ref whose tip carries it (default refs/heads/main)
@@ -107,6 +109,20 @@ enforcement boundary checks; no compiler exists yet, so the file is
 supplied directly and is exactly what dcr-b87f6e8 calls the first
 compilation's output. An attestation signed by nobody in it does not
 transfer, and that is reported per check rather than treated as a forgery.
+
+--signer-projects restricts signers to projects. Each line names a signer,
+then the projects its attestations count in, separated by spaces:
+
+  laddie-worker/attestations the-valley cosmo
+
+A signer the file names counts only in the projects on its line, where the
+project is the name events carry. In any other project its attestations
+are reported as signed by no signer the integrator holds. A line with a
+name and no project lets that signer count nowhere. A signer the file does
+not name counts wherever the known-signers file lets it. Blank lines and
+lines that open with # are skipped. A file that cannot be read, names a
+signer twice, or names a signer no verifier key can carry stops the
+integrator before it judges anything.
 `
 
 // integrator is one controller: which repository it serves, who it signs
@@ -133,6 +149,10 @@ type integrator struct {
 	signerName   string
 	keyHash      string
 	knownSigners string
+
+	// signerProjects restricts signers in knownSigners to projects
+	// (signerprojects.go). Nil restricts nobody.
+	signerProjects signerProjects
 
 	bus          string
 	publishQueue string
@@ -184,6 +204,7 @@ func run(args []string, loop bool) error {
 	key := fs.String("key", "", "ed25519 private key")
 	name := fs.String("name", defaultSignerName(), "the name that key signs under")
 	known := fs.String("known-signers", "", "verifier keys whose attestations count")
+	signerProjects := fs.String("signer-projects", "", "signers whose attestations count only in the projects listed beside them")
 	instanceRepo := fs.String("instance-repo", "", "the bare repository carrying the group's floor")
 	instanceRef := fs.String("instance-ref", "refs/heads/main", "the ref whose tip carries the floor")
 	instancePolicy := fs.String("instance-policy", "policy/instance", "the floor's directory in that tip")
@@ -265,6 +286,9 @@ func run(args []string, loop bool) error {
 	}
 	if in.project == "" {
 		in.project = projectName(in.repo)
+	}
+	if in.signerProjects, err = readSignerProjects(*signerProjects); err != nil {
+		return err
 	}
 	if in.keyHash, err = in.readKeyHash(); err != nil {
 		return err

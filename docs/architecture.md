@@ -151,20 +151,24 @@ The host publishes what a client verifies the integrator's transfer statements w
 is a tree at `refs/the-valley/signers` in the instance repository. It holds two files:
 `known-signers`, the known-signers file the controllers read, and `integrator-name`, the name they
 sign under, on one line. Both are in one tree under one ref, so a client reads both values or
-neither.
+neither. A host that restricts signers to projects (see
+[Evidence: attest and notes](#evidence-attest-and-notes)) adds a third file, `signer-projects`, the
+signer projects file the controllers read. No `valley` verb reads it (`not built`).
 
 The publisher is `integrator publish-signers` (`integrator/signers.go`). The oneshot service
 `valley-signers` runs it as git (`nix/valley-host.nix`). A host renders the service when the
 integrator is enabled and the host serves the instance repository (`integrator.instanceProject`).
-The publisher is given the same signers file and the same `--name` as the controllers. When
-`integrator.signingName` is unset, neither is given a name. Both then take the integrator's default,
-`<hostname>/attestations`, computed by the same code on the same host. The service's sandbox lets it
-write the instance repository and nothing else.
+The publisher is given the same signers file, the same `--name` and the same `--signer-projects` as
+the controllers. When `integrator.signingName` is unset, neither is given a name. Both then take the
+integrator's default, `<hostname>/attestations`, computed by the same code on the same host. The
+service's sandbox lets it write the instance repository and nothing else.
 
 The service runs at boot and on activation, after `valley-init` and after the registry compiler when
-there is one. A path unit, `valley-signers.path`, runs it again whenever the signers file changes,
-as it does when a compilation replaces the file. A run that would publish what is already there
-writes nothing. A run that changes the publication moves the ref with a compare-and-swap.
+there is one. The signer projects file is rendered into the Nix store, so a changed list is a
+changed command for the service, which activation runs again. A path unit, `valley-signers.path`,
+runs it again whenever the signers file changes, as it does when a compilation replaces the file. A
+run that would publish what is already there writes nothing. A run that changes the publication
+moves the ref with a compare-and-swap.
 
 Two runs at once take turns. Each run holds a lock in the instance repository from reading the
 signers file to moving the ref. So the later run reads the file after the earlier one has published,
@@ -983,6 +987,22 @@ signed by a known signer, says the check `passed`, and one of these holds
   evidence is younger than the check's `validity` window.
 
 Checked by `integrator-unit` (the verdict tests) and `integrator-e2e`.
+
+A signer can be restricted to projects. This is how a check worker's key can sit in the
+known-signers file that every controller on a host shares, while its evidence counts only in the
+projects it builds for. The controllers are given a signer projects file (`--signer-projects`,
+rendered from `integrator.signerProjects`) that names each restricted signer and its projects
+(`integrator/signerprojects.go`). In a project not listed for it, the controller classifies a note
+whose only verified signers are restricted elsewhere as signed by an unknown signer, as it
+classifies a stranger's note (`integrator/evidence.go`). A signer the file does not name is not
+restricted. The push hook does not read the file, so it admits a restricted signer's evidence in
+every project, and only the controllers refuse it.
+
+A controller reads the file once, at start. A file that cannot be read, names a signer twice, or
+names a signer no verifier key can carry stops the controller before it judges anything. A changed
+list does not by itself re-judge a request whose answer is recorded: a request a narrower list held
+back waits until its head, the target's tip or the stored evidence moves. Checked by
+`integrator-e2e`, `integrator-unit`, `module-eval` and `signers-e2e`.
 
 Check definitions come from the change being judged. `attest` builds the flake checks of the
 exported tree, so a change can edit the check it is judged by

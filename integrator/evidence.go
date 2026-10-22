@@ -92,6 +92,8 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 }
 
 // classify runs `attest verify` over one note and reads the statement back.
+// A note whose only verified signers are restricted to other projects
+// (signerprojects.go) is classified as signed by an unknown signer.
 func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.Evidence, error) {
 	text, err := noteText(note)
 	if err != nil {
@@ -137,8 +139,17 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.E
 	out, err := cmd.CombinedOutput()
 	switch {
 	case err == nil:
-		ev.Admissible = verdict.Admissible
-		ev.Signer = verifiedSigner(string(out))
+		// A key in the known-signers file signed the note. Its signer
+		// counts here only if the signer projects file lets it count in
+		// this project; a note no such signer signed is a stranger's.
+		ev.Admissible = verdict.UnknownSigner
+		for _, signer := range verifiedSigners(string(out)) {
+			name, _, _ := strings.Cut(signer, "+")
+			if in.signerProjects.counts(name, in.project) {
+				ev.Admissible, ev.Signer = verdict.Admissible, signer
+				break
+			}
+		}
 	case strings.Contains(string(out), unknownSigner):
 		ev.Admissible = verdict.UnknownSigner
 	default:
@@ -148,15 +159,16 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.E
 	return ev, nil
 }
 
-// verifiedSigner reads the name whose signature checked out, from the
-// verifier's own report.
-func verifiedSigner(out string) string {
+// verifiedSigners reads the signers whose signatures checked out, as
+// name+hash, in the order of the verifier's own report.
+func verifiedSigners(out string) []string {
+	var signers []string
 	for _, line := range strings.Split(out, "\n") {
 		if fields := strings.Fields(line); len(fields) == 3 && fields[0] == "signature" && fields[1] == "ok" {
-			return fields[2]
+			signers = append(signers, fields[2])
 		}
 	}
-	return ""
+	return signers
 }
 
 // noteText returns the bytes a signature covers: everything before the

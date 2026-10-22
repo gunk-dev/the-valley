@@ -151,7 +151,9 @@ request() {
   git push --quiet origin "$3:refs/the-valley/integration-requests/$2/$1"
 }
 
-integrate() {
+# reconcile [flag…] — one pass. A flag given here overrides the one set
+# before it.
+reconcile() {
   # Neither policy path is stated: both layers come from where the
   # integrator defaults to looking, which is the whole of what a deployment
   # following the convention says about policy.
@@ -164,7 +166,11 @@ integrate() {
     --attest-schema "$SCHEMA_ATTESTATION" \
     --event-schema "$SCHEMA_EVENTS" \
     ${VALLEY_E2E_NOW:+--now "$VALLEY_E2E_NOW"} \
-    2>&1 | tee "$work/last.out"
+    "$@"
+}
+
+integrate() {
+  reconcile "$@" 2>&1 | tee "$work/last.out"
   grep -q . "$work/last.out" || die "the integrator said nothing"
 }
 
@@ -1477,5 +1483,81 @@ done
 git -C "$origin" merge-base --is-ancestor "$np" "$(tip)" || die "the plain branch did not land"
 unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
 holds "the rebased stack landed as one fast-forward, and every layer reads landed"
+
+# ----------------------------------------------------------------------
+say "28. a signer restricted to some projects counts in those, and is unknown in every other"
+
+# A check worker's key is in the known-signers file, as it is for every
+# controller that shares the file. The signer projects file lets it count
+# in this project alone. A controller takes the project from the
+# repository it serves, so this one's is "project".
+ssh-keygen -q -t ed25519 -N "" -C worker -f "$work/worker"
+worker=worker.valley.invalid/attestations
+cat "$work/known_signers" > "$work/worker_signers"
+attest key --key "$work/worker" --name "$worker" >> "$work/worker_signers"
+printf '# the check worker builds for this project alone\n%s project\n' "$worker" > "$work/signer_projects"
+restricted=(--known-signers "$work/worker_signers" --signer-projects "$work/signer_projects")
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c28
+echo "a readme a check worker built" > docs/c28.md
+git add -A
+git commit --quiet -m "a change a check worker attested"
+attest_change c28 "$work/worker" "$worker" --check prose-format
+c28="$(git rev-parse c28)"
+c28digest="$(attest digest --repo "$repo" --rev c28 | cut -d: -f2)"
+c28ref="refs/the-valley/attestations/$c28digest/$(attest key --key "$work/worker" --name "$worker" | cut -d+ -f2)"
+request c28 main "$c28"
+
+# A second project, served the same way, holds the same commits, the same
+# note and the same request. Its controller's project is "elsewhere".
+elsewhere="$work/elsewhere.git"
+git init --quiet --bare "$elsewhere"
+git -C "$origin" push --quiet "$elsewhere" main c28 "$c28ref" refs/the-valley/integration-requests/main/c28
+[ "$(git -C "$elsewhere" rev-parse "$c28ref")" = "$(git -C "$origin" rev-parse "$c28ref")" ] \
+  || die "the second project does not hold the same note"
+integrate --repo "$elsewhere" "${restricted[@]}"
+grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
+  || die "the worker's evidence counted in a project not listed for it"
+grep -q "check    prose-format .*signed by no signer the integrator holds" "$work/last.out" \
+  || die "the worker's note was not reported as an unknown signer's"
+[ "$(git -C "$elsewhere" rev-parse main)" != "$c28" ] || die "main moved in the second project"
+holds "in a project not listed for it, the worker's note is classified as a stranger's"
+
+# A signer projects file the controller cannot read stops it before it
+# judges anything: one that names a signer twice, one that names a
+# verifier key line rather than a signer, and one that is not there.
+printf '%s project\n%s elsewhere\n' "$worker" "$worker" > "$work/named_twice"
+attest key --key "$work/worker" --name "$worker" > "$work/key_line"
+for list in named_twice key_line missing; do
+  if reconcile "${restricted[@]}" --signer-projects "$work/$list" > "$work/last.out" 2>&1; then
+    die "a controller given the $list signer projects file ran: $(cat "$work/last.out")"
+  fi
+  grep -q "signer projects file" "$work/last.out" \
+    || die "the $list signer projects file was not named as the reason: $(cat "$work/last.out")"
+  grep -q "^c28 " "$work/last.out" && die "a controller given the $list signer projects file judged c28"
+  [ "$(tip)" != "$c28" ] || die "main moved under the $list signer projects file"
+done
+holds "a signer projects file that does not read stops the controller, and nothing lands"
+
+# In the project listed for it, the same note lands the change.
+integrate "${restricted[@]}"
+grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "the worker's evidence did not count in the project listed for it"
+grep -q "check    prose-format .*transferred" "$work/last.out" || die "prose-format did not transfer"
+[ "$(tip)" = "$c28" ] || die "main is not at c28's head"
+holds "in the project listed for it, the same note lands c28"
+
+# A signer the file does not name still counts in the second project. The
+# contributor's note for the same tree arrives there, and replaces the
+# worker's as the evidence.
+attest run --repo "$repo" --key "$work/contributor" --name "$contributor" --check prose-format > /dev/null
+git push --quiet "$elsewhere" "refs/the-valley/attestations/$c28digest/$(cut -d+ -f2 < "$work/known_signers")"
+integrate --repo "$elsewhere" "${restricted[@]}"
+grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "an unrestricted signer's evidence did not count in the second project"
+[ "$(git -C "$elsewhere" rev-parse main)" = "$c28" ] || die "main in the second project is not at c28's head"
+holds "a signer the file does not name counts in every project, as before"
 
 printf '\nintegrator-e2e: every scenario held\n'

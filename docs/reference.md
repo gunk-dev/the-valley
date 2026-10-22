@@ -237,10 +237,8 @@ valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] 
   - `--json`: Emits a single-line [`valley-status/v1`](#valley-statusv1) JSON object including
     linked knots.
   - `-v`: With `--json`, warns on `stderr` if the plan graph cannot be read.
-  - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
-    integrator's signing name a transfer statement is verified with. Each takes precedence over its
-    environment variable and over the host's publication (see
-    [Environment variables](#environment-variables)).
+  - `--known-signers <file>`, `--integrator-name <name>`: As for
+    [`valley pending`](#valley-pending).
 - **Behavior:** Fetches the needed objects from `origin` without updating `FETCH_HEAD` or moving any
   local branch. Computes one of 13 status states (`integrated`, `integrated-recorded`,
   `outdated-request`, `outcome-unreadable`, `voided-withdrawn`, `not-requested`,

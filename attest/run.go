@@ -107,10 +107,11 @@ func cmdRun(args []string) error {
 	}
 	commit := subj.Digest["git-sha1"] + subj.Digest["git-sha256"]
 
-	// The pure checks are evaluated and built together first (runPure),
-	// and are reported in the order given once the build is over. The
-	// command checks then run one at a time, each reported as it ends. A
-	// check that fails or cannot run stops no other.
+	// The pure checks are evaluated together and built side by side first
+	// (runPure), each reported in the order given as soon as it and those
+	// before it have ended. The command checks then run one at a time,
+	// each reported as it ends. A check that fails or cannot run stops no
+	// other.
 	var pure, effectful []checkSpec
 	for _, spec := range specs {
 		if spec.runner() == "nix" {
@@ -158,9 +159,7 @@ func cmdRun(args []string) error {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	for _, r := range runPure(tree, *system, pure, *timings) {
-		report(r)
-	}
+	runPure(tree, *system, pure, *timings, report)
 	for _, spec := range effectful {
 		began := time.Now()
 		out := runEffectful(tree, spec)

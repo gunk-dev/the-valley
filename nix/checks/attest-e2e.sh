@@ -297,4 +297,127 @@ fi
   exit 1
 }
 git update-ref -d "refs/replace/$evil"
+
+# ----------------------------------------------------------------------
+# Pure checks, through integrator-e2e's stand-in for nix, which logs every
+# call here. One shared evaluation names every check, and each check is
+# built by a nix build of its own, whose result is that check's. A check
+# that declares a failure (checks/<name>.fails) fails with what it
+# declares. Two checks can share an output, as fixed-output derivations
+# can (checks/<name>.output): one whose own build failed stays failed when
+# the other builds that output. A run with any check that failed or did
+# not evaluate publishes nothing, neither here nor on the remote.
+cp -r "$nixStandIn" "$TMPDIR/stand-ins"
+chmod -R +w "$TMPDIR/stand-ins"
+patchShebangs "$TMPDIR/stand-ins" > /dev/null
+nixlog="$TMPDIR/nix.log"
+mkdir -p "$TMPDIR/nix-bin"
+for tool in nix nix-store; do
+  cat > "$TMPDIR/nix-bin/$tool" <<EOF
+#!$(command -v bash)
+printf '%s %s\n' "$tool" "\$*" >> "$nixlog"
+exec "$TMPDIR/stand-ins/$tool" "\$@"
+EOF
+  chmod +x "$TMPDIR/nix-bin/$tool"
+done
+export PATH="$TMPDIR/nix-bin:$PATH" VALLEY_FAKE_STORE="$TMPDIR/store"
+export XDG_STATE_HOME="$TMPDIR/state"
+
+pure="$TMPDIR/pure"
+remote="$TMPDIR/pure-remote.git"
+git init --quiet "$pure"
+git init --quiet --bare "$remote"
+cd "$pure" || exit 1
+mkdir -p src checks
+echo source > src/main.txt
+for check in one two broken maker loser; do echo src > "checks/$check.inputs"; done
+echo "the broken check says why" > checks/broken.fails
+echo shared > checks/maker.output
+echo shared > checks/loser.output
+echo "the loser's own build failed" > checks/loser.fails
+git add -A
+git commit --quiet -m "pure checks"
+nothing_on_remote() {
+  if [ -n "$(git --git-dir="$remote" for-each-ref)" ]; then
+    echo "attest-e2e: $1" >&2
+    git --git-dir="$remote" for-each-ref >&2
+    exit 1
+  fi
+}
+pure_run() {
+  : > "$nixlog"
+  attest run --key "$TMPDIR/host" --name "$host" --push "$remote" --branch main "$@"
+}
+
+# Two checks pass and one fails: each keeps its own result, the failing
+# one keeps its own log under its own name, and nothing is published.
+if pure_run --timings --check one --check broken --check two > mixed.out 2> mixed.err; then
+  echo "attest-e2e: a run with a failing pure check succeeded" >&2
+  exit 1
+fi
+grep -qE '^check   one +nix +passed$' mixed.out
+grep -qE '^check   broken +nix +failed$' mixed.out
+grep -qE '^check   two +nix +passed$' mixed.out
+[ "$(grep -c '^--- ' mixed.err)" = 1 ]
+sed -n '/^--- broken ---$/,$p' mixed.err > broken.log
+grep -qx 'the broken check says why' broken.log
+grep -q '1 of 3 checks failed; nothing published' mixed.err
+nothing_published "a run with a failing pure check stored a ref"
+nothing_on_remote "a run with a failing pure check pushed"
+# One evaluation named all three checks, and each had a build of its own.
+[ "$(grep -c '^nix eval ' "$nixlog")" = 1 ]
+grep '^nix eval --json --apply ' "$nixlog" > shared-eval.log
+for check in one broken two; do
+  grep -qF "\"$check\"" shared-eval.log
+  [ "$(grep -cE "^nix build .*/$check-[A-Za-z0-9]{6}\.drv\^\*\$" "$nixlog")" = 1 ]
+done
+[ "$(grep -c '^nix build ' "$nixlog")" = 3 ]
+# Each check is logged with its evaluation time.
+[ "$(grep -c '"runner":"nix".*"eval_ms":' "$XDG_STATE_HOME/valley/timings.jsonl")" = 3 ]
+
+# A check whose own build failed stays failed, though the other check that
+# shares its output built that output.
+if pure_run --check loser --check maker > shared.out 2> shared.err; then
+  echo "attest-e2e: a check whose build failed passed on another's output" >&2
+  exit 1
+fi
+grep -qE '^check   loser +nix +failed$' shared.out
+grep -qE '^check   maker +nix +passed$' shared.out
+[ -f "$VALLEY_FAKE_STORE/shared.out/result" ]
+sed -n '/^--- loser ---$/,$p' shared.err > loser.log
+grep -qx "the loser's own build failed" loser.log
+grep -q '1 of 2 checks failed; nothing published' shared.err
+nothing_published "a run with a failed build behind a shared output stored a ref"
+nothing_on_remote "a run with a failed build behind a shared output pushed"
+
+# A check that does not evaluate is an error for that check alone: the
+# shared evaluation names it as nothing, it is evaluated alone for its own
+# error, and the other check is still built and reported.
+if pure_run --check one --check absent > absent.out 2> absent.err; then
+  echo "attest-e2e: a run with a check that does not evaluate succeeded" >&2
+  exit 1
+fi
+grep -qE '^check   one +nix +passed$' absent.out
+grep -qE '^time    absent +error ' absent.out
+grep -q 'declares no check absent' absent.err
+grep -qE '^nix build .*/one-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog"
+nothing_published "a run with a check that does not evaluate stored a ref"
+nothing_on_remote "a run with a check that does not evaluate pushed"
+
+# When every check passes, the run publishes the branch and one note per
+# check, and each note verifies.
+pure_run --check one --check two --check maker > passing.out 2> passing.err || {
+  echo "attest-e2e: a run whose pure checks pass failed" >&2
+  cat passing.out passing.err >&2
+  exit 1
+}
+puredigest="$(attest digest | sed 's/^valley-tree-v1://')"
+pureref="$(git --git-dir="$remote" for-each-ref --format='%(refname)' "refs/the-valley/attestations/$puredigest")"
+[ -n "$pureref" ]
+[ "$(git --git-dir="$remote" rev-parse refs/heads/main)" = "$(git rev-parse HEAD)" ]
+for check in one two maker; do
+  git --git-dir="$remote" cat-file blob "$pureref:$check/statement.note" > "$check.note"
+  attest verify --note "$check.note" --known-keys "$TMPDIR/known_keys" --repo "$pure" > "$check.verify"
+  grep -q 'matches the recorded subject digest' "$check.verify"
+done
 touch "$out"

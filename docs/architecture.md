@@ -969,16 +969,18 @@ The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 shell command in the exported tree. If every check passes, `attest` writes a statement per check,
 signs it, and stores it under `refs/the-valley/attestations/<tree>/<key-hash>`.
 
-The `nix` checks are built together, so nix can build them side by side instead of one after
-another. One nix evaluation names every check's derivation. One `nix build --keep-going` builds all
-of them, and nix runs as many builds at once as the machine's own `max-jobs` and `cores` settings
-allow. Each check still has its own outcome. After the build, a check passed when every output of
-its derivation is in the nix store, and a check that failed keeps the log nix holds for its
-derivation. A check that does not evaluate is an error for that check alone, and the others are
-still built. The `command` checks run after the build, one at a time. The statements are the ones a
-check built alone would get, and nothing is published unless every check passed. No flake check
-covers this, because a nix build has no daemon to build with. The tests in `attest/run_test.go`
-build real flake checks when `go test` runs on a machine with a nix daemon, and skip otherwise.
+The `nix` checks build side by side instead of one after another. One nix evaluation names every
+check's derivation. Each derivation is then built by a `nix build` of its own, with up to one build
+per CPU running at once. Nix applies `max-jobs` and `cores` within each build, so that bound is how
+many checks build at once. Each check's outcome is its own build's exit status, and a check that
+failed keeps its own build's `stderr` as its log. So a failed build stays failed even when another
+derivation produces the same output path, as two fixed-output derivations can. A check that does not
+evaluate is an error for that check alone, and the others are still built. The `command` checks run
+after the `nix` checks, one at a time. The statements are the ones a check built alone would get,
+and nothing is published unless every check passed. Checked by `attest-e2e`, through
+integrator-e2e's stand-in for nix, and against a real nix by the tests in `attest/run_test.go`. A
+nix build has no daemon to build with, so those tests run under `go test` on a machine with nix, and
+skip elsewhere.
 
 A statement is line-based text that opens with `the-valley/attestation/v1` (`attest/text.go`,
 `schema/attestation.cue`). Its subject is the tree digest. A pure statement records the derivation,
@@ -1283,13 +1285,13 @@ each check, with its result, its duration, and whether nix found its output alre
 `[a]pprove` passes `attest run --timings`, which appends one JSON line per check to
 `$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
 names the repository, the change and version, the head, the check, its runner and declared cost, its
-result, and `duration_ms`. A `nix` check's line also gives its evaluation time, `eval_ms`. The `nix`
-checks are built together and nix gives no time for one of them, so each one's `duration_ms` is the
-whole nix stage's. The log stays local and is not evidence: nothing signs it or pushes it. A log
-that cannot be written is a warning, and approval continues. Timing never holds approval up:
-anything at the log's path that is not a regular file is refused at once, and a `time` line, warning
-or log line that cannot be written within a second is dropped. The reference describes
-[the timing log](reference.md#the-timing-log) field by field.
+result, and `duration_ms`. A `nix` check's line also gives its evaluation time, `eval_ms`, which is
+part of its `duration_ms`. The `nix` checks share one evaluation and build at the same time, so the
+sum of a run's `duration_ms` is more than the run took. The log stays local and is not evidence:
+nothing signs it or pushes it. A log that cannot be written is a warning, and approval continues.
+Timing never holds approval up: anything at the log's path that is not a regular file is refused at
+once, and a `time` line, warning or log line that cannot be written within a second is dropped. The
+reference describes [the timing log](reference.md#the-timing-log) field by field.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
 branch no record is on is requested under its name with each `/` replaced by `-`. A branch whose

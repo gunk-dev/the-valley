@@ -567,17 +567,20 @@ attest key --key ~/.ssh/valley-attest --name operator
     — prints a `time` line per check. `--timings` appends each check's timing to the
     [timing log](#the-timing-log); `--change`, `--change-version` and `--cost` supply the fields
     `attest` cannot read itself.
-    - Runs every `nix` check first, all together. One nix evaluation names every check's derivation.
-      One `nix build --no-link --keep-going` then builds all of them, so nix builds them side by
-      side under the machine's own `max-jobs` and `cores` settings. `attest` sets neither.
-    - Decides each `nix` check on its own after the build. A check passed when every output of its
-      derivation is in the nix store. A check that failed keeps the log `nix log <drv>` holds for
-      its derivation. When nix holds none, such as for a check whose dependency failed, its log is
-      what the whole build wrote on `stderr`.
+    - Runs every `nix` check first. One nix evaluation names every check's derivation.
+    - Builds each derivation in a `nix build --no-link --print-out-paths <drv>^*` of its own. Up to
+      one build runs per CPU at a time, and the nix daemon runs them side by side. Checks with the
+      same derivation share its one build.
+    - The machine's `max-jobs` and `cores` settings apply within each build, not across them. So up
+      to one check derivation per CPU builds at once.
+    - Decides each `nix` check by its own build, as when checks were built one at a time. A check
+      passed when its build succeeded. A check that failed keeps its own build's `stderr` as its
+      log. A build that prints other than one output path is an error, since a check attribute must
+      produce exactly one.
     - A check that does not evaluate is an error for that check alone. Every other check is still
       built and reported. When the shared evaluation stops at an error nix cannot catch, such as a
       type error, each check is evaluated on its own.
-    - Runs the `command` checks after the build, one at a time, in the order given.
+    - Runs the `command` checks after the `nix` checks, one at a time, in the order given.
     - Prints each check's `check` and `time` lines, then the log of every check that failed, under
       `--- <name> ---` on `stderr`. Publishes nothing unless every check passed, and exits `1`.
   - `attest verify --note <file> --known-keys <file> [--signer <name>]... [--schema <file>] [--repo <dir>] [--rev <rev>]`
@@ -740,12 +743,13 @@ $ tail -n 1 ~/.local/state/valley/timings.jsonl
 
 `attest run --timings` appends one line per check to
 `${XDG_STATE_HOME:-$HOME/.local/state}/valley/timings.jsonl`, whether the check passed or failed.
-The lines for the `nix` checks are appended when their shared build ends, and the line for each
-`command` check when it finishes. It creates the file and its directory when they are missing,
-readable by their owner alone. A log that others can read is made readable by its owner alone before
-a line is added. Anything at the path that is not a regular file, such as a FIFO, is refused.
-`valley approve` passes `--timings` whenever it runs checks. Without the flag, `attest run` prints
-its `time` lines, writes no log, and does not ask the nix store whether an output is already there.
+The line for a `nix` check is appended once it and every `nix` check before it have ended, and the
+line for each `command` check when it finishes. It creates the file and its directory when they are
+missing, readable by their owner alone. A log that others can read is made readable by its owner
+alone before a line is added. Anything at the path that is not a regular file, such as a FIFO, is
+refused. `valley approve` passes `--timings` whenever it runs checks. Without the flag, `attest run`
+prints its `time` lines, writes no log, and does not ask the nix store whether an output is already
+there.
 
 - `time` (`string`): When the check started, in UTC, to the millisecond. Every `nix` check starts
   when the shared evaluation starts.
@@ -766,10 +770,11 @@ its `time` lines, writes no log, and does not ask the nix store whether an outpu
   store could not be asked or did not answer within five seconds. `attest run` runs every check it
   is given, so it never reuses evidence that already exists.
 - `duration_ms` (`integer`): The check's wall time in milliseconds. For a `command` check, it is the
-  time the command ran. The `nix` checks are built together, and nix gives no time for one
-  derivation in a build of many. So for a `nix` check, it is the wall time of the whole nix stage:
-  the shared evaluation, the one build, and deciding each check's outcome. Every `nix` check that
-  evaluated has the same value. A `nix` check that does not evaluate ends at its evaluation error.
+  time the command ran. For a `nix` check, it is the check's evaluation (`eval_ms`), the store
+  probe, and the time its own build ran. A `nix` check that does not evaluate ends at its evaluation
+  error.
+  - Summing `duration_ms` over one run's checks overcounts the run's wall time. Every `nix` check
+    counts the one shared evaluation, and the `nix` checks build at the same time.
 - `eval_ms` (`integer`): How long evaluating a `nix` check took, in milliseconds. It counts the
   shared evaluation of all the `nix` checks, plus the time spent on this check alone, such as
   digesting its inputs or evaluating it on its own. Omitted for a `command` check.

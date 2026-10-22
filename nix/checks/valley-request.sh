@@ -1374,7 +1374,7 @@ fi
 #     writes it (signers-e2e drives the publisher itself). Both of the
 #     project's checks use the nix runner, through integrator-e2e's
 #     stand-in for nix, wrapped so that every call is logged: a check that
-#     ran is a check whose attribute the log names.
+#     ran is a check the log shows a build of.
 r="$w/reuse"
 mkdir -p "$r/bin" "$r/keys"
 cp -r "$integratorE2e" "$r/stand-ins"
@@ -1604,7 +1604,7 @@ grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out
 grep -qxF "valley: not reusing code-build: the integrator judges it by refs/the-valley/attestations/$partialdigest/$workerhash:code-build/statement.note, and its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
 grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
 grep -qE '^check   code-build +nix +passed$' "$w/partial.out"
-if ! grep -q '^nix eval .*#checks\.[^.]*\.code-build\.drvPath$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
+if ! grep -qE '^nix build .*/code-build-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
   echo "valley-request: a partly covered approval did not run exactly the missing check" >&2
   cat "$nixlog" >&2
   exit 1
@@ -1920,7 +1920,7 @@ approving elsewhere-built valley approve origin/elsewhere
 grep -qF "valley: not reusing prose-format: the integrator judges it by $(under elsewhere "$workerhash"):prose-format/statement.note, and none of its signers counts in project project" "$w/elsewhere-built.err"
 grep -qx "checking elsewhere at $(git rev-parse --short elsewhere): prose-format" "$w/elsewhere-built.out"
 grep -qx "  evidence $(under elsewhere "$operatorhash")" "$w/elsewhere-built.out"
-if ! grep -q '^nix eval .*#checks\.[^.]*\.prose-format\.drvPath$' "$nixlog" \
+if ! grep -qE '^nix build .*/prose-format-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog" \
   || grep -q '^  reused ' "$w/elsewhere-built.out"; then
   echo "valley-request: approve did not build the check whose only signer counts elsewhere" >&2
   cat "$w/elsewhere-built.out" "$nixlog" >&2

@@ -238,27 +238,30 @@ func evalDrvPaths(tree, system string, attrs []string) map[string]string {
 	return drvs
 }
 
-// runPure runs every pure check together and returns their runs in the
-// order given. It evaluates them all (evalClosures), then builds every
-// derivation that evaluated in one nix build, so nix builds them side by
-// side under the machine's own max-jobs and cores settings. --keep-going
-// lets every build finish whatever another does.
+// buildSlots is how many nix build processes runPure runs at once.
+var buildSlots = runtime.NumCPU()
+
+// runPure runs every pure check and returns their runs in the order given.
+// It evaluates them all together (evalClosures), then builds each
+// derivation that evaluated in a nix build of its own, buildSlots of them
+// at once, so the nix daemon builds them side by side. Checks that
+// evaluate to the same derivation share its one build. With report, it
+// hands each run to report in the order given, as soon as that check and
+// every one before it have ended.
 //
-// Each check's outcome is still its own, decided from the store after the
-// build: it passed when every output of its derivation is there. Building
-// from the derivation path rather than the attribute a second time
-// guarantees the thing built is the thing recorded. With probe, it first
-// asks the nix store whether each output is already there, for the check's
-// timing; without, it asks nothing before the build.
+// Each check's outcome is its own derivation's build: the exit status and
+// standard error of the nix build that built it, exactly as when checks
+// were built one at a time. With probe, it first asks the nix store
+// whether each output is already there, for the check's timing; without,
+// it asks nothing about outputs.
 //
-// A check is timed from the start of the evaluation. One that does not
-// evaluate ends there. Every other one ends when the whole build does,
-// since nix gives no time for one derivation in a build of many.
-func runPure(tree, system string, specs []checkSpec, probe bool) []ranCheck {
+// A check is timed from the start of the shared evaluation. Its duration
+// is its evaluation, its probe, and its derivation's build. One that does
+// not evaluate ends at its evaluation error.
+func runPure(tree, system string, specs []checkSpec, probe bool, report func(ranCheck)) []ranCheck {
 	began := time.Now()
 	evals := evalClosures(tree, system, specs)
 	runs := make([]ranCheck, len(specs))
-	var drvs []string
 	for i, spec := range specs {
 		e := evals[i]
 		runs[i] = ranCheck{out: checkOutcome{spec: spec}, began: began, took: e.took, eval: e.took, err: e.err}
@@ -267,68 +270,66 @@ func runPure(tree, system string, specs []checkSpec, probe bool) []ranCheck {
 		}
 		runs[i].out.derivation, runs[i].out.inputs = e.derivation, e.inputs
 		if probe {
+			probed := time.Now()
 			runs[i].out.satisfied = outputsCached(e.drv)
+			runs[i].took += time.Since(probed)
 		}
-		drvs = append(drvs, e.drv)
-	}
-	if len(drvs) == 0 {
-		return runs
 	}
 
-	buildLog := buildAll(tree, drvs)
+	slots := make(chan struct{}, max(buildSlots, 1))
+	builds := map[string]*drvBuild{}
+	for i := range runs {
+		drv := evals[i].drv
+		if runs[i].err != nil || builds[drv] != nil {
+			continue
+		}
+		b := &drvBuild{done: make(chan struct{})}
+		builds[drv] = b
+		go func() {
+			defer close(b.done)
+			slots <- struct{}{}
+			defer func() { <-slots }()
+			built := time.Now()
+			b.paths, b.log, b.err = nix(tree, "build", "--no-link", "--print-out-paths", drv+"^*")
+			b.took = time.Since(built)
+		}()
+	}
 	for i := range runs {
 		if runs[i].err == nil {
-			runs[i].err = pureOutcome(tree, evals[i].drv, buildLog, &runs[i].out)
+			b := builds[evals[i].drv]
+			<-b.done
+			runs[i].took += b.took
+			runs[i].err = pureOutcome(b, &runs[i].out)
 		}
-	}
-	took := time.Since(began)
-	for i := range runs {
-		if evals[i].err == nil {
-			runs[i].took = took
+		if report != nil {
+			report(runs[i])
 		}
 	}
 	return runs
 }
 
-// buildAll builds every output of every derivation given in one nix build,
-// and returns what nix wrote on standard error. Its exit status says
-// nothing about any one check, and when any build fails nix prints no
-// output path at all, so neither is read: each check's outcome is read
-// from the store afterwards.
-func buildAll(tree string, drvs []string) string {
-	args := []string{"build", "--no-link", "--keep-going"}
-	seen := map[string]bool{}
-	for _, drv := range drvs {
-		if !seen[drv] {
-			seen[drv] = true
-			args = append(args, drv+"^*")
-		}
-	}
-	_, errb, err := nix(tree, args...)
-	if log := strings.TrimSpace(errb); log != "" || err == nil {
-		return log
-	}
-	return err.Error()
+// drvBuild is the nix build of one derivation: what it printed on standard
+// output and on standard error, how it ended, and how long it took. done
+// is closed once it has ended.
+type drvBuild struct {
+	done  chan struct{}
+	paths string
+	log   string
+	err   error
+	took  time.Duration
 }
 
-// pureOutcome decides one pure check after the shared build, and digests
-// its output when it passed. A check whose outputs are not all in the
-// store failed, and its log is the one nix kept for its derivation. A
-// derivation nix holds no log for, such as one whose dependency failed so
-// that it never started, gets the whole build's log instead.
-func pureOutcome(tree, drv, buildLog string, out *checkOutcome) error {
-	paths, built, err := storeOutputs(context.Background(), drv)
-	if err != nil {
-		return fmt.Errorf("%s: %w", out.spec.name, err)
-	}
-	if !built {
-		log, _, err := nix(tree, "log", drv)
-		out.log = strings.TrimSpace(log)
-		if err != nil || out.log == "" {
-			out.log = buildLog
-		}
+// pureOutcome decides one pure check from its derivation's build, and
+// digests the output when the build succeeded. Building from the
+// derivation path rather than the attribute a second time guarantees the
+// thing built is the thing recorded. The build's standard error is the
+// check's log.
+func pureOutcome(b *drvBuild, out *checkOutcome) error {
+	out.log = strings.TrimSpace(b.log)
+	if b.err != nil {
 		return nil // a failed check is an outcome, not an error
 	}
+	paths := strings.Fields(b.paths)
 	if len(paths) != 1 {
 		return fmt.Errorf("%s produced %d outputs; a check attribute must produce exactly one", out.spec.name, len(paths))
 	}
@@ -339,24 +340,6 @@ func pureOutcome(tree, drv, buildLog string, out *checkOutcome) error {
 	out.output = treeDigest(entries)
 	out.passed = true
 	return nil
-}
-
-// storeOutputs names every output of a derivation and says whether all of
-// them are in the local nix store.
-func storeOutputs(ctx context.Context, drv string) ([]string, bool, error) {
-	outputs, errb, err := nixStore(ctx, "--query", "--outputs", drv)
-	if err != nil {
-		return nil, false, fmt.Errorf("querying the outputs of %s: %w: %s", drv, err, strings.TrimSpace(errb))
-	}
-	paths := strings.Fields(outputs)
-	if len(paths) == 0 {
-		return nil, false, fmt.Errorf("%s names no outputs", drv)
-	}
-	invalid, errb, err := nixStore(ctx, append([]string{"--check-validity", "--print-invalid"}, paths...)...)
-	if err != nil {
-		return nil, false, fmt.Errorf("checking the outputs of %s: %w: %s", drv, err, strings.TrimSpace(errb))
-	}
-	return paths, strings.TrimSpace(invalid) == "", nil
 }
 
 // drvInputs collects the store paths a derivation reads: the derivations

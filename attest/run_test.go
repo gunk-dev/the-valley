@@ -15,10 +15,11 @@ import (
 )
 
 // These tests run attest against the machine's real nix: they evaluate and
-// build flake checks, so they need a nix daemon to talk to, and skip where
-// there is none, as inside a nix build. attest itself is this test binary,
-// run again with ATTEST_AS_MAIN set, so what is run is the program's own
-// main with real standard output and error.
+// build flake checks, so they need a nix daemon to talk to. They skip where
+// there is none, as inside a nix build, unless ATTEST_NIX_TESTS=require,
+// which makes a missing nix fail them instead. attest itself is this test
+// binary, run again with ATTEST_AS_MAIN set, so what is run is the
+// program's own main with real standard output and error.
 
 func TestMain(m *testing.M) {
 	if os.Getenv("ATTEST_AS_MAIN") != "" {
@@ -45,16 +46,20 @@ type nixFixture struct {
 
 func newNixFixture(t *testing.T, checks map[string]string) nixFixture {
 	t.Helper()
+	skip := t.Skipf
+	if os.Getenv("ATTEST_NIX_TESTS") == "require" {
+		skip = t.Fatalf
+	}
 	for _, tool := range []string{"nix", "nix-store", "git", "cue", "ssh-keygen"} {
 		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("%s is not available: %v", tool, err)
+			skip("%s is not available: %v", tool, err)
 		}
 	}
-	// A client may send max-jobs to the daemon, so the side-by-side test
-	// does not depend on how this machine is configured.
+	// A client may send max-jobs to the daemon, so how this machine is
+	// configured does not decide what the tests see.
 	nixConfig := os.Getenv("NIX_CONFIG") + "\nextra-experimental-features = nix-command flakes\nmax-jobs = 4\n"
 	if out, err := exec.Command("env", "NIX_CONFIG="+nixConfig, "nix", "store", "info").CombinedOutput(); err != nil {
-		t.Skipf("no nix store to build in: %v: %s", err, out)
+		skip("no nix store to build in: %v: %s", err, out)
 	}
 	t.Setenv("NIX_CONFIG", nixConfig)
 
@@ -157,8 +162,8 @@ func (f nixFixture) published(t *testing.T) string {
 
 // sequentialOutcome is what the sequential run made of one pure check that
 // passes: an evaluation of the check alone, then a nix build of its
-// derivation alone, whose printed output path is digested. A batch must
-// decide each check as this did.
+// derivation alone, whose printed output path is digested. A run of many
+// checks must decide each one as this did.
 func sequentialOutcome(t *testing.T, tree string, spec checkSpec) checkOutcome {
 	t.Helper()
 	c, err := evalClosure(tree, nixSystem(), spec)
@@ -198,11 +203,12 @@ func statementText(t *testing.T, subj subject, out checkOutcome) string {
 	return string(text)
 }
 
-// Three checks built together, one of which fails. The two that pass are
-// recorded exactly as the sequential run recorded them, the one that fails
-// keeps its own log, and nothing is published. The same two checks without
-// the failing one publish statements a sequential run would have signed.
-func TestABatchDecidesEachCheckAlone(t *testing.T) {
+// Three checks built side by side, one of which fails. The two that pass
+// are recorded exactly as the sequential run recorded them, the one that
+// fails keeps its own log, and nothing is published. The same two checks
+// without the failing one publish statements a sequential run would have
+// signed.
+func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 	f := newNixFixture(t, map[string]string{
 		"one":    `check "one" "echo one > $out"`,
 		"two":    `check "two" "echo two > $out"`,
@@ -217,7 +223,7 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 			t.Errorf("the run did not report %q:\n%s", want, stdout)
 		}
 	}
-	if !strings.Contains(stderr, "\n--- broken ---\nthe broken check says why\n") {
+	if _, log, _ := strings.Cut(stderr, "\n--- broken ---\n"); !strings.Contains(log, "the broken check says why") {
 		t.Errorf("the failing check's log was lost:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "1 of 3 checks failed; nothing published") {
@@ -228,8 +234,7 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 	}
 
 	// Each check is logged on its own line, with the fields it always had
-	// and its evaluation time. The two that were built share one duration:
-	// the build's.
+	// and its evaluation time, which is part of its duration.
 	data, err := os.ReadFile(filepath.Join(f.state, "valley", "timings.jsonl"))
 	if err != nil {
 		t.Fatal(err)
@@ -239,14 +244,12 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 		t.Fatalf("the timing log holds %d lines, want 3:\n%s", len(lines), data)
 	}
 	results := map[string]string{}
-	durations := map[int64]bool{}
 	for _, line := range lines {
 		var timing checkTiming
 		if err := json.Unmarshal([]byte(line), &timing); err != nil {
 			t.Fatal(err)
 		}
 		results[timing.Check] = timing.Result
-		durations[timing.DurationMS] = true
 		if timing.EvalMS <= 0 || timing.EvalMS > timing.DurationMS || timing.Satisfied != satisfiedRan {
 			t.Errorf("a pure check's timing reads %s", line)
 		}
@@ -254,12 +257,9 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 	if results["one"] != "passed" || results["two"] != "passed" || results["broken"] != "failed" {
 		t.Errorf("the timing log records the results %v", results)
 	}
-	if len(durations) != 1 {
-		t.Errorf("checks built together logged different durations: %s", data)
-	}
 
-	// The two that passed, decided in the batch with the failing one, are
-	// the outcomes the sequential run made of them.
+	// The two that passed, decided beside the failing one, are the
+	// outcomes the sequential run made of them.
 	tree := t.TempDir()
 	if err := exportTree(f.repo, "HEAD", tree); err != nil {
 		t.Fatal(err)
@@ -269,7 +269,7 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []checkSpec{{name: "one", attribute: "one"}, {name: "broken", attribute: "broken"}, {name: "two", attribute: "two"}}
-	runs := runPure(tree, nixSystem(), specs, false)
+	runs := runPure(tree, nixSystem(), specs, false, nil)
 	for i, r := range runs {
 		if r.err != nil {
 			t.Fatalf("%s: %v", specs[i].name, r.err)
@@ -282,7 +282,7 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 	for _, i := range []int{0, 2} {
 		want := statementText(t, subj, sequentialOutcome(t, tree, specs[i]))
 		if got := statementText(t, subj, runs[i].out); got != want {
-			t.Errorf("%s in a batch:\n%s\nalone:\n%s", specs[i].name, got, want)
+			t.Errorf("%s beside the others:\n%s\nalone:\n%s", specs[i].name, got, want)
 		}
 		sequential[specs[i].name] = want
 	}
@@ -312,7 +312,7 @@ func TestABatchDecidesEachCheckAlone(t *testing.T) {
 
 // Two slow checks build side by side: the run takes about as long as one
 // of them, not as long as both.
-func TestABatchBuildsChecksSideBySide(t *testing.T) {
+func TestChecksBuildSideBySide(t *testing.T) {
 	// The sandbox's /bin/sh may have no sleep, so each check waits on a
 	// read that never ends a line and times out.
 	const sleep = 5 * time.Second
@@ -368,5 +368,33 @@ func TestAnEvaluationErrorStopsNoOtherCheck(t *testing.T) {
 				t.Errorf("a run with a check that does not evaluate published:\n%s", refs)
 			}
 		})
+	}
+}
+
+// A check attribute produces exactly one output, so a derivation with two
+// is an error for that check alone, and the check beside it still passes.
+func TestACheckWithTwoOutputsIsAnError(t *testing.T) {
+	f := newNixFixture(t, map[string]string{
+		"fine": `check "fine" "echo fine > $out"`,
+		"split": `derivation {
+          name = "split";
+          inherit system;
+          builder = "/bin/sh";
+          args = [ (builtins.toFile "split.sh" "echo a > $out; echo b > $dev") ];
+          outputs = [ "out" "dev" ];
+        }`,
+	})
+	stdout, stderr, err := f.attest(t, "--check", "split", "--check", "fine")
+	if err == nil {
+		t.Fatalf("a run with a two-output check succeeded:\n%s%s", stdout, stderr)
+	}
+	if !strings.Contains(stdout, checkLine("fine", "passed")) || !strings.Contains(stdout, fmt.Sprintf("time    %-24s %-8s ", "split", "error")) {
+		t.Errorf("the run did not report the two checks apart:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "split produced 2 outputs; a check attribute must produce exactly one") {
+		t.Errorf("the two-output check's error is not reported:\n%s", stderr)
+	}
+	if refs := f.published(t); refs != "" {
+		t.Errorf("a run with a two-output check published:\n%s", refs)
 	}
 }

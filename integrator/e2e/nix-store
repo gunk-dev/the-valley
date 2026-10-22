@@ -3,13 +3,13 @@
 # the derivations it writes. One opaque store path per input file, named by
 # the file's content, which is what makes the closure content-addressed.
 # It also names a derivation's one output, where the nix stub builds it,
-# and says which outputs are not built yet.
+# and says which outputs are not built yet, for attest's timing probe.
 set -euo pipefail
 
 case "${1:-} ${2:-}" in
   "--query --outputs")
     drv="${*: -1}"
-    printf '%s\n' "${drv%.drv}.out"
+    if [ -f "$drv.output" ]; then cat "$drv.output"; else printf '%s\n' "${drv%.drv}.out"; fi
     exit 0
     ;;
   "--check-validity --print-invalid")

@@ -26,15 +26,44 @@ fi
 store="${VALLEY_FAKE_STORE:?VALLEY_FAKE_STORE is not set}"
 mkdir -p "$store"
 
+# derive <tree> <attr>: evaluate one check, writing its derivation into the
+# store and printing the derivation's path. A check that declares a
+# failure (checks/<name>.fails) or an output it shares with other checks
+# (checks/<name>.output, as fixed-output derivations can) carries that
+# beside its derivation, for the build.
+derive() {
+  local tree="$1" attr="$2" list drv path f
+  list="$tree/checks/$attr.inputs"
+  [ -f "$list" ] || { echo "nix (stub): $tree declares no check $attr" >&2; return 1; }
+  drv="$(mktemp "$store/$attr-XXXXXX.drv")"
+  while read -r path; do
+    [ -n "$path" ] || continue
+    while IFS= read -r f; do
+      printf '%s %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "${f#"$tree"/}" >> "$drv"
+    done < <(find "$tree/$path" -type f | LC_ALL=C sort)
+  done < "$list"
+  [ -s "$drv" ] || { echo "nix (stub): check $attr reads nothing" >&2; return 1; }
+  if [ -f "$tree/checks/$attr.fails" ]; then cp "$tree/checks/$attr.fails" "$drv.fails"; fi
+  if [ -f "$tree/checks/$attr.output" ]; then
+    printf '%s/%s.out\n' "$store" "$(cat "$tree/checks/$attr.output")" > "$drv.output"
+  fi
+  printf '%s' "$drv"
+}
+
 case "${1:-}" in
   eval)
-    # The flake reference is the one argument naming a check attribute.
-    spec=""
-    for a in "$@"; do case "$a" in *'#checks.'*) spec="$a" ;; esac; done
+    # The flake reference is the one argument naming a check attribute,
+    # and --apply, when given, is followed by the expression applied.
+    spec="" apply="" prev=""
+    for a in "$@"; do
+      case "$a" in *'#checks.'*) spec="$a" ;; esac
+      [ "$prev" != --apply ] || apply="$a"
+      prev="$a"
+    done
     [ -n "$spec" ] || { echo "nix (stub): no #checks. reference in: $*" >&2; exit 2; }
     tree="${spec%%#*}"
     rest="${spec#*#checks.}"
-    if [ "$rest" = "${rest%.drvPath}" ]; then
+    if [ "$rest" = "${rest%.drvPath}" ] && [ "$apply" = builtins.attrNames ]; then
       # `nix eval --json --apply builtins.attrNames …#checks.<system>`:
       # every check the tree declares.
       names=""
@@ -46,25 +75,34 @@ case "${1:-}" in
       printf '[%s]\n' "$names"
       exit 0
     fi
+    if [ "$rest" = "${rest%.drvPath}" ]; then
+      # attest's shared evaluation, `nix eval --json --apply <expression>
+      # …#checks.<system>`: the derivation of every check the expression
+      # names, each as a quoted string, and null for a check that does not
+      # evaluate.
+      out=""
+      while IFS= read -r quoted; do
+        attr="${quoted//\"/}"
+        if drv="$(derive "$tree" "$attr" 2> /dev/null)"; then
+          value="\"$drv\""
+        else
+          value=null
+        fi
+        out="${out:+$out,}\"$attr\":$value"
+      done < <(grep -o '"[^"]*"' <<< "$apply")
+      printf '{%s}\n' "$out"
+      exit 0
+    fi
     attr="${rest#*.}"
-    attr="${attr%.drvPath}"
-    list="$tree/checks/$attr.inputs"
-    [ -f "$list" ] || { echo "nix (stub): $tree declares no check $attr" >&2; exit 1; }
-    drv="$(mktemp "$store/$attr-XXXXXX.drv")"
-    while read -r path; do
-      [ -n "$path" ] || continue
-      while IFS= read -r f; do
-        printf '%s %s\n' "$(sha256sum < "$f" | cut -d' ' -f1)" "${f#"$tree"/}" >> "$drv"
-      done < <(find "$tree/$path" -type f | LC_ALL=C sort)
-    done < "$list"
-    [ -s "$drv" ] || { echo "nix (stub): check $attr reads nothing" >&2; exit 1; }
-    printf '%s' "$drv"
+    derive "$tree" "${attr%.drvPath}"
     ;;
   build)
-    # `nix build --no-link --keep-going <drv>^*...`: every derivation
-    # named, each to the one output beside it, where the nix-store stub
-    # finds it. The output is a function of the derivation, as a build's
-    # output ought to be.
+    # `nix build --no-link --print-out-paths <drv>^*`: every derivation
+    # named, each to its one output, where the nix-store stub finds it. The
+    # output is a function of the derivation, as a build's output ought to
+    # be, or, when checks share it, of its name. A check that declares a
+    # failure fails with what it declares, on standard error, and builds
+    # nothing.
     status=0
     for a in "$@"; do
       case "$a" in
@@ -75,9 +113,25 @@ case "${1:-}" in
             status=1
             continue
           fi
-          out="${drv%.drv}.out"
-          mkdir -p "$out"
-          cp "$drv" "$out/result"
+          if [ -f "$drv.fails" ]; then
+            cat "$drv.fails" >&2
+            status=1
+            continue
+          fi
+          # Written beside the store and moved into place, so two builds
+          # of one output at once leave it whole, as nix's locks do.
+          if [ -f "$drv.output" ]; then
+            out="$(cat "$drv.output")"
+            mkdir -p "$out"
+            tmp="$(mktemp "$store/.result-XXXXXX")"
+            basename "$out" .out > "$tmp"
+          else
+            out="${drv%.drv}.out"
+            mkdir -p "$out"
+            tmp="$(mktemp "$store/.result-XXXXXX")"
+            cp "$drv" "$tmp"
+          fi
+          mv -f "$tmp" "$out/result"
           printf '%s\n' "$out"
           ;;
       esac

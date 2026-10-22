@@ -28,17 +28,20 @@
   # and a throwaway key: what it publishes, what it refuses to
   # publish, and what a verifier makes of both.
   #
-  # Every check there uses the command runner. The nix runner cannot
-  # be exercised from inside a nix build — there is no daemon in the
-  # sandbox — so what a pure statement looks like is pinned by
-  # attest-schema and by the unit tests over the digest scheme, and
-  # the runner itself is exercised by running the helper outside the
-  # sandbox.
+  # A real nix cannot run inside a nix build — there is no daemon in
+  # the sandbox — so the nix runner is driven through integrator-e2e's
+  # stand-in for nix: the shared evaluation, a build per check, mixed
+  # outcomes, an output two checks share, and what a run with a failed
+  # check refuses to publish. What a pure statement looks like is
+  # pinned by attest-schema and by the unit tests over the digest
+  # scheme, and the runner against a real nix by attest's Go tests
+  # outside the sandbox.
   attest-e2e = pkgs.runCommand "valley-attest-e2e" {
     nativeBuildInputs = [
       pkgs.git
       pkgs.openssh
       packages.attest
     ];
+    nixStandIn = ../../integrator/e2e;
   } (builtins.readFile ./attest-e2e.sh);
 }

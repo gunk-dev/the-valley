@@ -35,10 +35,43 @@ git config --global pager.diff "sed -e 's/^/| /'"
 export EDITOR="$reviewer"
 mkdir -p "$XDG_STATE_HOME"
 
+# wait_for <log> <pattern>: wait until <log> shows <pattern>, and fail
+# after a minute. A review reads every key from the one terminal, so a
+# verdict typed before the prompt that takes it would go to whatever held
+# the terminal then, such as less. Each log waited on here is written by
+# one review only, so no earlier review's output can match.
+wait_for() {
+  local i=0
+  until grep -q -- "$2" "$1" 2> /dev/null; do
+    if [ "$i" -ge 600 ]; then
+      printf 'review-notes: %s never showed %s\n' "$1" "$2" >&2
+      return 1
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+}
+
+# answer_after <log> <prompt> <command> <answers>: wait until the review
+# writing to <log> has asked <prompt>, run <command>, then answer. A page
+# is shown before its prompt, so the command runs after the page is shown
+# and before the answer.
+answer_after() {
+  wait_for "$1" "$2"
+  eval "$3"
+  printf '%b' "$4"
+}
+
 # v opens the editor, RETURN dismisses less's LESSOPEN
-# warning, q leaves the pager, s is the verdict.
-{ printf 'v\nq'; sleep 2; printf 's\n'; sleep 1; } \
-  | script -qec "valley review scratch" /dev/null > session.log 2>&1
+# warning, q leaves the pager, s is the verdict. The verdict
+# waits for its prompt, and the keys stay open until the
+# notes are printed.
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  printf 'v\nq'
+  answer_after session.log 'scratch: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? ' : 's\n'
+  wait_for session.log '5 note(s) on scratch'
+} | script -qec "valley review scratch" /dev/null > session.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' session.log > plain.log
 
 # The anchors, exactly: above every file, on a file header
@@ -64,7 +97,7 @@ grep -q '^| @@ ' plain.log
 # The line the reviewer edited instead of inserting is gone,
 # and said so.
 grep -q 'changed or deleted diff line(s) ignored' plain.log
-! grep -q 'alpha SEVENTEEN' "$XDG_STATE_HOME/valley/notes/scratch.md"
+if grep -q 'alpha SEVENTEEN' "$XDG_STATE_HOME/valley/notes/scratch.md"; then exit 1; fi
 
 # The verdict is unchanged, and the notes come after it.
 grep -q 'skipped scratch; nothing done' plain.log
@@ -77,7 +110,7 @@ notes="$(grep -n '5 note(s) on scratch' plain.log | cut -d: -f1)"
 printf 's\n' | valley review scratch > piped.log
 grep -q '^diff --git a/alpha.md b/alpha.md$' piped.log
 grep -q 'skipped scratch; nothing done' piped.log
-! grep -q 'note(s) on scratch' piped.log
+if grep -q 'note(s) on scratch' piped.log; then exit 1; fi
 
 # The pending list titles each branch by the subject of its first own
 # commit, on the line under its name, and cuts a long one short with … to
@@ -162,8 +195,12 @@ sed -i '/^+layer one$/a one wants a second line' "$f"
 EOF
 chmod +x "$TMPDIR/stack-editor"
 : > "$pushlog"
-{ printf 'v\nq'; sleep 2; printf 's\n'; sleep 1; } \
-  | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stack-tty.log 2>&1
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  printf 'v\nq'
+  answer_after stack-tty.log 'one, 1 of 3: \[n\]ext layer, .*\[s\]top? ' : 's\n'
+  wait_for stack-tty.log '1 note(s) on one'
+} | EDITOR="$TMPDIR/stack-editor" script -qec "valley review pppp" /dev/null > stack-tty.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' stack-tty.log > stack-plain.log
 grep -q 'pppp is a stack of 3 changes; reviewing from the bottom, each against the one below it:$' stack-plain.log
 grep -qxF 'read each layer and go on with [n]; approving pppp at the top lands all 3. [a] on a lower layer lands it and the layers under it, and ends the review.' stack-plain.log
@@ -229,19 +266,6 @@ grep -q '^branch one, log against origin/main:$' stack-one.out
 grep -q '^one: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped one; nothing done$' stack-one.out
 if grep -q 'stack of\|change 1 of' stack-one.out; then exit 1; fi
 
-# answer_after <log> <prompt> <command> <answers>: wait until the review
-# writing to <log> has asked <prompt>, run <command>, then answer. A page
-# is shown before its prompt, so the command runs after the page is shown
-# and before the answer.
-answer_after() {
-  local i=0
-  until grep -q -- "$2" "$1" 2> /dev/null || [ "$i" -ge 600 ]; do
-    sleep 0.1
-    i=$((i + 1))
-  done
-  eval "$3"
-  printf '%b' "$4"
-}
 seed="$(git rev-parse main)" onehead="$(git rev-parse one)"
 
 # [a]pprove at the bottom, on a plain branch under the top, files that
@@ -399,8 +423,12 @@ case "$1" in +*) f="$2" ;; esac
 sed -i '/^+line 9 edited$/a why edit line 9?' "$f"
 EOF
 chmod +x "$TMPDIR/changed-editor"
-{ printf 'v\nq'; sleep 2; printf 's\n'; sleep 1; } \
-  | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1
+# shellcheck disable=SC2094 # the answers wait on the review's own output
+{
+  printf 'v\nq'
+  answer_after changed-tty.log '\[s\]kip? ' : 's\n'
+  wait_for changed-tty.log '1 note(s) on edited'
+} | EDITOR="$TMPDIR/changed-editor" script -qec "valley review mmmm" /dev/null > changed-tty.log 2>&1
 sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' -e 's/\r//g' changed-tty.log > changed-plain.log
 grep -q "| mmmm v2 at [0-9a-f]*: changed since approved v1 at " changed-plain.log
 grep -qx 'lines.md:9: why edit line 9?' "$XDG_STATE_HOME/valley/notes/edited.md"

@@ -92,8 +92,9 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 }
 
 // classify runs `attest verify` over one note and reads the statement back.
-// A note whose only verified signers are restricted to other projects
-// (signerprojects.go) is classified as signed by an unknown signer.
+// A note with no verified signer who counts in this project
+// (note/signerprojects.go) is classified as signed by an unknown signer.
+// The integrator's own signature never counts here.
 func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.Evidence, error) {
 	text, err := noteText(note)
 	if err != nil {
@@ -142,10 +143,17 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.E
 		// A key in the known-signers file signed the note. Its signer
 		// counts here only if the signer projects file lets it count in
 		// this project; a note no such signer signed is a stranger's.
+		//
+		// A signature under the integrator's own name is its
+		// countersignature, added when the note landed (transfer.go). It
+		// vouches for that landing, in the project it landed in, and is
+		// never the check's own signer: a countersigned note copied into
+		// another project counts there only through the signer who made
+		// the claim.
 		ev.Admissible = verdict.UnknownSigner
 		for _, signer := range verifiedSigners(string(out)) {
 			name, _, _ := strings.Cut(signer, "+")
-			if in.signerProjects.counts(name, in.project) {
+			if name != in.signerName && in.signerProjects.Counts(name, in.project) {
 				ev.Admissible, ev.Signer = verdict.Admissible, signer
 				break
 			}

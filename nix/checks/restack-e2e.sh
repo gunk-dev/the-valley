@@ -567,6 +567,23 @@ served_plan
 action "$lands" leave
 family "$lands" | jq -e '.layers[0].state == "uncertain"' > /dev/null \
   || fail "without the keys, the landing is not uncertain: $(family "$lands")"
+# A signer projects file that restricts the integrator name makes that
+# name a signer of check evidence, never the integrator's, so with the keys
+# the same landing is again only uncertain. A file that does not read
+# stops the pass.
+printf '%s served\n' "$integrator_name" > "$w/restricts-the-integrator"
+served_plan --known-signers "$signers" --integrator-name "$integrator_name" \
+  --signer-projects "$w/restricts-the-integrator"
+action "$lands" leave
+family "$lands" | jq -e '.layers[0].state == "uncertain"' > /dev/null \
+  || fail "with the integrator name restricted, the landing is not uncertain: $(family "$lands")"
+printf '%s served\n%s served\n' "$integrator_name" "$integrator_name" > "$w/named-twice"
+if valley-restacker once --report-only --json --repo "$(url restacker "$served")" --state "$w/served-state" \
+  --principal restacker --instance "$w/floor" --known-signers "$signers" --integrator-name "$integrator_name" \
+  --signer-projects "$w/named-twice" > "$w/plan.json" 2> "$w/err"; then
+  fail 'a pass ran with a signer projects file that does not read'
+fi
+grep -q -- "--signer-projects $w/named-twice does not read" "$w/err" || fail "the pass did not say why: $(cat "$w/err")"
 
 # ----------------------------------------------------------------------
 # A pass locks its state directory: a second pass fails while a barrier

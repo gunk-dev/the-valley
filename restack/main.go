@@ -51,6 +51,7 @@ import (
 
 	"the-valley/change"
 	"the-valley/composed"
+	"the-valley/note"
 	"the-valley/rebase"
 )
 
@@ -83,6 +84,10 @@ flags:
                         included; what it runs is killed then (default 10m)
   --known-signers FILE  verifier keys, for landings proved by integrator evidence
   --integrator-name N   the name the integrator signs under
+  --signer-projects F   the signer projects file the integrator reads; while
+                        it names the --integrator-name, no landing is proved
+                        by integrator evidence. A file that does not read
+                        stops the pass
   --attest PATH         the attest helper that checks a note (default: attest on PATH)
   --instance-repo URL   the repository carrying the group's floor
   --instance-ref REF    the ref whose tip carries the floor (refs/heads/main)
@@ -167,6 +172,7 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 	fs.StringVar(&c.verify.Keys, "known-signers", "", "")
 	fs.StringVar(&c.verify.Signer, "integrator-name", "", "")
 	fs.StringVar(&c.verify.Attest, "attest", "", "")
+	signerProjects := fs.String("signer-projects", "", "")
 	fs.StringVar(&c.instanceRepo, "instance-repo", "", "")
 	fs.StringVar(&c.floor.Ref, "instance-ref", "refs/heads/main", "")
 	fs.StringVar(&c.floor.Dir, "instance-policy", "policy/instance", "")
@@ -211,6 +217,15 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 	}
 	if c.verify.Attest == "" {
 		c.verify.Attest, _ = exec.LookPath("attest")
+	}
+	if *signerProjects != "" {
+		data, err := os.ReadFile(*signerProjects)
+		if err != nil {
+			return fmt.Errorf("--signer-projects: %w", err)
+		}
+		if c.verify.SignerProjects, err = note.ParseSignerProjects(data); err != nil {
+			return fmt.Errorf("--signer-projects %s does not read: %w", *signerProjects, err)
+		}
 	}
 	var err error
 	if c.cue, err = exec.LookPath("cue"); err != nil {

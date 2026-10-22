@@ -21,6 +21,13 @@
 // each other: the file must read as verifier keys and hold a key under the
 // name. When it does not, the command says why, naming where each value
 // came from, and verifies no statement.
+//
+// When the publication is read, its signer projects file is read too, if
+// it holds one (note/signerprojects.go). A signer that file names signs
+// check evidence and is never the integrator, so while it names the
+// integrator name no statement is verified (rebase/snapshot.go). A
+// publication whose signer projects file does not read is not used at
+// all.
 
 package main
 
@@ -35,9 +42,10 @@ import (
 )
 
 const (
-	signersRef  = "refs/the-valley/signers"
-	signersKeys = "known-signers"
-	signersName = "integrator-name"
+	signersRef      = "refs/the-valley/signers"
+	signersKeys     = "known-signers"
+	signersName     = "integrator-name"
+	signersProjects = "signer-projects"
 )
 
 // signerVerbs are the verbs that read how far a version has landed, and
@@ -74,8 +82,9 @@ type signerSource struct {
 	keys, name setting // what the flags gave
 
 	resolved      bool
-	found, signer string // what resolve answered
-	temp          string // the published file, written out for attest
+	found, signer string              // what resolve answered
+	projects      note.SignerProjects // and the signer projects file
+	temp          string              // the published file, written out for attest
 }
 
 // verification is the current run's source, which run sets up.
@@ -115,13 +124,13 @@ func takeSignerFlags(args []string) (rest []string, keys, name setting, err erro
 	return rest, keys, name, nil
 }
 
-// resolve is the keys file and the name, or two empty strings when a
-// statement cannot be verified. It reads the publication only for a value
-// neither a flag nor the environment gives, and answers the same on every
-// call.
-func (s *signerSource) resolve() (keys, signer string) {
+// resolve is the keys file, the name and the published signer projects
+// file, or two empty strings when a statement cannot be verified. It reads
+// the publication only for a value neither a flag nor the environment
+// gives, and answers the same on every call.
+func (s *signerSource) resolve() (keys, signer string, projects map[string]map[string]bool) {
 	if s.resolved {
-		return s.found, s.signer
+		return s.found, s.signer, s.projects
 	}
 	s.resolved = true
 	k, n := s.keys, s.name
@@ -146,16 +155,22 @@ func (s *signerSource) resolve() (keys, signer string) {
 		if p != nil && n.value == "" {
 			n = setting{value: p.name, from: p.where, published: true}
 		}
+		if p != nil {
+			s.projects = p.projects
+		}
 	}
 	if k.value == "" || n.value == "" {
-		return "", ""
+		return "", "", nil
 	}
 	if err := agree(k, n); err != nil {
 		fmt.Fprintf(s.stderr, "valley: %v, so no transfer statement is verified\n", err)
-		return "", ""
+		return "", "", nil
+	}
+	if s.projects.Restricts(n.value) {
+		fmt.Fprintf(s.stderr, "valley: %s is restricted to projects by the published %s, so it is a signer of check evidence and not the integrator, and no transfer statement is verified\n", n.named("the integrator name"), signersProjects)
 	}
 	s.found, s.signer = k.value, n.value
-	return s.found, s.signer
+	return s.found, s.signer, s.projects
 }
 
 // agree checks the two values against each other: the name must be one a
@@ -212,9 +227,10 @@ func (s *signerSource) done() {
 // publishedSigners is the serving host's publication, and where it was
 // read.
 type publishedSigners struct {
-	keys  []byte
-	name  string
-	where string
+	keys     []byte
+	name     string
+	projects note.SignerProjects
+	where    string
 }
 
 // readSigners reads the serving host's publication. It is nil, with no
@@ -266,6 +282,15 @@ func readSigners(g git) (*publishedSigners, error) {
 	}
 	if strings.Contains(p.name, "\n") {
 		return nil, fmt.Errorf("%s in %s is more than one line", signersName, p.where)
+	}
+	if blobs[signersProjects] != "" {
+		projects, err := g.output(true, "cat-file", "blob", blobs[signersProjects])
+		if err != nil {
+			return nil, fmt.Errorf("could not read %s in %s", signersProjects, p.where)
+		}
+		if p.projects, err = note.ParseSignerProjects([]byte(projects)); err != nil {
+			return nil, fmt.Errorf("%s in %s does not read: %v", signersProjects, p.where, err)
+		}
 	}
 	return p, nil
 }

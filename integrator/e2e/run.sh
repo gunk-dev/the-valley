@@ -1488,13 +1488,15 @@ holds "the rebased stack landed as one fast-forward, and every layer reads lande
 say "28. a signer restricted to some projects counts in those, and is unknown in every other"
 
 # A check worker's key is in the known-signers file, as it is for every
-# controller that shares the file. The signer projects file lets it count
-# in this project alone. A controller takes the project from the
-# repository it serves, so this one's is "project".
+# controller that shares the file, and so is the integrator's, as a host's
+# registry holds it. The signer projects file lets the worker count in this
+# project alone. A controller takes the project from the repository it
+# serves, so this one's is "project".
 ssh-keygen -q -t ed25519 -N "" -C worker -f "$work/worker"
 worker=worker.valley.invalid/attestations
 cat "$work/known_signers" > "$work/worker_signers"
 attest key --key "$work/worker" --name "$worker" >> "$work/worker_signers"
+attest key --key "$work/integrator" --name "$integrator_name" >> "$work/worker_signers"
 printf '# the check worker builds for this project alone\n%s project\n' "$worker" > "$work/signer_projects"
 restricted=(--known-signers "$work/worker_signers" --signer-projects "$work/signer_projects")
 
@@ -1527,19 +1529,26 @@ holds "in a project not listed for it, the worker's note is classified as a stra
 
 # A signer projects file the controller cannot read stops it before it
 # judges anything: one that names a signer twice, one that names a
-# verifier key line rather than a signer, and one that is not there.
+# verifier key line rather than a signer, one whose projects are joined by
+# a no-break space rather than a space, and one that is not there. So does
+# one that restricts the integrator's own name, under which a worker would
+# also sign transfer statements.
 printf '%s project\n%s elsewhere\n' "$worker" "$worker" > "$work/named_twice"
 attest key --key "$work/worker" --name "$worker" > "$work/key_line"
-for list in named_twice key_line missing; do
-  if reconcile "${restricted[@]}" --signer-projects "$work/$list" > "$work/last.out" 2>&1; then
-    die "a controller given the $list signer projects file ran: $(cat "$work/last.out")"
+printf '%s project\302\240elsewhere\n' "$worker" > "$work/no_break_space"
+printf '%s project\n' "$integrator_name" > "$work/names_the_integrator"
+for list in named_twice key_line no_break_space missing names_the_integrator; do
+  if reconcile "${restricted[@]}" --signer-projects "$work/$list" > "$work/$list.out" 2>&1; then
+    die "a controller given the $list signer projects file ran: $(cat "$work/$list.out")"
   fi
-  grep -q "signer projects file" "$work/last.out" \
-    || die "the $list signer projects file was not named as the reason: $(cat "$work/last.out")"
-  grep -q "^c28 " "$work/last.out" && die "a controller given the $list signer projects file judged c28"
+  grep -q "signer projects file" "$work/$list.out" \
+    || die "the $list signer projects file was not named as the reason: $(cat "$work/$list.out")"
+  grep -q "^c28 " "$work/$list.out" && die "a controller given the $list signer projects file judged c28"
   [ "$(tip)" != "$c28" ] || die "main moved under the $list signer projects file"
 done
-holds "a signer projects file that does not read stops the controller, and nothing lands"
+grep -qF "names $integrator_name, the name the integrator signs under" "$work/names_the_integrator.out" \
+  || die "the integrator's own name was not the reason: $(cat "$work/names_the_integrator.out")"
+holds "a signer projects file that does not read, or restricts the integrator's name, stops the controller, and nothing lands"
 
 # In the project listed for it, the same note lands the change.
 integrate "${restricted[@]}"
@@ -1548,6 +1557,20 @@ grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
 grep -q "check    prose-format .*transferred" "$work/last.out" || die "prose-format did not transfer"
 [ "$(tip)" = "$c28" ] || die "main is not at c28's head"
 holds "in the project listed for it, the same note lands c28"
+
+# Landing countersigned the worker's note: the integrator stored it, with
+# its own signature added, under its own key hash. The second project's
+# controller holds the integrator's key. Copied there, the countersigned
+# note still counts only through the worker, who does not count there.
+countersigned="refs/the-valley/attestations/$c28digest/$ihash"
+git -C "$origin" cat-file blob "$countersigned:prose-format/statement.note" | grep -qF " $integrator_name " \
+  || die "the landing did not countersign the worker's note"
+git -C "$origin" push --quiet "$elsewhere" "$countersigned"
+integrate --repo "$elsewhere" "${restricted[@]}"
+grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
+  || die "the integrator's countersignature made the worker's note count in a project not listed for it"
+[ "$(git -C "$elsewhere" rev-parse main)" != "$c28" ] || die "main moved in the second project"
+holds "the integrator's countersignature does not stand in for the worker in another project"
 
 # A signer the file does not name still counts in the second project. The
 # contributor's note for the same tree arrives there, and replaces the

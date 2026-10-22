@@ -469,7 +469,8 @@ rec {
   # which families it would restack and which it would hold, and builds the
   # writes a pass would push, pushing none. It reads the cap on its
   # automatic versions through the composed-policy reader it shares with
-  # the integrator (../composed). Its unit tests cover request association,
+  # the integrator (../composed), and a signer projects file through the
+  # note module (../note). Its unit tests cover request association,
   # outcome currency, capacity and report bounds, and, against real git,
   # the journal of writes and recovery's decisions, its environment, its
   # scratch repository's identity, its state directory's lock and binding,
@@ -481,6 +482,7 @@ rec {
     src = withLocal ../restack [
       ../change
       ../composed
+      ../note
       ../rebase
     ];
     modRoot = "restack";

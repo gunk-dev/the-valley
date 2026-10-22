@@ -337,6 +337,47 @@ done
 cd "$w/fixture"
 
 # ----------------------------------------------------------------------
+# A signer the signer projects file names signs check evidence and is
+# never the integrator. The publisher refuses a list that names the name it
+# publishes. A client refuses one too, however it came to be published, and
+# a published list that does not read: it verifies no transfer statement.
+# A list naming only a worker leaves the landing as it was. Each list is
+# written on disk beside the published signers, as no publisher writes it.
+printf '%s served\n' "$name" > "$w/restricts-the-integrator"
+if integrator publish-signers --instance-repo "$instance" --known-signers "$signers" \
+  --signer-projects "$w/restricts-the-integrator" > "$w/out" 2> "$w/err"; then
+  fail 'the publisher published a signer projects file that restricts the integrator name'
+fi
+said "names $name, the name the integrator signs under"
+[ "$(git -C "$instance" rev-parse refs/the-valley/signers)" = "$published" ] || fail 'a refused run moved the publication'
+# with_list <file>: the publication, with the file beside the signers.
+with_list() {
+  local blob
+  blob="$(git -C "$instance" hash-object -w "$1")"
+  { git -C "$instance" ls-tree "$published" && printf '100644 blob %s\tsigner-projects\n' "$blob"; } \
+    | git -C "$instance" mktree > "$w/tree"
+  git -C "$instance" update-ref refs/the-valley/signers "$(cat "$w/tree")"
+}
+with_list "$w/restricts-the-integrator"
+client
+changes
+expect "$lands" uncertain 'with a published list that restricts the integrator name'
+said "is restricted to projects by the published signer-projects"
+printf 'worker.valley.invalid/attestations served\302\240instance\n' > "$w/unreadable-list"
+with_list "$w/unreadable-list"
+client
+changes
+expect "$lands" uncertain 'with a published list that does not read'
+said "signer-projects in refs/the-valley/signers in $instance does not read"
+printf 'worker.valley.invalid/attestations served\n' > "$w/worker-list"
+with_list "$w/worker-list"
+client
+changes
+expect "$lands" landed-recorded 'with a published list that restricts only a worker'
+quiet 'could not be verified'
+git -C "$instance" update-ref refs/the-valley/signers "$published"
+
+# ----------------------------------------------------------------------
 # The integrator's key is rotated: the signers file now holds the new key
 # under the same name, and the next landing is signed with it. Until the
 # publisher runs again, a fresh client cannot verify that landing. After

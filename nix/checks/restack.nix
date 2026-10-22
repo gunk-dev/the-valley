@@ -126,8 +126,10 @@ in
   # real integrator lands one change and rejects another whose signed
   # evidence lies about its kind. The planner, reading the shared verifier
   # keys, sees the landed change submitted, which it reads as uncertain
-  # without them, and releases the rejected change's family on the real
-  # outcome, noting the reject.
+  # without them or while a signer projects file restricts the integrator
+  # name, and releases the rejected change's family on the real outcome,
+  # noting the reject. A signer projects file that does not read stops
+  # the pass.
   restack-e2e = pkgs.runCommand "valley-restack-e2e" {
     nativeBuildInputs = [
       pkgs.git

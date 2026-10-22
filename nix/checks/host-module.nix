@@ -29,6 +29,7 @@ let
     integratorSelfHost
     restrictedHost
     spacedSignerProjectsHost
+    unicodeSpacedSignerProjectsHost
     identityHost
     ;
 
@@ -94,6 +95,11 @@ let
       host = spacedSignerProjectsHost;
       says = "services.valley.integrator.signerProjects holds";
       why = "a project with a space in it would be read back as two projects the declaration never listed";
+    }
+    {
+      host = unicodeSpacedSignerProjectsHost;
+      says = "services.valley.integrator.signerProjects holds";
+      why = "a project holding a no-break space would be read back by the integrator as two projects, or refused at start";
     }
     {
       host = conflictingKeysHost;

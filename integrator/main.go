@@ -11,6 +11,7 @@ package main
 
 import (
 	"the-valley/composed"
+	"the-valley/note"
 
 	"flag"
 	"fmt"
@@ -120,9 +121,16 @@ project is the name events carry. In any other project its attestations
 are reported as signed by no signer the integrator holds. A line with a
 name and no project lets that signer count nowhere. A signer the file does
 not name counts wherever the known-signers file lets it. Blank lines and
-lines that open with # are skipped. A file that cannot be read, names a
-signer twice, or names a signer no verifier key can carry stops the
-integrator before it judges anything.
+lines that open with # are skipped. Every name and project is a word of
+printable ASCII. A file that cannot be read, names a signer twice, holds
+a word that is not printable ASCII, names a signer no verifier key can
+carry, or names the integrator's own --name stops the integrator before
+it judges anything.
+
+The integrator's own signature never makes a check's attestation count.
+It countersigns the attestations a landing carried, and that vouches for
+the landing; a countersigned attestation counts, in any project, only
+through another signer who counts there.
 `
 
 // integrator is one controller: which repository it serves, who it signs
@@ -151,8 +159,8 @@ type integrator struct {
 	knownSigners string
 
 	// signerProjects restricts signers in knownSigners to projects
-	// (signerprojects.go). Nil restricts nobody.
-	signerProjects signerProjects
+	// (note/signerprojects.go). Nil restricts nobody.
+	signerProjects note.SignerProjects
 
 	bus          string
 	publishQueue string
@@ -287,7 +295,7 @@ func run(args []string, loop bool) error {
 	if in.project == "" {
 		in.project = projectName(in.repo)
 	}
-	if in.signerProjects, err = readSignerProjects(*signerProjects); err != nil {
+	if in.signerProjects, _, err = readSignerProjects(*signerProjects, in.signerName); err != nil {
 		return err
 	}
 	if in.keyHash, err = in.readKeyHash(); err != nil {

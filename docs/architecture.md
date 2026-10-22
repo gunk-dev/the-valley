@@ -153,7 +153,11 @@ is a tree at `refs/the-valley/signers` in the instance repository. It holds two 
 sign under, on one line. Both are in one tree under one ref, so a client reads both values or
 neither. A host that restricts signers to projects (see
 [Evidence: attest and notes](#evidence-attest-and-notes)) adds a third file, `signer-projects`, the
-signer projects file the controllers read. No `valley` verb reads it (`not built`).
+signer projects file the controllers read. A signer that file names signs check evidence and is
+never the integrator. So while it names the integrator name a client uses, the client verifies no
+transfer statement, and a publication whose `signer-projects` does not read is not used
+(`status/signers.go`, `rebase/snapshot.go`). The restacker applies the same rule to the file it is
+given as `--signer-projects`.
 
 The publisher is `integrator publish-signers` (`integrator/signers.go`). The oneshot service
 `valley-signers` runs it as git (`nix/valley-host.nix`). A host renders the service when the
@@ -992,17 +996,26 @@ A signer can be restricted to projects. This is how a check worker's key can sit
 known-signers file that every controller on a host shares, while its evidence counts only in the
 projects it builds for. The controllers are given a signer projects file (`--signer-projects`,
 rendered from `integrator.signerProjects`) that names each restricted signer and its projects
-(`integrator/signerprojects.go`). In a project not listed for it, the controller classifies a note
-whose only verified signers are restricted elsewhere as signed by an unknown signer, as it
-classifies a stranger's note (`integrator/evidence.go`). A signer the file does not name is not
-restricted. The push hook does not read the file, so it admits a restricted signer's evidence in
-every project, and only the controllers refuse it.
+(`note/signerprojects.go`). In a project not listed for it, the controller classifies a note whose
+only verified signers are restricted elsewhere as signed by an unknown signer, as it classifies a
+stranger's note (`integrator/evidence.go`). A signer the file does not name is not restricted. The
+push hook does not read the file, so it admits a restricted signer's evidence in every project, and
+only the controllers refuse it.
 
-A controller reads the file once, at start. A file that cannot be read, names a signer twice, or
-names a signer no verifier key can carry stops the controller before it judges anything. A changed
+The controller's own signature never makes a check's attestation count. When a change lands, the
+controller countersigns the attestations it carried (`integrator/transfer.go`). That
+countersignature vouches for the landing in the controller's own project. Copied into another
+project, a countersigned attestation counts there only through the signer who made the check claim.
+
+A controller reads the file once, at start. Every name and project in it is printable ASCII with no
+space, and the host module holds the list it renders to the same rule. A file that cannot be read,
+names a signer twice, holds a word that is not printable ASCII, names a signer no verifier key can
+carry, or names the controller's own `--name` stops the controller before it judges anything. The
+last is refused because a restricted signer under the integrator's own name could also sign transfer
+statements, which clients believe in every project. The publisher refuses the same files. A changed
 list does not by itself re-judge a request whose answer is recorded: a request a narrower list held
 back waits until its head, the target's tip or the stored evidence moves. Checked by
-`integrator-e2e`, `integrator-unit`, `module-eval` and `signers-e2e`.
+`integrator-e2e`, `integrator-unit`, `note-unit`, `module-eval`, `signers-e2e` and `restack-e2e`.
 
 Check definitions come from the change being judged. `attest` builds the flake checks of the
 exported tree, so a change can edit the check it is judged by

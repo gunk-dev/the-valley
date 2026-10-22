@@ -1220,7 +1220,10 @@ in
           The list is rendered into a file every controller reads at start.
           A host that publishes its signers publishes the file beside them,
           so a client can read the same restriction. Names and projects are
-          single words.
+          words of printable ASCII with no space, and a name holds no plus
+          and does not open with #. The list may not name the name the
+          controllers sign under: a controller given such a list refuses to
+          start.
         '';
       };
 
@@ -1439,11 +1442,21 @@ in
           assertion = (cfg.integrator.instanceProject == null) != (cfg.integrator.instancePolicy == null);
           message = "exactly one of services.valley.integrator.instanceProject and services.valley.integrator.instancePolicy must be set: the floor is read from the instance repository this host serves, or supplied as a directory for a host that serves none, and two sources for one layer is a question about which one won.";
         }
+        # The rule the integrator reads the rendered file by
+        # (note/signerprojects.go): every name and project is printable
+        # ASCII with no space, so only the spaces this renders separate
+        # words, and a name holds no plus and opens with no #, which
+        # would make its line a comment.
         {
-          assertion = lib.all (word: builtins.match "[^[:space:]]+" word != null) (
-            lib.concatLists (lib.mapAttrsToList (name: projects: [ name ] ++ projects) cfg.integrator.signerProjects)
-          );
-          message = "services.valley.integrator.signerProjects holds an empty name or project, or one with a space in it. The list is rendered one signer per line, its name and projects separated by spaces, so such a word would be read back as some other signer or project. Write each as one word.";
+          assertion =
+            let
+              word = w: builtins.match "[!-~]+" w != null;
+              name = n: word n && !lib.hasInfix "+" n && !lib.hasPrefix "#" n;
+            in
+            lib.all (n: name n && lib.all word cfg.integrator.signerProjects.${n}) (
+              lib.attrNames cfg.integrator.signerProjects
+            );
+          message = "services.valley.integrator.signerProjects holds a name or project that is empty or not printable ASCII with no space, or a name with a plus or an opening #. The list is rendered one signer per line, its name and projects separated by spaces, and read back by that rule, so such a word would be read as some other signer or project, or refused. Write each as one such word.";
         }
         {
           assertion =

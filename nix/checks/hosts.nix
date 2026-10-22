@@ -299,6 +299,24 @@ in
     };
   };
 
+  # The same two projects joined by a no-break space, U+00A0, which Nix's
+  # [:space:] does not match and Go's unicode.IsSpace does. Nix strings
+  # have no escape for it, so it is decoded from JSON.
+  unicodeSpacedSignerProjectsHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+        signerProjects."worker.valley.invalid/attestations" = [
+          "guarded${builtins.fromJSON ''"\u00a0"''}sealed"
+        ];
+      };
+    };
+  };
+
   # One key declared untagged and tagged: which principal it pushes as
   # would depend on which line sshd reads first.
   conflictingKeysHost = mkHost {

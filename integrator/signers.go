@@ -60,13 +60,14 @@ moving the ref, so a run that read an older file cannot publish it over
 a newer one.
 
 The file must read as verifier keys, the name must be one a verifier key
-can carry, and a signer projects file must read as watch reads one. A
-file that holds no key under the name, or no key at all, is published
-all the same, because it is what the controller uses. So when every
-signing key is revoked, the publication drops the old keys too, and
-clients stop verifying with them. The run says on stderr that no client
-can verify a statement with the file. An empty signer projects file
-restricts nobody, as no file does, and is not published.
+can carry, and a signer projects file must read as watch reads one, so
+it may not name NAME. A file that holds no key under the name, or no key
+at all, is published all the same, because it is what the controller
+uses. So when every signing key is revoked, the publication drops the
+old keys too, and clients stop verifying with them. The run says on
+stderr that no client can verify a statement with the file. An empty
+signer projects file restricts nobody, as no file does, and is not
+published.
 `
 
 // publishSigners writes the publication, and says what it did on stdout.
@@ -100,14 +101,9 @@ func publishSigners(args []string) error {
 	if err != nil {
 		return fmt.Errorf("reading the known-signers file: %w", err)
 	}
-	var restrictions []byte
-	if *projects != "" {
-		if restrictions, err = os.ReadFile(*projects); err != nil {
-			return fmt.Errorf("reading the signer projects file: %w", err)
-		}
-		if _, err := parseSignerProjects(restrictions); err != nil {
-			return fmt.Errorf("the signer projects file %s does not read: %w", *projects, err)
-		}
+	_, restrictions, err := readSignerProjects(*projects, *name)
+	if err != nil {
+		return err
 	}
 	tree, err := signersTree(*repo, keys, *name, restrictions)
 	if err != nil {

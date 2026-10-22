@@ -200,7 +200,9 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
     integrator's signing name a transfer statement is verified with. Each takes precedence over its
     environment variable and over the host's publication (see
-    [Environment variables](#environment-variables)).
+    [Environment variables](#environment-variables)). When either value comes from the publication,
+    its `signer-projects` file is read too. While that file names the integrator name, no transfer
+    statement is verified. A publication whose `signer-projects` does not read is not used.
 - **Behavior:** Groups stacked entries under their top entry by commit ancestry, shows linked knots
   (`<title> · <knot-id>`), marks `includes <handle>` for unlanded non-entry changes (such as
   `withdrawn` changes) contained in a head, and marks `uncertain` when a version's landing cannot be
@@ -599,23 +601,28 @@ attest key --key ~/.ssh/valley-attest --name operator
     repository's name). In any other project the controller reports that signer's evidence as
     `signed by no signer the integrator holds`. A line with a name and no project lets that signer
     count nowhere. A signer the file does not name counts wherever `--known-signers` lets it. Blank
-    lines and lines that open with `#` are skipped. The controller reads the file once, at start. A
-    file that cannot be read, names a signer twice, or names a signer no verifier key can carry
-    stops the controller before it judges anything.
+    lines and lines that open with `#` are skipped. Every name and project is printable ASCII with
+    no space. The controller reads the file once, at start. A file that cannot be read, names a
+    signer twice, holds a word that is not printable ASCII, names a signer no verifier key can
+    carry, or names the controller's own `--name` stops the controller before it judges anything.
+    The controller's own signature never makes a check's attestation count. It countersigns the
+    attestations a landing carried, and that vouches for the landing, not for the check.
   - `integrator publish-signers --instance-repo <dir> --known-signers <file> [--name <name>] [--signer-projects <file>]`
     — writes the signers publication, `refs/the-valley/signers`, into the instance repository: the
     known-signers file and the signing name (default `<hostname>/attestations`, as for `watch`).
     Given `--signer-projects`, the publication holds that file too, unless it is empty. Refuses a
     file that is not verifier keys, a name no verifier key can carry, or a signer projects file the
-    controllers would refuse, and writes nothing when the publication would not change. Publishes a
-    file with no key in it. Holds a lock in the instance repository from reading the file to moving
-    the ref, so runs at once take turns.
+    controllers would refuse, such as one that names `--name`, and writes nothing when the
+    publication would not change. Publishes a file with no key in it. Holds a lock in the instance
+    repository from reading the file to moving the ref, so runs at once take turns.
 - **`valley-identity`** (binary `identity`; [`identity/main.go`](../identity/main.go)):
   - `identity compile --repo <dir> [--ref <ref>] [--dir <dir>] [--schema <file>] --known-signers <file> --authorized-keys <file> --grants <file> [--declared-keys <file>] [--now <YYYY-MM-DD>]`
     — compiles `identity/*.cue` from an instance repository tip into runtime files.
 - **`valley-restacker`** ([`restack/main.go`](../restack/main.go)):
-  - `valley-restacker once --report-only --repo <url> --state <dir> --principal <name> --schema <file> [--target main] [--known-signers <file>] [--integrator-name <name>] [--attest <path>] [--instance-repo <url> | --instance <dir>] [--instance-ref <ref>] [--instance-policy <dir>] [--project-policy <dir>] [--json]`
-    — read-only planner (`implemented`); the write pass and host service are `not built`.
+  - `valley-restacker once --report-only --repo <url> --state <dir> --principal <name> --schema <file> [--target main] [--known-signers <file>] [--integrator-name <name>] [--signer-projects <file>] [--attest <path>] [--instance-repo <url> | --instance <dir>] [--instance-ref <ref>] [--instance-policy <dir>] [--project-policy <dir>] [--json]`
+    — read-only planner (`implemented`); the write pass and host service are `not built`. While the
+    `--signer-projects` file names the `--integrator-name`, no landing is proved by a transfer
+    statement. A file that does not read stops the pass.
 
 ---
 
@@ -772,7 +779,7 @@ services.valley = {
 | `integrator.enable`, `integrator.user`                                                       | `false`, `"valley-integrator"`                     | Spawns `valley-integrator@<project>` for every git-enabled project in `valley.cue` that declares a `protection` block (requires at least one protected project; `integrator.user` must differ from `services.valley.user`).                                                                                                                                                 |
 | `integrator.signingKeyFile`, `integrator.signingName`                                        | `null` (required when enabled), `null`             | Runtime path to the integrator's Ed25519 private key and optional signer name (when `null`, `integrator` defaults to `<hostname>/attestations`). The effective name is published at `refs/the-valley/signers`.                                                                                                                                                              |
 | `integrator.knownSignersFile`                                                                | `null`                                             | Runtime path to the `known-signers` file of trusted verifier keys (used by both `valleyhook` and `valley-integrator`). Required when `integrator.enable = true` and `identity.enable = false`; must be `null` whenever `identity.enable = true`.                                                                                                                            |
-| `integrator.signerProjects`                                                                  | `{}`                                               | Signer names mapped to the projects their evidence counts in, as in `{ "laddie-worker/attestations" = [ "the-valley" ]; }`. Rendered into the controllers' `--signer-projects` file and published at `refs/the-valley/signers`. An empty list counts nowhere. Names and projects are single words.                                                                          |
+| `integrator.signerProjects`                                                                  | `{}`                                               | Signer names mapped to the projects their evidence counts in, as in `{ "laddie-worker/attestations" = [ "the-valley" ]; }`. Rendered into the controllers' `--signer-projects` and published. An empty list counts nowhere. Names and projects are printable ASCII with no space; the integrator's own name is refused.                                                     |
 | `integrator.instanceProject`, `integrator.instancePolicy`                                    | `null`, `null`                                     | Exactly one must be set when `integrator.enable = true`: `instanceProject` names the hosted repository carrying `policy/instance/` (whose `refs/heads/main` must be protected) and causes `valley-init` to write `refs/the-valley/projects` and `valley-signers` to write `refs/the-valley/signers` there; `instancePolicy` names a local directory of floor `*.cue` files. |
 | `integrator.interval`                                                                        | `"15s"`                                            | Poll interval between `integrator watch` reconciliation passes.                                                                                                                                                                                                                                                                                                             |
 | `identity.enable`, `identity.ref`, `identity.directory`, `identity.interval`                 | `false`, `"refs/heads/main"`, `"identity"`, `"5m"` | Compiles `<directory>/*.cue` from `integrator.instanceProject` at `<ref>` (which must be covered by `protection`) into `/var/lib/valley-identity/{known-signers,authorized_keys.<user>,grants}` on a timer (`knownSignersFile` must be `null`).                                                                                                                             |

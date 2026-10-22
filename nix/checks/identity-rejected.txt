@@ -12,3 +12,5 @@ unknown-principal-field	principals.root.role
 not-an-ed25519-key	principals.root.keys.0.public
 signing-name-with-plus	principals.root.keys.0.signs
 top-level-typo	unknown top-level field
+attested-key-bound-to-host	principals.root.keys.0.bound
+attestation-not-pem	principals.root.keys.0.attestation.slot

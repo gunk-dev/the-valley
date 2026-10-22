@@ -13,7 +13,10 @@
 # does none of that. A grant named approve at a boundary of another kind
 # compiles to nothing. The registry is read past a replacement ref planted
 # to forge it, and from the commit its ref resolved to while a push moves
-# that ref mid-read.
+# that ref mid-read. A registry enrolling a YubiKey key, with the
+# attestation the device wrote, compiles it into both approval signers
+# files; that attestation offered for another key, or altered, fails the
+# compilation.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {
@@ -25,7 +28,8 @@
 {
   # The compiler's Go tests, run in the package's checkPhase: the key
   # hash pinned against the reference vector attest is held to, expiry,
-  # and the renders it must refuse.
+  # the renders it must refuse, and the approval files, over a real
+  # YubiKey's attestation and signature.
   identity-unit = packages.identity-unwrapped;
 
   identity-e2e = pkgs.runCommand "valley-identity-e2e" {
@@ -46,6 +50,7 @@
     registry = ../../examples/identity/registry;
     compiled = ../../examples/identity/compiled;
     expired = ../../examples/identity/expired;
+    attested = ../../examples/identity/attested;
     # The fail-safe case. Any invalid registry would do; this one fails on a
     # property of the floor rather than on a typo, so the check also
     # observes that a floor violation is what stops a compilation.

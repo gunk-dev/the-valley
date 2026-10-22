@@ -1,0 +1,5 @@
+# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Hardware approval keys: the approval keys whose YubiKey attestation
+# verifies and says every signature needs a touch, as verifier keys, one
+# per line, each named by the principal who approves with it.
+operator+e7bc234d+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX

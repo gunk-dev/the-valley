@@ -12,7 +12,8 @@
 // One tool reads this file: the compiler (identity/), which renders a
 // registry into the artifacts the enforcement boundaries check — the
 // known-signers file the integrator and `attest verify` read, the git
-// user's authorized_keys, and the grants the pre-receive hook checks.
+// user's authorized_keys, the grants the pre-receive hook checks, and the
+// two approval signers files.
 // Expiry is enforced there rather than here, because a document has no
 // clock: the compiler omits an expired entry, so access ends at the first
 // convergence after expiry.
@@ -86,7 +87,32 @@ package identity
 	// line no verifier will ever match. A key without it pushes and never
 	// attests.
 	signs?: #SignerName
+
+	// Evidence that the private half was made on a YubiKey and cannot
+	// leave it. The compiler verifies it against the Yubico roots it
+	// carries, and a key whose attestation verifies and says every
+	// signature needs a touch is a hardware approval key. Without one, a
+	// key is never a hardware approval key, whatever bound says. A key
+	// with one is held on a device, so it is bound to hardware.
+	attestation?: #Attestation
+	if attestation != _|_ {bound: "hardware"}
 }
+
+// A YubiKey PIV attestation of one key: two certificates, each PEM as the
+// YubiKey writes it. The schema holds their shape; the compiler checks
+// what they say.
+#Attestation: {
+	// The certificate the YubiKey wrote for the slot holding the key:
+	// `yubico-piv-tool -a attest -s 9c` for slot 9c.
+	slot: #Certificate
+
+	// The YubiKey's own attestation certificate, which signed the slot's:
+	// `yubico-piv-tool -a read-certificate -s f9`.
+	f9: #Certificate
+}
+
+// One PEM certificate and nothing else.
+#Certificate: =~"^-----BEGIN CERTIFICATE-----\n([A-Za-z0-9+/=]+\n)+-----END CERTIFICATE-----\n?$"
 
 // A grant is a named permission.
 #Grant: {

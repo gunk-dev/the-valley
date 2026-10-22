@@ -21,6 +21,8 @@ func compile(args []string) error {
 	knownSigners := fs.String("known-signers", "", "where the verifier keys are written")
 	authorizedKeys := fs.String("authorized-keys", "", "where the tagged authorized_keys is written")
 	grantsFile := fs.String("grants", "", "where the grants the pre-receive hook checks are written")
+	approvalSignersFile := fs.String("approval-signers", "", "where the verifier keys of every approval key are written")
+	approvalHardwareFile := fs.String("approval-signers-hardware", "", "where the verifier keys of the hardware approval keys are written")
 	declaredKeys := fs.String("declared-keys", "", "the authorized_keys lines the host declares by hand")
 	now := fs.String("now", "", "the day expiry is judged against")
 	if err := fs.Parse(args); err != nil {
@@ -84,9 +86,32 @@ func compile(args []string) error {
 		return err
 	}
 
-	fmt.Fprintf(os.Stderr, "identity: %s at %s: %d verifier key(s)%s, %d authorized key(s)%s, %d grant(s)%s\n",
+	// The approval files are written only where the caller names them.
+	// Every render computes both, so a registry whose approval keys do not
+	// compile fails the whole compilation either way.
+	approval := ""
+	for _, f := range []struct {
+		path    string
+		content []byte
+		count   int
+		what    string
+	}{
+		{*approvalSignersFile, a.approvalSigners, a.approvers, "approval signer(s)"},
+		{*approvalHardwareFile, a.approvalHardware, a.hardware, "hardware approval signer(s)"},
+	} {
+		if f.path == "" {
+			continue
+		}
+		written, err := writeArtifact(f.path, f.content)
+		if err != nil {
+			return err
+		}
+		approval += fmt.Sprintf(", %d %s%s", f.count, f.what, changed(written))
+	}
+
+	fmt.Fprintf(os.Stderr, "identity: %s at %s: %d verifier key(s)%s, %d authorized key(s)%s, %d grant(s)%s%s\n",
 		*ref, commit, a.signers, changed(signersWritten), a.authorized, changed(keysWritten),
-		a.granted, changed(grantsWritten))
+		a.granted, changed(grantsWritten), approval)
 	return nil
 }
 

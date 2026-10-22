@@ -169,8 +169,9 @@ project: {
 		requires: "valley-go-unit": true
 	}
 
-	// The note envelope. The hook and attest both read notes through it, so
-	// a change to it requires their tests as well as its own.
+	// The note envelope. The hook and attest both read notes through it,
+	// and the identity compiler reads its approval files back with it, so a
+	// change to it requires their tests as well as its own.
 	classes: note: {
 		paths: "note/**":            true
 		requires: "note-unit":       true
@@ -178,6 +179,7 @@ project: {
 		requires: "protect-e2e":     true
 		requires: "attest-unit":     true
 		requires: "attest-e2e":      true
+		requires: "identity-unit":   true
 	}
 
 	// The attestation helper, and the conformance vectors under

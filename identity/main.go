@@ -7,7 +7,8 @@
 // by nobody in the known-signers it writes, and the pre-receive hook
 // refuses an integration request or a restack write from anybody not in
 // the grants it writes; this program is the step between the document and
-// those three gates.
+// those three gates. It also writes the two approval signers files, which
+// no gate reads.
 package main
 
 import (
@@ -24,7 +25,8 @@ const usage = `usage: identity <command> [flags]
 The registry is one declared CUE document in the instance repository
 (dcr-b87f6e8), read from that repository's integrated tip and never from a
 working tree: an edit in a branch or a worktree governs nothing until it
-lands. Three artifacts come out of it.
+lands. Three artifacts come out of it, and two approval signers files when
+asked for.
 
 The known-signers file is every attestation-capable key, written as the
 note format's verifier keys. It is both the integrator's acceptance list
@@ -49,6 +51,28 @@ compiles the same file. The hook takes writes to the integration request
 namespace only from a holder of the approve grant. It takes a version
 added to another principal's ready change, and a restack report, only from
 one named under restack.
+
+The two approval signers files hold the keys whose signed approvals
+count. They are written as the note format's verifier keys, and each line
+is named by the principal who approves with its key. No gate reads them.
+
+approval-signers lists every key of every unexpired human holding the
+approve grant. approval-signers-hardware lists the keys from it whose
+entry carries a YubiKey attestation that verifies and whose touch policy
+is always: the YubiKey asks for a touch before every signature.
+
+An attestation is two PEM certificates: the one the YubiKey wrote for the
+PIV slot holding the key, and the YubiKey's own f9 certificate, which
+signed it. It verifies when the slot certificate chains through the f9
+certificate and Yubico's PIV intermediates to Yubico Attestation Root 1,
+and the key it names is the entry's public key. This program carries that
+root and those intermediates, and a registry cannot add others. An
+attestation that does not verify fails the render. Each one that verifies
+is reported on stderr with the YubiKey's serial number, firmware, PIN
+policy and touch policy, for whoever reviews the enrollment.
+
+A key that approves belongs to one principal: one also listed under
+another principal fails the render.
 
 The registry is read with git's replacement refs off and with no GIT_
 variable or user or system configuration inherited, so the registry
@@ -88,6 +112,12 @@ flags:
   --authorized-keys FILE where the tagged authorized_keys is written
   --grants FILE          where the grants the pre-receive hook checks are
                          written
+  --approval-signers FILE
+                         where the verifier keys of every approval key are
+                         written. None is written without it.
+  --approval-signers-hardware FILE
+                         where the verifier keys of the hardware approval
+                         keys are written. None is written without it.
   --declared-keys FILE   the authorized_keys lines the host declares by
                          hand. A registry key that is also declared under
                          another tag, or untagged, fails the render: sshd

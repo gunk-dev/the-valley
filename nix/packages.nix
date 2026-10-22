@@ -245,14 +245,18 @@ rec {
       '';
 
   # The identity registry compiler (dcr-b87f6e8). Go, standard library
-  # only, same trade as attest and the integrator — hence vendorHash = null
-  # and no module fetch. Its unit tests pin the note format's key hash
-  # against the reference vector attest is held to.
+  # only, note format included, same trade as attest and the integrator —
+  # hence vendorHash = null and no module fetch. Its unit tests pin the
+  # note format's key hash against the reference vector attest is held to,
+  # and verify a real YubiKey attestation against the Yubico roots it
+  # carries.
   identity-unwrapped = pkgs.buildGoModule {
     pname = "valley-identity";
     version = "0";
-    src = ../identity;
+    src = withNote ../identity;
+    modRoot = "identity";
     vendorHash = null;
+    preBuild = readsGoMod;
     meta.mainProgram = "identity";
   };
 

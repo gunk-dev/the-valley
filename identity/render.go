@@ -7,9 +7,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
+
+	"the-valley/note"
 )
 
 const (
@@ -21,6 +24,9 @@ const (
 	// The environment variable carrying the pushing key's principal name.
 	// One name, shared with nix/valley-host.nix — change it in both.
 	principalEnv = "VALLEY_PRINCIPAL"
+
+	// Only a human approves.
+	kindHuman = "human"
 
 	dateLayout = "2006-01-02"
 )
@@ -42,6 +48,18 @@ const grantsHeader = `# Compiled from the identity registry — do not edit (dcr
 # principal holding it. A principal not named here holds none.
 `
 
+const approvalSignersHeader = `# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Approval keys: every key of every human holding the approve grant, as
+# verifier keys, one per line, each named by the principal who approves
+# with it.
+`
+
+const approvalHardwareHeader = `# Compiled from the identity registry — do not edit (dcr-b87f6e8).
+# Hardware approval keys: the approval keys whose YubiKey attestation
+# verifies and says every signature needs a touch, as verifier keys, one
+# per line, each named by the principal who approves with it.
+`
+
 // The lines a holder of a grant at a hook boundary is written under: the
 // grant the hook checks. grantRequest is the approve grant, the verb of
 // dcr-e544f20. A holder at a boundary of kind approve or of kind request
@@ -57,13 +75,17 @@ const (
 // counts the journal line reports. Nothing is written until every part of
 // this exists, so a failure anywhere leaves the last good set intact.
 type artifacts struct {
-	knownSigners   []byte
-	authorizedKeys []byte
-	grants         []byte
-	notes          []string
-	signers        int
-	authorized     int
-	granted        int
+	knownSigners     []byte
+	authorizedKeys   []byte
+	grants           []byte
+	approvalSigners  []byte
+	approvalHardware []byte
+	notes            []string
+	signers          int
+	authorized       int
+	granted          int
+	approvers        int
+	hardware         int
 }
 
 // render turns a registry into every artifact as of one day. declared maps
@@ -75,11 +97,28 @@ type artifacts struct {
 // first entry that names it, so which principal such a key pushed as would
 // depend on the order of lines and files, and a grant could silently stop
 // applying to the principal that holds it.
+//
+// A key that approves is refused under a second principal too, whatever
+// that principal holds. An approval names the principal who gave it, and
+// the key it is checked against must answer for that principal alone.
+//
+// A key's attestation, when the entry carries one, is verified here
+// (attestation.go). One that does not verify fails the render: evidence
+// that was offered and is wrong is never read as no evidence.
 func render(r registry, day time.Time, declared map[string]string) (artifacts, error) {
 	var a artifacts
-	var signers, authorized, granted []string
+	var signers, authorized, granted, approvers, hardware []string
 	governed := false
 	authorizedAs := map[string]string{}
+	// Every principal holding each key, by the key's raw bytes, and the
+	// keys that approve.
+	holders := map[string][]string{}
+	type approvalKey struct {
+		name  string
+		index int
+		pub   ed25519.PublicKey
+	}
+	var approving []approvalKey
 
 	names := make([]string, 0, len(r.Principals))
 	for name := range r.Principals {
@@ -112,11 +151,41 @@ func render(r registry, day time.Time, declared map[string]string) (artifacts, e
 		if held[boundaryRestack] {
 			granted = append(granted, grantRestack+" "+name)
 		}
+		approves := p.Kind == kindHuman && (held[boundaryApprove] || held[boundaryRequest])
 
 		for i, k := range p.Keys {
 			pub, err := sshEd25519Public(k.Public)
 			if err != nil {
 				return a, fmt.Errorf("%s: key %d: %w", name, i, err)
+			}
+			isHardware := false
+			if k.Attestation != nil {
+				att, err := verifyAttestation(*k.Attestation, pub, day, yubico)
+				if err != nil {
+					return a, fmt.Errorf("%s: key %d: %w", name, i, err)
+				}
+				isHardware = att.hardware()
+				report := fmt.Sprintf("%s: key %d is on %s", name, i, att)
+				switch {
+				case !approves:
+					report += "; its principal approves nothing"
+				case isHardware:
+					report += "; it approves as a hardware key"
+				default:
+					report += "; it approves, but not as a hardware key, because its touch policy is not always"
+				}
+				a.notes = append(a.notes, report)
+			}
+			if !slices.Contains(holders[string(pub)], name) {
+				holders[string(pub)] = append(holders[string(pub)], name)
+			}
+			if approves {
+				line := verifierKey(name, pub)
+				approvers = append(approvers, line)
+				if isHardware {
+					hardware = append(hardware, line)
+				}
+				approving = append(approving, approvalKey{name, i, pub})
 			}
 			if k.Signs != "" {
 				signers = append(signers, verifierKey(k.Signs, pub))
@@ -138,6 +207,14 @@ func render(r registry, day time.Time, declared map[string]string) (artifacts, e
 		}
 	}
 
+	for _, k := range approving {
+		for _, other := range holders[string(k.pub)] {
+			if other != k.name {
+				return a, fmt.Errorf("%s: key %d is also %s's, and a key that approves belongs to one principal", k.name, k.index, other)
+			}
+		}
+	}
+
 	// The state the whole render is refused for: after the expiry cut,
 	// nobody governs the registry's own stream (dcr-2f03be3).
 	if !governed {
@@ -148,6 +225,17 @@ func render(r registry, day time.Time, declared map[string]string) (artifacts, e
 	a.knownSigners, a.signers = artifact(knownSignersHeader, signers)
 	a.authorizedKeys, a.authorized = artifact(authorizedKeysHeader, authorized)
 	a.grants, a.granted = artifact(grantsHeader, granted)
+	a.approvalSigners, a.approvers = artifact(approvalSignersHeader, approvers)
+	a.approvalHardware, a.hardware = artifact(approvalHardwareHeader, hardware)
+
+	// The approval files are read as verifier keys, by the note reader
+	// every verifier uses. Reading them with it here means a render never
+	// writes one a verifier would refuse.
+	for _, file := range [][]byte{a.approvalSigners, a.approvalHardware} {
+		if _, err := note.ParseVerifierKeys(file); err != nil {
+			return a, fmt.Errorf("an approval signers file would not parse: %w", err)
+		}
+	}
 	return a, nil
 }
 

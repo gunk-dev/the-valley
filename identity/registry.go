@@ -31,10 +31,11 @@ type principal struct {
 }
 
 type key struct {
-	Class  string `json:"class"`
-	Bound  string `json:"bound"`
-	Public string `json:"public"`
-	Signs  string `json:"signs"`
+	Class       string       `json:"class"`
+	Bound       string       `json:"bound"`
+	Public      string       `json:"public"`
+	Signs       string       `json:"signs"`
+	Attestation *attestation `json:"attestation"`
 }
 
 type grant struct {

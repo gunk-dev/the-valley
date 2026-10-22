@@ -670,8 +670,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     publication would not change. Publishes a file with no key in it. Holds a lock in the instance
     repository from reading the file to moving the ref, so runs at once take turns.
 - **`valley-identity`** (binary `identity`; [`identity/main.go`](../identity/main.go)):
-  - `identity compile --repo <dir> [--ref <ref>] [--dir <dir>] [--schema <file>] --known-signers <file> --authorized-keys <file> --grants <file> [--declared-keys <file>] [--now <YYYY-MM-DD>]`
+  - `identity compile --repo <dir> [--ref <ref>] [--dir <dir>] [--schema <file>] --known-signers <file> --authorized-keys <file> --grants <file> [--approval-signers <file>] [--approval-signers-hardware <file>] [--declared-keys <file>] [--now <YYYY-MM-DD>]`
     — compiles `identity/*.cue` from an instance repository tip into runtime files.
+    `--approval-signers` and `--approval-signers-hardware` each write one of the
+    [approval signers files](#approval-signers-files), and neither is written without its flag.
 - **`valley-restacker`** ([`restack/main.go`](../restack/main.go)):
   - `valley-restacker once --report-only --repo <url> --state <dir> --principal <name> --schema <file> [--target main] [--known-signers <file>] [--integrator-name <name>] [--signer-projects <file>] [--attest <path>] [--instance-repo <url> | --instance <dir>] [--instance-ref <ref>] [--instance-policy <dir>] [--project-policy <dir>] [--json]`
     — read-only planner (`implemented`); the write pass and host service are `not built`. While the
@@ -1802,18 +1804,99 @@ cue vet -c schema/attestation.cue statement.json
 
 [`schema/identity.cue`](../schema/identity.cue) (`package identity`) validates an instance's
 governed identity registry (`identity/*.cue`), which `valley-identity compile` renders into
-`known-signers`, `authorized_keys`, and `grants` ([`identity/render.go`](../identity/render.go)).
+`known-signers`, `authorized_keys`, `grants`, and the two
+[approval signers files](#approval-signers-files) ([`identity/render.go`](../identity/render.go)).
 
 ```sh
 cue vet -c schema/identity.cue examples/identity/registry/*.cue
 ```
 
-| Definition / field                 | Type / default         | Rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| :--------------------------------- | :--------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `boundaries.<name>` (`#Boundary`)  | `[#Name]: #Boundary`   | Enforcement boundaries run by the instance (`#Name`: `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"`). Every boundary has `kind: "git-push" \| "registry" \| "request" \| "restack"`. Every `boundary` referenced by a principal's grant must exist in `boundaries`.                                                                                                                                                                                                                                                                                   |
-| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`  | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [#Key, ...#Key]`, `grants: [#Name]: #Grant` (`{ boundary: #Name }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`.                                                                                                                                                                             |
-| `#Key`                             | `class: "ssh-ed25519"` | `bound: "hardware" \| "host"`, `public: =~"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\n]*)?$"`, and optional `signs?: =~"^[^\\s+]+$"` (when set, `identity compile` emits a verifier key in `known-signers`). Hardware-key (`sk-*`) classes are `not built`.                                                                                                                                                                                                                                                                                  |
-| `genesis` and governance checks    | `genesis: #Name`       | `genesis` must be a key in `principals` that holds at least one grant at a boundary with `kind == "registry"` (`genesisGovernance: [_, ...]`), and no principal with `external != null` may hold a `registry` boundary grant (`externalGovernance`). At compile time, `identity compile` omits principals with `expires <= now` and fails if no unexpired principal holds a `registry` grant, if two principals holding `git-push` grants share a public key, or if a `git-push` key conflicts with a host-declared `authorizedKeys` tag. |
+| Definition / field                 | Type / default         | Rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| :--------------------------------- | :--------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `boundaries.<name>` (`#Boundary`)  | `[#Name]: #Boundary`   | Enforcement boundaries run by the instance (`#Name`: `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"`). Every boundary has `kind: "git-push" \| "registry" \| "request" \| "restack"`. Every `boundary` referenced by a principal's grant must exist in `boundaries`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`  | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [#Key, ...#Key]`, `grants: [#Name]: #Grant` (`{ boundary: #Name }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`.                                                                                                                                                                                                                                                                                 |
+| `#Key`                             | `class: "ssh-ed25519"` | `bound: "hardware" \| "host"`, `public: =~"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\n]*)?$"`, and optional `signs?: =~"^[^\\s+]+$"` (when set, `identity compile` emits a verifier key in `known-signers`), and optional `attestation?: #Attestation`. A key with an `attestation` must be `bound: "hardware"`.                                                                                                                                                                                                                                                                                                                                 |
+| `#Attestation`                     | `slot`, `f9`           | A YubiKey PIV attestation of the key: `slot`, the certificate the YubiKey wrote for the PIV slot holding the key, and `f9`, the YubiKey's own attestation certificate, which signed it. Each is one PEM certificate and nothing else (`#Certificate`). `identity compile` checks what they say; see [Approval signers files](#approval-signers-files).                                                                                                                                                                                                                                                                                        |
+| `genesis` and governance checks    | `genesis: #Name`       | `genesis` must be a key in `principals` that holds at least one grant at a boundary with `kind == "registry"` (`genesisGovernance: [_, ...]`), and no principal with `external != null` may hold a `registry` boundary grant (`externalGovernance`). At compile time, `identity compile` omits principals with `expires <= now` and fails if no unexpired principal holds a `registry` grant, if two principals holding `git-push` grants share a public key, if a `git-push` key conflicts with a host-declared `authorizedKeys` tag, if a key that approves is also listed under another principal, or if an `attestation` does not verify. |
+
+#### Approval signers files
+
+An approval signers file lists the keys whose signed approvals count. `identity compile` writes two
+of them, each only when its flag names a path:
+
+```sh
+identity compile --repo /srv/git/instance.git --known-signers known-signers \
+  --authorized-keys authorized_keys --grants grants \
+  --approval-signers approval-signers --approval-signers-hardware approval-signers-hardware
+```
+
+Each line is a verifier key in the `known-signers` format, named by the principal who approves with
+that key:
+
+```text
+operator+e7bc234d+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX
+```
+
+- **`approval-signers`** lists every key of every unexpired `human` principal holding the approve
+  grant, at a boundary of kind `approve` or `request`. Software keys are listed too.
+- **`approval-signers-hardware`** lists the hardware approval keys: the keys from `approval-signers`
+  whose entry carries an `attestation` that verifies and says the touch policy is `always`. The
+  YubiKey then asks for a touch before every signature.
+- No gate reads either file, and the host module does not write them (`not built`).
+- [`examples/identity/attested/`](../examples/identity/attested/registry.cue) is a registry
+  enrolling a YubiKey key, beside the two files it compiles to.
+
+An `attestation` verifies when all of these hold:
+
+1. The `slot` certificate chains through the entry's `f9` certificate and Yubico's PIV intermediates
+   to Yubico Attestation Root 1, on the day the compilation is for (`--now`, default today).
+2. The `f9` certificate is the one that signed the `slot` certificate.
+3. The key in the `slot` certificate is the entry's `public` key.
+4. The `slot` certificate states a PIN and touch policy, in Yubico's extension
+   `1.3.6.1.4.1.41482.3.8`. Its second byte is the touch policy: 1 never, 2 always, 3 cached.
+
+The compiler carries that root and those intermediates, in
+[`identity/yubico/`](../identity/yubico/attestation-root-1.pem), and a registry cannot add others.
+The root is Yubico's `yubico-ca-1.pem`, with the SHA-256 fingerprint Yubico publishes:
+
+```text
+62:76:0C:6A:6E:F9:16:79:F4:54:C8:90:2B:80:FD:00:98:25:B3:F2:5D:A9:0F:1F:BA:CE:2E:C6:58:6C:D5:A8
+```
+
+The compiler reports each attestation that verifies on stderr, with the YubiKey's serial number,
+firmware, PIN policy and touch policy. Whoever reviews an enrollment checks them there:
+
+```text
+identity: operator: key 0 is on YubiKey serial 33986790, firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key
+```
+
+Who can do what, and what stops them:
+
+- **Whoever can land a registry change can enroll a key and its attestation.** The registry's own
+  governance decides who that is.
+- **Only Yubico's chain makes a key a hardware approval key.** A registry entry cannot add a root or
+  an intermediate. It needs an attestation that Yubico's chain signs, for that exact key, with touch
+  policy `always`. `bound: "hardware"` without an attestation does not make a hardware approval key.
+- **Evidence that does not verify stops the compilation.** An attestation naming another key,
+  altered, missing its `f9` certificate, or chaining to another root fails the whole compilation,
+  and the last good files stay as they were. The key is never compiled as a software key instead.
+- **A cached or never touch policy is not hardware.** Such a key is in `approval-signers` and not in
+  `approval-signers-hardware`. With a cached policy, one touch allows further signatures for 15
+  seconds.
+- **One approval key belongs to one principal.** A key that approves and is also listed under
+  another unexpired principal fails the compilation. A line in either file therefore names the only
+  principal holding its key.
+- **Enrolling someone else's attested key gains nothing.** An approval still needs a signature from
+  the device that holds the key.
+
+Limits:
+
+- The compiler trusts Yubico's root, and the YubiKey's firmware, to state the touch policy
+  truthfully.
+- An attestation chaining to Yubico's older PIV root, used before firmware 5.7.4, does not verify.
+- The PIN policy is reported, and nothing requires one.
+- The files hold keys, not serial numbers. The compile report and the attestation link a key to its
+  device.
 
 ### Node frontmatter and bus events (`schema/node.cue`, `schema/events.cue`)
 

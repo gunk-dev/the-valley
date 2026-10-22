@@ -26,7 +26,8 @@ serve() {
 compile() {
   identity compile --repo "$TMPDIR/instance.git" \
     --known-signers "$TMPDIR/signers" --authorized-keys "$TMPDIR/keys" \
-    --grants "$TMPDIR/grants" "$@"
+    --grants "$TMPDIR/grants" --approval-signers "$TMPDIR/approval-signers" \
+    --approval-signers-hardware "$TMPDIR/approval-signers-hardware" "$@"
 }
 
 # The worked registry compiles to exactly the artifacts checked in beside
@@ -37,6 +38,11 @@ compile --now 2026-08-09 2> first.log || exit 1
 diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
 diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+# The approval files too: every key of the one human holding the approve
+# grant, and no hardware key, because no key in this registry carries an
+# attestation.
+diff -u "$compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
+diff -u "$compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
 
 # A replacement ref planted in the instance repository changes nothing the
 # compiler reads. refs/replace/<blob> makes git read another object wherever
@@ -427,6 +433,8 @@ grep -q "patrick" "$TMPDIR/keys" || {
 cp "$TMPDIR/signers" last-good-signers
 cp "$TMPDIR/keys" last-good-keys
 cp "$TMPDIR/grants" last-good-grants
+cp "$TMPDIR/approval-signers" last-good-approval
+cp "$TMPDIR/approval-signers-hardware" last-good-hardware
 mkdir -p invalid-registry
 cp "$invalid" invalid-registry/registry.cue
 serve instance invalid-registry
@@ -442,6 +450,8 @@ fi
 diff -u last-good-signers "$TMPDIR/signers" || exit 1
 diff -u last-good-keys "$TMPDIR/keys" || exit 1
 diff -u last-good-grants "$TMPDIR/grants" || exit 1
+diff -u last-good-approval "$TMPDIR/approval-signers" || exit 1
+diff -u last-good-hardware "$TMPDIR/approval-signers-hardware" || exit 1
 
 # Governance the clock orphans. This registry is valid as a document — the
 # genesis entry governs — and the only entry governing carries an expiry, so
@@ -510,6 +520,66 @@ for pinned in 2026-10-01 2026-12-01; do
   diff -u last-good-signers "$TMPDIR/signers" || exit 1
   diff -u last-good-keys "$TMPDIR/keys" || exit 1
 done
+
+# A hardware approval key. The attested registry enrolls a key a YubiKey
+# generated, with the attestation the YubiKey wrote for it, beside an
+# ordinary key. Both approve. Only the YubiKey's is a hardware approval
+# key: its attestation verifies to Yubico Attestation Root 1, which the
+# compiler carries, names the entry's public key, and says every signature
+# needs a touch. The compiler reports what the attestation says, for
+# whoever reviews the enrollment.
+serve instance "$attested"
+compile --now 2026-10-22 2> attested.log || exit 1
+diff -u "$attested/compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
+diff -u "$attested/compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
+grep -qF "operator: key 0 is on YubiKey serial 33986790, firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key" attested.log || {
+  echo "identity-e2e: the compiler did not report the attestation it verified" >&2
+  cat attested.log >&2
+  exit 1
+}
+cp "$TMPDIR/approval-signers" last-good-approval
+cp "$TMPDIR/approval-signers-hardware" last-good-hardware
+
+# Evidence that does not verify fails the compilation, and the last good
+# approval files stand: the key is never compiled as an ordinary key
+# instead. The attestation is offered for the laptop's key, and then with
+# one character of the slot certificate's signature changed.
+yubikey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX"
+laptop="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILKzHsPMypFDy83wUJgO8DPMT42rf2UakMkCqW6uXdeB"
+mkdir -p wrong-key altered-slot
+sed "s|public: \"$yubikey\"|public: \"$laptop\"|" "$attested/registry.cue" > wrong-key/registry.cue
+sed 's|GDJAF3vFOrQDmqHLY8vKZluju2tdDJeqQsWh|GDJAF3vFOrQDmqHLY8vKZluju2tdDJeqQsWg|' "$attested/registry.cue" > altered-slot/registry.cue
+for variant in "wrong-key:attests a different key" "altered-slot:does not verify to Yubico Attestation Root 1"; do
+  name="${variant%%:*}"
+  want="${variant#*:}"
+  if cmp -s "$attested/registry.cue" "$name/registry.cue"; then
+    echo "identity-e2e: the $name registry was not written, so the check below proves nothing" >&2
+    exit 1
+  fi
+  serve instance "$name"
+  if compile --now 2026-10-22 2> "$name.err"; then
+    echo "identity-e2e: a registry whose attestation does not verify ($name) compiled" >&2
+    exit 1
+  fi
+  if ! grep -qF "operator: key 0: " "$name.err" || ! grep -qF "$want" "$name.err"; then
+    echo "identity-e2e: the refusal of $name did not name the key and say \"$want\"" >&2
+    cat "$name.err" >&2
+    exit 1
+  fi
+  diff -u last-good-approval "$TMPDIR/approval-signers" || exit 1
+  diff -u last-good-hardware "$TMPDIR/approval-signers-hardware" || exit 1
+done
+
+# The approval files are written only where the caller names them, so a
+# host that does not ask for them gets neither.
+rm "$TMPDIR/approval-signers" "$TMPDIR/approval-signers-hardware"
+serve instance "$attested"
+identity compile --repo "$TMPDIR/instance.git" --known-signers "$TMPDIR/signers" \
+  --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" --now 2026-10-22 || exit 1
+if [ -e "$TMPDIR/approval-signers" ] || [ -e "$TMPDIR/approval-signers-hardware" ]; then
+  echo "identity-e2e: a compilation that named no approval file wrote one" >&2
+  exit 1
+fi
 
 # A key the host declares by hand under one tag, and the registry
 # authorizes as another principal, is refused: sshd reads the declared

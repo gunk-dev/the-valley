@@ -12,7 +12,8 @@
 # record, and a principal holding neither, including one named approve,
 # does none of that. A grant named approve at a boundary of another kind
 # compiles to nothing. The registry is read past a replacement ref planted
-# to forge it.
+# to forge it, and from the commit its ref resolved to while a push moves
+# that ref mid-read.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {
@@ -35,7 +36,13 @@
       # attest, so the compiled verifier line is checked against the
       # implementation that reads it and not only against a fixed vector.
       packages.attest
+      # cue, for the unwrapped compiler the mid-read push races.
+      pkgs.cue
     ];
+    # The compiler without its wrapper, so a git placed first on PATH is
+    # the one it runs, and the schema the wrapper would name.
+    identityUnwrapped = "${packages.identity-unwrapped}/bin/identity";
+    identitySchema = ../../schema/identity.cue;
     registry = ../../examples/identity/registry;
     compiled = ../../examples/identity/compiled;
     expired = ../../examples/identity/expired;

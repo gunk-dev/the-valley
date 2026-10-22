@@ -77,12 +77,15 @@ const (
 func readRegistry(repo, ref, dir, schema string) (registry, string, error) {
 	var r registry
 
-	commit, err := git(repo, "rev-parse", ref)
+	// The ref is resolved once, and everything after reads the commit it
+	// resolved to. Reading through the ref again would let a push landing
+	// mid-read mix two registries, compiled under the first one's commit.
+	commit, err := git(repo, "rev-parse", "--verify", ref+"^{commit}")
 	if err != nil {
 		return r, "", fmt.Errorf("%s has no %s: %w", repo, ref, err)
 	}
 
-	tree := ref + ":" + dir
+	tree := commit + ":" + dir
 	listing, err := git(repo, "ls-tree", "--name-only", tree)
 	if err != nil {
 		return r, "", fmt.Errorf("no registry: %s has no %s/ at %s: %w", repo, dir, ref, err)

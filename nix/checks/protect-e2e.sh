@@ -819,4 +819,35 @@ if git -C "$TMPDIR/sealed.git" update-ref refs/heads/main "$expected~1" "" 2> /d
 fi
 [ "$(git -C "$TMPDIR/sealed.git" rev-parse main)" = "$expected" ]
 
+# ----------------------------------------------------------------------
+# The hook valley-init converges on is live. init-e2e holds the rendered
+# init script to installing each project's declared hook over repositories
+# that already exist, over a stand-in for valleyhook. Here the same script
+# wires a repository that already has history, with the real valleyhook,
+# and the hook it installed is pushed to. Relocating the data directory is
+# the only edit to the script: the sandbox cannot write /srv.
+data="$TMPDIR/host/srv/git"
+mkdir -p "$data"
+sed "s|/srv/git|$data|g" "$initScriptPath" > "$TMPDIR/init.sh"
+git init --quiet --bare "$data/guarded.git"
+git clone --quiet "$data/guarded.git" "$TMPDIR/existing"
+git -C "$TMPDIR/existing" commit --quiet --allow-empty -m one
+git -C "$TMPDIR/existing" push --quiet origin main
+before="$(git -C "$TMPDIR/existing" rev-parse HEAD)"
+bash "$TMPDIR/init.sh"
+git -C "$TMPDIR/existing" commit --quiet --allow-empty -m two
+refused existing.err "an untagged key wrote a protected ref of a pre-existing repository" \
+  as anonymous git -C "$TMPDIR/existing" push --quiet origin main
+grep -q '<untagged key>' existing.err
+grep -q 'refs/heads/main' existing.err
+if [ "$(git -C "$data/guarded.git" rev-parse main)" != "$before" ]; then
+  echo "protect-e2e: guarded kept a ref through a rejected push" >&2
+  exit 1
+fi
+as integrator git -C "$TMPDIR/existing" push --quiet origin main
+if [ "$(git -C "$data/guarded.git" rev-parse main)" != "$(git -C "$TMPDIR/existing" rev-parse HEAD)" ]; then
+  echo "protect-e2e: a declared writer could not write a protected ref" >&2
+  exit 1
+fi
+
 touch "$out"

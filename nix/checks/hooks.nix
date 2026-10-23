@@ -1,10 +1,17 @@
 # The hooks the module renders, run against real git. Each check follows the
 # store paths out of a rendered valley-init script, so what it drives is what
 # a host would execute — never a copy of it written for the test.
+#
+# A check that pushes through the pre-receive hook runs the real valleyhook,
+# and takes the hosts that run it. mirror-e2e, bus-e2e and init-e2e run none
+# of this flake's programs: they drive what the module renders around them,
+# so they take the hosts rendered over stand-ins (nix/checks/hosts.nix), and
+# an edit to a program does not change them.
 {
   pkgs,
   packages,
   hosts,
+  stubbedHosts,
   ...
 }:
 {
@@ -25,8 +32,8 @@
   # move queued and publishes it next.
   mirror-e2e = pkgs.runCommand "valley-mirror-e2e" {
     nativeBuildInputs = [ pkgs.git ];
-    initScript = hosts.mirrorHost.config.systemd.services.valley-init.script;
-    publishUnit = hosts.mirrorHost.config.systemd.units."valley-publish@.service".text;
+    initScript = stubbedHosts.mirrorHost.config.systemd.services.valley-init.script;
+    publishUnit = stubbedHosts.mirrorHost.config.systemd.units."valley-publish@.service".text;
     passAsFile = [
       "initScript"
       "publishUnit"
@@ -61,7 +68,10 @@
   # hook, and the namespaces every push is refused. An
   # attestation's tree written by hand, with the genuine note at a name
   # holding a slash, is refused. Projects with and without protection are
-  # both served.
+  # both served. Last, the rendered init script wires a repository that
+  # already has history, and the hook it installs refuses an untagged key
+  # and takes a declared writer's push: the check begins where init-e2e
+  # ends.
   protect-e2e = pkgs.runCommand "valley-protect-e2e" {
     nativeBuildInputs = [
       pkgs.git
@@ -109,14 +119,15 @@
   # managed hook installed where a project had none, re-pointed where it
   # had drifted to another store path, removed where the declaration no
   # longer protects the project, and a hand-written hook of the same name
-  # left alone. The hook it converges on is then pushed to for real, so
-  # the check ends where protect-e2e begins. Relocating the data
+  # left alone. The hooks run a stand-in for valleyhook, so nothing is
+  # pushed through them here: protect-e2e pushes through the hook this
+  # script converges on, with the real valleyhook. Relocating the data
   # directory is the only edit to the script — the sandbox cannot write
   # /srv.
   init-e2e = pkgs.runCommand "valley-init-e2e" {
     nativeBuildInputs = [ pkgs.git ];
-    initScript = hosts.protectedHost.config.systemd.services.valley-init.script;
-    integratorInitScript = hosts.integratorHost.config.systemd.services.valley-init.script;
+    initScript = stubbedHosts.protectedHost.config.systemd.services.valley-init.script;
+    integratorInitScript = stubbedHosts.integratorHost.config.systemd.services.valley-init.script;
     passAsFile = [
       "initScript"
       "integratorInitScript"
@@ -141,8 +152,8 @@
       pkgs.cue
       packages.valley-script
     ];
-    initScript = hosts.busHost.config.systemd.services.valley-init.script;
-    busInitScript = hosts.busHost.config.systemd.services.valley-bus-init.script;
+    initScript = stubbedHosts.busHost.config.systemd.services.valley-init.script;
+    busInitScript = stubbedHosts.busHost.config.systemd.services.valley-bus-init.script;
     eventSchema = ../../schema/events.cue;
     passAsFile = [
       "initScript"

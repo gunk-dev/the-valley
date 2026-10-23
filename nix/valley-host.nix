@@ -90,10 +90,14 @@ let
   # the integrator is what lands everyone else's changes onto it.
   integratedProjects = lib.filterAttrs (_: p: p ? protection) gitProjects;
 
+  # The programs this flake builds (nix/packages.nix), the defaults of
+  # services.valley.packages.
+  flakePackages = import ./packages.nix { inherit pkgs lib; };
+
   # The integrator this flake builds, in its shipping form: attest, the
   # deriver, cue, git and natscli pinned inside the wrapper, so every host
   # judges with the same tools (nix/packages.nix).
-  integratorPackage = (import ./packages.nix { inherit pkgs lib; }).integrator;
+  integratorPackage = cfg.packages.integrator;
 
   # The whole of a controller's configuration: which repository it serves,
   # who it signs as, and whose evidence it accepts. No policy — the
@@ -185,7 +189,7 @@ let
   # check (dcr-b87f6e8): the known-signers file the integrator and any
   # reader of an attestation use, and a tagged authorized_keys for the git
   # user.
-  identityPackage = (import ./packages.nix { inherit pkgs lib; }).identity;
+  identityPackage = cfg.packages.identity;
 
   identityStateName = "valley-identity";
   identityStateDir = "/var/lib/${identityStateName}";
@@ -654,7 +658,7 @@ let
 
   # The program every project's pre-receive hook runs: the whole of the ref
   # policy (valleyhook/), built by this flake.
-  valleyhookPackage = (import ./packages.nix { inherit pkgs lib; }).valleyhook;
+  valleyhookPackage = cfg.packages.valleyhook;
 
   # The grants declared by hand, in the format the compiler writes, so the
   # hook reads one format whichever wrote it. The holders of the approve
@@ -1421,6 +1425,37 @@ in
           known_hosts file pinning the sftp target's host key. Pin from
           the provider's published fingerprints, not a blind ssh-keyscan.
         '';
+      };
+    };
+
+    # The programs the host runs, as this flake builds them
+    # (nix/packages.nix). These options are internal: a host has no reason
+    # to set them. The module checks set them to stand-ins with the same
+    # binary names (nix/checks/hosts.nix), so a check that reads only what
+    # the module renders does not change when one of the programs does.
+    packages = {
+      integrator = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.integrator;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).integrator";
+        description = "The integrator, which the controllers and the signers publisher run.";
+      };
+
+      identity = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.identity;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).identity";
+        description = "The identity registry compiler, which valley-identity runs.";
+      };
+
+      valleyhook = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.valleyhook;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).valleyhook";
+        description = "The push policy, which every pre-receive hook and the git user's login shell run.";
       };
     };
   };

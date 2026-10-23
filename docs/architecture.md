@@ -1075,7 +1075,10 @@ The flake gives each check only the files it reads, and the packages it builds o
 their builds read (`nix/checks.nix`, `nix/packages.nix`). So an edit to any other file leaves a
 check's derivation and inputs digest unchanged, and its evidence transfers. No package build runs
 tests. Each Go module's unit tests run in its `*-unit` check, which builds the package again with
-the tests and the files they read. So an edit to a test changes that check alone.
+the tests and the files they read. So an edit to a test changes that check alone. The checks that
+only read what the NixOS module renders are `module-eval`, `mirror-e2e`, `bus-e2e` and `init-e2e`.
+They render it over stand-ins for the three programs it runs: the integrator, the identity compiler
+and valleyhook (`nix/checks/hosts.nix`). An edit to one of those programs does not change them.
 `nix/tools/drv-churn.sh` measures which checks a representative edit changes.
 
 A signer can be restricted to projects. This is how a check worker's key can sit in the

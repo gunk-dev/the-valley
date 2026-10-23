@@ -157,21 +157,9 @@ done
 ln -sfn "$(declared released)" "$(hook guarded)"
 bash init.sh || fail "the rendered init script failed over a drifted hook"
 is_declared_hook guarded
-
-# The converged hook is live. Pushing as a principal is pushing with the
-# tag on; pushing with an untagged key is pushing with it off — the same
-# substitution for sshd that protect-e2e makes.
-git -C work commit --quiet --allow-empty -m two
-if env -u VALLEY_PRINCIPAL git -C work push --quiet origin main 2> denied.err; then
-  fail "an untagged key wrote a protected ref of a pre-existing repository"
-fi
-grep -q '<untagged key>' denied.err
-grep -q 'refs/heads/main' denied.err
-[ "$(git -C "$data/guarded.git" rev-parse main)" = "$before" ] ||
-  fail "guarded kept a ref through a rejected push"
-VALLEY_PRINCIPAL=integrator git -C work push --quiet origin main
-[ "$(git -C "$data/guarded.git" rev-parse main)" = "$(git -C work rev-parse HEAD)" ] ||
-  fail "a declared writer could not write a protected ref"
+# The declared hooks run a stand-in for valleyhook, so no push is made
+# through them here. protect-e2e runs this init script with the real
+# valleyhook and pushes through the hook it installs.
 
 # A host without an instance repository publishes no project list.
 for name in sealed guarded released open; do

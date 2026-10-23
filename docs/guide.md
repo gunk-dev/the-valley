@@ -734,6 +734,12 @@ a check that reads a file it was not given.
 A Go package's source holds no test files, and its unit check adds them. So an edit to a test
 changes the unit check alone, and no check built on the package.
 
+The NixOS module runs three of the flake's programs: the integrator, the identity compiler and
+valleyhook. `module-eval`, `mirror-e2e`, `bus-e2e` and `init-e2e` run none of them. They render the
+module over stand-ins with the same names ([nix/checks/hosts.nix](../nix/checks/hosts.nix)), so an
+edit to one of those programs does not change them. A check that runs one of them takes the real
+program.
+
 To see which checks an edit gives a new derivation, run the measurement script on a commit:
 
 ```sh

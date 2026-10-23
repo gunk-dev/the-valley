@@ -2,14 +2,21 @@
 # The refusals are eval-time: a host that must not evaluate is caught by a
 # throw here, since there is nothing to build once it has. What a host does
 # render is pinned by module-eval.sh over the rendered scripts.
+#
+# Every host here runs the stand-ins for this flake's programs
+# (nix/checks/hosts.nix). Nothing here runs a program: each assertion is
+# about the units, hooks and scripts the module renders, which name a
+# program's path and the flags it is given. So module-eval changes when the
+# module, a host declaration or this check does, and not when a program
+# does.
 {
   pkgs,
   lib,
-  hosts,
+  stubbedHosts,
   ...
 }:
 let
-  inherit (hosts)
+  inherit (stubbedHosts)
     unprotectedInstanceHost
     acceptEnvHost
     matchAcceptEnvHost

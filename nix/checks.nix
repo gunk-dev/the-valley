@@ -82,6 +82,16 @@ let
       self
       ;
   };
+  # The same hosts over stand-ins for the programs they run, for the checks
+  # that read what the module renders and run none of the programs.
+  stubbedHosts = import ./checks/hosts.nix {
+    inherit
+      pkgs
+      lib
+      self
+      ;
+    stubbed = true;
+  };
   # The part of a directory a check reads: the paths given, each in its
   # place under root.
   partOf =
@@ -105,6 +115,7 @@ let
       system
       packages
       hosts
+      stubbedHosts
       partOf
       nixStandIns
       ;

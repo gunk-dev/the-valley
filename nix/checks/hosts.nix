@@ -6,8 +6,26 @@
   pkgs,
   lib,
   self,
+  # Whether the hosts run stand-ins for this flake's programs rather than
+  # the programs themselves.
+  stubbed ? false,
 }:
 let
+  # The stand-ins: the integrator, the identity compiler and valleyhook,
+  # each a script with the program's name that fails if anything runs it.
+  # A host rendered over them renders the same units, hooks and scripts,
+  # with the stand-ins' store paths where the programs' would be. None of
+  # them changes when a program does, so a check that reads only what the
+  # module renders changes only when the module or the check does. A check
+  # that runs a program takes the hosts that run the real one.
+  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" ] (
+    name:
+    pkgs.writeShellScriptBin name ''
+      echo "${name}: a stand-in the module checks render hosts over, which runs nothing" >&2
+      exit 1
+    ''
+  );
+
   # Each check host shares the machine baseline and supplies its own
   # declaration (and, where the declaration asks for backup, the secret
   # paths).
@@ -37,6 +55,7 @@ let
             ];
           };
         }
+        (lib.mkIf stubbed { services.valley.packages = stubs; })
         module
       ];
     };

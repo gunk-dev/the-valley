@@ -1745,7 +1745,8 @@ floor: approval: hardware: true
 ```
 
 A hardware key is an approval key that the identity registry enrolled with proof that the key is
-held on a device and that every signature takes a touch.
+held on a device and that every signature takes a touch. The identity compiler lists those keys in
+`approval-signers-hardware` ([Approval signers files](#approval-signers-files)).
 
 - **What it decides.** It decides which keys may sign an approval. It does not decide whether a
   change needs an approval.
@@ -1766,10 +1767,10 @@ held on a device and that every signature takes a touch.
   a value of the wrong type.
 
 The schema rule and its Go reader, `HardwareApproval` in
-[`composed/composed.go`](../composed/composed.go), are `implemented`. Nothing acts on the value. Two
-parts are `not built`: enrolling hardware keys in the identity registry, and the approval gate that
-would check approvals against those keys alone. Whether a floor writes the field is a
-`deployment choice`.
+[`composed/composed.go`](../composed/composed.go), are `implemented`. Nothing acts on the value.
+Enrolling hardware keys in the identity registry is `implemented`: the compiler verifies each key's
+attestation and writes `approval-signers-hardware`. The approval gate that would check approvals
+against that file alone is `not built`. Whether a floor writes the field is a `deployment choice`.
 
 The schema travels with the tools: `valley`, the integrator and the restacker each compose under
 their own packaged copy. A tool with an older schema refuses a policy that writes `approval`, and

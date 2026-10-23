@@ -92,7 +92,9 @@ git -C instance.git update-ref -d "refs/replace/$landed"
 # that commit. Here a git standing in front of the real one moves main to a
 # commit holding the forged registry the moment the compiler has resolved
 # it. A compiler reading through the ref would compile the forged registry
-# and name the first commit in its journal line. The compiler runs
+# and name the first commit in its journal line. The approval signers files
+# come from the resolved commit too: the forged registry's intruder is a
+# human holding request, so it would add an approval key. The compiler runs
 # unwrapped, because its wrapper puts its own git first on PATH.
 resolved="$(git -C instance.git rev-parse main)"
 cp forged.cue work/identity/registry.cue
@@ -111,7 +113,9 @@ RACING
 chmod +x racing/git
 PATH="$TMPDIR/racing:$PATH" "$identityUnwrapped" compile --repo "$TMPDIR/instance.git" \
   --schema "$identitySchema" --known-signers "$TMPDIR/signers" \
-  --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" --now 2026-08-09 2> raced.log || {
+  --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" \
+  --approval-signers "$TMPDIR/approval-signers" \
+  --approval-signers-hardware "$TMPDIR/approval-signers-hardware" --now 2026-08-09 2> raced.log || {
   cat raced.log >&2
   exit 1
 }
@@ -127,13 +131,15 @@ grep -qF "at $resolved:" raced.log || {
 diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
 diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+diff -u "$compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
+diff -u "$compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
 # The next compilation resolves main where it now is, and compiles the
 # forged registry: the commit the race moved main to compiles differently.
 compile --now 2026-08-09 || exit 1
-grep -q intruder "$TMPDIR/keys" || {
+if ! grep -q intruder "$TMPDIR/keys" || cmp -s "$compiled/approval-signers" "$TMPDIR/approval-signers"; then
   echo "identity-e2e: the commit main moved to compiles the same, so the race check proves nothing" >&2
   exit 1
-}
+fi
 git -C instance.git update-ref refs/heads/main "$resolved"
 compile --now 2026-08-09 || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1

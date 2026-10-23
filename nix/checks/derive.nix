@@ -5,9 +5,9 @@
   ...
 }:
 {
-  # Run in the package's checkPhase with go vet: the glob language by
-  # example, a diff's paths read from git diff -z and every cut of it
-  # refused, and the deriver's rules over a policy written in the test.
+  # Run with go vet: the glob language by example, a diff's paths read
+  # from git diff -z and every cut of it refused, and the deriver's rules
+  # over a policy written in the test.
   # Then the deriver held to bin/valley's: both run over the repository's
   # own policy, the example policies and paths drawn from a fixed seed,
   # with bin/valley under the C, C.UTF-8 and en_US.UTF-8 locales and the
@@ -22,5 +22,5 @@
   # (bd-11e0e4d), the test records what each answers: a path holding a
   # newline, a class added by refining policy that requires an undefined
   # check, and a class named unclassified.
-  derive-unit = packages.derive;
+  derive-unit = packages.derive.unit;
 }

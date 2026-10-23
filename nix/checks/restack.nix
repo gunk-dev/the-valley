@@ -55,7 +55,7 @@ let
   };
 in
 {
-  # The restacker's own tests (restack/), run in its checkPhase: how a
+  # The restacker's own tests (restack/), in its unit build: how a
   # request relates to a family, by every version head a change has had,
   # which outcomes are current and which release a family, the arithmetic
   # of each capacity limit, and how the policy's cap is counted, one larger
@@ -80,7 +80,7 @@ in
   # as the restacker principal: the hook takes the active title and
   # refuses a forged one, and takes a report from the restacker and not
   # from the change's owner.
-  restack-unit = packages.restack-unwrapped.overrideAttrs {
+  restack-unit = packages.restack-unwrapped.unit.overrideAttrs {
     inherit initScript;
     passAsFile = [ "initScript" ];
     preCheck = ''

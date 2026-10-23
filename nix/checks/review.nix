@@ -1,5 +1,5 @@
 # Review records (review/): the record, its binding and its history.
-# No program builds with the module, so its tests run here.
+# Its tests run here, in the package's unit build (nix/packages.nix).
 {
   packages,
   ...
@@ -12,5 +12,5 @@
   # its parents, the records it keeps once the change's record ref is gone,
   # unique review IDs, withdrawals, every append the hook must refuse, and
   # a compare-and-swap publish between two clones. go vet runs after them.
-  review-unit = packages.review;
+  review-unit = packages.review.unit;
 }

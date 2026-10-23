@@ -701,6 +701,15 @@ for module in attest change composed delta identity integrator knot note rebase 
 done
 ```
 
+Through Nix, a module's unit tests run in its unit check, and nowhere else. The check is named for
+the module, such as `valleyhook-unit` for `valleyhook/`, and `valley-go-unit` for `status/`:
+
+```sh
+nix build --no-link .#checks.x86_64-linux.valleyhook-unit -L
+```
+
+Building a package runs no tests.
+
 Run a single Nix check by name. For documentation, format first, then check formatting, links, and
 the style rules, then the policy that selects checks:
 
@@ -720,8 +729,12 @@ Each check is given only the files it reads. [nix/checks.nix](../nix/checks.nix)
 [nix/packages.nix](../nix/packages.nix) narrow each source to those files with `lib.fileset`. An
 edit to any other file leaves the check's derivation unchanged, so the check's evidence transfers to
 the edited tree. When a check starts to read a new file, give the check that file. The sandbox fails
-a check that reads a file it was not given. To see which checks an edit gives a new derivation, run
-the measurement script on a commit:
+a check that reads a file it was not given.
+
+A Go package's source holds no test files, and its unit check adds them. So an edit to a test
+changes the unit check alone, and no check built on the package.
+
+To see which checks an edit gives a new derivation, run the measurement script on a commit:
 
 ```sh
 nix/tools/drv-churn.sh --expect nix/tools/drv-churn.expected

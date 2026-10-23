@@ -1072,8 +1072,10 @@ signed by a known signer, says the check `passed`, and one of these holds
 Checked by `integrator-unit` (the verdict tests) and `integrator-e2e`.
 
 The flake gives each check only the files it reads, and the packages it builds on only the files
-their builds and tests read (`nix/checks.nix`, `nix/packages.nix`). So an edit to any other file
-leaves a check's derivation and inputs digest unchanged, and its evidence transfers.
+their builds read (`nix/checks.nix`, `nix/packages.nix`). So an edit to any other file leaves a
+check's derivation and inputs digest unchanged, and its evidence transfers. No package build runs
+tests. Each Go module's unit tests run in its `*-unit` check, which builds the package again with
+the tests and the files they read. So an edit to a test changes that check alone.
 `nix/tools/drv-churn.sh` measures which checks a representative edit changes.
 
 A signer can be restricted to projects. This is how a check worker's key can sit in the

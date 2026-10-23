@@ -6,7 +6,7 @@
   # sight. Every rule of dcr-439b771 is a function of data, so the
   # unit tests state each one directly; what a repository does to
   # produce those inputs is integrator-e2e's.
-  integrator-unit = packages.integrator-unwrapped;
+  integrator-unit = packages.integrator-unwrapped.unit;
 
   # The integrator itself, driven end to end over scratch bare
   # repositories and throwaway keys, running the real binaries: the

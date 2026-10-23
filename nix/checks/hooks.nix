@@ -39,14 +39,14 @@
   # refusal against real git objects. What the hook does to a real push
   # is protect-e2e's, valley-ready's for the records the CLI writes, and
   # knots-e2e's for the plan graph.
-  valleyhook-unit = packages.valleyhook;
+  valleyhook-unit = packages.valleyhook.unit;
 
   # The note envelope every reader of an attestation shares (note/).
-  note-unit = packages.note;
+  note-unit = packages.note.unit;
 
   # The change record the hook guards and the CLI writes (change/): its
   # strict reading, and the fuzz target's seed corpus.
-  change-unit = packages.change;
+  change-unit = packages.change.unit;
 
   # The one structural invariant, driven for real: bare repos wired
   # with the rendered pre-receive hook, pushed to as each principal.

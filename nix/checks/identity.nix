@@ -27,11 +27,10 @@
   ...
 }:
 {
-  # The compiler's Go tests, run in the package's checkPhase: the key
-  # hash pinned against the reference vector attest is held to, expiry,
+  # The compiler's Go tests: the key hash pinned against the reference vector attest is held to, expiry,
   # the renders it must refuse, and the approval files, over a real
   # YubiKey's attestation and signature.
-  identity-unit = packages.identity-unwrapped;
+  identity-unit = packages.identity-unwrapped.unit;
 
   identity-e2e = pkgs.runCommand "valley-identity-e2e" {
     nativeBuildInputs = [

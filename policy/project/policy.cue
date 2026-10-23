@@ -88,8 +88,9 @@ project: {
 	checks: "publish-e2e": cost:    "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
-	// A path in two classes requires both sets. A Go module's unit check is its
-	// package, whose checkPhase runs `go test`.
+	// A path in two classes requires both sets. A Go module's unit check is
+	// its package built again with its tests, which runs `go test`. The
+	// package itself runs no tests (nix/packages.nix).
 
 	// The pre-receive hook and the git user's login shell. protect-e2e
 	// pushes to bare repositories wired with the hook a host renders,

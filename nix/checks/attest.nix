@@ -7,11 +7,10 @@
   ...
 }:
 {
-  # The helper's Go tests, run in the package's checkPhase against real
-  # git and ssh-keygen: the written form, the note's key hash and
-  # signatures, and the tree digest and input manifest. The unwrapped
-  # package, because its checkPhase is where the tests run.
-  attest-unit = packages.attest-unwrapped;
+  # The helper's Go tests, run against real git and ssh-keygen: the
+  # written form, the note's key hash and signatures, and the tree digest
+  # and input manifest.
+  attest-unit = packages.attest-unwrapped.unit;
 
   # The written form and the note envelope, held to fixed vectors.
   # These bytes are an interop contract rather than an

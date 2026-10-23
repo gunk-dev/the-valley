@@ -37,7 +37,7 @@ in
   # ssh-keygen signing through sk-dummy, including a key stub rewritten
   # to skip the touch, which ssh-keygen -Y verify and git verify-tag both
   # accept and sigverify must refuse.
-  sigverify-unit = packages.sigverify.overrideAttrs (old: {
+  sigverify-unit = packages.sigverify.unit.overrideAttrs (old: {
     env = (old.env or { }) // {
       SIGVERIFY_SK_PROVIDER = provider;
     };

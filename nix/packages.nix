@@ -31,30 +31,82 @@ rec {
   # nothing.
   unread = lib.fileset.fileFilter (f: f.hasExt "md" || f.name == ".gitignore") ../.;
 
-  # The source of a Go program that uses modules of this repository: its own
-  # directory and those modules, which its go.mod replaces with their local
-  # directories, each in its place in the tree. Nothing shared this way is
-  # fetched. withLocalExcept also leaves out the paths in its last argument,
-  # which are files of the directory that only a flake check reads, never
-  # the package's build or tests.
-  withLocalExcept =
-    dir: modules: excluded:
-    lib.fileset.toSource {
-      root = ../.;
-      fileset = lib.fileset.difference (lib.fileset.unions ([ dir ] ++ modules)) (
-        lib.fileset.unions ([ unread ] ++ excluded)
-      );
-    };
-  withLocal = dir: modules: withLocalExcept dir modules [ ];
+  # Every Go test file in the tree. No package's build reads one.
+  goTests = lib.fileset.fileFilter (f: lib.hasSuffix "_test.go" f.name) ../.;
 
-  # The source of a Go module that uses no other module of this repository:
-  # its own directory.
-  ownSource =
-    dir:
-    lib.fileset.toSource {
-      root = dir;
-      fileset = lib.fileset.difference dir unread;
-    };
+  # A Go module of this repository, built as a package that runs no tests,
+  # with its unit tests beside it as the package's unit attribute.
+  #
+  # The package's source is what its build reads: the module's directory
+  # (dir) and the modules of this repository it uses (modules), which its
+  # go.mod replaces with their local directories, each in its place in the
+  # tree. Nothing shared this way is fetched. The source holds no test file
+  # and none of the files only the tests read (tests.reads), and the
+  # package's checkPhase is off. So an edit to a test, or to a file only the
+  # tests read, changes neither the package nor any check built on it.
+  #
+  # unit is the same build over the same source with the module's own tests
+  # and tests.reads added, and with its checkPhase on. The checkPhase runs
+  # go test, with the rest of tests: the tools the tests need, and what runs
+  # before and after them, such as go vet. Each module's unit is its unit
+  # check (nix/checks/), so its tests run in that check and in no package
+  # build.
+  #
+  # excluded names files of dir that neither the build nor the tests read,
+  # because only a flake check reads them.
+  goModule =
+    {
+      dir,
+      modules ? [ ],
+      excluded ? [ ],
+      tests ? { },
+      ...
+    }@args:
+    let
+      testReads = tests.reads or [ ];
+      source =
+        fileset:
+        lib.fileset.toSource {
+          root = ../.;
+          inherit fileset;
+        };
+      build = lib.fileset.difference (lib.fileset.unions ([ dir ] ++ modules)) (
+        lib.fileset.unions ([ unread goTests ] ++ excluded ++ testReads)
+      );
+      withTests = lib.fileset.difference (lib.fileset.unions (
+        [
+          build
+          (lib.fileset.intersection goTests dir)
+        ]
+        ++ testReads
+      )) (lib.fileset.unions ([ unread ] ++ excluded));
+    in
+    pkgs.buildGoModule (
+      finalAttrs:
+      removeAttrs args [
+        "dir"
+        "modules"
+        "excluded"
+        "tests"
+      ]
+      // {
+        version = "0";
+        src = source build;
+        modRoot = lib.path.removePrefix ../. dir;
+        # Standard library only, so no module is fetched.
+        vendorHash = null;
+        doCheck = false;
+        passthru.unit = finalAttrs.finalPackage.overrideAttrs (
+          prev:
+          removeAttrs tests [ "reads" ]
+          // {
+            pname = "${prev.pname}-unit";
+            src = source withTests;
+            doCheck = true;
+          }
+        );
+      }
+    );
 
   # vendorHash = null builds in vendor mode, which has no reading of a local
   # replace. The replaced module is a directory beside the program and
@@ -142,43 +194,40 @@ rec {
   # self-update installs the tip of a branch of the-valley into the user's
   # nix profile (../selfupdate). checks prints which checks a change
   # requires, as the deriver (../derive) derives them from the policy the
-  # composed-policy reader (../composed) reads. Go,
-  # standard library only — hence vendorHash = null and no module fetch. It
-  # runs whatever git and cue are on PATH, which inside the CLI's package
+  # composed-policy reader (../composed) reads. Go, standard library only.
+  # It runs whatever git and cue are on PATH, which inside the CLI's package
   # are the CLI's own. Its unit tests hold its shell quoting to the bash it
   # replaced, so they need bash, lay pending out over real repositories,
   # so they need git, and derive a change's checks under the verification
   # schema, so they need cue and the schema. The plan's golden files
   # (status/testdata/plan/) are valley-plan's, and no Go test reads them.
-  valley-go = pkgs.buildGoModule {
+  valley-go = goModule {
     pname = "valley-go";
-    version = "0";
-    src =
-      withLocalExcept ../status
-        [
-          ../change
-          ../composed
-          ../delta
-          ../derive
-          ../knot
-          ../note
-          ../rebase
-          ../selfupdate
-          ../schema/verification.cue
-        ]
-        [ ../status/testdata/plan ];
-    modRoot = "status";
-    vendorHash = null;
-    preBuild = readsGoMod;
-    nativeCheckInputs = [
-      pkgs.bash
-      pkgs.git
-      pkgs.cue
+    dir = ../status;
+    modules = [
+      ../change
+      ../composed
+      ../delta
+      ../derive
+      ../knot
+      ../note
+      ../rebase
+      ../selfupdate
     ];
-    # A test that cannot find a tool it needs fails rather than skipping.
-    preCheck = ''
-      export VALLEY_TEST_TOOLS=required
-    '';
+    excluded = [ ../status/testdata/plan ];
+    preBuild = readsGoMod;
+    tests = {
+      reads = [ ../schema/verification.cue ];
+      nativeCheckInputs = [
+        pkgs.bash
+        pkgs.git
+        pkgs.cue
+      ];
+      # A test that cannot find a tool it needs fails rather than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+      '';
+    };
     meta.mainProgram = "valley-go";
   };
 
@@ -222,21 +271,19 @@ rec {
   };
 
   # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
-  # only, note format included — hence vendorHash = null, and hence no
-  # module fetch at build time. Its unit tests run in the checkPhase and
-  # need git and ssh-keygen. It reads signed notes with the note module
-  # (../note), the one reading of the envelope shared by the programs that
-  # write, verify and admit attestations. The conformance vectors
-  # (attest/conformance/) are attest-conformance's, and no Go test reads
-  # them.
-  attest-unwrapped = pkgs.buildGoModule {
+  # only, note format included, and hence no module fetch at build time.
+  # Its unit tests need git and ssh-keygen. It reads signed notes with the
+  # note module (../note), the one reading of the envelope shared by the
+  # programs that write, verify and admit attestations. The conformance
+  # vectors (attest/conformance/) are attest-conformance's, and no Go test
+  # reads them.
+  attest-unwrapped = goModule {
     pname = "valley-attest";
-    version = "0";
-    src = withLocalExcept ../attest [ ../note ] [ ../attest/conformance ];
-    modRoot = "attest";
-    vendorHash = null;
+    dir = ../attest;
+    modules = [ ../note ];
+    excluded = [ ../attest/conformance ];
     preBuild = readsGoMod;
-    nativeCheckInputs = [
+    tests.nativeCheckInputs = [
       pkgs.git
       pkgs.openssh
     ];
@@ -268,18 +315,18 @@ rec {
       '';
 
   # The identity registry compiler (dcr-b87f6e8). Go, standard library
-  # only, note format included, same trade as attest and the integrator —
-  # hence vendorHash = null and no module fetch. Its unit tests pin the
-  # note format's key hash against the reference vector attest is held to,
-  # and verify a real YubiKey attestation against the Yubico roots it
-  # carries.
-  identity-unwrapped = pkgs.buildGoModule {
+  # only, note format included, same trade as attest and the integrator, so
+  # no module is fetched. Its unit tests pin the note format's key hash
+  # against the reference vector attest is held to, and verify a real
+  # YubiKey attestation against the Yubico roots it carries. The test
+  # vectors (identity/testdata/) are read by the tests and by identity-e2e,
+  # never by the build.
+  identity-unwrapped = goModule {
     pname = "valley-identity";
-    version = "0";
-    src = withLocal ../identity [ ../note ];
-    modRoot = "identity";
-    vendorHash = null;
+    dir = ../identity;
+    modules = [ ../note ];
     preBuild = readsGoMod;
+    tests.reads = [ ../identity/testdata ];
     meta.mainProgram = "identity";
   };
 
@@ -307,7 +354,7 @@ rec {
       '';
 
   # The security-key signature verifier (sigverify/README.md). Go,
-  # standard library only — hence vendorHash = null and no module fetch.
+  # standard library only, so no module is fetched.
   #
   # The git its git-tag command runs is fixed at build time to this
   # flake's git, as an absolute store path compiled into the binary. A
@@ -315,17 +362,15 @@ rec {
   # git up on PATH, and a caller's environment could change which git that
   # is. Compiled in, there is no PATH lookup to change.
   #
-  # Its tests run in the checkPhase against real ssh-keygen and git. The
-  # security-key cases among them need OpenSSH's sk-dummy authenticator,
-  # which only the sigverify-unit check supplies; here they skip, so a
-  # consumer building this package never builds OpenSSH.
-  sigverify = pkgs.buildGoModule {
+  # Its tests run against real ssh-keygen and git. The security-key cases
+  # among them need OpenSSH's sk-dummy authenticator, which the
+  # sigverify-unit check supplies. Building this package runs no test, so a
+  # consumer building it never builds OpenSSH.
+  sigverify = goModule {
     pname = "valley-sigverify";
-    version = "0";
-    src = ownSource ../sigverify;
-    vendorHash = null;
+    dir = ../sigverify;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
-    nativeCheckInputs = [
+    tests.nativeCheckInputs = [
       pkgs.git
       pkgs.openssh
     ];
@@ -334,161 +379,149 @@ rec {
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
-  # with the one reading of a graph the CLI shares (../knot). The same binary is the git user's login
-  # shell, which derives the pushing principal and pauses pushes until the
-  # host has converged. Go, standard library only — hence
-  # vendorHash = null and no module fetch. Its unit tests run in the
-  # checkPhase.
+  # with the one reading of a graph the CLI shares (../knot). The same
+  # binary is the git user's login shell, which derives the pushing
+  # principal and pauses pushes until the host has converged. Go, standard
+  # library only, so no module is fetched.
   #
   # The git it reads the repository with is fixed at build time, the way
   # sigverify's is: an absolute store path compiled into the binary, so no
   # PATH a hook runs under can change which git that is.
-  valleyhook = pkgs.buildGoModule {
+  valleyhook = goModule {
     pname = "valley-valleyhook";
-    version = "0";
-    src = withLocal ../valleyhook [
+    dir = ../valleyhook;
+    modules = [
       ../note
       ../change
       ../knot
     ];
-    modRoot = "valleyhook";
-    vendorHash = null;
     preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
     # The walk's and the change records' tests build hostile objects with
     # real git.
-    nativeCheckInputs = [ pkgs.git ];
+    tests.nativeCheckInputs = [ pkgs.git ];
     meta.mainProgram = "valleyhook";
   };
 
-  # The note envelope's own tests, which hold it to refusing every line a
+  # The note envelope (note/). Its tests hold it to refusing every line a
   # relayer could append that one of its readers would refuse.
-  note = pkgs.buildGoModule {
+  note = goModule {
     pname = "valley-note";
-    version = "0";
-    src = ownSource ../note;
-    vendorHash = null;
+    dir = ../note;
   };
 
   # The plan graph (knot/): its canonical form, its layout, cycles and
   # transitions, held by its own tests. The package is knotcheck, which
   # knot-agree runs to hold the Go validator to the CUE schema and the
   # knowledge lint.
-  knot = pkgs.buildGoModule {
+  knot = goModule {
     pname = "valley-knot";
-    version = "0";
-    src = ownSource ../knot;
-    vendorHash = null;
+    dir = ../knot;
     meta.mainProgram = "knotcheck";
   };
 
   # The rebase engine (rebase/): a family of stacked changes captured from
   # one snapshot of origin, rebased in a throwaway worktree, and published
-  # as one atomic branch push and one record append per change. Building
-  # valley-go does not run a module's tests that it only imports, so this
-  # package runs the engine's: go test, against real repositories, real
-  # pushes and real git, and go vet. Go, standard library only — hence
-  # vendorHash = null and no module fetch.
-  rebase = pkgs.buildGoModule {
+  # as one atomic branch push and one record append per change. Its tests
+  # run against real repositories, real pushes and real git, with go vet
+  # after them. Go, standard library only, so no module is fetched.
+  rebase = goModule {
     pname = "valley-rebase";
-    version = "0";
-    src = withLocal ../rebase [ ../change ];
-    modRoot = "rebase";
-    vendorHash = null;
+    dir = ../rebase;
+    modules = [ ../change ];
     preBuild = readsGoMod;
-    nativeCheckInputs = [ pkgs.git ];
-    postCheck = ''
-      go vet ./...
-    '';
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./...
+      '';
+    };
   };
 
   # Self-update (selfupdate/): the installed CLI brought up to the tip of a
-  # branch, built with nix and installed into the user's profile. Building
-  # valley-go does not run the tests of a module it only imports, so this
-  # package runs them, and go vet: a real bare repository for ls-remote,
-  # and a stand-in for nix whose builds are small scripts, so nothing is
-  # built and no profile is touched. Go, standard library only — hence
-  # vendorHash = null and no module fetch.
-  selfupdate = pkgs.buildGoModule {
+  # branch, built with nix and installed into the user's profile. Its tests,
+  # with go vet after them, use a real bare repository for ls-remote and a
+  # stand-in for nix whose builds are small scripts, so nothing is built and
+  # no profile is touched. Go, standard library only, so no module is
+  # fetched.
+  selfupdate = goModule {
     pname = "valley-selfupdate";
-    version = "0";
-    src = ownSource ../selfupdate;
-    vendorHash = null;
-    nativeCheckInputs = [ pkgs.git ];
-    postCheck = ''
-      go vet ./...
-    '';
+    dir = ../selfupdate;
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./...
+      '';
+    };
   };
 
   # The deriver of required checks (derive/): a change's paths read from
   # git diff -z, globs matched byte by byte, and the required checks, pins,
   # carry mode and unclassified paths derived from the whole composed
-  # policy (../composed). Building valley-go does not run the tests of a
-  # module it only imports, so this package runs them, and go vet. They
-  # hold it to bin/valley's deriver, run over the repository's own policy,
-  # the example policies and paths drawn from a fixed seed, so the source
-  # carries bin/valley, the schema and those policies, and the tests need
-  # bash, git and cue. bin/valley is run under C.UTF-8 and en_US.UTF-8 as
-  # well as C, so the tests read the UTF-8 locales' archive. Go, standard
-  # library only — hence vendorHash = null and no module fetch.
-  derive = pkgs.buildGoModule {
+  # policy (../composed). Its tests, with go vet after them, hold it to
+  # bin/valley's deriver, run over the repository's own policy, the example
+  # policies and paths drawn from a fixed seed. So the tests read
+  # bin/valley, the schema and those policies, and need bash, git and cue.
+  # bin/valley is run under C.UTF-8 and en_US.UTF-8 as well as C, so the
+  # tests read the UTF-8 locales' archive. Go, standard library only, so no
+  # module is fetched.
+  derive = goModule {
     pname = "valley-derive";
-    version = "0";
-    src = withLocal ../derive [
-      ../composed
-      ../bin/valley
-      ../schema/verification.cue
-      ../examples/policy
-      ../policy/project
-    ];
-    modRoot = "derive";
-    vendorHash = null;
+    dir = ../derive;
+    modules = [ ../composed ];
     preBuild = readsGoMod;
-    nativeCheckInputs = [
-      pkgs.bash
-      pkgs.git
-      pkgs.cue
-    ];
-    # A test that cannot find a tool it needs, or a locale, fails rather
-    # than skipping.
-    preCheck = ''
-      export VALLEY_TEST_TOOLS=required
-      export LOCALE_ARCHIVE=${pkgs.glibcLocalesUtf8}/lib/locale/locale-archive
-    '';
-    postCheck = ''
-      go vet ./...
-    '';
+    tests = {
+      reads = [
+        ../bin/valley
+        ../schema/verification.cue
+        ../examples/policy
+        ../policy/project
+      ];
+      nativeCheckInputs = [
+        pkgs.bash
+        pkgs.git
+        pkgs.cue
+      ];
+      # A test that cannot find a tool it needs, or a locale, fails rather
+      # than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+        export LOCALE_ARCHIVE=${pkgs.glibcLocalesUtf8}/lib/locale/locale-archive
+      '';
+      postCheck = ''
+        go vet ./...
+      '';
+    };
   };
 
-  # The change record's own tests: its strict reading, its fuzz target's
-  # seed corpus, and its branch-name rule, which they hold to real git's
-  # check-ref-format.
-  change = pkgs.buildGoModule {
+  # The change record (change/). Its tests cover its strict reading, its
+  # fuzz target's seed corpus, and its branch-name rule, which they hold to
+  # real git's check-ref-format.
+  change = goModule {
     pname = "valley-change";
-    version = "0";
-    src = ownSource ../change;
-    vendorHash = null;
-    nativeCheckInputs = [ pkgs.git ];
+    dir = ../change;
+    tests.nativeCheckInputs = [ pkgs.git ];
   };
 
   # valley-delta-v1 (delta/): the encoding's strict reading, and the delta
-  # read from real trees. Its checkPhase runs go vet, the conformance
+  # read from real trees. Its unit tests run go vet, the conformance
   # vectors' script in its --check mode, which holds the committed expected
   # results to what the script computes, and go test, which builds each
   # vector's trees with real git and holds the Go code to those results.
-  delta = pkgs.buildGoModule {
+  delta = goModule {
     pname = "valley-delta";
-    version = "0";
-    src = ownSource ../delta;
-    vendorHash = null;
-    nativeCheckInputs = [
-      pkgs.git
-      pkgs.python3
-    ];
-    preCheck = ''
-      go vet ./...
-      python3 -I testdata/vectors.py --check testdata
-    '';
+    dir = ../delta;
+    tests = {
+      reads = [ ../delta/testdata ];
+      nativeCheckInputs = [
+        pkgs.git
+        pkgs.python3
+      ];
+      preCheck = ''
+        go vet ./...
+        python3 -I testdata/vectors.py --check testdata
+      '';
+    };
   };
 
   # Review records (review/): the-valley/review/v1's strict reading, a
@@ -496,24 +529,24 @@ rec {
   # budget, and the append-only history a review is kept in, with the check
   # an append is held to. It reads change records with the one reading of a
   # record the push hook shares (../change), and the delta with
-  # valley-delta-v1's bounded reading (../delta). Its checkPhase runs go
-  # test, which builds every repository it reads with real git, its fuzz
-  # target's seed corpus, and then go vet. Go, standard library only —
-  # hence vendorHash = null and no module fetch.
-  review = pkgs.buildGoModule {
+  # valley-delta-v1's bounded reading (../delta). Its tests build every
+  # repository they read with real git and run its fuzz target's seed
+  # corpus, and go vet runs after them. Go, standard library only, so no
+  # module is fetched.
+  review = goModule {
     pname = "valley-review";
-    version = "0";
-    src = withLocal ../review [
+    dir = ../review;
+    modules = [
       ../change
       ../delta
     ];
-    modRoot = "review";
-    vendorHash = null;
     preBuild = readsGoMod;
-    nativeCheckInputs = [ pkgs.git ];
-    postCheck = ''
-      go vet ./...
-    '';
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./...
+      '';
+    };
   };
 
   # The restacker (restack/): `valley-restacker once --report-only` reads
@@ -527,29 +560,27 @@ rec {
   # the journal of writes and recovery's decisions, its environment, its
   # scratch repository's identity, its state directory's lock and binding,
   # and the deadline on what it runs. go vet runs after them. Go, standard
-  # library only — hence vendorHash = null and no module fetch.
-  restack-unwrapped = pkgs.buildGoModule {
+  # library only, so no module is fetched.
+  restack-unwrapped = goModule {
     pname = "valley-restacker";
-    version = "0";
+    dir = ../restack;
+    modules = [
+      ../change
+      ../composed
+      ../note
+      ../rebase
+    ];
     # The program alone: e2e/transport is a module of restack-e2e's own,
     # which neither this build nor its tests read.
-    src =
-      withLocalExcept ../restack
-        [
-          ../change
-          ../composed
-          ../note
-          ../rebase
-        ]
-        [ ../restack/e2e ];
-    modRoot = "restack";
+    excluded = [ ../restack/e2e ];
     subPackages = [ "." ];
-    vendorHash = null;
     preBuild = readsGoMod;
-    nativeCheckInputs = [ pkgs.git ];
-    postCheck = ''
-      go vet ./...
-    '';
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./...
+      '';
+    };
     # The module is named for its directory; the program, for what it is.
     postInstall = ''
       mv $out/bin/restack $out/bin/valley-restacker
@@ -580,34 +611,31 @@ rec {
       '';
 
   # The Phase 3 integrator (dcr-439b771). Go, standard library only,
-  # same trade as attest — hence vendorHash = null and no module fetch. It
-  # reads change records with the one reading of a record the push hook
-  # shares (../change), and verifier keys with the one reading of a key the
-  # note format defines (../note).
-  integrator-unwrapped = pkgs.buildGoModule {
+  # same trade as attest, so no module is fetched. It reads change records
+  # with the one reading of a record the push hook shares (../change), and
+  # verifier keys with the one reading of a key the note format defines
+  # (../note).
+  integrator-unwrapped = goModule {
     pname = "valley-integrator";
-    version = "0";
-    # The verification schema is in the source for the policy bridge's
-    # tests, which compose a policy under it. The scenarios (integrator/e2e/)
-    # are integrator-e2e's, and no Go test reads them.
-    src =
-      withLocalExcept ../integrator
-        [
-          ../change
-          ../composed
-          ../note
-          ../schema/verification.cue
-        ]
-        [ ../integrator/e2e ];
-    modRoot = "integrator";
-    vendorHash = null;
-    preBuild = readsGoMod;
-    # The policy bridge's tests check a deriver's report against real git,
-    # and compose a policy with real cue.
-    nativeCheckInputs = [
-      pkgs.git
-      pkgs.cue
+    dir = ../integrator;
+    modules = [
+      ../change
+      ../composed
+      ../note
     ];
+    # The scenarios (integrator/e2e/) are integrator-e2e's, and no Go test
+    # reads them.
+    excluded = [ ../integrator/e2e ];
+    preBuild = readsGoMod;
+    tests = {
+      # The policy bridge's tests compose a policy under the verification
+      # schema with real cue, and check a deriver's report against real git.
+      reads = [ ../schema/verification.cue ];
+      nativeCheckInputs = [
+        pkgs.git
+        pkgs.cue
+      ];
+    };
     meta.mainProgram = "integrator";
   };
 

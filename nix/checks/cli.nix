@@ -275,25 +275,25 @@ in
     eventSchema = ../../schema/events.cue;
   } (builtins.readFile ./valley-request.sh);
 
-  # The rebase engine's tests (rebase/), run in its package's checkPhase
-  # with go vet: a chain, a shared lower layer, a conflict, an empty layer,
-  # a lease lost to a moved branch, a record append refused after the
-  # branches moved, a branch push and a record push that origin takes and
-  # never acknowledges, a cancellation before the push, and a cancellation
-  # while a hook or a filter blocks, each over real repositories and real
-  # pushes. A restack append kept and restored still reads the branch
+  # The rebase engine's tests (rebase/), run with go vet: a chain, a
+  # shared lower layer, a conflict, an empty layer, a lease lost to a moved
+  # branch, a record append refused after the branches moved, a branch
+  # push and a record push that origin takes and never acknowledges, a
+  # cancellation before the push, and a cancellation while a hook or a
+  # filter blocks, each over real repositories and real pushes. A restack
+  # append kept and restored still reads the branch
   # before its push, and is refused once the owner has moved it; a kept
   # write that is malformed does not restore. valley-ready and
   # integrator-e2e drive it through valley rebase.
-  rebase-unit = packages.rebase;
+  rebase-unit = packages.rebase.unit;
 
-  # The Go verbs' tests (status/), run in valley-go's checkPhase: the
+  # The Go verbs' tests (status/), in valley-go's unit build: the
   # outcome records status accepts, the names its JSON refuses, its shell
   # quoting held to the bash it replaced, a rebase ended by a SIGTERM
   # while a hook blocks it, and the valley-checks/v1 document checks prints
   # over a real repository, a path that is not UTF-8 in base64. valley-status
   # and valley-ready drive the verbs through the CLI over real repositories.
-  valley-go-unit = packages.valley-go;
+  valley-go-unit = packages.valley-go.unit;
 
   # Read origin's request/outcome refs and distinguish a pending request,
   # a recorded decision and a landing, without moving the user's checkout.
@@ -434,13 +434,13 @@ in
     golden = ../../status/testdata/plan;
   } (builtins.readFile ./valley-plan.sh);
 
-  # Self-update's own tests (selfupdate/), run in its package's checkPhase
-  # with go vet: a real bare repository for ls-remote and a stand-in for
-  # nix, over an install, an up-to-date run, each step of the smoke test
-  # failing and being skipped, --retry, a rollback and its return, a pin, a
-  # valley removed from the profile by hand, and the repositories and
-  # branches it refuses. valley-self-update drives the verb through the CLI.
-  selfupdate-unit = packages.selfupdate;
+  # Self-update's own tests (selfupdate/), run with go vet: a real bare
+  # repository for ls-remote and a stand-in for nix, over an install, an
+  # up-to-date run, each step of the smoke test failing and being skipped,
+  # --retry, a rollback and its return, a pin, a valley removed from the
+  # profile by hand, and the repositories and branches it refuses.
+  # valley-self-update drives the verb through the CLI.
+  selfupdate-unit = packages.selfupdate.unit;
 
   # valley --version and valley self-update through the installed package,
   # against a real bare repository. A build has no nix, so a stand-in for

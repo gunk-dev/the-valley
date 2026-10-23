@@ -7,9 +7,9 @@
   ...
 }:
 {
-  # The canonical form's parser, cycles, transitions and every limit at
-  # its edge, run in the package's checkPhase.
-  knot-unit = packages.knot;
+  # The module's tests: the canonical form's parser, cycles, transitions
+  # and every limit at its edge.
+  knot-unit = packages.knot.unit;
 
   # The Go validator is the authority for refs/the-valley/knots, and
   # schema/node.cue with nix/knowledge-lint.py is the one documented schema,

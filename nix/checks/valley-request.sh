@@ -2033,17 +2033,21 @@ pushed() {
   cat "$reusepushes" >&2
   exit 1
 }
-# built <check…>: the nix log names a derivation of exactly these checks,
-# each once. built nothing: nix did not run.
+# built <check…>: nix built a derivation of exactly these checks, each
+# once. attest evaluates the checks of a batch together, then builds each
+# check's derivation with nix build <store>/<check>-XXXXXX.drv^*, which the
+# stand-in names after the check, so every derivation a nix build line
+# names is read as one build of that check. built nothing: nix did not run.
 built() {
-  local check got
+  local got
   if [ "$1" = nothing ]; then
     [ ! -s "$nixlog" ] && return
     echo "valley-request: the worker ran nix when it had nothing to build" >&2
     cat "$nixlog" >&2
     exit 1
   fi
-  got="$(sed -n 's/^nix eval .*#checks\.[^.]*\.\([^.]*\)\.drvPath$/\1/p' "$nixlog" | sort | paste -sd' ')"
+  got="$(grep '^nix build ' "$nixlog" | tr ' ' '\n' \
+    | sed -n 's|^.*/\([a-z0-9][a-z0-9-]*\)-[A-Za-z0-9]\{6\}\.drv^\*$|\1|p' | sort | paste -sd' ')"
   [ "$got" = "$(printf '%s\n' "$@" | sort | paste -sd' ')" ] && return
   echo "valley-request: the worker built '$got', not '$*'" >&2
   cat "$nixlog" >&2

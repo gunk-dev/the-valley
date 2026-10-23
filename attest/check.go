@@ -244,10 +244,10 @@ var buildSlots = runtime.NumCPU()
 // runPure runs every pure check and returns their runs in the order given.
 // It evaluates them all together (evalClosures), then builds each
 // derivation that evaluated in a nix build of its own, buildSlots of them
-// at once, so the nix daemon builds them side by side. Checks that
-// evaluate to the same derivation share its one build. With report, it
-// hands each run to report in the order given, as soon as that check and
-// every one before it have ended.
+// at once, so the nix daemon builds them side by side (buildChecks).
+// Checks that evaluate to the same derivation share its one build. With
+// report, it hands each run to report in the order given, as soon as that
+// check and every one before it have ended.
 //
 // Each check's outcome is its own derivation's build: the exit status and
 // standard error of the nix build that built it, exactly as when checks
@@ -276,27 +276,50 @@ func runPure(tree, system string, specs []checkSpec, probe bool, report func(ran
 		}
 	}
 
-	slots := make(chan struct{}, max(buildSlots, 1))
+	drvs := make([]string, len(evals))
+	for i, e := range evals {
+		drvs[i] = e.drv
+	}
+	buildChecks(runs, drvs, buildSlots, func(drv string) (string, string, error) {
+		return nix(tree, "build", "--no-link", "--print-out-paths", drv+"^*")
+	}, report)
+	return runs
+}
+
+// buildChecks builds the derivation of every run that has no error yet
+// and decides each from its derivation's build (pureOutcome). drvs[i] is
+// runs[i]'s derivation, and build builds one derivation, returning what it
+// printed on standard output and standard error and how it ended. Builds
+// start in the order of runs, at most slots of them at once, and runs that
+// share a derivation share its one build. Each run is handed to report in
+// order, as soon as it and every run before it have ended.
+func buildChecks(runs []ranCheck, drvs []string, slots int, build func(drv string) (string, string, error), report func(ranCheck)) {
 	builds := map[string]*drvBuild{}
+	var order []*drvBuild
 	for i := range runs {
-		drv := evals[i].drv
-		if runs[i].err != nil || builds[drv] != nil {
+		if runs[i].err != nil || builds[drvs[i]] != nil {
 			continue
 		}
-		b := &drvBuild{done: make(chan struct{})}
-		builds[drv] = b
-		go func() {
-			defer close(b.done)
-			slots <- struct{}{}
-			defer func() { <-slots }()
-			built := time.Now()
-			b.paths, b.log, b.err = nix(tree, "build", "--no-link", "--print-out-paths", drv+"^*")
-			b.took = time.Since(built)
-		}()
+		b := &drvBuild{drv: drvs[i], done: make(chan struct{})}
+		builds[drvs[i]] = b
+		order = append(order, b)
 	}
+	free := make(chan struct{}, max(slots, 1))
+	go func() {
+		for _, b := range order {
+			free <- struct{}{}
+			go func() {
+				defer close(b.done)
+				defer func() { <-free }()
+				began := time.Now()
+				b.paths, b.log, b.err = build(b.drv)
+				b.took = time.Since(began)
+			}()
+		}
+	}()
 	for i := range runs {
 		if runs[i].err == nil {
-			b := builds[evals[i].drv]
+			b := builds[drvs[i]]
 			<-b.done
 			runs[i].took += b.took
 			runs[i].err = pureOutcome(b, &runs[i].out)
@@ -305,13 +328,13 @@ func runPure(tree, system string, specs []checkSpec, probe bool, report func(ran
 			report(runs[i])
 		}
 	}
-	return runs
 }
 
 // drvBuild is the nix build of one derivation: what it printed on standard
 // output and on standard error, how it ended, and how long it took. done
 // is closed once it has ended.
 type drvBuild struct {
+	drv   string
 	done  chan struct{}
 	paths string
 	log   string
@@ -323,10 +346,15 @@ type drvBuild struct {
 // digests the output when the build succeeded. Building from the
 // derivation path rather than the attribute a second time guarantees the
 // thing built is the thing recorded. The build's standard error is the
-// check's log.
+// check's log. A build that failed with nothing on standard error, as when
+// nix could not be started or was killed by a signal, gets the error that
+// ended it as its log instead.
 func pureOutcome(b *drvBuild, out *checkOutcome) error {
 	out.log = strings.TrimSpace(b.log)
 	if b.err != nil {
+		if out.log == "" {
+			out.log = b.err.Error()
+		}
 		return nil // a failed check is an outcome, not an error
 	}
 	paths := strings.Fields(b.paths)

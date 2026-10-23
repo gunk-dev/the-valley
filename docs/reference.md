@@ -575,8 +575,9 @@ attest key --key ~/.ssh/valley-attest --name operator
       to one check derivation per CPU builds at once.
     - Decides each `nix` check by its own build, as when checks were built one at a time. A check
       passed when its build succeeded. A check that failed keeps its own build's `stderr` as its
-      log. A build that prints other than one output path is an error, since a check attribute must
-      produce exactly one.
+      log. When the build wrote nothing there, such as when `nix` could not start or was killed by a
+      signal, the log is the error that ended the build. A build that prints other than one output
+      path is an error, since a check attribute must produce exactly one.
     - A check that does not evaluate is an error for that check alone. Every other check is still
       built and reported. When the shared evaluation stops at an error nix cannot catch, such as a
       type error, each check is evaluated on its own.

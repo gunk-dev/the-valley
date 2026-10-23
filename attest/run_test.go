@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,8 +22,15 @@ import (
 // binary, run again with ATTEST_AS_MAIN set, so what is run is the
 // program's own main with real standard output and error.
 
+// TestMain runs this test binary as attest when ATTEST_AS_MAIN is set.
+// ATTEST_TEST_BUILD_SLOTS then sets how many builds that attest runs at
+// once, so a test decides the capacity rather than the machine's CPU
+// count.
 func TestMain(m *testing.M) {
 	if os.Getenv("ATTEST_AS_MAIN") != "" {
+		if slots, err := strconv.Atoi(os.Getenv("ATTEST_TEST_BUILD_SLOTS")); err == nil {
+			buildSlots = slots
+		}
 		main()
 		os.Exit(0)
 	}
@@ -310,25 +318,38 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 	}
 }
 
-// Two slow checks build side by side: the run takes about as long as one
-// of them, not as long as both.
+// Two slow checks build side by side when attest may run two builds at
+// once: the run takes about as long as one of them. Allowed one build at a
+// time, the same run takes as long as both. The capacity is set here, so
+// the machine's CPU count does not decide either.
 func TestChecksBuildSideBySide(t *testing.T) {
 	// The sandbox's /bin/sh may have no sleep, so each check waits on a
 	// read that never ends a line and times out.
 	const sleep = 5 * time.Second
 	script := fmt.Sprintf("read -t %d line < /dev/zero; echo done > $out", int(sleep.Seconds()))
-	f := newNixFixture(t, map[string]string{
-		"slow-one": fmt.Sprintf("check %q %q", "slow-one", script),
-		"slow-two": fmt.Sprintf("check %q %q", "slow-two", script),
-	})
-	began := time.Now()
-	stdout, stderr, err := f.attest(t, "--check", "slow-one", "--check", "slow-two")
-	took := time.Since(began)
-	if err != nil {
-		t.Fatalf("the slow checks did not pass: %v\n%s%s", err, stdout, stderr)
-	}
-	if took < sleep || took >= 2*sleep-time.Second {
-		t.Errorf("two %v checks took %v together", sleep, took)
+	for _, c := range []struct {
+		slots    int
+		min, max time.Duration
+	}{
+		{slots: 2, min: sleep, max: 2*sleep - time.Second},
+		{slots: 1, min: 2 * sleep, max: 3 * sleep},
+	} {
+		// A fixture of its own, so the second run does not find the
+		// first one's outputs built.
+		f := newNixFixture(t, map[string]string{
+			"slow-one": fmt.Sprintf("check %q %q", "slow-one", script),
+			"slow-two": fmt.Sprintf("check %q %q", "slow-two", script),
+		})
+		f.env = append(f.env, fmt.Sprintf("ATTEST_TEST_BUILD_SLOTS=%d", c.slots))
+		began := time.Now()
+		stdout, stderr, err := f.attest(t, "--check", "slow-one", "--check", "slow-two")
+		took := time.Since(began)
+		if err != nil {
+			t.Fatalf("the slow checks did not pass: %v\n%s%s", err, stdout, stderr)
+		}
+		if took < c.min || took >= c.max {
+			t.Errorf("two %v checks, %d build at a time, took %v together", sleep, c.slots, took)
+		}
 	}
 }
 

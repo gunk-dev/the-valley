@@ -4,7 +4,23 @@
 # The flags are one string so the formatter app and this check cannot
 # drift; split it back into argv.
 read -ra fmtArgs <<< "$proseFmtArgs"
+
+# The tree the check reads: the markdown files and prettier's configuration,
+# and the link targets that are neither, each an empty file or directory at
+# its path.
+tree="$TMPDIR/tree"
+cp -r "$markdown" "$tree"
+chmod -R u+w "$tree"
 cd "$tree" || exit 1
+while IFS= read -r path; do
+  case "$path" in
+    */) mkdir -p "$path" ;;
+    *)
+      mkdir -p "$(dirname "$path")"
+      touch "$path"
+      ;;
+  esac
+done < "$linkTargetsPath"
 find . -name '*.md' -print0 | xargs -0 --no-run-if-empty \
   prettier "${fmtArgs[@]}" --check
 

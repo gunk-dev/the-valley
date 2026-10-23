@@ -1071,6 +1071,11 @@ signed by a known signer, says the check `passed`, and one of these holds
 
 Checked by `integrator-unit` (the verdict tests) and `integrator-e2e`.
 
+The flake gives each check only the files it reads, and the packages it builds on only the files
+their builds and tests read (`nix/checks.nix`, `nix/packages.nix`). So an edit to any other file
+leaves a check's derivation and inputs digest unchanged, and its evidence transfers.
+`nix/tools/drv-churn.sh` measures which checks a representative edit changes.
+
 A signer can be restricted to projects. This is how a check worker's key can sit in the
 known-signers file that every controller on a host shares, while its evidence counts only in the
 projects it builds for. The controllers are given a signer projects file (`--signer-projects`,

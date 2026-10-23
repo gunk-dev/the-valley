@@ -716,6 +716,23 @@ them one at a time; VM checks need the virtualization facilities their definitio
 flake suite is invoked with `nix flake check` when your task permits it and the machine can run all
 its checks.
 
+Each check is given only the files it reads. [nix/checks.nix](../nix/checks.nix) and
+[nix/packages.nix](../nix/packages.nix) narrow each source to those files with `lib.fileset`. An
+edit to any other file leaves the check's derivation unchanged, so the check's evidence transfers to
+the edited tree. When a check starts to read a new file, give the check that file. The sandbox fails
+a check that reads a file it was not given. To see which checks an edit gives a new derivation, run
+the measurement script on a commit:
+
+```sh
+nix/tools/drv-churn.sh --expect nix/tools/drv-churn.expected
+```
+
+It applies a fixed list of representative edits to the commit's tree, one at a time, and evaluates
+every check's derivation after each. With `--expect`, it fails if any edit changes other checks than
+the recorded table says. When a change means to alter the table, write the new one with `--write`.
+With `--history origin/main~20..origin/main` instead, it replays the paths each of those commits
+touched. Run `nix/tools/drv-churn.sh --help` for every option.
+
 The [architecture](./architecture.md) explains component invariants and the checks that cover them.
 The [reference](./reference.md) documents CLI flags, ref bounds, wire formats, JSON outputs, and
 [schema](../schema/) definitions alongside the [concept glossary](./concepts.md#glossary).

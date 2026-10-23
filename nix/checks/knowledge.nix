@@ -9,6 +9,7 @@
   self,
   system,
   packages,
+  partOf,
   ...
 }:
 {
@@ -39,7 +40,7 @@
     ];
     lint = ../knowledge-lint.py;
     nodeSchema = ../../schema/node.cue;
-    graphs = ../../examples/graphs;
+    graphs = partOf ../../examples/graphs [ ../../examples/graphs/rejected ];
     rejectedCases = ./knowledge-lint-rejected.txt;
   } (builtins.readFile ./knowledge-lint-rejects.sh);
 

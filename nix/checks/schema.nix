@@ -3,7 +3,7 @@
 # definition instead of referencing it opens the schema — so every rejection
 # is a checked-in example, and the ones whose field carries the weight are
 # held to naming it.
-{ pkgs, ... }:
+{ pkgs, partOf, ... }:
 {
   # A host declaration: the pilot's own, the compatibility case, the
   # protection block the installer renders a hook from, and the twelve
@@ -12,17 +12,28 @@
   # does the worked verification policy under examples/policy/, with the
   # carry modes and the restacker's cap case by case under
   # examples/policy/carry/, and the hardware approval requirement case by
-  # case under examples/policy/approval/.
+  # case under examples/policy/approval/. The other host declarations, and
+  # the deriver's and the smoke policies, are other checks' fixtures, and
+  # cue-vet is given none of them.
   cue-vet = pkgs.runCommand "valley-cue-vet" {
     nativeBuildInputs = [ pkgs.cue ];
     schema = ../../schema/valley.cue;
     example = ../../examples/host.cue;
-    hosts = ../../examples/hosts;
+    hosts = partOf ../../examples/hosts [
+      ../../examples/hosts/no-backup.cue
+      ../../examples/hosts/protected.cue
+      ../../examples/hosts/rejected
+    ];
     eventSchema = ../../schema/events.cue;
     events = ../../examples/events;
     rejectedCases = ./cue-vet-rejected.txt;
     verificationSchema = ../../schema/verification.cue;
-    policies = ../../examples/policy;
+    policies = partOf ../../examples/policy [
+      ../../examples/policy/instance
+      ../../examples/policy/project
+      ../../examples/policy/carry
+      ../../examples/policy/approval
+    ];
   } (builtins.readFile ./cue-vet.sh);
 
   # The attestation statement schema (dcr-0de694f). A statement the

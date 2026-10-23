@@ -1,5 +1,5 @@
 commit only	
-bin/valley	bus-e2e derive-unit integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+bin/valley	bus-e2e derive-unit integrator-e2e knots-e2e own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
 completions	valley-cli valley-darwin-eval valley-self-update
 doc	prose-format
 doc: README	prose-format
@@ -7,12 +7,12 @@ doc: module README	prose-format
 doc: archive	prose-format
 doc: research	prose-format
 doc: added	prose-format
-schema: attestation	attest-conformance attest-e2e attest-schema bus-e2e identity-e2e integrator-e2e module-eval own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-ready valley-request valley-self-update valley-status
-schema: events	bus-e2e cue-vet integrator-e2e module-eval publish-e2e restack-e2e signers-e2e valley-request
+schema: attestation	attest-conformance attest-e2e attest-schema bus-e2e identity-e2e integrator-e2e own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-ready valley-request valley-self-update valley-status
+schema: events	bus-e2e cue-vet integrator-e2e publish-e2e restack-e2e signers-e2e valley-request
 schema: identity	identity-e2e identity-schema signers-e2e ssh-e2e
 schema: node	knot-agree knowledge-lint-consumer knowledge-lint-rejects
 schema: valley	cue-vet
-schema: verification	bus-e2e cue-vet derive-unit integrator-e2e integrator-unit knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+schema: verification	bus-e2e cue-vet derive-unit integrator-e2e integrator-unit own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-ready valley-request valley-self-update valley-status
 check script	valley-status
 check script: shared	policy-deriver valley-request
 check script: added	own-policy
@@ -30,21 +30,21 @@ fixture: graph deleted	knowledge-lint-consumer prose-format
 fixture: integrator e2e	integrator-e2e
 fixture: plan golden	valley-plan
 fixture: attest vectors	attest-conformance prose-format
-go test: status	bus-e2e integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
-go: attest	attest-conformance attest-e2e attest-unit bus-e2e identity-e2e integrator-e2e module-eval own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-ready valley-request valley-self-update valley-status
-go: change	bus-e2e change-unit identity-e2e init-e2e integrator-e2e integrator-unit knots-e2e mirror-e2e module-eval own-policy policy-deriver protect-e2e publish-e2e rebase-unit restack-e2e restack-unit review-notes review-unit signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
-go: composed	bus-e2e derive-unit integrator-e2e integrator-unit knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
-go: delta	bus-e2e delta-unit integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes review-unit signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
-go: derive	bus-e2e derive-unit integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go test: status	valley-go-unit
+go: attest	attest-conformance attest-e2e attest-unit bus-e2e identity-e2e integrator-e2e own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-ready valley-request valley-self-update valley-status
+go: change	bus-e2e change-unit identity-e2e integrator-e2e integrator-unit knots-e2e own-policy policy-deriver protect-e2e publish-e2e rebase-unit restack-e2e restack-unit review-notes review-unit signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
+go: composed	bus-e2e derive-unit integrator-e2e integrator-unit knots-e2e own-policy policy-deriver publish-e2e restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go: delta	bus-e2e delta-unit integrator-e2e knots-e2e own-policy policy-deriver publish-e2e restack-e2e review-notes review-unit signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go: derive	bus-e2e derive-unit integrator-e2e knots-e2e own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
 go: identity	identity-e2e identity-unit signers-e2e ssh-e2e
-go: integrator	integrator-e2e integrator-unit module-eval publish-e2e restack-e2e signers-e2e valley-request
-go: knot	bus-e2e identity-e2e init-e2e integrator-e2e knot-agree knot-unit knots-e2e mirror-e2e module-eval own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
-go: note	attest-conformance attest-e2e attest-unit bus-e2e identity-e2e identity-unit init-e2e integrator-e2e integrator-unit knots-e2e mirror-e2e module-eval note-unit own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
-go: rebase	bus-e2e integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e rebase-unit restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go: integrator	integrator-e2e integrator-unit publish-e2e restack-e2e signers-e2e valley-request
+go: knot	bus-e2e identity-e2e integrator-e2e knot-agree knot-unit knots-e2e own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
+go: note	attest-conformance attest-e2e attest-unit bus-e2e identity-e2e identity-unit integrator-e2e integrator-unit knots-e2e note-unit own-policy policy-deriver protect-e2e publish-e2e restack-e2e restack-unit review-notes signers-e2e ssh-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status valleyhook-unit
+go: rebase	bus-e2e integrator-e2e knots-e2e own-policy policy-deriver publish-e2e rebase-unit restack-e2e restack-unit review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
 go: restack	restack-e2e restack-unit
 go: restack/e2e/transport	restack-e2e
 go: review	review-unit
-go: selfupdate	bus-e2e integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes selfupdate-unit signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go: selfupdate	bus-e2e integrator-e2e knots-e2e own-policy policy-deriver publish-e2e restack-e2e review-notes selfupdate-unit signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
 go: sigverify	sigverify-e2e sigverify-unit
-go: status	bus-e2e integrator-e2e knots-e2e module-eval own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
-go: valleyhook	bus-e2e identity-e2e init-e2e knots-e2e mirror-e2e module-eval protect-e2e publish-e2e restack-e2e restack-unit signers-e2e ssh-e2e valley-changes valley-ready valley-request valleyhook-unit
+go: status	bus-e2e integrator-e2e knots-e2e own-policy policy-deriver publish-e2e restack-e2e review-notes signers-e2e valley-changes valley-cli valley-darwin-eval valley-go-unit valley-knot valley-plan valley-ready valley-request valley-self-update valley-status
+go: valleyhook	identity-e2e knots-e2e protect-e2e publish-e2e restack-e2e restack-unit signers-e2e ssh-e2e valley-changes valley-ready valley-request valleyhook-unit

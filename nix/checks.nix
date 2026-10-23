@@ -55,6 +55,9 @@
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push
 #                    mirror and the bus, in a NixOS machine running the
 #                    real controller
+#   worker-e2e.nix   worker-e2e — the check worker on its timer in a NixOS
+#                    machine: its key, its enrollment, its evidence on
+#                    origin, and a runaway build stopped by the caps
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation
@@ -138,3 +141,4 @@ import ./checks/host-module.nix args
 // import ./checks/cli.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args
+// import ./checks/worker-e2e.nix args

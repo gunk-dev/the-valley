@@ -59,6 +59,34 @@ let
         module
       ];
     };
+
+  # The same controllers as restrictedHost's with the check worker on, for
+  # two of the projects they serve, and its signer restricted to exactly
+  # those two. It is bound here so the hosts the module must refuse can be
+  # made from it.
+  workerHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+        signerProjects."worker.valley.invalid/attestations" = [
+          "sealed"
+          "guarded"
+        ];
+      };
+      worker = {
+        enable = true;
+        projects = [
+          "guarded"
+          "sealed"
+        ];
+        signerName = "worker.valley.invalid/attestations";
+      };
+    };
+  };
 in
 {
   # The example declaration enables backup, so this host supplies
@@ -208,6 +236,8 @@ in
     };
   };
 
+  inherit workerHost;
+
   # The registry machinery switched on, over the same declaration. The
   # signers file is not supplied: the compiler renders it, and a consumer
   # that also named one would be asking which of the two won. The
@@ -339,6 +369,44 @@ in
         ];
       };
     };
+  };
+
+  # The check worker with its signer restricted to no project list at all:
+  # every controller holding its key would count its evidence everywhere.
+  unrestrictedWorkerHost = workerHost.extendModules {
+    modules = [ { services.valley.integrator.signerProjects = lib.mkForce { }; } ];
+  };
+
+  # The worker's signer restricted to a project the worker does not build:
+  # its key would be trusted where it does no work.
+  widerWorkerHost = workerHost.extendModules {
+    modules = [
+      {
+        services.valley.integrator.signerProjects = lib.mkForce {
+          "worker.valley.invalid/attestations" = [
+            "guarded"
+            "released"
+            "sealed"
+          ];
+        };
+      }
+    ];
+  };
+
+  # The worker signing under the controllers' own name.
+  integratorNamedWorkerHost = workerHost.extendModules {
+    modules = [
+      {
+        services.valley.integrator.signingName = "integrator";
+        services.valley.integrator.signerProjects = lib.mkForce {
+          integrator = [
+            "guarded"
+            "sealed"
+          ];
+        };
+        services.valley.worker.signerName = lib.mkForce "integrator";
+      }
+    ];
   };
 
   # One key declared untagged and tagged: which principal it pushes as

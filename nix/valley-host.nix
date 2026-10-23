@@ -31,8 +31,9 @@
 # secrets: the backup options below take *paths* to consumer-provisioned
 # secret files; the contents never pass through this module or the store.
 #
-# One service runs under its own unix user rather than the git one: the
-# integrator. That is the first half of the split bd-500adf7 asks for.
+# Two services run under their own unix users rather than the git one: the
+# integrator, which is the first half of the split bd-500adf7 asks for, and
+# the check worker, which is not in the git group at all.
 {
   config,
   pkgs,
@@ -253,6 +254,129 @@ let
     ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
     ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
   );
+
+  # The check worker (status/worker.go), as this flake packages it, and the
+  # attest it signs with.
+  workerPackage = (import ./packages.nix { inherit pkgs lib; }).valley-worker;
+  attestPackage = (import ./packages.nix { inherit pkgs lib; }).attest;
+
+  workerDir = toString cfg.worker.stateDir;
+
+  # The worker's one key. It signs the worker's notes, and it is the ssh
+  # key the worker reaches this host's repositories with. It is made on
+  # the host the first time the service starts, and never leaves it.
+  workerKey = "${workerDir}/key";
+
+  # The worker reads and pushes as an ssh client of this host, as the git
+  # user, so its pushes pass the pre-receive hook like anyone else's. It
+  # holds no grant on the repositories' files. The repository it runs in
+  # names the instance repository as origin, and the projects are found
+  # through it, the way valley pending --repo finds them.
+  workerOrigin = "${cfg.user}@localhost:${toString cfg.integrator.instanceProject}.git";
+
+  # Every host the worker connects to is checked against this host's own
+  # keys, under one alias. A project's policy/valley may name this host by
+  # another name, such as git@classic-laddie:qinling.git, and that still
+  # reaches this host's sshd. A name that reaches any other host fails the
+  # check, so the worker talks to no other host.
+  workerSsh = lib.concatStringsSep " " [
+    "${config.programs.ssh.package}/bin/ssh -F none"
+    "-i ${workerKey}"
+    "-p ${toString (lib.head config.services.openssh.ports)}"
+    "-o IdentitiesOnly=yes -o BatchMode=yes"
+    "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost"
+    "-o UserKnownHostsFile=${workerDir}/known_hosts -o GlobalKnownHostsFile=/dev/null"
+  ];
+
+  # The nix settings the worker's nix commands run with. The daemon applies
+  # max-jobs and cores to every connection, a client's that is not trusted
+  # included: each nix build the worker starts builds one derivation at a
+  # time, and tells the builder it may use 4 cores. cores is a hint the
+  # builder reads as NIX_BUILD_CORES; the slice below is what holds a build
+  # to 4 CPUs. The worker uses no remote builder, and no flake's nixConfig.
+  workerNixConfig = ''
+    extra-experimental-features = nix-command flakes
+    max-jobs = 1
+    cores = 4
+    builders =
+    accept-flake-config = false
+  '';
+
+  # The slice the operator's caps are set on (oc-13c6bd6): 4 CPUs and
+  # 8 GiB of memory, with no swap, for the worker and the nix daemon
+  # together. A build runs as a child of the daemon, in the daemon's
+  # cgroup, never in the worker's. So a cap on the worker's unit alone
+  # would hold its evaluation and leave its builds uncapped, and the cap
+  # is on a slice that holds both units.
+  buildSlice = "valley-builds.slice";
+  buildCaps = {
+    CPUQuota = "400%";
+    MemoryMax = "8G";
+    MemorySwapMax = "0";
+  };
+
+  # What the service does each time it starts: make the key if there is
+  # none, write its public halves and this host's ssh keys, make the
+  # repository it runs in, and run one pass.
+  workerScript = ''
+    set -eu
+    state=${lib.escapeShellArg workerDir}
+    key="$state/key"
+
+    # The key is made once, under a temporary name and renamed into place,
+    # so a start that is killed half way leaves no key, and the next start
+    # makes one. The public half is renamed first, so a key is never
+    # without it. The private half is never printed.
+    if [ ! -e "$key" ]; then
+      rm -f "$key.new" "$key.new.pub"
+      ssh-keygen -q -t ed25519 -N "" -C "valley-worker@${config.networking.hostName}" -f "$key.new"
+      chmod 0400 "$key.new"
+      mv -f "$key.new.pub" "$key.pub"
+      mv -f "$key.new" "$key"
+    fi
+
+    # The verifier line the known-signers file holds for the key, under
+    # the worker's signing name. A changed name is a changed line, so it is
+    # written again on every start, and said whenever it changes.
+    attest key --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} > "$state/verifier.new"
+    if cmp -s "$state/verifier.new" "$state/verifier"; then
+      rm -f "$state/verifier.new"
+    else
+      mv -f "$state/verifier.new" "$state/verifier"
+      echo "valley-worker: the worker's ssh public key is $(cat "$state/key.pub")"
+      echo "valley-worker: the worker's verifier line is $(cat "$state/verifier")"
+    fi
+
+    # This host's own ssh keys, the only ones the worker's ssh accepts.
+    : > "$state/known_hosts.new"
+    for pub in ${lib.escapeShellArgs (map (k: "${k.path}.pub") config.services.openssh.hostKeys)}; do
+      if [ -r "$pub" ]; then
+        printf 'localhost %s\n' "$(cut -d' ' -f1,2 "$pub")" >> "$state/known_hosts.new"
+      fi
+    done
+    mv -f "$state/known_hosts.new" "$state/known_hosts"
+
+    # The repository the pass runs in. It holds no checkout, and origin is
+    # the instance repository.
+    origin="$state/origin"
+    git init --quiet "$origin"
+    if [ "$(git -C "$origin" remote get-url origin 2>/dev/null)" != ${lib.escapeShellArg workerOrigin} ]; then
+      git -C "$origin" remote remove origin 2>/dev/null || true
+      git -C "$origin" remote add origin ${lib.escapeShellArg workerOrigin}
+    fi
+
+    cd "$origin"
+    exec valley-worker ${
+      lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state"
+  '';
+
+  # The name the controllers sign under, which the worker's must not be.
+  integratorName =
+    if cfg.integrator.signingName != null then
+      cfg.integrator.signingName
+    else
+      "${config.networking.hostName}/attestations";
 
   # The paths the consumer must supply once the integrator is enabled,
   # with what each names — for the assertion message. The signers file is
@@ -1329,6 +1453,71 @@ in
       };
     };
 
+    # The check worker (oc-13c6bd6): a timer that runs one pass of
+    # valley-worker over the projects listed, so ready changes have their
+    # nix checks built before anyone approves them. Machine options only —
+    # whether this host runs the worker, for which of its projects, under
+    # which signing name, how often, and where it keeps its state.
+    worker = {
+      enable = lib.mkEnableOption ''
+        the valley check worker: a timer that builds the nix checks ready
+        changes require and publishes the evidence, under its own key, for
+        the projects listed'';
+
+      projects = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
+        default = [ ];
+        example = [ "the-valley" ];
+        description = ''
+          The projects the worker builds evidence for. Each is a project
+          this host serves, and no other project is read.
+
+          The controllers count the worker's evidence in these projects and
+          no others: {option}`services.valley.integrator.signerProjects`
+          must list exactly these projects under
+          {option}`services.valley.worker.signerName`, and the module
+          refuses a host where it does not.
+        '';
+      };
+
+      signerName = lib.mkOption {
+        type = lib.types.str;
+        example = "laddie-worker/attestations";
+        description = ''
+          The name the worker signs its notes under. It is a name of the
+          worker's own: never the operator's, and never the name the
+          controllers sign under, which the module refuses.
+
+          Enrolled with the worker's key, it is what the known-signers file
+          and the identity registry hold for the worker: the registry key's
+          `signs`, and the name in the verifier line.
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "1m";
+        example = "5m";
+        description = ''
+          How long the timer waits after one pass ends before it starts the
+          next; systemd's default timer accuracy can add up to a minute. A
+          pass that has nothing to build reads origin and ends.
+        '';
+      };
+
+      stateDir = lib.mkOption {
+        type = lib.types.path;
+        default = "/var/lib/valley-worker";
+        description = ''
+          The worker's own directory, mode 0700 and owned by the
+          `valley-worker` user. It holds the worker's key, made on the
+          first start and readable by the worker alone; its public halves,
+          `key.pub` and `verifier`; the lock and the record of failed
+          batches; and the clones the worker reads projects through.
+        '';
+      };
+    };
+
     # The identity registry compiler (dcr-b87f6e8): the step between the
     # instance's declared registry and the two gates that read what it
     # compiles to. Machine options only — whether this host compiles, and
@@ -1563,7 +1752,49 @@ in
         assertion = cfg.integrator.knownSignersFile == null;
         message = "services.valley.integrator.knownSignersFile must be unset: the registry compiles that file (${identityKnownSigners}), and two sources for one file is a question about which one won.";
       }
-    ];
+    ]
+    ++ lib.optionals cfg.worker.enable (
+      let
+        name = cfg.worker.signerName;
+        listed = cfg.integrator.signerProjects.${name} or null;
+        sorted = l: lib.sort lib.lessThan (lib.unique l);
+        unserved = lib.filter (p: !(gitProjects ? ${p})) cfg.worker.projects;
+      in
+      [
+        {
+          assertion = cfg.integrator.enable;
+          message = "services.valley.worker.enable needs services.valley.integrator.enable: the worker builds evidence for this host's controllers, and they are what restrict its key to its projects.";
+        }
+        {
+          assertion = cfg.integrator.instanceProject != null;
+          message = "services.valley.worker.enable needs services.valley.integrator.instanceProject: the worker finds this host's projects through the instance repository, as valley pending --repo does.";
+        }
+        {
+          assertion = cfg.worker.projects != [ ] && unserved == [ ];
+          message = "services.valley.worker.projects must name at least one project, and only projects this host serves${
+            lib.optionalString (unserved != [ ]) ", and it names ${lib.concatStringsSep ", " unserved}"
+          }.";
+        }
+        # The restriction (oc-13c6bd6). Every controller that shares the
+        # known-signers file counts a key it holds in every project, so a
+        # worker whose key is not restricted would be trusted for projects
+        # it never builds.
+        {
+          assertion = listed != null && sorted listed == sorted cfg.worker.projects;
+          message = "services.valley.integrator.signerProjects must restrict ${name}, the worker's signer, to exactly the worker's projects: without the restriction, every controller that holds the worker's key counts its evidence in every project. Set services.valley.integrator.signerProjects.\"${name}\" = [ ${
+            lib.concatMapStringsSep " " (p: "\"${p}\"") cfg.worker.projects
+          } ];";
+        }
+        {
+          assertion = name != integratorName;
+          message = "services.valley.worker.signerName must differ from ${integratorName}, the name the controllers sign under: a controller's signature never counts as check evidence, and a controller refuses to start when the signer projects list names it.";
+        }
+        {
+          assertion = config.services.openssh.enable && config.nix.enable;
+          message = "services.valley.worker.enable needs services.openssh.enable and nix.enable: the worker reaches this host's repositories through its sshd, and builds through its nix daemon.";
+        }
+      ]
+    );
 
     users.groups.${cfg.group} = { };
 
@@ -1589,6 +1820,17 @@ in
       home = "/var/lib/valley-integrator";
       description = "The valley integrator";
     };
+
+    # The worker's own account. Its group is its own, not the git group, so
+    # it can neither read nor write the repositories on disk: it reaches
+    # them as an ssh client, as anyone else does.
+    users.users.valley-worker = lib.mkIf cfg.worker.enable {
+      isSystemUser = true;
+      group = "valley-worker";
+      home = workerDir;
+      description = "The valley check worker";
+    };
+    users.groups.valley-worker = lib.mkIf cfg.worker.enable { };
 
     services.openssh.enable = lib.mkDefault true;
 
@@ -1629,6 +1871,9 @@ in
     ]
     ++ lib.optionals cfg.bus.enable [
       "d ${cfg.bus.storeDir} 0700 ${cfg.user} ${cfg.group} - -"
+    ]
+    ++ lib.optionals cfg.worker.enable [
+      "d ${workerDir} 0700 valley-worker valley-worker - -"
     ];
 
     # The bus itself. It runs as the git user — the store directory lives in
@@ -2059,6 +2304,117 @@ in
       description = "The valley integrator's controllers";
       wantedBy = [ "multi-user.target" ];
       wants = map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects);
+    };
+
+    # The operator's caps on the check worker. The worker builds through
+    # this machine's nix daemon, and the daemon runs every build in its own
+    # cgroup, whoever asked for it. So the caps are on a slice that holds
+    # the daemon and the worker both: the kernel holds everything in it,
+    # the worker's evaluation and every build the daemon runs, to 4 CPUs
+    # and 8 GiB together, with no swap. A build that goes past the memory
+    # cap is killed by the kernel's OOM killer inside the slice, and the
+    # rest of the host goes on as it was.
+    #
+    # The daemon's builds for every other user of it are in the slice too,
+    # so enabling the worker caps them as well, and they share the cap with
+    # the worker's builds. A build that does not go through the daemon,
+    # such as a nix command root runs on the store directly, is outside
+    # the slice and uncapped. The slice sets no device policy, so a build
+    # keeps the /dev/kvm the daemon gives NixOS tests. Its OOM kill does
+    # not stop the daemon: the daemon's unit delegates its cgroup, which
+    # makes systemd's OOM policy for it continue.
+    systemd.slices.valley-builds = lib.mkIf cfg.worker.enable {
+      description = "The valley check worker and the nix daemon's builds, under the operator's caps";
+      sliceConfig = buildCaps;
+    };
+
+    systemd.services.nix-daemon.serviceConfig.Slice = lib.mkIf cfg.worker.enable buildSlice;
+
+    # One pass of the worker, as a oneshot the timer below starts. A pass
+    # that finds nothing to build reads origin and ends. Two passes never
+    # overlap: systemd starts the unit only while it is inactive, and the
+    # worker's own lock in its state directory serializes any pass started
+    # by hand.
+    #
+    # The unit runs on one CPU. attest runs one nix build per CPU it may
+    # run on, and NIX_CONFIG holds each of those to one derivation at a
+    # time, so the worker's builds run one at a time. The builds themselves
+    # run in the daemon, under the slice's 4 CPUs, whatever CPU the worker
+    # is on.
+    systemd.services.valley-worker = lib.mkIf cfg.worker.enable {
+      description = "One pass of the valley check worker";
+      after = [
+        "network.target"
+        "sshd.service"
+        "valley-init.service"
+        "systemd-tmpfiles-setup.service"
+      ];
+      unitConfig.RequiresMountsFor = workerDir;
+      # nix is the machine's own, for the reason the integrator's is.
+      path = [
+        workerPackage
+        attestPackage
+        pkgs.git
+        pkgs.diffutils
+        config.programs.ssh.package
+        config.nix.package
+      ];
+      environment = {
+        HOME = workerDir;
+        XDG_CACHE_HOME = "${workerDir}/cache";
+        GIT_SSH_COMMAND = workerSsh;
+        NIX_CONFIG = workerNixConfig;
+      };
+      script = workerScript;
+      serviceConfig = {
+        Type = "oneshot";
+        User = "valley-worker";
+        Group = "valley-worker";
+        Slice = buildSlice;
+        CPUAffinity = "0";
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        # Its own directory, and the nix daemon's socket, which a client
+        # writes to connect.
+        ReadWritePaths = [
+          workerDir
+          "/nix/var/nix/daemon-socket"
+        ];
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        UMask = "0077";
+      };
+    };
+
+    # The interval runs from the end of one pass to the start of the next,
+    # so a long batch is never followed at once by another pass.
+    systemd.timers.valley-worker = lib.mkIf cfg.worker.enable {
+      description = "Run the valley check worker";
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "1m";
+        OnUnitInactiveSec = cfg.worker.interval;
+      };
     };
 
     # Offsite backup, rendered only when the declaration asks for it. The

@@ -38,6 +38,10 @@ let
     spacedSignerProjectsHost
     unicodeSpacedSignerProjectsHost
     identityHost
+    workerHost
+    unrestrictedWorkerHost
+    widerWorkerHost
+    integratorNamedWorkerHost
     ;
 
   failedAssertions = builtins.filter (a: !a.assertion) (
@@ -50,6 +54,7 @@ let
     ++ integratorSelfHost.config.assertions
     ++ restrictedHost.config.assertions
     ++ identityHost.config.assertions
+    ++ workerHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -107,6 +112,21 @@ let
       host = unicodeSpacedSignerProjectsHost;
       says = "services.valley.integrator.signerProjects holds";
       why = "a project holding a no-break space would be read back by the integrator as two projects, or refused at start";
+    }
+    {
+      host = unrestrictedWorkerHost;
+      says = "must restrict worker.valley.invalid/attestations, the worker's signer, to exactly the worker's projects";
+      why = "a worker whose signer no project list restricts would have its evidence counted in every project by every controller that holds its key";
+    }
+    {
+      host = widerWorkerHost;
+      says = "must restrict worker.valley.invalid/attestations, the worker's signer, to exactly the worker's projects";
+      why = "a worker trusted in a project it does not build would be trusted where it does no work";
+    }
+    {
+      host = integratorNamedWorkerHost;
+      says = "services.valley.worker.signerName must differ from integrator";
+      why = "a worker signing under the controllers' name would make every controller refuse to start";
     }
     {
       host = conflictingKeysHost;
@@ -394,6 +414,64 @@ let
   # this machinery must never have.
   identityKeepsDeclaredKeys =
     identityHost.config.users.users.git.openssh.authorizedKeys.keys == [ ];
+
+  # The check worker. It is off by default, and a host that never asked for
+  # it renders none of it: no unit, no account, no slice, and a nix daemon
+  # where NixOS puts it. integratorHost is the strongest witness, with the
+  # integrator the worker would need already on.
+  workerRenderedWithoutEnable =
+    integratorHost.config.systemd.services ? valley-worker
+    || integratorHost.config.systemd.timers ? valley-worker
+    || integratorHost.config.systemd.slices ? valley-builds
+    || integratorHost.config.users.users ? valley-worker
+    || integratorHost.config.systemd.services.nix-daemon.serviceConfig ? Slice;
+
+  # What the VM check runs, held at the operator's values. worker-e2e
+  # boots the worker and lowers the memory cap at runtime to make a build
+  # run past it, so the values themselves are held here. The caps are on
+  # a slice that holds the worker and the nix daemon both, since a build
+  # runs in the daemon's cgroup and never in the worker's; the slice and
+  # the daemon set no device policy, so a NixOS test still gets /dev/kvm.
+  # The worker runs on one CPU, so attest, which runs one nix build per CPU
+  # it may run on, runs one at a time, and each nix build builds one
+  # derivation at a time with 4 cores. The account is not in the git
+  # group, so the repositories on disk are not the worker's to read or
+  # write, and it reaches them only through this host's sshd, checking the
+  # host's key.
+  workerMisrendered =
+    let
+      unit = workerHost.config.systemd.services.valley-worker;
+      service = unit.serviceConfig;
+      daemon = workerHost.config.systemd.services.nix-daemon.serviceConfig;
+      slice = workerHost.config.systemd.slices.valley-builds.sliceConfig;
+      account = workerHost.config.users.users.valley-worker;
+      timer = workerHost.config.systemd.timers.valley-worker;
+      devicePolicy = c: c ? DevicePolicy || c ? DeviceAllow || c ? PrivateDevices;
+    in
+    service.User or null != "valley-worker"
+    || account.group != "valley-worker"
+    || account.extraGroups != [ ]
+    || service.Type or null != "oneshot"
+    || service.Slice or null != "valley-builds.slice"
+    || daemon.Slice or null != "valley-builds.slice"
+    || slice.CPUQuota or null != "400%"
+    || slice.MemoryMax or null != "8G"
+    || slice.MemorySwapMax or null != "0"
+    || devicePolicy slice
+    || devicePolicy daemon
+    || service.CPUAffinity or null != "0"
+    || !(lib.hasInfix "max-jobs = 1\n" unit.environment.NIX_CONFIG)
+    || !(lib.hasInfix "cores = 4\n" unit.environment.NIX_CONFIG)
+    || !(lib.hasInfix "builders =\n" unit.environment.NIX_CONFIG)
+    || !(lib.hasInfix "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost" unit.environment.GIT_SSH_COMMAND)
+    || service.ReadWritePaths or [ ] != [
+      "/var/lib/valley-worker"
+      "/nix/var/nix/daemon-socket"
+    ]
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\"" unit.script)
+    || !(lib.hasInfix "git -C \"$origin\" remote add origin git@localhost:sealed.git\n" unit.script)
+    || timer.timerConfig.OnUnitInactiveSec or null != "1m"
+    || !(builtins.elem "timers.target" timer.wantedBy);
 in
 {
   module-eval =
@@ -469,6 +547,10 @@ in
       throw "valley module-eval: a controller is given a signer projects file exactly when the host restricts a signer to projects"
     else if identityKeepsDeclaredKeys then
       throw "valley module-eval: the declared authorized keys must stay authorized beside the compiled ones — a compiled file that replaced them would make a bad compilation a locked-out git user"
+    else if workerRenderedWithoutEnable then
+      throw "valley module-eval: check-worker machinery rendered for a host that never enabled it — nothing, the nix daemon's slice included, may change until a consumer opts in"
+    else if workerMisrendered then
+      throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer counted from the end of each pass"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

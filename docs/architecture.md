@@ -786,7 +786,8 @@ the evidence on `origin`, where approval reuses it instead of building it (see
 [The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is
 `valley-go work` (`status/worker.go`), packaged with this flake's git, cue and `attest` and the
 verification schema (`nix/packages.nix`). It keeps no queue, lease or schedule, and nothing connects
-to it. Running it on a timer is **not built**: no host module unit runs it.
+to it. A host that turns the worker on runs a pass on a timer (see
+[The worker on the host](#the-worker-on-the-host)).
 
 A pass reads only the projects named with `--repo`. It reads each project as `valley pending --repo`
 does, so it can run from a clone of any project the host serves. For each project it follows
@@ -806,7 +807,8 @@ The hook admits that ref as it admits any evidence. Every note must verify under
 signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the
 worker's notes like any other. Where the host restricts the worker's key to projects (see
 [Evidence: attest and notes](#evidence-attest-and-notes)), `--repo` names those projects and no
-others (**deployment choice**). The controllers count the worker's evidence nowhere else.
+others (**deployment choice**). The controllers count the worker's evidence nowhere else. The host
+module refuses a host that runs the worker without that restriction.
 
 The evidence is about the head's tree, so it stays true if the change moves on while the batch runs.
 The pass does not read the change's record again before it publishes. A superseded head's evidence
@@ -843,6 +845,139 @@ on to the next. The pass exits 1 when anything went wrong.
 
 Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
 lands its evidence with the real integrator.
+
+### The worker on the host
+
+The host module runs the worker when `services.valley.worker.enable` is set (`nix/valley-host.nix`).
+It is off by default, and no host turns it on (**deployment choice**). Turned on, the module renders
+four things:
+
+- `valley-worker.service`, a oneshot that runs one pass of `valley-worker` over the projects in
+  `worker.projects`, as the `valley-worker` user;
+- `valley-worker.timer`, which starts the service 1 minute after boot, and then `worker.interval` (1
+  minute by default) after each pass ends, to which systemd's default timer accuracy can add up to a
+  minute;
+- `valley-builds.slice`, the slice the caps below are set on;
+- the `valley-worker` account, in a group of its own.
+
+Two passes never overlap. systemd starts the oneshot only while it is inactive, and the worker's
+lock serializes a pass started by hand.
+
+The account is not in the git group, so the worker can neither read nor write the repositories on
+disk. It reaches them as an ssh client of the same host: it logs in as the git user at `localhost`
+with its own key. So its pushes pass the git user's shell and the pre-receive hook, as any other
+key's do. The service runs the pass in a repository of its own, `<stateDir>/origin`, whose `origin`
+is the instance repository. The worker finds its projects through the project list there, as
+`valley pending --repo` does. Its ssh checks every host it connects to against this host's own ssh
+host keys. A project's `policy/valley` can name this host by another name, such as
+`git@classic-laddie:qinling.git`, and still reach it. A name that reaches any other host fails the
+check, so the worker talks to no other host.
+
+The service makes the worker's key the first time it starts. The key is an ed25519 key at
+`<stateDir>/key`, mode 0400 and owned by `valley-worker`, in a state directory of mode 0700. It is
+made under a temporary name that is renamed into place, so a start killed half way leaves no key.
+The private half never leaves the host: it is in no repository, no Nix store path and no journal.
+The one key signs the worker's notes under `worker.signerName`, and it authenticates the worker's
+ssh sessions. Beside it the service writes the two public halves: `key.pub`, the ssh public key, and
+`verifier`, the key's verifier line under the signing name. It prints both to the service's journal
+whenever the verifier line changes. Checked by `worker-e2e`.
+
+The operator enrolls the key once (**deployment choice**). Until then, every pass stops at its first
+read of `origin`, because sshd does not know the key.
+
+1. Turn the worker on, with the restriction the module requires, and apply the configuration:
+
+   ```nix
+   services.valley.worker = {
+     enable = true;
+     projects = [ "the-valley" ];
+     signerName = "laddie-worker/attestations";
+   };
+   services.valley.integrator.signerProjects."laddie-worker/attestations" = [ "the-valley" ];
+   ```
+
+2. Read the public halves after the service has started once:
+
+   ```sh
+   journalctl -u valley-worker -g "the worker's"
+   sudo cat /var/lib/valley-worker/key.pub /var/lib/valley-worker/verifier
+   ```
+
+3. Add the key to the identity registry as a principal of its own, and land the change. The key's
+   `signs` is the signing name, and the principal holds a grant at the instance's `git-push`
+   boundary. The compiler then puts the key in the known-signers file and in the git user's
+   authorized keys:
+
+   ```cue
+   "laddie-worker": {
+   	kind: "machine"
+   	keys: [{
+   		class:  "ssh-ed25519"
+   		bound:  "host"
+   		public: "ssh-ed25519 AAAA..."
+   		signs:  "laddie-worker/attestations"
+   	}]
+   	grants: push: boundary: "classic-laddie-push"
+   	expires: "2027-06-01"
+   }
+   ```
+
+   A host that does not compile the registry adds `key.pub` to `services.valley.authorizedKeys` as a
+   plain string, and the `verifier` line to the file `integrator.knownSignersFile` names.
+
+4. List the projects. `worker.projects` names the projects the worker builds for, and
+   `integrator.signerProjects` restricts its signer to exactly those. Every other host whose
+   integrator shares the registry lists the worker's signer in its own `signerProjects` too, or its
+   controllers count the worker's evidence in every project.
+
+The module refuses a host whose `signerProjects` does not list the worker's signer with exactly the
+worker's projects. It also refuses a worker without the integrator on the same host, without
+`integrator.instanceProject`, for a project the host does not serve, or under the name the
+controllers sign under. Checked by `module-eval`.
+
+A registry entry tags the key with its principal. A named principal without grants may push what the
+hook opens to any named principal: topic branches, records of its own changes, and the plan graph.
+It may write nothing protected, and it may not file a request. An untagged key in `authorizedKeys`
+has no principal at all.
+
+The operator's caps for the worker are one build at a time, 4 CPUs and 8 GiB of memory (**deployment
+choice**, which the module sets). The kernel and the nix daemon enforce them this way
+(`implemented`):
+
+- A build runs as a child of the nix daemon, in the daemon's cgroup, never in the worker's. So the
+  CPU and memory caps are on a slice, `valley-builds.slice`, that holds both `nix-daemon.service`
+  and `valley-worker.service`: `CPUQuota=400%`, `MemoryMax=8G` and `MemorySwapMax=0`. The worker's
+  evaluation and every build the daemon runs share that budget. A build that goes past the memory
+  cap is killed by the kernel's OOM killer inside the slice, and the batch fails. The daemon's unit
+  delegates its cgroup, so the kill does not stop the daemon.
+- The worker's nix commands run with `max-jobs = 1` and `cores = 4`. The daemon applies both to each
+  connection, including one from a user it does not trust. So each `nix build` the worker starts
+  builds one derivation at a time, and tells the builder it may use 4 cores, as `NIX_BUILD_CORES`.
+  `cores` is only a hint to the builder. The slice's quota is what holds a build to 4 CPUs.
+- `attest` runs one `nix build` per CPU it may run on. The service runs on one CPU
+  (`CPUAffinity=0`), so the worker's builds run one at a time.
+- The worker's nix commands use no remote builder and no flake's `nixConfig`.
+
+Checked by `worker-e2e`. It builds a ready change's two checks, sees one build at a time, each in
+the slice, and reads the caps off the slice's cgroup. Then it lowers the memory cap at runtime and
+builds a change whose check eats memory without end. The kernel kills that build inside the slice,
+and sshd, the daemon and the controllers stay up. `module-eval` holds the values the module renders.
+
+The caps leave these uncovered:
+
+- Every other user's builds through the daemon are in the slice too. So turning the worker on caps
+  the operator's own builds through the daemon, such as a local `valley approve`, and they share the
+  4 CPUs and 8 GiB with the worker's builds. Their own `max-jobs` applies to them, not the worker's.
+- A nix command that does not go through the daemon, such as one that root runs on the store
+  directly, is outside the slice and uncapped.
+- A build's disk use, its scratch directory and the store's growth are not capped, and neither is
+  disk I/O. A build has no time limit, so a build that never ends holds the worker until the
+  operator stops it.
+- The caps contain resource use, not exploits. The evaluator, the daemon, the kernel and KVM are
+  shared with the host.
+- The slice sets no device policy, so a build that needs KVM, as a NixOS test does, still gets
+  `/dev/kvm` from the daemon. A NixOS test's machines have to fit in 8 GiB, beside everything else
+  in the slice.
 
 ## Policy
 
@@ -2500,7 +2635,7 @@ provisioning, so the run logs a failure until it is set up.
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
 | The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
-| The check worker                            | `valley-worker` publishes evidence for ready changes (`status/worker.go`). No host runs it.        |
+| The check worker                            | The host module runs it on a timer (`services.valley.worker`). No host turns it on.                |
 | Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                 |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |

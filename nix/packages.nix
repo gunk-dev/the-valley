@@ -26,20 +26,35 @@ rec {
     else
       "${cliVersion}-${builtins.substring 0 7 rev}";
 
+  # What no Go build or test here reads: prose and .gitignore files. A Go
+  # package's source leaves them out, so editing a module's README rebuilds
+  # nothing.
+  unread = lib.fileset.fileFilter (f: f.hasExt "md" || f.name == ".gitignore") ../.;
+
   # The source of a Go program that uses modules of this repository: its own
   # directory and those modules, which its go.mod replaces with their local
-  # directories. Nothing shared this way is fetched.
-  withLocal =
-    dir: modules:
+  # directories, each in its place in the tree. Nothing shared this way is
+  # fetched. withLocalExcept also leaves out the paths in its last argument,
+  # which are files of the directory that only a flake check reads, never
+  # the package's build or tests.
+  withLocalExcept =
+    dir: modules: excluded:
     lib.fileset.toSource {
       root = ../.;
-      fileset = lib.fileset.unions ([ dir ] ++ modules);
+      fileset = lib.fileset.difference (lib.fileset.unions ([ dir ] ++ modules)) (
+        lib.fileset.unions ([ unread ] ++ excluded)
+      );
     };
+  withLocal = dir: modules: withLocalExcept dir modules [ ];
 
-  # A program that reads signed notes takes the note module (../note). One
-  # reading of the envelope is shared by the programs that write, verify and
-  # admit attestations.
-  withNote = dir: withLocal dir [ ../note ];
+  # The source of a Go module that uses no other module of this repository:
+  # its own directory.
+  ownSource =
+    dir:
+    lib.fileset.toSource {
+      root = dir;
+      fileset = lib.fileset.difference dir unread;
+    };
 
   # vendorHash = null builds in vendor mode, which has no reading of a local
   # replace. The replaced module is a directory beside the program and
@@ -133,21 +148,25 @@ rec {
   # are the CLI's own. Its unit tests hold its shell quoting to the bash it
   # replaced, so they need bash, lay pending out over real repositories,
   # so they need git, and derive a change's checks under the verification
-  # schema, so they need cue and the schema.
+  # schema, so they need cue and the schema. The plan's golden files
+  # (status/testdata/plan/) are valley-plan's, and no Go test reads them.
   valley-go = pkgs.buildGoModule {
     pname = "valley-go";
     version = "0";
-    src = withLocal ../status [
-      ../change
-      ../composed
-      ../delta
-      ../derive
-      ../knot
-      ../note
-      ../rebase
-      ../selfupdate
-      ../schema/verification.cue
-    ];
+    src =
+      withLocalExcept ../status
+        [
+          ../change
+          ../composed
+          ../delta
+          ../derive
+          ../knot
+          ../note
+          ../rebase
+          ../selfupdate
+          ../schema/verification.cue
+        ]
+        [ ../status/testdata/plan ];
     modRoot = "status";
     vendorHash = null;
     preBuild = readsGoMod;
@@ -205,11 +224,15 @@ rec {
   # The Phase 2 attestation helper (dcr-0de694f). Go, standard library
   # only, note format included — hence vendorHash = null, and hence no
   # module fetch at build time. Its unit tests run in the checkPhase and
-  # need git and ssh-keygen.
+  # need git and ssh-keygen. It reads signed notes with the note module
+  # (../note), the one reading of the envelope shared by the programs that
+  # write, verify and admit attestations. The conformance vectors
+  # (attest/conformance/) are attest-conformance's, and no Go test reads
+  # them.
   attest-unwrapped = pkgs.buildGoModule {
     pname = "valley-attest";
     version = "0";
-    src = withNote ../attest;
+    src = withLocalExcept ../attest [ ../note ] [ ../attest/conformance ];
     modRoot = "attest";
     vendorHash = null;
     preBuild = readsGoMod;
@@ -253,7 +276,7 @@ rec {
   identity-unwrapped = pkgs.buildGoModule {
     pname = "valley-identity";
     version = "0";
-    src = withNote ../identity;
+    src = withLocal ../identity [ ../note ];
     modRoot = "identity";
     vendorHash = null;
     preBuild = readsGoMod;
@@ -299,7 +322,7 @@ rec {
   sigverify = pkgs.buildGoModule {
     pname = "valley-sigverify";
     version = "0";
-    src = ../sigverify;
+    src = ownSource ../sigverify;
     vendorHash = null;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
     nativeCheckInputs = [
@@ -343,7 +366,7 @@ rec {
   note = pkgs.buildGoModule {
     pname = "valley-note";
     version = "0";
-    src = ../note;
+    src = ownSource ../note;
     vendorHash = null;
   };
 
@@ -354,7 +377,7 @@ rec {
   knot = pkgs.buildGoModule {
     pname = "valley-knot";
     version = "0";
-    src = ../knot;
+    src = ownSource ../knot;
     vendorHash = null;
     meta.mainProgram = "knotcheck";
   };
@@ -389,7 +412,7 @@ rec {
   selfupdate = pkgs.buildGoModule {
     pname = "valley-selfupdate";
     version = "0";
-    src = ../selfupdate;
+    src = ownSource ../selfupdate;
     vendorHash = null;
     nativeCheckInputs = [ pkgs.git ];
     postCheck = ''
@@ -443,7 +466,7 @@ rec {
   change = pkgs.buildGoModule {
     pname = "valley-change";
     version = "0";
-    src = ../change;
+    src = ownSource ../change;
     vendorHash = null;
     nativeCheckInputs = [ pkgs.git ];
   };
@@ -456,7 +479,7 @@ rec {
   delta = pkgs.buildGoModule {
     pname = "valley-delta";
     version = "0";
-    src = ../delta;
+    src = ownSource ../delta;
     vendorHash = null;
     nativeCheckInputs = [
       pkgs.git
@@ -508,14 +531,18 @@ rec {
   restack-unwrapped = pkgs.buildGoModule {
     pname = "valley-restacker";
     version = "0";
-    src = withLocal ../restack [
-      ../change
-      ../composed
-      ../note
-      ../rebase
-    ];
+    # The program alone: e2e/transport is a module of restack-e2e's own,
+    # which neither this build nor its tests read.
+    src =
+      withLocalExcept ../restack
+        [
+          ../change
+          ../composed
+          ../note
+          ../rebase
+        ]
+        [ ../restack/e2e ];
     modRoot = "restack";
-    # The program alone: e2e/transport is a module of the tests' own.
     subPackages = [ "." ];
     vendorHash = null;
     preBuild = readsGoMod;
@@ -561,13 +588,17 @@ rec {
     pname = "valley-integrator";
     version = "0";
     # The verification schema is in the source for the policy bridge's
-    # tests, which compose a policy under it.
-    src = withLocal ../integrator [
-      ../change
-      ../composed
-      ../note
-      ../schema/verification.cue
-    ];
+    # tests, which compose a policy under it. The scenarios (integrator/e2e/)
+    # are integrator-e2e's, and no Go test reads them.
+    src =
+      withLocalExcept ../integrator
+        [
+          ../change
+          ../composed
+          ../note
+          ../schema/verification.cue
+        ]
+        [ ../integrator/e2e ];
     modRoot = "integrator";
     vendorHash = null;
     preBuild = readsGoMod;

@@ -1,19 +1,26 @@
 # The check worker on a host: one NixOS machine running the module with the
-# worker on, beside the controllers and the registry compiler, and a
-# project with ready changes. The worker makes its key the first time it
-# starts, readable by it alone, and says its public halves. Until the
-# registry holds the key, the worker cannot reach the host's repositories.
-# Once it does, a pass builds the nix checks a ready change requires, one
-# build at a time, through the machine's nix daemon, and the evidence is on
-# origin before anyone approves the change. The timer runs the next pass.
-# Then a change whose check eats memory without end is built, and the
-# kernel stops the build at the slice's memory cap while the rest of the
-# host goes on as it was.
+# build slice and the worker on, beside the controllers and the registry
+# compiler, and a project with ready changes. The worker makes its key the
+# first time it starts, readable by it alone, and says its public halves.
+# An earlier start that was interrupted leaves nothing that stands in the
+# way. Until the registry holds the key, the worker cannot reach the
+# host's repositories. Once it does, a pass builds the nix checks a ready
+# change requires, one build at a time, through the machine's nix daemon,
+# and the evidence is on origin before anyone approves the change. The
+# timer runs the next pass.
 #
-# The operator's caps are 4 CPUs and 8 GiB. The machine here has 2 GiB, so
-# the memory cap is lowered at runtime, after the check reads the module's
-# own values off the slice, to let a build run past it. module-eval holds
-# the values the module renders.
+# Then the slice's caps, with builds that are not the worker's. A build
+# that wants six CPUs gets four. A change whose check eats memory without
+# end is built while two unrelated builds hold memory of their own. The
+# kernel kills the process in the slice using the most memory, so the
+# unrelated build bigger than the runaway is killed with it, the smaller
+# one finishes, and the rest of the host goes on as it was. Last, the key
+# is the same after many starts and a reboot.
+#
+# The slice's default caps are 4 CPUs and 8 GiB. The machine here has
+# 2 GiB, so the memory cap is lowered at runtime, after the check reads
+# the default values off the slice, to let builds run past it. module-eval
+# holds the values the module renders.
 {
   pkgs,
   lib,
@@ -94,6 +101,27 @@ let
     while :; do x=$x$x; done
   '';
 
+  # Builds that are not the worker's, through the same daemon. small and
+  # big each hold a string of 1 MiB or 128 MiB and then spin for a while;
+  # cpu spins on six CPUs until it is stopped.
+  unrelated = pkgs.writeText "unrelated.nix" ''
+    { kind }:
+    let
+      hold = n: "x=a; n=0; while [ $n -lt ''${n} ]; do x=$x$x; n=$((n+1)); done; i=0; while [ $i -lt 8000000 ]; do i=$((i+1)); done; echo ok > $out";
+      scripts = {
+        small = hold "20";
+        big = hold "27";
+        cpu = "for i in 1 2 3 4 5 6; do (while :; do :; done) & done; wait";
+      };
+    in
+    derivation {
+      name = "unrelated-''${kind}";
+      system = "x86_64-linux";
+      builder = "/bin/sh";
+      args = [ "-c" scripts.''${kind} ];
+    }
+  '';
+
   # What the daemon's builds look like while the worker runs: the number
   # of build users with a process, and the cgroup of each such process,
   # sampled ten times a second.
@@ -118,8 +146,9 @@ in
     name = "valley-worker-e2e";
     nodes.host = {
       imports = [ self.nixosModules.default ];
-      # Two CPUs, so attest could run two builds at once if the unit let it.
-      virtualisation.cores = 2;
+      # Six CPUs: attest could run six builds at once if the unit let it,
+      # and a build can want more CPUs than the slice's quota of four.
+      virtualisation.cores = 6;
       virtualisation.memorySize = 2048;
       environment.systemPackages = [
         pkgs.git
@@ -128,6 +157,7 @@ in
       services.valley = {
         enable = true;
         config = declaration;
+        buildSlice.enable = true;
         authorizedKeys = [
           {
             principal = "contributor";
@@ -174,6 +204,15 @@ in
 
       def journal():
           return host.succeed("journalctl -u valley-worker -o cat")
+
+      def unrelated(kind):
+          host.succeed(
+              f"systemd-run --unit=unrelated-{kind} --remain-after-exit --setenv=NIX_REMOTE=daemon"
+              f" nix-build ${unrelated} --argstr kind {kind} --no-out-link"
+          )
+
+      def unit_property(name, prop):
+          return host.succeed(f"systemctl show -p {prop} --value {name}").strip()
 
       def attestations():
           return host.succeed(
@@ -258,6 +297,13 @@ in
 
       with subtest("the first start makes the key, readable by the worker alone, and says its public halves"):
           host.fail(f"test -e {state}/key")
+          # What an earlier start killed half way leaves: a partial key and
+          # public half under the temporary names, and a public half with
+          # no key.
+          host.succeed(
+              f"sudo -u valley-worker sh -c 'echo partial > {state}/key.new;"
+              f" echo partial > {state}/key.new.pub; echo stale > {state}/key.pub'"
+          )
           # Not enrolled yet, so the host's sshd turns the worker away and
           # the pass stops before it builds anything.
           host.fail("systemctl start valley-worker.service")
@@ -275,6 +321,8 @@ in
           assert f"the worker's verifier line is {verifier}" in said, said
           assert "PRIVATE KEY" not in said, said
           assert host.succeed(f"ssh-keygen -y -f {state}/key").split()[1] == public.split()[1]
+          host.fail(f"ls {state} | grep -q '^key.new'")
+          fingerprint = host.succeed(f"ssh-keygen -lf {state}/key").strip()
           assert attestations() == []
 
       with subtest("enrolled in the registry, the worker builds the ready change's checks one at a time and publishes them"):
@@ -316,23 +364,63 @@ in
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating")
           assert len(attestations()) == 1
 
-      with subtest("the slice holds the operator's caps"):
+      with subtest("the slice holds its default caps"):
           cgroup = "/sys/fs/cgroup/valley.slice/valley-builds.slice"
           assert host.succeed(f"cat {cgroup}/cpu.max").strip() == "400000 100000"
           assert host.succeed(f"cat {cgroup}/memory.max").strip() == str(8 * 1024**3)
           assert host.succeed(f"cat {cgroup}/memory.swap.max").strip() == "0"
 
-      with subtest("a runaway build is stopped at the memory cap, and the rest of the host stays healthy"):
+      with subtest("a build that wants six CPUs gets the slice's four"):
+          unrelated("cpu")
+          host.wait_until_succeeds("test \"$(ps -eo user= | grep -c '^nixbld')\" -ge 7", timeout=60)
+          host.sleep(2)
+          stat = lambda: dict(line.split() for line in host.succeed(f"cat {cgroup}/cpu.stat").splitlines())
+          before = stat()
+          host.sleep(10)
+          after = stat()
+          cpus = (int(after["usage_usec"]) - int(before["usage_usec"])) / 10e6
+          assert 3.0 < cpus < 4.5, cpus
+          assert int(after["nr_throttled"]) > int(before["nr_throttled"]), (before, after)
+          host.succeed("systemctl stop unrelated-cpu")
+          host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
+
+      with subtest("a runaway build is stopped at the memory cap, a bigger unrelated build is stopped with it, and the rest of the host stays healthy"):
           ready("runaway", "${runaway}")
-          host.succeed("systemctl set-property --runtime valley-builds.slice MemoryMax=512M")
-          assert host.succeed(f"cat {cgroup}/memory.max").strip() == str(512 * 1024**2)
           failed_before = set(host.succeed("systemctl list-units --state=failed --no-legend --plain | cut -d' ' -f1").split())
+          # Two builds that are not the worker's, with room to make their
+          # strings. The shell takes about twice a string's size while it
+          # makes it, so what big holds is read once it stops growing.
+          host.succeed("systemctl set-property --runtime valley-builds.slice MemoryMax=1536M")
+          unrelated("small")
+          unrelated("big")
+          host.wait_until_succeeds("ps -eo user=,rss= | awk '$1 ~ /^nixbld/ && $2 > 100000' | grep -q .", timeout=60)
+          biggest = lambda: int(host.succeed("ps -eo user=,rss= | awk '$1 ~ /^nixbld/ {print $2}' | sort -n | tail -1").strip())
+          held = 0
+          for _ in range(30):
+              host.sleep(1)
+              now = biggest()
+              if now == held:
+                  break
+              held = now
+          assert held > 100000, held
+          # The cap is what the slice cannot give back, and half of what big
+          # holds. The runaway reaches the cap while it is still smaller than
+          # big.
+          memory = dict(line.split() for line in host.succeed(f"cat {cgroup}/memory.stat").splitlines())
+          cap = int(memory["anon"]) + int(memory["shmem"]) + held * 1024 // 2
+          host.succeed(f"systemctl set-property --runtime valley-builds.slice MemoryMax={cap}")
           host.fail("systemctl start valley-worker.service")
           said = journal()
           assert "the batch did not pass" in said, said
           kills = host.succeed(f"sed -n 's/^oom_kill //p' {cgroup}/memory.events").strip()
-          assert int(kills) >= 1, kills
+          assert int(kills) >= 2, kills
           assert len(attestations()) == 1
+          # The kernel killed the biggest process in the slice: the unrelated
+          # big build, before the runaway grew past it, and then the runaway.
+          # The small build was never the biggest, and it finishes.
+          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value unrelated-small)\" = exited", timeout=300)
+          assert unit_property("unrelated-small", "Result") == "success"
+          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value unrelated-big)\" = failed", timeout=60)
           # The units the host runs are as they were, the daemon still
           # answers, and the git user still serves pushes and fetches.
           host.succeed(
@@ -340,12 +428,23 @@ in
               " valley-integrator@instance.service valley-integrator@project.service"
           )
           failed_after = set(host.succeed("systemctl list-units --state=failed --no-legend --plain | cut -d' ' -f1").split())
-          assert failed_after <= failed_before | {"valley-worker.service"}, failed_after
+          assert failed_after <= failed_before | {"valley-worker.service", "unrelated-big.service"}, failed_after
           host.succeed("nix-store --store daemon --query --hash /run/current-system")
           host.succeed(f"{contributor} git ls-remote origin refs/heads/runaway | grep -q runaway")
           # The failed batch waits before it is built again.
           host.succeed("systemctl start valley-worker.service")
           assert "failed 1 time in a row, so it is not built again before" in journal()
+
+      with subtest("the key is the same after many starts and a reboot, and is not said again"):
+          assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
+          host.shutdown()
+          host.start()
+          host.wait_for_unit("multi-user.target")
+          host.succeed("systemctl stop valley-worker.timer")
+          host.succeed("systemctl start valley-worker.service")
+          assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
+          assert host.succeed(f"cat {state}/verifier").strip() == verifier
+          host.fail("journalctl -b -u valley-worker -o cat | grep -q 'verifier line is'")
     '';
   };
 }

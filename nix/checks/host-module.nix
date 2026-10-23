@@ -39,6 +39,8 @@ let
     unicodeSpacedSignerProjectsHost
     identityHost
     workerHost
+    buildSliceHost
+    noSliceWorkerHost
     unrestrictedWorkerHost
     widerWorkerHost
     integratorNamedWorkerHost
@@ -55,6 +57,7 @@ let
     ++ restrictedHost.config.assertions
     ++ identityHost.config.assertions
     ++ workerHost.config.assertions
+    ++ buildSliceHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -112,6 +115,11 @@ let
       host = unicodeSpacedSignerProjectsHost;
       says = "services.valley.integrator.signerProjects holds";
       why = "a project holding a no-break space would be read back by the integrator as two projects, or refused at start";
+    }
+    {
+      host = noSliceWorkerHost;
+      says = "services.valley.worker.enable needs services.valley.buildSlice.enable";
+      why = "a worker on a host without the build slice would build uncapped, and capping every build of the daemon is the host's decision, not the worker's";
     }
     {
       host = unrestrictedWorkerHost;
@@ -415,16 +423,32 @@ let
   identityKeepsDeclaredKeys =
     identityHost.config.users.users.git.openssh.authorizedKeys.keys == [ ];
 
-  # The check worker. It is off by default, and a host that never asked for
-  # it renders none of it: no unit, no account, no slice, and a nix daemon
-  # where NixOS puts it. integratorHost is the strongest witness, with the
-  # integrator the worker would need already on.
+  # The check worker and the build slice. Both are off by default, and a
+  # host that never asked for them renders none of either: no unit, no
+  # account, no slice, and a nix daemon where NixOS puts it. integratorHost
+  # is the strongest witness, with the integrator the worker would need
+  # already on.
   workerRenderedWithoutEnable =
     integratorHost.config.systemd.services ? valley-worker
     || integratorHost.config.systemd.timers ? valley-worker
     || integratorHost.config.systemd.slices ? valley-builds
     || integratorHost.config.users.users ? valley-worker
     || integratorHost.config.systemd.services.nix-daemon.serviceConfig ? Slice;
+
+  # The build slice is a host decision of its own. On, it puts the daemon
+  # in the slice at the caps the host names, with no swap, and nothing of
+  # the worker.
+  buildSliceMisrendered =
+    let
+      slice = buildSliceHost.config.systemd.slices.valley-builds.sliceConfig or { };
+    in
+    buildSliceHost.config.systemd.services.nix-daemon.serviceConfig.Slice or null
+      != "valley-builds.slice"
+    || slice.CPUQuota or null != "200%"
+    || slice.MemoryMax or null != "4G"
+    || slice.MemorySwapMax or null != "0"
+    || buildSliceHost.config.systemd.services ? valley-worker
+    || buildSliceHost.config.users.users ? valley-worker;
 
   # What the VM check runs, held at the operator's values. worker-e2e
   # boots the worker and lowers the memory cap at runtime to make a build
@@ -549,6 +573,8 @@ in
       throw "valley module-eval: the declared authorized keys must stay authorized beside the compiled ones — a compiled file that replaced them would make a bad compilation a locked-out git user"
     else if workerRenderedWithoutEnable then
       throw "valley module-eval: check-worker machinery rendered for a host that never enabled it — nothing, the nix daemon's slice included, may change until a consumer opts in"
+    else if buildSliceMisrendered then
+      throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
       throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer counted from the end of each pass"
     else

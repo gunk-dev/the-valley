@@ -55,9 +55,10 @@
 #   publish-e2e.nix  publish-e2e — an integrator landing reaching the push
 #                    mirror and the bus, in a NixOS machine running the
 #                    real controller
-#   worker-e2e.nix   worker-e2e — the check worker on its timer in a NixOS
-#                    machine: its key, its enrollment, its evidence on
-#                    origin, and a runaway build stopped by the caps
+#   worker-e2e.nix   worker-e2e — the build slice and the check worker in a
+#                    NixOS machine: the worker's key, its enrollment and
+#                    its evidence on origin, and the slice's caps on its
+#                    builds and on builds that are not its own
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation

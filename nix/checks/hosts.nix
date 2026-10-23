@@ -61,12 +61,13 @@ let
     };
 
   # The same controllers as restrictedHost's with the check worker on, for
-  # two of the projects they serve, and its signer restricted to exactly
-  # those two. It is bound here so the hosts the module must refuse can be
-  # made from it.
+  # two of the projects they serve, its signer restricted to exactly those
+  # two, and the build slice on at its defaults. It is bound here so the
+  # hosts the module must refuse can be made from it.
   workerHost = mkHost {
     services.valley = {
       config = ../../examples/hosts/protected.cue;
+      buildSlice.enable = true;
       integrator = {
         enable = true;
         signingKeyFile = "/run/agenix/valley-integrator-key";
@@ -238,6 +239,19 @@ in
 
   inherit workerHost;
 
+  # The build slice alone, at caps of its own: every build of the daemon
+  # capped, and no worker.
+  buildSliceHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      buildSlice = {
+        enable = true;
+        cpuQuota = "200%";
+        memoryMax = "4G";
+      };
+    };
+  };
+
   # The registry machinery switched on, over the same declaration. The
   # signers file is not supplied: the compiler renders it, and a consumer
   # that also named one would be asking which of the two won. The
@@ -375,6 +389,12 @@ in
   # every controller holding its key would count its evidence everywhere.
   unrestrictedWorkerHost = workerHost.extendModules {
     modules = [ { services.valley.integrator.signerProjects = lib.mkForce { }; } ];
+  };
+
+  # The check worker on a host whose builds are not capped: turning it on
+  # must not be what caps every build of the daemon.
+  noSliceWorkerHost = workerHost.extendModules {
+    modules = [ { services.valley.buildSlice.enable = lib.mkForce false; } ];
   };
 
   # The worker's signer restricted to a project the worker does not build:

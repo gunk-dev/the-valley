@@ -264,7 +264,8 @@ let
 
   # The worker's one key. It signs the worker's notes, and it is the ssh
   # key the worker reaches this host's repositories with. It is made on
-  # the host the first time the service starts, and never leaves it.
+  # the host the first time the service starts, and the service never
+  # copies or prints it. Anything running as the worker can read it.
   workerKey = "${workerDir}/key";
 
   # The worker reads and pushes as an ssh client of this host, as the git
@@ -292,8 +293,8 @@ let
   # max-jobs and cores to every connection, a client's that is not trusted
   # included: each nix build the worker starts builds one derivation at a
   # time, and tells the builder it may use 4 cores. cores is a hint the
-  # builder reads as NIX_BUILD_CORES; the slice below is what holds a build
-  # to 4 CPUs. The worker uses no remote builder, and no flake's nixConfig.
+  # builder reads as NIX_BUILD_CORES; the build slice is what holds a build
+  # to its CPUs. The worker uses no remote builder, and no flake's nixConfig.
   workerNixConfig = ''
     extra-experimental-features = nix-command flakes
     max-jobs = 1
@@ -302,18 +303,9 @@ let
     accept-flake-config = false
   '';
 
-  # The slice the operator's caps are set on (oc-13c6bd6): 4 CPUs and
-  # 8 GiB of memory, with no swap, for the worker and the nix daemon
-  # together. A build runs as a child of the daemon, in the daemon's
-  # cgroup, never in the worker's. So a cap on the worker's unit alone
-  # would hold its evaluation and leave its builds uncapped, and the cap
-  # is on a slice that holds both units.
+  # The build slice (services.valley.buildSlice): the one slice every
+  # build of this machine's nix daemon runs in, under the host's caps.
   buildSlice = "valley-builds.slice";
-  buildCaps = {
-    CPUQuota = "400%";
-    MemoryMax = "8G";
-    MemorySwapMax = "0";
-  };
 
   # What the service does each time it starts: make the key if there is
   # none, write its public halves and this host's ssh keys, make the
@@ -1453,6 +1445,40 @@ in
       };
     };
 
+    # The build slice (oc-03b6f8c): caps on every build this machine's nix
+    # daemon runs, whoever asked for it. A host decision of its own, and a
+    # condition of the check worker, which builds through the daemon.
+    buildSlice = {
+      enable = lib.mkEnableOption ''
+        capping every build the nix daemon on this host runs, for every user
+        of it, together: the daemon runs in one slice with a CPU quota, a
+        memory cap and no swap'';
+
+      cpuQuota = lib.mkOption {
+        type = lib.types.str;
+        default = "400%";
+        example = "800%";
+        description = ''
+          The CPU time every build the daemon runs gets together, as
+          systemd's CPUQuota: 400% is four CPUs' worth.
+        '';
+      };
+
+      memoryMax = lib.mkOption {
+        type = lib.types.str;
+        default = "8G";
+        example = "16G";
+        description = ''
+          The memory every build the daemon runs gets together, as
+          systemd's MemoryMax. The slice gets no swap. A build that takes
+          the slice past it is ended by the kernel's OOM killer, which kills
+          the process in the slice using the most memory: usually the
+          build that went past, but any build in the slice can be the one
+          killed.
+        '';
+      };
+    };
+
     # The check worker (oc-13c6bd6): a timer that runs one pass of
     # valley-worker over the projects listed, so ready changes have their
     # nix checks built before anyone approves them. Machine options only —
@@ -1788,6 +1814,10 @@ in
         {
           assertion = name != integratorName;
           message = "services.valley.worker.signerName must differ from ${integratorName}, the name the controllers sign under: a controller's signature never counts as check evidence, and a controller refuses to start when the signer projects list names it.";
+        }
+        {
+          assertion = cfg.buildSlice.enable;
+          message = "services.valley.worker.enable needs services.valley.buildSlice.enable: the worker builds through this host's nix daemon, and only the build slice caps what it makes the daemon do. The slice caps every build the daemon runs, for every user, so turning it on is a decision about the host, made on its own.";
         }
         {
           assertion = config.services.openssh.enable && config.nix.enable;
@@ -2306,29 +2336,35 @@ in
       wants = map (name: "valley-integrator@${name}.service") (lib.attrNames integratedProjects);
     };
 
-    # The operator's caps on the check worker. The worker builds through
-    # this machine's nix daemon, and the daemon runs every build in its own
-    # cgroup, whoever asked for it. So the caps are on a slice that holds
-    # the daemon and the worker both: the kernel holds everything in it,
-    # the worker's evaluation and every build the daemon runs, to 4 CPUs
-    # and 8 GiB together, with no swap. A build that goes past the memory
-    # cap is killed by the kernel's OOM killer inside the slice, and the
-    # rest of the host goes on as it was.
+    # The build slice. The daemon runs every build in its own cgroup,
+    # whoever asked for it, so a cap on a build is a cap on the daemon: the
+    # slice holds nix-daemon.service, and the check worker when it runs,
+    # and the kernel holds everything in it to the quota and the memory cap
+    # together, with no swap. Every user's builds through the daemon share
+    # the caps. A nix command that does not go through the daemon, such as
+    # one root runs on the store directly, is outside the slice and
+    # uncapped.
     #
-    # The daemon's builds for every other user of it are in the slice too,
-    # so enabling the worker caps them as well, and they share the cap with
-    # the worker's builds. A build that does not go through the daemon,
-    # such as a nix command root runs on the store directly, is outside
-    # the slice and uncapped. The slice sets no device policy, so a build
-    # keeps the /dev/kvm the daemon gives NixOS tests. Its OOM kill does
-    # not stop the daemon: the daemon's unit delegates its cgroup, which
-    # makes systemd's OOM policy for it continue.
-    systemd.slices.valley-builds = lib.mkIf cfg.worker.enable {
-      description = "The valley check worker and the nix daemon's builds, under the operator's caps";
-      sliceConfig = buildCaps;
+    # A build that takes the slice past its memory cap is ended by the
+    # kernel's OOM killer, which kills the process in the slice using the
+    # most memory. That is usually the build that went past, and it can be
+    # another build in the slice. The rest of the host goes on as it was.
+    # When the OOM killer kills one of the daemon's processes, systemd keeps
+    # the daemon's unit running, since the unit delegates its cgroup
+    # (OOMPolicy=continue). Nothing exempts the daemon's own processes from
+    # being the one chosen.
+    # The slice sets no device policy, so a build keeps the /dev/kvm the
+    # daemon gives NixOS tests.
+    systemd.slices.valley-builds = lib.mkIf cfg.buildSlice.enable {
+      description = "Every build of the nix daemon, under the host's caps";
+      sliceConfig = {
+        CPUQuota = cfg.buildSlice.cpuQuota;
+        MemoryMax = cfg.buildSlice.memoryMax;
+        MemorySwapMax = "0";
+      };
     };
 
-    systemd.services.nix-daemon.serviceConfig.Slice = lib.mkIf cfg.worker.enable buildSlice;
+    systemd.services.nix-daemon.serviceConfig.Slice = lib.mkIf cfg.buildSlice.enable buildSlice;
 
     # One pass of the worker, as a oneshot the timer below starts. A pass
     # that finds nothing to build reads origin and ends. Two passes never
@@ -2336,11 +2372,12 @@ in
     # worker's own lock in its state directory serializes any pass started
     # by hand.
     #
-    # The unit runs on one CPU. attest runs one nix build per CPU it may
-    # run on, and NIX_CONFIG holds each of those to one derivation at a
-    # time, so the worker's builds run one at a time. The builds themselves
-    # run in the daemon, under the slice's 4 CPUs, whatever CPU the worker
-    # is on.
+    # The unit runs in the build slice, so its evaluation shares the caps
+    # with the builds. It runs on one CPU. attest runs one nix build per
+    # CPU it may run on, and NIX_CONFIG holds each of those to one
+    # derivation at a time, so the worker's builds run one at a time. The
+    # builds themselves run in the daemon, under the slice's quota,
+    # whatever CPU the worker is on.
     systemd.services.valley-worker = lib.mkIf cfg.worker.enable {
       description = "One pass of the valley check worker";
       after = [

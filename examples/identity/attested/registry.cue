@@ -1,12 +1,20 @@
-// A registry enrolling a YubiKey approval key, written against
-// schema/identity.cue. The operator holds two keys: one generated in PIV
-// slot 9c of a YubiKey with touch policy always, with the attestation
-// that proves it, and an ordinary key on a laptop. Both approve, and only
-// the first is a hardware approval key. The compiler renders this into
-// compiled/, which the identity-e2e check compares byte for byte.
+// An example registry enrolling a YubiKey approval key, written against
+// schema/identity.cue. The principal and both keys are examples: copy the
+// shape, never the values.
 //
-// The attestation is the one the YubiKey wrote. Like every key here, it
-// is public: nothing in a registry is a secret.
+// example-operator holds two keys. The first stands for a key generated
+// in PIV slot 9c of a YubiKey with touch policy always, with the
+// attestation that proves it. The second stands for an ordinary key on a
+// laptop. Both keys' private halves are derived from published seeds, so
+// neither is a secret.
+//
+// The compiler refuses this registry. The attestation chains to a
+// test-only root, "the-valley example attestation root, not Yubico", and
+// not to Yubico Attestation Root 1, so it does not verify. An entry made
+// from this one compiles only once both certificates are the ones the
+// enrolling YubiKey wrote: `yubico-piv-tool -a attest -s 9c` for slot, and
+// `yubico-piv-tool -a read-certificate -s f9` for f9. The identity-e2e
+// check compiles this registry and holds the compiler to that refusal.
 package identity
 
 boundaries: {
@@ -15,59 +23,49 @@ boundaries: {
 	"approve":  kind: "approve"
 }
 
-genesis: "operator"
+genesis: "example-operator"
 
 principals: {
-	"operator": {
+	"example-operator": {
 		kind: "human"
 		keys: [
-			{ // YubiKey 5C, PIV slot 9c
+			{ // the example YubiKey key, PIV slot 9c
 				class:  "ssh-ed25519"
 				bound:  "hardware"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID/3+vgQhY5cdQ4AqspQ1A2yW60nn4j1FOyx04WfuQjc"
 				attestation: {
 					slot: """
 						-----BEGIN CERTIFICATE-----
-						MIICJzCCAQ+gAwIBAgIQATCsihQMzzFrSCbhTl5GojANBgkqhkiG9w0BAQsFADAi
-						MSAwHgYDVQQDDBdZdWJpS2V5IFBJViBBdHRlc3RhdGlvbjAgFw0yNDEyMDEwMDAw
-						MDBaGA85OTk5MTIzMTIzNTk1OVowJTEjMCEGA1UEAwwaWXViaUtleSBQSVYgQXR0
-						ZXN0YXRpb24gOWMwKjAFBgMrZXADIQCGTUoe5D0Ded7YQSaAVXRlKVCQJEAG+J7D
-						aP6WCRlSF6NOMEwwEQYKKwYBBAGCxAoDAwQDBQcEMBQGCisGAQQBgsQKAwcEBgIE
-						AgaY5jAQBgorBgEEAYLECgMIBAIDAjAPBgorBgEEAYLECgMJBAEDMA0GCSqGSIb3
-						DQEBCwUAA4IBAQBlCVM5odtfuW6cSdc+91ZuxH9UUkiwLbgTjsUbI+r8uEgQvuGe
-						dayjAI5w9Z6snXiazWwrMWrJnuPelRqfs/UGvDhwyeVlh3B5F6HcG4r6OPtA+Dtg
-						PFgPNfugE79yDzAh6FGSZ/nfhlfBcNLkhjh5VONWqDX5AU/WDIstg4B26N/RmUJP
-						d1B7CFlQsjs7ncbHe8eP7E5MWtWEVtOMLTHMDB20wk9wCXX9qBBkOdbtjSG4Sgz6
-						dgalpWbxhhwcGGAHIMO29AIr1cHV3ICChMD4j5hrwcK6x6MvPxCqPgUJSFwff7R+
-						GDJAF3vFOrQDmqHLY8vKZluju2tdDJeqQsWh
+						MIIBnzCCAVGgAwIBAgIBAzAFBgMrZXAwPTE7MDkGA1UEAxMydGhlLXZhbGxleSBl
+						eGFtcGxlIGY5IGNlcnRpZmljYXRlLCBub3QgYSBZdWJpS2V5J3MwIBcNMjQxMjAx
+						MDAwMDAwWhgPOTk5OTEyMzEyMzU5NTlaMEIxQDA+BgNVBAMTN3RoZS12YWxsZXkg
+						ZXhhbXBsZSBzbG90IDljIGNlcnRpZmljYXRlLCBub3QgYSBZdWJpS2V5J3MwKjAF
+						BgMrZXADIQA/9/r4EIWOXHUOAKrKUNQNslutJ5+I9RTssdOFn7kI3KNvMG0wHwYD
+						VR0jBBgwFoAUyUoEX5UuH7szTIEPGV+za/s50oYwEQYKKwYBBAGCxAoDAwQDBQcE
+						MBQGCisGAQQBgsQKAwcEBgIEALxhTjAQBgorBgEEAYLECgMIBAIDAjAPBgorBgEE
+						AYLECgMJBAEDMAUGAytlcANBAL3VEws3t6SNeFJXeiEOMHpdJkaFtDLvNJT/II4E
+						v0tMQ6pKimp/cI7lfdDBxASGFaft4vkUyg+3W5Qdadn9rQg=
 						-----END CERTIFICATE-----
 						"""
 					f9: """
 						-----BEGIN CERTIFICATE-----
-						MIIC9TCCAd2gAwIBAgIJAJXcF5k7Lbf8MA0GCSqGSIb3DQEBCwUAMCUxIzAhBgNV
-						BAMMGll1YmljbyBQSVYgQXR0ZXN0YXRpb24gQiAxMCAXDTI0MTIwMTAwMDAwMFoY
-						Dzk5OTkxMjMxMjM1OTU5WjAiMSAwHgYDVQQDDBdZdWJpS2V5IFBJViBBdHRlc3Rh
-						dGlvbjCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALfGsJlUJlSFW9U1
-						LiPJe2J0HEy0wacxa53c0UEexr/ZtgmrIf/CVh8kqE4qpMs5igeyqxqZqLjdNqZZ
-						mdYFfHJL6AKSppCcWYnaHN6rSj6OgBpidg9uaQlNx+03fXn7GJHQhWYgvTX9qczm
-						fkqh2rh4a14Bg2ipgBePwwvPUidHSdqytfMgq+H1YzbouamXyHdcpW/OPPOeoTwv
-						+X4fr3bldpwABqHDT/mM/znh16dhQu7QlPFgnG3rNK6ddCIdVuFs+LqYlU7Ute+f
-						QbVp8FiravxczUb1GRRKMNkWGtA6m5P87zyAw8vUbnMlsflj6paHAwOpzXfAT4/G
-						k65UhqUCAwEAAaMpMCcwEQYKKwYBBAGCxAoDAwQDBQcEMBIGA1UdEwEB/wQIMAYB
-						Af8CAQAwDQYJKoZIhvcNAQELBQADggEBAEsyUM3GxUCWSHliTfcF9+r5BEILfR/5
-						2cdpRfaJWSdW+/bHUffdGWRD6PckY3AQBpgap3zBgzE5yq2Kv3A1bnAFo6DHjPCn
-						waos9hFm/YVidxjWvi0brHwKHHGGQdSmQzLAG7/aabpfaVfEurQDBBUoZAnBxdMP
-						tLaS+HGhAVbTgyh9glZrfqZi/aoM57JB5yBZ8GCzUazN6CdE5TnEs+ooVQXfQNP2
-						wNkM2IMOE/CNXa/UVp9s3JH7hloW/VNoynK5SlMrJ+acoehM3fDM4NgIpE+q8ei8
-						+sjUk8NEdie+vPIEgpS8ZEGX1030kuRfw47GG4CJEN9fbB2jaqzU/Mg=
+						MIIBoTCCAVOgAwIBAgIBAjAFBgMrZXAwOjE4MDYGA1UEAxMvdGhlLXZhbGxleSBl
+						eGFtcGxlIGF0dGVzdGF0aW9uIHJvb3QsIG5vdCBZdWJpY28wIBcNMjQxMjAxMDAw
+						MDAwWhgPOTk5OTEyMzEyMzU5NTlaMD0xOzA5BgNVBAMTMnRoZS12YWxsZXkgZXhh
+						bXBsZSBmOSBjZXJ0aWZpY2F0ZSwgbm90IGEgWXViaUtleSdzMCowBQYDK2VwAyEA
+						Meen8osipGPgf/7tu2vDRTLuy64wglsPaCcoQx/mPfujeTB3MA4GA1UdDwEB/wQE
+						AwICBDASBgNVHRMBAf8ECDAGAQH/AgEAMB0GA1UdDgQWBBTJSgRflS4fuzNMgQ8Z
+						X7Nr+znShjAfBgNVHSMEGDAWgBQijekYIu2T50x1FfsEQsCgXG6MaTARBgorBgEE
+						AYLECgMDBAMFBwQwBQYDK2VwA0EAwNl9U1R6NYF1Bhr5E0zTN2iIkONbtq8zqO5E
+						gNmETkG/yax7c2cuGo6uw/9egP5AT1EfGH1quK7VVyW6peIbBw==
 						-----END CERTIFICATE-----
 						"""
 				}
 			},
-			{ // laptop
+			{ // the example laptop key
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILKzHsPMypFDy83wUJgO8DPMT42rf2UakMkCqW6uXdeB"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDgoIskk25f2EYhLkPeJniiairVGv46CCYt2CUZ8EoxH"
 			},
 		]
 		grants: {

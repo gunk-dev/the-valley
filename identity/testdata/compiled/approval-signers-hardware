@@ -2,4 +2,4 @@
 # Hardware approval keys: the approval keys whose YubiKey attestation
 # verifies and says every signature needs a touch, as verifier keys, one
 # per line, each named by the principal who approves with it.
-operator+e7bc234d+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX
+test-vector+90926b1b+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX

@@ -1831,10 +1831,10 @@ identity compile --repo /srv/git/instance.git --known-signers known-signers \
 ```
 
 Each line is a verifier key in the `known-signers` format, named by the principal who approves with
-that key:
+that key. For the example key of `example-operator`:
 
 ```text
-operator+e7bc234d+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX
+example-operator+3649fd12+AT/3+vgQhY5cdQ4AqspQ1A2yW60nn4j1FOyx04WfuQjc
 ```
 
 - **`approval-signers`** lists every key of every unexpired `human` principal holding the approve
@@ -1843,8 +1843,10 @@ operator+e7bc234d+AYZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX
   whose entry carries an `attestation` that verifies and says the touch policy is `always`. The
   YubiKey then asks for a touch before every signature.
 - No gate reads either file, and the host module does not write them (`not built`).
-- [`examples/identity/attested/`](../examples/identity/attested/registry.cue) is a registry
-  enrolling a YubiKey key, beside the two files it compiles to.
+- [`examples/identity/attested/`](../examples/identity/attested/registry.cue) is an example registry
+  enrolling a YubiKey key for `example-operator`. Its keys are examples, and its attestation chains
+  to a test-only root, "the-valley example attestation root, not Yubico". The compiler refuses it,
+  so an entry copied from it compiles only with the enrolling YubiKey's own certificates.
 
 An `attestation` verifies when all of these hold:
 
@@ -1867,10 +1869,11 @@ The root is Yubico's `yubico-ca-1.pem`, with the SHA-256 fingerprint Yubico publ
 ```
 
 The compiler reports each attestation that verifies on stderr, with the YubiKey's serial number,
-firmware, PIN policy and touch policy. Whoever reviews an enrollment checks them there:
+firmware, PIN policy and touch policy. Whoever reviews an enrollment checks them there. For a
+YubiKey with serial number 12345678, enrolled as the first key of `example-operator`:
 
 ```text
-identity: operator: key 0 is on YubiKey serial 33986790, firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key
+identity: example-operator: key 0 is on YubiKey serial 12345678, firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key
 ```
 
 Who can do what, and what stops them:

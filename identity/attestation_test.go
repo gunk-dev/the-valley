@@ -24,15 +24,13 @@ import (
 	"the-valley/note"
 )
 
-// The device fixtures, from the operator's YubiKey 5C (firmware 5.7.4): an
-// Ed25519 key generated in PIV slot 9c with PIN policy always and touch
-// policy always, the slot certificate the YubiKey wrote for it, its f9
-// certificate, and a 2075-byte text the key signed with a touch
-// (`yubico-piv-tool -a verify-pin --sign -A ED25519 -s 9c`).
-const (
-	deviceKey    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX"
-	deviceSerial = "33986790"
-)
+// The device fixtures are the-valley operator's own approval key, from a
+// YubiKey 5C (firmware 5.7.4): an Ed25519 key generated in PIV slot 9c
+// with PIN policy always and touch policy always, the slot certificate the
+// YubiKey wrote for it, its f9 certificate, and a 2075-byte text the key
+// signed with a touch (`yubico-piv-tool -a verify-pin --sign -A ED25519 -s
+// 9c`). They are test vectors and stay in testdata/ (testdata/README.md):
+// only a real device's chain verifies to Yubico's root.
 
 func testdata(t *testing.T, name string) string {
 	t.Helper()
@@ -43,13 +41,23 @@ func testdata(t *testing.T, name string) string {
 	return string(b)
 }
 
+// deviceKey is the device key's registry line.
+func deviceKey(t *testing.T) string {
+	return strings.TrimSpace(testdata(t, "valley-approve.pub"))
+}
+
+// deviceReport is what the compiler reports for the device's attestation.
+func deviceReport(t *testing.T) string {
+	return strings.TrimSpace(testdata(t, "valley-approve.report"))
+}
+
 func deviceAttestation(t *testing.T) attestation {
 	return attestation{Slot: testdata(t, "valley-approve.attest.pem"), F9: testdata(t, "yubico-f9.pem")}
 }
 
 func devicePublic(t *testing.T) ed25519.PublicKey {
 	t.Helper()
-	pub, err := sshEd25519Public(deviceKey)
+	pub, err := sshEd25519Public(deviceKey(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +73,7 @@ func TestTheDeviceKeyIsTheExportedKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !devicePublic(t).Equal(exported) {
-		t.Fatalf("%s is not the exported key", deviceKey)
+		t.Fatalf("%s is not the exported key", deviceKey(t))
 	}
 }
 
@@ -129,9 +137,50 @@ func TestTheDeviceAttestationVerifies(t *testing.T) {
 	if !got.hardware() {
 		t.Error("the device's touch-always key is not a hardware key")
 	}
-	const want = "YubiKey serial " + deviceSerial + ", firmware 5.7.4, PIN policy always, touch policy always"
-	if got.String() != want {
+	if want := deviceReport(t); got.String() != want {
 		t.Errorf("reported %q, want %q", got, want)
+	}
+}
+
+// The example registry's attestation (examples/identity/attested/) is a
+// synthetic chain under a test-only root, "the-valley example attestation
+// root, not Yubico". The compiler refuses it under the pinned Yubico
+// roots, so an entry copied from the example compiles only with a real
+// device's certificates. Under the test-only root it verifies, so the root
+// is the one thing wrong with it. The identity-e2e check holds the example
+// to these same certificates and has the compiler refuse it.
+func TestTheExampleAttestationVerifiesOnlyUnderItsTestRoot(t *testing.T) {
+	const exampleKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID/3+vgQhY5cdQ4AqspQ1A2yW60nn4j1FOyx04WfuQjc"
+	pub, err := sshEd25519Public(exampleKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !testPrivateKey("the-valley example approval key").Public().(ed25519.PublicKey).Equal(pub) {
+		t.Fatal("the example key is not the one derived from its published seed")
+	}
+	example := attestation{Slot: testdata(t, "example-slot.pem"), F9: testdata(t, "example-f9.pem")}
+	on := day(t, "2026-10-23")
+
+	_, err = verifyAttestation(example, pub, on, yubico)
+	if err == nil || !strings.Contains(err.Error(), "does not verify to Yubico Attestation Root 1: x509: certificate signed by unknown authority") {
+		t.Errorf("under the pinned Yubico roots: error = %v", err)
+	}
+
+	root, err := x509.ParseCertificate(pemBytes(t, testdata(t, "example-root.pem")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root.Subject.CommonName != "the-valley example attestation root, not Yubico" {
+		t.Fatalf("the test-only root is %q", root.Subject.CommonName)
+	}
+	testOnly := trust{roots: x509.NewCertPool(), intermediates: x509.NewCertPool()}
+	testOnly.roots.AddCert(root)
+	got, err := verifyAttestation(example, pub, on, testOnly)
+	if err != nil {
+		t.Fatalf("under the test-only root: %v", err)
+	}
+	if want := "YubiKey serial 12345678, firmware 5.7.4, PIN policy always, touch policy always"; got.String() != want || !got.hardware() {
+		t.Errorf("under the test-only root: reported %q, hardware %v", got, got.hardware())
 	}
 }
 
@@ -385,7 +434,7 @@ func approvalRegistry(t *testing.T, pki testPKI) registry {
 	founder := r.Principals["founder"]
 	device := deviceAttestation(t)
 	founder.Keys = append(founder.Keys,
-		key{Class: sshEd25519, Bound: "hardware", Public: deviceKey, Attestation: &device},
+		key{Class: sshEd25519, Bound: "hardware", Public: deviceKey(t), Attestation: &device},
 		attestedKey("cached", 3),
 	)
 	founder.Grants["approve"] = approve
@@ -437,8 +486,8 @@ func TestApprovalFilesListHumanApproversAndTheirHardwareKeys(t *testing.T) {
 	_, cached := testKey("cached")
 	_, second := testKey("second")
 	founderPlain := r.Principals["founder"].Keys[0].Public
-	all := []string{line("founder", founderPlain), line("founder", deviceKey), line("founder", cached), line("second", second)}
-	hardware := []string{line("founder", deviceKey), line("second", second)}
+	all := []string{line("founder", founderPlain), line("founder", deviceKey(t)), line("founder", cached), line("second", second)}
+	hardware := []string{line("founder", deviceKey(t)), line("second", second)}
 	for _, c := range []struct {
 		name  string
 		got   []byte
@@ -462,7 +511,7 @@ func TestApprovalFilesListHumanApproversAndTheirHardwareKeys(t *testing.T) {
 	// Each attested key of a principal still in force is reported for
 	// review, and the expired one is not.
 	for _, want := range []string{
-		"founder: key 1 is on YubiKey serial " + deviceSerial + ", firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key",
+		"founder: key 1 is on " + deviceReport(t) + "; it approves as a hardware key",
 		"founder: key 2 is on YubiKey serial 12345678, firmware 5.7.4, PIN policy always, touch policy cached; it approves, but not as a hardware key, because its touch policy is not always",
 		"robot: key 0 is on YubiKey serial 12345678, firmware 5.7.4, PIN policy always, touch policy always; its principal approves nothing",
 	} {
@@ -529,7 +578,7 @@ func TestAKeyThatApprovesBelongsToOnePrincipal(t *testing.T) {
 	} {
 		r := approvalRegistry(t, pki)
 		device := deviceAttestation(t)
-		holder.Keys = []key{{Class: sshEd25519, Bound: "hardware", Public: deviceKey, Attestation: &device}}
+		holder.Keys = []key{{Class: sshEd25519, Bound: "hardware", Public: deviceKey(t), Attestation: &device}}
 		r.Principals["impostor"] = holder
 		_, err := render(r, day(t, "2026-10-22"), nil)
 		if err == nil || !strings.Contains(err.Error(), "founder: key 1 is also impostor's, and a key that approves belongs to one principal") {
@@ -576,7 +625,7 @@ func TestTheDeviceSignatureOpensAgainstTheCompiledFiles(t *testing.T) {
 		r.Boundaries["approve"] = boundary{Kind: boundaryApprove}
 		founder := r.Principals["founder"]
 		founder.Grants["approve"] = grant{Boundary: "approve"}
-		k := key{Class: sshEd25519, Bound: "hardware", Public: deviceKey}
+		k := key{Class: sshEd25519, Bound: "hardware", Public: deviceKey(t)}
 		if attested {
 			device := deviceAttestation(t)
 			k.Attestation = &device

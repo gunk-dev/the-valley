@@ -521,18 +521,60 @@ for pinned in 2026-10-01 2026-12-01; do
   diff -u last-good-keys "$TMPDIR/keys" || exit 1
 done
 
-# A hardware approval key. The attested registry enrolls a key a YubiKey
-# generated, with the attestation the YubiKey wrote for it, beside an
-# ordinary key. Both approve. Only the YubiKey's is a hardware approval
-# key: its attestation verifies to Yubico Attestation Root 1, which the
-# compiler carries, names the entry's public key, and says every signature
-# needs a touch. The compiler reports what the attestation says, for
-# whoever reviews the enrollment.
-serve instance "$attested"
+# A hardware approval key, from a real YubiKey. The registry is written
+# here from the test vectors in identity/testdata: the-valley operator's
+# own approval key and the certificates its YubiKey wrote, which are the
+# only chain at hand that verifies to Yubico Attestation Root 1. No
+# example enrolls them. The registry enrolls that key under test-vector,
+# beside the example laptop key. Both approve. Only the YubiKey's is a
+# hardware approval key: its attestation verifies to the root the
+# compiler carries, names the entry's public key, and says every
+# signature needs a touch. The compiler reports what the attestation
+# says, for whoever reviews the enrollment.
+yubikey="$(cat "$testdata/valley-approve.pub")"
+laptop="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDgoIskk25f2EYhLkPeJniiairVGv46CCYt2CUZ8EoxH"
+# attested_registry <dir> <public> <slot pem> <f9 pem>: a registry whose
+# one principal, test-vector, governs and approves with the attested key
+# and the laptop key.
+attested_registry() {
+  mkdir -p "$1"
+  {
+    echo 'package identity'
+    echo 'boundaries: {'
+    echo '	"push": kind:     "git-push"'
+    echo '	"registry": kind: "registry"'
+    echo '	"approve": kind:  "approve"'
+    echo '}'
+    echo 'genesis: "test-vector"'
+    echo 'principals: "test-vector": {'
+    echo '	kind: "human"'
+    echo '	keys: [{'
+    echo '		class:  "ssh-ed25519"'
+    echo '		bound:  "hardware"'
+    printf '\t\tpublic: "%s"\n' "$2"
+    echo '		attestation: {'
+    echo '			slot: """'
+    sed 's/^/\t\t\t\t/' "$3"
+    echo '				"""'
+    echo '			f9: """'
+    sed 's/^/\t\t\t\t/' "$4"
+    echo '				"""'
+    echo '		}'
+    echo '	}, {'
+    echo '		class:  "ssh-ed25519"'
+    echo '		bound:  "host"'
+    printf '\t\tpublic: "%s"\n' "$laptop"
+    echo '	}]'
+    echo '	grants: {push: boundary: "push", approve: boundary: "approve", govern: boundary: "registry"}'
+    echo '}'
+  } > "$1/registry.cue"
+}
+attested_registry device-registry "$yubikey" "$testdata/valley-approve.attest.pem" "$testdata/yubico-f9.pem"
+serve instance device-registry
 compile --now 2026-10-22 2> attested.log || exit 1
-diff -u "$attested/compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
-diff -u "$attested/compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
-grep -qF "operator: key 0 is on YubiKey serial 33986790, firmware 5.7.4, PIN policy always, touch policy always; it approves as a hardware key" attested.log || {
+diff -u "$testdata/compiled/approval-signers" "$TMPDIR/approval-signers" || exit 1
+diff -u "$testdata/compiled/approval-signers-hardware" "$TMPDIR/approval-signers-hardware" || exit 1
+grep -qxF "identity: test-vector: key 0 is on $(cat "$testdata/valley-approve.report"); it approves as a hardware key" attested.log || {
   echo "identity-e2e: the compiler did not report the attestation it verified" >&2
   cat attested.log >&2
   exit 1
@@ -542,38 +584,56 @@ cp "$TMPDIR/approval-signers-hardware" last-good-hardware
 
 # Evidence that does not verify fails the compilation, and the last good
 # approval files stand: the key is never compiled as an ordinary key
-# instead. The attestation is offered for the laptop's key, and then with
-# one character of the slot certificate's signature changed.
-yubikey="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIZNSh7kPQN53thBJoBVdGUpUJAkQAb4nsNo/pYJGVIX"
-laptop="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILKzHsPMypFDy83wUJgO8DPMT42rf2UakMkCqW6uXdeB"
-mkdir -p wrong-key altered-slot
-sed "s|public: \"$yubikey\"|public: \"$laptop\"|" "$attested/registry.cue" > wrong-key/registry.cue
-sed 's|GDJAF3vFOrQDmqHLY8vKZluju2tdDJeqQsWh|GDJAF3vFOrQDmqHLY8vKZluju2tdDJeqQsWg|' "$attested/registry.cue" > altered-slot/registry.cue
-for variant in "wrong-key:attests a different key" "altered-slot:does not verify to Yubico Attestation Root 1"; do
-  name="${variant%%:*}"
-  want="${variant#*:}"
-  if cmp -s "$attested/registry.cue" "$name/registry.cue"; then
-    echo "identity-e2e: the $name registry was not written, so the check below proves nothing" >&2
+# instead. The cases:
+# - wrong-key: the attestation offered for the laptop's key;
+# - altered-slot: the slot certificate with one character of its
+#   signature changed, the first of its last base64 line;
+# - the example registry: its attestation chains to the test-only root
+#   "the-valley example attestation root, not Yubico", so an entry copied
+#   from it compiles only with the enrolling device's own certificates.
+attested_registry wrong-key "$laptop" "$testdata/valley-approve.attest.pem" "$testdata/yubico-f9.pem"
+last="$(($(grep -n -- '-----END' "$testdata/valley-approve.attest.pem" | cut -d: -f1) - 1))"
+awk -v n="$last" 'NR == n { $0 = (substr($0, 1, 1) == "A" ? "B" : "A") substr($0, 2) } { print }' \
+  "$testdata/valley-approve.attest.pem" > altered-slot.pem
+if cmp -s altered-slot.pem "$testdata/valley-approve.attest.pem"; then
+  echo "identity-e2e: the altered slot certificate was not written, so the check below proves nothing" >&2
+  exit 1
+fi
+attested_registry altered-slot "$yubikey" altered-slot.pem "$testdata/yubico-f9.pem"
+# The example's certificates are the ones the unit tests verify under the
+# test-only root, so its refusal here is the root's alone.
+for which in slot f9; do
+  sed -n "/^\t\t\t\t\t$which: \"\"\"\$/,/\"\"\"\$/p" "$attested/registry.cue" | sed '1d;$d' | tr -d '\t' > "example-$which.pem"
+  diff -u "$testdata/example-$which.pem" "example-$which.pem" || {
+    echo "identity-e2e: the example's $which certificate is not the one the unit tests verify" >&2
+    exit 1
+  }
+done
+# refused <registry dir> <key> <reason>: the registry fails to compile,
+# naming the key and the reason, and the last good approval files stand.
+refused() {
+  serve instance "$1"
+  if compile --now 2026-10-22 2> refused-attestation.err; then
+    echo "identity-e2e: a registry whose attestation does not verify ($1) compiled" >&2
     exit 1
   fi
-  serve instance "$name"
-  if compile --now 2026-10-22 2> "$name.err"; then
-    echo "identity-e2e: a registry whose attestation does not verify ($name) compiled" >&2
-    exit 1
-  fi
-  if ! grep -qF "operator: key 0: " "$name.err" || ! grep -qF "$want" "$name.err"; then
-    echo "identity-e2e: the refusal of $name did not name the key and say \"$want\"" >&2
-    cat "$name.err" >&2
+  if ! grep -qF "$2: " refused-attestation.err || ! grep -qF "$3" refused-attestation.err; then
+    echo "identity-e2e: the refusal of $1 did not name \"$2\" and say \"$3\"" >&2
+    cat refused-attestation.err >&2
     exit 1
   fi
   diff -u last-good-approval "$TMPDIR/approval-signers" || exit 1
   diff -u last-good-hardware "$TMPDIR/approval-signers-hardware" || exit 1
-done
+}
+refused wrong-key "test-vector: key 0" "attests a different key"
+refused altered-slot "test-vector: key 0" "does not verify to Yubico Attestation Root 1"
+refused "$attested" "example-operator: key 0" \
+  "does not verify to Yubico Attestation Root 1: x509: certificate signed by unknown authority"
 
 # The approval files are written only where the caller names them, so a
 # host that does not ask for them gets neither.
 rm "$TMPDIR/approval-signers" "$TMPDIR/approval-signers-hardware"
-serve instance "$attested"
+serve instance device-registry
 identity compile --repo "$TMPDIR/instance.git" --known-signers "$TMPDIR/signers" \
   --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" --now 2026-10-22 || exit 1
 if [ -e "$TMPDIR/approval-signers" ] || [ -e "$TMPDIR/approval-signers-hardware" ]; then

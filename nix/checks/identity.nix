@@ -13,10 +13,11 @@
 # does none of that. A grant named approve at a boundary of another kind
 # compiles to nothing. The registry is read past a replacement ref planted
 # to forge it, and from the commit its ref resolved to while a push moves
-# that ref mid-read. A registry enrolling a YubiKey key, with the
-# attestation the device wrote, compiles it into both approval signers
-# files; that attestation offered for another key, or altered, fails the
-# compilation.
+# that ref mid-read. A registry enrolling a real YubiKey key from the test
+# vectors, with the attestation the device wrote, compiles it into both
+# approval signers files; that attestation offered for another key, or
+# altered, fails the compilation, and so does the example registry, whose
+# attestation chains to a test-only root.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {
@@ -51,6 +52,10 @@
     compiled = ../../examples/identity/compiled;
     expired = ../../examples/identity/expired;
     attested = ../../examples/identity/attested;
+    # The test vectors: the-valley operator's own approval key and its
+    # YubiKey's certificates, the compiled files they make, and the
+    # example's synthetic chain (identity/testdata/README.md).
+    testdata = ../../identity/testdata;
     # The fail-safe case. Any invalid registry would do; this one fails on a
     # property of the floor rather than on a typo, so the check also
     # observes that a floor violation is what stops a compilation.

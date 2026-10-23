@@ -1,6 +1,11 @@
 # The attestation helper: its unit tests, the written form as a fixed
 # contract, and the helper driven end to end over scratch repositories.
-{ pkgs, packages, ... }:
+{
+  pkgs,
+  packages,
+  nixStandIns,
+  ...
+}:
 {
   # The helper's Go tests, run in the package's checkPhase against real
   # git and ssh-keygen: the written form, the note's key hash and
@@ -42,6 +47,6 @@
       pkgs.openssh
       packages.attest
     ];
-    nixStandIn = ../../integrator/e2e;
+    nixStandIn = nixStandIns;
   } (builtins.readFile ./attest-e2e.sh);
 }

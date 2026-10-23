@@ -3,6 +3,7 @@
   lib,
   packages,
   hosts,
+  nixStandIns,
   ...
 }:
 let
@@ -145,7 +146,7 @@ in
     inherit initScript keys;
     passAsFile = [ "initScript" ];
     smokePolicy = ../../examples/policy/smoke;
-    integratorE2e = ../../integrator/e2e;
+    integratorE2e = nixStandIns;
     SCHEMA_ATTESTATION = ../../schema/attestation.cue;
     SCHEMA_VERIFICATION = ../../schema/verification.cue;
     SCHEMA_EVENTS = ../../schema/events.cue;

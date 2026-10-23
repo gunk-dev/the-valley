@@ -14,6 +14,7 @@
   system,
   packages,
   hosts,
+  nixStandIns,
   ...
 }:
 let
@@ -269,7 +270,7 @@ in
     inherit failNth reuseKeys;
     reuseInitScript = reuseHost.config.systemd.services.valley-init.script;
     passAsFile = [ "reuseInitScript" ];
-    integratorE2e = ../../integrator/e2e;
+    integratorE2e = nixStandIns;
     attestSchema = ../../schema/attestation.cue;
     eventSchema = ../../schema/events.cue;
   } (builtins.readFile ./valley-request.sh);

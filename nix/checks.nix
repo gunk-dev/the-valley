@@ -60,6 +60,13 @@
 # attestations, events, graphs and policies under examples/, attestation
 # vectors under attest/, delta vectors under delta/, the integrator's
 # scenarios under integrator/e2e/.
+#
+# A check is given only the files it reads, so an edit to any other file
+# leaves its derivation, and the evidence for it, unchanged. A source path
+# names one file or directory, and lib.fileset narrows a directory to the
+# part of it a check reads. The sandbox holds a check to what it is given:
+# a file it reads and was not given fails it. nix/tools/drv-churn.sh
+# measures which checks an edit changes.
 {
   pkgs,
   lib,
@@ -75,6 +82,21 @@ let
       self
       ;
   };
+  # The part of a directory a check reads: the paths given, each in its
+  # place under root.
+  partOf =
+    root: paths:
+    lib.fileset.toSource {
+      inherit root;
+      fileset = lib.fileset.unions paths;
+    };
+  # integrator-e2e's stand-ins for nix and nix-store, without its
+  # scenarios. attest-e2e, valley-request, signers-e2e and restack-e2e run
+  # through these two and read nothing else of integrator/e2e/.
+  nixStandIns = partOf ../integrator/e2e [
+    ../integrator/e2e/nix
+    ../integrator/e2e/nix-store
+  ];
   args = {
     inherit
       pkgs
@@ -83,6 +105,8 @@ let
       system
       packages
       hosts
+      partOf
+      nixStandIns
       ;
   };
 in

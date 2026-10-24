@@ -701,14 +701,12 @@ for module in attest change composed delta identity integrator knot note rebase 
 done
 ```
 
-Through Nix, a module's unit tests run in its unit check, and nowhere else. The check is named for
-the module, such as `valleyhook-unit` for `valleyhook/`, and `valley-go-unit` for `status/`:
+In Nix, building a Go package does not run its unit tests. Those tests run only in the module's
+`*-unit` check, such as `valleyhook-unit` for `valleyhook/` or `valley-go-unit` for `status/`:
 
 ```sh
 nix build --no-link .#checks.x86_64-linux.valleyhook-unit -L
 ```
-
-Building a package runs no tests.
 
 Run a single Nix check by name. For documentation, format first, then check formatting, links, and
 the style rules, then the policy that selects checks:
@@ -731,14 +729,15 @@ edit to any other file leaves the check's derivation unchanged, so the check's e
 the edited tree. When a check starts to read a new file, give the check that file. The sandbox fails
 a check that reads a file it was not given.
 
-A Go package's source holds no test files, and its unit check adds them. So an edit to a test
-changes the unit check alone, and no check built on the package.
+Editing a Go test changes only that module's `*-unit` check, not the other checks that use the
+package. A Go package's source leaves out test files, and its `*-unit` check adds them back.
 
-The NixOS module runs three of the flake's programs: the integrator, the identity compiler and
-valleyhook. `module-eval`, `mirror-e2e`, `bus-e2e` and `init-e2e` run none of them. They render the
-module over stand-ins with the same names ([nix/checks/hosts.nix](../nix/checks/hosts.nix)), so an
-edit to one of those programs does not change them. A check that runs one of them takes the real
-program.
+The NixOS host module uses three of the flake's programs: the integrator, the identity compiler, and
+`valleyhook`. Four checks test what the module renders without running those programs:
+`module-eval`, `mirror-e2e`, `bus-e2e`, and `init-e2e`. Those checks render the module with stand-in
+scripts in place of the three programs ([nix/checks/hosts.nix](../nix/checks/hosts.nix)), so editing
+one of the programs leaves those four checks unchanged. Checks that run one of the programs use the
+real package.
 
 To see which checks an edit gives a new derivation, run the measurement script on a commit:
 

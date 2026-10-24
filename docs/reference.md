@@ -622,9 +622,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `attest run`. The name defaults as `attest`'s does.
     - `--state <dir>`: The directory holding the lock and the record of failed batches and pushes
       (default `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
-  - Prints lines of the form `<project>: <handle> v<n> at <short-head>: <what>` for each ready
-    change in a project whose policy at `main` loads. A change it builds or publishes gets one line
-    for each step, with what `attest run` prints between them. `<what>` is one of these:
+  - Prints lines of the form `<project>: <handle> v<n> at <short-head>: <what>` for the ready
+    changes in a project whose policy at `main` loads. A change it builds or publishes gets one line
+    for each step, with what `attest run` prints between them. `<what>` is usually one of these.
+    Errors print their own messages.
     - `requires no nix check`
     - `origin holds evidence for every nix check it requires`
     - `building <check>, <check>`, then what `attest run` prints, then `published <ref>`

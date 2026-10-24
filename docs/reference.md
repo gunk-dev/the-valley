@@ -612,14 +612,19 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   [NixOS host options](#nixos-host-options)).
   - `valley-worker --repo <name>... --key <path> [--name <name>] [--state <dir>]` — run in a clone
     of any project the host serves.
-    - `--repo <name>`: A project to build evidence for, once per project. At least one is required,
-      and no other project is read.
+    - `--repo <name>`: A project to build evidence for, once per project. At least one is required.
+      The worker builds evidence for no other project. To find a project other than its clone's own,
+      it reads `policy/valley` on `origin`'s `main` and the instance repository's
+      `refs/the-valley/projects`. When that `main` holds `policy/instance` and no `policy/valley`,
+      `origin` is itself the instance repository. It can also fetch `main` of the owning valley a
+      project's `policy/valley` names.
     - `--key <path>` and `--name <name>`: The worker's signing key and signing name, passed to
       `attest run`. The name defaults as `attest`'s does.
     - `--state <dir>`: The directory holding the lock and the record of failed batches and pushes
       (default `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
-  - Prints one line per ready change, `<project>: <handle> v<n> at <short-head>: <what>`, where
-    `<what>` is one of these:
+  - Prints lines of the form `<project>: <handle> v<n> at <short-head>: <what>` for each ready
+    change in a project whose policy at `main` loads. A change it builds or publishes gets one line
+    for each step, with what `attest run` prints between them. `<what>` is one of these:
     - `requires no nix check`
     - `origin holds evidence for every nix check it requires`
     - `building <check>, <check>`, then what `attest run` prints, then `published <ref>`
@@ -629,11 +634,17 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `the batch did not pass (<reason>); it is not built again before <time>`
     - `publishing <ref> failed <n> times in a row, so it is not pushed again before <time>`
     - `could not publish <ref>; it is not pushed again before <time>`
+  - A project with ready changes gets one line for the whole project instead when `origin` has no
+    `main`, or when the policy at `main` does not load. Its changes are skipped. The line is
+    `<project>: origin has no main to read the policy at, so nothing is built`, or
+    `<project>: the policy at main did not read, so nothing is built: <reason>`.
   - A pass that finds the lock held prints
     `valley: another pass holds <state>/lock; waiting for it to end` on `stderr`, and waits.
   - Exits `0` when everything it tried succeeded, and `2` when `VALLEY_NOW` is not a time. It exits
     `1` for invalid flags, when a read of `origin` failed, which stops the pass, and when anything
-    else went wrong.
+    else went wrong. A `failures.json` that cannot be read or does not parse is the exception: the
+    pass prints `valley: <state>/failures.json does not read, so everything it held is tried again`
+    on `stderr`, starts the record empty, and goes on.
 - **`valleyhook`** ([`valleyhook/main.go`](../valleyhook/main.go),
   [`valleyhook/shell.go`](../valleyhook/shell.go)):
   - `valleyhook pre-receive --project <name> --policy <json-file> [--grants <file>]... [--known-signers <file>]... [--principal <name>] [--then <hook-file>]`

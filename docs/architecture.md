@@ -832,9 +832,13 @@ verification schema (`nix/packages.nix`). It keeps no queue, lease or schedule, 
 to it. A host that turns the worker on runs a pass on a timer (see
 [The worker on the host](#the-worker-on-the-host)).
 
-A pass reads only the projects named with `--repo`. It reads each project as `valley pending --repo`
-does, so it can run from a clone of any project the host serves. For each project it follows
-approval's steps:
+A pass builds evidence only for the projects named with `--repo`. It reads each project as
+`valley pending --repo` does, so it can run from a clone of any project the host serves. To find a
+project other than its clone's own, it also reads `policy/valley` on `main` of `origin` to find the
+instance repository, then reads `refs/the-valley/projects` there. When that `main` holds
+`policy/instance` and no `policy/valley`, `origin` is itself the instance repository. To load a
+project's policy floor, it can fetch `main` of the owning valley that the project's `policy/valley`
+names. For each project it follows approval's steps:
 
 1. It lists the ready changes whose active version has not landed, and pins each one's active head.
 2. It derives the checks the head requires with the Go deriver, as `valley-go checks` does, over the
@@ -869,9 +873,11 @@ pushes that same object again.
 After a failure, the same thing waits before it is tried again. A batch that fails waits 15 minutes
 at first, and a push that fails waits one minute. Each failure in a row doubles the wait, up to 24
 hours. A wait is measured from when the attempt ended, so a long build does not use up its own wait.
-The waits are kept in `failures.json` in the worker's state directory, project by project. A batch
-is known by its tree and the checks it runs, so a new version runs at once. A push is known by the
-object it publishes, so changes whose heads hold the same tree wait together.
+The waits are kept in `failures.json` in the worker's state directory, project by project. A batch's
+key is its tree and the names of the checks it runs, the ones `origin` holds no evidence for. A new
+key escapes the previous key's wait. A batch with the same key keeps the earlier wait, whichever
+change it belongs to. A push is known by the object it publishes, so changes whose heads hold the
+same tree wait together.
 
 A pass forgets the waits it did not meet in a project, but only for a project it read whole: every
 ready change's checks derived and its evidence read. A pass over other projects, or one that could
@@ -884,7 +890,9 @@ it reads `origin` after the first has published, or finds the ref the batch stor
 
 A read of `origin` that fails stops the pass, because a read that did not happen must not read as no
 changes or no evidence. Anything else that goes wrong with one change is reported, and the pass goes
-on to the next. The pass exits 1 when anything went wrong.
+on to the next. The pass exits 1 when anything went wrong, with one exception. When `failures.json`
+cannot be read or does not parse, the pass prints a warning on `stderr`, starts the record empty,
+and goes on, and that alone does not make it exit 1.
 
 Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
 lands its evidence with the real integrator.
@@ -904,18 +912,24 @@ default, and no host turns it on (**deployment choice**). When enabled, the modu
   `worker.interval` (`1m` by default, plus up to 1 minute of systemd timer slack) after each pass
   finishes before starting the next.
 
-Two passes never overlap. systemd only starts the oneshot unit while it is inactive, and the
-worker's own `flock` on `<stateDir>/lock` serializes any pass run by hand.
+Two passes that use the same state directory never overlap. systemd only starts the oneshot unit
+while it is inactive, and the worker's own `flock` on `<stateDir>/lock` serializes any pass run by
+hand with `--state <stateDir>`. A pass run with a different state directory takes a different lock.
 
-The `valley-worker` user cannot read or write the repository directory (`services.valley.dataDir`,
-`/srv/git` by default) on disk because it is not in the repository group (`services.valley.group`,
-`git` by default) (`implemented`). Instead, the worker connects to the host's own `sshd` as the
-repository account (`services.valley.user`, `git` by default) over `localhost`, using its own SSH
-key. Every push from the worker goes through `valleyhook shell` and `valleyhook pre-receive` like
-any external client's push. The service runs in a git repository without a checkout at
-`<stateDir>/origin` whose `origin` remote points at the local instance repository
-(`git@localhost:<instanceProject>.git`). From there, `valley-worker` discovers each project in
-`worker.projects` through `refs/the-valley/projects`, just as `valley pending --repo` does.
+In the default configuration, the `valley-worker` user cannot read or write the repository directory
+(`services.valley.dataDir`, `/srv/git` by default) on disk. The module makes that directory `0750`,
+owned by `services.valley.user` and the repository group (`services.valley.group`, `git` by
+default). It gives the worker its own primary group, `valley-worker` (`implemented`). This keeps the
+worker out only while it is not a member of the repository group, as its primary group or as a
+supplementary one. The module does not stop a host's configuration from adding that membership
+(**deployment choice**). Instead of reading the directory, the worker connects to the host's own
+`sshd` as the repository account (`services.valley.user`, `git` by default) over `localhost`, using
+its own SSH key. Every push from the worker goes through `valleyhook shell` and
+`valleyhook pre-receive` like any external client's push. The service runs in a git repository
+without a checkout at `<stateDir>/origin` whose `origin` remote points at the local instance
+repository (`<user>@localhost:<instanceProject>.git`, where `<user>` is `services.valley.user`).
+From there, `valley-worker` discovers each project in `worker.projects` through
+`refs/the-valley/projects`, just as `valley pending --repo` does.
 
 The service pins the worker's SSH connections to the local host. It writes the host's own SSH host
 keys to `<stateDir>/known_hosts` under `localhost` and passes `HostKeyAlias=localhost` and

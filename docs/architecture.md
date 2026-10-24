@@ -1076,11 +1076,11 @@ reads (`nix/checks.nix`, `nix/packages.nix`). An edit to any other file leaves a
 and inputs digest unchanged, so its evidence transfers. Building a package does not run tests. Each
 Go module's unit tests run in its `*-unit` check, which builds the package again with its test files
 and the files they read. Editing a test therefore changes only that `*-unit` check. Four checks test
-what the NixOS host module renders without running the flake's programs: `module-eval`,
-`mirror-e2e`, `bus-e2e`, and `init-e2e`. Those checks render the module with stand-in scripts for
-the integrator, the identity compiler, and `valleyhook` (`nix/checks/hosts.nix`), so editing one of
-those programs leaves the four checks unchanged. `nix/tools/drv-churn.sh` measures which checks a
-representative edit changes.
+what the NixOS host module renders without running the integrator, the identity compiler, or
+valleyhook: `module-eval`, `mirror-e2e`, `bus-e2e`, and `init-e2e`. Those checks render the module
+with stand-in scripts for the integrator, the identity compiler, and `valleyhook`
+(`nix/checks/hosts.nix`), so editing one of those programs leaves the four checks unchanged.
+`nix/tools/drv-churn.sh` measures which checks a representative edit changes.
 
 A signer can be restricted to projects. This is how a check worker's key can sit in the
 known-signers file that every controller on a host shares, while its evidence counts only in the

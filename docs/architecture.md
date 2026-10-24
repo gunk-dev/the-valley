@@ -192,42 +192,45 @@ because it lands code there. Checked by `module-eval`, `signers-e2e` and `publis
 
 ### The build slice
 
-The build slice caps every build this host's nix daemon runs, for every user of the daemon,
-together. A host turns it on with `services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is
-off by default, and no host turns it on (**deployment choice**). It is how a host keeps a build from
-wedging the services beside it (knot oc-03b6f8c), and the check worker requires it.
+The build slice caps the total CPU and memory that all Nix daemon builds on a host can use at once.
+It keeps a runaway build from starving the host's other services (knot oc-03b6f8c). A host turns it
+on with `services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is off by default, and no
+host turns it on (**deployment choice**). The check worker cannot be enabled without it
+(`implemented`).
 
-Turned on, the module puts `nix-daemon.service` in `valley-builds.slice` (`implemented`). The slice
-has `CPUQuota` set to `buildSlice.cpuQuota`, 400% by default, `MemoryMax` set to
-`buildSlice.memoryMax`, 8G by default, and `MemorySwapMax=0`. The daemon runs each build as a child
-of itself, in its own cgroup, whoever asked for the build. So everything in the slice shares the
-caps: every user's builds, the daemon itself, and the check worker's evaluation when it runs. The
-operator's own builds through the daemon, such as a local `valley approve`, are among them.
+Every user who builds through the Nix daemon shares one pool of CPU and memory. That pool covers the
+check worker's builds and evaluation, the daemon itself, and any local build an operator runs on the
+host, such as `valley approve`. The Nix daemon runs every build as its own child process inside the
+daemon's cgroup, no matter which user asked for the build. To cap those builds, the module places
+`nix-daemon.service` in `valley-builds.slice` (`implemented`). By default, the slice sets `CPUQuota`
+to `400%` (`buildSlice.cpuQuota`, four CPUs' worth), `MemoryMax` to `8G` (`buildSlice.memoryMax`),
+and `MemorySwapMax=0` (no swap).
 
-When the slice reaches its memory cap, the kernel's OOM killer kills one process in it: the one
-using the most memory. That is usually the build that went past the cap. It can also be another
-build in the slice, if that build holds more at that moment. The rest of the host goes on as it was.
-systemd keeps the daemon's unit running when one of its processes is killed, because the unit
-delegates its cgroup, which makes its OOM policy `continue`. Nothing exempts the daemon's own
-processes from being the one chosen.
+When the slice hits its memory cap, the kernel's OOM killer kills the single process in the slice
+using the most memory. That is usually the build that pushed the slice over the cap, but it can be
+an unrelated build in the slice that happens to hold more memory at that moment. Nothing exempts the
+daemon's own processes from being chosen. When a child build is killed, `nix-daemon.service` stays
+up because its unit delegates its cgroup, which sets systemd's `OOMPolicy` to `continue`. Services
+outside the slice are unaffected.
 
-Checked by `worker-e2e`. A build that wants six CPUs gets four. The check then sets the memory cap
-at runtime, below what an unrelated build holds, and the worker builds a check that eats memory
-without end. The kernel kills the unrelated build first, as the bigger, and then the worker's build.
-A smaller unrelated build finishes. sshd, the daemon and the controllers stay up, and no other unit
-fails. `module-eval` holds the slice to the values a host names.
+Checked by `worker-e2e` and `module-eval`. In `worker-e2e`, a build that tries to use six CPUs is
+throttled to four. The test then runs two unrelated builds alongside a worker check that allocates
+memory without bound, and lowers the slice's memory cap at runtime below what the larger unrelated
+build holds. The kernel kills the larger unrelated build first, then kills the worker's runaway
+build, while the smaller unrelated build finishes. `sshd`, `nix-daemon`, and the integrator
+controllers stay up, and no other unit fails. `module-eval` checks that the slice renders the quota
+and memory cap the host configures.
 
-The slice leaves these uncovered:
+The slice does not cap:
 
-- A nix command that does not go through the daemon, such as one that root runs on the store
-  directly, is outside the slice and uncapped.
-- A build's disk use, its scratch directory and the store's growth are not capped, and neither is
-  disk I/O.
-- The caps contain resource use, not exploits. The evaluator, the daemon, the kernel and KVM are
-  shared with the host.
-- The slice sets no device policy, so a build that needs KVM, as a NixOS test does, still gets
-  `/dev/kvm` from the daemon. A NixOS test's machines have to fit in the memory cap, beside
-  everything else in the slice.
+- Nix commands that bypass the daemon, such as a build `root` runs directly on the store, which run
+  outside the slice and are uncapped.
+- Disk space, scratch directories, `/nix/store` growth, or disk I/O.
+- Exploits against shared host components. The slice limits CPU and memory use only; builds still
+  share the Nix evaluator, the daemon, the kernel, and `/dev/kvm` with the host.
+- Device access. The slice sets no device policy, so the daemon can still hand `/dev/kvm` to NixOS
+  VM tests, whose virtual machines must fit within the slice's memory cap alongside everything else
+  in the slice.
 
 ## What a push may write
 
@@ -887,52 +890,62 @@ lands its evidence with the real integrator.
 
 ### The worker on the host
 
-The host module runs the worker when `services.valley.worker.enable` is set (`nix/valley-host.nix`).
-It is off by default, and no host turns it on (**deployment choice**). Turned on, the module renders
-four things:
+`services.valley.worker.enable` runs `valley-worker` on a timer so ready changes have their Nix
+checks built and signed before an operator approves them (`nix/valley-host.nix`). It is off by
+default, and no host turns it on (**deployment choice**). When enabled, the module creates
+(`implemented`):
 
-- `valley-worker.service`, a oneshot that runs one pass of `valley-worker` over the projects in
-  `worker.projects`, as the `valley-worker` user;
-- `valley-worker.timer`, which starts the service 1 minute after boot, and then `worker.interval` (1
-  minute by default) after each pass ends, to which systemd's default timer accuracy can add up to a
-  minute;
-- `valley-builds.slice`, the slice the caps below are set on;
-- the `valley-worker` account, in a group of its own.
+- the `valley-worker` system user and group, with a `0700` state directory at `worker.stateDir`
+  (`/var/lib/valley-worker` by default);
+- `valley-worker.service`, a oneshot unit that runs one pass of `valley-worker` over
+  `worker.projects` as `valley-worker`, inside `valley-builds.slice`;
+- `valley-worker.timer`, which starts `valley-worker.service` 1 minute after boot and waits
+  `worker.interval` (`1m` by default, plus up to 1 minute of systemd timer slack) after each pass
+  finishes before starting the next.
 
-Two passes never overlap. systemd starts the oneshot only while it is inactive, and the worker's
-lock serializes a pass started by hand.
+Two passes never overlap. systemd only starts the oneshot unit while it is inactive, and the
+worker's own `flock` on `<stateDir>/lock` serializes any pass run by hand.
 
-The account is not in the git group, so the worker can neither read nor write the repositories on
-disk. It reaches them as an ssh client of the same host: it logs in as the git user at `localhost`
-with its own key. So its pushes pass the git user's shell and the pre-receive hook, as any other
-key's do. The service runs the pass in a repository of its own, `<stateDir>/origin`, whose `origin`
-is the instance repository. The worker finds its projects through the project list there, as
-`valley pending --repo` does. Its ssh checks every host it connects to against this host's own ssh
-host keys. A project's `policy/valley` can name this host by another name, such as
-`git@classic-laddie:qinling.git`, and still reach it. An ssh connection to any other host fails the
-check. This confines the worker's ssh, not its network. The worker fetches a floor from whatever
-repository `policy/valley` names, and it lets git use ssh, git, https and file URLs
-(`status/list.go`). A git or https URL reaches another host without ssh. The module cannot narrow
-this, because the worker sets the protocols git may use itself. nix, too, fetches a candidate's
-flake inputs from wherever its lock file names.
+The `valley-worker` user cannot read or write `/srv/git` on disk because it is not in the `git`
+group (`implemented`). Instead, the worker connects to the host's own `sshd` as the `git` user over
+`localhost`, using its own SSH key. Every push from the worker goes through `valleyhook shell` and
+`valleyhook pre-receive` like any external client's push. The service runs in an empty git
+repository at `<stateDir>/origin` whose `origin` remote points at the local instance repository
+(`git@localhost:<instanceProject>.git`). From there, `valley-worker` discovers each project in
+`worker.projects` through `refs/the-valley/projects`, just as `valley pending --repo` does.
 
-The service makes the worker's key the first time it starts. The key is an ed25519 key at
-`<stateDir>/key`, mode 0400 and owned by `valley-worker`, in a state directory of mode 0700. It is
-made under a temporary name that is renamed into place, so a start killed half way leaves no key. In
-normal operation the private half stays on the host: the service never copies or prints it, and it
-is in no repository and no Nix store path. That describes what the service does. It is no defence
-against a compromised worker: anything that runs as `valley-worker`, such as a pass's own git or
-nix, can read the key. The worker owns its directory, so it can also replace the key and `key.pub`,
-and the journal lines print `key.pub` as the service finds it. The one key signs the worker's notes
-under `worker.signerName`, and it authenticates the worker's ssh sessions. Beside it the service
-writes the two public halves: `key.pub`, the ssh public key, and `verifier`, the key's verifier line
-under the signing name. It prints both to the service's journal whenever the verifier line changes.
-Checked by `worker-e2e`.
+The service pins the worker's SSH connections to the local host. It writes the host's own SSH host
+keys to `<stateDir>/known_hosts` under `localhost` and passes `HostKeyAlias=localhost` and
+`StrictHostKeyChecking=yes` in `GIT_SSH_COMMAND`. If a project's `policy/valley` names this host by
+its public hostname, such as `git@classic-laddie:qinling.git`, SSH still verifies it against the
+local host key. Any SSH connection to a different machine fails host-key verification. This host-key
+pin restricts SSH connections only; it does not cut the worker off from the network. When the worker
+fetches an instance floor named in `policy/valley`, `valley-go` sets
+`GIT_ALLOW_PROTOCOL=ssh:git:https:file` in its own child environment (`status/list.go`), so the host
+module cannot narrow that list, and `git://` and `https://` URLs still reach other hosts without
+using SSH. Similarly, when Nix builds a check, it can fetch flake inputs over the network from the
+URLs in `flake.lock`.
 
-The operator enrolls the key once (**deployment choice**). Until then, every pass stops at its first
-read of `origin`, because sshd does not know the key.
+The worker uses one Ed25519 key to sign check attestations under `worker.signerName` and to
+authenticate its SSH connections (`implemented`). On its first start, `valley-worker.service`
+generates `<stateDir>/key` (mode `0400`, owned by `valley-worker` inside the `0700` state
+directory). It writes the key to `<stateDir>/key.new` first and renames `key.new.pub` and `key.new`
+into place, so an interrupted start never leaves a half-written key. Alongside `<stateDir>/key`, the
+service writes `<stateDir>/key.pub` (the OpenSSH public key) and `<stateDir>/verifier` (the
+`known-signers` line for `worker.signerName`). Whenever `<stateDir>/verifier` is created or changes,
+the service prints both public lines to the systemd journal. The service never prints or copies the
+private key, and the key never enters a git repository or the Nix store. Other unprivileged users on
+the host (`git`, `valley-integrator`, `nobody`) cannot read `<stateDir>`. However, any process
+running as `valley-worker` — including the `git` and `nix` commands a pass invokes — can read
+`<stateDir>/key`, and can replace `key` or `key.pub` in `<stateDir>` (which the journal prints as it
+finds on disk). Checked by `worker-e2e`.
 
-1. Turn the build slice and the worker on, with the restriction the module requires, and apply the
+A newly generated key has no access until the operator enrolls it (**deployment choice**). Until
+then, `sshd` rejects the worker's connection and each pass stops at its first read of `origin`
+(`implemented`).
+
+1. Enable the build slice and the worker on the host, restrict `worker.signerName` in
+   `integrator.signerProjects` to the exact list in `worker.projects`, and deploy the host
    configuration:
 
    ```nix
@@ -945,17 +958,16 @@ read of `origin`, because sshd does not know the key.
    services.valley.integrator.signerProjects."laddie-worker/attestations" = [ "the-valley" ];
    ```
 
-2. Read the public halves after the service has started once:
+2. After `valley-worker.service` has run once, read the worker's public key and verifier line:
 
    ```sh
    journalctl -u valley-worker -g "the worker's"
    sudo cat /var/lib/valley-worker/key.pub /var/lib/valley-worker/verifier
    ```
 
-3. Add the key to the identity registry as a principal of its own, and land the change. The key's
-   `signs` is the signing name, and the principal holds a grant at the instance's `git-push`
-   boundary. The compiler then puts the key in the known-signers file and in the git user's
-   authorized keys:
+3. Enroll the key in the identity registry as its own `machine` principal with `signs` set to
+   `worker.signerName` and a `git-push` grant, then land that change. On the next compilation,
+   `valley-identity` adds the key to `known-signers` and to the `git` user's `authorized_keys`:
 
    ```cue
    "laddie-worker": {
@@ -971,53 +983,66 @@ read of `origin`, because sshd does not know the key.
    }
    ```
 
-   A host that does not compile the registry adds `key.pub` to `services.valley.authorizedKeys` as a
-   plain string, and the `verifier` line to the file `integrator.knownSignersFile` names.
+   On a host that does not use `services.valley.identity`, add `key.pub` to
+   `services.valley.authorizedKeys` as an untagged string and add the `verifier` line to the file at
+   `integrator.knownSignersFile`.
 
-4. List the projects. `worker.projects` names the projects the worker builds for, and
-   `integrator.signerProjects` restricts its signer to exactly those. Every other host whose
-   integrator shares the registry lists the worker's signer in its own `signerProjects` too, or its
-   controllers count the worker's evidence in every project.
+4. If other hosts share the same identity registry, add `worker.signerName` to
+   `services.valley.integrator.signerProjects` on those hosts as well. Without an entry in
+   `signerProjects`, a controller accepts a known signer's evidence in every project it serves.
 
-The module refuses a host whose `signerProjects` does not list the worker's signer with exactly the
-worker's projects. It also refuses a worker without the build slice, without the integrator on the
-same host, without `integrator.instanceProject`, for a project the host does not serve, or under the
-name the controllers sign under. Checked by `module-eval`.
+At NixOS evaluation time, `services.valley.worker` refuses to build unless all of the following hold
+(`implemented`; checked by `module-eval`):
 
-The worker holds an ordinary git-push grant in this pilot, which runs it on laddie alone
-(**deployment choice**). The grant authorizes the worker's key for the git user, on every repository
-the host serves, as it does any principal's key. A registry entry tags the key with its principal.
-The hook then lets the worker push what it lets any named principal push:
+- `services.valley.buildSlice.enable` is `true`.
+- `services.valley.integrator.enable` is `true` and `services.valley.integrator.instanceProject` is
+  set.
+- `worker.projects` is non-empty and names only repositories this host serves.
+- `worker.signerName` differs from the integrator's signing name.
+- `integrator.signerProjects.<signerName>` lists the exact projects in `worker.projects`.
 
-- attestation refs, which are all the worker needs;
-- topic branches, which it may create, move and delete;
-- change records that name it;
-- commits to the plan graph.
+Once enrolled in the identity registry with a `git-push` grant (**deployment choice** for the
+single-host pilot on `classic-laddie`), the worker's key authenticates as a named principal
+(`VALLEY_PRINCIPAL=laddie-worker`) on every repository the host serves. `valleyhook pre-receive`
+allows a named principal without `approve` or `restack` grants to push (`implemented`):
 
-It may write no protected ref, and it may not file a request. `integrator.signerProjects` limits the
-projects that count the worker's evidence. It does not limit these pushes. A key in `authorizedKeys`
-with no tag has no principal: it may push topic branches and attestation refs, and nothing else.
-Before a worker runs anywhere else, it needs a permission to publish evidence and nothing else,
-which knot oc-6da5273 tracks.
+- attestation refs (`refs/the-valley/attestations/<tree>/<key-hash>`), which are all the worker
+  writes in normal operation;
+- topic branches (`refs/heads/*`), which it can create, update, or delete;
+- change records (`refs/the-valley/changes/main/<change-id>`) that name it as the owner;
+- new commits on the plan graph (`refs/the-valley/knots`).
 
-The worker builds under the host's build slice (see [The build slice](#the-build-slice)), and the
-module refuses a worker on a host that has not turned the slice on. The operator's caps for the
-worker are one build at a time, 4 CPUs and 8 GiB of memory (**deployment choice**). The slice's
-defaults supply the CPUs and the memory, and the worker's service supplies the rest (`implemented`):
+The hook stops the worker from pushing to protected branches (`main`), filing integration requests,
+or updating another principal's change records (`implemented`). `integrator.signerProjects`
+restricts which projects count the worker's signed notes; it does not restrict which repositories
+the key can push to. An untagged key in `services.valley.authorizedKeys` has no principal name
+(`VALLEY_PRINCIPAL=""`), so the hook allows it to push only attestation refs and topic branches.
+Narrowing a registry key to attestation pushes alone is tracked in knot oc-6da5273.
 
-- The service runs in the slice, so the worker's evaluation shares the slice's caps with the builds.
-- The worker's nix commands run with `max-jobs = 1` and `cores = 4`. The daemon applies both to each
-  connection, including one from a user it does not trust. So each `nix build` the worker starts
-  builds one derivation at a time, and tells the builder it may use 4 cores, as `NIX_BUILD_CORES`.
-  `cores` is only a hint to the builder. The slice's quota is what holds a build to its CPUs.
-- `attest` runs one `nix build` per CPU it may run on. The service runs on one CPU
-  (`CPUAffinity=0`), so the worker's builds run one at a time.
-- The worker's nix commands use no remote builder and no flake's `nixConfig`.
+The worker's builds are capped at one check build at a time, 4 CPUs, and 8 GiB of memory
+(**deployment choice**). `valley-builds.slice` enforces the 4-CPU and 8-GiB limits across the Nix
+daemon and the worker (see [The build slice](#the-build-slice)), and `valley-worker.service`
+configures how the worker invokes Nix (`implemented`):
 
-A build has no time limit, so a build that never ends holds the worker until the operator stops it.
+- `valley-worker.service` runs inside `valley-builds.slice`, so the worker's own flake evaluation
+  shares the slice's CPU and memory caps with the daemon's builds.
+- `attest run` starts one `nix build` process per CPU available to it (`runtime.NumCPU()`).
+  `valley-worker.service` pins the worker to a single CPU (`CPUAffinity=0`), so `attest` runs one
+  check build at a time.
+- `NIX_CONFIG` sets `max-jobs = 1` and `cores = 4`. The Nix daemon applies both settings per client
+  connection, including connections from untrusted users. Each `nix build` therefore builds one
+  derivation at a time and passes `NIX_BUILD_CORES=4` to the builder. `NIX_BUILD_CORES` is only a
+  hint; the slice's `CPUQuota` is what enforces the CPU cap.
+- `NIX_CONFIG` sets `builders =` and `accept-flake-config = false`, so the worker never delegates
+  builds to remote machines and ignores `nixConfig` blocks in candidate flakes.
 
-Checked by `worker-e2e`, on a machine with six CPUs. It builds a ready change's two checks and sees
-one build at a time, each in the slice. `module-eval` holds the values the module renders.
+Individual builds have no timeout. A check build that hangs holds the worker lock and blocks further
+passes until an operator stops `valley-worker.service`.
+
+Checked by `worker-e2e` and `module-eval`. On a six-CPU VM, `worker-e2e` runs the worker against a
+ready change with two required Nix checks and verifies that they build one at a time inside
+`valley-builds.slice` with `NIX_BUILD_CORES=4`. `module-eval` checks the rendered systemd units and
+`NIX_CONFIG`.
 
 ## Policy
 

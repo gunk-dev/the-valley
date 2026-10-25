@@ -13,16 +13,16 @@ boundaries: {
 	"registry": kind: "registry"
 }
 
-genesis: "patrick"
+genesis: "operator"
 
 principals: {
-	"patrick": {
+	"operator": {
 		kind: "human"
 		keys: [{
 			class:  "ssh-ed25519"
 			bound:  "host"
-			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip"
-			signs:  "patrick"
+			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMsWYyDSCNBwb6MnvQ7sfu++kZold+0HuP5leY4IiKnV"
+			signs:  "operator"
 		}]
 		grants: {
 			push: boundary:   "push"
@@ -30,13 +30,13 @@ principals: {
 		}
 	}
 
-	"stoned-flynn": {
+	"agent-vm": {
 		kind: "machine"
 		keys: [{
 			class:  "ssh-ed25519"
 			bound:  "host"
-			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"
-			signs:  "stoned-flynn/attestations"
+			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0AEJMcSrXCOYKlyVrdVWG07RF2SIM/8gaI/8oDEMRI"
+			signs:  "agent-vm/attestations"
 		}]
 		grants: {
 			push: boundary:    "push"

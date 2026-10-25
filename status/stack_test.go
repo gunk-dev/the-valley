@@ -37,7 +37,7 @@ func TestStackListsLayersBottomFirst(t *testing.T) {
 	}
 	git("config", "user.name", "stack-test")
 	git("config", "user.email", "stack-test@localhost")
-	git("config", "valley.principal", "klaus-env")
+	git("config", "valley.principal", "alice")
 	git("checkout", "--quiet", "-b", "main")
 	git("commit", "--quiet", "--allow-empty", "-m", "base")
 	git("push", "--quiet", "origin", "main")

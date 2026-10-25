@@ -61,17 +61,17 @@ func TestAGraphCheckedPastTheDeadlineIsRefused(t *testing.T) {
 	ty, _ := knot.TypeNamed("idea")
 	slug := knot.Slug("Checked late")
 	k := &knot.Knot{Type: ty.Name, ID: knot.DeriveID(ty, slug), Slug: slug, Status: ty.Initial(),
-		Title: "Checked late", Created: "2026-10-15", CreatedBy: "patrick"}
+		Title: "Checked late", Created: "2026-10-15", CreatedBy: "operator"}
 	ideas := r.git(fmt.Sprintf("100644 blob %s\t%s\n", r.blob(string(knot.Render(k))), path.Base(k.Path())), "mktree")
 	root := r.git(fmt.Sprintf("040000 tree %s\t%s\n", ideas, ty.Directory), "mktree")
-	commit := r.git(fmt.Sprintf("tree %s\nauthor patrick <p@localhost> 1700000000 +0000\ncommitter patrick <p@localhost> 1700000000 +0000\n\n%s",
+	commit := r.git(fmt.Sprintf("tree %s\nauthor operator <p@localhost> 1700000000 +0000\ncommitter operator <p@localhost> 1700000000 +0000\n\n%s",
 		root, knot.Message("knot new", "0123456789abcdef")), "hash-object", "-t", "commit", "-w", "--stdin")
 	u := update{old: zeroID, new: commit, ref: knot.Ref}
 
-	if _, why := (policy{repo: lateRepository{deadline: knot.HookDeadline}}).checkGraph("patrick", u); why != "" {
+	if _, why := (policy{repo: lateRepository{deadline: knot.HookDeadline}}).checkGraph("operator", u); why != "" {
 		t.Fatalf("the push read in time: %s", why)
 	}
-	_, why := (policy{repo: lateRepository{deadline: 500 * time.Millisecond, wait: 600 * time.Millisecond}}).checkGraph("patrick", u)
+	_, why := (policy{repo: lateRepository{deadline: 500 * time.Millisecond, wait: 600 * time.Millisecond}}).checkGraph("operator", u)
 	if want := "the hook could not finish checking it within the 500ms it spends on the plan graph"; why != want {
 		t.Errorf("the push read late: %q, want %q", why, want)
 	}

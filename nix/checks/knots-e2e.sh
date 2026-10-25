@@ -66,47 +66,47 @@ git remote add origin "$w/guarded.git"
 git remote add open "$w/open.git"
 
 # ----------------------------------------------------------------------
-# The real CLI, as each principal: patrick creates the graph, klaus-env
+# The real CLI, as each principal: operator creates the graph, alice
 # adds to it. The hook admits every write.
-git config valley.principal patrick
-as patrick valley knot new outcome "Slice one lands" > "$w/out" 2> "$w/err" || fail "patrick could not create the graph"
+git config valley.principal operator
+as operator valley knot new outcome "Slice one lands" > "$w/out" 2> "$w/err" || fail "operator could not create the graph"
 milestone="oc-$(printf '%s' slice-one-lands | sha256sum | cut -c1-7)"
 created="$(tip guarded)"
 [ -n "$created" ] || fail "the create did not land"
-as patrick valley knot new bug "The hook reads too much" --parent "$milestone" > "$w/out" 2> "$w/err" \
-  || fail "patrick could not update the graph"
+as operator valley knot new bug "The hook reads too much" --parent "$milestone" > "$w/out" 2> "$w/err" \
+  || fail "operator could not update the graph"
 bug="bd-$(printf '%s' the-hook-reads-too-much | sha256sum | cut -c1-7)"
-as patrick valley knot comment "$bug" -m "Seen on a large graph." > "$w/out" 2> "$w/err" || fail "patrick could not comment"
-git config valley.principal klaus-env
-as klaus-env valley knot new outcome "Write the hook case" --parent "$milestone" --blocked-by "$bug" \
-  > "$w/out" 2> "$w/err" || fail "klaus-env could not add a knot"
+as operator valley knot comment "$bug" -m "Seen on a large graph." > "$w/out" 2> "$w/err" || fail "operator could not comment"
+git config valley.principal alice
+as alice valley knot new outcome "Write the hook case" --parent "$milestone" --blocked-by "$bug" \
+  > "$w/out" 2> "$w/err" || fail "alice could not add a knot"
 work="oc-$(printf '%s' write-the-hook-case | sha256sum | cut -c1-7)"
-as klaus-env valley knot claim "$work" --run 20261015-0058-feb0a926 > "$w/out" 2> "$w/err" || fail "klaus-env could not claim"
-as klaus-env valley knot set "$bug" status=closed > "$w/out" 2> "$w/err" || fail "klaus-env could not change patrick's knot"
-as klaus-env valley knot comment "$work" -m "Claimed." > "$w/out" 2> "$w/err" || fail "klaus-env could not comment"
+as alice valley knot claim "$work" --run 20261015-0058-feb0a926 > "$w/out" 2> "$w/err" || fail "alice could not claim"
+as alice valley knot set "$bug" status=closed > "$w/out" 2> "$w/err" || fail "alice could not change operator's knot"
+as alice valley knot comment "$work" -m "Claimed." > "$w/out" 2> "$w/err" || fail "alice could not comment"
 # A question waits on its owner, and links the change that records its
 # answer in the source.
-as klaus-env valley knot new question "Where does the graph live" --owner patrick > "$w/out" 2> "$w/err" \
-  || fail "klaus-env could not add a question"
+as alice valley knot new question "Where does the graph live" --owner operator > "$w/out" 2> "$w/err" \
+  || fail "alice could not add a question"
 question="qn-$(printf '%s' where-does-the-graph-live | sha256sum | cut -c1-7)"
-as klaus-env valley knot set "$question" status=answered > "$w/out" 2> "$w/err" || fail "klaus-env could not answer the question"
-as klaus-env valley knot link "$question" --change valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr > "$w/out" 2> "$w/err" \
-  || fail "klaus-env could not link a change to a question"
+as alice valley knot set "$question" status=answered > "$w/out" 2> "$w/err" || fail "alice could not answer the question"
+as alice valley knot link "$question" --change valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr > "$w/out" 2> "$w/err" \
+  || fail "alice could not link a change to a question"
 git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:questions/$question-where-does-the-graph-live.md" > "$w/question"
 grep -qx 'status: answered' "$w/question" || fail "the question's answer did not land"
-grep -qx 'owner: "patrick"' "$w/question" || fail "the question's owner did not land"
+grep -qx 'owner: "operator"' "$w/question" || fail "the question's owner did not land"
 grep -qx 'changes: \["valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"\]' "$w/question" || fail "the question's change did not land"
-[ "$(git -C "$w/guarded.git" log --format=%cn refs/the-valley/knots | sort -u | tr '\n' ' ')" = "klaus-env patrick " ] \
+[ "$(git -C "$w/guarded.git" log --format=%cn refs/the-valley/knots | sort -u | tr '\n' ' ')" = "alice operator " ] \
   || fail "the graph's commits are not both principals'"
 
 # The CLI, written as a principal its key does not push as, is refused by
 # the hook, and says what the hook said. A refusal is the hook's answer,
 # not a race, so the CLI pushes once and does not try again.
-git config valley.principal patrick
+git config valley.principal operator
 : > "$w/guarded.runs"
-as klaus-env valley knot comment "$bug" -m "Forged." > "$w/out" 2> "$w/err" && fail "a write by a principal other than the pusher landed"
+as alice valley knot comment "$bug" -m "Forged." > "$w/out" 2> "$w/err" && fail "a write by a principal other than the pusher landed"
 grep -q 'origin refused the write' "$w/err" || fail "the CLI did not report the hook's refusal"
-grep -q 'patrick as its committer, and klaus-env is pushing it' "$w/err" || fail "the refusal does not name the committer"
+grep -q 'operator as its committer, and alice is pushing it' "$w/err" || fail "the refusal does not name the committer"
 [ "$(wc -l < "$w/guarded.runs")" -eq 1 ] || fail "a refused write ran the hook $(wc -l < "$w/guarded.runs") times, not once"
 
 # ----------------------------------------------------------------------
@@ -169,7 +169,7 @@ idea_path() { echo "ideas/ida-$(printf '%s' "$1" | sha256sum | cut -c1-7)-$1.md"
 
 # A well-formed next commit is admitted, so every refusal below is the
 # hook's answer to the one thing each breaks.
-next="$(craft "$good" patrick - "+$(idea_path a-crafted-idea)=$(idea "A crafted idea" a-crafted-idea patrick)")"
+next="$(craft "$good" operator - "+$(idea_path a-crafted-idea)=$(idea "A crafted idea" a-crafted-idea operator)")"
 cp /dev/null "$w/err"
 
 # Who: an untagged key is no principal.
@@ -177,75 +177,75 @@ refused "an untagged key's write" 'untagged key.*named principal' anonymous orig
 
 # Shape: one commit whose only parent is the old tip.
 older="$(git rev-parse "$good~1")"
-rewind="$(craft "$older" patrick - "+$(idea_path rewound)=$(idea Rewound rewound patrick)")"
-refused "a non-fast-forward update" 'only parent is the tip it replaces' patrick --force origin "$(push_graph "$rewind")"
-side="$(craft "$older" patrick - "+$(idea_path side)=$(idea Side side patrick)")"
-merge="$(GIT_COMMITTER_NAME=patrick git commit-tree "$next^{tree}" -p "$good" -p "$side" -m "$(printf 'merge\n\nValley-Op: 0123456789abcdef')")"
-refused "a merge" 'only parent is the tip it replaces' patrick origin "$(push_graph "$merge")"
-two="$(craft "$next" patrick - "+$(idea_path second)=$(idea Second second patrick)")"
-refused "two commits at once" 'only parent is the tip it replaces' patrick origin "$(push_graph "$two")"
+rewind="$(craft "$older" operator - "+$(idea_path rewound)=$(idea Rewound rewound operator)")"
+refused "a non-fast-forward update" 'only parent is the tip it replaces' operator --force origin "$(push_graph "$rewind")"
+side="$(craft "$older" operator - "+$(idea_path side)=$(idea Side side operator)")"
+merge="$(GIT_COMMITTER_NAME=operator git commit-tree "$next^{tree}" -p "$good" -p "$side" -m "$(printf 'merge\n\nValley-Op: 0123456789abcdef')")"
+refused "a merge" 'only parent is the tip it replaces' operator origin "$(push_graph "$merge")"
+two="$(craft "$next" operator - "+$(idea_path second)=$(idea Second second operator)")"
+refused "two commits at once" 'only parent is the tip it replaces' operator origin "$(push_graph "$two")"
 git commit --quiet --allow-empty -m unrelated
-stranger="$(craft "$(git rev-parse HEAD)" patrick - "+$(idea_path stranger)=$(idea Stranger stranger patrick)")"
-refused "a parent that is not the old tip" 'only parent is the tip it replaces' patrick --force origin "$(push_graph "$stranger")"
+stranger="$(craft "$(git rev-parse HEAD)" operator - "+$(idea_path stranger)=$(idea Stranger stranger operator)")"
+refused "a parent that is not the old tip" 'only parent is the tip it replaces' operator --force origin "$(push_graph "$stranger")"
 tagged="$(printf 'object %s\ntype commit\ntag t\ntagger t <t> 0 +0000\n\nt\n' "$next" | git mktag)"
-refused "a tag object as the tip" 'points at a tag' patrick origin "$tagged:refs/the-valley/knots"
+refused "a tag object as the tip" 'points at a tag' operator origin "$tagged:refs/the-valley/knots"
 
 # Every commit: committed by the pusher, and carrying its operation.
-forged="$(craft "$good" klaus-env - "+$(idea_path forged)=$(idea Forged forged klaus-env)")"
-refused "a commit by another committer" 'names klaus-env as its committer, and patrick is pushing it' patrick origin "$(push_graph "$forged")"
-untrailed="$(craft "$good" patrick "no trailer" "+$(idea_path untrailed)=$(idea Untrailed untrailed patrick)")"
-refused "a commit without its trailer" 'Valley-Op' patrick origin "$(push_graph "$untrailed")"
+forged="$(craft "$good" alice - "+$(idea_path forged)=$(idea Forged forged alice)")"
+refused "a commit by another committer" 'names alice as its committer, and operator is pushing it' operator origin "$(push_graph "$forged")"
+untrailed="$(craft "$good" operator "no trailer" "+$(idea_path untrailed)=$(idea Untrailed untrailed operator)")"
+refused "a commit without its trailer" 'Valley-Op' operator origin "$(push_graph "$untrailed")"
 
 # Transitions: comments stay, knots stay, and what never changes does not.
-refused "a deleted comment" 'a comment is never deleted' patrick origin "$(push_graph "$(craft "$good" patrick - "-$comment_path")")"
-refused "a changed comment" 'stays exactly as it was written' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$comment_path=$(comment patrick 'Rewritten.')")")"
-refused "a deleted knot" 'a knot is never deleted' patrick origin "$(push_graph "$(craft "$good" patrick - "-$bug_path")")"
-refused "a changed id" 'filename says id' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$bug_path=${bug_text/id: $bug/id: bd-0000000}")")"
-refused "a changed type" "id is \"$bug\", and an outcome's id is oc-" patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$bug_path=${bug_text/type: bug/type: outcome}")")"
-refused "a changed created_by" 'changes created_by from "patrick" to "klaus-env"' klaus-env origin \
-  "$(push_graph "$(craft "$good" klaus-env - "+$bug_path=${bug_text/created_by: \"patrick\"/created_by: \"klaus-env\"}")")"
+refused "a deleted comment" 'a comment is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$comment_path")")"
+refused "a changed comment" 'stays exactly as it was written' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(comment operator 'Rewritten.')")")"
+refused "a deleted knot" 'a knot is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$bug_path")")"
+refused "a changed id" 'filename says id' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$bug_path=${bug_text/id: $bug/id: bd-0000000}")")"
+refused "a changed type" "id is \"$bug\", and an outcome's id is oc-" operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$bug_path=${bug_text/type: bug/type: outcome}")")"
+refused "a changed created_by" 'changes created_by from "operator" to "alice"' alice origin \
+  "$(push_graph "$(craft "$good" alice - "+$bug_path=${bug_text/created_by: \"operator\"/created_by: \"alice\"}")")"
 
 # Provenance: a new comment's author and a new knot's creator are the
 # pusher.
-refused "a comment with a forged author" 'names klaus-env as its author, and patrick is pushing it' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+comments/$bug/$stamp-0123456789abcdef.md=$(comment klaus-env 'Not mine.')")")"
-refused "a knot with a forged creator" 'names klaus-env in created_by, and patrick is pushing it' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$(idea_path forged)=$(idea Forged forged klaus-env)")")"
+refused "a comment with a forged author" 'names alice as its author, and operator is pushing it' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+comments/$bug/$stamp-0123456789abcdef.md=$(comment alice 'Not mine.')")")"
+refused "a knot with a forged creator" 'names alice in created_by, and operator is pushing it' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$(idea_path forged)=$(idea Forged forged alice)")")"
 
 # Layout: plain files, in the layout, within the bounds.
-knot_blob="$(blob "$(idea Linked linked patrick)")"
-refused "a symlink" 'mode 120000' patrick origin "$(push_graph "$(craft "$good" patrick - "120000:$(idea_path linked)=$knot_blob")")"
-refused "an executable" 'mode 100755' patrick origin "$(push_graph "$(craft "$good" patrick - "100755:$(idea_path linked)=$knot_blob")")"
-refused "a file outside the layout" 'outside the graph.s layout' patrick origin "$(push_graph "$(craft "$good" patrick - "+README.md=hello")")"
-refused "a directory outside the layout" 'no directory a graph holds' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+tasks/$(basename "$(idea_path tasked)")=$(idea Tasked tasked patrick)")")"
+knot_blob="$(blob "$(idea Linked linked operator)")"
+refused "a symlink" 'mode 120000' operator origin "$(push_graph "$(craft "$good" operator - "120000:$(idea_path linked)=$knot_blob")")"
+refused "an executable" 'mode 100755' operator origin "$(push_graph "$(craft "$good" operator - "100755:$(idea_path linked)=$knot_blob")")"
+refused "a file outside the layout" 'outside the graph.s layout' operator origin "$(push_graph "$(craft "$good" operator - "+README.md=hello")")"
+refused "a directory outside the layout" 'no directory a graph holds' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+tasks/$(basename "$(idea_path tasked)")=$(idea Tasked tasked operator)")")"
 # A knot is an outcome, a bug, an idea or a question, and the hook names
 # the directories each lives in.
 decision="dcr-$(printf '%s' one-ref | sha256sum | cut -c1-7)"
-decision_text="$(printf -- '---\ntype: decision\nid: %s\nstatus: decided\ntitle: "One ref"\ncreated: 2026-10-15\ncreated_by: "patrick"\n---' "$decision")"
-refused "a decision" 'decisions: is no directory a graph holds; the root holds outcomes, bugs, ideas, questions, comments' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+decisions/$decision-one-ref.md=$decision_text")")"
-refused "a non-canonical knot" 'not in canonical form' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$(idea_path loose)=$(idea Loose loose patrick | sed 's/^title: "Loose"/title: Loose/')")")"
+decision_text="$(printf -- '---\ntype: decision\nid: %s\nstatus: decided\ntitle: "One ref"\ncreated: 2026-10-15\ncreated_by: "operator"\n---' "$decision")"
+refused "a decision" 'decisions: is no directory a graph holds; the root holds outcomes, bugs, ideas, questions, comments' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+decisions/$decision-one-ref.md=$decision_text")")"
+refused "a non-canonical knot" 'not in canonical form' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$(idea_path loose)=$(idea Loose loose operator | sed 's/^title: "Loose"/title: Loose/')")")"
 big="$(head -c 70000 /dev/zero | tr '\0' x)"
-refused "an oversized knot" 'more than the 65536' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$(idea_path big)=$(idea Big big patrick "$big")")")"
+refused "an oversized knot" 'more than the 65536' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$(idea_path big)=$(idea Big big operator "$big")")")"
 
 # A tree that names one subtree many times over is refused at a bound,
 # before it is walked.
 leaf_lines=""
 for i in $(seq 1 64); do
-  leaf_lines+="$(printf '100644 blob %s\t%s-%016x.md' "$(blob "$(comment patrick x)")" "$stamp" "$i")"$'\n'
+  leaf_lines+="$(printf '100644 blob %s\t%s-%016x.md' "$(blob "$(comment operator x)")" "$stamp" "$i")"$'\n'
 done
 leaf="$(printf '%s' "$leaf_lines" | git mktree)"
 comments_tree="$(for i in $(seq 1 1000); do printf '040000 tree %s\toc-%07x\n' "$leaf" "$i"; done | git mktree)"
 root="$(git ls-tree "$good" | grep -v $'\tcomments$' | { cat; printf '040000 tree %s\tcomments\n' "$comments_tree"; } | git mktree)"
-bomb="$(GIT_COMMITTER_NAME=patrick git commit-tree "$root" -p "$good" -m "$(printf 'bomb\n\nValley-Op: 0123456789abcdef')")"
+bomb="$(GIT_COMMITTER_NAME=operator git commit-tree "$root" -p "$good" -m "$(printf 'bomb\n\nValley-Op: 0123456789abcdef')")"
 start="$(date +%s)"
-refused "a shared-subtree bomb" 'entries in all' patrick origin "$(push_graph "$bomb")"
+refused "a shared-subtree bomb" 'entries in all' operator origin "$(push_graph "$bomb")"
 [ $(($(date +%s) - start)) -lt 10 ] || fail "the bomb took more than 10 seconds to refuse"
 
 # Trees written by hand. A tree object can hold any bytes, and the host
@@ -273,16 +273,16 @@ entries_of() {
     printf '%s\n%s\n%s\n' "${mode#0}" "$name" "$oid"
   done
 }
-on_good() { GIT_COMMITTER_NAME=patrick git commit-tree "$1" -p "$good" -m "$(printf 'raw\n\nValley-Op: %016x' "$RANDOM$RANDOM")"; }
+on_good() { GIT_COMMITTER_NAME=operator git commit-tree "$1" -p "$good" -m "$(printf 'raw\n\nValley-Op: %016x' "$RANDOM$RANDOM")"; }
 mapfile -t root_entries < <(entries_of "$good")
 mapfile -t flat_entries < <(entries_of "$good" -r)
-named_idea="$(blob "$(idea Named named patrick)")"
+named_idea="$(blob "$(idea Named named operator)")"
 refused "a root file named ideas/<id>-<slug>.md" 'named "ideas/ida-[0-9a-f]{7}-named\.md", and git writes no name with a slash' \
-  patrick origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$(idea_path named)" "$named_idea")")")"
+  operator origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$(idea_path named)" "$named_idea")")")"
 refused "every knot and comment flattened into names with slashes" 'git writes no name with a slash' \
-  patrick origin "$(push_graph "$(on_good "$(raw_tree "${flat_entries[@]}")")")"
+  operator origin "$(push_graph "$(on_good "$(raw_tree "${flat_entries[@]}")")")"
 # comments/, in the mode 040000, naming a subtree with a forged comment.
-hidden="$(raw_tree 40000 "$bug" "$(raw_tree 100644 "$stamp-0123456789abcdef.md" "$(blob "$(comment klaus-env 'Never read.')")")")"
+hidden="$(raw_tree 40000 "$bug" "$(raw_tree 100644 "$stamp-0123456789abcdef.md" "$(blob "$(comment alice 'Never read.')")")")"
 hiding=()
 for ((i = 0; i < ${#root_entries[@]}; i += 3)); do
   if [ "${root_entries[i + 1]}" = comments ]; then
@@ -292,10 +292,10 @@ for ((i = 0; i < ${#root_entries[@]}; i += 3)); do
   fi
 done
 refused "a directory in the mode 040000" 'holds "comments" with mode 040000, and git writes only the modes' \
-  patrick origin "$(push_graph "$(on_good "$(raw_tree "${hiding[@]}")")")"
+  operator origin "$(push_graph "$(on_good "$(raw_tree "${hiding[@]}")")")"
 for name in . ..; do
   refused "an entry named $name" "holds an entry named \"${name//./\\.}\", which git does not write" \
-    patrick origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$name" "$named_idea")")")"
+    operator origin "$(push_graph "$(on_good "$(raw_tree "${root_entries[@]}" 100644 "$name" "$named_idea")")")"
 done
 # git push walks every tree it sends, and will not send one that holds an
 # entry with an empty name. So the update is sent to receive-pack as any
@@ -311,32 +311,32 @@ capabilities=report-status
   printf 0000
   printf '%s\n' "$nameless" "$nameless_tree" "$named_idea" | git pack-objects --quiet --stdout
 } > "$w/raw.request"
-as patrick git receive-pack "$w/guarded.git" < "$w/raw.request" > "$w/raw.report" 2> "$w/err" || true
+as operator git receive-pack "$w/guarded.git" < "$w/raw.request" > "$w/raw.report" 2> "$w/err" || true
 grep -q 'ng refs/the-valley/knots' "$w/raw.report" || fail "an entry with an empty name was admitted"
 grep -q 'its tree: it holds an entry with an empty name' "$w/err" || fail "the hook did not refuse an entry with an empty name"
 [ "$(tip guarded)" = "$good" ] || fail "an entry with an empty name moved the ref"
 
 # Edges: every edge resolves, a parent is an outcome, and no edge forms a
 # cycle. A cycle is crafted, since the CLI refuses to write one.
-refused "a blocker that is no knot" 'is no knot in the graph' patrick origin \
-  "$(push_graph "$(craft "$good" patrick - "+$work_path=${work_text/blocked_by: \[$bug\]/blocked_by: [$bug, oc-0000000]}")")"
+refused "a blocker that is no knot" 'is no knot in the graph' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$work_path=${work_text/blocked_by: \[$bug\]/blocked_by: [$bug, oc-0000000]}")")"
 loop_bug="${bug_text/blocked_by: \[\]/blocked_by: [$work]}"
 [ "$loop_bug" != "$bug_text" ] || fail "the bug's blocked_by could not be edited"
-refused "a cycle" 'blocked_by edges form a cycle' patrick origin "$(push_graph "$(craft "$good" patrick - "+$bug_path=$loop_bug")")"
+refused "a cycle" 'blocked_by edges form a cycle' operator origin "$(push_graph "$(craft "$good" operator - "+$bug_path=$loop_bug")")"
 
 # The ref: never deleted, and matched exactly.
-refused "a deletion of the graph" 'never deleted' patrick origin --delete refs/the-valley/knots
-refused "a ref that only begins with the graph's name" 'written only by the machinery' patrick origin "$next:refs/the-valley/knots-x"
-refused "a ref below the graph's name" 'written only by the machinery' patrick origin "$next:refs/the-valley/knots/x"
+refused "a deletion of the graph" 'never deleted' operator origin --delete refs/the-valley/knots
+refused "a ref that only begins with the graph's name" 'written only by the machinery' operator origin "$next:refs/the-valley/knots-x"
+refused "a ref below the graph's name" 'written only by the machinery' operator origin "$next:refs/the-valley/knots/x"
 
 # Create: one commit with no parent, on a project that has no graph yet.
-first="$(craft - patrick - "+$(idea_path first)=$(idea First first patrick)")"
-child="$(craft "$first" patrick - "+$(idea_path second)=$(idea Second second patrick)")"
-if as patrick git push --quiet open "$(push_graph "$child")" 2> "$w/err"; then fail "a create with a parent was admitted"; fi
+first="$(craft - operator - "+$(idea_path first)=$(idea First first operator)")"
+child="$(craft "$first" operator - "+$(idea_path second)=$(idea Second second operator)")"
+if as operator git push --quiet open "$(push_graph "$child")" 2> "$w/err"; then fail "a create with a parent was admitted"; fi
 grep -q 'creates the graph has no parent' "$w/err" || fail "a create with a parent was refused for another reason"
 [ -z "$(tip open)" ] || fail "a refused create made the ref"
-as patrick git push --quiet open "$(push_graph "$first")" 2> "$w/err" || fail "a parentless create was refused"
-as patrick git push --quiet open "$(push_graph "$child")" 2> "$w/err" || fail "the update after it was refused"
+as operator git push --quiet open "$(push_graph "$first")" 2> "$w/err" || fail "a parentless create was refused"
+as operator git push --quiet open "$(push_graph "$child")" 2> "$w/err" || fail "the update after it was refused"
 [ "$(tip open)" = "$child" ] || fail "the open project's graph is not at the update"
 
 # A push that carries a valid graph update with an invalid write to
@@ -349,12 +349,12 @@ request="refs/the-valley/integration-requests/main/topic"
 for other in "$next:$record" "$next:$attestation" "HEAD:$request"; do
   for mode in --atomic --no-atomic; do
     refused "a graph update beside $other ($mode)" 'refs/the-valley/(changes|attestations|integration-requests)/' \
-      patrick "$mode" origin "$(push_graph "$next")" "$other"
+      operator "$mode" origin "$(push_graph "$next")" "$other"
     if git -C "$w/guarded.git" rev-parse --verify --quiet "${other#*:}" > /dev/null; then fail "$other landed"; fi
   done
 done
 
 # The well-formed commit itself is admitted.
-as patrick git push --quiet origin "$(push_graph "$next")" 2> "$w/err" || fail "a well-formed update was refused"
+as operator git push --quiet origin "$(push_graph "$next")" 2> "$w/err" || fail "a well-formed update was refused"
 [ "$(tip guarded)" = "$next" ] || fail "the well-formed update did not land"
 touch "$out"

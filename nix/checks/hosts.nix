@@ -342,7 +342,7 @@ in
   # sshd setting the principal itself, over every key.
   setEnvHost = mkHost {
     services.valley.config = ../../examples/hosts/protected.cue;
-    services.openssh.extraConfig = lib.mkAfter "SetEnv VALLEY_PRINCIPAL=patrick";
+    services.openssh.extraConfig = lib.mkAfter "SetEnv VALLEY_PRINCIPAL=operator";
   };
 
   # sshd honouring every variable a key's entry or ~/.ssh/environment sets.

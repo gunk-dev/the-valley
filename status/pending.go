@@ -14,14 +14,14 @@
 // indented under it give its title, then the commits and the diff the
 // entry adds to its base:
 //
-//	act-on-a-change-by-handle-key-its-1902807a          9 hours ago · patflynn-agent
+//	act-on-a-change-by-handle-key-its-1902807a          9 hours ago · alice-agent-vm
 //	  change: share the record bounds and the c-<change ID> request name
 //	  10 commits · 31 files +2412 −404
 //	  approving it lands the 2 below too
-//	  ├ find-changes-across-repos-valley-changes-1e788c4f  10 hours ago · patfly…
+//	  ├ find-changes-across-repos-valley-changes-1e788c4f  10 hours ago · alice-…
 //	  │   valley: changes --json and pending by handle, across a host's projects
 //	  │   9 commits · 17 files +2701 −137
-//	  └ a-draft-state-valley-unready-and-what-56ed34ac  12 hours ago · patflynn…
+//	  └ a-draft-state-valley-unready-and-what-56ed34ac  12 hours ago · alice-ag…
 //	      change: read a draft as a third state
 //	      14 commits · 20 files +1207 −219
 //

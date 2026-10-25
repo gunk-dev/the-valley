@@ -3,7 +3,7 @@
 # shellcheck disable=SC2154
 cue vet -c "$schema" "$example"
 cue export "$schema" "$example" > example.json
-grep -q 'gunk-dev/the-valley' example.json
+grep -q 'mirror.example.org:the-valley' example.json
 grep -q 'restic-sftp' example.json
 
 # A declaration with no optional field set must stay valid —

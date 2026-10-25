@@ -11,7 +11,7 @@ import (
 
 var (
 	words      = []string{"plan", "graph", "hook", "ref", "knot", "cord", "lease", "claim", "slice", "seed", "view", "push", "tree", "walk", "bound"}
-	principals = []string{"patrick", "klaus-env", "integrator", "a.b_c"}
+	principals = []string{"operator", "alice", "integrator", "a.b_c"}
 )
 
 // Generate is n graphs from seed: each valid graph the generator makes,
@@ -109,7 +109,7 @@ func graph(r *rand.Rand) []*knot.Knot {
 				}
 			}
 			if r.IntN(5) == 0 {
-				k.BlockedBy = append(k.BlockedBy, "cosmo:oc-0123456")
+				k.BlockedBy = append(k.BlockedBy, "app:oc-0123456")
 			}
 			slices.Sort(k.BlockedBy)
 			if r.IntN(4) == 0 {
@@ -119,13 +119,13 @@ func graph(r *rand.Rand) []*knot.Knot {
 				k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 			}
 			if r.IntN(6) == 0 {
-				k.Target = pick([]string{"klaus", "cosmo", "cosmo:bd-0123456"})
+				k.Target = pick([]string{"site", "app", "app:bd-0123456"})
 			}
 		}
 		// An answered question links the change that records its answer.
 		// This draws nothing, so the graphs a seed makes stay the same.
 		if k.Status == "answered" {
-			k.Changes = []string{"https://github.com/gunk-dev/klaus/pull/12"}
+			k.Changes = []string{"https://github.com/example/site/pull/12"}
 		}
 		if r.IntN(2) == 0 {
 			k.Body = "A body for " + k.Title + ".\n"
@@ -188,7 +188,7 @@ func mutate(r *rand.Rand, knots []*knot.Knot) (map[string]string, knot.Rule) {
 		case "idea":
 			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 		default:
-			k.Target = "klaus"
+			k.Target = "site"
 		}
 	case knot.RuleFieldShape:
 		k.Owner = "an owner"

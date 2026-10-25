@@ -83,14 +83,14 @@ mirror_main_is
 # survive the next push, and main moves on beside them.
 prev="$tip"
 git -C mirror.git branch sneaky "$prev"
-git -C mirror.git update-ref refs/klaus/data "$prev"
+git -C mirror.git update-ref refs/other/data "$prev"
 git -C work commit --quiet --allow-empty -m three
 git -C work push --quiet origin main
 tip="$(git -C work rev-parse HEAD)"
 drain mirror-pilot
 mirror_main_is
 [ "$(git -C mirror.git rev-parse --verify --quiet sneaky)" = "$prev" ]
-[ "$(git -C mirror.git rev-parse --verify --quiet refs/klaus/data)" = "$prev" ]
+[ "$(git -C mirror.git rev-parse --verify --quiet refs/other/data)" = "$prev" ]
 
 # A move that cannot be deleted fails the drain, though the mirror
 # push succeeded, so systemd retries it after a delay rather than

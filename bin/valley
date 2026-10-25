@@ -25,7 +25,6 @@
 # The size tripwire (~300 lines) is crossed too. Which way to take the
 # graduation is dcr-2aa1a12, still `proposed`.
 # Graduation is a deliberate act, recorded as a decision node.
-# Precedent: klaus — born in cosmo, graduated deliberately.
 
 set -euo pipefail
 
@@ -672,7 +671,7 @@ usage: valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp]
                    way: at the active version's head, it is ready again at
                    that version, and at another head it gains the next
                    version. prints the handle and version, e.g.
-                   `cosmo nxvp v2 ready`.
+                   `app nxvp v2 ready`.
                    the change id is --change, else the head commit's jj
                    change-id header, else a Change-Id: trailer in its
                    message, else a new one, which is printed. a header and
@@ -719,7 +718,7 @@ usage: valley unready <change>
                    its owner or the operator. a draft is a pause: it voids
                    nothing, and approvals of its active version stand when
                    it is readied again. ready brings it back. prints e.g.
-                   `cosmo nxvp v2 draft`. needs the valley-go helper.
+                   `app nxvp v2 draft`. needs the valley-go helper.
 EOF
   help_unready_withdraw_requests
   help_naming
@@ -737,7 +736,7 @@ usage: valley withdraw <change>
                    integration requests, and the approvals and reviews of
                    every version, so a change brought back needs fresh
                    approvals. ready brings it back, at the same version
-                   or a new one. prints e.g. `cosmo nxvp v2 withdrawn`.
+                   or a new one. prints e.g. `app nxvp v2 withdrawn`.
                    needs the valley-go helper.
 EOF
   help_unready_withdraw_requests

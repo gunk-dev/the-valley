@@ -91,11 +91,11 @@ R="$(id nxvpwlkz)" D2="$(id xxxx)" E2="$(id yyyy)"
 
 # A checkout of a project, whose main names sealed as its owning valley.
 # Every push carries the principal, as the key sshd authenticated would.
-export VALLEY_PRINCIPAL=klaus-env
+export VALLEY_PRINCIPAL=alice
 checkout() {
   local name="$1" dir="$w/$1"
   git clone --quiet "$data/$name.git" "$dir" 2> /dev/null
-  git -C "$dir" config valley.principal klaus-env
+  git -C "$dir" config valley.principal alice
   mkdir -p "$dir/policy"
   printf '# the owning valley\n%s\n' "$instance" > "$dir/policy/valley"
   git -C "$dir" add policy/valley
@@ -322,9 +322,9 @@ holds '.schema == "valley-changes/v1"' '.host == "localhost"' '(.repos | length)
   '.repos[0].repo == "open"' ".repos[0].url == \"$data/open.git\"" '.repos[0].error == null' \
   '(.repos[0].changes | length) == 12' '.repos[0] | has("drafts") | not'
 c() { printf '.repos[0].changes[] | select(.change_id == "%s")' "$1"; }
-holds "$(c "$A") | .handle == \"nxvp\" and .state == \"ready\" and .owner == \"klaus-env\" and .target == \"main\" and .active == 1 and .seq == 1" \
+holds "$(c "$A") | .handle == \"nxvp\" and .state == \"ready\" and .owner == \"alice\" and .target == \"main\" and .active == 1 and .seq == 1" \
   "$(c "$A") | .record == \"$(git -C "$data/open.git" rev-parse "refs/the-valley/changes/main/$A")\"" \
-  "$(c "$A") | .versions[0] | .n == 1 and .title == \"stack-a\" and .branch == \"stack-a\" and .uploader == \"klaus-env\"" \
+  "$(c "$A") | .versions[0] | .n == 1 and .title == \"stack-a\" and .branch == \"stack-a\" and .uploader == \"alice\"" \
   "$(c "$A") | .versions[0] | .head == \"$(git rev-parse stack-a)\" and .landing == \"not-landed\" and .landed_commit == null" \
   "$(c "$A") | .versions[0].request == {ref: \"refs/the-valley/integration-requests/main/stack-a\", commit: \"$(git rev-parse stack-a)\"}" \
   "$(c "$A") | .versions[0].outcome == null" \
@@ -575,13 +575,13 @@ line "^change"$'\t'"$A"$'\t'
 # approving the branch is refused for I's state rather than taken as a
 # plain branch.
 ok valley-go resolve again
-line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft"$'\t'"klaus-env$"
+line "^change"$'\t'"$I"$'\t'"zzzz"$'\t'"2"$'\t'"$hprime"$'\t'"again"$'\t'"draft"$'\t'"alice$"
 if valley approve again > "$w/out" 2> "$w/err"; then fail "approve took the branch of a draft"; fi
 grep -q "change zzzz v2 is draft, not ready" "$w/err" || fail "approve did not refuse the draft for its state"
 
 # J' is not J's landing replayed, so its branch names J, a draft, too.
 ok valley-go resolve ffrec
-line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft"$'\t'"klaus-env$"
+line "^change"$'\t'"$J"$'\t'"lmlm"$'\t'"2"$'\t'"$jprime"$'\t'"ffrec"$'\t'"draft"$'\t'"alice$"
 if valley approve ffrec > "$w/out" 2> "$w/err"; then fail "approve took the branch of a replayed landing"; fi
 grep -q "change lmlm v2 is draft, not ready" "$w/err" || fail "approve did not refuse J' for its state"
 
@@ -655,7 +655,7 @@ grep -qF "open's plan graph could not be read, so no change shows a knot" "$w/er
   || fail 'changes -v did not say why it shows no knot'
 git -C "$data/open.git" update-ref refs/the-valley/knots "$graph_tip"
 
-# valley help names the verbs klaus looks for.
+# valley help names the verbs front ends look for.
 valley help > "$w/out"
 line '^  ready '
 line '^  changes '

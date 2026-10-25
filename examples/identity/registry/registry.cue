@@ -1,19 +1,20 @@
-// The worked identity registry: the gunk-dev instance as it stands, written
-// against schema/identity.cue. The compiler renders it into
+// The worked identity registry: an example instance, written against
+// schema/identity.cue. The compiler renders it into
 // ../compiled/, which is what the enforcement boundaries read — so this
 // pair is the schema's evidence, and the golden case of the identity-e2e
 // check.
 //
-// The keys are the real published ones. Nothing here is a secret: a
-// registry holds public halves only, which is why it is an ordinary
-// document in the instance repository rather than a provisioned file.
+// The keys were generated for this example, and their private halves were
+// discarded. Nothing in a registry is a secret: it holds public halves
+// only, which is why it is an ordinary document in the instance repository
+// rather than a provisioned file.
 package identity
 
 boundaries: {
 	// The host serving the instance's repositories. sshd is the gate: a key
 	// in the compiled authorized_keys may push, and one that is not there
 	// cannot reach the repositories at all.
-	"classic-laddie-push": kind: "git-push"
+	"valley-host-push": kind: "git-push"
 
 	// The integration path that admits a change to this document.
 	"registry": kind: "registry"
@@ -21,53 +22,53 @@ boundaries: {
 	// The same host's pre-receive hook, deciding who may write an
 	// integration request. A key it does not find among the holders cannot
 	// file one.
-	"classic-laddie-request": kind: "request"
+	"valley-host-request": kind: "request"
 }
 
-genesis: "patrick"
+genesis: "operator"
 
 principals: {
 	// The operator. Five keys across four machines, and the signing name
-	// varies per key rather than per entry: two keys on makers-mark sign
+	// varies per key rather than per entry: two keys on the workstation sign
 	// under that machine's attestations name, the plain key on
-	// classic-laddie signs under the operator's own name, and the two that
+	// valley-host signs under the operator's own name, and the two that
 	// sign nothing push and never attest. The operator files integration
 	// requests, so the entry holds request beside push.
-	"patrick": {
+	"operator": {
 		kind: "human"
 		keys: [
-			{ // makers-mark, ubuntu
+			{ // workstation, first system
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILc8u2oEFD+sn9vmX0gEbf62V4fmHGSvu10ENPkci3Yd"
-				signs:  "makers-mark/attestations"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINeHRYwKqCETPj0ZZ/+B5c5Julf3dJZclYZaRWixQs1D"
+				signs:  "workstation/attestations"
 			},
-			{ // makers-mark, nixos
+			{ // workstation, second system
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIG8B2eVhu/TpXZPyOt/6w0ELdtO6X6cTiWz3CvofxDCR"
-				signs:  "makers-mark/attestations"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIORtFu8o9epEZ6UPhN7EfghFnP0gUTrvuZxdSwlHGGWQ"
+				signs:  "workstation/attestations"
 			},
-			{ // classic-laddie
+			{ // valley-host
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip"
-				signs:  "patrick"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMsWYyDSCNBwb6MnvQ7sfu++kZold+0HuP5leY4IiKnV"
+				signs:  "operator"
 			},
-			{ // cloud-ssh
+			{ // cloud-shell
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo0Oc728AfV2EMn30DhTWSqdWhmY8xR6np/qf6U7xvn"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFtx7r+B/QI75Oohpr5+TQIEmTBstSuby0rsG9d4T8vx"
 			},
-			{ // weller
+			{ // laptop
 				class:  "ssh-ed25519"
 				bound:  "host"
-				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICkzfSlbK9YX3KztdvtgfyJelixdI6QN3c41eme9HOWv"
+				public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA2HH5cIC6Nmby7aN2bEOxeF6pe4EYvtOLTiLdztbQFG"
 			},
 		]
 		grants: {
-			push: boundary:    "classic-laddie-push"
-			request: boundary: "classic-laddie-request"
+			push: boundary:    "valley-host-push"
+			request: boundary: "valley-host-request"
 			govern: boundary:  "registry"
 		}
 	}
@@ -76,14 +77,14 @@ principals: {
 	// request, decrypts nothing, and holds its raw key until the
 	// certificate issuance service exists. Hence the expiry, which is what
 	// makes the compilation a revocation already scheduled (bd-8a591dc).
-	"stoned-flynn": {
+	"agent-vm": {
 		kind: "machine"
 		keys: [{
 			class:  "ssh-ed25519"
 			bound:  "host"
-			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"
+			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0AEJMcSrXCOYKlyVrdVWG07RF2SIM/8gaI/8oDEMRI"
 		}]
-		grants: push: boundary: "classic-laddie-push"
+		grants: push: boundary: "valley-host-push"
 		expires: "2026-10-01"
 	}
 
@@ -91,13 +92,13 @@ principals: {
 	// it. It pushes nowhere, so it holds no grant — and it is still in the
 	// compiled known-signers, because that artifact is every
 	// attestation-capable key rather than the holders of some grant.
-	"classic-laddie": {
+	"valley-host": {
 		kind: "machine"
 		keys: [{
 			class:  "ssh-ed25519"
 			bound:  "host"
-			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE7/mipW9wcQwVlDmEqBZksGDO3BEG94gb6VBuyDJUgk"
-			signs:  "classic-laddie/attestations"
+			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGRtI+7TYX67rzFGIp3ZJEVLAnaL4SA2n5ipYkFqpgKS"
+			signs:  "valley-host/attestations"
 		}]
 		expires: "2027-06-01"
 	}
@@ -110,7 +111,7 @@ principals: {
 		keys: [{
 			class:  "ssh-ed25519"
 			bound:  "host"
-			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ"
+			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI"
 			signs:  "integrator"
 		}]
 		expires: "2027-06-01"

@@ -42,7 +42,7 @@ let
             home.username = "someone";
             programs.valley.selfUpdate = {
               enable = true;
-              repo = "git@classic-laddie:the-valley";
+              repo = "git@valley-host:the-valley";
             };
           };
         }

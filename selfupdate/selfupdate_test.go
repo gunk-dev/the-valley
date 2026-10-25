@@ -15,14 +15,14 @@ import (
 
 // acceptedRepos covers every form Validate accepts.
 var acceptedRepos = []string{
-	"https://github.com/gunk-dev/the-valley",
-	"https://github.com/gunk-dev/the-valley.git",
-	"ssh://git@github.com/gunk-dev/the-valley",
+	"https://github.com/example/the-valley",
+	"https://github.com/example/the-valley.git",
+	"ssh://git@github.com/example/the-valley",
 	"ssh://git@[::1]:2222/srv/the-valley.git",
 	"git://example.com/the-valley.git",
 	"file:///srv/git/the-valley.git",
 	"/srv/git/the-valley.git",
-	"git@classic-laddie:the-valley",
+	"git@valley-host:the-valley",
 	"me@host.example:~/the-valley.git",
 	"me@host.example:/srv/git/the-valley.git",
 	"https://example.com/a-b_c.d~e/f:g@h",
@@ -82,8 +82,8 @@ func TestRepoURL(t *testing.T) {
 	for repo, want := range map[string]string{
 		"/srv/git/the-valley.git":                 "file:///srv/git/the-valley.git",
 		"file:///srv/git/the-valley.git":          "file:///srv/git/the-valley.git",
-		"https://github.com/gunk-dev/the-valley":  "https://github.com/gunk-dev/the-valley",
-		"git@classic-laddie:the-valley":           "ssh://git@classic-laddie/~/the-valley",
+		"https://github.com/example/the-valley":   "https://github.com/example/the-valley",
+		"git@valley-host:the-valley":              "ssh://git@valley-host/~/the-valley",
 		"me@host.example:/srv/git/the-valley.git": "ssh://me@host.example/srv/git/the-valley.git",
 		"me@host.example:~/the-valley.git":        "ssh://me@host.example/~/the-valley.git",
 		"me@host.example:~you/the-valley.git":     "ssh://me@host.example/~you/the-valley.git",
@@ -300,7 +300,7 @@ func TestUpdateInstallsNewCommit(t *testing.T) {
 	f := newFixture(t)
 	f.u.Version = "0.1.0-1111111"
 	hand := f.handInstalled("0.1.0-1111111")
-	f.nix.profile["klaus"] = []string{"/nix/store/klaus"}
+	f.nix.profile["other"] = []string{"/nix/store/other"}
 	c1 := f.up.push("one")
 
 	out := f.mustUpdate(false)
@@ -316,8 +316,8 @@ func TestUpdateInstallsNewCommit(t *testing.T) {
 	if st.Previous == nil || st.Previous.StorePath != hand || st.Previous.Commit != "1111111" {
 		t.Errorf("previous = %+v; want the hand-installed %s", st.Previous, hand)
 	}
-	if got := f.nix.profile["klaus"]; len(got) != 1 {
-		t.Errorf("the klaus element was touched: %v", got)
+	if got := f.nix.profile["other"]; len(got) != 1 {
+		t.Errorf("the other element was touched: %v", got)
 	}
 }
 

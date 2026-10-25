@@ -15,12 +15,12 @@
 //	  "schema": "valley-change-record/v1",
 //	  "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
 //	  "target": "main",
-//	  "owner": "klaus-env",
+//	  "owner": "alice",
 //	  "state": "ready",
 //	  "seq": 1,
 //	  "versions": [
 //	    {"n": 1, "head": "git-sha1:<40 hex>", "title": "the head's subject",
-//	     "branch": "topic", "uploader": "klaus-env"}
+//	     "branch": "topic", "uploader": "alice"}
 //	  ],
 //	  "active": 1
 //	}

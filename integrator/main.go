@@ -114,7 +114,7 @@ transfer, and that is reported per check rather than treated as a forgery.
 --signer-projects restricts signers to projects. Each line names a signer,
 then the projects its attestations count in, separated by spaces:
 
-  laddie-worker/attestations the-valley cosmo
+  worker/attestations the-valley app
 
 A signer the file names counts only in the projects on its line, where the
 project is the name events carry. In any other project its attestations

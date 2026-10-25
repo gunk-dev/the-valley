@@ -329,9 +329,9 @@ func TestPrincipalMatchingAgreesWithSSHKeygen(t *testing.T) {
 		{"a,,b", "b", true},
 		{"!!a", "!a", false},
 		{"A", "a", false},
-		{"release@cosmo,!*@evil", "x@evil", false},
-		{"*@cosmo.invalid", "release@cosmo.invalid", true},
-		{"*@cosmo.invalid", "release@cosmo.invalid.evil", false},
+		{"release@example.org,!*@evil", "x@evil", false},
+		{"*@example.org", "release@example.org", true},
+		{"*@example.org", "release@example.org.evil", false},
 	} {
 		allowed := allowedSigners(t, dir, `"`+c.patterns+`" `+key.PublicLine())
 		ref, refOK := sh(t, dir, "", nil, "ssh-keygen", "-Y", "match-principals", "-f", allowed, "-I", c.principal)

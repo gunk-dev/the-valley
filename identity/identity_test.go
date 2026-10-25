@@ -27,19 +27,19 @@ func TestKeyHashMatchesTheReferenceImplementation(t *testing.T) {
 	}
 }
 
-// The second vector is the live one: the integrator's key, whose existing
-// attestations are filed under the host's name and which is published under
-// its own. The name is inside the hash, so one key under two names is two
-// verifier keys — the reason a signing name is recorded per key.
+// The second vector is the worked registry's integrator key, under its own
+// name and under the host's attestations name. The name is inside the hash,
+// so one key under two names is two verifier keys — the reason a signing
+// name is recorded per key.
 func TestOneKeyUnderTwoNamesIsTwoVerifierKeys(t *testing.T) {
-	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ"
+	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI"
 	pub, err := sshEd25519Public(key)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]string{
-		"integrator":                  "integrator+78dfd4e6+Adyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ",
-		"classic-laddie/attestations": "classic-laddie/attestations+9eb2dad8+Adyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ",
+		"integrator":               "integrator+a3f65322+AUGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI",
+		"valley-host/attestations": "valley-host/attestations+d6a0b338+AUGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI",
 	} {
 		if got := verifierKey(name, pub); got != want {
 			t.Errorf("verifierKey(%s) = %s, want %s", name, got, want)
@@ -53,7 +53,7 @@ func TestPublicKeysThatAreNotEd25519AreRefused(t *testing.T) {
 		"ssh-ed25519",
 		"ssh-ed25519 not-base64!",
 		// An ed25519 line whose blob names another algorithm.
-		"ssh-ed25519 AAAAB3NzaC1yc2EAAAADAQABAAAAIHo0Oc728AfV2EMn30DhTWSqdWhmY8xR6np/qf6U7xvn",
+		"ssh-ed25519 AAAAB3NzaC1yc2EAAAADAQABAAAAIFtx7r+B/QI75Oohpr5+TQIEmTBstSuby0rsG9d4T8vx",
 	} {
 		if _, err := sshEd25519Public(line); err == nil {
 			t.Errorf("%q was read as an ed25519 key", line)
@@ -107,7 +107,7 @@ func TestAGrantAtAnUndeclaredBoundaryFailsTheRender(t *testing.T) {
 		Principals: map[string]principal{
 			"someone": {
 				Kind:   "human",
-				Keys:   []key{{Public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ"}},
+				Keys:   []key{{Public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI"}},
 				Grants: map[string]grant{"publish": {Boundary: "bus"}},
 			},
 		},
@@ -152,7 +152,7 @@ func TestARegistryGoverningNothingIsRefused(t *testing.T) {
 
 // A registry that compiles: one entry governing, one pushing.
 func governedRegistry() registry {
-	const public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ"
+	const public = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI"
 	return registry{
 		Boundaries: map[string]boundary{
 			"push":     {Kind: boundaryGitPush},
@@ -167,7 +167,7 @@ func governedRegistry() registry {
 			},
 			"runner": {
 				Kind:    "machine",
-				Keys:    []key{{Public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"}},
+				Keys:    []key{{Public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0AEJMcSrXCOYKlyVrdVWG07RF2SIM/8gaI/8oDEMRI"}},
 				Grants:  map[string]grant{"push": {Boundary: "push"}},
 				Expires: "2027-01-01",
 			},

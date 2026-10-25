@@ -77,7 +77,7 @@ func newKnot(t, title string) *Knot {
 	ty, _ := TypeNamed(t)
 	slug := Slug(title)
 	k := &Knot{Type: t, ID: DeriveID(ty, slug), Slug: slug, Status: ty.Initial(), Title: title,
-		Created: "2026-10-15", CreatedBy: "patrick"}
+		Created: "2026-10-15", CreatedBy: "operator"}
 	if t == "outcome" || t == "bug" {
 		k.BlockedBy = []string{}
 	}
@@ -131,11 +131,11 @@ func (t tree) mergedReader(old tree) Reader {
 
 func TestTheCanonicalFormReadsBackExactly(t *testing.T) {
 	k := newKnot("outcome", "Ship the \"plan\" graph <now> & then")
-	k.Status, k.Parent, k.Owner, k.Source = "in-progress", "oc-1234567", "klaus-env", "2026-10-15, a design"
-	k.BlockedBy = []string{"oc-89abcde", "bd-0123456", "cosmo:oc-7654321"}
+	k.Status, k.Parent, k.Owner, k.Source = "in-progress", "oc-1234567", "alice", "2026-10-15, a design"
+	k.BlockedBy = []string{"oc-89abcde", "bd-0123456", "app:oc-7654321"}
 	k.ClaimedBy, k.ClaimedAt = "run-1", "2026-10-15T00:58:00Z"
 	k.Changes = []string{"https://github.com/a/b/pull/3", "valley:x/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
-	k.Target = "cosmo:bd-0123456"
+	k.Target = "app:bd-0123456"
 	k.Body = "A body.\n\n\twith a tab, and ünïcode.\n"
 	data := Render(k)
 	want := `---
@@ -144,15 +144,15 @@ id: ` + k.ID + `
 status: in-progress
 title: "Ship the \"plan\" graph <now> & then"
 created: 2026-10-15
-created_by: "patrick"
+created_by: "operator"
 source: "2026-10-15, a design"
 parent: oc-1234567
-owner: "klaus-env"
-blocked_by: [bd-0123456, "cosmo:oc-7654321", oc-89abcde]
+owner: "alice"
+blocked_by: ["app:oc-7654321", bd-0123456, oc-89abcde]
 claimed_by: "run-1"
 claimed_at: "2026-10-15T00:58:00Z"
 changes: ["https://github.com/a/b/pull/3", "valley:x/kkkkllllmmmmnnnnooooppppqqqqrrrr"]
-target: "cosmo:bd-0123456"
+target: "app:bd-0123456"
 ---
 
 A body.
@@ -175,12 +175,12 @@ A body.
 	canonical := string(data)
 	for _, c := range []struct{ what, from, to string }{
 		{"keys out of order", "status: in-progress\ntitle: ", "title: \"x\"\nstatus: in-progress\ntitle: "},
-		{"a string written bare", `created_by: "patrick"`, "created_by: patrick"},
+		{"a string written bare", `created_by: "operator"`, "created_by: operator"},
 		{"a token written as a string", "status: in-progress", `status: "in-progress"`},
-		{"a list out of order", `[bd-0123456, "cosmo:oc-7654321", oc-89abcde]`, `[oc-89abcde, bd-0123456, "cosmo:oc-7654321"]`},
-		{"an entry twice", `[bd-0123456, "cosmo:oc-7654321", oc-89abcde]`, `[bd-0123456, bd-0123456, "cosmo:oc-7654321", oc-89abcde]`},
-		{"a local id quoted", `[bd-0123456,`, `["bd-0123456",`},
-		{"a list without spaces", `[bd-0123456, "cosmo:oc-7654321", oc-89abcde]`, `[bd-0123456,"cosmo:oc-7654321",oc-89abcde]`},
+		{"a list out of order", `["app:oc-7654321", bd-0123456, oc-89abcde]`, `[oc-89abcde, bd-0123456, "app:oc-7654321"]`},
+		{"an entry twice", `["app:oc-7654321", bd-0123456, oc-89abcde]`, `["app:oc-7654321", bd-0123456, bd-0123456, oc-89abcde]`},
+		{"a local id quoted", `, bd-0123456,`, `, "bd-0123456",`},
+		{"a list without spaces", `["app:oc-7654321", bd-0123456, oc-89abcde]`, `["app:oc-7654321",bd-0123456,oc-89abcde]`},
 		{"a block list", "changes: [\"https://github.com/a/b/pull/3\", \"valley:x/kkkkllllmmmmnnnnooooppppqqqqrrrr\"]", "changes:\n  - \"https://github.com/a/b/pull/3\""},
 		{"an escape where a character would do", `"Ship the`, `"` + "\\" + `u0053hip the`},
 		{"two spaces after a key", "owner: ", "owner:  "},
@@ -190,8 +190,8 @@ A body.
 		{"two blank lines before the body", "---\n\nA body.", "---\n\n\nA body."},
 		{"a blank line at the end", "ünïcode.\n", "ünïcode.\n\n"},
 		{"no newline at the end", "ünïcode.\n", "ünïcode."},
-		{"a key named twice", "owner: \"klaus-env\"\n", "owner: \"klaus-env\"\nowner: \"klaus-env\"\n"},
-		{"an empty optional key", "owner: \"klaus-env\"\n", "owner: \"\"\n"},
+		{"a key named twice", "owner: \"alice\"\n", "owner: \"alice\"\nowner: \"alice\"\n"},
+		{"an empty optional key", "owner: \"alice\"\n", "owner: \"\"\n"},
 		{"an empty optional list", "target:", "changes: []\ntarget:"},
 	} {
 		variant := strings.Replace(canonical, c.from, c.to, 1)
@@ -272,7 +272,7 @@ func TestEdgesFormNoCycle(t *testing.T) {
 		b.BlockedBy = []string{c.ID}
 		c.BlockedBy = []string{a.ID}
 	})
-	if err := push(before, after, "patrick"); ruleOf(err) != RuleCycle {
+	if err := push(before, after, "operator"); ruleOf(err) != RuleCycle {
 		t.Errorf("a push closing a loop: %v", err)
 	}
 }
@@ -281,11 +281,11 @@ func TestWhatAPushMayChange(t *testing.T) {
 	a, b := newKnot("outcome", "A"), newKnot("idea", "B")
 	comment := CommentsDirectory + "/" + a.ID + "/20261015T005800Z-0123456789abcdef.md"
 	before := tree{}.with(a, b)
-	before[comment] = string(RenderComment(&Comment{Author: "patrick", Body: "Noted.\n"}))
-	if err := push(nil, before, "patrick"); err != nil {
+	before[comment] = string(RenderComment(&Comment{Author: "operator", Body: "Noted.\n"}))
+	if err := push(nil, before, "operator"); err != nil {
 		t.Fatalf("the create: %v", err)
 	}
-	if err := push(nil, before, "klaus-env"); ruleOf(err) != RuleProvenance {
+	if err := push(nil, before, "alice"); ruleOf(err) != RuleProvenance {
 		t.Errorf("a create naming another creator: %v", err)
 	}
 	change := func(f func(t tree)) tree {
@@ -310,42 +310,42 @@ func TestWhatAPushMayChange(t *testing.T) {
 		pusher string
 		rule   Rule
 	}{
-		{"a status change by anyone", change(edited(func(k *Knot) { k.Status = "done" })), "klaus-env", ""},
-		{"a new knot by its creator", change(func(t tree) { k := newKnot("bug", "New"); k.CreatedBy = "klaus-env"; t[k.Path()] = string(Render(k)) }), "klaus-env", ""},
-		{"a new knot naming another creator", change(func(t tree) { k := newKnot("bug", "New"); t[k.Path()] = string(Render(k)) }), "klaus-env", RuleProvenance},
+		{"a status change by anyone", change(edited(func(k *Knot) { k.Status = "done" })), "alice", ""},
+		{"a new knot by its creator", change(func(t tree) { k := newKnot("bug", "New"); k.CreatedBy = "alice"; t[k.Path()] = string(Render(k)) }), "alice", ""},
+		{"a new knot naming another creator", change(func(t tree) { k := newKnot("bug", "New"); t[k.Path()] = string(Render(k)) }), "alice", RuleProvenance},
 		{"a comment by its author", change(func(t tree) {
-			t[CommentsDirectory+"/"+b.ID+"/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "klaus-env", Body: "Yes.\n"}))
-		}), "klaus-env", ""},
+			t[CommentsDirectory+"/"+b.ID+"/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "alice", Body: "Yes.\n"}))
+		}), "alice", ""},
 		{"a comment naming another author", change(func(t tree) {
-			t[CommentsDirectory+"/"+b.ID+"/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "patrick", Body: "Yes.\n"}))
-		}), "klaus-env", RuleProvenance},
+			t[CommentsDirectory+"/"+b.ID+"/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "operator", Body: "Yes.\n"}))
+		}), "alice", RuleProvenance},
 		{"a comment stamped with no time", change(func(t tree) {
-			t[CommentsDirectory+"/"+b.ID+"/20261315T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "patrick", Body: "Yes.\n"}))
-		}), "patrick", RuleLayout},
+			t[CommentsDirectory+"/"+b.ID+"/20261315T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "operator", Body: "Yes.\n"}))
+		}), "operator", RuleLayout},
 		{"a comment on no knot", change(func(t tree) {
-			t[CommentsDirectory+"/oc-0000000/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "patrick", Body: "Yes.\n"}))
-		}), "patrick", RuleEdgeResolves},
-		{"a changed comment", change(func(t tree) { t[comment] = string(RenderComment(&Comment{Author: "patrick", Body: "Unsaid.\n"})) }), "patrick", RuleTransition},
-		{"a deleted comment", change(func(t tree) { delete(t, comment) }), "patrick", RuleTransition},
-		{"a deleted knot", change(func(t tree) { delete(t, b.Path()) }), "patrick", RuleTransition},
+			t[CommentsDirectory+"/oc-0000000/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "operator", Body: "Yes.\n"}))
+		}), "operator", RuleEdgeResolves},
+		{"a changed comment", change(func(t tree) { t[comment] = string(RenderComment(&Comment{Author: "operator", Body: "Unsaid.\n"})) }), "operator", RuleTransition},
+		{"a deleted comment", change(func(t tree) { delete(t, comment) }), "operator", RuleTransition},
+		{"a deleted knot", change(func(t tree) { delete(t, b.Path()) }), "operator", RuleTransition},
 		{"a moved knot", change(func(t tree) {
 			k := b.Clone()
 			k.Slug = "b-2"
 			k.ID = DeriveID(k.TypeOf(), k.Slug)
 			delete(t, b.Path())
 			t[k.Path()] = string(Render(k))
-		}), "patrick", RuleTransition},
-		{"a changed created_by", change(edited(func(k *Knot) { k.CreatedBy = "klaus-env" })), "klaus-env", RuleTransition},
-		{"a changed created date", change(edited(func(k *Knot) { k.Created = "2026-10-16" })), "patrick", RuleTransition},
+		}), "operator", RuleTransition},
+		{"a changed created_by", change(edited(func(k *Knot) { k.CreatedBy = "alice" })), "alice", RuleTransition},
+		{"a changed created date", change(edited(func(k *Knot) { k.Created = "2026-10-16" })), "operator", RuleTransition},
 		{"a changed type", change(func(t tree) {
 			k := a.Clone()
 			k.Type, k.BlockedBy = "bug", []string{}
 			t[a.Path()] = string(Render(k))
-		}), "patrick", RuleIDShape},
-		{"a changed id", change(func(t tree) { k := a.Clone(); k.ID = "oc-0000000"; t[a.Path()] = string(Render(k)) }), "patrick", RuleFilename},
-		{"an edge to no knot", change(edited(func(k *Knot) { k.BlockedBy = []string{"oc-0000000"} })), "patrick", RuleEdgeResolves},
-		{"a parent that is an idea", change(edited(func(k *Knot) { k.Parent = b.ID })), "patrick", RuleParentOutcome},
-		{"a claim with no time", change(edited(func(k *Knot) { k.ClaimedBy = "run" })), "patrick", RuleClaim},
+		}), "operator", RuleIDShape},
+		{"a changed id", change(func(t tree) { k := a.Clone(); k.ID = "oc-0000000"; t[a.Path()] = string(Render(k)) }), "operator", RuleFilename},
+		{"an edge to no knot", change(edited(func(k *Knot) { k.BlockedBy = []string{"oc-0000000"} })), "operator", RuleEdgeResolves},
+		{"a parent that is an idea", change(edited(func(k *Knot) { k.Parent = b.ID })), "operator", RuleParentOutcome},
+		{"a claim with no time", change(edited(func(k *Knot) { k.ClaimedBy = "run" })), "operator", RuleClaim},
 	} {
 		if err := push(before, x.after, x.pusher); ruleOf(err) != x.rule {
 			t.Errorf("%s: %v, want rule %q", x.what, err, x.rule)
@@ -415,7 +415,7 @@ func TestTheLimitsHoldAtTheirEdges(t *testing.T) {
 		t.Fatalf("the largest knot is %d bytes", n)
 	}
 
-	c := &Comment{Author: "patrick", Body: "x\n"}
+	c := &Comment{Author: "operator", Body: "x\n"}
 	c.Body = strings.Repeat("x", MaxCommentSize-len(RenderComment(c))+1) + "\n"
 	if _, err := ParseComment("c", RenderComment(c)); err != nil || len(RenderComment(c)) != MaxCommentSize {
 		t.Errorf("a comment of the most bytes: %v", err)
@@ -472,10 +472,10 @@ func TestTheLimitsHoldAtTheirEdges(t *testing.T) {
 		}
 		return after
 	}
-	if err := push(before, grow(MaxChangedPaths), "patrick"); err != nil {
+	if err := push(before, grow(MaxChangedPaths), "operator"); err != nil {
 		t.Errorf("a push of %d files: %v", MaxChangedPaths, err)
 	}
-	if err := push(before, grow(MaxChangedPaths+1), "patrick"); ruleOf(err) != RuleLimit {
+	if err := push(before, grow(MaxChangedPaths+1), "operator"); ruleOf(err) != RuleLimit {
 		t.Errorf("a push of %d files: %v", MaxChangedPaths+1, err)
 	}
 }
@@ -483,7 +483,7 @@ func TestTheLimitsHoldAtTheirEdges(t *testing.T) {
 func refs(n int) []string {
 	var list []string
 	for i := range n {
-		list = append(list, fmt.Sprintf("cosmo:oc-%07x", i))
+		list = append(list, fmt.Sprintf("app:oc-%07x", i))
 	}
 	return list
 }
@@ -518,9 +518,9 @@ func TestANewIDTakesASuffixOnACollision(t *testing.T) {
 
 func TestACommitNamesItsOperationOnce(t *testing.T) {
 	tree := strings.Repeat("a", 40)
-	head := "tree " + tree + "\nparent " + strings.Repeat("b", 40) + "\nauthor p <p> 1 +0000\ncommitter patrick <p@x> 1 +0000\n\n"
+	head := "tree " + tree + "\nparent " + strings.Repeat("b", 40) + "\nauthor p <p> 1 +0000\ncommitter operator <p@x> 1 +0000\n\n"
 	c, err := ParseCommit([]byte(head+Message("knot new oc-1234567: x", "0123456789abcdef")), 20)
-	if err != nil || c.Op != "0123456789abcdef" || c.Committer != "patrick" || len(c.Parents) != 1 {
+	if err != nil || c.Op != "0123456789abcdef" || c.Committer != "operator" || len(c.Parents) != 1 {
 		t.Fatalf("ParseCommit = %+v, %v", c, err)
 	}
 	for _, bad := range []string{

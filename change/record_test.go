@@ -22,11 +22,11 @@ func record() string {
   "schema": "valley-change-record/v1",
   "change_id": "` + id1 + `",
   "target": "main",
-  "owner": "klaus-env",
+  "owner": "alice",
   "state": "ready",
   "seq": 2,
   "versions": [
-    {"n": 1, "head": "` + head1 + `", "title": "the first", "branch": "topic", "uploader": "klaus-env"},
+    {"n": 1, "head": "` + head1 + `", "title": "the first", "branch": "topic", "uploader": "alice"},
     {"n": 2, "head": "` + head2 + `", "title": "the second", "branch": "", "uploader": "operator"}
   ],
   "active": 2
@@ -40,9 +40,9 @@ func TestAWellFormedRecordReadsWhole(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := &Record{
-		Schema: Schema, ChangeID: id1, Target: "main", Owner: "klaus-env", State: Ready, Seq: 2,
+		Schema: Schema, ChangeID: id1, Target: "main", Owner: "alice", State: Ready, Seq: 2,
 		Versions: []Version{
-			{N: 1, Head: head1, Title: "the first", Branch: "topic", Uploader: "klaus-env"},
+			{N: 1, Head: head1, Title: "the first", Branch: "topic", Uploader: "alice"},
 			{N: 2, Head: head2, Title: "the second", Branch: "", Uploader: "operator"},
 		},
 		Active: 2,
@@ -110,7 +110,7 @@ func TestTheReadingIsStrict(t *testing.T) {
 		{"seq with an exponent", swap(`"seq": 2`, `"seq": 2e0`), "where an integer is expected"},
 		{"seq negative", swap(`"seq": 2`, `"seq": -2`), "where an integer is expected"},
 		{"active as null", swap(`"active": 2`, `"active": null`), "where an integer is expected"},
-		{"owner as a number", swap(`"owner": "klaus-env"`, `"owner": 7`), "where a string is expected"},
+		{"owner as a number", swap(`"owner": "alice"`, `"owner": 7`), "where a string is expected"},
 		{"versions as an object", `{"schema": "valley-change-record/v1", "change_id": "` + id1 +
 			`", "target": "main", "owner": "o", "state": "ready", "seq": 1, "versions": {}, "active": 1}`,
 			"where an array is expected"},
@@ -142,7 +142,7 @@ func TestTheReadingIsStrict(t *testing.T) {
 		{"an escaped control character in a title", swap(`"the first"`, `"the\nfirst"`), "title"},
 		{"a C1 control character in a title", swap(`"the first"`, `"the`+"\u0085"+`first"`), "title"},
 		{"a branch git would refuse", swap(`"branch": "topic"`, `"branch": "to..pic"`), "not a branch name"},
-		{"an owner that is no principal", swap(`"owner": "klaus-env"`, `"owner": "-klaus"`), "not a principal name"},
+		{"an owner that is no principal", swap(`"owner": "alice"`, `"owner": "-alice"`), "not a principal name"},
 		{"an empty uploader", swap(`"uploader": "operator"`, `"uploader": ""`), "not a principal name"},
 		{"a target that is no branch", swap(`"target": "main"`, `"target": "ma in"`), "its target"},
 	} {

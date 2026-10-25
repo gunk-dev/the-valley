@@ -62,8 +62,8 @@ chmod u+w forged.cue
   printf '\t\tpublic: "%s"\n' "$(cut -d' ' -f1,2 < "$TMPDIR/intruder.pub")"
   echo '	}]'
   echo '	grants: {'
-  echo '		push: boundary:    "classic-laddie-push"'
-  echo '		request: boundary: "classic-laddie-request"'
+  echo '		push: boundary:    "valley-host-push"'
+  echo '		request: boundary: "valley-host-request"'
   echo '	}'
   echo '}'
 } >> forged.cue
@@ -166,29 +166,29 @@ chmod +x hook
 git init --quiet --bare guarded.git
 ln -s "$TMPDIR/hook" guarded.git/hooks/pre-receive
 request=refs/the-valley/integration-requests/main/topic
-if VALLEY_PRINCIPAL=stoned-flynn git -C work push --quiet "$TMPDIR/guarded.git" "main:$request" 2> refused.err; then
+if VALLEY_PRINCIPAL=agent-vm git -C work push --quiet "$TMPDIR/guarded.git" "main:$request" 2> refused.err; then
   echo "identity-e2e: a principal the registry grants push and not request filed a request" >&2
   exit 1
 fi
 grep -q 'approve grant (also accepted as request)' refused.err
-VALLEY_PRINCIPAL=patrick git -C work push --quiet "$TMPDIR/guarded.git" "main:$request"
+VALLEY_PRINCIPAL=operator git -C work push --quiet "$TMPDIR/guarded.git" "main:$request"
 git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null || {
   echo "identity-e2e: the principal the registry grants request could not file one" >&2
   exit 1
 }
-VALLEY_PRINCIPAL=patrick git -C work push --quiet "$TMPDIR/guarded.git" --delete "$request"
+VALLEY_PRINCIPAL=operator git -C work push --quiet "$TMPDIR/guarded.git" --delete "$request"
 
 # The approve grant goes by two names, approve and request, and a registry
 # may use either. A registry whose hook boundary is of kind approve, and one
-# granting patrick at a boundary of each kind, compile exactly the artifacts
-# the worked registry does, with patrick written once.
+# granting operator at a boundary of each kind, compile exactly the artifacts
+# the worked registry does, with operator written once.
 mkdir -p approve-registry both-registry
 sed 's/kind: "request"/kind: "approve"/' "$registry/registry.cue" > approve-registry/registry.cue
-sed -e 's/^\t"classic-laddie-request": kind: "request"$/&\n\t"classic-laddie-approve": kind: "approve"/' \
-  -e 's/^\t\t\trequest: boundary: "classic-laddie-request"$/&\n\t\t\tapprove: boundary: "classic-laddie-approve"/' \
+sed -e 's/^\t"valley-host-request": kind: "request"$/&\n\t"valley-host-approve": kind: "approve"/' \
+  -e 's/^\t\t\trequest: boundary: "valley-host-request"$/&\n\t\t\tapprove: boundary: "valley-host-approve"/' \
   "$registry/registry.cue" > both-registry/registry.cue
 if grep -q 'kind: "request"' approve-registry/registry.cue ||
-  [ "$(grep -c 'classic-laddie-approve' both-registry/registry.cue)" != 2 ]; then
+  [ "$(grep -c 'valley-host-approve' both-registry/registry.cue)" != 2 ]; then
   echo "identity-e2e: the registries naming the grant approve were not written, so the checks below prove nothing" >&2
   exit 1
 fi
@@ -205,19 +205,19 @@ for variant in approve-registry both-registry; do
   diff -u "$compiled/known-signers" "$TMPDIR/signers" || exit 1
   diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
   diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
-  # And through the hook: patrick files and deletes a request, and
-  # stoned-flynn, holding push alone, does neither.
-  if hook_as stoned-flynn "main:$request" 2> refused.err; then
+  # And through the hook: operator files and deletes a request, and
+  # agent-vm, holding push alone, does neither.
+  if hook_as agent-vm "main:$request" 2> refused.err; then
     echo "identity-e2e: under $variant, a principal holding push alone filed a request" >&2
     exit 1
   fi
   grep -q 'approve grant (also accepted as request)' refused.err
-  hook_as patrick "main:$request"
-  if hook_as stoned-flynn --delete "$request" 2> refused.err; then
+  hook_as operator "main:$request"
+  if hook_as agent-vm --delete "$request" 2> refused.err; then
     echo "identity-e2e: under $variant, a principal holding push alone deleted a request" >&2
     exit 1
   fi
-  hook_as patrick --delete "$request"
+  hook_as operator --delete "$request"
   if git -C guarded.git rev-parse --verify --quiet "$request" > /dev/null; then
     echo "identity-e2e: under $variant, the approve holder could not delete its request" >&2
     exit 1
@@ -226,11 +226,11 @@ done
 
 # The hook reads a grants file naming the grant approve exactly as one
 # naming it request. approver is named under approve, requester under
-# request, both under each, and stoned-flynn under neither. A principal
+# request, both under each, and agent-vm under neither. A principal
 # named approve is in the file too, holding only push, a grant the hook
 # does not check: a principal's name is not a grant. Each holder files a
 # request, replaces it with a head that does not descend from it, and
-# deletes it. stoned-flynn and approve can do none of that in between.
+# deletes it. agent-vm and approve can do none of that in between.
 cat > "$TMPDIR/grants" << 'EOF'
 approve approver
 request requester
@@ -249,7 +249,7 @@ for holder in approver requester both; do
     exit 1
   }
   for refused in "main:$request" "--delete $request"; do
-    for lacking in stoned-flynn approve; do
+    for lacking in agent-vm approve; do
       # shellcheck disable=SC2086  # the push arguments are two words, split on purpose
       if hook_as "$lacking" --force $refused 2> refused.err; then
         echo "identity-e2e: $lacking, holding neither name of the approve grant, wrote $holder's request" >&2
@@ -265,18 +265,18 @@ for holder in approver requester both; do
   fi
 done
 
-# Change records, through the same hook and the same grants file. patrick
+# Change records, through the same hook and the same grants file. operator
 # owns the change and holds nothing in this file. A holder of the approve
 # grant under either name, or both, may update another principal's change
 # record, here by withdrawing the change, and may delete the record.
-# stoned-flynn and approve may do neither, and each refusal leaves the
+# agent-vm and approve may do neither, and each refusal leaves the
 # record where it was. The record is created afresh for each holder.
 owned_ref=refs/the-valley/changes/main/klmnopqrstuvwxyzklmnopqrstuvwxyz
-# owned_record <state> <seq> <parent>: a record commit of patrick's change,
+# owned_record <state> <seq> <parent>: a record commit of operator's change,
 # at one version whose head is owned_head.
 owned_record() {
   local blob tree
-  blob="$(printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "patrick", "state": "%s", "seq": %s, "versions": [{"n": 1, "head": "git-sha1:%s", "title": "the change", "branch": "topic", "uploader": "patrick"}], "active": 1}\n' \
+  blob="$(printf '{"schema": "valley-change-record/v1", "change_id": "%s", "target": "main", "owner": "operator", "state": "%s", "seq": %s, "versions": [{"n": 1, "head": "git-sha1:%s", "title": "the change", "branch": "topic", "uploader": "operator"}], "active": 1}\n' \
     "${owned_ref##*/}" "$1" "$2" "$owned_head" | git -C work hash-object -w --stdin)"
   tree="$(printf '100644 blob %s\trecord.json\n' "$blob" | git -C work mktree)"
   git -C work commit-tree "$tree" -p "$3" -m "a change record"
@@ -298,7 +298,7 @@ owned_refused() {
     echo "identity-e2e: $who, holding neither name of the approve grant, updated another principal's change record" >&2
     exit 1
   fi
-  grep -q "only the change's owner, patrick, or a principal holding the approve grant (also accepted as request) may update its record" refused.err
+  grep -q "only the change's owner, operator, or a principal holding the approve grant (also accepted as request) may update its record" refused.err
   if hook_as "$who" --delete "$owned_ref" 2> refused.err; then
     echo "identity-e2e: $who, holding neither name of the approve grant, deleted another principal's change record" >&2
     exit 1
@@ -306,19 +306,19 @@ owned_refused() {
   grep -q "only a principal holding the approve grant (also accepted as request) may delete a change record, and $who holds none" refused.err
   owned_at "$before" "a refused write by $who moved the change record"
 }
-# owned_commits: patrick's change, and the two records of it pushed below,
+# owned_commits: operator's change, and the two records of it pushed below,
 # written into work. filed creates the change, and retired withdraws it.
 # serve replaces work, so they are written again after it.
 owned_commits() {
-  owned_head="$(git -C work commit-tree "main^{tree}" -p main -m "patrick's change")"
+  owned_head="$(git -C work commit-tree "main^{tree}" -p main -m "operator's change")"
   filed="$(owned_record ready 1 "$owned_head")"
   retired="$(owned_record withdrawn 2 "$filed")"
 }
 owned_commits
 for holder in approver requester both; do
-  hook_as patrick "$filed:$owned_ref"
-  owned_at "$filed" "patrick could not create a change record"
-  owned_refused stoned-flynn "$retired"
+  hook_as operator "$filed:$owned_ref"
+  owned_at "$filed" "operator could not create a change record"
+  owned_refused agent-vm "$retired"
   owned_refused approve "$retired"
   hook_as "$holder" "$retired:$owned_ref"
   owned_at "$retired" "$holder could not withdraw another principal's change"
@@ -326,13 +326,13 @@ for holder in approver requester both; do
   owned_at "" "$holder could not delete another principal's change record"
 done
 
-# A grant's name is not its kind. A registry granting stoned-flynn a grant
+# A grant's name is not its kind. A registry granting agent-vm a grant
 # named approve at a boundary of another kind compiles exactly the grants
-# the worked registry does, so the hook refuses stoned-flynn the approve
+# the worked registry does, so the hook refuses agent-vm the approve
 # grant's writes.
-for boundary in classic-laddie-push registry; do
+for boundary in valley-host-push registry; do
   mkdir -p "mislabelled-$boundary"
-  sed "s/^\t\tgrants: push: boundary: \"classic-laddie-push\"$/\t\tgrants: {push: boundary: \"classic-laddie-push\", approve: boundary: \"$boundary\"}/" \
+  sed "s/^\t\tgrants: push: boundary: \"valley-host-push\"$/\t\tgrants: {push: boundary: \"valley-host-push\", approve: boundary: \"$boundary\"}/" \
     "$registry/registry.cue" > "mislabelled-$boundary/registry.cue"
   if ! grep -q "approve: boundary: \"$boundary\"" "mislabelled-$boundary/registry.cue"; then
     echo "identity-e2e: the registry granting approve at $boundary was not written, so the check below proves nothing" >&2
@@ -342,15 +342,15 @@ for boundary in classic-laddie-push registry; do
   compile --now 2026-08-09 || exit 1
   diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
   owned_commits
-  if hook_as stoned-flynn "main:$request" 2> refused.err; then
+  if hook_as agent-vm "main:$request" 2> refused.err; then
     echo "identity-e2e: a grant named approve at $boundary let its holder file a request" >&2
     exit 1
   fi
   grep -q 'approve grant (also accepted as request)' refused.err
-  hook_as patrick "$filed:$owned_ref"
-  owned_refused stoned-flynn "$retired"
-  hook_as patrick --delete "$owned_ref"
-  owned_at "" "patrick could not delete its own change record, holding the approve grant"
+  hook_as operator "$filed:$owned_ref"
+  owned_refused agent-vm "$retired"
+  hook_as operator --delete "$owned_ref"
+  owned_at "" "operator could not delete its own change record, holding the approve grant"
 done
 
 # The worked registry again, for what follows.
@@ -409,26 +409,26 @@ fi
 # declared day is the first day the entry no longer counts.
 serve instance "$expired"
 compile --now 2026-09-30 || exit 1
-grep -q "stoned-flynn/attestations" "$TMPDIR/signers" || {
+grep -q "agent-vm/attestations" "$TMPDIR/signers" || {
   echo "identity-e2e: an unexpired entry was omitted" >&2
   exit 1
 }
-grep -qx "request stoned-flynn" "$TMPDIR/grants" || {
+grep -qx "request agent-vm" "$TMPDIR/grants" || {
   echo "identity-e2e: an unexpired holder of request was omitted from the grants" >&2
   exit 1
 }
 compile --now 2026-11-01 2> expired.log || exit 1
-if grep -q "stoned-flynn" "$TMPDIR/signers" "$TMPDIR/keys" "$TMPDIR/grants"; then
+if grep -q "agent-vm" "$TMPDIR/signers" "$TMPDIR/keys" "$TMPDIR/grants"; then
   echo "identity-e2e: an expired entry stayed in the compiled artifacts" >&2
   cat "$TMPDIR/signers" "$TMPDIR/keys" "$TMPDIR/grants" >&2
   exit 1
 fi
-if ! grep -q "stoned-flynn expired 2026-10-01" expired.log; then
+if ! grep -q "agent-vm expired 2026-10-01" expired.log; then
   echo "identity-e2e: an expired entry was dropped without saying so" >&2
   cat expired.log >&2
   exit 1
 fi
-grep -q "patrick" "$TMPDIR/keys" || {
+grep -q "operator" "$TMPDIR/keys" || {
   echo "identity-e2e: one expired entry took the rest of the registry with it" >&2
   exit 1
 }
@@ -478,7 +478,7 @@ mkdir -p orphan-registry
   echo '		keys: [{'
   echo '			class:  "ssh-ed25519"'
   echo '			bound:  "hardware"'
-  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip"'
+  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMsWYyDSCNBwb6MnvQ7sfu++kZold+0HuP5leY4IiKnV"'
   echo '			signs:  "founder"'
   echo '		}]'
   echo '		grants: {'
@@ -492,7 +492,7 @@ mkdir -p orphan-registry
   echo '		keys: [{'
   echo '			class:  "ssh-ed25519"'
   echo '			bound:  "host"'
-  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAvpmbUKEDVsejgv2vxWaY/t4xl0JNnjFswb9SxcG9GG"'
+  echo '			public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIO0AEJMcSrXCOYKlyVrdVWG07RF2SIM/8gaI/8oDEMRI"'
   echo '		}]'
   echo '		grants: push: boundary: "push"'
   echo '		expires: "2027-01-01"'
@@ -653,8 +653,8 @@ fi
 serve instance "$registry"
 compile --now 2026-08-09 || exit 1
 cp "$TMPDIR/keys" last-good-keys
-patrick_key="$(grep -m1 -o 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip' "$registry/registry.cue")"
-for declared in "$patrick_key operator@laptop" "environment=\"VALLEY_PRINCIPAL=someone\" $patrick_key"; do
+operator_key="$(grep -m1 -o 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMsWYyDSCNBwb6MnvQ7sfu++kZold+0HuP5leY4IiKnV' "$registry/registry.cue")"
+for declared in "$operator_key operator@laptop" "environment=\"VALLEY_PRINCIPAL=someone\" $operator_key"; do
   printf '%s\n' "$declared" > declared-keys
   if compile --now 2026-08-09 --declared-keys declared-keys 2> declared.err; then
     echo "identity-e2e: a registry key declared by hand under another tag compiled" >&2
@@ -667,7 +667,7 @@ for declared in "$patrick_key operator@laptop" "environment=\"VALLEY_PRINCIPAL=s
   }
   diff -u last-good-keys "$TMPDIR/keys" || exit 1
 done
-printf 'environment="VALLEY_PRINCIPAL=patrick" %s\n' "$patrick_key" > declared-keys
+printf 'environment="VALLEY_PRINCIPAL=operator" %s\n' "$operator_key" > declared-keys
 compile --now 2026-08-09 --declared-keys declared-keys || exit 1
 
 # Attestation names. Under a registry with two signers, the hook checks
@@ -832,7 +832,7 @@ record_ref="refs/the-valley/changes/main/$change_id"
 created="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 1, \"versions\": [$(version 1 "$h1" author)], \"active\": 1}" "$h1")"
 rpush author "$created:$record_ref"
 appended="$(one_file record.json "{\"schema\": \"valley-change-record/v1\", \"change_id\": \"$change_id\", \"target\": \"main\", \"owner\": \"author\", \"state\": \"ready\", \"seq\": 2, \"versions\": [$(version 1 "$h1" author), $(version 2 "$h2" valley-restacker)], \"active\": 2}" "$created" "$h2")"
-if rpush stoned-flynn "$appended:$record_ref" 2> restack.err; then
+if rpush agent-vm "$appended:$record_ref" 2> restack.err; then
   echo "identity-e2e: a principal the registry does not grant restack added a version to another's change" >&2
   exit 1
 fi

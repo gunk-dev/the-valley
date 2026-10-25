@@ -20,7 +20,7 @@
 //	  "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
 //	  "target": "main",
 //	  "review": "operator",
-//	  "reviewer": "klaus-env",
+//	  "reviewer": "alice",
 //	  "verdict": "request-changes",
 //	  "withdraws": null,
 //	  "binding": {

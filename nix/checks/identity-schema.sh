@@ -3,11 +3,11 @@
 # shellcheck disable=SC2154
 cue vet -c "$schema" "$registry"/*.cue
 cue export "$schema" "$registry"/*.cue > registry.json
-grep -q '"genesis": "patrick"' registry.json
+grep -q '"genesis": "operator"' registry.json
 # The signing name is per key, not per entry: one entry holds keys signing
 # under two different names, and that is what the compiler renders from.
-grep -q '"signs": "makers-mark/attestations"' registry.json
-grep -q '"signs": "patrick"' registry.json
+grep -q '"signs": "workstation/attestations"' registry.json
+grep -q '"signs": "operator"' registry.json
 
 # The registries the schema must reject, and the words each rejection must
 # name. The floor's properties are here — mandatory expiry where a raw key

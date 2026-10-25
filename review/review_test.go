@@ -25,7 +25,7 @@ func text() string {
   "change_id": "` + changeID + `",
   "target": "main",
   "review": "docs-style",
-  "reviewer": "klaus-env",
+  "reviewer": "alice",
   "verdict": "request-changes",
   "withdraws": null,
   "binding": {
@@ -42,7 +42,7 @@ func text() string {
     {"side": "before", "path": "docs/old file.md", "blob": "` + sha1c + `", "lines": null, "body": "Why was this removed?"}
   ],
   "provenance": {
-    "harness": "klaus 0.9.1",
+    "harness": "agent-runner 0.9.1",
     "model": "claude-opus-5-5",
     "settings": "` + digest + `",
     "inputs": "` + digest + `",
@@ -56,7 +56,7 @@ func text() string {
 // withdrawalText is a well-formed withdrawal.
 func withdrawalText() string {
 	return `{"schema": "the-valley/review/v1", "review_id": "` + id2 + `", "change_id": "` + changeID + `",
-"target": "main", "review": "docs-style", "reviewer": "klaus-env", "verdict": "withdraw",
+"target": "main", "review": "docs-style", "reviewer": "alice", "verdict": "withdraw",
 "withdraws": "` + id1 + `", "binding": null, "summary": "Judged in error.", "notes": [], "provenance": null}`
 }
 
@@ -68,14 +68,14 @@ func TestAWellFormedReviewReadsWhole(t *testing.T) {
 	tokens := int64(1200)
 	want := &Record{
 		Schema: Schema, ReviewID: id1, ChangeID: changeID, Target: "main", Review: "docs-style",
-		Reviewer: "klaus-env", Verdict: RequestChanges,
+		Reviewer: "alice", Verdict: RequestChanges,
 		Binding: &Binding{Record: sha1a, Version: 2, Head: sha1b, TargetTip: sha1c, Base: sha1a, Delta: digest},
 		Summary: "Two sentences need splitting.\nSee the notes.",
 		Notes: []Note{
 			{Side: After, Path: "docs/guide.md", Blob: sha1b, Lines: &Lines{Start: 3, End: 4}, Body: "Split this sentence."},
 			{Side: Before, Path: "docs/old file.md", Blob: sha1c, Body: "Why was this removed?"},
 		},
-		Provenance: &Provenance{Harness: "klaus 0.9.1", Model: "claude-opus-5-5", Settings: digest, Inputs: digest, InputTokens: &tokens},
+		Provenance: &Provenance{Harness: "agent-runner 0.9.1", Model: "claude-opus-5-5", Settings: digest, Inputs: digest, InputTokens: &tokens},
 	}
 	if !reflect.DeepEqual(r, want) {
 		t.Fatalf("Parse = %+v, want %+v", r, want)
@@ -109,7 +109,7 @@ func TestMalformedReviewsAreRefused(t *testing.T) {
 	}{
 		{"a key given twice", `"verdict": "request-changes",`, `"verdict": "request-changes", "verdict": "approve",`, `names the key "verdict" twice`, false},
 		{"a key given twice in the binding", `"version": 2,`, `"version": 2, "version": 3,`, `names the key "version" twice`, false},
-		{"a field the schema does not have", `"target": "main",`, `"target": "main", "instance": "qinling",`, `the field "instance"`, false},
+		{"a field the schema does not have", `"target": "main",`, `"target": "main", "instance": "valley",`, `the field "instance"`, false},
 		{"a field in another case", `"verdict": "request-changes",`, `"Verdict": "request-changes",`, `the field "Verdict"`, false},
 		{"a field missing", `"review": "docs-style",`, ``, `no field "review"`, false},
 		{"a field in a note the schema does not have", `"body": "Split this sentence."`, `"body": "Split this sentence.", "line": 3`, `notes[0] holds the field "line"`, false},
@@ -128,7 +128,7 @@ func TestMalformedReviewsAreRefused(t *testing.T) {
 		{"a target that is no branch", `"target": "main"`, `"target": "ma..in"`, "is not a branch name", false},
 		{"a review name in capitals", `"review": "docs-style"`, `"review": "Docs-style"`, "is not a review's name", false},
 		{"a review name too long", `"review": "docs-style"`, `"review": "` + strings.Repeat("d", 65) + `"`, "is not a review's name", false},
-		{"a reviewer that is no principal", `"reviewer": "klaus-env"`, `"reviewer": "-klaus"`, "is not a principal name", false},
+		{"a reviewer that is no principal", `"reviewer": "alice"`, `"reviewer": "-alice"`, "is not a principal name", false},
 		{"a record named by another hash", `"record": "` + sha1a + `"`, `"record": "git-sha256:` + digest + `"`, "binding.record", false},
 		{"a delta in capitals", `"delta": "` + digest + `"`, `"delta": "` + strings.ToUpper(digest) + `"`, "binding.delta", false},
 		{"a side the schema does not have", `"side": "after"`, `"side": "middle"`, `side is "middle"`, false},

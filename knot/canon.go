@@ -22,9 +22,9 @@ import (
 //	status: open
 //	title: "Ship the plan graph"
 //	created: 2026-10-15
-//	created_by: "patrick"
+//	created_by: "operator"
 //	parent: oc-7654321
-//	blocked_by: [bd-89abcde, "cosmo:oc-0123456"]
+//	blocked_by: ["app:oc-0123456", bd-89abcde]
 //	---
 //
 //	The body, as markdown.
@@ -350,7 +350,7 @@ func quote(s string) string {
 // ParseComment reads a comment's file:
 //
 //	---
-//	author: "patrick"
+//	author: "operator"
 //	---
 //
 //	The comment, as markdown.

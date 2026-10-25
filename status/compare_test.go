@@ -28,7 +28,7 @@ func newCompareRepo(t *testing.T) *compareRepo {
 	r.in(dir, "clone", "--quiet", r.origin, r.work)
 	r.git("config", "user.name", "compare-test")
 	r.git("config", "user.email", "compare-test@localhost")
-	r.git("config", "valley.principal", "klaus-env")
+	r.git("config", "valley.principal", "alice")
 	r.git("checkout", "--quiet", "-b", "main")
 	r.file("README", "base\n")
 	r.git("commit", "--quiet", "-m", "base")

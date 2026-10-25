@@ -5,9 +5,8 @@
 // profile element named valley. Every step prints one short line, so a
 // journal of timer runs reads as a history.
 //
-// It mirrors klaus's self-update (github.com/patflynn/klaus,
-// internal/selfupdate), which does the same for klaus: the same steps, the
-// same state file, the same flags.
+// It follows the self-update of an agent runner:
+// the same steps, the same state file, the same flags.
 package selfupdate
 
 import (

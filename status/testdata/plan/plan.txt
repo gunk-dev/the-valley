@@ -2,17 +2,17 @@
 
 ○ oc-1b5d5fe  Slice two lands                                    2/10 ██░░░░░░░░
   ✓ oc-7125815  Read the graph once
-  ◇ qn-f10cc70  Choose the glyphs · owner patrick
-  ◇ ida-9c65fa3 Colour the glyphs · owner patrick
-  ○ oc-c9066f1  Document the schema · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner operator
+  ◇ ida-9c65fa3 Colour the glyphs · owner operator
+  ○ oc-c9066f1  Document the schema · owner operator
                 blocked by oc-23ebda7 (abandoned)
-                lands in cosmo:oc-7654321 (dangling)
-  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+                lands in app:oc-7654321 (dangling)
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner alice
     ⊘ oc-70947c5  Golden files · blocked by bd-6e27560
     ✓ bd-b198e52  The tree misses a level
     ○ bd-6e27560  Width is off by one
   ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
-  ⊘ oc-f982ae7  Ship it · blocked by cosmo:oc-2172d43,
+  ⊘ oc-f982ae7  Ship it · blocked by app:oc-2172d43,
                 ghost:oc-0123456 (dangling), oc-70947c5
   ✗ oc-23ebda7  Use a tree widget
 
@@ -22,17 +22,17 @@ no milestone
   ○ bd-bee76f4  A stray report
   ◇ ida-162ff1b The graph as a web page
 
-waiting on you (patrick)
-  ◇ qn-f10cc70  Choose the glyphs · owner patrick
-  ○ oc-c9066f1  Document the schema · owner patrick
+waiting on you (operator)
+  ◇ qn-f10cc70  Choose the glyphs · owner operator
+  ○ oc-c9066f1  Document the schema · owner operator
                 blocked by oc-23ebda7 (abandoned)
-                lands in cosmo:oc-7654321 (dangling)
+                lands in app:oc-7654321 (dangling)
   ready for approval
     pqrs v1  the-valley  plan: the plan graph as a view
 
 in flight
   ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
-  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner alice
 
 open residuals
   ○ bd-bee76f4  A stray report

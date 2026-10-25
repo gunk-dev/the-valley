@@ -2,8 +2,8 @@
 # Verifier keys whose attestations count, one per line: the name a key
 # signs under, the note format's key hash over that name and key, and
 # base64 of the algorithm byte and the raw ed25519 public key.
-classic-laddie/attestations+9033aa07+AU7/mipW9wcQwVlDmEqBZksGDO3BEG94gb6VBuyDJUgk
-integrator+78dfd4e6+Adyd1zTLxcPuMDojZpjOdUxGj6AYl6RP7yiWb3Cd/fOQ
-makers-mark/attestations+45e7639c+Abc8u2oEFD+sn9vmX0gEbf62V4fmHGSvu10ENPkci3Yd
-makers-mark/attestations+4eb59ac2+AW8B2eVhu/TpXZPyOt/6w0ELdtO6X6cTiWz3CvofxDCR
-patrick+58a6cfd9+AWCxVUxXoyFYV40QureqqSMSA17CvK9IrFB33BA6UOip
+integrator+a3f65322+AUGTRJkpUO9Z+nujKT+u5Ho7jcovPYu070iz6poQIKoI
+operator+c44fb215+AcsWYyDSCNBwb6MnvQ7sfu++kZold+0HuP5leY4IiKnV
+valley-host/attestations+1c56c0e6+AWRtI+7TYX67rzFGIp3ZJEVLAnaL4SA2n5ipYkFqpgKS
+workstation/attestations+09ae4403+AdeHRYwKqCETPj0ZZ/+B5c5Julf3dJZclYZaRWixQs1D
+workstation/attestations+d2809021+AeRtFu8o9epEZ6UPhN7EfghFnP0gUTrvuZxdSwlHGGWQ

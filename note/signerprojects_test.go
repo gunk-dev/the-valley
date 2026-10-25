@@ -11,7 +11,7 @@ import (
 
 func TestASignerCountsOnlyInTheProjectsListedForIt(t *testing.T) {
 	s, err := ParseSignerProjects([]byte(`# workers
-laddie-worker/attestations  the-valley cosmo
+worker/attestations  the-valley app
 
 retired/attestations
 `))
@@ -22,9 +22,9 @@ retired/attestations
 		name, project string
 		counts        bool
 	}{
-		{"laddie-worker/attestations", "the-valley", true},
-		{"laddie-worker/attestations", "cosmo", true},
-		{"laddie-worker/attestations", "elsewhere", false},
+		{"worker/attestations", "the-valley", true},
+		{"worker/attestations", "app", true},
+		{"worker/attestations", "elsewhere", false},
 		// A signer with no project counts nowhere.
 		{"retired/attestations", "the-valley", false},
 		// A signer the file does not name is not restricted.
@@ -38,7 +38,7 @@ retired/attestations
 		t.Errorf("the file restricts the wrong signers")
 	}
 	var none SignerProjects
-	if !none.Counts("laddie-worker/attestations", "elsewhere") || none.Restricts("laddie-worker/attestations") {
+	if !none.Counts("worker/attestations", "elsewhere") || none.Restricts("worker/attestations") {
 		t.Errorf("with no file, a signer is restricted")
 	}
 }
@@ -49,7 +49,7 @@ retired/attestations
 // module refuses the same words (nix/checks/hosts.nix).
 func TestAMalformedSignerProjectsFileDoesNotRead(t *testing.T) {
 	for _, c := range []struct{ file, says string }{
-		{"w/attestations the-valley\nw/attestations cosmo\n", "line 2: w/attestations is named on an earlier line too"},
+		{"w/attestations the-valley\nw/attestations app\n", "line 2: w/attestations is named on an earlier line too"},
 		{"w/attestations+0a1b2c3d the-valley\n", `line 1: signer name "w/attestations+0a1b2c3d" holds a plus`},
 		{"w/attestations guarded\u00a0sealed\n", "holds 0xc2"},
 		{"w/attestations guarded\u2003sealed\n", "holds 0xe2"},

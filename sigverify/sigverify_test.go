@@ -31,7 +31,7 @@ var (
 )
 
 const (
-	release = "release@cosmo.invalid"
+	release = "release@example.org"
 	root    = "root@valley.invalid"
 )
 
@@ -42,8 +42,8 @@ func signers(t *testing.T) *AllowedSigners {
 		"# comments and blank lines are skipped",
 		"",
 		release + ` namespaces="git,file" ` + approver.PublicLine() + " the approver",
-		`ecdsa@cosmo.invalid ` + ecdsaSK.PublicLine(),
-		`ci@cosmo.invalid ` + software.PublicLine(),
+		`ecdsa@example.org ` + ecdsaSK.PublicLine(),
+		`ci@example.org ` + software.PublicLine(),
 		root + ` tkey-signer="1.0.0" ` + tkey.PublicLine(),
 	}, "\n"))
 }
@@ -76,30 +76,30 @@ func TestVerify(t *testing.T) {
 		class   Class  // checked when accepted
 	}{
 		{name: "a touched sk-ed25519 signature", sig: approver.Sign(message, "git", 0x01), opts: as(release, none), class: ClassFIDO},
-		{name: "a touched sk-ecdsa signature", sig: ecdsaSK.Sign(message, "git", 0x01), opts: as("ecdsa@cosmo.invalid", none), class: ClassFIDO},
+		{name: "a touched sk-ecdsa signature", sig: ecdsaSK.Sign(message, "git", 0x01), opts: as("ecdsa@example.org", none), class: ClassFIDO},
 		{name: "touch and PIN, UV required", sig: approver.Sign(message, "git", 0x05), opts: as(release, Policy{RequireUV: true}), class: ClassFIDO},
-		{name: "a software key the policy admits", sig: software.Sign(message, "git", 0), opts: as("ci@cosmo.invalid", Policy{AllowNonSK: true}), class: ClassSoftware},
+		{name: "a software key the policy admits", sig: software.Sign(message, "git", 0), opts: as("ci@example.org", Policy{AllowNonSK: true}), class: ClassSoftware},
 		{name: "a TKey, with its class allowed", sig: tkey.Sign(message, "git", 0), opts: as(root, tkeyOnly), class: ClassTKey},
 		{name: "a security key, with both classes allowed", sig: approver.Sign(message, "git", 0x01), opts: as(release, Policy{Classes: []Class{ClassFIDO, ClassTKey}}), class: ClassFIDO},
 
 		{name: "untouched: UP clear", sig: approver.Sign(message, "git", 0x00), opts: as(release, none), want: NoUserPresence},
-		{name: "untouched sk-ecdsa", sig: ecdsaSK.Sign(message, "git", 0x00), opts: as("ecdsa@cosmo.invalid", none), want: NoUserPresence},
+		{name: "untouched sk-ecdsa", sig: ecdsaSK.Sign(message, "git", 0x00), opts: as("ecdsa@example.org", none), want: NoUserPresence},
 		{name: "a PIN is no touch: UV without UP", sig: approver.Sign(message, "git", 0x04), opts: as(release, none), want: NoUserPresence},
 		{name: "UP alone when UV is required", sig: approver.Sign(message, "git", 0x01), opts: as(release, Policy{RequireUV: true}), want: NoUserVerification},
-		{name: "a software key cannot prove UV", sig: software.Sign(message, "git", 0), opts: as("ci@cosmo.invalid", Policy{AllowNonSK: true, RequireUV: true}), want: NoUserVerification},
+		{name: "a software key cannot prove UV", sig: software.Sign(message, "git", 0), opts: as("ci@example.org", Policy{AllowNonSK: true, RequireUV: true}), want: NoUserVerification},
 		{name: "wrong namespace", sig: approver.Sign(message, "file", 0x01), opts: as(release, none), want: WrongNamespace},
 		{name: "a namespace the line does not allow", sig: approver.Sign(message, "ssh-approval", 0x01), opts: Options{Namespace: "ssh-approval", Principal: release, Time: when}, want: NamespaceNotAllowed},
 		{name: "signer not in allowed signers", sig: stranger.Sign(message, "git", 0x01), opts: as(release, none), want: UnknownKey},
 		{name: "a principal the line does not list", sig: approver.Sign(message, "git", 0x01), opts: as("someone@else.invalid", none), want: PrincipalNotAllowed},
 		{name: "tampered message", sig: approver.Sign(message, "git", 0x01), message: []byte("object 0123\ntype commit\ntag v2\n\nrelease v1\n"), opts: as(release, none), want: BadSignature},
-		{name: "a software key when only security keys are accepted", sig: software.Sign(message, "git", 0), opts: as("ci@cosmo.invalid", none), want: ClassNotAllowed},
+		{name: "a software key when only security keys are accepted", sig: software.Sign(message, "git", 0), opts: as("ci@example.org", none), want: ClassNotAllowed},
 		{name: "not a signature at all", sig: []byte("-----BEGIN PGP SIGNATURE-----\n"), opts: as(release, none), want: Malformed},
 
 		// The TKey class is opt-in, and opting in to it admits nothing else.
 		{name: "a TKey by default", sig: tkey.Sign(message, "git", 0), opts: as(root, none), want: ClassNotAllowed},
 		{name: "a TKey with software keys allowed", sig: tkey.Sign(message, "git", 0), opts: as(root, Policy{AllowNonSK: true}), want: ClassNotAllowed},
 		{name: "a TKey when UV is required", sig: tkey.Sign(message, "git", 0), opts: as(root, Policy{Classes: []Class{ClassTKey}, RequireUV: true}), want: NoUserVerification},
-		{name: "a software key where only a TKey will do", sig: software.Sign(message, "git", 0), opts: as("ci@cosmo.invalid", tkeyOnly), want: ClassNotAllowed},
+		{name: "a software key where only a TKey will do", sig: software.Sign(message, "git", 0), opts: as("ci@example.org", tkeyOnly), want: ClassNotAllowed},
 		{name: "a security key where only a TKey will do", sig: approver.Sign(message, "git", 0x05), opts: as(release, tkeyOnly), want: ClassNotAllowed},
 		{
 			name:    "a TKey's key on an unmarked line is a software key",
@@ -137,7 +137,7 @@ func TestVerify(t *testing.T) {
 			// demand UV, but the second does, and the stricter one holds.
 			name: "verify-required on any matching line",
 			signers: release + ` ` + approver.PublicLine() + "\n" +
-				`*@cosmo.invalid verify-required ` + approver.PublicLine(),
+				`*@example.org verify-required ` + approver.PublicLine(),
 			sig: approver.Sign(message, "git", 0x01), opts: as(release, none), want: NoUserVerification,
 		},
 		{
@@ -324,7 +324,7 @@ func TestAlteredSignatures(t *testing.T) {
 			},
 		},
 		{
-			name: "an ECDSA integer with a redundant leading zero", opts: as("ecdsa@cosmo.invalid", Policy{}), want: Malformed,
+			name: "an ECDSA integer with a redundant leading zero", opts: as("ecdsa@example.org", Policy{}), want: Malformed,
 			sig: func() []byte {
 				e := skforge.ParseEnvelope(ecdsaSK.Sign(message, "git", 0x01))
 				r := skforge.Reader{Rest: e.Signature}

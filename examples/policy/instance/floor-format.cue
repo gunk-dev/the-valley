@@ -1,6 +1,6 @@
 // One document of an instance floor: the formatting half. It is a sample,
 // not an installed file — the real floor directory lives in the instance
-// repository, which for the gunk-dev instance is qinling (dcr-f41f718).
+// repository that policy/valley names (dcr-f41f718).
 //
 // The floor is a directory, not a file. This document and its sibling
 // floor-references.cue both contribute to the `prose` class, and the

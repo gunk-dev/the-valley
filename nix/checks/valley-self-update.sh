@@ -124,7 +124,7 @@ mkdir -p "$TMPDIR/stub"
 printf '#!/bin/sh\nprintf "%%s\\n" "$@"\n' > "$TMPDIR/stub/valley"
 chmod +x "$TMPDIR/stub/valley"
 PATH="$TMPDIR/stub:$PATH" "$(jq -r '.services."valley-self-update".Service.ExecStart' "$unitsPath")" > args.txt
-printf '%s\n' self-update --repo git@classic-laddie:the-valley --branch main | cmp - args.txt \
+printf '%s\n' self-update --repo git@valley-host:the-valley --branch main | cmp - args.txt \
   || fail "the service runs valley with: $(cat args.txt)"
 
 touch "$out"

@@ -36,7 +36,7 @@ func TestPendingFitsEightyColumnsAndKeepsNamesWhole(t *testing.T) {
 	}
 	sh("config", "user.name", "a committer whose name is so long that the line it is on has to cut it short")
 	sh("config", "user.email", "committer@localhost")
-	sh("config", "valley.principal", "klaus-env")
+	sh("config", "valley.principal", "alice")
 	sh("checkout", "--quiet", "-b", "main")
 	sh("commit", "--quiet", "--allow-empty", "-m", "base")
 	sh("push", "--quiet", "origin", "main")

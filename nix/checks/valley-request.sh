@@ -18,7 +18,7 @@ git config --global advice.detachedHead false
 # takes it as a parameter and this check supplies a throwaway.
 ssh-keygen -q -t ed25519 -N "" -C valley-check -f "$TMPDIR/host"
 export VALLEY_ATTEST_KEY="$TMPDIR/host"
-export VALLEY_ATTEST_NAME=laddie.valley.invalid/attestations
+export VALLEY_ATTEST_NAME=valley-host.example.org/attestations
 keyhash="$(attest key --key "$TMPDIR/host" --name "$VALLEY_ATTEST_NAME" | cut -d+ -f2)"
 
 origin="$TMPDIR/project.git"

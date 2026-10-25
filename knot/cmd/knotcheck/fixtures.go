@@ -12,7 +12,7 @@ func mk(t, title string, options ...func(*knot.Knot)) *knot.Knot {
 	ty, _ := knot.TypeNamed(t)
 	slug := knot.Slug(title)
 	k := &knot.Knot{Type: t, ID: knot.DeriveID(ty, slug), Slug: slug, Status: ty.Initial(),
-		Title: title, Created: "2026-10-15", CreatedBy: "patrick"}
+		Title: title, Created: "2026-10-15", CreatedBy: "operator"}
 	if t == "outcome" || t == "bug" {
 		k.BlockedBy = []string{}
 	}
@@ -43,7 +43,7 @@ func with(fs map[string]string, id, author, body string) map[string]string {
 func Fixtures() []Case {
 	milestone := mk("outcome", "Slice one lands")
 	question := mk("question", "Where does the graph live", func(k *knot.Knot) {
-		k.Status, k.Owner = "answered", "patrick"
+		k.Status, k.Owner = "answered", "operator"
 		k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 	})
 	bug := mk("bug", "The hook reads too much", func(k *knot.Knot) { k.Parent = milestone.ID })
@@ -51,11 +51,11 @@ func Fixtures() []Case {
 		k.Status, k.GraduatedInto, k.Parent = "graduated", question.ID, milestone.ID
 	})
 	work := mk("outcome", "Write the hook case", func(k *knot.Knot) {
-		k.Status, k.Parent, k.Owner = "in-progress", milestone.ID, "klaus-env"
-		k.BlockedBy = []string{bug.ID, "cosmo:oc-0123456"}
+		k.Status, k.Parent, k.Owner = "in-progress", milestone.ID, "alice"
+		k.BlockedBy = []string{bug.ID, "app:oc-0123456"}
 		k.ClaimedBy, k.ClaimedAt = "20261015-0058-feb0a926", "2026-10-15T00:58:00Z"
-		k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr", "https://github.com/gunk-dev/klaus/pull/12"}
-		k.Target, k.Source = "klaus", "2026-10-15, the plan-graph design"
+		k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr", "https://github.com/example/site/pull/12"}
+		k.Target, k.Source = "site", "2026-10-15, the plan-graph design"
 		k.Body = "Some \"quoted\" text, and a line with <angle> brackets & more.\n\n- a list\n"
 	})
 	// A milestone waiting on its own work item is no cycle.
@@ -65,7 +65,7 @@ func Fixtures() []Case {
 	work2.ID = knot.DeriveID(work2.TypeOf(), work2.Slug)
 
 	valid := []Case{
-		{Name: "every-shape", Accept: true, Files: with(files(milestone, question, bug, idea, work, waiting, work2), work.ID, "klaus-env", "Claimed for the run.\n")},
+		{Name: "every-shape", Accept: true, Files: with(files(milestone, question, bug, idea, work, waiting, work2), work.ID, "alice", "Claimed for the run.\n")},
 		{Name: "one-knot", Accept: true, Files: files(mk("bug", "A lone bug"))},
 		// A graduated idea moves to work taken on, or to a question to
 		// settle.
@@ -123,20 +123,20 @@ func Fixtures() []Case {
 			return strings.Replace(s, "blocked_by: []\n", "blocked_by: []\npriority: \"high\"\n", 1)
 		})),
 		reject("blocked-by-on-an-idea", knot.RuleFieldOnType, edit(mk("idea", "Idea"), func(s string) string {
-			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nblocked_by: []\n", 1)
+			return strings.Replace(s, "created_by: \"operator\"\n", "created_by: \"operator\"\nblocked_by: []\n", 1)
 		})),
 		reject("changes-on-an-idea", knot.RuleFieldOnType, files(set(mk("idea", "Idea"), func(k *knot.Knot) {
 			k.Changes = []string{"valley:the-valley/kkkkllllmmmmnnnnooooppppqqqqrrrr"}
 		}))),
 		reject("claim-on-a-question", knot.RuleFieldOnType, edit(asked, func(s string) string {
-			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nclaimed_by: \"run\"\nclaimed_at: \"2026-10-15T00:58:00Z\"\n", 1)
+			return strings.Replace(s, "created_by: \"operator\"\n", "created_by: \"operator\"\nclaimed_by: \"run\"\nclaimed_at: \"2026-10-15T00:58:00Z\"\n", 1)
 		})),
 		reject("blocked-by-on-a-question", knot.RuleFieldOnType, edit(asked, func(s string) string {
-			return strings.Replace(s, "created_by: \"patrick\"\n", "created_by: \"patrick\"\nblocked_by: []\n", 1)
+			return strings.Replace(s, "created_by: \"operator\"\n", "created_by: \"operator\"\nblocked_by: []\n", 1)
 		})),
 		reject("creator-not-a-name", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.CreatedBy = "the operator" }))),
 		reject("owner-not-a-name", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.Owner = "-dash" }))),
-		reject("blocker-not-a-reference", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.BlockedBy = []string{"cosmo/oc-0123456"} }))),
+		reject("blocker-not-a-reference", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.BlockedBy = []string{"app/oc-0123456"} }))),
 		reject("change-not-a-link", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.Changes = []string{"https://example.com/pull/1"} }))),
 		reject("claim-time-not-a-time", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.ClaimedBy, k.ClaimedAt = "run", "yesterday" }))),
 		reject("created-not-a-date", knot.RuleFieldShape, files(set(a, func(k *knot.Knot) { k.Created = "2026-10-15T00:00" }))),

@@ -29,8 +29,9 @@ const (
 
 	// signerSuffix completes a host's signer name. A note names its key by
 	// a string and a hash, and the string a valley host uses is its fully
-	// qualified name, a slash, and what it is signing: laddie.gunk.dev
-	// attesting is "laddie.gunk.dev/attestations". The host part says
+	// qualified name, a slash, and what it is signing:
+	// valley-host.example.org attesting is
+	// "valley-host.example.org/attestations". The host part says
 	// which machine to go and ask about a key; the suffix keeps a key
 	// signing attestations distinct as a verifier key from the same key
 	// signing anything else, because the name is inside the key hash.

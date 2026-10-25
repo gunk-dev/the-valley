@@ -1,5 +1,5 @@
 // the-valley's project layer: what this one project declares above the
-// floor. The floor is the owning valley's (qinling policy/instance); this
+// floor. The floor is the owning valley's policy/instance; this
 // layer binds the-valley alone, and a project can only add to its own
 // layer (dcr-f41f718).
 package verification

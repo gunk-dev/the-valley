@@ -11,8 +11,8 @@ package main
 //	subject.primary valley-tree-v1
 //	…
 //
-//	— laddie.gunk.dev/attestations WhFo+DGb1c/Fk6…
-//	— witness.gunk.dev/attestations Ro+Yc3q9nSs8W…
+//	— valley-host.example.org/attestations WhFo+DGb1c/Fk6…
+//	— witness.example.org/attestations Ro+Yc3q9nSs8W…
 //
 // This is the format golang.org/x/mod/sumdb/note defines and transparency
 // log checkpoints are published in.
@@ -43,7 +43,7 @@ package main
 // golang.org/x/mod/sumdb/note is the reference implementation of the
 // format, and the note module is that format written out again. The
 // format is frozen — it is what sum.golang.org publishes and every
-// checkpoint verifier reads — and gunk-dev holds that the size of a
+// checkpoint verifier reads — and the project holds that the size of a
 // dependency graph is itself the exposure, so the valley's programs depend
 // on nothing outside the standard library and their own repository.
 // Interoperability is bought by pinning bytes rather than by sharing code:

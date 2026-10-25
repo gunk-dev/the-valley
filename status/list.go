@@ -1,6 +1,6 @@
 // valley changes: every change, across every repository a host serves,
 // as valley-changes/v1. docs/architecture.md documents the object, and
-// klaus reads it, so a change to any field's name or meaning is a new
+// front ends read it, so a change to any field's name or meaning is a new
 // schema version.
 //
 // Without --all it lists the current repository. With --all it lists every

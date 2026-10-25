@@ -10,7 +10,7 @@ package note
 // Each line names one signer, then the projects its evidence counts in,
 // separated by spaces:
 //
-//	laddie-worker/attestations the-valley cosmo
+//	worker/attestations the-valley app
 //
 // A signer the file names counts only in the projects on its line, and a
 // line with a name and no project lets it count nowhere. A signer the file

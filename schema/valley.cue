@@ -162,8 +162,8 @@ package valley
 	// merely no longer written to or pruned.
 	enable: bool | *true
 
-	// The backup target kind. restic over sftp (a Hetzner Storage Box,
-	// dcr-d7952bc) is the only target today; an object-store target
+	// The backup target kind. restic over sftp (dcr-d7952bc) is the
+	// only target today; an object-store target
 	// would widen this to a disjunction ("restic-s3") — deliberately not
 	// before an implementation exists.
 	target: "restic-sftp"

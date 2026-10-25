@@ -62,7 +62,7 @@ line() {
 
 srv="$w/srv"
 git init --quiet --bare "$srv/the-valley.git"
-git init --quiet --bare "$srv/cosmo.git"
+git init --quiet --bare "$srv/app.git"
 graph="$srv/the-valley.git"
 git init --quiet "$w/work"
 cd "$w/work"
@@ -71,7 +71,7 @@ git remote add origin "$srv/the-valley.git"
 # A write names the principal; without one it is refused, and nothing is
 # pushed.
 fails 1 'valley.principal' valley knot new outcome "Slice one lands"
-git config valley.principal patrick
+git config valley.principal operator
 if git -C "$graph" rev-parse --verify --quiet refs/the-valley/knots > /dev/null; then
   fail "a refused write created the ref"
 fi
@@ -93,11 +93,11 @@ fails 2 'knot has no verb' valley knot frob
 # principal, carrying its operation's trailer.
 ok valley knot new outcome "Slice one lands" --json
 milestone="$(jq -r .knot.id "$w/out")"
-holds '.schema == "valley-knot-op/v1"' '.knot.status == "open"' '.knot.created_by == "patrick"' \
+holds '.schema == "valley-knot-op/v1"' '.knot.status == "open"' '.knot.created_by == "operator"' \
   '.knot.blocked_by == []' '.op | test("^[0-9a-f]{16}$")'
 first="$(git -C "$graph" rev-parse refs/the-valley/knots)"
 [ "$(git -C "$graph" rev-list --parents -n 1 "$first")" = "$first" ] || fail "the first commit has a parent"
-[ "$(git -C "$graph" log -1 --format=%cn "$first")" = patrick ] || fail "the committer is not the principal"
+[ "$(git -C "$graph" log -1 --format=%cn "$first")" = operator ] || fail "the committer is not the principal"
 [ "$(git -C "$graph" log -1 --format='%(trailers:key=Valley-Op,valueonly)' "$first")" = "$(jq -r .op "$w/out")" ] \
   || fail "the commit carries no Valley-Op trailer naming its operation"
 [ "$milestone" = "oc-$(printf '%s' slice-one-lands | sha256sum | cut -c1-7)" ] \
@@ -107,7 +107,7 @@ ok valley knot new bug "The hook reads too much" --parent "$milestone"
 bug="bd-$(printf '%s' the-hook-reads-too-much | sha256sum | cut -c1-7)"
 printf 'The hook case.\n\nWith a second paragraph.\n' > "$w/body"
 ok valley knot new outcome "Write the hook case" --parent "$milestone" \
-  --blocked-by "$bug" --blocked-by cosmo:oc-0123456 --owner klaus-env --body - < "$w/body"
+  --blocked-by "$bug" --blocked-by app:oc-0123456 --owner alice --body - < "$w/body"
 work="oc-$(printf '%s' write-the-hook-case | sha256sum | cut -c1-7)"
 # Every later commit has the previous tip as its one parent.
 second="$(git -C "$graph" rev-parse refs/the-valley/knots)"
@@ -128,9 +128,9 @@ fails 1 'control character' valley knot new idea $'A bell \a here'
 # ----------------------------------------------------------------------
 # show and list.
 ok valley knot show "$work" --json
-holds '.schema == "valley-knot/v1"' ".knot.parent == \"$milestone\"" '.knot.owner == "klaus-env"' \
-  ".knot.blocked_by == [\"$bug\", \"cosmo:oc-0123456\"]" ".knot.waiting_on == [\"$bug\", \"cosmo:oc-0123456\"]" \
-  '.knot.dangling == ["cosmo:oc-0123456"]' '.knot.ready == false' \
+holds '.schema == "valley-knot/v1"' ".knot.parent == \"$milestone\"" '.knot.owner == "alice"' \
+  ".knot.blocked_by == [\"app:oc-0123456\", \"$bug\"]" ".knot.waiting_on == [\"app:oc-0123456\", \"$bug\"]" \
+  '.knot.dangling == ["app:oc-0123456"]' '.knot.ready == false' \
   '.knot.body == "The hook case.\n\nWith a second paragraph.\n"'
 ok valley knot show "$milestone" --json
 holds ".knot.children | sort == ([\"$bug\", \"$work\"] | sort)" '.knot.progress == {"done": 0, "of": 2}'
@@ -142,21 +142,21 @@ ok valley knot list --ready --json
 holds "[.knots[].id] | sort == ([\"$milestone\", \"$bug\", \"$twin\"] | sort)"
 ok valley knot list --type bug --json
 holds ".knots | map(.id) == [\"$bug\"]"
-ok valley knot list --owner klaus-env --json
+ok valley knot list --owner alice --json
 holds ".knots | map(.id) == [\"$work\"]"
 fails 1 '--status takes active, terminal, or one of' valley knot list --status nonsense
 fails 1 'holds no knot' valley knot show oc-0000000
 
 # ----------------------------------------------------------------------
 # set: the settable fields, and the guards.
-ok valley knot set "$bug" title="The hook reads too much at once" owner=patrick
+ok valley knot set "$bug" title="The hook reads too much at once" owner=operator
 ok valley knot show "$bug" --json
-holds '.knot.title == "The hook reads too much at once"' '.knot.owner == "patrick"'
+holds '.knot.title == "The hook reads too much at once"' '.knot.owner == "operator"'
 fails 1 'set changes status, title, source, owner, target, graduated_into' valley knot set "$bug" priority=high
 fails 1 'change it with valley knot link' valley knot set "$bug" parent="$work"
 fails 1 "a bug's status is one of open, closed" valley knot set "$bug" status=done
 fails 3 "requires \"closed\"" valley knot set "$bug" status=open --if status=closed
-fails 0 'nothing to change' valley knot set "$bug" owner=patrick
+fails 0 'nothing to change' valley knot set "$bug" owner=operator
 ok valley knot set "$bug" owner=
 
 # link and unlink, and a cycle refused.
@@ -184,7 +184,7 @@ printf 'A second finding,\nover two lines.\n' | valley knot comment "$work" --bo
 ok valley knot show "$work" --json
 holds '.knot.comment_count == 2' \
   '[.knot.comments[].body] | sort == ["A finding.\n", "A second finding,\nover two lines.\n"]' \
-  '.knot.comments | all(.author == "patrick")'
+  '.knot.comments | all(.author == "operator")'
 [ "$(git -C "$graph" ls-tree --name-only "refs/the-valley/knots:comments/$work" | wc -l)" = 2 ] \
   || fail "two comments are not two files"
 fails 1 'takes the comment' valley knot comment "$work"
@@ -209,27 +209,27 @@ ok valley knot claim "$work" --run run-2
 
 # ----------------------------------------------------------------------
 # Another project on the same host, by --project and by a qualified id.
-ok valley knot new outcome "Land the module" --project cosmo --json
-holds '.project == "cosmo"'
+ok valley knot new outcome "Land the module" --project app --json
+holds '.project == "app"'
 other="$(jq -r .knot.id "$w/out")"
-ok valley knot link "$work" --blocked-by "cosmo:$other"
+ok valley knot link "$work" --blocked-by "app:$other"
 ok valley knot show "$work" --json
-holds ".knot.waiting_on | index(\"cosmo:$other\") != null" ".knot.dangling | index(\"cosmo:$other\") == null"
-ok valley knot set "$other" status=done --project cosmo
-ok valley knot show "cosmo:$other" --json
-holds '.project == "cosmo"' '.knot.status == "done"'
+holds ".knot.waiting_on | index(\"app:$other\") != null" ".knot.dangling | index(\"app:$other\") == null"
+ok valley knot set "$other" status=done --project app
+ok valley knot show "app:$other" --json
+holds '.project == "app"' '.knot.status == "done"'
 ok valley knot show "$work" --json
-holds ".knot.waiting_on | index(\"cosmo:$other\") == null"
-git -C "$srv/cosmo.git" rev-parse --verify --quiet refs/the-valley/knots > /dev/null \
-  || fail "--project wrote no graph in cosmo"
+holds ".knot.waiting_on | index(\"app:$other\") == null"
+git -C "$srv/app.git" rev-parse --verify --quiet refs/the-valley/knots > /dev/null \
+  || fail "--project wrote no graph in app"
 
 # ----------------------------------------------------------------------
 # Ready means an outcome or a bug: an idea and an open question are not.
 ok valley knot new idea "A thought, not work" --json
 idea="$(jq -r .knot.id "$w/out")"
-ok valley knot new question "Which ref holds the graph" --owner patrick --json
+ok valley knot new question "Which ref holds the graph" --owner operator --json
 asked="$(jq -r .knot.id "$w/out")"
-holds '.knot.type == "question"' '.knot.status == "open"' '.knot.owner == "patrick"' \
+holds '.knot.type == "question"' '.knot.status == "open"' '.knot.owner == "operator"' \
   '.knot.path | startswith("questions/qn-")'
 fails 1 'carries no blocked_by' valley knot new question "A blocked question" --blocked-by "$bug"
 ok valley knot list --ready --json
@@ -277,15 +277,15 @@ holds '.knot.ready == true' '.knot.waiting_on == []' ".knot.cleared_by_ending ==
 # source, and stays never ready. An idea links no change: it graduates
 # into an outcome or a question, and that links the change.
 ok valley knot set "$asked" status=answered
-ok valley knot link "$asked" --change https://github.com/gunk-dev/the-valley/pull/7
+ok valley knot link "$asked" --change https://github.com/example/the-valley/pull/7
 ok valley knot show "$asked" --json
-holds '.knot.changes == ["https://github.com/gunk-dev/the-valley/pull/7"]' '.knot.ready == false'
+holds '.knot.changes == ["https://github.com/example/the-valley/pull/7"]' '.knot.ready == false'
 ok valley knot show "$asked"
-line '^change: +https://github.com/gunk-dev/the-valley/pull/7$'
+line '^change: +https://github.com/example/the-valley/pull/7$'
 ok valley knot list --type question --json
-holds ".knots | map(select(.id == \"$asked\")) | .[0].changes == [\"https://github.com/gunk-dev/the-valley/pull/7\"]"
+holds ".knots | map(select(.id == \"$asked\")) | .[0].changes == [\"https://github.com/example/the-valley/pull/7\"]"
 before="$(git -C "$graph" rev-parse refs/the-valley/knots)"
-fails 1 'an idea does not carry changes' valley knot link "$idea" --change https://github.com/gunk-dev/the-valley/pull/7
+fails 1 'an idea does not carry changes' valley knot link "$idea" --change https://github.com/example/the-valley/pull/7
 [ "$(git -C "$graph" rev-parse refs/the-valley/knots)" = "$before" ] || fail "a change linked to an idea was pushed"
 ok valley knot schema --json
 holds '.fields[] | select(.name == "changes") | .on == ["outcome","bug","question"]'
@@ -442,7 +442,7 @@ holds '.knot.title == "My title"'
 if git rev-parse --verify --quiet HEAD > /dev/null; then fail "a write made a commit on the checkout"; fi
 # Every commit on the ref is one operation by the principal, with one
 # parent, and no operation appears twice.
-git -C "$graph" log --format=%cn refs/the-valley/knots | sort -u | grep -qvx patrick && fail "a commit names another committer"
+git -C "$graph" log --format=%cn refs/the-valley/knots | sort -u | grep -qvx operator && fail "a commit names another committer"
 [ "$(git -C "$graph" log --format=%B refs/the-valley/knots | grep -c '^Valley-Op:')" \
   = "$(git -C "$graph" rev-list --count refs/the-valley/knots)" ] || fail "a commit carries no operation"
 dupes="$(git -C "$graph" log --format=%B refs/the-valley/knots | grep '^Valley-Op:' | sort | uniq -d)"

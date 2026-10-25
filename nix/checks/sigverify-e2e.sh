@@ -2,9 +2,9 @@
 # Paths and fixtures come from the derivation environment.
 # shellcheck disable=SC2154
 #
-# The shipped sigverify over a real repository, called the way cosmo calls
-# it to verify a release tag. ssh-keygen signs through the sk-dummy
-# authenticator the derivation names in SSH_SK_PROVIDER.
+# The shipped sigverify over a real repository, called the way a host's
+# deploy step calls it to verify a release tag. ssh-keygen signs through
+# the sk-dummy authenticator the derivation names in SSH_SK_PROVIDER.
 export HOME="$TMPDIR"
 export GIT_CONFIG_NOSYSTEM=1
 git config --global user.name valley-check

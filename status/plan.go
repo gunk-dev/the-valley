@@ -18,7 +18,7 @@
 //
 //	◐ oc-1d4a2b7 Slice two lands                                    2/7 ██░░░░░░░░
 //	  ✓ bd-2b3c4d5 The hook reads too much
-//	  ◐ oc-3f4e5d6 Draw the tree · claimed by run-7 2h ago · owner klaus-env
+//	  ◐ oc-3f4e5d6 Draw the tree · claimed by run-7 2h ago · owner alice
 //	    ⊘ oc-8a7b6c5 Golden files · blocked by oc-3f4e5d6
 //
 // Three sections follow the tree. "waiting on you" lists the active

@@ -74,13 +74,13 @@ same() {
 }
 
 srv="$w/srv"
-for project in the-valley cosmo quiet; do
+for project in the-valley app quiet; do
   git init --quiet --bare "$srv/$project.git"
 done
 git init --quiet "$w/work"
 cd "$w/work"
 git remote add origin "$srv/the-valley.git"
-git config valley.principal patrick
+git config valley.principal operator
 
 # main carries policy/instance, so this repository is its own instance,
 # and the instance publishes its projects as valley-init writes the list:
@@ -90,7 +90,7 @@ echo 'package verification' > policy/instance/floor.cue
 git add policy
 git commit --quiet -m "the instance"
 git push --quiet origin main
-projects="$(printf '%s\n' cosmo ghost quiet the-valley | git -C "$srv/the-valley.git" hash-object -w --stdin)"
+projects="$(printf '%s\n' app ghost quiet the-valley | git -C "$srv/the-valley.git" hash-object -w --stdin)"
 git -C "$srv/the-valley.git" update-ref refs/the-valley/projects "$projects"
 
 # A change ready for approval, under a fixed change ID.
@@ -114,7 +114,7 @@ jq -e '.schema == "valley-plan/v1" and (.projects | length) == 1 and .projects[0
 # The graph. Day one: two milestones, one finished by the end.
 d1=2026-10-01T09:00:00Z d2=2026-10-02T09:00:00Z d3=2026-10-03T09:00:00Z
 d14=2026-10-14T21:30:00Z now=2026-10-15T09:00:00Z
-other="$(knot "$d1" new outcome "Land the module" --project cosmo)"
+other="$(knot "$d1" new outcome "Land the module" --project app)"
 one="$(knot "$d1" new outcome "Slice one lands")"
 two="$(knot "$d1" new outcome "Slice two lands")"
 hook="$(knot "$d1" new bug "The hook reads too much" --parent "$one")"
@@ -124,17 +124,17 @@ case="$(knot "$d1" new outcome "Write the hook case" --parent "$one")"
 once="$(knot "$d1" new outcome "Read the graph once" --parent "$two")"
 
 # Day two: the work under slice two.
-tree="$(knot "$d2" new outcome "Draw the tree" --parent "$two" --owner klaus-env)"
+tree="$(knot "$d2" new outcome "Draw the tree" --parent "$two" --owner alice)"
 width="$(knot "$d2" new bug "Width is off by one" --parent "$tree")"
 level="$(knot "$d2" new bug "The tree misses a level" --parent "$tree")"
 golden_files="$(knot "$d2" new outcome "Golden files" --parent "$tree" --blocked-by "$width")"
 ship="$(knot "$d2" new outcome "Ship it" --parent "$two" --blocked-by "$golden_files" \
-  --blocked-by "cosmo:$other" --blocked-by ghost:oc-0123456)"
+  --blocked-by "app:$other" --blocked-by ghost:oc-0123456)"
 widget="$(knot "$d2" new outcome "Use a tree widget" --parent "$two")"
 schema="$(knot "$d2" new outcome "Document the schema" --parent "$two" --blocked-by "$widget" \
-  --owner patrick --target cosmo:oc-7654321)"
-glyphs="$(knot "$d2" new question "Choose the glyphs" --parent "$two" --owner patrick)"
-colour="$(knot "$d2" new idea "Colour the glyphs" --parent "$two" --owner patrick)"
+  --owner operator --target app:oc-7654321)"
+glyphs="$(knot "$d2" new question "Choose the glyphs" --parent "$two" --owner operator)"
+colour="$(knot "$d2" new idea "Colour the glyphs" --parent "$two" --owner operator)"
 old="$(knot "$d2" new outcome "Old work" --parent "$two")"
 knot "$d2" claim "$old" --run run-0
 
@@ -145,8 +145,8 @@ late="$(knot "$d3" new outcome "A late milestone")"
 stray="$(knot "$d3" new bug "A stray report")"
 web="$(knot "$d3" new idea "The graph as a web page")"
 dropped="$(knot "$d3" new idea "A dropped thought")"
-settled="$(knot "$d3" new question "Where the plan lives" --owner patrick)"
-moot="$(knot "$d3" new question "A moot point" --owner patrick)"
+settled="$(knot "$d3" new question "Where the plan lives" --owner operator)"
+moot="$(knot "$d3" new question "A moot point" --owner operator)"
 
 # Then the work moves.
 knot "$d3" set "$hook" status=closed
@@ -194,7 +194,7 @@ holds "$p.roots == [\"$one\", \"$two\", \"$late\"]" \
   "$(k "$old").claim.stale == true" \
   "$(k "$tree").claim.stale == false" \
   "$(k "$tree").claim.age_seconds == 41400" \
-  "[$(k "$ship").edges[] | {ref, state, why}] == [{\"ref\": \"cosmo:$other\", \"state\": \"resolved\", \"why\": null}, {\"ref\": \"ghost:oc-0123456\", \"state\": \"dangling\", \"why\": \"unreadable\"}]" \
+  "[$(k "$ship").edges[] | {ref, state, why}] == [{\"ref\": \"app:$other\", \"state\": \"resolved\", \"why\": null}, {\"ref\": \"ghost:oc-0123456\", \"state\": \"dangling\", \"why\": \"unreadable\"}]" \
   "[$(k "$schema").edges[] | {field, state, why}] == [{\"field\": \"target\", \"state\": \"dangling\", \"why\": \"missing\"}]" \
   "$(k "$glyphs").state == \"active\"" \
   "$(k "$settled").state == \"done\"" \
@@ -207,15 +207,15 @@ holds "$p.roots == [\"$one\", \"$two\", \"$late\"]" \
 # ----------------------------------------------------------------------
 # The operator: --owner names another, and with no principal named the
 # view says how to name one.
-ok at "$now" valley plan --owner klaus-env --json
-holds '.operator == "klaus-env"' "$p.waiting_on_you.knots == [\"$tree\"]"
+ok at "$now" valley plan --owner alice --json
+holds '.operator == "alice"' "$p.waiting_on_you.knots == [\"$tree\"]"
 git config --unset valley.principal
 ok at "$now" valley plan
 grep -qx '  set git config valley.principal <name>, or pass --owner <name>, to see the knots you own' "$w/out" \
   || fail "with no operator named, plan did not say how to name one"
 ok at "$now" valley plan --json
 holds '.operator == null' "$p.waiting_on_you.knots == null"
-git config valley.principal patrick
+git config valley.principal operator
 
 # ----------------------------------------------------------------------
 # Another project, by --project, and every project the host publishes.
@@ -226,7 +226,7 @@ ok at "$now" valley plan --all
 cp "$w/out" "$w/plan-all.txt"
 same plan-all.txt "$w/plan-all.txt"
 ok at "$now" valley plan --all --json
-holds '[.projects[].project] == ["cosmo", "ghost", "quiet", "the-valley"]' \
+holds '[.projects[].project] == ["app", "ghost", "quiet", "the-valley"]' \
   '.projects[1].error != null' '.projects[2].tip == "" and .projects[2].error == null' \
   '.projects[0].knots | length == 1'
 
@@ -238,7 +238,7 @@ fails() {
   [ "$status" = 1 ] || fail "$* exited $status, not 1"
   grep -qE -- "$says" "$w/err" || fail "$* did not say $says"
 }
-fails 'not both' valley plan --all --project cosmo
+fails 'not both' valley plan --all --project app
 fails 'does not take --frob' valley plan --frob
 fails 'is not one' valley plan --owner 'not a name'
 status=0

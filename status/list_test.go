@@ -14,25 +14,25 @@ import (
 // replaces the last path segment alone.
 func TestProjectURL(t *testing.T) {
 	for _, c := range []struct{ instance, want string }{
-		{"git@classic-laddie:qinling.git", "git@classic-laddie:cosmo.git"},
-		{"git@classic-laddie:qinling", "git@classic-laddie:cosmo"},
-		{"classic-laddie:srv/git/qinling.git", "classic-laddie:srv/git/cosmo.git"},
-		{"git@classic-laddie:/srv/git/qinling.git/", "git@classic-laddie:/srv/git/cosmo.git"},
-		{"ssh://git@classic-laddie/qinling.git", "ssh://git@classic-laddie/cosmo.git"},
-		{"ssh://git@classic-laddie:2222/srv/git/qinling.git", "ssh://git@classic-laddie:2222/srv/git/cosmo.git"},
-		{"ssh://git@[fe80::1]:22/qinling.git", "ssh://git@[fe80::1]:22/cosmo.git"},
-		{"https://git.example/valley/qinling", "https://git.example/valley/cosmo"},
-		{"file:///srv/git/qinling.git", "file:///srv/git/cosmo.git"},
-		{"/srv/git/qinling.git", "/srv/git/cosmo.git"},
-		{"./a:b/qinling.git", "./a:b/cosmo.git"},
+		{"git@valley-host:valley.git", "git@valley-host:app.git"},
+		{"git@valley-host:valley", "git@valley-host:app"},
+		{"valley-host:srv/git/valley.git", "valley-host:srv/git/app.git"},
+		{"git@valley-host:/srv/git/valley.git/", "git@valley-host:/srv/git/app.git"},
+		{"ssh://git@valley-host/valley.git", "ssh://git@valley-host/app.git"},
+		{"ssh://git@valley-host:2222/srv/git/valley.git", "ssh://git@valley-host:2222/srv/git/app.git"},
+		{"ssh://git@[fe80::1]:22/valley.git", "ssh://git@[fe80::1]:22/app.git"},
+		{"https://git.example/valley/valley", "https://git.example/valley/app"},
+		{"file:///srv/git/valley.git", "file:///srv/git/app.git"},
+		{"/srv/git/valley.git", "/srv/git/app.git"},
+		{"./a:b/valley.git", "./a:b/app.git"},
 	} {
-		got, err := projectURL(c.instance, "cosmo")
+		got, err := projectURL(c.instance, "app")
 		if err != nil || got != c.want {
 			t.Errorf("projectURL(%q) = %q, %v; want %q", c.instance, got, err, c.want)
 		}
 	}
-	for _, bad := range []string{"ssh://classic-laddie", "ssh://classic-laddie/", "git@classic-laddie:", "git@classic-laddie:.git"} {
-		if got, err := projectURL(bad, "cosmo"); err == nil {
+	for _, bad := range []string{"ssh://valley-host", "ssh://valley-host/", "git@valley-host:", "git@valley-host:.git"} {
+		if got, err := projectURL(bad, "app"); err == nil {
 			t.Errorf("projectURL(%q) = %q, where it has no path to replace", bad, got)
 		}
 	}
@@ -40,11 +40,11 @@ func TestProjectURL(t *testing.T) {
 
 func TestHostOf(t *testing.T) {
 	for url, want := range map[string]string{
-		"git@classic-laddie:cosmo.git":              "classic-laddie",
-		"ssh://git@classic-laddie:2222/cosmo.git":   "classic-laddie:2222",
-		"https://user@git.example/valley/cosmo.git": "git.example",
-		"/srv/git/cosmo.git":                        "localhost",
-		"file:///srv/git/cosmo.git":                 "localhost",
+		"git@valley-host:app.git":                 "valley-host",
+		"ssh://git@valley-host:2222/app.git":      "valley-host:2222",
+		"https://user@git.example/valley/app.git": "git.example",
+		"/srv/git/app.git":                        "localhost",
+		"file:///srv/git/app.git":                 "localhost",
 	} {
 		if got := hostOf(url); got != want {
 			t.Errorf("hostOf(%q) = %q, want %q", url, got, want)
@@ -54,8 +54,8 @@ func TestHostOf(t *testing.T) {
 
 // pointerURL reads policy/valley as bin/valley's pointer_url does.
 func TestPointerURL(t *testing.T) {
-	got := pointerURL("# the owning valley\n\n  git@classic-laddie:qinling.git  # floor\nother\n")
-	if got != "git@classic-laddie:qinling.git" {
+	got := pointerURL("# the owning valley\n\n  git@valley-host:valley.git  # floor\nother\n")
+	if got != "git@valley-host:valley.git" {
 		t.Errorf("pointerURL = %q", got)
 	}
 	if got := pointerURL("# nothing\n\n"); got != "" {
@@ -67,30 +67,30 @@ func TestPointerURL(t *testing.T) {
 // and minimal: one letter shorter, down to four, and another change
 // listed shares it.
 func TestHandlesUniqueAndMinimal(t *testing.T) {
-	cosmo := []string{
+	app := []string{
 		"nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
 		"nxvpwlzzqtsrzyoukklnpmqrstuvwxyz",
 		"xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 	}
 	valley := []string{
-		"nxvpwlkmqtsrzyoukklnpmqrstuvwxyk", // shares 31 letters with cosmo's first
+		"nxvpwlkmqtsrzyoukklnpmqrstuvwxyk", // shares 31 letters with app's first
 		"xunykkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 		"qqqqkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
 	}
 	repos := []listed{
-		{source: source{name: "cosmo"}, snap: &snapshot{all: recordsOf(cosmo)}},
+		{source: source{name: "app"}, snap: &snapshot{all: recordsOf(app)}},
 		{source: source{name: "valley"}, snap: &snapshot{all: recordsOf(valley)}},
 		{source: source{name: "ghost", err: errUnread}},
 	}
 	got := handles(repos)
 	h := map[string]string{}
-	for _, id := range cosmo {
-		h[id] = got[handleKey{"cosmo", "main", id}]
+	for _, id := range app {
+		h[id] = got[handleKey{"app", "main", id}]
 	}
 	for _, id := range valley {
 		h[id] = got[handleKey{"valley", "main", id}]
 	}
-	all := append(append([]string(nil), cosmo...), valley...)
+	all := append(append([]string(nil), app...), valley...)
 	seen := map[string]string{}
 	for _, id := range all {
 		handle := h[id]
@@ -129,14 +129,14 @@ func TestHandlesUniqueAndMinimal(t *testing.T) {
 func TestHandlesQualifiedAcrossRepos(t *testing.T) {
 	shared := "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz"
 	repos := []listed{
-		{source: source{name: "cosmo"}, snap: &snapshot{all: recordsOf([]string{shared, "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"})}},
+		{source: source{name: "app"}, snap: &snapshot{all: recordsOf([]string{shared, "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"})}},
 		{source: source{name: "origin"}, snap: &snapshot{all: recordsOf([]string{shared})}},
 	}
 	h := handles(repos)
 	want := handleMap{
-		{"cosmo", "main", shared}:                             "cosmo:nxvp",
-		{"origin", "main", shared}:                            "origin:nxvp",
-		{"cosmo", "main", "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"}: "xunx",
+		{"app", "main", shared}:                             "app:nxvp",
+		{"origin", "main", shared}:                          "origin:nxvp",
+		{"app", "main", "xunxkkkkkkkkkkkkkkkkkkkkkkkkkkkk"}: "xunx",
 	}
 	if len(h) != len(want) {
 		t.Fatalf("handles = %v, want %v", h, want)
@@ -153,9 +153,9 @@ func TestHandlesQualifiedAcrossRepos(t *testing.T) {
 // scp-like and local URLs are read.
 func TestCheckURL(t *testing.T) {
 	for _, ok := range []string{
-		"git@classic-laddie:qinling.git", "classic-laddie:qinling", "ssh://git@classic-laddie:22/qinling.git",
-		"ssh://git@[::1]/qinling.git", "git://classic-laddie/qinling.git", "https://git.example/qinling",
-		"file:///srv/git/qinling.git", "/srv/git/qinling.git", "./qinling.git",
+		"git@valley-host:valley.git", "valley-host:valley", "ssh://git@valley-host:22/valley.git",
+		"ssh://git@[::1]/valley.git", "git://valley-host/valley.git", "https://git.example/valley",
+		"file:///srv/git/valley.git", "/srv/git/valley.git", "./valley.git",
 	} {
 		if err := checkURL(ok); err != nil {
 			t.Errorf("checkURL(%q) = %v", ok, err)
@@ -163,14 +163,14 @@ func TestCheckURL(t *testing.T) {
 	}
 	for _, bad := range []string{
 		"", "--upload-pack=touch /tmp/pwned; git-upload-pack", "-oProxyCommand=sh:x",
-		"ext::sh -c touch% /tmp/pwned", "fd::0", "remote-x::address", "http://git.example/qinling",
-		"ftp://git.example/qinling", "ssh://-oProxyCommand=sh/qinling", "git@host:q\nqinling", "git@host:q\x1bqinling",
+		"ext::sh -c touch% /tmp/pwned", "fd::0", "remote-x::address", "http://git.example/valley",
+		"ftp://git.example/valley", "ssh://-oProxyCommand=sh/valley", "git@host:q\nvalley", "git@host:q\x1bvalley",
 	} {
 		if err := checkURL(bad); err == nil {
 			t.Errorf("checkURL(%q) let it through", bad)
 		}
 	}
-	if url, err := projectURL("ext::sh -c x/qinling", "cosmo"); err == nil {
+	if url, err := projectURL("ext::sh -c x/valley", "app"); err == nil {
 		t.Errorf("projectURL derived %q from a remote helper's URL", url)
 	}
 }
@@ -189,18 +189,18 @@ func recordsOf(ids []string) []recorded {
 // version has the title and branch given.
 func listingWith(title, branch string) jsonChanges {
 	tip := strings.Repeat("b", 40)
-	return jsonChanges{Schema: changesSchema, Host: "classic-laddie", Repos: []jsonRepo{{
-		Repo: "cosmo", URL: "git@classic-laddie:cosmo.git",
+	return jsonChanges{Schema: changesSchema, Host: "valley-host", Repos: []jsonRepo{{
+		Repo: "app", URL: "git@valley-host:app.git",
 		Changes: []jsonChange{{
 			ChangeID: "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz", Handle: "nxvp", Target: "main",
-			Owner: "klaus-env", State: "ready", Record: strings.Repeat("c", 40), Seq: 1, Active: 1,
+			Owner: "alice", State: "ready", Record: strings.Repeat("c", 40), Seq: 1, Active: 1,
 			Versions: []jsonVersion{{
-				N: 1, Head: strings.Repeat("a", 40), Title: title, Branch: branch, Uploader: "klaus-env",
+				N: 1, Head: strings.Repeat("a", 40), Title: title, Branch: branch, Uploader: "alice",
 				Landing: notLanded, Outcome: &versionOutcome{Decision: "failed", Head: strings.Repeat("a", 40), Tip: &tip},
 			}},
 			Includes: []string{},
 		}},
-		Drafts:   &[]jsonChange{{ChangeID: "qqqqkkkkkkkkkkkkkkkkkkkkkkkkkkkk", Handle: "qqqq", Target: "main", Owner: "klaus-env", State: "draft", Record: tip, Seq: 2, Active: 1, Versions: []jsonVersion{{N: 1, Head: tip, Title: title, Branch: branch, Uploader: "klaus-env", Landing: notLanded}}, Includes: []string{}}},
+		Drafts:   &[]jsonChange{{ChangeID: "qqqqkkkkkkkkkkkkkkkkkkkkkkkkkkkk", Handle: "qqqq", Target: "main", Owner: "alice", State: "draft", Record: tip, Seq: 2, Active: 1, Versions: []jsonVersion{{N: 1, Head: tip, Title: title, Branch: branch, Uploader: "alice", Landing: notLanded}}, Includes: []string{}}},
 		Branches: []jsonBranch{{Branch: branch, Head: tip}},
 	}}}
 }

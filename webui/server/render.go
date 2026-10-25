@@ -2,9 +2,11 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"embed"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -74,7 +76,11 @@ type link struct {
 
 // page renders the page called name with content as the response, to be
 // written with status. A page is rendered whole before anything is
-// written, so a failure to render answers 500 rather than half a page.
+// written, so a failure to render answers 500 rather than half a page. A
+// page that would pass the server's maxResponse stops rendering there,
+// and answers with the short page that says it is too large. A page the
+// response budget has no room for, or whose request runs out of time
+// while it renders, answers 503.
 func (q *request) page(status int, name, title string, content any) {
 	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
 	if name == "plan" {
@@ -88,14 +94,126 @@ func (q *request) page(status int, name, title string, content any) {
 		}
 		data.Fresh = freshnessOf(q.e.Collected, q.now)
 	}
-	var b bytes.Buffer
-	if err := pages[name].ExecuteTemplate(&b, "layout", data); err != nil {
-		q.s.log(fmt.Errorf("rendering %s: %w", name, err))
-		q.status, q.ctype, q.body = http.StatusInternalServerError, "text/plain; charset=utf-8",
-			[]byte("The server could not render this page.\n")
+	q.drop()
+	b := &body{s: q.s, ctx: q.ctx}
+	err := pages[name].ExecuteTemplate(b, "layout", data)
+	if err == nil {
+		q.status, q.ctype, q.body = status, htmlType, b
 		return
 	}
-	q.status, q.ctype, q.body = status, "text/html; charset=utf-8", b.Bytes()
+	b.free()
+	switch {
+	case errors.Is(err, errNoBudget):
+		q.busy()
+	case errors.Is(err, errTooLarge):
+		q.s.log(fmt.Errorf("rendering %q: the page is larger than %d bytes", q.r.URL.EscapedPath(), q.s.maxResponse))
+		q.static(http.StatusInternalServerError, htmlType, tooLargePage)
+	case q.ctx.Err() != nil:
+		q.fail(fmt.Errorf("rendering %s: %w", name, err))
+	default:
+		q.s.log(fmt.Errorf("rendering %s: %w", name, err))
+		q.static(http.StatusInternalServerError, "text/plain; charset=utf-8", notRendered)
+	}
+}
+
+const htmlType = "text/html; charset=utf-8"
+
+// static answers with a response made once, when the server starts. It
+// shows no export, and takes nothing from the budget.
+func (q *request) static(status int, ctype string, page []byte) {
+	q.drop()
+	q.status, q.ctype, q.body = status, ctype, &body{pieces: [][]byte{page}, n: len(page)}
+}
+
+// drop gives back the pieces of the response the request rendered, if it
+// rendered one.
+func (q *request) drop() {
+	if q.body != nil {
+		q.body.free()
+		q.body = nil
+	}
+}
+
+// The responses made once: two pages, and the text that answers a page
+// that failed to render.
+var (
+	busyPage = staticPage("Busy", errorPage{
+		Heading: "Busy", Text: "The server is serving too many pages at once. Try again in a few seconds.",
+	})
+	tooLargePage = staticPage("Page too large", errorPage{
+		Heading: "Page too large", Text: "This page is larger than the server sends.",
+	})
+	notRendered = []byte("The server could not render this page.\n")
+)
+
+func staticPage(title string, content errorPage) []byte {
+	var b bytes.Buffer
+	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
+	if err := pages["error"].ExecuteTemplate(&b, "layout", data); err != nil {
+		panic(err)
+	}
+	return b.Bytes()
+}
+
+// The errors a body's Write fails with: the page is larger than the
+// server sends, or the response budget has no piece left for it.
+var (
+	errTooLarge = errors.New("the page is larger than the server sends")
+	errNoBudget = errors.New("the response budget is spent")
+)
+
+// body is a response's body: the pieces it is held in, and their length.
+// A page is rendered into pieces of pieceSize, each taken from the
+// server's budget and given back by free, until its request's ctx is
+// done. A static page is one piece of its own, and its body has no
+// server.
+type body struct {
+	s      *Server
+	ctx    context.Context
+	pieces [][]byte
+	n      int
+}
+
+// Write appends p to the body. It writes nothing of p that would take the
+// body past the server's maxResponse, and fails with errTooLarge, and
+// nothing once ctx is done. It fails with errNoBudget when the budget has
+// no piece left for the rest of p.
+func (b *body) Write(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(p) > b.s.maxResponse-b.n {
+		return 0, errTooLarge
+	}
+	written := 0
+	for written < len(p) {
+		last := len(b.pieces) - 1
+		if last < 0 || len(b.pieces[last]) == cap(b.pieces[last]) {
+			select {
+			case b.s.budget <- struct{}{}:
+			default:
+				return written, errNoBudget
+			}
+			b.pieces = append(b.pieces, make([]byte, 0, pieceSize))
+			last++
+		}
+		piece := b.pieces[last]
+		k := copy(piece[len(piece):cap(piece)], p[written:])
+		b.pieces[last] = piece[:len(piece)+k]
+		written += k
+		b.n += k
+	}
+	return written, nil
+}
+
+// free gives the body's pieces back to the budget, once.
+func (b *body) free() {
+	if b.s != nil {
+		for range b.pieces {
+			<-b.s.budget
+		}
+	}
+	b.pieces, b.n = nil, 0
 }
 
 // freshness is the export's collection time and its age, as of the

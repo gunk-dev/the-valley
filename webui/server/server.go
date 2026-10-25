@@ -24,9 +24,18 @@
 // MaxWaiting wait. A request the server cannot admit, or that runs out
 // of time, answers 503.
 //
+// # Responses
+//
 // A response is rendered whole before it is written. A request gives back
 // its generation and its git slot before it writes, so a reader that
-// reads slowly holds neither.
+// reads slowly holds neither. It keeps its response until the response
+// is written.
+//
+// A response's body is at most MaxResponse bytes. A page that would pass
+// it stops rendering there, and the request answers with a short page
+// that says the page is too large. Rendered responses take their memory
+// from a budget of MaxBuffered bytes, which they give back once they are
+// written. A request that finds the budget spent answers 503.
 //
 // # Routes
 //
@@ -113,6 +122,17 @@ const (
 	requestTimeout = 15 * time.Second
 	// MaxLoads is the most generations whose export is read at once.
 	MaxLoads = 2
+	// MaxResponse is the most bytes a response's body takes. A page
+	// that would take more stops rendering, and the request answers with
+	// a short page that says the page is too large.
+	MaxResponse = 8 << 20
+	// MaxBuffered is the most bytes of rendered responses the server
+	// holds at once, from when each starts rendering until it is
+	// written. A response takes them in pieces of pieceSize as it
+	// renders.
+	MaxBuffered = 64 << 20
+	// pieceSize is the size of the pieces a response is rendered into.
+	pieceSize = 64 << 10
 )
 
 // Config is what a Server serves from.
@@ -131,14 +151,19 @@ type Server struct {
 	store *export.Store
 	now   func() time.Time
 	log   func(error)
-	// timeout is requestTimeout, which a test shortens.
-	timeout time.Duration
+	// timeout is requestTimeout, and maxResponse is MaxResponse. A test
+	// shortens either.
+	timeout     time.Duration
+	maxResponse int
 	// slots holds a token for each source request running git, and
 	// waiting one for each source request waiting for a slot.
 	slots   chan struct{}
 	waiting chan struct{}
 	// loaders holds a token for each export being read.
 	loaders chan struct{}
+	// budget holds a token for each piece of a response that is being
+	// rendered or written: MaxBuffered bytes, in pieces of pieceSize.
+	budget chan struct{}
 
 	mu sync.Mutex
 	// cached is the newest generation's snapshot read so far.
@@ -158,9 +183,10 @@ type Server struct {
 
 // New is a Server over c's store.
 func New(c Config) *Server {
-	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout,
+	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
-		loaders: make(chan struct{}, MaxLoads), loads: map[int64]*load{}}
+		loaders: make(chan struct{}, MaxLoads), budget: make(chan struct{}, MaxBuffered/pieceSize),
+		loads: map[int64]*load{}}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -212,10 +238,11 @@ type request struct {
 	now time.Time
 
 	// The response: a status and a page, or a redirect. It is written
-	// once the request has given back its generation and git slot.
+	// once the request has given back its generation and git slot, and
+	// the page's pieces are given back to the budget once it is written.
 	status   int
 	ctype    string
-	body     []byte
+	body     *body
 	location string
 }
 
@@ -224,6 +251,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
 	q := &request{s: s, w: w, r: r, ctx: ctx, now: s.now()}
+	defer q.drop()
 	q.serve()
 	q.write()
 }
@@ -469,24 +497,24 @@ func (q *request) fail(err error) {
 	})
 }
 
-// busy answers a request the server has no time for: a source request it
-// could not admit, or a request that ran out of time. A reader that went
-// away is answered with nothing.
+// busy answers a request the server has no room for: a source request it
+// could not admit, a request that ran out of time, or a page the response
+// budget has no room for. A reader that went away is answered with
+// nothing.
 func (q *request) busy() {
 	if q.r.Context().Err() != nil {
 		return
 	}
 	q.w.Header().Set("Retry-After", "5")
-	q.page(http.StatusServiceUnavailable, "error", "Busy", errorPage{
-		Heading: "Busy", Text: "The server is reading too many pages at once. Try again in a few seconds.",
-	})
+	q.static(http.StatusServiceUnavailable, htmlType, busyPage)
 }
 
 // redirect answers with a redirect to url.
 func (q *request) redirect(url string) { q.location = url }
 
 // write writes the rendered response, or nothing for a reader that went
-// away.
+// away. It returns once the response is written, or the connection
+// failed or timed out.
 func (q *request) write() {
 	switch {
 	case q.location != "":
@@ -494,9 +522,13 @@ func (q *request) write() {
 	case q.status != 0:
 		h := q.w.Header()
 		h.Set("Content-Type", q.ctype)
-		h.Set("Content-Length", strconv.Itoa(len(q.body)))
+		h.Set("Content-Length", strconv.Itoa(q.body.n))
 		q.w.WriteHeader(q.status)
-		q.w.Write(q.body)
+		for _, p := range q.body.pieces {
+			if _, err := q.w.Write(p); err != nil {
+				return
+			}
+		}
 	}
 }
 

@@ -1,11 +1,13 @@
 package server
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1145,6 +1148,182 @@ func TestNothingPublishedAndMethods(t *testing.T) {
 	}
 }
 
+// tooLarge checks that GET target answers with the one short page that
+// says a page is too large.
+func (h *harness) tooLarge(target string) {
+	h.t.Helper()
+	w := h.get(target)
+	if w.Code != http.StatusInternalServerError || !bytes.Equal(w.Body.Bytes(), tooLargePage) {
+		h.t.Errorf("GET %s answered %d with %d bytes, not the page that says it is too large", target, w.Code, w.Body.Len())
+	}
+	if n := len(h.srv.budget); n != 0 {
+		h.t.Errorf("GET %s kept %d pieces of the budget", target, n)
+	}
+}
+
+// A response's body is at most MaxResponse bytes. A page that would pass
+// the bound answers with the one short page that says it is too large,
+// and the failure is logged: a knot whose body passes MaxResponse, and,
+// under a smaller bound, a file, a directory, a page of history and the
+// plan page. A page within the bound is served on each route.
+func TestPageTooLarge(t *testing.T) {
+	h := newHarness(t)
+	var logged []string
+	h.srv.log = func(err error) { logged = append(logged, err.Error()) }
+	files := []file{{"100644", "wide.txt", strings.Repeat("<", 16<<10)}}
+	for i := range 32 {
+		files = append(files, file{"100644", fmt.Sprintf("wide/%02d-%s", i, strings.Repeat("n", 1000)), "x\n"})
+	}
+	h.commitMain("app: a wide file and a wide directory\n", files...)
+	var tip, bundle string
+	for i := range 8 {
+		tip, bundle = h.commitMain(fmt.Sprintf("%d %s\n", i, strings.Repeat(`"`, maxLogText)))
+	}
+	h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{"app": bundle}, func(e *export.Export) {
+		p := &e.Projects[0]
+		p.SourceTip = tip
+		p.Knots[0].Body = strings.Repeat("a", MaxResponse)
+		for i := range 100 {
+			p.Knots = append(p.Knots, export.Knot{ID: fmt.Sprintf("oc-e%06x", i), Type: "outcome", Status: "open",
+				Active: true, State: "ready", Title: strings.Repeat(`"`, knot.MaxTitle), Created: "2026-10-01", CreatedBy: "operator"})
+		}
+	})
+
+	h.tooLarge("/knots/app/" + h.f.Export.Projects[0].Knots[0].ID)
+	h.page("/knots/app/oc-a000002")
+
+	h.srv.maxResponse = 32 << 10
+	at := "/source/app/blob/" + tip + "/"
+	h.tooLarge(at + "wide.txt")
+	h.page(at + "docs/guide.md")
+	at = "/source/app/tree/" + tip + "/"
+	h.tooLarge(at + "wide/")
+	h.page(at + "docs/")
+	h.tooLarge("/source/app/log/" + tip)
+	h.page("/source/app/log/" + tip + "?skip=8")
+	h.tooLarge("/")
+
+	if len(logged) != 5 {
+		t.Errorf("%d failures were logged for 5 pages too large: %q", len(logged), logged)
+	}
+	for _, l := range logged {
+		if !strings.Contains(l, "larger than") {
+			t.Errorf("the server logged %q", l)
+		}
+	}
+	if len(tooLargePage) > 16<<10 {
+		t.Errorf("the page that says a page is too large is %d bytes", len(tooLargePage))
+	}
+}
+
+// Rendered responses share a budget of MaxBuffered bytes, which each
+// holds from when it starts rendering until it is written. Readers that
+// never read, asking for twice the budget in all, hold no more than it:
+// once their pages fill it, a page it has no room for answers 503 at
+// once, and a small page that fits is still served. The server's heap
+// grows by no more than the budget, and the budget is whole again once
+// the readers read.
+func TestSlowReadersShareTheBudget(t *testing.T) {
+	h := newHarness(t)
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, func(e *export.Export) {
+		e.Projects[0].Knots[0].Body = strings.Repeat("a line of a long body\n", (4<<20)/22)
+	})
+	target := "/knots/app/" + h.f.Export.Projects[0].Knots[0].ID
+	size := len(h.page(target))
+	pieces := (size + pieceSize - 1) / pieceSize
+	fit := cap(h.srv.budget) / pieces
+	n := 2*MaxBuffered/size + 1
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sl := &stallingListener{Listener: ln, release: make(chan struct{}), stalled: make(chan struct{}, n)}
+	sl.stall.Store(true)
+	srv := &http.Server{Handler: h.srv}
+	go srv.Serve(sl)
+	var conns []net.Conn
+	released := false
+	defer func() {
+		if !released {
+			close(sl.release)
+		}
+		for _, c := range conns {
+			c.Close()
+		}
+		srv.Close()
+	}()
+
+	var before runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	// One reader at a time, each stalled before the next asks, so the
+	// readers that fill the budget are the first fit of them.
+	for i := range n {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: valley-host\r\n\r\n", target)
+		select {
+		case <-sl.stalled:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("reader %d of %d was not answered", i+1, n)
+		}
+	}
+	sl.stall.Store(false)
+	var after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&after)
+	if held := len(h.srv.budget); held != fit*pieces {
+		t.Errorf("slow readers hold %d pieces; %d pages of %d pieces fit", held, fit, pieces)
+	}
+	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > MaxBuffered+8<<20 {
+		t.Errorf("%d slow readers of %d bytes each grew the heap by %d bytes, past MaxBuffered", n, size, grew)
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	get := func(target string) (int, string) {
+		t.Helper()
+		resp, err := client.Get("http://" + ln.Addr().String() + target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, resp.Header.Get("Retry-After")
+	}
+	if code, retry := get(target); code != http.StatusServiceUnavailable || retry == "" {
+		t.Errorf("a page the budget has no room for answered %d, Retry-After %q", code, retry)
+	}
+	if code, _ := get("/knots/app/oc-a000002"); code != http.StatusOK {
+		t.Errorf("a small page answered %d while slow readers hold most of the budget", code)
+	}
+
+	close(sl.release)
+	released = true
+	codes := map[int]int{}
+	for _, c := range conns {
+		c.SetReadDeadline(time.Now().Add(10 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err := io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if err != nil || resp.StatusCode == http.StatusOK && read != int64(size) {
+			t.Errorf("a slow reader read %d bytes of %d: %v", read, size, err)
+		}
+		codes[resp.StatusCode]++
+	}
+	if codes[http.StatusOK] != fit || codes[http.StatusServiceUnavailable] != n-fit {
+		t.Errorf("of %d slow readers, %d were served and %d answered 503; %d pages fit the budget",
+			n, codes[http.StatusOK], codes[http.StatusServiceUnavailable], fit)
+	}
+	eventually(t, "the budget is whole again", func() bool { return len(h.srv.budget) == 0 })
+}
+
 // A read of an export starts only in a request that holds a loader slot.
 // While MaxLoads reads run, a request for a newer generation waits for a
 // slot, holding its generation, until its time runs out, whatever its
@@ -1261,5 +1440,26 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	defer mu.Unlock()
 	if len(logged) != 1 || !strings.Contains(logged[0], "deadline exceeded") {
 		t.Errorf("the server logged %q; it logs the one request that ran out of time", logged)
+	}
+}
+
+// A request's time runs from its arrival through its rendering: a request
+// for a page that runs no git, held past its time before it renders,
+// answers 503, and the server logs it.
+func TestRenderingIsWithinTheDeadline(t *testing.T) {
+	h := newHarness(t)
+	h.page("/")
+	h.srv.timeout = 50 * time.Millisecond
+	var logged []string
+	h.srv.log = func(err error) { logged = append(logged, err.Error()) }
+	h.srv.opened = func(export.Generation) { time.Sleep(100 * time.Millisecond) }
+	if w := h.get("/"); w.Code != http.StatusServiceUnavailable || !bytes.Equal(w.Body.Bytes(), busyPage) {
+		t.Errorf("a request that ran out of time before it rendered answered %d", w.Code)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "rendering plan: context deadline exceeded") {
+		t.Errorf("the server logged %q", logged)
+	}
+	if n := len(h.srv.budget); n != 0 {
+		t.Errorf("a page that stopped rendering kept %d pieces of the budget", n)
 	}
 }

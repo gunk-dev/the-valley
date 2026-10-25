@@ -43,7 +43,12 @@ func AcceptBundle(ctx context.Context, path, repo, tip string) error {
 	if err != nil {
 		return err
 	}
-	return fetchMain(ctx, path, repo, tip, format)
+	// git fetches in repo, so the bundle is named from the root.
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	return fetchMain(ctx, abs, repo, tip, format)
 }
 
 // CarryRepo fetches main from from, a repository the receiver holds at tip,

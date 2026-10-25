@@ -98,6 +98,20 @@ func TestAcceptBundle(t *testing.T) {
 	}
 }
 
+// A bundle and a repository named relative to the working directory are
+// read and written there.
+func TestAcceptBundleTakesRelativePaths(t *testing.T) {
+	s := newSource(t, "sha1")
+	bundle := s.bundle(t, "main")
+	t.Chdir(filepath.Dir(bundle))
+	if err := export.AcceptBundle(context.Background(), filepath.Base(bundle), "app.git", s.tip); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(bundle), "app.git", "HEAD")); err != nil {
+		t.Error(err)
+	}
+}
+
 // What the acceptance procedure refuses, each leaving no repository.
 func TestAcceptBundleRefuses(t *testing.T) {
 	ctx := context.Background()

@@ -180,6 +180,18 @@ func (s *Store) active() (int64, bool, error) {
 	return n, true, nil
 }
 
+// Active is the sequence of the generation active points at. It reads
+// active without opening the generation, so it holds nothing, and the
+// generation it names may be deleted once active moves on. Its error is
+// ErrNoExport before the first activation.
+func (s *Store) Active() (int64, error) {
+	seq, ok, err := s.active()
+	if err == nil && !ok {
+		err = ErrNoExport
+	}
+	return seq, err
+}
+
 // Open resolves active once and returns that generation, held against
 // deletion until release is called. A request serves everything from the
 // one generation it opened, so an activation during the request never

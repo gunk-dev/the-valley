@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -881,10 +883,12 @@ func renamed(title string) func(*export.Export) {
 	return func(e *export.Export) { e.Projects[0].Knots[0].Title = title }
 }
 
-// Requests that open a generation together read its export once. While
-// it is read, a newer generation is read and served on its own, at most
-// MaxLoads exports are read at once, and an older read that finishes
-// last does not displace the newest generation's snapshot.
+// Requests that wait for a generation together read its export once.
+// While it is read, a newer generation is read on its own, and at most
+// MaxLoads exports are read at once. A request whose load ends after a
+// newer generation was activated waits for that one, so every request is
+// served the generation active when its snapshot is ready, and an older
+// read that finishes last does not displace the newest snapshot.
 func TestExportLoadsCoalesce(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex
@@ -930,10 +934,13 @@ func TestExportLoadsCoalesce(t *testing.T) {
 			}
 		}
 	}
+	waiting := func(n int) func() bool { return func() bool { return len(h.srv.loadWaiting) == n } }
 
 	first := h.active()
 	firstServed := get(10)
-	eventually(t, "ten requests open the first generation", func() bool { return opens.Load() == 10 })
+	eventually(t, "ten requests wait for the first generation's read", func() bool {
+		return loaded(first) == 1 && len(h.srv.loadWaiting) == 10
+	})
 	second := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
 	secondServed := get(1)
 	eventually(t, "the second generation is read", func() bool { return loaded(second) == 1 })
@@ -941,17 +948,24 @@ func TestExportLoadsCoalesce(t *testing.T) {
 	// Both loaders are taken, so the third generation waits for one.
 	third := h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
 	thirdServed := get(1)
-	eventually(t, "a request opens the third generation", func() bool { return opens.Load() == 12 })
+	eventually(t, "a request waits for the third generation", waiting(12))
 	time.Sleep(20 * time.Millisecond)
 	if n := loaded(third); n != 0 {
 		t.Errorf("a third export was read while %d were", MaxLoads)
 	}
+	if n := opens.Load(); n != 0 {
+		t.Errorf("%d requests opened a generation while they waited for its read", n)
+	}
+
+	// The second read ends, and its request finds the third generation
+	// active, and waits for that read with the third's request.
 	close(hold(second))
-	expect(secondServed, 1, "Readers browse the second plan")
+	eventually(t, "the third generation is read", func() bool { return loaded(third) == 1 })
 	close(hold(third))
+	expect(secondServed, 1, "Readers browse the third plan")
 	expect(thirdServed, 1, "Readers browse the third plan")
 	close(hold(first))
-	expect(firstServed, 10, "Readers browse the app&#39;s plan")
+	expect(firstServed, 10, "Readers browse the third plan")
 
 	if !strings.Contains(h.page("/knots/app/oc-a000001"), "Readers browse the third plan") {
 		t.Error("the first generation's read displaced the third's")
@@ -1324,11 +1338,10 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 	eventually(t, "the budget is whole again", func() bool { return len(h.srv.budget) == 0 })
 }
 
-// A read of an export starts only in a request that holds a loader slot.
-// While MaxLoads reads run, a request for a newer generation waits for a
-// slot, holding its generation, until its time runs out, whatever its
-// route, or its reader goes away. Neither leaves a read behind, and
-// neither holds its generation once it has answered.
+// A load starts only once a request that waits for it takes a loader
+// slot. While MaxLoads loads run, a request for a newer generation waits
+// for a slot, holding no generation, until its time runs out, whatever
+// its route, or its reader goes away. Neither leaves a load behind.
 func TestExportLoadWaitsEnd(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex
@@ -1351,8 +1364,6 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 		defer mu.Unlock()
 		return loads[g.Sequence]
 	}
-	var opened atomic.Int64
-	h.srv.opened = func(g export.Generation) { opened.Store(g.Sequence) }
 	serve := func(r *http.Request) chan *httptest.ResponseRecorder {
 		served := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
@@ -1376,9 +1387,10 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 
 	first := h.active()
 	firstServed := serve(httptest.NewRequest("GET", "/", nil))
+	eventually(t, "the first generation is read", func() bool { return loaded(first) == 1 })
 	second := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
 	secondServed := serve(httptest.NewRequest("GET", "/", nil))
-	eventually(t, "both loader slots are taken", func() bool { return loaded(first) == 1 && loaded(second) == 1 })
+	eventually(t, "both loader slots are taken", func() bool { return loaded(second) == 1 })
 
 	// A request that runs no git runs out of time waiting, and answers
 	// 503.
@@ -1400,7 +1412,7 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	gone := serve(httptest.NewRequest("GET", "/", nil).WithContext(ctx))
-	eventually(t, "a request opens the fourth generation", func() bool { return opened.Load() == fourth.Sequence })
+	eventually(t, "a request waits for the fourth generation", func() bool { return len(h.srv.loadWaiting) == 3 })
 	cancel()
 	select {
 	case w := <-gone:
@@ -1412,11 +1424,10 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	}
 
 	h.srv.mu.Lock()
-	_, thirdLoad := h.srv.loads[third.Sequence]
-	_, fourthLoad := h.srv.loads[fourth.Sequence]
+	left := len(h.srv.loads)
 	h.srv.mu.Unlock()
-	if thirdLoad || fourthLoad {
-		t.Error("a read no request waits for is left behind")
+	if left != MaxLoads {
+		t.Errorf("%d loads may be joined; only the %d that run are wanted", left, MaxLoads)
 	}
 	h.publish(exporttest.SignedAt.Add(4*time.Minute), nil, renamed("Readers browse the fifth plan"))
 	for _, g := range []export.Generation{third, fourth} {
@@ -1425,12 +1436,11 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 		}
 	}
 
+	// The first two reads end, and their requests are served the newest
+	// generation.
 	close(hold)
-	expect(firstServed, "Readers browse the app&#39;s plan")
-	expect(secondServed, "Readers browse the second plan")
-	if !strings.Contains(h.page("/"), "Readers browse the fifth plan") {
-		t.Error("the newest generation is not served once the reads end")
-	}
+	expect(firstServed, "Readers browse the fifth plan")
+	expect(secondServed, "Readers browse the fifth plan")
 	for _, g := range []export.Generation{third, fourth} {
 		if n := loaded(g); n != 0 {
 			t.Errorf("generation %d's export was read %d times after every request for it gave up", g.Sequence, n)
@@ -1440,6 +1450,190 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	defer mu.Unlock()
 	if len(logged) != 1 || !strings.Contains(logged[0], "deadline exceeded") {
 		t.Errorf("the server logged %q; it logs the one request that ran out of time", logged)
+	}
+}
+
+// A load that reads slowly does not hold the request that waits for it:
+// the request answers 503 at its deadline. With no request left waiting,
+// the load stops reading part way through the export, caches nothing, and
+// gives back its generation, which the next activation deletes. A load
+// that ends is kept, and the requests after it are served without another
+// read.
+func TestSlowLoadEndsWithItsRequests(t *testing.T) {
+	h := newHarness(t)
+	h.srv.timeout = 200 * time.Millisecond
+	var mu sync.Mutex
+	var logged []string
+	h.srv.log = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, err.Error())
+	}
+	var reads atomic.Int32
+	h.srv.loading = func(export.Generation) { reads.Add(1) }
+
+	// The active generation's export.json becomes a pipe the test writes
+	// a few bytes at a time, as a slow disk would give it: all of it
+	// takes about 4 seconds, twenty times the request's time.
+	old := h.active()
+	data, err := os.ReadFile(old.ExportPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(old.ExportPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(old.ExportPath(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	piece := max(1, len(data)/200)
+	wrote := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(old.ExportPath(), os.O_WRONLY, 0)
+		if err != nil {
+			wrote <- err
+			return
+		}
+		defer f.Close()
+		for p := data; len(p) > 0; p = p[min(len(p), piece):] {
+			if _, err := f.Write(p[:min(len(p), piece)]); err != nil {
+				wrote <- err
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		wrote <- nil
+	}()
+
+	start := time.Now()
+	if w := h.get("/"); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+		t.Errorf("a request whose load ran past its time answered %d", w.Code)
+	}
+	if waited := time.Since(start); waited > 2*time.Second {
+		t.Errorf("a request waited %v for a slow load, past its time of 200ms", waited)
+	}
+	select {
+	case err := <-wrote:
+		if !errors.Is(err, syscall.EPIPE) {
+			t.Errorf("the load read the whole export after its request gave up: the writer ended with %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the load still reads the export")
+	}
+	eventually(t, "the load ends", func() bool { return len(h.srv.loaders) == 0 })
+	h.srv.mu.Lock()
+	cached, loads := h.srv.cached, len(h.srv.loads)
+	h.srv.mu.Unlock()
+	if cached != nil || loads != 0 {
+		t.Errorf("a load that stopped left a snapshot %v and %d loads", cached != nil, loads)
+	}
+	// The store reads the active export.json when it takes an upload.
+	if err := os.Remove(old.ExportPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(old.ExportPath(), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
+	if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
+		t.Errorf("the generation a stopped load opened outlived an activation: %v", err)
+	}
+
+	h.srv.timeout = requestTimeout
+	for range 3 {
+		if !strings.Contains(h.page("/knots/app/oc-a000001"), "Readers browse the second plan") {
+			t.Error("a request after the stopped load is not served the new generation")
+		}
+	}
+	if n := reads.Load(); n != 2 {
+		t.Errorf("exports were read %d times: once in part, and once for the new generation", n)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 || !strings.Contains(logged[0], "export to be read: context deadline exceeded") {
+		t.Errorf("the server logged %q; it logs the one request that ran out of time", logged)
+	}
+}
+
+// openFiles is the number of files the process holds open, and false
+// where the system does not list them.
+func openFiles(t *testing.T) (int, bool) {
+	t.Helper()
+	entries, err := os.ReadDir("/proc/self/fd")
+	if err != nil {
+		return 0, false
+	}
+	return len(entries), true
+}
+
+// A flood of requests while a load runs: MaxLoadWaiting of them wait, and
+// the rest answer 503 at once, unlogged. A waiting request holds no
+// generation, so the goroutines and files the server holds stay within a
+// bound however large the flood. Once the load ends, every request that
+// waited is served from its one read.
+func TestLoadFlood(t *testing.T) {
+	h := newHarness(t)
+	var reads atomic.Int32
+	reading, hold := make(chan struct{}, 1), make(chan struct{})
+	h.srv.loading = func(export.Generation) {
+		reads.Add(1)
+		reading <- struct{}{}
+		<-hold
+	}
+	get := func(n int) chan *httptest.ResponseRecorder {
+		served := make(chan *httptest.ResponseRecorder, n)
+		for range n {
+			go func() {
+				w := httptest.NewRecorder()
+				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+				served <- w
+			}()
+		}
+		return served
+	}
+
+	first := get(1)
+	select {
+	case <-reading:
+	case <-time.After(10 * time.Second):
+		t.Fatal("no load started")
+	}
+	goroutines := runtime.NumGoroutine()
+	files, listed := openFiles(t)
+
+	flood := 4 * MaxLoadWaiting
+	served := get(flood)
+	refused := flood - (MaxLoadWaiting - 1)
+	for range refused {
+		if w := <-served; w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Fatalf("a request past MaxLoadWaiting answered %d", w.Code)
+		}
+	}
+	if n := len(h.srv.loadWaiting); n != MaxLoadWaiting {
+		t.Errorf("%d requests wait for the load, not %d", n, MaxLoadWaiting)
+	}
+	const slack = 8
+	eventually(t, "the refused requests' goroutines end", func() bool {
+		return runtime.NumGoroutine() <= goroutines+MaxLoadWaiting-1+slack
+	})
+	if n, _ := openFiles(t); listed && n > files+slack {
+		t.Errorf("the flood holds %d files open, %d more than before it", n, n-files)
+	}
+
+	close(hold)
+	for range MaxLoadWaiting - 1 {
+		if w := <-served; w.Code != http.StatusOK {
+			t.Errorf("a request that waited for the load answered %d", w.Code)
+		}
+	}
+	if w := <-first; w.Code != http.StatusOK {
+		t.Errorf("the request that started the load answered %d", w.Code)
+	}
+	if n := reads.Load(); n != 1 {
+		t.Errorf("the export was read %d times for one generation", n)
+	}
+	if n := len(h.srv.loadWaiting); n != 0 {
+		t.Errorf("%d requests still hold a place among those that wait", n)
 	}
 }
 

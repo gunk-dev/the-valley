@@ -7,13 +7,19 @@
 // Every request opens the store's active generation once, with
 // export.Store.Open, and renders its whole response from that
 // generation. An activation during the request changes nothing the
-// request reads. Each generation's export is read once, however many
-// requests open it at once, and is kept while the generation is the
-// newest one read. At most MaxLoads exports are read at once. A read
-// starts only once it has one of those slots, and it runs in the
-// goroutine of the request that took the slot, which holds the
-// generation open while it reads. The requests that wait for a read
-// stop waiting when their reader goes away or their time runs out.
+// request reads. The server keeps a snapshot of the newest generation it
+// has read: the export, decoded, and its index. A request opens its
+// generation only once the generation has a snapshot, and every request
+// for that generation serves from the one snapshot.
+//
+// A request whose generation has no snapshot yet waits for a load. A load
+// runs in a worker of its own, which opens the active generation, holds
+// it while it reads and indexes the export, and then gives it back. At
+// most MaxLoads workers run at once. The requests that wait for a
+// generation share one load, so each export is read once. A waiting
+// request holds no generation, and stops waiting when its reader goes away
+// or its time runs out. A load stops once no request waits for it, and
+// the server keeps nothing of what it read.
 //
 // # Admission
 //
@@ -21,8 +27,10 @@
 // git commands and its rendering. A source request runs git, and at most
 // MaxGit run at once. A source request takes one of those slots before
 // it opens a generation, and waits for one only while fewer than
-// MaxWaiting wait. A request the server cannot admit, or that runs out
-// of time, answers 503.
+// MaxWaiting wait. A request waits for a load only while fewer than
+// MaxLoadWaiting wait, and it is admitted among them before it opens
+// anything. A request the server cannot admit, or that runs out of time,
+// answers 503.
 //
 // # Responses
 //
@@ -73,9 +81,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,8 +130,12 @@ const (
 	// a git slot or for its generation's export to be read, its git
 	// commands and its rendering.
 	requestTimeout = 15 * time.Second
-	// MaxLoads is the most generations whose export is read at once.
+	// MaxLoads is the most loads that run at once, each in a worker of
+	// its own that reads one generation's export.
 	MaxLoads = 2
+	// MaxLoadWaiting is the most requests that wait for loads. A request
+	// that would wait while MaxLoadWaiting do answers 503 at once.
+	MaxLoadWaiting = 64
 	// MaxResponse is the most bytes a response's body takes. A page
 	// that would take more stops rendering, and the request answers with
 	// a short page that says the page is too large.
@@ -159,8 +173,10 @@ type Server struct {
 	// waiting one for each source request waiting for a slot.
 	slots   chan struct{}
 	waiting chan struct{}
-	// loaders holds a token for each export being read.
-	loaders chan struct{}
+	// loaders holds a token for each load's worker, and loadWaiting one
+	// for each request waiting for a load.
+	loaders     chan struct{}
+	loadWaiting chan struct{}
 	// budget holds a token for each piece of a response that is being
 	// rendered or written: MaxBuffered bytes, in pieces of pieceSize.
 	budget chan struct{}
@@ -168,14 +184,15 @@ type Server struct {
 	mu sync.Mutex
 	// cached is the newest generation's snapshot read so far.
 	cached *snapshot
-	// loads are the reads of generations' exports under way, by sequence.
-	loads map[int64]*load
+	// loads are the loads a request that waits may still join: those that
+	// have not ended, and that some request waits for.
+	loads map[*load]struct{}
 
 	// The test hooks. opened, when set, is called with each generation a
 	// request opens, before the request reads anything from it. admitted
 	// is called when a source request takes a git slot, before it opens
-	// a generation. loading is called with each generation whose export
-	// is read, before it is read.
+	// a generation. loading is called by a load's worker with the
+	// generation it opened, before it reads the generation's export.
 	opened   func(export.Generation)
 	admitted func()
 	loading  func(export.Generation)
@@ -185,8 +202,8 @@ type Server struct {
 func New(c Config) *Server {
 	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
-		loaders: make(chan struct{}, MaxLoads), budget: make(chan struct{}, MaxBuffered/pieceSize),
-		loads: map[int64]*load{}}
+		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
+		budget: make(chan struct{}, MaxBuffered/pieceSize), loads: map[*load]struct{}{}}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -205,21 +222,23 @@ type snapshot struct {
 	idx *index
 }
 
-// load is one read of a generation's export, which every request that
-// opens the generation while it is under way waits for. The first of
-// those requests to take a loader slot reads the export.
+// load reads the active generation's export for every request that
+// waits for it. It starts once one of those requests takes a loader slot
+// for it, and runs in a worker of its own, so a request can stop waiting
+// while the load goes on for the others.
 type load struct {
-	// waiting counts the requests that wait for the read, and reading
-	// is set once one of them reads the export. A load every request gave
-	// up on before it started is dropped. Both are guarded by the
+	// wants counts the requests that wait for the load. cancel is set once
+	// the load has started, and stops its worker. The worker sets opened
+	// and seq once it has opened a generation. All are guarded by the
 	// server's mu.
-	waiting int
-	reading bool
-	// started is closed once a request reads the export, and done once
-	// it has read it.
+	wants  int
+	cancel context.CancelFunc
+	opened bool
+	seq    int64
+	// started is closed once the load starts, and done once its worker
+	// ends. err is the worker's error, set before done is closed.
 	started chan struct{}
 	done    chan struct{}
-	snap    *snapshot
 	err     error
 }
 
@@ -279,25 +298,23 @@ func (q *request) serve() {
 			q.s.admitted()
 		}
 	}
-	g, release, err := q.s.store.Open()
+	g, snap, release, err := q.s.open(q.ctx)
 	defer release()
-	if errors.Is(err, export.ErrNoExport) {
+	switch {
+	case errors.Is(err, export.ErrNoExport):
 		q.page(http.StatusServiceUnavailable, "error", "Nothing published", errorPage{
 			Heading: "Nothing published yet", Text: "No export has been activated on this server.",
 		})
 		return
-	}
-	if err != nil {
+	case errors.Is(err, errLoadsFull):
+		q.busy()
+		return
+	case err != nil:
 		q.fail(err)
 		return
 	}
 	if q.s.opened != nil {
 		q.s.opened(g)
-	}
-	snap, err := q.s.snapshot(q.ctx, g)
-	if err != nil {
-		q.fail(err)
-		return
 	}
 	q.g, q.e, q.idx = g, snap.e, snap.idx
 	q.route(parts, ok)
@@ -333,94 +350,208 @@ func (s *Server) admit(ctx context.Context) (done func(), ok bool) {
 	}
 }
 
-// snapshot is the generation's snapshot: the cached one when it is the
-// generation's, and otherwise the one a single read of the generation's
-// export gives every request that waits for it. A read is kept only when
-// its generation is newer than the cached one, so a request still serving
-// an older generation never displaces a newer.
+// errLoadsFull is open's error for a request that would wait for a load
+// while MaxLoadWaiting requests wait already.
+var errLoadsFull = errors.New("too many requests wait for exports to be read")
+
+// open opens the active generation once its snapshot is cached, and
+// returns both. release gives the generation back.
 //
-// At most MaxLoads exports are read at once. The requests waiting for a
-// read that has not started each try to take a loader slot, and the
-// first to take one reads the export itself, so no read is queued that
-// no request waits for. A request stops waiting when ctx is done, and a
-// read that every waiting request gave up on before it started is
-// dropped.
-func (s *Server) snapshot(ctx context.Context, g export.Generation) (*snapshot, error) {
-	s.mu.Lock()
-	if c := s.cached; c != nil && c.seq == g.Sequence {
+// A request whose active generation has no snapshot waits for a load,
+// and opens nothing until the load ends. It is admitted among the
+// MaxLoadWaiting requests that may wait before it waits, and it keeps its
+// place until open returns. Once the load ends it looks again, since
+// another generation may have been activated meanwhile.
+func (s *Server) open(ctx context.Context) (g export.Generation, snap *snapshot, release func(), err error) {
+	release = func() {}
+	waiting := false
+	defer func() {
+		if waiting {
+			<-s.loadWaiting
+		}
+	}()
+	for {
+		seq, err := s.store.Active()
+		if err != nil {
+			return g, nil, release, err
+		}
+		s.mu.Lock()
+		snap = s.cached
 		s.mu.Unlock()
-		return c, nil
+		if snap != nil && snap.seq == seq {
+			g, release, err = s.store.Open()
+			if err != nil || g.Sequence == seq {
+				return g, snap, release, err
+			}
+			release() // active moved on since it was read
+			release = func() {}
+			continue
+		}
+		if !waiting {
+			select {
+			case s.loadWaiting <- struct{}{}:
+				waiting = true
+			default:
+				return g, nil, release, errLoadsFull
+			}
+		}
+		if err := s.await(ctx, seq); err != nil {
+			return g, nil, release, err
+		}
 	}
-	l, ok := s.loads[g.Sequence]
-	if !ok {
+}
+
+// await waits until a load of generation seq, or of a newer one, ends,
+// or until ctx is done. It joins a load that will read seq or a newer
+// generation, since a worker reads whatever generation is active once it
+// starts, and otherwise makes one.
+//
+// A load starts only once one of its requests takes a loader slot for
+// it. While every slot is taken, each of its requests waits for one, and
+// the first to take one starts the load, so no load is queued that no
+// request waits for. A request that stops waiting leaves the load, and
+// the last to leave stops it.
+func (s *Server) await(ctx context.Context, seq int64) error {
+	s.mu.Lock()
+	if c := s.cached; c != nil && c.seq >= seq {
+		s.mu.Unlock()
+		return nil
+	}
+	var l *load
+	for m := range s.loads {
+		if !m.opened || m.seq >= seq {
+			l = m
+			break
+		}
+	}
+	if l == nil {
 		l = &load{started: make(chan struct{}), done: make(chan struct{})}
-		s.loads[g.Sequence] = l
+		s.loads[l] = struct{}{}
 	}
-	l.waiting++
+	l.wants++
 	s.mu.Unlock()
 	select {
 	case <-l.started:
 	case s.loaders <- struct{}{}:
-		if s.start(l) {
-			s.load(g, l)
-			return l.snap, l.err
+		if !s.start(l) {
+			<-s.loaders
 		}
-		<-s.loaders
 	case <-ctx.Done():
-		s.leave(g.Sequence, l)
-		return nil, fmt.Errorf("waiting for generation %d's export to be read: %w", g.Sequence, ctx.Err())
+		s.leave(l)
+		return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
 	}
 	select {
 	case <-l.done:
-		return l.snap, l.err
+		return l.err
 	case <-ctx.Done():
-		return nil, fmt.Errorf("waiting for generation %d's export to be read: %w", g.Sequence, ctx.Err())
+		s.leave(l)
+		return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
 	}
 }
 
-// start makes l's read the read of the request that took a loader slot
-// for it. It is false when another request reads it already.
+// start starts l's worker, for the request that took a loader slot for
+// it. It is false when another request started it already.
 func (s *Server) start(l *load) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l.reading {
+	if l.cancel != nil {
 		return false
 	}
-	l.reading = true
+	ctx, cancel := context.WithCancel(context.Background())
+	l.cancel = cancel
 	close(l.started)
+	go s.run(ctx, l)
 	return true
 }
 
-// leave is a request giving up on l. The last request to give up on a
-// read that has not started drops it.
-func (s *Server) leave(seq int64, l *load) {
+// leave is a request that stopped waiting for l. Once no request waits for
+// it, no request may join it, and a load that started is stopped.
+func (s *Server) leave(l *load) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l.waiting--; l.waiting == 0 && !l.reading && s.loads[seq] == l {
-		delete(s.loads, seq)
+	if l.wants--; l.wants > 0 {
+		return
+	}
+	delete(s.loads, l)
+	if l.cancel != nil {
+		l.cancel()
 	}
 }
 
-// load reads g's export for every request waiting on l, and gives back
-// the loader slot the reading request took. That request holds g open
-// while it reads.
-func (s *Server) load(g export.Generation, l *load) {
-	defer func() { <-s.loaders }()
+// run is l's worker. It caches the snapshot it reads when the snapshot's
+// generation is newer than the cached one's, so a load of an older
+// generation never displaces a newer. A load that was stopped caches
+// nothing: leave stops it under mu, and run looks under mu. The worker
+// gives back its generation before it ends, and then its loader slot.
+func (s *Server) run(ctx context.Context, l *load) {
+	snap, err := s.read(ctx, l)
+	s.mu.Lock()
+	delete(s.loads, l)
+	if snap != nil && ctx.Err() == nil && (s.cached == nil || s.cached.seq < snap.seq) {
+		s.cached = snap
+	}
+	l.err = err
+	s.mu.Unlock()
+	l.cancel()
+	close(l.done)
+	<-s.loaders
+}
+
+// read opens the active generation for l, and holds it while it reads
+// and indexes the generation's export. It reads nothing when the
+// generation is cached already or another load reads it, and its waiting
+// requests look again. It stops reading once ctx is done.
+func (s *Server) read(ctx context.Context, l *load) (*snapshot, error) {
+	g, release, err := s.store.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	s.mu.Lock()
+	read := s.cached == nil || s.cached.seq < g.Sequence
+	for m := range s.loads {
+		if m != l && m.opened && m.seq == g.Sequence {
+			read = false
+		}
+	}
+	l.opened, l.seq = true, g.Sequence
+	s.mu.Unlock()
+	if !read {
+		return nil, nil
+	}
 	if s.loading != nil {
 		s.loading(g)
 	}
-	e, err := g.Export()
-	if err == nil {
-		l.snap = &snapshot{seq: g.Sequence, e: e, idx: newIndex(e)}
+	f, err := os.Open(g.ExportPath())
+	if err != nil {
+		return nil, err
 	}
-	l.err = err
-	s.mu.Lock()
-	delete(s.loads, g.Sequence)
-	if l.snap != nil && (s.cached == nil || s.cached.seq < g.Sequence) {
-		s.cached = l.snap
+	defer f.Close()
+	data, err := io.ReadAll(contextReader{ctx, f})
+	if err != nil {
+		return nil, fmt.Errorf("reading generation %d's export: %w", g.Sequence, err)
 	}
-	s.mu.Unlock()
-	close(l.done)
+	e, err := export.Decode(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &snapshot{seq: g.Sequence, e: e, idx: newIndex(e)}, nil
+}
+
+// contextReader reads from r until ctx is done.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c contextReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // route dispatches on the path's segments, each unescaped on its own, so

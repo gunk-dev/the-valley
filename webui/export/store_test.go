@@ -234,6 +234,9 @@ func TestStoreServesNothingBeforeTheFirstActivation(t *testing.T) {
 	if !errors.Is(err, export.ErrNoExport) {
 		t.Errorf("Open gave %v, want ErrNoExport", err)
 	}
+	if _, err := s.Active(); !errors.Is(err, export.ErrNoExport) {
+		t.Errorf("Active gave %v, want ErrNoExport", err)
+	}
 	if hw, err := s.HighWater(); hw != 0 || err != nil {
 		t.Errorf("high water %d, %v", hw, err)
 	}
@@ -265,6 +268,9 @@ func TestStoreActivates(t *testing.T) {
 	defer release()
 	if err != nil || served != g {
 		t.Fatalf("Open gave %v, %v; want %v", served, err, g)
+	}
+	if seq, err := s.Active(); err != nil || seq != g.Sequence {
+		t.Errorf("Active gave %d, %v; want %d", seq, err, g.Sequence)
 	}
 	data, err := os.ReadFile(served.ExportPath())
 	if err != nil || !bytes.Equal(data, f.ExportJSON) {

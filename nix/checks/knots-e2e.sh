@@ -257,21 +257,24 @@ refused "a commit without its trailer" 'Valley-Op' operator origin "$(push_graph
 # Transitions: comments stay, knots stay, and what never changes does not.
 refused "a deleted comment" 'a comment is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$comment_path")")"
 # An edit keeps its comment's author, records who made it and when, and
-# is made by the author or a holder of the approve grant.
-refused "an edit that records no edit" 'changes a comment without recording the edit' operator origin \
-  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(comment operator 'Rewritten.')")")"
-refused "an edit naming another editor" 'names alice in edited_by, and operator is pushing it' operator origin \
-  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(edit operator alice 'Rewritten.')")")"
-refused "an edit naming its editor and not its time" 'edited and edited_by come together' operator origin \
-  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(printf -- '---\nauthor: "operator"\nedited_by: "operator"\n---\n\nRewritten.')")")"
-refused "an edit whose time is no UTC time" 'edited is "yesterday", and it is a UTC time' operator origin \
-  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(edit operator operator 'Rewritten.' yesterday)")")"
-refused "an edit that changes the author" 'changes its author from "operator" to "approver"' approver origin \
-  "$(push_graph "$(craft "$good" approver - "+$comment_path=$(edit approver approver 'Mine now.')")")"
-refused "an edit by a principal without the approve grant" 'is a comment by operator, and alice is editing it: a comment is edited by its author, or by a holder of the approve grant' \
-  alice origin "$(push_graph "$(craft "$good" alice - "+$comment_path=$(edit operator alice 'Rewritten.')")")"
-refused "a new comment that records an edit" 'is a new comment that records an edit' operator origin \
-  "$(push_graph "$(craft "$good" operator - "+comments/$bug/$stamp-0123456789abcdef.md=$(edit operator operator 'Never written.')")")"
+# is made by the author or a holder of the approve grant. bob's comment
+# on the milestone is the one edited.
+bob_path="comments/$milestone/$edited.md"
+refused "an edit that records no edit" 'changes a comment without recording the edit' bob origin \
+  "$(push_graph "$(craft "$good" bob - "+$bob_path=$(comment bob 'Rewritten.')")")"
+refused "an edit naming another editor" 'names contributor in edited_by, and bob is pushing it' bob origin \
+  "$(push_graph "$(craft "$good" bob - "+$bob_path=$(edit bob contributor 'Rewritten.')")")"
+refused "an edit naming its editor and not its time" 'edited and edited_by come together' bob origin \
+  "$(push_graph "$(craft "$good" bob - "+$bob_path=$(printf -- '---\nauthor: "bob"\nedited_by: "bob"\n---\n\nRewritten.')")")"
+refused "an edit whose time is no UTC time" 'edited is "yesterday", and it is a UTC time' bob origin \
+  "$(push_graph "$(craft "$good" bob - "+$bob_path=$(edit bob bob 'Rewritten.' yesterday)")")"
+refused "an edit that changes the author" 'changes its author from "bob" to "approver"' approver origin \
+  "$(push_graph "$(craft "$good" approver - "+$bob_path=$(edit approver approver 'Mine now.')")")"
+refused "an edit by a principal without the approve grant" 'is a comment by bob, and contributor is editing it: a comment is edited by its author, or by a holder of the approve grant' \
+  contributor origin "$(push_graph "$(craft "$good" contributor - "+$bob_path=$(edit bob contributor 'Rewritten.')")")"
+refused "a deleted edited comment" 'a comment is never deleted' reviewer origin "$(push_graph "$(craft "$good" reviewer - "-$bob_path")")"
+refused "a new comment that records an edit" 'is a new comment that records an edit' bob origin \
+  "$(push_graph "$(craft "$good" bob - "+comments/$milestone/$stamp-0123456789abcdef.md=$(edit bob bob 'Never written.')")")"
 refused "a deleted knot" 'a knot is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$bug_path")")"
 refused "a changed id" 'filename says id' operator origin \
   "$(push_graph "$(craft "$good" operator - "+$bug_path=${bug_text/id: $bug/id: bd-0000000}")")"
@@ -432,12 +435,12 @@ as operator git push --quiet origin "$(push_graph "$next")" 2> "$w/err" || fail 
 
 # A crafted edit of another's comment is admitted from a holder of the
 # approve grant under either name, and its author edits it again after.
-as approver git push --quiet origin "$(push_graph "$(craft "$next" approver - "+$comment_path=$(edit operator approver 'Merged.')")")" 2> "$w/err" \
+as approver git push --quiet origin "$(push_graph "$(craft "$next" approver - "+$bob_path=$(edit bob approver 'Merged.')")")" 2> "$w/err" \
   || fail "a holder of the approve grant under request could not edit another's comment"
-as reviewer git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" reviewer - "+$comment_path=$(edit operator reviewer 'Merged again.')")")" 2> "$w/err" \
+as reviewer git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" reviewer - "+$bob_path=$(edit bob reviewer 'Merged again.')")")" 2> "$w/err" \
   || fail "a holder of the approve grant under approve could not edit another's comment"
-as operator git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" operator - "+$comment_path=$(edit operator operator 'Restored.')")")" 2> "$w/err" \
+as bob git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" bob - "+$bob_path=$(edit bob bob 'Restored.')")")" 2> "$w/err" \
   || fail "a comment's author could not edit it after another had"
-[ "$(git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:$comment_path")" = "$(edit operator operator 'Restored.')" ] \
+[ "$(git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:$bob_path")" = "$(edit bob bob 'Restored.')" ] \
   || fail "the last edit is not what the comment holds"
 touch "$out"

@@ -360,8 +360,7 @@ func quote(s string) string {
 // author comes first. edited and edited_by follow it, in that order, on a
 // comment that has been edited, and a comment holds both or neither. Each
 // value is a JSON string. A comment that was never edited is the author
-// line alone, so a comment written before edits existed reads as it
-// always has. The body is required, and the form is as canonical as a
+// line alone. The body is required, and the form is as canonical as a
 // knot's.
 func ParseComment(path string, data []byte) (*Comment, error) {
 	c, err := parseComment(path, data)

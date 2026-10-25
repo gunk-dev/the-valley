@@ -197,13 +197,14 @@ for cycles — so a parent `outcome` may be `blocked_by` one of its own child kn
 cross-project `blocked_by` references are checked for syntax only.
 
 _How git realizes this:_ Project storage lives under `refs/the-valley/*`, and knots live as Markdown
-files with canonical YAML frontmatter (`<type-dir>/<id>-<slug>.md`, plus append-only comments at
-`comments/<id>/<stamp>-<op>.md`) in a commit tree at `refs/the-valley/knots`. Because a plain
-`git clone` fetches only `refs/heads/*` and `refs/tags/*`, and the host's mirror publisher sends
-only `main` and tags (`refs/heads/main` and `refs/tags/*`), cloning from a push mirror (such as
-GitHub) does not fetch the host's plan graph or change records; running `valley plan` or
-`valley status` against a valley host clone fetches the `refs/the-valley/*` refs each command needs
-directly from `origin`.
+files with canonical YAML frontmatter (`<type-dir>/<id>-<slug>.md`, plus comments at
+`comments/<id>/<stamp>-<op>.md`, which are never deleted) in a commit tree at
+`refs/the-valley/knots`. Each write is one commit on that ref, so every earlier text of a knot or a
+comment stays in its history. Because a plain `git clone` fetches only `refs/heads/*` and
+`refs/tags/*`, and the host's mirror publisher sends only `main` and tags (`refs/heads/main` and
+`refs/tags/*`), cloning from a push mirror (such as GitHub) does not fetch the host's plan graph or
+change records; running `valley plan` or `valley status` against a valley host clone fetches the
+`refs/the-valley/*` refs each command needs directly from `origin`.
 
 Read [Planning work with knots](./guide.md#planning-work-with-knots) to create and update the plan,
 or [Plan graph and knots](./reference.md#plan-graph-and-knots-refsthe-valleyknots) for the knot file

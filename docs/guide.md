@@ -313,6 +313,23 @@ valley knot set oc-1234567 status=done
 valley plan
 ```
 
+Comments record findings on a knot. `show` prints each comment's ID in brackets. A comment's author,
+or a holder of the approve grant, can replace its text:
+
+```sh
+valley knot comment oc-1234567 -m 'Waiting on the example.'
+valley knot show oc-1234567
+valley knot comment oc-1234567 --edit <comment-id> -m 'The example landed.'
+```
+
+The graph keeps every earlier text. `log` lists the commits that touched a knot or its comments, and
+`show --at` shows the knot as one of them left it:
+
+```sh
+valley knot log oc-1234567
+valley knot show oc-1234567 --at <commit>
+```
+
 Use `valley knot schema` to see each type's fields and allowed statuses. Knot writes validate the
 resulting graph and push it directly; they do not go through change approval. See
 [`valley knot`](./reference.md#valley-knot) for every subcommand and flag, and

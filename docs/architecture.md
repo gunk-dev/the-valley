@@ -2391,37 +2391,54 @@ records its answer in the source's docs. `valley review`, `valley pending`, `val
 [Listing changes](#listing-changes)). A question may link none, when its answer is a comment or an
 outcome that does the work. An idea links none, because it graduates into an outcome or a question.
 A knot is never deleted, and its `id`, `type`, `created` and `created_by` never change. A comment is
-only ever added. A new knot's `created_by`, and a new comment's `author`, name the principal that
-writes it. The module and the CUE schema with the knowledge lint are two validators of one
-documented schema, and `knot-agree` runs both over shared fixtures and generated graphs and fails on
-any disagreement about the rules they share. The canonical form, the layout, cycles and transitions
-are the module's alone, and `knot-unit` covers them.
+never deleted either, but its text can be edited. An edit replaces the comment's body. It keeps the
+comment's author and its file, and so its ID, which is the file's name without `.md`. The edit
+records when it was made in `edited`, and who made it in `edited_by`. A new knot's `created_by`, a
+new comment's `author` and an edit's `edited_by` name the principal that writes it. The ref keeps
+every write as a commit, so every earlier text of a knot and of its comments stays in its history.
+The module and the CUE schema with the knowledge lint are two validators of one documented schema,
+and `knot-agree` runs both over shared fixtures and generated graphs and fails on any disagreement
+about the rules they share. The canonical form, the layout, cycles and transitions are the module's
+alone, and `knot-unit` covers them.
 
-`valley knot` is the graph's API: `new`, `show`, `list`, `set`, `link`, `unlink`, `edit`, `comment`,
-`claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for another project
-on the same host. A write reads the tip with one `ls-remote`, one fetch and one batched read of the
-tree. It builds the new commit with git plumbing on a private index, never touching the worktree,
-and holds the result to the rules the hook applies. Then it pushes with
+`valley knot` is the graph's API: `new`, `show`, `log`, `list`, `set`, `link`, `unlink`, `edit`,
+`comment`, `claim`, `unclaim` and `schema`, each with `--json`, and each with `--project` for
+another project on the same host. A write reads the tip with one `ls-remote`, one fetch and one
+batched read of the tree. It builds the new commit with git plumbing on a private index, never
+touching the worktree, and holds the result to the rules the hook applies. Then it pushes with
 `--force-with-lease=refs/the-valley/knots:<old tip>`. When the lease fails, the operation is formed
 again on the new tip, at most 5 tries in all, after a random pause. `set`, `edit`, `link --parent`,
-`claim` and `unclaim` compare before they write: a field another write changed meanwhile, a claim
-another run holds, or a claim that changed before `unclaim` lands, is reported as a conflict, with
-exit status 3, and is never overwritten. `--if` adds a comparison of its own, and a field it names
-that no knot has is refused before anything is read. Each operation carries a `Valley-Op` trailer
-whose ID it keeps across every try. After a push whose outcome it cannot tell, the CLI looks for
-that ID among the ref's latest 64 commits before trying again, so no operation is recorded twice. A
-push the hook refuses is not tried again, and the CLI prints what the hook said. Checked by
-`valley-knot`, against bare repositories with no hook, and by `knots-e2e` through the hook.
+`claim`, `unclaim` and `comment --edit` compare before they write: a field another write changed
+meanwhile, a claim another run holds, a claim that changed before `unclaim` lands, or a comment
+another edit changed, is reported as a conflict, with exit status 3, and is never overwritten.
+`--if` adds a comparison of its own, and a field it names that no knot has is refused before
+anything is read. Each operation carries a `Valley-Op` trailer whose ID it keeps across every try.
+After a push whose outcome it cannot tell, the CLI looks for that ID among the ref's latest 64
+commits before trying again, so no operation is recorded twice. A push the hook refuses is not tried
+again, and the CLI prints what the hook said. Checked by `valley-knot`, against bare repositories
+with no hook, and by `knots-e2e` through the hook.
+
+The CLI reads a knot's history from the ref. `log` lists every commit that touched the knot's file
+or its comments, newest first, down to the root commit. It reads each commit's time, committer and
+operation with the knot module, as the hook read them. `show --at <commit>` reads the graph as that
+commit left it, with the same reader as every other verb, so an earlier text of a knot or a comment
+is read through the CLI. It takes only the fetched tip or a commit the tip descends from. What
+`show` derives is still derived now: a claim's age against the current clock, and another project's
+knot at that project's current tip.
 
 The host decides every push to the ref in `valleyhook` (`valleyhook/knots.go`), with the knot
 module. It matches `refs/the-valley/knots` exactly, so a ref that only begins with that name stays
 in the closed namespace. Any named principal may write the graph, and an untagged key may not. Every
 writer can change every knot in every project's graph. That fits a deployment where the writers are
-the operator and the operator's agents. Any principal added later gets the same reach. A push that
-creates the ref brings one commit with no parent. An update brings one commit whose only parent is
-the old tip, so a push is one operation and the ref never rewinds. No push deletes the ref; a graph
-that must be recovered is recovered on the host, and its history stays the record. The commit's
-committer is the pushing principal, and its message ends with a `Valley-Op` trailer.
+the operator and the operator's agents. Any principal added later gets the same reach. A comment is
+the exception: its author edits it, and so does a principal holding the approve grant, under either
+of its names. The knot module checks what an edit records, and the hook decides who may make it,
+because the grants are the host's. The CLI holds a write to every other rule before it pushes, but
+it knows no grants, so it leaves that decision to the hook. A push that creates the ref brings one
+commit with no parent. An update brings one commit whose only parent is the old tip, so a push is
+one operation and the ref never rewinds. No push deletes the ref; a graph that must be recovered is
+recovered on the host, and its history stays the record. The commit's committer is the pushing
+principal, and its message ends with a `Valley-Op` trailer.
 
 The hook reads the old and new trees with the bounded walk attestations use, with the graph's own
 budget: trees 3 deep, 20,000 entries in one tree and 30,005 in all, a shared subtree counted each
@@ -2435,11 +2452,12 @@ same way. The hook then holds the push to the module's rules. The layout is chec
 directories of mode `40000`, each an entry of its own, and plain files of mode `100644` at the
 layout's paths and nowhere else, no empty directory, no repeated name, valid UTF-8 with no control
 character but newline and tab. Every knot and comment the commit adds or changes is read and
-checked, against the old tree for the transitions, as the pushing principal for `created_by` and
-`author`. Every tip the hook admitted was valid, so it reads only those files and the knots their
-edges reach, but it checks the counts from the listing on every push, and a cycle is looked for
-along the edges of every knot the push changes. A push that also carries an invalid change record,
-attestation or integration request is refused whole, like any push with one refused update.
+checked, against the old tree for the transitions, as the pushing principal for `created_by`,
+`author` and `edited_by`. Every tip the hook admitted was valid, so it reads only those files and
+the knots their edges reach, but it checks the counts from the listing on every push, and a cycle is
+looked for along the edges of every knot the push changes. A push that also carries an invalid
+change record, attestation or integration request is refused whole, like any push with one refused
+update.
 
 Measured at the limits, on the development VM: an update adding a comment to a graph of 5,000 knots
 and 19,999 comments takes the hook 0.65 s when the comments are spread over every knot, so the walk
@@ -2558,10 +2576,10 @@ open residuals
 ```
 
 `VALLEY_NOW` stands in for the clock of the knot verbs and of `plan`. It holds an RFC 3339 time. A
-knot's `created` date, a claim's `claimed_at` and a comment's stamp are written at that time, and a
-claim's age is read against it. The checks set it, so the dates and ages they compare are the same
-on every run. It lets a writer do nothing new: the hook holds none of those times to its own clock,
-so a writer could record any of them by writing the file.
+knot's `created` date, a claim's `claimed_at`, a comment's stamp and an edit's `edited` are written
+at that time, and a claim's age is read against it. The checks set it, so the dates and ages they
+compare are the same on every run. It lets a writer do nothing new: the hook holds none of those
+times to its own clock, so a writer could record any of them by writing the file.
 
 Checked by `valley-plan`, which builds a graph with the real knot verbs and compares the text and
 the JSON with golden files in `status/testdata/plan/`, and by the Go tests in `status/` for progress

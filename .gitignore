@@ -19,3 +19,4 @@
 /status/*.test
 /valleyhook/valleyhook
 /valleyhook/*.test
+/webui/**/*.test

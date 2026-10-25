@@ -31,6 +31,7 @@ let
     runtimeInputs = [
       pkgs.git
       pkgs.coreutils
+      pkgs.findutils
       pkgs.gnugrep
     ];
     text = ''
@@ -56,6 +57,15 @@ let
           fail "$key was read"
         fi
       done
+      # The same alternate layout the publisher writes must resolve host
+      # objects with the exact safe.directory list and read-only mounts.
+      shared="$CACHE_DIRECTORY/shared.git"
+      git init --quiet --bare --template= "$shared"
+      git -C /srv/git/app.git rev-parse --path-format=absolute --git-path objects > "$shared/objects/info/alternates"
+      tip=$(git -C /srv/git/app.git rev-parse refs/heads/main)
+      git -C "$shared" update-ref refs/heads/main "$tip"
+      git -C "$shared" cat-file -e "$tip^{commit}" || fail "shared objects could not be read"
+      test "$(find "$shared/objects" -type f | wc -l)" -eq 1 || fail "objects were copied"
       touch "$STATE_DIRECTORY/written" || fail "the state directory could not be written"
       touch "$CACHE_DIRECTORY/written" || fail "the cache directory could not be written"
       echo "probe: confined"
@@ -110,6 +120,8 @@ in
           "install -d -m 0755 /run/keys",
           "echo secret | install -m 0644 /dev/stdin /run/keys/backup-ssh-key",
       )
+
+      host.succeed("runuser -u git -- sh -c 'tree=$(git -C /srv/git/app.git mktree < /dev/null); tip=$(echo initial | git -C /srv/git/app.git -c user.name=operator -c user.email=operator@example.org commit-tree \"$tree\"); git -C /srv/git/app.git update-ref refs/heads/main \"$tip\"'")
 
       host.succeed("systemctl start valley-web-publish.service")
       journal = host.succeed("journalctl -u valley-web-publish.service --no-pager")

@@ -65,8 +65,9 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
 One pass of the web publisher: read the valley's public projects, and
 upload them to the receiver at URL, or write them to DIR.
 
-  --instance-repo URL  the instance repository: the origin of the
-                       publisher's own bare repository, which the valley
+  --instance-repo URL  an absolute local path to the instance repository,
+                       the origin of the publisher's own bare repository,
+                       which the valley
                        CLI discovers projects and signers through; its
                        main holds policy/instance and no policy/valley;
                        URL holds no #, no control character, and no space
@@ -93,8 +94,8 @@ upload them to the receiver at URL, or write them to DIR.
                        leaves, and a pass past it sends nothing
                        (default 1G)
   --max-storage SIZE   the most the state directory and the caches may
-                       hold, checked before the pass fetches and once it
-                       has read the valley; a bundle is written only into
+                       hold, checked before each repository cache write
+                       and after collection; a bundle is written only into
                        what it leaves, and a pass past it sends nothing
                        (default 16G)
 
@@ -173,6 +174,8 @@ func parseArgs(args []string) (config, error) {
 		// The pointer repository names it in policy/valley, which the CLI
 		// reads up to a # and without the spaces around it.
 		return c, fmt.Errorf("--instance-repo %q holds a #, a control character or a space at either end, which policy/valley cannot name", c.instanceRepo)
+	case !filepath.IsAbs(c.instanceRepo):
+		return c, errors.New("--instance-repo must be an absolute local path")
 	case !export.ValidName(c.instance):
 		return c, fmt.Errorf("--instance %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.instance)
 	case !export.ValidName(c.destination):

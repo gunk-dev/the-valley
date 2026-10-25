@@ -100,7 +100,7 @@ func TestAnotherInstanceIsNeverRead(t *testing.T) {
 	// it, so an instance repository whose URL holds them is refused before
 	// the pass runs: policy/valley would name another.
 	instance := filepath.Join(v.srv, "valley.git")
-	for _, url := range []string{instance + "#other", " " + instance, instance + "\n" + other} {
+	for _, url := range []string{"relative.git", "https://example.org/valley.git", instance + "#other", " " + instance, instance + "\n" + other} {
 		var stdout, stderr bytes.Buffer
 		if code := run(context.Background(), v.args("--out", t.TempDir(), "--instance-repo", url), &stdout, &stderr); code != 2 {
 			t.Errorf("--instance-repo %q: the pass exited %d, want 2", url, code)
@@ -207,14 +207,13 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			says: "site: the pending listing could not read it",
 		},
 		{
-			name: "site's main cannot be fetched into its mirror",
+			name: "a project mirror cannot be staged",
 			breaks: func(v *testValley) []string {
-				mirror := filepath.Join(v.root, "cache", "valley-web-publish", "repos", "site.git")
-				v.run("", "git", "init", "--quiet", "--bare", mirror)
-				v.run("", "git", "-C", mirror, "config", "core.repositoryformatversion", "99")
+				// A file where the parent directory belongs prevents staging.
+				v.write(filepath.Join(v.root, "cache", "valley-web-publish", "repos"), "blocked")
 				return nil
 			},
-			says: "site: could not read main",
+			says: "app: could not read main",
 		},
 		{
 			name: "discovery fails, and the CLI lists its own repository alone",
@@ -399,6 +398,21 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 	v.write(filepath.Join(v.work["app"], "noise"), string(noise))
 	v.commit("app", "app: a large history")
 
+	// A cold cache with room for less than one shared repository refuses
+	// before writing it. The source history is much larger than the budget.
+	coldBudget := du(storage...) + 128
+	var coldSaid string
+	coldPeak := peakSize(storage, func() {
+		coldSaid = v.fails(nil, "--max-storage", strconv.FormatInt(coldBudget, 10))
+	})
+	mustSay(t, "cold cache", coldSaid, "more than --max-storage")
+	if coldPeak > coldBudget {
+		t.Fatalf("cold cache reached %d bytes with budget %d", coldPeak, coldBudget)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(cache, "valley-web-publish")); len(entries) != 0 {
+		t.Fatalf("cold refusal left partial data: %v", entries)
+	}
+
 	var said string
 	peak := peakSize([]string{bundles}, func() { said = v.fails(nil, "--max-bundles", "64K") })
 	mustSay(t, "--max-bundles", said, "app: its bundle is larger than the 65536 bytes --max-bundles 65536 leaves for it")
@@ -407,6 +421,21 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 	}
 	if left, _ := os.ReadDir(bundles); len(left) != 0 {
 		t.Errorf("the refused pass left %v behind in the bundles", left)
+	}
+
+	publisherCache := filepath.Join(cache, "valley-web-publish")
+	if size := du(publisherCache); size > int64(len(noise))/16 {
+		t.Fatalf("shared cache grew to %d bytes for a %d-byte history", size, len(noise))
+	}
+	for _, repo := range []string{"origin.git", "repos/app.git"} {
+		objects := filepath.Join(publisherCache, repo, "objects")
+		if _, err := os.Stat(filepath.Join(objects, "info", "alternates")); err != nil {
+			t.Fatal(err)
+		}
+		entries, err := os.ReadDir(objects)
+		if err != nil || len(entries) != 1 || entries[0].Name() != "info" {
+			t.Fatalf("cache copied objects: %v, %v", entries, err)
+		}
 	}
 
 	// The cache now holds what a read fetches, and the budget leaves
@@ -650,5 +679,47 @@ func TestLandingsAreVerifiedWithThePublishedSigners(t *testing.T) {
 	got := changes()
 	if len(got) != 2 || !strings.Contains(strings.Join(got, " "), landedChangeID) {
 		t.Errorf("with no published signers, app's changes ready for approval are %v, want the landed change among them", got)
+	}
+}
+
+// A refresh reserves the entire replacement while the old cache remains.
+// Refusal leaves the old readable snapshot intact and no staged files.
+func TestSharedCacheRefreshBudget(t *testing.T) {
+	v := newValley(t)
+	cache := filepath.Join(v.root, "shared-cache")
+	p := &publisher{cache: cache, cfg: config{state: v.state, maxStorage: 1 << 20}}
+	dir := filepath.Join(cache, "app.git")
+	source := filepath.Join(v.srv, "app.git")
+	refs := map[string]string{"refs/heads/main": "refs/heads/main"}
+	ctx := context.Background()
+	if err := p.shareRepository(ctx, dir, source, refs); err != nil {
+		t.Fatal(err)
+	}
+	old, err := revParse(ctx, dir, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.write(filepath.Join(v.work["app"], "next"), "next")
+	v.commit("app", "app: next")
+	used, err := p.storageUsed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.cfg.maxStorage = byteSize(used)
+	if err := p.shareRepository(ctx, dir, source, refs); err == nil {
+		t.Fatal("refresh exceeded its budget")
+	}
+	if tip, err := revParse(ctx, dir, "refs/heads/main"); err != nil || tip != old {
+		t.Fatalf("refused refresh changed the cache: %s, %v", tip, err)
+	}
+	if entries, err := os.ReadDir(cache); err != nil || len(entries) != 1 {
+		t.Fatalf("refused refresh left partial data: %v, %v", entries, err)
+	}
+	p.cfg.maxStorage = 1 << 20
+	if err := p.shareRepository(ctx, dir, source, refs); err != nil {
+		t.Fatal(err)
+	}
+	if tip, err := revParse(ctx, dir, "refs/heads/main"); err != nil || tip == old {
+		t.Fatalf("refresh did not advance main: %s, %v", tip, err)
 	}
 }

@@ -700,10 +700,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   host, `services.valley.webPublisher` runs it on a timer (see
   [The web publisher's options](#the-web-publishers-options)).
   - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--schema <file>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
-    - `--instance-repo <url>`: The instance repository. It is the `origin` of the publisher's own
-      bare repository, and the CLI discovers projects and signers through it. Its `main` must hold
-      `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no control character, and
-      no space at either end, because `policy/valley` cannot name such a URL.
+    - `--instance-repo <url>`: An absolute local path to the instance repository. It is the `origin`
+      of the publisher's own bare repository, and the CLI discovers projects and signers through it.
+      Its `main` must hold `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no
+      control character, and no space at either end, because `policy/valley` cannot name such a URL.
     - `--instance <name>`: The instance the manifest names. The export key signs under
       `<name>/web-export`.
     - `--destination <name>`: The receiver the manifest is for.
@@ -2168,9 +2168,11 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   - The pass writes each bundle only into the room that both bounds leave. When a bundle is larger,
     the pass stops writing at that room. It deletes what it wrote of that bundle and every bundle it
     made in the pass, and fails.
-  - A fetch has no bound of its own. So one pass's fetches can grow the caches past `--max-storage`.
-    That pass fails at its second check, and each later pass fails at its first check until the
-    caches are smaller.
+  - **Implemented:** The publisher's own repository caches borrow objects from absolute local
+    repository paths through Git alternates. They copy no history. Before replacing each cache, the
+    publisher checks that its complete metadata fits alongside the existing storage. It checks
+    storage again before installing the replacement and removes partial replacements on failure.
+  - The CLI's separate caches remain covered by the checks before and after collection.
 
   A pass that fails on a bound sends and writes nothing.
 

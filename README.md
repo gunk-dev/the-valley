@@ -38,6 +38,8 @@ valley review kqxm              # inspect the diff (and interactively approve)
   principals may approve, and enabling the integrator or identity compiler are host choices
   (`valley.cue`, `services.valley`); push mirrors receive only `main` and tags, not
   [project storage](./docs/concepts.md#records-project-storage-the-plan-graph-and-knots).
+- **Implemented:** The web publisher reads local host repositories without copying their history
+  into its own cache. It checks storage before writing each repository cache.
 - **Not built yet:** For restacking, the rebase library behind `valley rebase` and `[b]ase` in
   `valley review`, the host's `restack` grant and report validation, and the read-only planner
   (`valley-restacker once --report-only`) are built, while the service that rebases ready changes

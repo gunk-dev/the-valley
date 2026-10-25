@@ -45,9 +45,6 @@ type reading struct {
 // in between makes the two disagree; export.Build says so with
 // ErrInconsistent, and collect reads everything again.
 func (p *publisher) collect(ctx context.Context) (*reading, error) {
-	if err := p.prepareOrigin(ctx); err != nil {
-		return nil, err
-	}
 	if err := checkSchema(ctx, p.cfg.schema); err != nil {
 		return nil, err
 	}
@@ -241,15 +238,6 @@ func (p *publisher) projectVisibility(ctx context.Context, name string, repo pen
 	return true, nil
 }
 
-// prepareOrigin makes the publisher's bare repository, with origin set to
-// the instance repository, or sets origin again when it names another.
-func (p *publisher) prepareOrigin(ctx context.Context) error {
-	if err := os.MkdirAll(p.cache, 0o700); err != nil {
-		return err
-	}
-	return bareWithOrigin(ctx, p.origin, p.cfg.instanceRepo)
-}
-
 // bareWithOrigin makes a bare repository at dir, unless one is there, and
 // sets its origin to url.
 func bareWithOrigin(ctx context.Context, dir, url string) error {
@@ -326,8 +314,9 @@ type instanceRead struct {
 // its own.
 func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	var r instanceRead
-	if _, err := git(ctx, p.origin, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin",
-		"+refs/heads/main:"+originMain, "+"+projectsRef+":"+originProjects); err != nil {
+	if err := p.shareRepository(ctx, p.origin, p.cfg.instanceRepo, map[string]string{
+		originMain: "refs/heads/main", originProjects: projectsRef,
+	}); err != nil {
 		return r, fmt.Errorf("could not read main and %s in the instance repository: %w", projectsRef, err)
 	}
 	var err error
@@ -359,49 +348,101 @@ func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 // errNoMain is fetchMain's error for a project with no main.
 var errNoMain = errors.New("no main")
 
-// fetchMain brings a project's main into its mirror, a bare repository
-// under the cache that holds main alone, and returns the mirror and main's
-// tip, or errNoMain when the project has none. A mirror is first made by a clone, so it has the project's object
-// format, and the clone is renamed into place only once it is whole. The
-// clone copies objects through the transport, as a fetch does, and never
-// links the project's own files.
+// fetchMain reads main into a cache that borrows the local repository's
+// objects. Borrowing keeps repository history outside the storage budget:
+// the publisher can read the host's objects but cannot write them.
 func (p *publisher) fetchMain(ctx context.Context, name, url string) (string, string, error) {
-	heads, err := git(ctx, p.origin, "ls-remote", "--end-of-options", url, "refs/heads/main")
+	if !filepath.IsAbs(url) {
+		return "", "", fmt.Errorf("repository must be an absolute local path: %q", url)
+	}
+	heads, err := git(ctx, url, "ls-remote", "--end-of-options", url, "refs/heads/main")
 	if err != nil {
 		return "", "", err
 	}
 	if !listsRef(heads, "refs/heads/main") {
 		return "", "", errNoMain
 	}
+
 	mirror := filepath.Join(p.cache, "repos", name+".git")
-	if _, err := os.Stat(filepath.Join(mirror, "HEAD")); err == nil {
-		if _, err := git(ctx, mirror, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head",
-			"--end-of-options", url, "+refs/heads/main:refs/heads/main"); err != nil {
-			return "", "", err
-		}
-	} else {
-		if err := os.MkdirAll(filepath.Dir(mirror), 0o700); err != nil {
-			return "", "", err
-		}
-		made, err := os.MkdirTemp(filepath.Dir(mirror), "."+name+".new-")
-		if err != nil {
-			return "", "", err
-		}
-		defer os.RemoveAll(made)
-		clone := filepath.Join(made, "repo.git")
-		if _, err := git(ctx, "", "clone", "--quiet", "--bare", "--no-local", "--no-tags", "--single-branch",
-			"--branch", "main", "--template=", "--end-of-options", url, clone); err != nil {
-			return "", "", err
-		}
-		if err := os.RemoveAll(mirror); err != nil {
-			return "", "", err
-		}
-		if err := os.Rename(clone, mirror); err != nil {
-			return "", "", err
-		}
+	if err := p.shareRepository(ctx, mirror, url, map[string]string{"refs/heads/main": "refs/heads/main"}); err != nil {
+		return "", "", err
 	}
 	tip, err := revParse(ctx, mirror, "refs/heads/main^{commit}")
 	return mirror, tip, err
+}
+
+// shareRepository replaces a disposable cache with refs and an alternate.
+// No fetch transport runs, so even objects added concurrently cannot be
+// copied. All bytes to be written are known before staging starts. Old
+// caches remain counted until the replacement is complete.
+func (p *publisher) shareRepository(ctx context.Context, dir, source string, refs map[string]string) error {
+	if !filepath.IsAbs(source) || strings.ContainsAny(source, "\n\r") {
+		return fmt.Errorf("repository must be an absolute local path: %q", source)
+	}
+	objects, err := git(ctx, source, "rev-parse", "--path-format=absolute", "--git-path", "objects")
+	if err != nil {
+		return err
+	}
+	format, err := git(ctx, source, "rev-parse", "--show-object-format")
+	if err != nil {
+		return err
+	}
+	config := "[core]\n\tbare = true\n\trepositoryformatversion = 0\n"
+	switch strings.TrimSpace(string(format)) {
+	case "sha1":
+	case "sha256":
+		config = "[core]\n\tbare = true\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
+	default:
+		return fmt.Errorf("unsupported object format %q", format)
+	}
+	quoted := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\t", "\\t").Replace(source)
+	config += "[remote \"origin\"]\n\turl = \"" + quoted + "\"\n"
+	files := map[string]string{
+		"HEAD": "ref: refs/heads/main\n", "config": config,
+		"objects/info/alternates": strings.TrimSpace(string(objects)) + "\n",
+	}
+	for dest, ref := range refs {
+		tip, err := revParse(ctx, source, ref)
+		if err != nil {
+			return err
+		}
+		files[dest] = tip + "\n"
+	}
+	used, err := p.storageUsed()
+	if err != nil {
+		return err
+	}
+	var added int64
+	for _, content := range files {
+		added += int64(len(content))
+	}
+	if used > int64(p.cfg.maxStorage)-added {
+		return p.overStorage(used + added)
+	}
+	if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
+		return err
+	}
+	stage, err := os.MkdirTemp(filepath.Dir(dir), ".shared-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(stage)
+	for name, content := range files {
+		path := filepath.Join(stage, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			return err
+		}
+	}
+	if err := p.checkStorage(); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return err
+	}
+	return os.Rename(stage, dir)
 }
 
 // listsRef reports whether ls-remote's output lists the ref. ls-remote

@@ -205,4 +205,40 @@ attribute project: checks: c: {runner: "nix", attribute: "a@b"}
 command project: checks: c: {runner: "command", command: "a@b"}
 refined-pattern policy: classes: c: paths: "a@b": true
 EOF
+
+# The web visibility declarations (schema/web.cue): the worked instance and
+# project declarations, and the-valley's own, which must say public or the
+# publisher keeps it private.
+cue vet -c "$webSchema" "$webPolicies"/instance/*.cue
+[ "$(cue export -e instance.projects.app.visibility "$webSchema" "$webPolicies"/instance/*.cue)" \
+  = '"public"' ]
+[ "$(cue export -e instance.projects.site.visibility "$webSchema" "$webPolicies"/instance/*.cue)" \
+  = '"private"' ]
+cue vet -c "$webSchema" "$webPolicies"/project/*.cue
+[ "$(cue export -e project.visibility "$webSchema" "$ownWeb"/*.cue)" = '"public"' ]
+
+# The declarations the schema must reject, and the field each rejection
+# must name. A refused declaration keeps its project private, so a schema
+# that stopped refusing one would make public what nobody declared.
+while read -r fixture names; do
+  if cue vet -c "$webSchema" "$webPolicies/rejected/$fixture.cue" > "$fixture.err" 2>&1; then
+    echo "cue-vet: expected web/rejected/$fixture.cue to be rejected" >&2
+    exit 1
+  fi
+  grep -qF -- "$names" "$fixture.err" || {
+    echo "cue-vet: web/rejected/$fixture.cue was rejected without naming $names" >&2
+    cat "$fixture.err" >&2
+    exit 1
+  }
+done <<'EOF'
+top-level-visibility visibility: conflicting values "INVALID: unknown top-level field
+unknown-visibility project.visibility
+unknown-project-field project.shares: field not allowed
+unsafe-project-name instance.projects."../app": field not allowed
+instance-list instance.public: field not allowed
+EOF
+[ "$(find "$webPolicies/rejected" -name '*.cue' | wc -l)" = 5 ] || {
+  echo "cue-vet: web/rejected/ holds a case the list above does not name" >&2
+  exit 1
+}
 touch "$out"

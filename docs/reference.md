@@ -19,8 +19,8 @@ and [A guide to working in the valley](./guide.md) for step-by-step workflows.
   review records, signed notes, digest manifests, transfer statements, outcome records, knots, CLI
   JSON contracts, the web export, and the web server.
 - [CUE configuration schemas](#cue-configuration-schemas) — `schema/valley.cue`,
-  `schema/verification.cue`, `schema/attestation.cue`, `schema/identity.cue`, `schema/node.cue`, and
-  `schema/events.cue`.
+  `schema/verification.cue`, `schema/web.cue`, `schema/attestation.cue`, `schema/identity.cue`,
+  `schema/node.cue`, and `schema/events.cue`.
 
 ---
 
@@ -554,8 +554,8 @@ valley help [<verb>]
 
 ### Helper and host commands
 
-The `valley` package and NixOS host module build six Go binaries that `bin/valley` and `systemd`
-invoke ([`nix/packages.nix`](../nix/packages.nix)).
+The `valley` package, the NixOS host module, and the web publisher's module build seven Go binaries
+that `bin/valley` and `systemd` invoke ([`nix/packages.nix`](../nix/packages.nix)).
 
 ```sh
 attest key --key ~/.ssh/valley-attest --name operator
@@ -693,6 +693,33 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     — read-only planner (`implemented`); the write pass and host service are `not built`. While the
     `--signer-projects` file names the `--integrator-name`, no landing is proved by a transfer
     statement. A file that does not read stops the pass.
+- **`valley-web-publish`**
+  ([`webui/cmd/valley-web-publish/main.go`](../webui/cmd/valley-web-publish/main.go)): One pass of
+  the web publisher (see [Web export publisher](#web-export-publisher)). It is wrapped with this
+  flake's `git`, `cue`, and `valley`, and with `VALLEY_WEB_SCHEMA` set to `schema/web.cue`. On a
+  host, `services.valley.webPublisher` runs it on a timer (see
+  [The web publisher's options](#the-web-publishers-options)).
+  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--schema <file>] [--recheck <duration>]`
+    - `--instance-repo <url>`: The instance repository. It is the `origin` of the publisher's own
+      bare repository, which the CLI discovers projects through.
+    - `--instance <name>`: The instance the manifest names. The export key signs under
+      `<name>/web-export`.
+    - `--destination <name>`: The receiver the manifest is for.
+    - `--receiver <url>`: The receiver's base URL, `http` or `https`, with no user, query, or
+      fragment. The upload's paths are appended to it.
+    - `--out <dir>`: Write the export to `<dir>` instead of uploading it. `<dir>` must not exist or
+      must be empty. Exactly one of `--receiver` and `--out` is given.
+    - `--principals <file>`: The display mapping, a JSON object from each principal's name to the
+      name an export shows. Without it, every principal is shown as `contributor`.
+    - `--state <dir>`: The state directory (default
+      `${XDG_STATE_HOME:-$HOME/.local/state}/valley/web-publish`).
+    - `--schema <file>`: The web visibility schema (default `$VALLEY_WEB_SCHEMA`).
+    - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
+      `1h`).
+  - Prints `valley-web-publish: public: <projects>; private: <projects>` on every pass, then one
+    line for what it did. Warnings go to `stderr`, and so does what the CLI prints there.
+  - Exits `0` when the pass uploaded the export, found nothing to send, or wrote `--out`. It exits
+    `1` when the pass failed, and `2` for invalid flags.
 
 ---
 
@@ -875,6 +902,47 @@ services.valley = {
 | `worker.enable`, `worker.projects`, `worker.signerName`                                      | `false`, `[]`, (required when enabled)             | Runs `valley-worker` on a timer over `projects` as the `valley-worker` user, signing attestations as `signerName`. Requires `buildSlice.enable = true`, `integrator.enable = true`, `integrator.instanceProject != null`, non-empty `projects` served by this host, `signerName` different from the integrator's signing name, and `integrator.signerProjects.<signerName>` set to the exact `projects` list. Runs in `valley-builds.slice` pinned to CPU 0 (`CPUAffinity=0`) with `max-jobs = 1` and `cores = 4`. Connects to the host's repositories over `localhost` SSH as `user` (`git` by default); its generated key must be enrolled before it can fetch or push (see [The worker on the host](architecture.md#the-worker-on-the-host)). |
 | `worker.interval`, `worker.stateDir`                                                         | `"1m"`, `"/var/lib/valley-worker"`                 | Delay (`OnUnitInactiveSec`) between the end of one `valley-worker.service` pass and the start of the next, and the `0700` state directory owned by `valley-worker`. Holds the worker's Ed25519 private key (`key`, mode `0400`, generated on first start), its public key (`key.pub`) and `known-signers` line (`verifier`), its `known_hosts`, the scratch repository (`origin/`), cached project clones (`cache/`), and `lock` and `failures.json`.                                                                                                                                                                                                                                                                                            |
 | `backup.repositoryFile`, `backup.passwordFile`, `backup.sshKeyFile`, `backup.knownHostsFile` | `null`                                             | Runtime secret paths required whenever `valley.cue` enables `backup` (`backup.enable` defaults to `true` when `backup` is declared).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+#### The web publisher's options
+
+The web publisher's module, `nixosModules.webui-publisher`
+([`nix/webui-publisher.nix`](../nix/webui-publisher.nix)), adds `services.valley.webPublisher` to a
+host that imports the host module (`deployment choice`).
+
+```nix
+imports = [ the-valley.nixosModules.default the-valley.nixosModules.webui-publisher ];
+services.valley.webPublisher = {
+  enable = true;
+  destination = "example.org";
+  receiver = "https://example.org";
+  principals = { operator = "operator"; alice = "agent"; };
+};
+```
+
+| NixOS option (`services.valley.webPublisher.*`) | Default                         | Meaning                                                                                                                                          |
+| :---------------------------------------------- | :------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable`                                        | `false`                         | Runs `valley-web-publish` on a timer. Needs `services.valley.integrator.instanceProject`, the instance repository the publisher reads.           |
+| `destination`                                   | (required)                      | The receiver's name, which every manifest is signed for.                                                                                         |
+| `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                |
+| `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                          |
+| `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`. |
+
+- **The pass:** `valley-web-publish.service` is a oneshot. It runs
+  `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
+  with the destination, receiver, display mapping, and state directory above. No switch starts it:
+  nothing wants the service, and a changed unit is not restarted (`restartIfChanged = false`). A
+  pass that runs longer than an hour is stopped (`TimeoutStartSec`).
+- **The timer:** `valley-web-publish.timer` starts a pass five minutes after the timer starts
+  (`OnActiveSec`), so a pass never runs inside the switch that started the timer. After that it
+  starts a pass five minutes after the last one ended (`OnUnitInactiveSec`).
+- **The sandbox:** The service runs as a dynamic user (`DynamicUser`) with the git group
+  (`SupplementaryGroups`), so it can read the repositories and owns nothing on disk but its state
+  and cache. Its environment carries one `safe.directory` entry for each repository the host
+  declaration serves, as `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and `GIT_CONFIG_VALUE_<n>`, with
+  no wildcard. `ProtectSystem=strict` leaves the filesystem read-only except the state and cache
+  directories, and the repositories are listed in `ReadOnlyPaths`. `InaccessiblePaths` holds the git
+  user's `<dataDir>/.ssh`, `/var/lib/valley-integrator`, the integrator's signing key file, the
+  worker's state directory when the worker runs, and the backup's secret files.
 
 ---
 
@@ -1745,9 +1813,9 @@ consists of `export.json`, one git bundle of `main` for each exported project, a
 that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
 the web server, and the web server never connects back to the host. Package `export` of the `webui`
 module ([`webui/export/`](../webui/export/)) implements the types, the verification checks below,
-and the receiver's state directory. The web server, [`valley-web`](#web-server-valley-web), reads
-the receiver's state directory with the package. The publisher command and the receiver's HTTP
-handlers are `not built`.
+and the receiver's state directory. `valley-web-publish` is the publisher, and the web server,
+[`valley-web`](#web-server-valley-web), reads the receiver's state directory with the package. The
+receiver's HTTP handlers are `not built`.
 
 #### `export.json` (`valley-web-export/v1`)
 
@@ -1780,7 +1848,9 @@ compact JSON ending with a newline.
 
 - **What is exported:** Visibility is set per project. A project is exported only when its
   visibility is `public`, the only visibility value in v1. Projects omitted from the visibility map
-  are not exported. Every knot and every comment of an exported project is included.
+  are not exported. The publisher builds the map from `policy/web` declarations (see
+  [Web visibility](#web-visibility-schemawebcue)). Every knot and every comment of an exported
+  project is included.
 - **Top-level fields:** `schema` (`"valley-web-export/v1"`), `collected` (`string`, the plan's
   `now`), and `projects` (sorted by project name).
 - **`projects[]` fields:**
@@ -1985,6 +2055,103 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
 | `bad-bundle`        | `422` | 3    | A bundle fails acceptance.                                                                                |
 
 A refused upload leaves the active export as it was.
+
+#### Web export publisher
+
+`valley-web-publish` ([`webui/cmd/valley-web-publish/`](../webui/cmd/valley-web-publish/)) builds an
+export of a valley host's public projects and uploads it. One run is one pass.
+
+```sh
+valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
+  --destination example.org --receiver https://example.org --principals principals.json
+```
+
+- **A pass:** In order, the pass:
+  1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
+  2. reads the export key, or makes one on the first start;
+  3. fetches the instance repository's `main` into the publisher's own bare repository,
+     `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is `--instance-repo`, and
+     requires that `main` carry `policy/instance`;
+  4. reads the instance's `policy/web` at that `main`;
+  5. runs `valley plan --all --json` and `valley pending --all --json` in the publisher's
+     repository, so the CLI discovers the projects through `refs/the-valley/projects` and the
+     signers through `refs/the-valley/signers`. `VALLEY_KNOWN_SIGNERS` and
+     `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment;
+  6. for each project the instance allows, fetches `main` from the URL the pending listing gives
+     into a mirror, `$XDG_CACHE_HOME/valley-web-publish/repos/<project>.git`, and reads the
+     project's own `policy/web` at that `main`;
+  7. runs `valley knot show --project <project> <id> --json` for every knot of every public project,
+     and builds the export with `export.Build`;
+  8. uploads the export, or writes it to `--out`.
+- **Visibility:** A project is public when the instance's declaration holds
+  `instance: projects: <project>: visibility: "public"` and the project's own declaration holds
+  `project: visibility: "public"`. Every other project is private: one the instance does not name,
+  one with no declaration, one whose declaration `schema/web.cue` refuses, one whose `main` cannot
+  be read, and one the pending listing gives no URL for. A refused declaration or an unreadable
+  `main` is said on `stderr`. A missing or refused instance declaration makes every project private,
+  and the pass uploads an export with no project.
+- **Reading a declaration:** The pass reads the `*.cue` files directly in `policy/web/` of the
+  commit, as regular files only, with `git ls-tree` and `git cat-file`, never a checkout. It copies
+  them into a scratch directory with no `cue.mod`, so `cue` resolves no import beyond its standard
+  library, and runs `cue export --out json` with the schema and the files. `CUE_*` variables are
+  removed from `cue`'s environment. A declaration with more than 32 files, a file over 64 KiB, a
+  `cue` run longer than a minute, or exported JSON with a field the schema does not define is
+  refused.
+- **Consistent reads:** `export.Build` fails with `export.ErrInconsistent` when a knot's detail was
+  read at another graph tip than the plan. The pass then reads the valley again, up to three reads
+  in all, and fails when every read was inconsistent.
+- **Bundles:** Each public project's bundle is `git bundle create <file> refs/heads/main` in its
+  mirror, kept under `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A
+  bundle is made once per source tip, so the body a manifest declares for a tip is the same in every
+  pass. The pass checks with `git bundle list-heads` that the bundle carries `refs/heads/main` at
+  the source tip. It deletes the bundles of a project's earlier tips, and of projects the export
+  does not hold.
+- **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends nothing when the
+  last acknowledgement names the same receiver, destination, and digest, and is less than
+  `--recheck` old. Otherwise it posts a manifest. When the inventory's `active.digest` is the
+  export's digest and `needs` names no bundle, the pass stops after step 1 of the upload. Either
+  way, the acknowledgement records what the receiver replied: the inventory's active sequence, or
+  the committed sequence. An upload that was attempted and refused records nothing. A receiver that
+  lost its state is sent the whole export at the first pass after the acknowledgement passes
+  `--recheck`.
+- **Sequence:** A manifest's sequence is the clock in Unix nanoseconds when it is signed. It must be
+  greater than the greatest sequence the receiver is known to have accepted: the acknowledged one,
+  or the `high_water` of a `replayed` refusal. When the clock is behind that mark by at most two
+  minutes, the pass waits for the clock to pass it. Otherwise the pass fails, and the next pass
+  tries again.
+- **Retries:** A pass makes at most five upload attempts.
+
+  | Reply                                                           | What the pass does                                                                     |
+  | :-------------------------------------------------------------- | :------------------------------------------------------------------------------------- |
+  | A failure in transit, a status with no refusal, or `unreadable` | Pauses, 2 seconds and then twice as long each time, and posts the same manifest again. |
+  | `incomplete`                                                    | Posts the same manifest again and sends what the inventory still needs.                |
+  | `replayed`                                                      | Signs a new manifest once the clock has passed `high_water`.                           |
+  | `superseded`, `no-manifest`                                     | Pauses, and signs a new manifest.                                                      |
+  | `out-of-window`                                                 | Fails the pass, naming the signing time, without a retry.                              |
+  | Any other refusal                                               | Fails the pass without a retry.                                                        |
+
+- **Requests:** A body is sent with its declared size as `Content-Length` and no `Content-Encoding`.
+  The client follows no redirect. A manifest post may take 2 minutes, a body or a commit 30 minutes.
+  A reply over 1 MiB is a failure.
+- **`--out`:** The pass writes the upload's content to `<dir>`: `manifest` (the signed manifest),
+  `export.json`, and `bundles/<project>.bundle`. It writes them in a temporary directory beside
+  `<dir>` and renames it into place, so a reader never sees part of it. A pass with `--out` signs
+  with the same key and does not read or write the acknowledgement.
+- **State directory:**
+
+  ```text
+  <state>/lock           flock(2) lock held for the whole of a pass
+  <state>/key            the export key: Ed25519, PKCS #8 in PEM, mode 0400
+  <state>/verifier       the key's verifier line, <instance>/web-export+<hash>+<base64>
+  <state>/acknowledged   valley-web-publish-acknowledged/v1: receiver, destination, digest,
+                         sequence, and when the receiver replied
+  ```
+
+  The key is made under a temporary name and renamed into place, so a start that is killed leaves no
+  key, and the next start makes one. Every pass compares the key's verifier line with
+  `<state>/verifier`. When the line differs, for a new key or a new `--instance`, the pass writes it
+  there and prints `valley-web-publish: the export key's verifier line is <line>`. The receiver pins
+  that line. The private key is never printed.
 
 #### Web export receiver state
 
@@ -2235,9 +2402,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 
 ## CUE configuration schemas
 
-Six CUE schemas under `schema/` validate host declarations, verification policies, attestation
-statements, identity registries, knowledge/plan nodes, and bus events. What an instance writes in
-its CUE files is a `deployment choice`; the schema constraints below are `implemented`.
+Seven CUE schemas under `schema/` validate host declarations, verification policies, web visibility
+declarations, attestation statements, identity registries, knowledge/plan nodes, and bus events.
+What an instance writes in its CUE files is a `deployment choice`; the schema constraints below are
+`implemented`.
 
 ### Host configuration (`schema/valley.cue`)
 
@@ -2316,6 +2484,51 @@ against that file alone is `not built`. Whether a floor writes the field is a `d
 The schema travels with the tools: `valley`, the integrator and the restacker each compose under
 their own packaged copy. A tool with an older schema refuses a policy that writes `approval`, and
 derives no checks for it. Deploy the tools before a policy writes the field.
+
+### Web visibility (`schema/web.cue`)
+
+[`schema/web.cue`](../schema/web.cue) (`package web`) defines the declaration a repository keeps in
+`policy/web/*.cue` on its `main`. The web publisher reads it to decide which projects an export
+holds.
+
+```cue
+// policy/web/web.cue in the instance repository
+package web
+
+instance: projects: {
+	app: visibility:  "public"
+	site: visibility: "private"
+}
+```
+
+```cue
+// policy/web/web.cue in app
+package web
+
+project: visibility: "public"
+```
+
+```sh
+cue vet -c schema/web.cue policy/web/*.cue
+```
+
+| Field                                    | Type                    | Rules                                                                                                                           |
+| :--------------------------------------- | :---------------------- | :------------------------------------------------------------------------------------------------------------------------------ |
+| `project.visibility` (`#Declaration`)    | `"public" \| "private"` | Optional. What the repository declares of itself. `project` holds no other field.                                               |
+| `instance.projects.<name>` (`#Instance`) | `#Declaration`          | Optional. The projects the instance lets the web read. `<name>` follows the project-name rule (`#Name`, at most 64 characters). |
+| Top-level fields                         | `project`, `instance`   | Any other top-level field conflicts with a sentinel string and fails vet, naming the field.                                     |
+
+- **Two declarations:** A project is exported publicly only when the instance repository's
+  `instance.projects.<name>.visibility` and the project's own `project.visibility` are both
+  `"public"`. A declaration that is missing, or that the schema refuses, means private.
+- **The instance repository:** The publisher reads `instance` from the instance repository alone,
+  and ignores it in any other repository. The instance repository is a project too, so its
+  `policy/web/` can carry both blocks.
+- **Beside the verification policy:** `policy/web/` sits beside `policy/instance/` and
+  `policy/project/`. Those two directories are verification-policy layers, whose top level
+  `schema/verification.cue` closes to its own fields.
+- **the-valley's own:** [`policy/web/web.cue`](../policy/web/web.cue) declares
+  `project: visibility: "public"` (`deployment choice`).
 
 ### Attestation statement (`schema/attestation.cue`)
 

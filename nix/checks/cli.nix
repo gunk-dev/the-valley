@@ -394,14 +394,15 @@ in
   } (builtins.readFile ./valley-changes.sh);
 
   # valley knot against local bare repositories that run no hook, as any
-  # git remote would: every verb, the ref's shape after each write, another
+  # git remote would: every verb, the ref's shape after each write, a
+  # comment's edits read back through log and show --at, another
   # project named by --project and by a qualified id, and then each way a
   # write may fail to land the first time. A stand-in for git, first on
   # PATH, makes another writer land between a read and its push, drops the
   # connection after a push lands and after one that did not, takes a
-  # claim or changes a field first, and releases and retakes a claim an
-  # unclaim read. Each write must then land exactly once, or be reported
-  # as a conflict. Two writers also run at once. cliScript
+  # claim, changes a field or edits a comment first, and releases and
+  # retakes a claim an unclaim read. Each write must then land exactly
+  # once, or be reported as a conflict. Two writers also run at once. cliScript
   # is bin/valley itself, because the package's wrapper puts its own git
   # ahead of the stand-in.
   valley-knot = pkgs.runCommand "valley-knot" {

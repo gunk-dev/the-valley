@@ -189,6 +189,72 @@ holds '.knot.comment_count == 2' \
   || fail "two comments are not two files"
 fails 1 'takes the comment' valley knot comment "$work"
 
+# comment --edit replaces a comment's text in place. The comment keeps its
+# id, its file, its author and its stamp, and records who edited it and
+# when. Each comment's id is its file's name without .md.
+ok valley knot show "$work" --json
+holds '.knot.comments | all(.id | test("^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$"))' '.knot.comments | all(has("edited") | not)'
+finding="$(jq -r '.knot.comments[] | select(.body == "A finding.\n") | .id' "$w/out")"
+found_at="$(jq -r ".knot.comments[] | select(.id == \"$finding\") | .at" "$w/out")"
+[ "$finding.md" = "$(git -C "$graph" ls-tree --name-only "refs/the-valley/knots:comments/$work" | grep -F "${finding#*-}")" ] \
+  || fail "a comment's id is not its file's name"
+unedited="$(git -C "$graph" rev-parse refs/the-valley/knots)"
+ok env VALLEY_NOW=2026-10-25T15:00:00Z valley knot comment "$work" --edit "$finding" -m "A finding, restated." --json
+holds ".knot.comments | map(select(.id == \"$finding\")) | .[0] | .body == \"A finding, restated.\\n\" and .author == \"patrick\"
+  and .at == \"$found_at\" and .edited == \"2026-10-25T15:00:00Z\" and .edited_by == \"patrick\"" '.knot.comment_count == 2'
+[ "$(git -C "$graph" ls-tree --name-only "refs/the-valley/knots:comments/$work" | wc -l)" = 2 ] \
+  || fail "an edit added a file"
+[ "$(git -C "$graph" show -s --format=%s refs/the-valley/knots)" = "knot comment $work: edit $finding" ] \
+  || fail "an edit is not one commit naming the comment"
+restated="$(git -C "$graph" rev-parse refs/the-valley/knots)"
+# The same editor edits it again, and each edit is its own commit.
+ok env VALLEY_NOW=2026-10-25T16:00:00Z valley knot comment "$work" --edit "$finding" -m "A finding, restated twice."
+ok valley knot show "$work"
+line "^— patrick, .*, edited 2026-10-25 16:00Z by patrick  \\[$finding\\]$"
+fails 0 'says that already; nothing to change' valley knot comment "$work" --edit "$finding" -m "A finding, restated twice."
+fails 1 "holds no comment 20261025T000000Z-0000000000000000" valley knot comment "$work" --edit 20261025T000000Z-0000000000000000 -m "Nothing."
+fails 1 "comment $finding is on $work, not on $bug" valley knot comment "$bug" --edit "$finding" -m "Elsewhere."
+fails 2 "--edit takes a comment's id" valley knot comment "$work" --edit "../$bug/$finding" -m "Elsewhere."
+fails 1 'takes the comment' valley knot comment "$work" --edit "$finding"
+
+# log lists every commit that touched the knot or its comments, newest
+# first, in the ref's ancestry, each with its time, committer and
+# operation as the commit records them. The milestone was the first knot,
+# so its log ends at the root commit.
+ok valley knot log "$work" --json
+holds '.schema == "valley-knot-log/v1"' ".id == \"$work\"" '.commits | all(.committer == "patrick")' \
+  '.commits[0].subject == "knot comment '"$work"': edit '"$finding"'"' \
+  ".commits[0].files == [{\"path\": \"comments/$work/$finding.md\", \"change\": \"changed\", \"comment\": \"$finding\"}]" \
+  '.commits[-1].files == [{"path": .path, "change": "added"}]'
+[ "$(jq -r '.commits[].commit' "$w/out")" = "$(git -C "$graph" rev-list refs/the-valley/knots -- "$(jq -r .path "$w/out")" "comments/$work/")" ] \
+  || fail "log does not list the knot's commits in the ref's order"
+for c in $(jq -r '.commits[].commit' "$w/out"); do
+  [ "$(jq -r ".commits[] | select(.commit == \"$c\") | [.at, .op] | join(\" \")" "$w/out")" \
+    = "$(TZ=UTC git -C "$graph" log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format='%cd %(trailers:key=Valley-Op,valueonly)' "$c")" ] \
+    || fail "log does not give commit $c's time and operation"
+done
+ok valley knot log "$milestone" --json
+holds ".commits[-1].commit == \"$first\""
+ok valley knot log "$work"
+line "^${restated:0:7} [0-9-]+ [0-9:]+Z patrick  knot comment $work: edit $finding$"
+line "^    changed comments/$work/$finding.md$"
+
+# show --at reads the knot as a commit of the graph left it, so every
+# earlier text of a comment is read back.
+ok valley knot show "$work" --at "$unedited" --json
+holds ".at == \"$unedited\"" ".tip == \"$(git -C "$graph" rev-parse refs/the-valley/knots)\"" \
+  ".knot.comments | map(select(.id == \"$finding\")) | .[0] | .body == \"A finding.\\n\" and (has(\"edited\") | not)"
+ok valley knot show "$work" --at "${restated:0:12}" --json
+holds ".knot.comments | map(select(.id == \"$finding\")) | .[0].body == \"A finding, restated.\\n\""
+ok valley knot show "$work" --at "$unedited"
+line "^as of $unedited$"
+# Only the graph's own history is read: a commit the tip does not descend
+# from is refused, and so is one from before the knot was made.
+stray="$(git commit-tree "$(git hash-object -w -t tree /dev/null)" -m stray)"
+fails 1 "is no commit of the graph" valley knot show "$work" --at "$stray"
+fails 1 "held no knot $work at" valley knot show "$work" --at "$first"
+fails 2 '--at takes a commit of the graph' valley knot show "$work" --at main
+
 # claim and unclaim.
 ok valley knot claim "$work" --run run-1 --json
 holds '.knot.claimed_by == "run-1"' '.knot.status == "in-progress"' '.knot.claim.stale == false'
@@ -403,6 +469,30 @@ raced after yes yes "valley knot comment $bug -m 'Landed meanwhile.'" -- \
 raced none no yes "" -- valley knot comment "$bug" -m "Lost, then sent." > "$w/out" 2> "$w/err" \
   || fail "a write whose push was lost was not tried again"
 [ "$(comments_saying 'Lost, then sent.')" = 1 ] || fail "a lost write did not land once"
+
+# Two edits of one comment race: the other lands between this one's read
+# and its push. This one was written against the text before it, so on
+# the new tip it is a conflict, and the other edit stands.
+ok valley knot show "$bug" --json
+raced_comment="$(jq -r '.knot.comments[] | select(.body == "This writer.\n") | .id' "$w/out")"
+status=0
+raced before no no "valley knot comment $bug --edit $raced_comment -m 'Their edit.'" -- \
+  valley knot comment "$bug" --edit "$raced_comment" -m "My edit." > "$w/out" 2> "$w/err" || status=$?
+[ "$status" = 3 ] || fail "an edit overwrote an edit it never read (status $status)"
+grep -q "conflict: comment $raced_comment on $bug changed while this was written" "$w/err" \
+  || fail "the conflict does not name the comment"
+[ "$(comments_saying 'Their edit.')" = 1 ] || fail "the other edit does not stand"
+[ "$(comments_saying 'My edit.')" = 0 ] || fail "the edit that lost the race landed"
+# The edit lands, and the connection drops before the command hears so,
+# while another writer moves the ref on. On the new tip the comment holds
+# this edit's own text, which a retry would take for another edit's; the
+# command finds its operation on the ref first, and stops.
+raced after yes yes "valley knot comment $bug -m 'Moved on meanwhile.'" -- \
+  valley knot comment "$bug" --edit "$raced_comment" -m "Edited, unheard." > "$w/out" 2> "$w/err" \
+  || fail "an edit that landed unheard was reported failed"
+[ "$(comments_saying 'Edited, unheard.')" = 1 ] || fail "an edit that landed unheard is not there"
+[ "$(git -C "$graph" log --format=%s refs/the-valley/knots | grep -cxF "knot comment $bug: edit $raced_comment")" = 2 ] \
+  || fail "an edit that landed unheard was written again"
 
 # A claim another run took first is a conflict, never an overwrite.
 ok valley knot unclaim "$work"

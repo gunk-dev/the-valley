@@ -90,7 +90,10 @@
   # push to the graph to, and each is refused with the ref left where it
   # was: an untagged key, a non-fast-forward update, a merge, two commits,
   # a parent that is not the old tip, a tag, another committer, a missing
-  # trailer, a deleted or changed comment, a deleted knot, a changed id,
+  # trailer, a deleted comment, an edit that records no edit, names
+  # another editor, half its record or no UTC time, changes the author, or
+  # comes from a principal without the approve grant, a new comment that
+  # records an edit, a deleted knot, a changed id,
   # type or created_by, a forged author or creator, a symlink, an
   # executable, a file or directory outside the layout, a non-canonical
   # knot, an oversized one, a shared-subtree bomb, a dangling edge, a
@@ -102,10 +105,14 @@
   # A refused write from the CLI runs the hook once. A create with a
   # parent is refused and one without is admitted, and a valid graph
   # update carries no invalid change record, attestation or integration
-  # request through with it.
+  # request through with it. Comments are edited by the real CLI and by
+  # crafted pushes: by their author, and by holders of the approve grant
+  # under each of its names, while another principal is refused, and
+  # valley knot log and show --at give back every earlier text.
   knots-e2e = pkgs.runCommand "valley-knots-e2e" {
     nativeBuildInputs = [
       pkgs.git
+      pkgs.jq
       packages.valley-go
     ];
     cliScript = ../../bin/valley;

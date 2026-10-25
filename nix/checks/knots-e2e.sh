@@ -34,12 +34,20 @@ export PATH="$w/bin:$PATH"
 # the rendered init script, as protect-e2e wires it. No verifier keys are
 # named: no attestation is accepted here. git runs the hook through a
 # wrapper that adds a line to <name>.runs for each run.
+#
+# The host declares approver and requester as holders of the approve
+# grant, and its declared grants file names them under request, the name
+# the grant had first. The hook reads one grants file more here, as a host
+# with an identity registry does, and it names reviewer under approve.
+printf 'approve reviewer\n' > "$w/grants"
 serve() {
   local hook
   hook="$(grep -o "/nix/store/[^ ]*-valley-protect-$1" "$initScriptPath" | head -n1)"
   test -x "$hook"
+  grep -q -- '--grants /nix/store/[^ ]*-valley-grants' "$hook"
   git init --quiet --bare "$w/$1.git"
-  sed "s|/var/lib/valley-instance/known_signers|$w/no_such_keys|" "$hook" > "$w/$1.git/hooks/valley-protect"
+  sed -e "s|/var/lib/valley-instance/known_signers|$w/no_such_keys|" -e "s|--grants |--grants $w/grants --grants |" \
+    "$hook" > "$w/$1.git/hooks/valley-protect"
   chmod +x "$w/$1.git/hooks/valley-protect"
   printf '#!%s\necho run >> %q\nexec %q\n' "$BASH" "$w/$1.runs" "$w/$1.git/hooks/valley-protect" \
     > "$w/$1.git/hooks/pre-receive"
@@ -109,6 +117,54 @@ grep -q 'origin refused the write' "$w/err" || fail "the CLI did not report the 
 grep -q 'operator as its committer, and alice is pushing it' "$w/err" || fail "the refusal does not name the committer"
 [ "$(wc -l < "$w/guarded.runs")" -eq 1 ] || fail "a refused write ran the hook $(wc -l < "$w/guarded.runs") times, not once"
 
+# A comment is edited in place, by the real CLI. Its author edits it, and
+# so does a holder of the approve grant: approver holds it under request,
+# and reviewer under approve. Each edit keeps the author and records the
+# editor. The CLI forms an edit by anyone, and the hook decides who may
+# make it, so a principal without the grant is refused by the hook.
+# comment_text <id> <comment id> [--at <commit>]: the comment's text, as
+# show prints it.
+comment_text() {
+  valley knot show "$1" --json "${@:3}" | jq -r ".knot.comments[] | select(.id == \"$2\") | .body"
+}
+git config valley.principal bob
+as bob valley knot comment "$milestone" -m "First thought." > "$w/out" 2> "$w/err" || fail "bob could not comment"
+edited="$(valley knot show "$milestone" --json | jq -r '.knot.comments[0].id')"
+as bob valley knot comment "$milestone" --edit "$edited" -m "Second thought." > "$w/out" 2> "$w/err" \
+  || fail "a comment's author could not edit it"
+git config valley.principal approver
+as approver valley knot comment "$milestone" --edit "$edited" -m "Moved to the bug." > "$w/out" 2> "$w/err" \
+  || fail "a holder of the approve grant under request could not edit another's comment"
+git config valley.principal reviewer
+as reviewer valley knot comment "$milestone" --edit "$edited" -m "Removed." > "$w/out" 2> "$w/err" \
+  || fail "a holder of the approve grant under approve could not edit another's comment"
+git config valley.principal contributor
+before="$(tip guarded)"
+: > "$w/guarded.runs"
+as contributor valley knot comment "$milestone" --edit "$edited" -m "Mine now." > "$w/out" 2> "$w/err" \
+  && fail "an edit by a principal without the approve grant landed"
+grep -q 'is a comment by bob, and contributor is editing it: a comment is edited by its author, or by a holder of the approve grant (also accepted as request)' "$w/err" \
+  || fail "the hook's refusal of an edit does not say who may make it"
+[ "$(tip guarded)" = "$before" ] || fail "a refused edit moved the ref"
+[ "$(wc -l < "$w/guarded.runs")" -eq 1 ] || fail "a refused edit ran the hook $(wc -l < "$w/guarded.runs") times, not once"
+valley knot show "$milestone" --json > "$w/out"
+jq -e ".knot.comments == [{id: \"$edited\", author: \"bob\", at: .knot.comments[0].at, op: \"${edited#*-}\",
+  edited: .knot.comments[0].edited, edited_by: \"reviewer\", body: \"Removed.\\n\"}]" "$w/out" > /dev/null \
+  || fail "the edited comment does not keep its id and author and name its last editor"
+[ "$(git -C "$w/guarded.git" ls-tree --name-only "refs/the-valley/knots:comments/$milestone/")" = "$edited.md" ] \
+  || fail "the edits are not one comment's file"
+# Every earlier text is still read from the ref: log lists each edit with
+# its committer, and show --at reads the comment as each commit left it.
+valley knot log "$milestone" --json > "$w/out"
+[ "$(jq -r '[.commits[] | select(.files | any(.comment != null)) | .committer] | join(" ")' "$w/out")" = "reviewer approver bob bob" ] \
+  || fail "log does not list the comment's writes, newest first, by their committers"
+texts=""
+for c in $(jq -r '.commits[] | select(.files | any(.comment != null)) | .commit' "$w/out"); do
+  texts+="$(comment_text "$milestone" "$edited" --at "$c")|"
+done
+[ "$texts" = "Removed.|Moved to the bug.|Second thought.|First thought.|" ] || fail "show --at does not give back each earlier text: $texts"
+git config valley.principal operator
+
 # ----------------------------------------------------------------------
 # Crafted commits. Each is made on a scratch index from the current tip,
 # with the edits given, by the committer given, and pushed as a principal.
@@ -159,6 +215,8 @@ bug_text="$(git cat-file blob "$good:$bug_path")"
 work_text="$(git cat-file blob "$good:$work_path")"
 stamp="20261015T120000Z"
 comment() { printf -- '---\nauthor: "%s"\n---\n\n%s\n' "$1" "$2"; }
+# edit <author> <editor> <text> [edited]: a comment as an edit writes it.
+edit() { printf -- '---\nauthor: "%s"\nedited: "%s"\nedited_by: "%s"\n---\n\n%s\n' "$1" "${4:-2026-10-25T15:00:00Z}" "$2" "$3"; }
 idea() { # idea <title> <slug> <creator> [body]
   local id
   id="ida-$(printf '%s' "$2" | sha256sum | cut -c1-7)"
@@ -198,8 +256,22 @@ refused "a commit without its trailer" 'Valley-Op' operator origin "$(push_graph
 
 # Transitions: comments stay, knots stay, and what never changes does not.
 refused "a deleted comment" 'a comment is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$comment_path")")"
-refused "a changed comment" 'stays exactly as it was written' operator origin \
+# An edit keeps its comment's author, records who made it and when, and
+# is made by the author or a holder of the approve grant.
+refused "an edit that records no edit" 'changes a comment without recording the edit' operator origin \
   "$(push_graph "$(craft "$good" operator - "+$comment_path=$(comment operator 'Rewritten.')")")"
+refused "an edit naming another editor" 'names alice in edited_by, and operator is pushing it' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(edit operator alice 'Rewritten.')")")"
+refused "an edit naming its editor and not its time" 'edited and edited_by come together' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(printf -- '---\nauthor: "operator"\nedited_by: "operator"\n---\n\nRewritten.')")")"
+refused "an edit whose time is no UTC time" 'edited is "yesterday", and it is a UTC time' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+$comment_path=$(edit operator operator 'Rewritten.' yesterday)")")"
+refused "an edit that changes the author" 'changes its author from "operator" to "approver"' approver origin \
+  "$(push_graph "$(craft "$good" approver - "+$comment_path=$(edit approver approver 'Mine now.')")")"
+refused "an edit by a principal without the approve grant" 'is a comment by operator, and alice is editing it: a comment is edited by its author, or by a holder of the approve grant' \
+  alice origin "$(push_graph "$(craft "$good" alice - "+$comment_path=$(edit operator alice 'Rewritten.')")")"
+refused "a new comment that records an edit" 'is a new comment that records an edit' operator origin \
+  "$(push_graph "$(craft "$good" operator - "+comments/$bug/$stamp-0123456789abcdef.md=$(edit operator operator 'Never written.')")")"
 refused "a deleted knot" 'a knot is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$bug_path")")"
 refused "a changed id" 'filename says id' operator origin \
   "$(push_graph "$(craft "$good" operator - "+$bug_path=${bug_text/id: $bug/id: bd-0000000}")")"
@@ -357,4 +429,15 @@ done
 # The well-formed commit itself is admitted.
 as operator git push --quiet origin "$(push_graph "$next")" 2> "$w/err" || fail "a well-formed update was refused"
 [ "$(tip guarded)" = "$next" ] || fail "the well-formed update did not land"
+
+# A crafted edit of another's comment is admitted from a holder of the
+# approve grant under either name, and its author edits it again after.
+as approver git push --quiet origin "$(push_graph "$(craft "$next" approver - "+$comment_path=$(edit operator approver 'Merged.')")")" 2> "$w/err" \
+  || fail "a holder of the approve grant under request could not edit another's comment"
+as reviewer git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" reviewer - "+$comment_path=$(edit operator reviewer 'Merged again.')")")" 2> "$w/err" \
+  || fail "a holder of the approve grant under approve could not edit another's comment"
+as operator git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" operator - "+$comment_path=$(edit operator operator 'Restored.')")")" 2> "$w/err" \
+  || fail "a comment's author could not edit it after another had"
+[ "$(git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:$comment_path")" = "$(edit operator operator 'Restored.')" ] \
+  || fail "the last edit is not what the comment holds"
 touch "$out"

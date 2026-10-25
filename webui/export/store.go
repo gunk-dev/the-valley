@@ -1,6 +1,7 @@
 package export
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -97,7 +98,9 @@ func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 
 // OpenStore opens the state directory at dir, creating its layout. It
 // finishes an activation a crash interrupted after high-water was written,
-// and deletes what no activation can use.
+// and deletes what no activation can use. If it cannot finish checking the
+// generation that activation would make active, as when git is killed, it
+// deletes nothing and returns the error, and the receiver tries again.
 //
 // report is told of each failure the store works past rather than
 // returns: deleting what no activation can use, which the next sweep
@@ -526,8 +529,8 @@ var errNotWhole = errors.New("the generation is not whole")
 // valid export, and each of its projects has a repository that git fsck
 // finds whole and that holds refs/heads/main at the project's source tip
 // and no other ref. A generation that fails gives an error that wraps
-// errNotWhole. Any other error, such as git failing to start, says
-// nothing about the generation.
+// errNotWhole. Any other error says nothing about the generation: the
+// check did not finish, as when git is killed or fails to start.
 func checkGeneration(ctx context.Context, dir string) error {
 	g := Generation{Dir: dir}
 	data, err := os.ReadFile(g.ExportPath())
@@ -543,15 +546,19 @@ func checkGeneration(ctx context.Context, dir string) error {
 	}
 	for _, p := range e.Projects {
 		repo, _ := g.Repo(p.Name)
-		var refs []byte
-		_, err := git(ctx, repo, "fsck", "--no-progress", "--no-dangling")
-		if err == nil {
-			refs, err = git(ctx, repo, "for-each-ref", "--format=%(objectname) %(refname)")
+		if _, err := os.Lstat(repo); errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("%w: the repository of %s is gone", errNotWhole, p.Name)
+		} else if err != nil {
+			return err
 		}
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return fmt.Errorf("%w: the repository of %s: %v", errNotWhole, p.Name, err)
+		finding, err := fsck(ctx, repo)
+		if err != nil {
+			return fmt.Errorf("the check of the repository of %s did not finish: %w", p.Name, err)
 		}
+		if finding != "" {
+			return fmt.Errorf("%w: git fsck finds the repository of %s damaged: %s", errNotWhole, p.Name, finding)
+		}
+		refs, err := git(ctx, repo, "for-each-ref", "--format=%(objectname) %(refname)")
 		if err != nil {
 			return err
 		}
@@ -560,6 +567,61 @@ func checkGeneration(ctx context.Context, dir string) error {
 		}
 	}
 	return nil
+}
+
+// fsck runs git fsck on the repository at repo. finding is the first
+// problem fsck names when it finds the repository damaged, and "" when it
+// finds it whole. fsck finds damage only when git exits on its own with a
+// non-zero status and names a problem. Anything else is an error, which
+// says nothing about the repository: git killed by a signal, failing to
+// start, outliving ctx, or exiting without naming a problem, as it does
+// when it runs out of memory.
+func fsck(ctx context.Context, repo string) (finding string, err error) {
+	// --git-dir, unlike -C, never lets git check a repository it finds
+	// above repo. LC_ALL=C keeps git's messages in the words fsckFinding
+	// reads.
+	cmd := command(ctx, "", "--git-dir="+repo, "fsck", "--no-progress", "--no-dangling")
+	cmd.Env = append(cmd.Env, "LC_ALL=C")
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err = cmd.Run()
+	if err == nil {
+		return "", nil
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.Exited() && ctx.Err() == nil {
+		if finding := fsckFinding(out.String()); finding != "" {
+			return finding, nil
+		}
+	}
+	last := strings.TrimSpace(out.String())
+	if i := strings.LastIndexByte(last, '\n'); i >= 0 {
+		last = last[i+1:]
+	}
+	if last == "" {
+		return "", fmt.Errorf("git fsck: %w", err)
+	}
+	return "", fmt.Errorf("git fsck: %w: %s", err, last)
+}
+
+// fsckFinding is the first line of git fsck's output that names a problem
+// with the repository, and "" when none does. fsck reports each problem it
+// finds on a line of its own: an error, a missing object, or a broken
+// link. git refuses a directory that holds no repository, and dies on an
+// object it finds corrupt. A failure of git's own, such as malloc failing,
+// names no problem.
+func fsckFinding(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "error: "),
+			strings.HasPrefix(line, "missing "),
+			strings.HasPrefix(line, "broken link from "),
+			strings.HasPrefix(line, "fatal: not a git repository"),
+			strings.HasPrefix(line, "fatal: ") && strings.HasSuffix(line, " is corrupt"):
+			return line
+		}
+	}
+	return ""
 }
 
 // checkNewer refuses a manifest whose sequence is not greater than the
@@ -608,7 +670,10 @@ func (s *Store) swap(sequence int64) error {
 // told to keep. recover holds it to checkGeneration before it swaps
 // active to it. A generation that fails is reported and not activated:
 // the old generation keeps serving, the sweep after recovery deletes the
-// damaged one, and the publisher's next manifest replaces it.
+// damaged one, and the publisher's next manifest replaces it. A check
+// that did not finish says nothing about the generation, so recover
+// returns its error, and OpenStore deletes nothing and fails, to be tried
+// again.
 func (s *Store) recover() error {
 	hw, err := s.HighWater()
 	if err != nil || hw == 0 {
@@ -629,7 +694,7 @@ func (s *Store) recover() error {
 		s.report(fmt.Errorf("generation %d, which high-water names, is not activated: %w", hw, err))
 		return nil
 	} else if err != nil {
-		return err
+		return fmt.Errorf("generation %d, which high-water names, is kept unchecked: %w", hw, err)
 	}
 	if err := s.swap(hw); err != nil {
 		return err

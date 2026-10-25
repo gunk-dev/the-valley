@@ -25,7 +25,7 @@ import (
 
 // roleEnv names the part a run of the test binary plays when it is not
 // running the tests: a receiver that commits the upload staged in a state
-// directory, or the git that receiver runs.
+// directory, the git that receiver runs, or a git whose fsck fails.
 const roleEnv = "EXPORT_TEST_ROLE"
 
 func TestMain(m *testing.M) {
@@ -34,6 +34,8 @@ func TestMain(m *testing.M) {
 		os.Exit(receiver())
 	case "git":
 		os.Exit(gitThatCrashesOnFetch())
+	case "git-fsck-fails":
+		os.Exit(gitWhoseFsckFails())
 	}
 	os.Exit(m.Run())
 }
@@ -90,6 +92,30 @@ func gitThatCrashesOnFetch() int {
 		syscall.Kill(os.Getppid(), syscall.SIGKILL)
 		return 1
 	}
+	return execGit()
+}
+
+// gitWhoseFsckFails is the git at $EXPORT_TEST_GIT, except that git fsck
+// fails before it checks anything. When $EXPORT_TEST_FSCK is "killed", it
+// is killed, as the kernel kills a process that runs out of memory. When
+// it is "out of memory", it dies as git does when malloc fails.
+func gitWhoseFsckFails() int {
+	if slices.Contains(os.Args[1:], "fsck") {
+		switch os.Getenv("EXPORT_TEST_FSCK") {
+		case "killed":
+			syscall.Kill(os.Getpid(), syscall.SIGKILL)
+			select {} // until the signal arrives
+		case "out of memory":
+			fmt.Fprintln(os.Stderr, "fatal: Out of memory, malloc failed (tried to allocate 1073741824 bytes)")
+			return 128
+		}
+	}
+	return execGit()
+}
+
+// execGit runs the git at $EXPORT_TEST_GIT in place of this process, with
+// this process's arguments.
+func execGit() int {
 	git := os.Getenv("EXPORT_TEST_GIT")
 	err := syscall.Exec(git, append([]string{git}, os.Args[1:]...), os.Environ())
 	fmt.Fprintln(os.Stderr, err)
@@ -610,8 +636,26 @@ func TestStoreSerialisesActivations(t *testing.T) {
 // names.
 func TestStoreFinishesAnInterruptedActivation(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	dir := t.TempDir()
 	u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
+	crashBeforeSwap(t, f, dir, u1, u2)
+	s := openStore(t, dir)
+	g, release, err := s.Open()
+	defer release()
+	if err != nil || g.Sequence != u2.m.Sequence {
+		t.Errorf("after recovery Open gave %v, %v; want the generation high-water names", g, err)
+	}
+	if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u2)}) {
+		t.Errorf("after recovery the generations are %s", got)
+	}
+}
+
+// crashBeforeSwap activates u1 and then u2 in the store at dir, and points
+// active back at u1, as a crash between writing high-water and swapping
+// active leaves it.
+func crashBeforeSwap(t *testing.T, f *exporttest.Fixture, dir string, u1, u2 upload) {
+	t.Helper()
+	s := openStore(t, dir)
 	if _, err := send(t, f, s, u1); err != nil {
 		t.Fatal(err)
 	}
@@ -620,19 +664,10 @@ func TestStoreFinishesAnInterruptedActivation(t *testing.T) {
 		t.Fatal(err)
 	}
 	release()
-	active := filepath.Join(s.Dir(), "active")
+	active := filepath.Join(dir, "active")
 	os.Remove(active)
 	if err := os.Symlink("exports/"+seqName(u1), active); err != nil {
 		t.Fatal(err)
-	}
-	s = openStore(t, s.Dir())
-	g, release, err := s.Open()
-	defer release()
-	if err != nil || g.Sequence != u2.m.Sequence {
-		t.Errorf("after recovery Open gave %v, %v; want the generation high-water names", g, err)
-	}
-	if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u2)}) {
-		t.Errorf("after recovery the generations are %s", got)
 	}
 }
 
@@ -960,23 +995,10 @@ func TestStoreRecoveryChecksTheGeneration(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := exporttest.New(t)
 			dir := t.TempDir()
-			s := openStore(t, dir)
 			u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
-			if _, err := send(t, f, s, u1); err != nil {
-				t.Fatal(err)
-			}
-			_, release, _ := s.Open() // keeps the first generation from deletion
-			if _, err := send(t, f, s, u2); err != nil {
-				t.Fatal(err)
-			}
-			release()
 			// A crash between high-water and the swap, after which the disk
 			// has lost part of the new generation.
-			active := filepath.Join(dir, "active")
-			os.Remove(active)
-			if err := os.Symlink("exports/"+seqName(u1), active); err != nil {
-				t.Fatal(err)
-			}
+			crashBeforeSwap(t, f, dir, u1, u2)
 			c.damage(t, filepath.Join(dir, "exports", seqName(u2), "repos", "app.git"))
 
 			var r reports
@@ -998,6 +1020,68 @@ func TestStoreRecoveryChecksTheGeneration(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantServing(t, s, u3)
+		})
+	}
+}
+
+// A recovery check that does not finish says nothing about the
+// generation. When git fsck is killed, dies of a failure of its own, or
+// git does not start, OpenStore returns the error and deletes nothing.
+// The generation high-water names survives, and the next OpenStore, with
+// a git that runs, activates it.
+func TestStoreKeepsAGenerationRecoveryCouldNotCheck(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		git  string // the git the store runs
+		fsck string // how its fsck fails
+		want string // in OpenStore's error
+	}{
+		{"fsck killed", self, "killed", "signal: killed"},
+		{"fsck out of memory", self, "out of memory", "Out of memory"},
+		{"git missing", filepath.Join(t.TempDir(), "git"), "", "no such file"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := exporttest.New(t)
+			dir := t.TempDir()
+			u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
+			crashBeforeSwap(t, f, dir, u1, u2)
+
+			git := export.GitProgram
+			inject(t, &export.GitProgram, c.git)
+			t.Setenv(roleEnv, "git-fsck-fails")
+			t.Setenv("EXPORT_TEST_GIT", realGit)
+			t.Setenv("EXPORT_TEST_FSCK", c.fsck)
+			var r reports
+			if _, err := export.OpenStore(dir, r.report); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Errorf("OpenStore gave %v; want the check's failure, %q", err, c.want)
+			}
+			if errs := r.all(); len(errs) != 0 {
+				t.Errorf("the store reported %v; a check that did not finish reports nothing", errs)
+			}
+			if got := fmt.Sprint(entries(t, filepath.Join(dir, "exports"))); got != fmt.Sprint([]string{seqName(u1), seqName(u2)}) {
+				t.Errorf("after the check failed the generations are %s; want both kept", got)
+			}
+			if target, err := os.Readlink(filepath.Join(dir, "active")); err != nil || target != "exports/"+seqName(u1) {
+				t.Errorf("after the check failed active is %q, %v; want the first generation", target, err)
+			}
+
+			export.GitProgram = git
+			s := openStore(t, dir)
+			wantServing(t, s, u2)
+			if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u2)}) {
+				t.Errorf("after recovery the generations are %s", got)
+			}
+			if hw, _ := s.HighWater(); hw != u2.m.Sequence {
+				t.Errorf("high-water is %d, want %d", hw, u2.m.Sequence)
+			}
 		})
 	}
 }

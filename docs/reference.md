@@ -1942,7 +1942,11 @@ The receiver keeps every accepted export as an immutable generation in one state
   is a valid export, and each repository passes `git fsck` and holds `main` at its source tip and no
   other ref. Only then does it swap `active` to that generation. A generation that fails the check
   is reported and not activated. The old generation keeps serving, the damaged one is deleted, and
-  the publisher's next manifest replaces it.
+  the publisher's next manifest replaces it. A repository fails `git fsck` only when git exits on
+  its own and names a problem. A check that does not finish says nothing about the generation:
+  `git fsck` killed by a signal, git failing to start, or git exiting without naming a problem, as
+  when it runs out of memory. `OpenStore` then returns the error and deletes nothing, and the
+  receiver tries again.
 - **Fixture:** Package `exporttest` builds a complete, valid export from a synthetic valley with a
   public project `app` and a hidden project `site`. It yields the export directory, the bundles, the
   signed manifest and its verifier, so the publisher's, receiver's, and server's tests share bytes.

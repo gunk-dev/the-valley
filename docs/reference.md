@@ -2095,10 +2095,15 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 | `/source/<project>/blob/<commit>/<path>`  | One file                                                          |
 | `/source/<project>/log/<commit>?skip=<n>` | 50 commits of the history that ends at `<commit>`, from the `n`th |
 
-- **One generation per request:** Each request calls `Store.Open` once and serves its whole response
-  from that generation. It releases the generation after the response is written. An activation
-  during the request does not change the response, and the old generation is not deleted until the
-  request releases it. Before the first activation, every route answers `503`.
+- **One generation per request:** Each request calls `Store.Open` once and renders its whole
+  response from that generation. It releases the generation once the response is rendered, before it
+  writes the response. An activation during the request does not change the response, and the old
+  generation is not deleted until the request releases it. Before the first activation, every route
+  answers `503`.
+- **One read per generation:** The server reads a generation's `export.json` once, however many
+  requests open the generation at the same time. It reads at most 2 exports at once
+  (`server.MaxLoads`). It keeps the newest generation it has read, and builds the plan page's
+  structure once for it.
 - **Plan page:** The page shows four sections, in this order:
   1. **Waiting on you:** Empty. Every reader sees the same public page.
   2. **In flight:** The export's `in_flight` knots, each with who claims it and how long ago. Beside
@@ -2109,7 +2114,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
      stage is one after the latest stage of the siblings in its `blocked_by`, whether or not they
      are done. Children with no order between them share a stage. Abandoned children are left out.
   4. **Milestones:** Each root with the tree of knots under it, children ordered by state. A
-     project's knots that have no parent and are not roots are listed under "Unfiled".
+     project's knots that have no parent and are not roots are listed under "Unfiled". A tree shows
+     at most 32 levels of knots (`server.MaxPlanDepth`). A knot on the last level says there is more
+     on its page. Each knot appears once in a project's trees. A milestone's count includes every
+     knot under it, at any depth.
 
   A knot whose `state` is `ready` shows as "free to start". The legend defines that as an open,
   unclaimed, unblocked outcome or bug. The page's one script runs the milestone filters. Without it,
@@ -2119,12 +2127,26 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   served. A page marks the export `stale` when it is more than five minutes old
   (`server.StaleAfter`).
 - **Knot page:** It shows the knot's type, status, state, and fields, the chain of parents above it,
-  and links to the knots it is blocked by, the knots it blocks, and its children. The body and each
-  comment are shown as escaped preformatted text. A comment that carries `edited` is marked
-  "edited", with its `edited` time and `edited_by`. A `blocked_by` reference into a project the
-  export does not hold is shown as text marked "not published", with no link.
+  and links to the knots it is blocked by, the knots it blocks, and its children. The chain names
+  the nearest 32 parents, and marks any above them with `…`. The body and each comment are shown as
+  escaped preformatted text. A comment that carries `edited` is marked "edited", with its `edited`
+  time and `edited_by`.
+- **References into unpublished projects:** A page never shows the name of a project the export does
+  not hold as public, or the text of a reference into one. Each such reference is shown with fixed
+  words and no link:
+  - A `blocked_by` entry, a `target`, or a `graduated_into` that names another project's knot is
+    shown as "a knot in an unpublished project".
+  - A `target` that names only a project is shown as "an unpublished project".
+  - A `changes` link `valley:<project>/<change ID>` is shown as "a change in an unpublished
+    project".
+  - A tree row's "waits on" chip names such knots once, as "a knot in an unpublished project".
+
+  A `blocked_by` entry that names a missing knot of a public project is still shown with its text.
+  It is marked "not found in its graph" when its edge is `dangling`, and "not found" otherwise.
+
 - **Source browser:** The server reads each generation's repositories with `git` subprocesses
-  through `export.Git`. It passes `git` only object IDs it has checked, never text from the request.
+  through `export.Git` and `export.GitStream`. It passes `git` only object IDs it has checked, never
+  text from the request.
   - A source route serves `<commit>` only when it is a full object ID and `export.Reachable` finds
     it reachable from the project's `source_tip`. Anything else answers `404`: an unreachable
     commit, a tree or blob ID, an abbreviated ID, or a name such as `main`.
@@ -2132,15 +2154,34 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     object IDs. A path deeper than 64 segments, or with a segment that is empty, `.`, or `..`, or
     that holds `/` or NUL, answers `404`.
   - Every source link names the project, a full commit ID, and a path.
-  - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. It shows
+  - The server reads `git` output as `git` prints it, through `export.GitStream`. It reads at most 4
+    MiB of one directory listing or one page of history (`server.MaxRead`). It stops `git` and waits
+    for it to exit once `git` prints more.
+  - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. A
+    directory whose listing is longer than 4 MiB is listed in part, and the page says so. A path
+    through an entry past the first 4 MiB of its directory's listing answers `404`. The page shows
     the directory's README below the listing: `README.md`, `README`, or `README.txt`, or else the
     first file named `readme` in any case with any extension.
-  - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`.
+  - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`. It
+    shows at most 10,000 lines (`server.MaxLines`). It stops at the line that would take the escaped
+    text and its rows' markup past 2 MiB (`server.MaxShown`). When the file is longer, the page says
+    "The page stops at line `<n>` of `<total>`." A README shows at most 10,000 lines and 2 MiB of
+    escaped text, and says when it is shown in part.
   - A file larger than 1 MiB (`server.MaxFile`) is not read. A file that holds a NUL byte or is not
     valid UTF-8 is not shown, and the page says it is binary. A symbolic link shows its target and
     is not followed. A submodule is listed with its commit and has no link.
-  - At most 8 source requests run `git` at once (`server.MaxGit`). The `git` commands of one request
-    have 15 seconds in all.
+  - A log page shows the first 1 KiB of each commit's subject and author name. When a page's commits
+    pass 4 MiB of `git log` output, the page ends at the commit the bound cut, shown as far as it
+    was read. The page says it ends early, and links the commits after it.
+- **Admission:** A tree, file, or log request runs `git`, and is admitted before it opens a
+  generation.
+  - At most 8 such requests run at once (`server.MaxGit`). At most 16 more wait for one of them to
+    finish (`server.MaxWaiting`). A request that finds both full answers `503` at once, with
+    `Retry-After: 5`.
+  - A request has 15 seconds from when it arrives, for its wait, its `git` commands and its
+    rendering. A request that runs out of time answers `503`.
+  - A request gives back its place among the 8 before it writes its response. A reader that reads
+    slowly holds no place and no generation.
 - **Access:** Every route that names a project checks that the export holds the project with
   visibility `public`. Every `404` is the same page, whatever the reason: a hidden or missing
   project, a missing knot or path, or a commit the server does not serve.
@@ -2153,7 +2194,8 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and
     `Cache-Control: no-cache`.
 - **Errors:** When the server cannot read the export or a repository, it answers `500` with a page
-  that gives no detail, and logs the error on `stderr`.
+  that gives no detail, and logs the error on `stderr`. A source request that runs out of time
+  answers `503`. If its time ran out after it was admitted, the error is logged.
 
 ---
 

@@ -13,8 +13,9 @@
   # the manifest's grammar and its agreement with export.json; the
   # streaming body check; bundle acceptance against real git, refusing
   # wrong tips, prerequisites, extra refs, corrupt objects and a header
-  # past its bound, and serving no commit main does not reach; and the
-  # receiver's state directory. For the state directory: readers holding
+  # past its bound, and serving no commit main does not reach; git's
+  # output read within its limit, with git stopped past it or when its
+  # reader stops early; and the receiver's state directory. For the state directory: readers holding
   # a generation through activations, every file of a generation synced
   # before high-water names it, a repository a crash interrupted built
   # again, recovery checking a generation before it activates it and
@@ -30,10 +31,19 @@
   # missing one, though its repository is in the generation; a commit
   # main's tip does not reach, and every other object ID or name, refused
   # with the one 404; hostile README, file, file name, commit subject and
-  # knot text rendered inert, and large and binary files not shown; the
-  # policy on every response, admitting the page's inline stylesheet and
-  # script by their hashes; a request keeping its generation while
-  # another activates; and valley-web run as a process of its own,
-  # serving and stopping on SIGTERM. go vet runs after them.
+  # knot text rendered inert, and large and binary files not shown; a
+  # reference into the hidden project naming nothing of it; a directory
+  # past MaxRead listed in part, and a 5 MiB commit message ending its
+  # page of history early; a file of MaxFile newlines shown to MaxLines;
+  # a chain of knots near the graph's limit shown to MaxPlanDepth, with
+  # the plan's structure built once; the policy on every response,
+  # admitting the page's inline stylesheet and script by their hashes; a
+  # request keeping its generation while another activates; an export
+  # read once per generation, however many requests open it, across
+  # activations; source requests past MaxGit and MaxWaiting answering
+  # 503, with an activation while they wait and a deadline that covers
+  # the wait; readers that never read holding no git slot and no
+  # generation; and valley-web run as a process of its own, serving and
+  # stopping on SIGTERM. go vet runs after them.
   webui-server-unit = packages.valley-web.unit;
 }

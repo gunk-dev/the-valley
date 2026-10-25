@@ -1,0 +1,52 @@
+{{define "content"}}
+<nav class="trail" aria-label="Where this knot sits"><a href="/">Plan</a>{{range .Trail}}<span>›</span><a href="{{.URL}}">{{.Title}}</a>{{end}}</nav>
+<header class="knot-head">
+  <div class="meta">{{template "glyph" .Knot.State}}<span class="mono">{{.Knot.Project}}:{{.Knot.ID}}</span><span class="chip quiet">{{.Type}}</span><span class="chip quiet">{{.Status}}</span></div>
+  <h1>{{.Knot.Title}}</h1>
+</header>
+
+<div class="card">
+  <dl class="facts">
+    {{- range .Facts}}
+    <dt>{{.Label}}</dt><dd>{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}{{.Text}}{{end}}</dd>
+    {{- end}}
+    {{- if .BlockedBy}}
+    <dt>Blocked by</dt>
+    <dd><ul class="plain">{{range .BlockedBy}}<li class="item">{{with .Knot}}{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.Project}}:{{.ID}}</span></span>{{else}}<span class="nochild"></span><span class="t"><span class="mono">{{.Ref}}</span> <span class="muted">{{.Note}}</span></span>{{end}}</li>{{end}}</ul></dd>
+    {{- end}}
+    {{- if .Blocks}}
+    <dt>Blocks</dt>
+    <dd><ul class="plain">{{range .Blocks}}<li class="item">{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.ID}}</span></span></li>{{end}}</ul></dd>
+    {{- end}}
+    {{- if .Children}}
+    <dt>Children</dt>
+    <dd><ul class="plain">{{range .Children}}<li class="item">{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.ID}}</span></span></li>{{end}}</ul></dd>
+    {{- end}}
+    {{- if .Changes}}
+    <dt>Changes</dt>
+    <dd><ul class="plain">{{range .Changes}}<li class="mono">{{.}}</li>{{end}}</ul></dd>
+    {{- end}}
+  </dl>
+</div>
+
+<section class="panel" aria-labelledby="body-h">
+  <h2 id="body-h">Body</h2>
+  <div class="card">{{if .Body}}<pre class="prose">{{.Body}}</pre>{{else}}<p class="muted">This knot has no body.</p>{{end}}</div>
+</section>
+
+<section class="panel" aria-labelledby="comments-h">
+  <h2 id="comments-h">Comments</h2>
+  {{- if .Comments}}
+  <ol class="comments">
+    {{- range .Comments}}
+    <li class="card">
+      <div class="comment-head"><b>{{.Author}}</b><span>{{.At}}</span>{{if .Edited}}<span class="chip quiet">edited</span><span>{{.EditedAt}}{{with .EditedBy}} by {{.}}{{end}}</span>{{end}}</div>
+      <pre class="prose">{{.Body}}</pre>
+    </li>
+    {{- end}}
+  </ol>
+  {{- else}}
+  <p class="muted">No comments.</p>
+  {{- end}}
+</section>
+{{end}}

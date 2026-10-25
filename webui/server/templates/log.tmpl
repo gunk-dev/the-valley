@@ -1,0 +1,16 @@
+{{define "content"}}
+<header class="knot-head">
+  <div class="meta"><span class="eyebrow">History</span><span class="mono">{{.Short}}</span>{{if .AtTip}}<span class="chip">main's published tip</span>{{end}}</div>
+  <h1>History of {{.Project}}</h1>
+</header>
+<div class="card">
+  <table class="listing">
+    <tbody>
+      {{- range .Commits}}
+      <tr><td class="name"><a href="{{.URL}}">{{.Short}}</a></td><td>{{.Subject}}</td><td class="kind">{{.Author}}</td><td class="kind">{{.Date}}</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+</div>
+<nav class="pager" aria-label="Pages of history">{{with .Newer}}<a href="{{.}}">Newer</a>{{end}}{{with .Older}}<a href="{{.}}">Older</a>{{end}}</nav>
+{{end}}

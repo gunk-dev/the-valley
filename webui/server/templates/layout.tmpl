@@ -1,0 +1,39 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<style>{{.Style}}</style>
+</head>
+<body>
+<div class="page">
+{{- if .Nav}}
+<nav class="site" aria-label="Pages">
+  {{- range .Nav}}<a href="{{.URL}}">{{.Text}}</a>{{end}}
+  {{- with .Fresh}}<span class="fresh">Collected {{.Collected}}, {{.Age}}{{if .Stale}} <span class="chip stale">stale</span>{{end}}</span>{{end}}
+</nav>
+{{- end}}
+{{template "content" .Content}}
+</div>
+{{- with .Script}}
+<script>{{.}}</script>
+{{- end}}
+</body>
+</html>
+{{end}}
+
+{{define "glyph"}}<i class="k {{glyph .}}" role="img" aria-label="{{label .}}" title="{{label .}}"></i>{{end}}
+
+{{define "source-head"}}
+<header class="knot-head">
+  <div class="meta">
+    <span class="eyebrow">Source</span><span class="mono">{{.Short}}</span>
+    {{- if .AtTip}}<span class="chip">main's published tip</span>{{else}}<a href="{{.TipURL}}">main's published tip</a>{{end}}
+    <a href="{{.LogURL}}">history</a>
+  </div>
+  <nav class="crumbs" aria-label="Path">
+    {{- range $i, $c := .Crumbs}}{{if $i}}<span class="muted">/</span>{{end}}{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}<span>{{.Text}}</span>{{end}}{{end -}}
+  </nav>
+</header>
+{{end}}

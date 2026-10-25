@@ -1,0 +1,98 @@
+{{define "content"}}
+<header class="top">
+  <div>
+    <div class="eyebrow">{{.Projects}}</div>
+    <h1>Plan</h1>
+  </div>
+  <div class="tally">{{range .Tally}}<span><b>{{.N}}</b> {{.Label}}</span>{{end}}</div>
+</header>
+
+<div class="legend" aria-label="Legend">
+  <span><i class="k done"></i>done</span>
+  <span><i class="k in-progress"></i>in progress</span>
+  <span><i class="k ready"></i>free to start: an open, unclaimed, unblocked outcome or bug</span>
+  <span><i class="k blocked"></i>blocked</span>
+  <span><i class="k active"></i>question or idea</span>
+  <span><i class="k abandoned"></i>abandoned</span>
+</div>
+
+<section class="panel" aria-labelledby="yours-h">
+  <h2 id="yours-h">Waiting on you</h2>
+  <div class="card"><p class="muted">Nothing here waits on you. This page shows the public plan, the same for every reader.</p></div>
+</section>
+
+<section class="panel" aria-labelledby="flight-h">
+  <h2 id="flight-h">In flight</h2>
+  <div class="cols">
+    <div class="card">
+      <div class="eyebrow">Knots in flight</div>
+      <ul class="plain">
+        {{- range .InFlight}}
+        <li class="item">{{template "glyph" .Knot.State}}<span class="t"><a href="{{.Knot.URL}}">{{.Knot.Title}}</a> <span class="mono muted">{{.Knot.ID}}</span> <span class="chip quiet">{{.Knot.Project}}</span></span><span class="note">{{.Note}}</span></li>
+        {{- else}}
+        <li class="muted">No knot is in flight.</li>
+        {{- end}}
+      </ul>
+    </div>
+    <div class="card">
+      <div class="eyebrow">Ready changes — order not assessed</div>
+      <ul class="plain">
+        {{- range .Changes}}
+        <li class="item"><span class="handle">{{.Handle}}</span><span class="t">{{.Title}} <span class="chip quiet">{{.Version}}</span></span><span class="note">{{.Note}}{{range .Knots}} · <a href="{{.URL}}">{{.ID}}</a>{{end}}</span></li>
+        {{- else}}
+        <li class="muted">No change is ready for approval.</li>
+        {{- end}}
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="panel" aria-labelledby="paths-h">
+  <h2 id="paths-h">Paths</h2>
+  <p class="muted">Each path is one knot's children in the order their blockers set. Knots at one stage do not wait on one another.</p>
+  {{- if .Paths}}
+  <div class="cols">
+    {{- range .Paths}}
+    <div class="card">
+      <h3><a href="{{.Parent.URL}}">{{.Parent.Title}}</a></h3>
+      <ol class="stages">
+        {{- range $i, $stage := .Stages}}
+        <li><span class="stage-num">{{inc $i}}</span><ul class="plain">{{range $stage}}<li class="item">{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.ID}}</span></span></li>{{end}}</ul></li>
+        {{- end}}
+      </ol>
+    </div>
+    {{- end}}
+  </div>
+  {{- else}}
+  <div class="card"><p class="muted">No knot's children wait on one another.</p></div>
+  {{- end}}
+</section>
+
+<section class="panel" aria-labelledby="ms-h">
+  <h2 id="ms-h">Milestones</h2>
+  <div class="controls" id="filters" role="group" aria-label="Filter knots" hidden>
+    <button type="button" data-filter="all" aria-pressed="true">All open</button>
+    <button type="button" data-filter="ready" aria-pressed="false">Free to start</button>
+    <button type="button" data-filter="in-progress" aria-pressed="false">In progress</button>
+    <button type="button" data-filter="blocked" aria-pressed="false">Blocked</button>
+    <label><input type="checkbox" id="show-done"> show done</label>
+  </div>
+  <div class="milestones" id="milestones">
+    {{- range .Milestones}}
+    <article class="milestone">
+      <div class="ms-head"><h3>{{with .Knot}}<a href="{{.URL}}">{{.Title}}</a>{{else}}{{.Title}}{{end}}</h3><span class="count">{{.Count}} · {{.Project}}</span></div>
+      {{- if .Cord}}
+      <div class="cord" aria-hidden="true">{{range .Cord}}<i class="k {{glyph .}}"></i>{{end}}</div>
+      {{- end}}
+      {{template "tree" .Tree}}
+    </article>
+    {{- else}}
+    <div class="card"><p class="muted">No milestone is published.</p></div>
+    {{- end}}
+  </div>
+</section>
+{{end}}
+
+{{define "tree"}}<ul class="tree">{{range .}}<li data-state="{{.Row.Filter}}">{{if .Children}}<details{{if .Open}} open{{end}}><summary>{{template "row" .}}</summary>{{template "tree" .Children}}</details>{{else}}{{template "row" .}}{{end}}</li>{{end}}</ul>{{end}}
+
+{{define "row"}}<div class="row {{glyph .Row.State}}">{{if .Children}}<span class="twisty" aria-hidden="true">▸</span>{{else}}<span class="nochild"></span>{{end}}{{template "glyph" .Row.State}}<span class="body"><a class="id" href="{{.Row.URL}}">{{.Row.ID}}</a><a class="title" href="{{.Row.URL}}">{{.Row.Title}}</a>{{range .Row.Chips}}<span class="chip{{with .Class}} {{.}}{{end}}">{{.Text}}</span>{{end}}</span></div>{{end}}

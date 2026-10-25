@@ -1,0 +1,24 @@
+{{define "content"}}
+<h1>{{.Project}}</h1>
+{{template "source-head" .}}
+<div class="card">
+  <table class="listing">
+    <tbody>
+      {{- range .Entries}}
+      <tr><td class="name">{{if .URL}}<a href="{{.URL}}">{{.Name}}{{if eq .Kind "directory"}}/{{end}}</a>{{else}}{{.Name}}{{end}}</td><td class="kind">{{.Kind}}</td><td class="size">{{.Size}}</td></tr>
+      {{- else}}
+      <tr><td class="muted">This directory is empty.</td></tr>
+      {{- end}}
+    </tbody>
+  </table>
+  {{- if .Omitted}}
+  <p class="notice">{{.Omitted}} more entries are not listed.</p>
+  {{- end}}
+</div>
+{{- with .Readme}}
+<section class="panel" aria-labelledby="readme-h">
+  <h2 id="readme-h"><a href="{{.URL}}">{{.Name}}</a></h2>
+  <div class="card">{{if .Notice}}<p class="notice">{{.Notice}}</p>{{else}}<pre class="text">{{.Text}}</pre>{{end}}</div>
+</section>
+{{- end}}
+{{end}}

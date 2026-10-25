@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>{{.Name}}</h1>
+{{template "source-head" .}}
+<div class="card">
+  <div class="muted">{{.Size}}</div>
+  {{- if .Notice}}
+  <p class="notice">{{.Notice}}</p>
+  {{- else}}
+  <div class="code"><table class="code"><tbody>{{range $i, $line := .Lines}}<tr id="L{{inc $i}}"><td class="ln"><a href="#L{{inc $i}}">{{inc $i}}</a></td><td class="src">{{$line}}</td></tr>{{end}}</tbody></table></div>
+  {{- end}}
+</div>
+{{end}}

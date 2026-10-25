@@ -13,7 +13,7 @@
 # project (or disabling its git store) leaves the data on disk untouched.
 #
 # Identity is deliberately thin and host-level: one git user, git-shell,
-# key-only, Tailscale ACLs in front. Per-project *access* is not honestly
+# key-only, network ACLs in front. Per-project *access* is not honestly
 # enforceable with this mechanism, so it is deliberately not an option
 # (archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md). Per-project
 # *write protection* is, because the pre-receive hook below is a real
@@ -26,7 +26,7 @@
 #
 # Mirror credentials are the consumer's concern: the module assumes the git
 # user's SSH identity and known_hosts are provisioned by the host (e.g.
-# cosmo, via its secrets). Every mirror push runs as the git user, whether
+# through its secrets). Every mirror push runs as the git user, whether
 # a push or an integrator landing moved the ref. Nothing here plumbs
 # secrets: the backup options below take *paths* to consumer-provisioned
 # secret files; the contents never pass through this module or the store.
@@ -277,7 +277,7 @@ let
 
   # Every host the worker connects to is checked against this host's own
   # keys, under one alias. A project's policy/valley may name this host by
-  # another name, such as git@classic-laddie:qinling.git, and that still
+  # another name, such as git@valley-host:valley.git, and that still
   # reaches this host's sshd. A name that reaches any other host fails the
   # check, so the worker talks to no other host.
   workerSsh = lib.concatStringsSep " " [
@@ -1125,7 +1125,7 @@ in
       default = { };
       example = lib.literalExpression ''
         {
-          cosmo = pkgs.writeShellScript "cosmo-pre-receive" ;
+          app = pkgs.writeShellScript "app-pre-receive" ;
         }
       '';
       description = ''
@@ -1234,11 +1234,11 @@ in
       listen = lib.mkOption {
         type = lib.types.str;
         default = "127.0.0.1:4222";
-        example = "100.100.1.7:4222";
+        example = "192.0.2.10:4222";
         description = ''
           Address the bus listens on, `host:port`. Localhost by default:
           nothing off the host can reach the bus until the consumer widens
-          this deliberately — e.g. to the host's tailnet address once a
+          this deliberately — e.g. to the host's private network address once a
           remote `valley tail` wants in. Local publishers (the ref-updated
           hook) connect to this same address, so it must be reachable from
           the host itself.
@@ -1322,7 +1322,7 @@ in
         type = lib.types.attrsOf (lib.types.listOf lib.types.str);
         default = { };
         example = {
-          "laddie-worker/attestations" = [ "the-valley" ];
+          "worker/attestations" = [ "the-valley" ];
         };
         description = ''
           Signers whose attestations count only in the projects listed for
@@ -1373,7 +1373,7 @@ in
       instanceProject = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
         default = null;
-        example = "qinling";
+        example = "valley";
         description = ''
           The project whose served repository carries the group's floor —
           the instance policy layer every controller on this host composes
@@ -1508,7 +1508,7 @@ in
 
       signerName = lib.mkOption {
         type = lib.types.str;
-        example = "laddie-worker/attestations";
+        example = "worker/attestations";
         description = ''
           The name the worker signs its notes under. It is a name of the
           worker's own: never the operator's, and never the name the
@@ -1606,7 +1606,7 @@ in
         example = "/run/agenix/valley-restic-repo";
         description = ''
           File containing the restic repository URL, for the sftp target
-          e.g. `sftp://u123456@u123456.your-storagebox.de:23//./backups/valley`.
+          e.g. `sftp://backup@backup.example.org:23//./backups/valley`.
         '';
       };
 

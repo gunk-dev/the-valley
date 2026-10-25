@@ -10,8 +10,8 @@
       # Checks use import-from-derivation (the module's cue export), so they
       # are only defined for the system that can actually build them here.
       systems = [ "x86_64-linux" ];
-      # sigverify is also built and tested for aarch64-linux, because cosmo's
-      # Raspberry Pis verify their releases with it. Its checks need no
+      # sigverify is also built and tested for aarch64-linux, because hosts
+      # such as Raspberry Pis verify their releases with it. Its checks need no
       # import-from-derivation, so they are defined there too, and an
       # aarch64 builder (or binfmt emulation) runs them. Nothing else here
       # is offered on aarch64-linux, because nothing else is tested there.
@@ -55,7 +55,7 @@
       # consuming flake is:
       #
       #   {
-      #     inputs.the-valley.url = "github:gunk-dev/the-valley";
+      #     inputs.the-valley.url = "git+ssh://git@valley-host/~/the-valley";
       #     outputs =
       #       { self, the-valley }:
       #       {

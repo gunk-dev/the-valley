@@ -21,7 +21,7 @@ in
 
     repo = lib.mkOption {
       type = lib.types.str;
-      example = "git@classic-laddie:the-valley";
+      example = "git@valley-host:the-valley";
       description = ''
         The repository of the-valley to follow, as `valley self-update
         --repo` takes it: an https://, ssh://, git:// or file:// URL, an

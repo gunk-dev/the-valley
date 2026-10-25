@@ -52,8 +52,9 @@ rec {
   # check (nix/checks/), so its tests run in that check and in no package
   # build.
   #
-  # excluded names files of dir that neither the build nor the tests read,
-  # because only a flake check reads them.
+  # excluded names files of dir that neither the build nor the tests read:
+  # files only a flake check reads, or the part of a shared module that
+  # another package builds and tests.
   goModule =
     {
       dir,
@@ -410,22 +411,27 @@ rec {
     dir = ../note;
   };
 
-  # The web UI (webui/). Package export is the contract between the
-  # publisher on a valley host and the web server it pushes to: the public
-  # export and the projection onto it, the signed manifest, the upload and
-  # the receiver's state directory. It reads names and IDs by the plan
-  # graph's rules (../knot) and the manifest with the note module (../note).
-  # No program is built from it yet, so the package is a library build. Its
-  # tests accept bundles and build the shared fixture's repositories with
-  # real git, and go vet runs after them. The fixture's expected export
-  # (export/exporttest/testdata/) is read by the tests alone. Go, standard
-  # library only, so no module is fetched.
+  # The web UI's export contract (webui/export/). Package export is the
+  # contract between the publisher on a valley host and the web server it
+  # pushes to: the public export and the projection onto it, the signed
+  # manifest, the upload and the receiver's state directory. It reads names
+  # and IDs by the plan graph's rules (../knot) and the manifest with the
+  # note module (../note). The package is a library build; the server and
+  # its command are valley-web's, below. Its tests accept bundles and build
+  # the shared fixture's repositories with real git, and go vet runs after
+  # them. The fixture's expected export (export/exporttest/testdata/) is
+  # read by the tests alone. Go, standard library only, so no module is
+  # fetched.
   webui = goModule {
     pname = "valley-webui";
     dir = ../webui;
     modules = [
       ../knot
       ../note
+    ];
+    excluded = [
+      ../webui/server
+      ../webui/cmd
     ];
     preBuild = readsGoMod;
     tests = {
@@ -435,6 +441,39 @@ rec {
         go vet ./...
       '';
     };
+  };
+
+  # The web UI's server (webui/server/) and its command, valley-web
+  # (webui/cmd/valley-web/), which serves the active export of a receiver's
+  # state directory to anonymous readers. It reads the export and the
+  # state directory with package export, so its source is the webui
+  # module, less the fixture's expected export, which only webui's tests
+  # read. The git it reads repositories with is fixed at build time, the
+  # way valleyhook's is. Its tests run the real program over the shared
+  # fixture and real git, and go vet runs after them. Go, standard library
+  # only, so no module is fetched.
+  valley-web = goModule {
+    pname = "valley-web";
+    dir = ../webui;
+    modules = [
+      ../knot
+      ../note
+    ];
+    excluded = [ ../webui/export/exporttest/testdata ];
+    subPackages = [ "cmd/valley-web" ];
+    preBuild = readsGoMod;
+    ldflags = [ "-X the-valley/webui/export.GitProgram=${lib.getExe pkgs.git}" ];
+    tests = {
+      subPackages = [
+        "server"
+        "cmd/valley-web"
+      ];
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./server/... ./cmd/...
+      '';
+    };
+    meta.mainProgram = "valley-web";
   };
 
   # The plan graph (knot/): its canonical form, its layout, cycles and

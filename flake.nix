@@ -131,6 +131,7 @@
               identity
               valleyhook
               sigverify
+              valley-web
               ;
             default = packages.valley;
           }

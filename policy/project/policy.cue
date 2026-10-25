@@ -47,6 +47,7 @@ project: {
 		"sigverify-unit",
 		"sigverify-e2e",
 		"webui-unit",
+		"webui-server-unit",
 		"rebase-unit",
 		"valley-go-unit",
 		"valley-cli",
@@ -130,17 +131,19 @@ project: {
 	// to the node schema and the knowledge lint, valley-knot and
 	// valley-plan drive the verbs that use it, and knots-e2e pushes
 	// through the hook. The web export reads names and knot IDs by its
-	// rules, so webui-unit is here too.
+	// rules, and the web server reads a claim's age by them, so
+	// webui-unit and webui-server-unit are here too.
 	classes: knot: {
-		paths: "knot/**":            true
-		requires: "knot-unit":       true
-		requires: "knot-agree":      true
-		requires: "valley-go-unit":  true
-		requires: "valley-knot":     true
-		requires: "valley-plan":     true
-		requires: "valleyhook-unit": true
-		requires: "knots-e2e":       true
-		requires: "webui-unit":      true
+		paths: "knot/**":              true
+		requires: "knot-unit":         true
+		requires: "knot-agree":        true
+		requires: "valley-go-unit":    true
+		requires: "valley-knot":       true
+		requires: "valley-plan":       true
+		requires: "valleyhook-unit":   true
+		requires: "knots-e2e":         true
+		requires: "webui-unit":        true
+		requires: "webui-server-unit": true
 	}
 
 	// valley-delta-v1, which the CLI's Go verbs compare a version with its
@@ -177,17 +180,18 @@ project: {
 
 	// The note envelope. The hook and attest both read notes through it,
 	// the identity compiler reads its approval files back with it, and the
-	// web export's manifest is a note, so a change to it requires their
-	// tests as well as its own.
+	// web export's manifest is a note, which the web server builds with,
+	// so a change to it requires their tests as well as its own.
 	classes: note: {
-		paths: "note/**":            true
-		requires: "note-unit":       true
-		requires: "valleyhook-unit": true
-		requires: "protect-e2e":     true
-		requires: "attest-unit":     true
-		requires: "attest-e2e":      true
-		requires: "identity-unit":   true
-		requires: "webui-unit":      true
+		paths: "note/**":              true
+		requires: "note-unit":         true
+		requires: "valleyhook-unit":   true
+		requires: "protect-e2e":       true
+		requires: "attest-unit":       true
+		requires: "attest-e2e":        true
+		requires: "identity-unit":     true
+		requires: "webui-unit":        true
+		requires: "webui-server-unit": true
 	}
 
 	// The attestation helper, and the conformance vectors under
@@ -225,10 +229,13 @@ project: {
 		requires: "sigverify-e2e":  true
 	}
 
-	// The web UI's module: the export contract and its shared fixture.
+	// The web UI's module: the export contract, its shared fixture, the
+	// server and valley-web. The server builds on the contract, so every
+	// change to the module requires both checks.
 	classes: webui: {
-		paths: "webui/**":      true
-		requires: "webui-unit": true
+		paths: "webui/**":             true
+		requires: "webui-unit":        true
+		requires: "webui-server-unit": true
 	}
 
 	// The valley CLI: the script, its Go verbs (status/), the rebase engine
@@ -409,7 +416,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"webui.nix": ["webui-unit"]
+		"webui.nix": ["webui-unit", "webui-server-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

@@ -1841,7 +1841,9 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
   `Manifest.Text` writes them in the order shown above, with projects sorted by name.
 - **Admission (`export.VerifyManifest`):** The receiver verifies a manifest in six separate steps,
   in this exact order:
-  1. Read at most 64 KiB (`MaxManifest = 65,536` bytes).
+  1. Read the manifest. The receiver reads up to 65,537 bytes so that it can tell when the manifest
+     is too long. It accepts at most 64 KiB (`MaxManifest = 65,536` bytes) and refuses a longer one
+     as `too-large`.
   2. Open the signed note under the receiver's pinned verifier keys.
   3. Check the `the-valley/web-export/v1` header line and parse the records.
   4. Require `instance` and `destination` to match the receiver's configured instance and
@@ -1859,8 +1861,8 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 #### Web export upload
 
-The publisher uploads an export to the receiver in three HTTP requests. Every response body is JSON.
-Package `export` defines the paths, reply schemas, and checks for each step; the HTTP handlers that
+The publisher uploads an export to the receiver in three steps. Every response body is JSON.
+A full upload is two requests plus one `PUT` for each needed body. Package `export` defines the paths, reply schemas, and checks for each step; the HTTP handlers that
 wire them are `not built`.
 
 | Step | Request                                                                       | Reply                                                                                                                                                                                                                               |
@@ -1876,18 +1878,25 @@ wire them are `not built`.
   includes no bundles, the receiver already serves the same content and repositories. The publisher
   may then stop after step 1 without sending `export.json` or committing, and the next manifest it
   posts replaces the staged upload.
-- **Retries:** Posting the same manifest again is harmless: it keeps the staging directory and
-  returns the same inventory minus any bodies already staged. Sending a body that is already staged
-  returns `204` immediately without reading the request body again.
+- **Retries:** Posting the same manifest again keeps the staging directory and returns the same
+  inventory minus any bodies already staged. This works only while the manifest is still
+  admissible. A retried manifest is refused as `replayed` if the receiver has since accepted its
+  sequence, as `superseded` if a staged upload has a later sequence, and as `out-of-window` if its
+  signing time is now more than 72 hours behind the receiver's clock. A body that is already staged still passes the size cap, the
+  `Content-Encoding` check, and the `Content-Length` check. After those, the receiver returns `204`
+  without reading the request body again.
 - **Body check (`export.StageBody`):** Before reading the request body, the receiver refuses a body
   whose declared `size` exceeds the receiver's cap (`too-large`), a request with a
-  `Content-Encoding` header (`content-encoding`), or a request whose `Content-Length` does not equal
-  the declared `size` (`size-mismatch`). While reading, it hashes the stream with SHA-256, reads at
+  `Content-Encoding` header (`content-encoding`), or a request whose `Content-Length`, when given, does
+  not equal the declared `size` (`size-mismatch`). A request with no known length skips that
+  comparison. The receiver then counts the streamed bytes and refuses a body that is shorter or
+  longer than `size` (`size-mismatch`). While reading, it hashes the stream with SHA-256, reads at
   most `size + 1` bytes, and writes to a temporary file inside the upload's `bodies/` directory.
   Once the byte count and SHA-256 match the manifest, it syncs and renames the temporary file to
   `bodies/<sha256>`. Nothing is written outside the upload's staging directory.
 - **Bundle acceptance (`export.AcceptBundle`):**
-  1. Read the bundle header, bounded to at most 64 KiB before buffering a line: require a v2 or v3
+  1. Read the bundle header. The receiver reads at most 64 KiB + 1 byte of the file, so that it can
+     tell when the header is too long, and never buffers a line past that bound. Require a v2 or v3
      git bundle header with no prerequisite commits.
   2. Require the header to list exactly one ref, `refs/heads/main`, at the project's declared
      `source_tip`.
@@ -1896,7 +1905,9 @@ wire them are `not built`.
      `core.fsync=all`.
   4. Verify that the repository holds `refs/heads/main` at `source_tip` and no other ref.
 
-  A bundle that fails any step is refused as `bad-bundle` and leaves no repository behind.
+  A bundle that fails any of these checks is refused as `bad-bundle`. Failing to open the bundle
+  file, to initialize the repository, or to list its refs is an operational error, not a refusal of
+  the bundle. Either way, no repository is left behind.
 
 - **Reachability (`export.Reachable`):** A git bundle can contain objects that `refs/heads/main`
   does not reach. When serving a repository, browsing serves a commit only when `export.Reachable`
@@ -1905,8 +1916,10 @@ wire them are `not built`.
   to `high-water` and swapped the `active` symlink to the new generation. The receiver then replies
   `200` with `valley-web-committed/v1`. A later failure while syncing the swap to disk or deleting
   old generations, stale staging directories, and `trash/` does not change the `200` reply. `Store`
-  passes that failure to the `report` callback given to `export.OpenStore` for the receiver to log,
-  and the next sweep or `OpenStore` repairs it. A commit that fails before `active` is swapped
+  passes that failure to the `report` callback given to `export.OpenStore` for the receiver to log.
+  The next sweep retries failed deletions, but it does not retry a failed directory sync. Recovery
+  at `OpenStore` returns at once when `active` already names the `high-water` generation. It
+  restores the swap after a crash only when the two differ. A commit that fails before `active` is swapped
   leaves the previous export active. If it failed after `high-water` was written, its sequence is
   accepted, and retrying the commit is refused as `replayed`. The publisher's next manifest, signed
   later, replaces the upload.

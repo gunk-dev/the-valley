@@ -48,12 +48,13 @@ _valley() {
     local -a knotverbs=(
       'new:make a knot: new <type> <title>'
       'show:show a knot, its edges both ways and its comments'
+      'log:list the commits that touched a knot or its comments'
       'list:list the knots'
       'set:set status, title, source, owner, target or graduated_into'
       'link:add a blocked-by, parent or change edge'
       'unlink:drop a blocked-by, parent or change edge'
       'edit:replace a knot'"'"'s body with stdin'
-      'comment:add a comment'
+      'comment:add or edit a comment'
       'claim:claim a knot for a run'
       'unclaim:release a claim'
       'schema:print the types, statuses, fields and edges'
@@ -73,7 +74,8 @@ _valley() {
       set) opts+=('--if:require <field>=<value> first' '--force:set it even if another write changed it') ;;
       link | unlink) opts+=('--blocked-by:a knot it waits on' '--parent:the outcome it belongs to' '--change:a change that does the work or records the answer' '--if:require <field>=<value> first') ;;
       edit) opts+=('--body:read the new body from stdin (-)' '--if:require <field>=<value> first') ;;
-      comment) opts+=('-m:the comment' '--body:read the comment from stdin (-)') ;;
+      show) opts+=('--at:show it as this commit of the graph left it') ;;
+      comment) opts+=('-m:the comment' '--body:read the comment from stdin (-)' '--edit:replace the text of the comment with this id') ;;
       claim) opts+=('--run:the run claiming it' '--if:require <field>=<value> first') ;;
       unclaim) opts+=('--if:require <field>=<value> first') ;;
     esac

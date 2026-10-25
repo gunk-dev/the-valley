@@ -6,15 +6,19 @@
 //
 // When the lease fails, the operation is formed again on the new tip and
 // pushed again, at most knot.Attempts times in all, after a random pause.
-// set, edit, link --parent, claim and unclaim are compare-and-set: each
-// remembers the value of every field it changes as it first read it, and
-// when a retry finds another value there it reports a conflict instead of
-// overwriting it. set's --force skips that comparison. --if adds a
+// set, edit, link --parent, claim, unclaim and comment --edit are
+// compare-and-set: each remembers the value of every field it changes, or
+// the comment it edits, as it first read it, and when a retry finds
+// another value there it reports a conflict instead of overwriting it. set's --force skips that comparison. --if adds a
 // comparison of its own, on a field the knot module names, which holds on
 // every try. Every operation carries a Valley-Op trailer naming an ID
 // chosen once, so after a push whose outcome it cannot tell, the verb
 // looks for the ID among the ref's latest commits before it tries again,
 // and an operation is never recorded twice.
+//
+// The ref keeps every write as a commit, so every earlier text of a knot
+// and of its comments stays readable: log lists the commits that touched
+// a knot, and show --at reads the graph as one of them left it.
 
 package main
 
@@ -44,13 +48,14 @@ import (
 const knotUsage = `usage: valley knot <verb> [args]
 
   new <type> <title> [--parent ID] [--blocked-by ID]... [--owner P] [--target PROJECT] [--body -]
-  show <id> [--json]
+  show <id> [--at COMMIT] [--json]
+  log <id> [--json]
   list [--type T] [--status S] [--owner P] [--ready] [--json]
   set <id> <field>=<value>... [--if <field>=<value>]... [--force]
   link <id> (--blocked-by ID | --parent ID | --change LINK)...
   unlink <id> (--blocked-by ID | --parent ID | --change LINK)...
   edit <id> --body -
-  comment <id> (-m TEXT | --body -)
+  comment <id> (-m TEXT | --body -) [--edit COMMENT-ID]
   claim <id> --run RUN
   unclaim <id>
   schema [--json]
@@ -76,6 +81,7 @@ type knotArgs struct {
 	json, ready, force, stdin bool
 	parent, owner, target     string
 	typ, status, run, message string
+	at, edit                  string
 	blockedBy, changes        []string
 	ifs                       []string
 	hasParent, hasMessage     bool
@@ -84,13 +90,14 @@ type knotArgs struct {
 // knotFlags are the flags each verb takes, beyond --project and --json.
 var knotFlags = map[string][]string{
 	"new":     {"--parent", "--blocked-by", "--owner", "--target", "--body"},
-	"show":    {},
+	"show":    {"--at"},
+	"log":     {},
 	"list":    {"--type", "--status", "--owner", "--ready"},
 	"set":     {"--if", "--force"},
 	"link":    {"--blocked-by", "--parent", "--change", "--if"},
 	"unlink":  {"--blocked-by", "--parent", "--change", "--if"},
 	"edit":    {"--body", "--if"},
-	"comment": {"-m", "--body"},
+	"comment": {"-m", "--body", "--edit"},
 	"claim":   {"--run", "--if"},
 	"unclaim": {"--if"},
 	"schema":  {},
@@ -99,7 +106,7 @@ var knotFlags = map[string][]string{
 // knotPositionals is how many positional arguments each verb takes: at
 // least the first, at most the second (-1 for any number).
 var knotPositionals = map[string][2]int{
-	"new": {2, 2}, "show": {1, 1}, "list": {0, 0}, "set": {2, -1}, "link": {1, 1}, "unlink": {1, 1},
+	"new": {2, 2}, "show": {1, 1}, "log": {1, 1}, "list": {0, 0}, "set": {2, -1}, "link": {1, 1}, "unlink": {1, 1},
 	"edit": {1, 1}, "comment": {1, 1}, "claim": {1, 1}, "unclaim": {1, 1}, "schema": {0, 0},
 }
 
@@ -111,7 +118,7 @@ func parseKnotArgs(args []string) (knotArgs, error) {
 	a.verb, args = args[0], args[1:]
 	allowed, ok := knotFlags[a.verb]
 	if !ok {
-		return a, failure(fmt.Sprintf("knot has no verb %q; its verbs are new, show, list, set, link, unlink, edit, comment, claim, unclaim and schema\n%s", a.verb, knotUsage))
+		return a, failure(fmt.Sprintf("knot has no verb %q; its verbs are new, show, log, list, set, link, unlink, edit, comment, claim, unclaim and schema\n%s", a.verb, knotUsage))
 	}
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -183,6 +190,16 @@ func parseKnotArgs(args []string) (knotArgs, error) {
 			a.ifs = append(a.ifs, v)
 		case "-m":
 			a.message, a.hasMessage = v, true
+		case "--edit":
+			a.edit = v
+			if !knot.IsCommentID(v) {
+				return a, failure(fmt.Sprintf("--edit takes a comment's id, <stamp>-<op> as knot show prints it, and %q is not one", v))
+			}
+		case "--at":
+			a.at = v
+			if !isAbbreviatedID(v) {
+				return a, failure(fmt.Sprintf("--at takes a commit of the graph, as knot log prints it, and %q is not a commit's object id", v))
+			}
 		case "--body":
 			if v != "-" {
 				return a, failure("--body takes -, and reads the body from stdin")
@@ -244,7 +261,7 @@ func knotVerb(g git, a knotArgs, stdin io.Reader, stdout io.Writer) error {
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return failure("not a git repository")
 	}
-	if a.verb == "show" && knot.IsQualifiedID(a.pos[0]) {
+	if (a.verb == "show" || a.verb == "log") && knot.IsQualifiedID(a.pos[0]) {
 		project, id, _ := strings.Cut(a.pos[0], ":")
 		if a.project != "" && a.project != project {
 			return failure(fmt.Sprintf("%s names a knot in %s, and --project names %s", a.pos[0], project, a.project))
@@ -258,6 +275,8 @@ func knotVerb(g git, a knotArgs, stdin io.Reader, stdout io.Writer) error {
 	switch a.verb {
 	case "show":
 		return knotShow(r, a, stdout)
+	case "log":
+		return knotLog(r, a, stdout)
 	case "list":
 		return knotList(r, a, stdout)
 	}
@@ -650,6 +669,10 @@ func formOp(a knotArgs, body, principal string) (op, error) {
 		if text == "" {
 			return o, failure("knot comment takes the comment, with -m TEXT or --body -")
 		}
+		if a.edit != "" {
+			o.form = editComment(id, a.edit, text, principal, now)
+			break
+		}
 		stamp := now.Format(knot.CommentStamp)
 		o.form = func(s knotState) (map[string][]byte, string, string, error) {
 			if _, err := guarded(s, id, nil, false); err != nil {
@@ -710,6 +733,65 @@ func formOp(a knotArgs, body, principal string) (op, error) {
 		}
 	}
 	return o, nil
+}
+
+// editComment forms comment --edit: it replaces the body of the comment
+// with commentID on the knot with id, keeps its author, and records the
+// principal and the time as its editor and when it was edited. Whether the
+// principal may edit a comment another wrote is the host's to decide, so
+// the edit is formed for anyone and the hook refuses what it does not
+// allow.
+//
+// The edit is written against the comment as the first try read it. A
+// retry that finds the comment's file changed reports a conflict: another
+// edit landed meanwhile, and this one would overwrite it unread.
+func editComment(id, commentID, text, principal string, now time.Time) func(s knotState) (map[string][]byte, string, string, error) {
+	path := knot.CommentPath(id, commentID)
+	first := ""
+	return func(s knotState) (map[string][]byte, string, string, error) {
+		if _, ok := s.graph.Knots[id]; !ok {
+			return nil, "", "", failure(fmt.Sprintf("the graph holds no knot %s", id))
+		}
+		f, ok := s.graph.Index.Comments[path]
+		if !ok {
+			for _, other := range s.graph.Index.Comments {
+				if other.CommentID() == commentID {
+					return nil, "", "", failure(fmt.Sprintf("comment %s is on %s, not on %s", commentID, other.ID, id))
+				}
+			}
+			return nil, "", "", failure(fmt.Sprintf("%s holds no comment %s; knot show %s lists its comments' ids", id, commentID, id))
+		}
+		if first == "" {
+			first = f.OID
+		} else if f.OID != first {
+			return nil, "", "", conflict(fmt.Sprintf("comment %s on %s changed while this was written; read it again", commentID, id))
+		}
+		var c knot.Comment
+		for _, n := range s.graph.Comments[id] {
+			if n.Path == path {
+				c = n.Comment
+			}
+		}
+		if c.Body == text {
+			return nil, "", "", unchanged(fmt.Sprintf("comment %s on %s says that already; nothing to change", commentID, id))
+		}
+		c.Body, c.Edited, c.EditedBy = text, now.Format(time.RFC3339), principal
+		return map[string][]byte{path: knot.RenderComment(&c)}, fmt.Sprintf("knot comment %s: edit %s", id, commentID), id, nil
+	}
+}
+
+// isAbbreviatedID reports whether s is a git object ID, whole or
+// abbreviated to at least 4 lowercase hex digits.
+func isAbbreviatedID(s string) bool {
+	if len(s) < 4 || len(s) > 64 {
+		return false
+	}
+	for _, c := range []byte(s) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // assignment is one <field>=<value>.
@@ -917,8 +999,12 @@ func (r remote) commit(g git, s knotState, files map[string][]byte, message, pri
 	}
 	idx, err := knot.Layout(entries)
 	if err == nil {
+		// Who may edit another principal's comment is the host's to
+		// decide, from grants this command does not know. The hook
+		// refuses an edit the host does not allow.
 		after := knotState{blobs: blobs}
-		err = knot.Push{Old: s.graph.Index, New: idx, Read: after.read, Pusher: principal}.Check()
+		err = knot.Push{Old: s.graph.Index, New: idx, Read: after.read, Pusher: principal,
+			MayEdit: func(string) error { return nil }}.Check()
 	}
 	if err != nil {
 		return "", knotState{}, failure("the write would leave the graph invalid: " + err.Error())
@@ -1049,11 +1135,17 @@ type jsonKnot struct {
 	knot.View
 }
 
+// jsonComment is one comment as --json prints it. Its id is its file's
+// name without .md, <stamp>-<op>, which comment --edit takes. edited and
+// edited_by are there once it has been edited.
 type jsonComment struct {
-	Author string `json:"author"`
-	At     string `json:"at"`
-	Op     string `json:"op"`
-	Body   string `json:"body"`
+	ID       string `json:"id"`
+	Author   string `json:"author"`
+	At       string `json:"at"`
+	Op       string `json:"op"`
+	Edited   string `json:"edited,omitempty"`
+	EditedBy string `json:"edited_by,omitempty"`
+	Body     string `json:"body"`
 }
 
 func (r remote) jsonKnot(s knotState, k *knot.Knot, full bool, foreign knot.Foreign) *jsonKnot {
@@ -1067,7 +1159,8 @@ func (r remote) jsonKnot(s knotState, k *knot.Knot, full bool, foreign knot.Fore
 		j.Body = &body
 		j.Comments = []jsonComment{}
 		for _, c := range s.graph.Comments[k.ID] {
-			j.Comments = append(j.Comments, jsonComment{Author: c.Author, At: c.At.Format(time.RFC3339), Op: c.Op, Body: c.Body})
+			j.Comments = append(j.Comments, jsonComment{ID: c.ID, Author: c.Author, At: c.At.Format(time.RFC3339), Op: c.Op,
+				Edited: c.Edited, EditedBy: c.EditedBy, Body: c.Body})
 		}
 	}
 	return j
@@ -1090,14 +1183,30 @@ func (r remote) foreign(g git) knot.Foreign {
 	return f.resolve
 }
 
+// knotShow shows a knot as the graph's tip holds it, or, with --at, as one
+// commit of the graph's history left it. Either way, what is derived of it
+// is derived now: a claim's age is read against the clock, and a reference
+// to another project's knot is resolved at that project's tip.
 func knotShow(r remote, a knotArgs, w io.Writer) error {
 	s, err := r.read()
 	if err != nil {
 		return err
 	}
+	tip, at := s.tip, ""
+	if a.at != "" {
+		if at, err = r.resolveAt(tip, a.at); err != nil {
+			return err
+		}
+		if s, err = r.readAt(at); err != nil {
+			return err
+		}
+	}
 	id := a.pos[0]
 	k, ok := s.graph.Knots[id]
-	if !ok {
+	switch {
+	case !ok && at != "":
+		return failure(fmt.Sprintf("the graph of %s held no knot %s at %s", r.name, id, short(at)))
+	case !ok:
 		return failure(fmt.Sprintf("the graph of %s holds no knot %s", r.name, id))
 	}
 	j := r.jsonKnot(s, k, true, r.foreign(r.g))
@@ -1106,10 +1215,14 @@ func knotShow(r remote, a knotArgs, w io.Writer) error {
 			Schema  string    `json:"schema"`
 			Project string    `json:"project"`
 			Tip     string    `json:"tip"`
+			At      string    `json:"at,omitempty"`
 			Knot    *jsonKnot `json:"knot"`
-		}{"valley-knot/v1", r.name, s.tip, j})
+		}{"valley-knot/v1", r.name, tip, at, j})
 	}
 	var b strings.Builder
+	if at != "" {
+		fmt.Fprintf(&b, "as of %s\n", at)
+	}
 	title := func(id string) string {
 		if o, ok := s.graph.Knots[id]; ok {
 			return fmt.Sprintf("%s (%s) %s", id, o.Status, visible(o.Title))
@@ -1168,7 +1281,146 @@ func knotShow(r remote, a knotArgs, w io.Writer) error {
 		b.WriteString("\n" + visible(k.Body))
 	}
 	for _, c := range s.graph.Comments[k.ID] {
-		fmt.Fprintf(&b, "\n— %s, %s\n%s", visible(c.Author), c.At.Format("2006-01-02 15:04Z"), visible(c.Body))
+		edited := ""
+		if c.Edited != "" {
+			edited = fmt.Sprintf(", edited %s by %s", minute(c.Edited), visible(c.EditedBy))
+		}
+		fmt.Fprintf(&b, "\n— %s, %s%s  [%s]\n%s", visible(c.Author), c.At.Format("2006-01-02 15:04Z"), edited, c.ID, visible(c.Body))
+	}
+	_, err = io.WriteString(w, b.String())
+	return err
+}
+
+// minute is an RFC 3339 time as show and log print one, to the minute.
+func minute(t string) string {
+	at, err := time.Parse(time.RFC3339, t)
+	if err != nil {
+		return t
+	}
+	return at.UTC().Format("2006-01-02 15:04Z")
+}
+
+// resolveAt is the commit --at names: the graph's tip, or a commit the tip
+// descends from, by its object ID, whole or abbreviated. Any other commit
+// is refused, so --at reads only the graph's own history.
+func (r remote) resolveAt(tip, at string) (string, error) {
+	if tip == "" {
+		return "", failure(fmt.Sprintf("the graph of %s has no commits yet", r.name))
+	}
+	commit, err := r.g.output(true, "rev-parse", "--verify", "--quiet", at+"^{commit}")
+	if err != nil {
+		return "", failure(fmt.Sprintf("%s names no one commit here; knot log lists the graph's commits", at))
+	}
+	if !r.g.succeeds(true, "merge-base", "--is-ancestor", commit, tip) {
+		return "", failure(fmt.Sprintf("%s is no commit of the graph of %s; knot log lists its commits", at, r.name))
+	}
+	return commit, nil
+}
+
+// logEntry is one commit that touched a knot or its comments, as knot log
+// lists it: the commit, when it was committed, by whom, the operation it
+// records, its subject, and the knot's files it added, changed or
+// deleted.
+type logEntry struct {
+	Commit    string    `json:"commit"`
+	At        string    `json:"at"`
+	Committer string    `json:"committer"`
+	Op        string    `json:"op"`
+	Subject   string    `json:"subject"`
+	Files     []logFile `json:"files"`
+}
+
+// logFile is one file a commit touched: its path, whether the commit
+// added, changed or deleted it, and, for a comment, the comment's id.
+type logFile struct {
+	Path    string `json:"path"`
+	Change  string `json:"change"`
+	Comment string `json:"comment,omitempty"`
+}
+
+// knotLog lists every commit of the graph that touched the knot's file or
+// one of its comments, newest first, down to the root commit. A knot's
+// file never moves, so the commits that touch its path and its comments'
+// directory are every commit that touched it. Each commit is read with the
+// knot module's reader, as the hook read it when it was pushed, so its
+// time, committer and operation are the ones the hook checked.
+func knotLog(r remote, a knotArgs, w io.Writer) error {
+	s, err := r.read()
+	if err != nil {
+		return err
+	}
+	id := a.pos[0]
+	f, ok := s.graph.Index.Knots[id]
+	if !ok {
+		return failure(fmt.Sprintf("the graph of %s holds no knot %s", r.name, id))
+	}
+	comments := knot.CommentsDirectory + "/" + id + "/"
+	// --root lists what the root commit added, whatever log.showRoot
+	// says, and --topo-order lists a parent after its child.
+	out, err := r.g.output(true, "log", "--no-color", "--topo-order", "--root", "--no-renames", "--name-status",
+		"--format=%x1e%H", s.tip, "--", f.Path, comments)
+	if err != nil {
+		return failure("could not read the history of the graph of " + r.name)
+	}
+	entries := []logEntry{}
+	var commits []string
+	for _, rec := range strings.Split(out, "\x1e") {
+		commit, files, _ := strings.Cut(strings.TrimSpace(rec), "\n")
+		if commit == "" {
+			continue
+		}
+		e := logEntry{Commit: commit, Files: []logFile{}}
+		for _, line := range strings.Split(files, "\n") {
+			status, path, ok := strings.Cut(line, "\t")
+			if !ok {
+				continue
+			}
+			lf := logFile{Path: path, Change: "changed"}
+			switch status {
+			case "A":
+				lf.Change = "added"
+			case "D":
+				lf.Change = "deleted"
+			}
+			if name, ok := strings.CutPrefix(path, comments); ok {
+				lf.Comment = strings.TrimSuffix(name, ".md")
+			}
+			e.Files = append(e.Files, lf)
+		}
+		entries = append(entries, e)
+		commits = append(commits, commit)
+	}
+	bodies, err := r.blobs(commits)
+	if err != nil {
+		return err
+	}
+	for i := range entries {
+		e := &entries[i]
+		c, err := knot.ParseCommit(bodies[e.Commit], len(e.Commit)/2)
+		if err != nil {
+			return failure(fmt.Sprintf("the graph's commit %s does not read: %v", short(e.Commit), err))
+		}
+		e.At, e.Committer, e.Op = c.Time.Format(time.RFC3339), c.Committer, c.Op
+		if _, message, ok := bytes.Cut(bodies[e.Commit], []byte("\n\n")); ok {
+			e.Subject, _, _ = strings.Cut(string(message), "\n")
+		}
+	}
+	if a.json {
+		return writeKnotJSON(w, struct {
+			Schema  string     `json:"schema"`
+			Project string     `json:"project"`
+			Tip     string     `json:"tip"`
+			ID      string     `json:"id"`
+			Path    string     `json:"path"`
+			Commits []logEntry `json:"commits"`
+		}{"valley-knot-log/v1", r.name, s.tip, id, f.Path, entries})
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		fmt.Fprintf(&b, "%s %s %s  %s\n", short(e.Commit), minute(e.At), visible(e.Committer), visible(e.Subject))
+		for _, f := range e.Files {
+			fmt.Fprintf(&b, "    %-7s %s\n", f.Change, f.Path)
+		}
 	}
 	_, err = io.WriteString(w, b.String())
 	return err

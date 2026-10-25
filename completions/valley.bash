@@ -54,11 +54,11 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = ready ] && [[ ! "${COMP_WORDS[COMP_CWORD - 1]}" =~ ^--(head|change|if-active)$ ]]; then
     mapfile -t COMPREPLY < <(compgen -W "$(_valley_branches --no-merged=origin/main)" -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = knot ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'new show list set link unlink edit comment claim unclaim schema' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'new show log list set link unlink edit comment claim unclaim schema' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = knot ] && { [ "$COMP_CWORD" -eq 3 ] && [ "${COMP_WORDS[2]}" = new ] || [ "${COMP_WORDS[COMP_CWORD - 1]}" = --type ]; }; then
     mapfile -t COMPREPLY < <(compgen -W 'outcome bug idea question' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = knot ] && [ "${cur:0:1}" = - ]; then
-    mapfile -t COMPREPLY < <(compgen -W '--project --json --parent --blocked-by --owner --target --body --type --status --ready --if --force --change -m --run' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W '--project --json --parent --blocked-by --owner --target --body --type --status --ready --if --force --change -m --edit --run --at' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = plan ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--project --all --owner --json --known-signers --integrator-name' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = replay ]; then

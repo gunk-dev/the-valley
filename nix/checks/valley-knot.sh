@@ -192,6 +192,7 @@ fails 1 'takes the comment' valley knot comment "$work"
 # comment --edit replaces a comment's text in place. The comment keeps its
 # id, its file, its author and its stamp, and records who edited it and
 # when. Each comment's id is its file's name without .md.
+me="$(git config valley.principal)"
 ok valley knot show "$work" --json
 holds '.knot.comments | all(.id | test("^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$"))' '.knot.comments | all(has("edited") | not)'
 finding="$(jq -r '.knot.comments[] | select(.body == "A finding.\n") | .id' "$w/out")"
@@ -200,8 +201,8 @@ found_at="$(jq -r ".knot.comments[] | select(.id == \"$finding\") | .at" "$w/out
   || fail "a comment's id is not its file's name"
 unedited="$(git -C "$graph" rev-parse refs/the-valley/knots)"
 ok env VALLEY_NOW=2026-10-25T15:00:00Z valley knot comment "$work" --edit "$finding" -m "A finding, restated." --json
-holds ".knot.comments | map(select(.id == \"$finding\")) | .[0] | .body == \"A finding, restated.\\n\" and .author == \"patrick\"
-  and .at == \"$found_at\" and .edited == \"2026-10-25T15:00:00Z\" and .edited_by == \"patrick\"" '.knot.comment_count == 2'
+holds ".knot.comments | map(select(.id == \"$finding\")) | .[0] | .body == \"A finding, restated.\\n\" and .author == \"$me\"
+  and .at == \"$found_at\" and .edited == \"2026-10-25T15:00:00Z\" and .edited_by == \"$me\"" '.knot.comment_count == 2'
 [ "$(git -C "$graph" ls-tree --name-only "refs/the-valley/knots:comments/$work" | wc -l)" = 2 ] \
   || fail "an edit added a file"
 [ "$(git -C "$graph" show -s --format=%s refs/the-valley/knots)" = "knot comment $work: edit $finding" ] \
@@ -210,7 +211,7 @@ restated="$(git -C "$graph" rev-parse refs/the-valley/knots)"
 # The same editor edits it again, and each edit is its own commit.
 ok env VALLEY_NOW=2026-10-25T16:00:00Z valley knot comment "$work" --edit "$finding" -m "A finding, restated twice."
 ok valley knot show "$work"
-line "^— patrick, .*, edited 2026-10-25 16:00Z by patrick  \\[$finding\\]$"
+line "^— $me, .*, edited 2026-10-25 16:00Z by $me  \\[$finding\\]$"
 fails 0 'says that already; nothing to change' valley knot comment "$work" --edit "$finding" -m "A finding, restated twice."
 fails 1 "holds no comment 20261025T000000Z-0000000000000000" valley knot comment "$work" --edit 20261025T000000Z-0000000000000000 -m "Nothing."
 fails 1 "comment $finding is on $work, not on $bug" valley knot comment "$bug" --edit "$finding" -m "Elsewhere."
@@ -222,7 +223,7 @@ fails 1 'takes the comment' valley knot comment "$work" --edit "$finding"
 # operation as the commit records them. The milestone was the first knot,
 # so its log ends at the root commit.
 ok valley knot log "$work" --json
-holds '.schema == "valley-knot-log/v1"' ".id == \"$work\"" '.commits | all(.committer == "patrick")' \
+holds '.schema == "valley-knot-log/v1"' ".id == \"$work\"" ".commits | all(.committer == \"$me\")" \
   '.commits[0].subject == "knot comment '"$work"': edit '"$finding"'"' \
   ".commits[0].files == [{\"path\": \"comments/$work/$finding.md\", \"change\": \"changed\", \"comment\": \"$finding\"}]" \
   '.commits[-1].files == [{"path": .path, "change": "added"}]'
@@ -236,7 +237,7 @@ done
 ok valley knot log "$milestone" --json
 holds ".commits[-1].commit == \"$first\""
 ok valley knot log "$work"
-line "^${restated:0:7} [0-9-]+ [0-9:]+Z patrick  knot comment $work: edit $finding$"
+line "^${restated:0:7} [0-9-]+ [0-9:]+Z $me  knot comment $work: edit $finding$"
 line "^    changed comments/$work/$finding.md$"
 
 # show --at reads the knot as a commit of the graph left it, so every

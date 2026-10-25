@@ -2101,13 +2101,15 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   generation is not deleted until the request releases it. Before the first activation, every route
   answers `503`.
 - **One read per generation:** The server reads a generation's `export.json` once, however many
-  requests open the generation at the same time. It keeps the newest generation it has read, and
-  builds the plan page's structure once for it.
-  - It reads at most 2 exports at once (`server.MaxLoads`). A read starts only once it has one of
-    those 2 places.
-  - A read runs in one of the requests that wait for it, which holds the generation open while it
-    reads. No read is queued for a generation that no request waits for.
-  - A request stops waiting for a read when its reader disconnects or its time runs out.
+  requests wait for it at the same time. It keeps the newest generation it has read, and builds the
+  plan page's structure once for it. A request opens its generation only once the server has read
+  that generation.
+  - Each read runs in a worker of its own. The worker opens the active generation, holds it while it
+    reads, and releases it once the read ends. A request that waits for a read holds no generation.
+  - At most 2 workers run at once (`server.MaxLoads`). A worker starts only when a request that
+    waits for the read takes one of those 2 places. No read is queued that no request waits for.
+  - A request stops waiting for a read when its reader disconnects or its time runs out. Once no
+    request waits for a read, the worker stops reading, and the server keeps nothing of that read.
 - **Plan page:** The page shows four sections, in this order:
   1. **Waiting on you:** Empty. Every reader sees the same public page.
   2. **In flight:** The export's `in_flight` knots, each with who claims it and how long ago. Beside
@@ -2186,6 +2188,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     `Retry-After: 5`.
   - A request gives back its place among the 8 before it writes its response. A reader that reads
     slowly holds no place and no generation.
+  - A request whose generation the server has not read yet waits for the read. It is admitted among
+    the requests that wait for reads before it opens anything. At most 64 of them wait at once
+    (`server.MaxLoadWaiting`). A request that finds them full answers `503` at once, with
+    `Retry-After: 5`.
 - **Response size and memory:** Every page is rendered whole before it is written.
   - A page is at most 8 MiB (`server.MaxResponse`), whatever its route and whatever it shows. A page
     that would be larger stops rendering at the bound. The server answers `500` with a short page

@@ -39,19 +39,24 @@
   # the plan's structure built once; the policy on every response,
   # admitting the page's inline stylesheet and script by their hashes; a
   # request keeping its generation while another activates; an export
-  # read once per generation, however many requests open it, across
-  # activations; a read of an export started only by a request holding a
-  # loader slot, with requests that wait for one ending at their deadline
-  # or when their reader goes away, leaving no read behind and holding no
-  # generation; source requests past MaxGit and MaxWaiting answering 503,
-  # with an activation while they wait and a deadline that covers the
-  # wait; a request held past its deadline before it renders answering
-  # 503; a page past MaxResponse on a knot, and past a smaller bound on a
-  # file, a directory, a page of history and the plan, answering the one
-  # short page that says it is too large; readers that never read holding
-  # no git slot and no generation, and, asking for twice MaxBuffered,
-  # holding no more of the heap than it, with a page it has no room for
-  # answering 503; and valley-web run as a process of its own, serving and
-  # stopping on SIGTERM. go vet runs after them.
+  # read once per generation, however many requests wait for it, across
+  # activations; a load started only by a request taking a loader slot,
+  # with requests that wait for one ending at their deadline or when
+  # their reader goes away, leaving no load behind and holding no
+  # generation; a load reading export.json from a slow pipe stopped part
+  # way once its one request's deadline passes, caching nothing and
+  # giving back its generation; a flood during a load keeping
+  # MaxLoadWaiting requests waiting and answering the rest 503, with the
+  # server's goroutines and open files bounded; source requests past
+  # MaxGit and MaxWaiting answering 503, with an activation while they
+  # wait and a deadline that covers the wait; a request held past its
+  # deadline before it renders answering 503; a page past MaxResponse on
+  # a knot, and past a smaller bound on a file, a directory, a page of
+  # history and the plan, answering the one short page that says it is
+  # too large; readers that never read holding no git slot and no
+  # generation, and, asking for twice MaxBuffered, holding no more of the
+  # heap than it, with a page it has no room for answering 503; and
+  # valley-web run as a process of its own, serving and stopping on
+  # SIGTERM. go vet runs after them.
   webui-server-unit = packages.valley-web.unit;
 }

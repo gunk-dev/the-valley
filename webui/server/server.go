@@ -9,15 +9,19 @@
 // generation. An activation during the request changes nothing the
 // request reads. Each generation's export is read once, however many
 // requests open it at once, and is kept while the generation is the
-// newest one read.
+// newest one read. At most MaxLoads exports are read at once. A read
+// starts only once it has one of those slots, and it runs in the
+// goroutine of the request that took the slot, which holds the
+// generation open while it reads. The requests that wait for a read
+// stop waiting when their reader goes away or their time runs out.
 //
 // # Admission
 //
-// A source request runs git, and at most MaxGit run at once. A source
-// request takes one of those slots before it opens a generation, and
-// waits for one only while fewer than MaxWaiting wait. Its time is
-// bounded from when it arrives: the wait, its git commands and its
-// rendering. A source request the server cannot admit, or that runs out
+// Every request's time is bounded from when it arrives: its waits, its
+// git commands and its rendering. A source request runs git, and at most
+// MaxGit run at once. A source request takes one of those slots before
+// it opens a generation, and waits for one only while fewer than
+// MaxWaiting wait. A request the server cannot admit, or that runs out
 // of time, answers 503.
 //
 // A response is rendered whole before it is written. A request gives back
@@ -59,6 +63,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/url"
@@ -102,9 +107,10 @@ const (
 	// MaxGit to finish. A source request that finds every slot taken
 	// and MaxWaiting waiting answers 503 at once.
 	MaxWaiting = 16
-	// gitTimeout bounds a source request from when it arrives: its wait
-	// for a slot, its git commands and its rendering.
-	gitTimeout = 15 * time.Second
+	// requestTimeout bounds a request from when it arrives: its wait for
+	// a git slot or for its generation's export to be read, its git
+	// commands and its rendering.
+	requestTimeout = 15 * time.Second
 	// MaxLoads is the most generations whose export is read at once.
 	MaxLoads = 2
 )
@@ -125,7 +131,7 @@ type Server struct {
 	store *export.Store
 	now   func() time.Time
 	log   func(error)
-	// timeout is gitTimeout, which a test shortens.
+	// timeout is requestTimeout, which a test shortens.
 	timeout time.Duration
 	// slots holds a token for each source request running git, and
 	// waiting one for each source request waiting for a slot.
@@ -152,7 +158,7 @@ type Server struct {
 
 // New is a Server over c's store.
 func New(c Config) *Server {
-	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: gitTimeout,
+	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
 		loaders: make(chan struct{}, MaxLoads), loads: map[int64]*load{}}
 	if s.now == nil {
@@ -174,11 +180,21 @@ type snapshot struct {
 }
 
 // load is one read of a generation's export, which every request that
-// opens the generation while it runs waits for.
+// opens the generation while it is under way waits for. The first of
+// those requests to take a loader slot reads the export.
 type load struct {
-	done chan struct{}
-	snap *snapshot
-	err  error
+	// waiting counts the requests that wait for the read, and reading
+	// is set once one of them reads the export. A load every request gave
+	// up on before it started is dropped. Both are guarded by the
+	// server's mu.
+	waiting int
+	reading bool
+	// started is closed once a request reads the export, and done once
+	// it has read it.
+	started chan struct{}
+	done    chan struct{}
+	snap    *snapshot
+	err     error
 }
 
 // request is one request, the generation it serves from, and the
@@ -187,8 +203,8 @@ type request struct {
 	s *Server
 	w http.ResponseWriter
 	r *http.Request
-	// ctx is the context the request's git commands run under. A source
-	// request's ends at its deadline.
+	// ctx is the context the request waits and runs git under. It ends
+	// at the request's deadline, or when its reader goes away.
 	ctx context.Context
 	g   export.Generation
 	e   *export.Export
@@ -205,7 +221,9 @@ type request struct {
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setHeaders(w.Header())
-	q := &request{s: s, w: w, r: r, ctx: r.Context(), now: s.now()}
+	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
+	defer cancel()
+	q := &request{s: s, w: w, r: r, ctx: ctx, now: s.now()}
 	q.serve()
 	q.write()
 }
@@ -223,15 +241,12 @@ func (q *request) serve() {
 	}
 	parts, ok := segments(q.r.URL.EscapedPath())
 	if ok && runsGit(parts) {
-		ctx, cancel := context.WithTimeout(q.r.Context(), q.s.timeout)
-		defer cancel()
-		done, admitted := q.s.admit(ctx)
+		done, admitted := q.s.admit(q.ctx)
 		if !admitted {
 			q.busy()
 			return
 		}
 		defer done()
-		q.ctx = ctx
 		if q.s.admitted != nil {
 			q.s.admitted()
 		}
@@ -292,10 +307,16 @@ func (s *Server) admit(ctx context.Context) (done func(), ok bool) {
 
 // snapshot is the generation's snapshot: the cached one when it is the
 // generation's, and otherwise the one a single read of the generation's
-// export gives every request that waits for it. A request stops waiting
-// when ctx is done. At most MaxLoads exports are read at once. A read is
-// kept only when its generation is newer than the cached one, so a
-// request still serving an older generation never displaces a newer.
+// export gives every request that waits for it. A read is kept only when
+// its generation is newer than the cached one, so a request still serving
+// an older generation never displaces a newer.
+//
+// At most MaxLoads exports are read at once. The requests waiting for a
+// read that has not started each try to take a loader slot, and the
+// first to take one reads the export itself, so no read is queued that
+// no request waits for. A request stops waiting when ctx is done, and a
+// read that every waiting request gave up on before it started is
+// dropped.
 func (s *Server) snapshot(ctx context.Context, g export.Generation) (*snapshot, error) {
 	s.mu.Lock()
 	if c := s.cached; c != nil && c.seq == g.Sequence {
@@ -304,24 +325,58 @@ func (s *Server) snapshot(ctx context.Context, g export.Generation) (*snapshot, 
 	}
 	l, ok := s.loads[g.Sequence]
 	if !ok {
-		l = &load{done: make(chan struct{})}
+		l = &load{started: make(chan struct{}), done: make(chan struct{})}
 		s.loads[g.Sequence] = l
-		go s.load(g, l)
 	}
+	l.waiting++
 	s.mu.Unlock()
+	select {
+	case <-l.started:
+	case s.loaders <- struct{}{}:
+		if s.start(l) {
+			s.load(g, l)
+			return l.snap, l.err
+		}
+		<-s.loaders
+	case <-ctx.Done():
+		s.leave(g.Sequence, l)
+		return nil, fmt.Errorf("waiting for generation %d's export to be read: %w", g.Sequence, ctx.Err())
+	}
 	select {
 	case <-l.done:
 		return l.snap, l.err
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, fmt.Errorf("waiting for generation %d's export to be read: %w", g.Sequence, ctx.Err())
 	}
 }
 
-// load reads g's export for every request waiting on l. It reads while
-// those requests hold g open. Should they all go away first, an
-// activation may delete g, and the read fails, for no one.
+// start makes l's read the read of the request that took a loader slot
+// for it. It is false when another request reads it already.
+func (s *Server) start(l *load) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l.reading {
+		return false
+	}
+	l.reading = true
+	close(l.started)
+	return true
+}
+
+// leave is a request giving up on l. The last request to give up on a
+// read that has not started drops it.
+func (s *Server) leave(seq int64, l *load) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if l.waiting--; l.waiting == 0 && !l.reading && s.loads[seq] == l {
+		delete(s.loads, seq)
+	}
+}
+
+// load reads g's export for every request waiting on l, and gives back
+// the loader slot the reading request took. That request holds g open
+// while it reads.
 func (s *Server) load(g export.Generation, l *load) {
-	s.loaders <- struct{}{}
 	defer func() { <-s.loaders }()
 	if s.loading != nil {
 		s.loading(g)
@@ -398,8 +453,8 @@ func (q *request) notFound() {
 
 // fail logs err and answers with the one 500 page, which says nothing of
 // the failure. A reader that went away is answered with nothing: git
-// killed for it fails, and that is no failure of the server's. A source
-// request that ran out of time answers 503.
+// killed for it fails, and that is no failure of the server's. A request
+// that ran out of time answers 503.
 func (q *request) fail(err error) {
 	if q.r.Context().Err() != nil {
 		return
@@ -414,9 +469,9 @@ func (q *request) fail(err error) {
 	})
 }
 
-// busy answers a source request the server has no time for: it could not
-// be admitted, or it ran out of time. A reader that went away is answered
-// with nothing.
+// busy answers a request the server has no time for: a source request it
+// could not admit, or a request that ran out of time. A reader that went
+// away is answered with nothing.
 func (q *request) busy() {
 	if q.r.Context().Err() != nil {
 		return

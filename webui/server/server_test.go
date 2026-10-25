@@ -1144,3 +1144,122 @@ func TestNothingPublishedAndMethods(t *testing.T) {
 		}
 	}
 }
+
+// A read of an export starts only in a request that holds a loader slot.
+// While MaxLoads reads run, a request for a newer generation waits for a
+// slot, holding its generation, until its time runs out, whatever its
+// route, or its reader goes away. Neither leaves a read behind, and
+// neither holds its generation once it has answered.
+func TestExportLoadWaitsEnd(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var logged []string
+	h.srv.log = func(err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		logged = append(logged, err.Error())
+	}
+	loads := map[int64]int{}
+	hold := make(chan struct{})
+	h.srv.loading = func(g export.Generation) {
+		mu.Lock()
+		loads[g.Sequence]++
+		mu.Unlock()
+		<-hold
+	}
+	loaded := func(g export.Generation) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return loads[g.Sequence]
+	}
+	var opened atomic.Int64
+	h.srv.opened = func(g export.Generation) { opened.Store(g.Sequence) }
+	serve := func(r *http.Request) chan *httptest.ResponseRecorder {
+		served := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			w := httptest.NewRecorder()
+			h.srv.ServeHTTP(w, r)
+			served <- w
+		}()
+		return served
+	}
+	expect := func(served chan *httptest.ResponseRecorder, title string) {
+		t.Helper()
+		select {
+		case w := <-served:
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), title) {
+				t.Errorf("a request answered %d, not with %q", w.Code, title)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("a request was not answered with %q", title)
+		}
+	}
+
+	first := h.active()
+	firstServed := serve(httptest.NewRequest("GET", "/", nil))
+	second := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
+	secondServed := serve(httptest.NewRequest("GET", "/", nil))
+	eventually(t, "both loader slots are taken", func() bool { return loaded(first) == 1 && loaded(second) == 1 })
+
+	// A request that runs no git runs out of time waiting, and answers
+	// 503.
+	h.srv.timeout = 200 * time.Millisecond
+	third := h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
+	select {
+	case w := <-serve(httptest.NewRequest("GET", "/knots/app/oc-a000001", nil)):
+		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Errorf("a request that waited past its time for a read answered %d", w.Code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a request waits for a read past its time of 200ms")
+	}
+
+	// A request whose reader goes away stops waiting, and answers
+	// nothing.
+	h.srv.timeout = time.Hour
+	fourth := h.publish(exporttest.SignedAt.Add(3*time.Minute), nil, renamed("Readers browse the fourth plan"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gone := serve(httptest.NewRequest("GET", "/", nil).WithContext(ctx))
+	eventually(t, "a request opens the fourth generation", func() bool { return opened.Load() == fourth.Sequence })
+	cancel()
+	select {
+	case w := <-gone:
+		if w.Body.Len() != 0 {
+			t.Errorf("a request whose reader went away answered %d", w.Code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a request whose reader went away still waits")
+	}
+
+	h.srv.mu.Lock()
+	_, thirdLoad := h.srv.loads[third.Sequence]
+	_, fourthLoad := h.srv.loads[fourth.Sequence]
+	h.srv.mu.Unlock()
+	if thirdLoad || fourthLoad {
+		t.Error("a read no request waits for is left behind")
+	}
+	h.publish(exporttest.SignedAt.Add(4*time.Minute), nil, renamed("Readers browse the fifth plan"))
+	for _, g := range []export.Generation{third, fourth} {
+		if _, err := os.Stat(g.Dir); !os.IsNotExist(err) {
+			t.Errorf("generation %d outlived an activation after its request gave up: %v", g.Sequence, err)
+		}
+	}
+
+	close(hold)
+	expect(firstServed, "Readers browse the app&#39;s plan")
+	expect(secondServed, "Readers browse the second plan")
+	if !strings.Contains(h.page("/"), "Readers browse the fifth plan") {
+		t.Error("the newest generation is not served once the reads end")
+	}
+	for _, g := range []export.Generation{third, fourth} {
+		if n := loaded(g); n != 0 {
+			t.Errorf("generation %d's export was read %d times after every request for it gave up", g.Sequence, n)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 || !strings.Contains(logged[0], "deadline exceeded") {
+		t.Errorf("the server logged %q; it logs the one request that ran out of time", logged)
+	}
+}

@@ -1861,9 +1861,9 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 #### Web export upload
 
-The publisher uploads an export to the receiver in three steps. Every response body is JSON.
-A full upload is two requests plus one `PUT` for each needed body. Package `export` defines the paths, reply schemas, and checks for each step; the HTTP handlers that
-wire them are `not built`.
+The publisher uploads an export to the receiver in three steps. Every response body is JSON. A full
+upload is two requests plus one `PUT` for each needed body. Package `export` defines the paths,
+reply schemas, and checks for each step; the HTTP handlers that wire them are `not built`.
 
 | Step | Request                                                                       | Reply                                                                                                                                                                                                                               |
 | :--- | :---------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1879,16 +1879,16 @@ wire them are `not built`.
   may then stop after step 1 without sending `export.json` or committing, and the next manifest it
   posts replaces the staged upload.
 - **Retries:** Posting the same manifest again keeps the staging directory and returns the same
-  inventory minus any bodies already staged. This works only while the manifest is still
-  admissible. A retried manifest is refused as `replayed` if the receiver has since accepted its
-  sequence, as `superseded` if a staged upload has a later sequence, and as `out-of-window` if its
-  signing time is now more than 72 hours behind the receiver's clock. A body that is already staged still passes the size cap, the
-  `Content-Encoding` check, and the `Content-Length` check. After those, the receiver returns `204`
-  without reading the request body again.
+  inventory minus any bodies already staged. This works only while the manifest is still admissible.
+  A retried manifest is refused as `replayed` if the receiver has since accepted its sequence, as
+  `superseded` if a staged upload has a later sequence, and as `out-of-window` if its signing time
+  is more than 72 hours behind the receiver's clock. A body that is already staged still passes the
+  size cap, the `Content-Encoding` check, and the `Content-Length` check. After those, the receiver
+  returns `204` without reading the request body again.
 - **Body check (`export.StageBody`):** Before reading the request body, the receiver refuses a body
   whose declared `size` exceeds the receiver's cap (`too-large`), a request with a
-  `Content-Encoding` header (`content-encoding`), or a request whose `Content-Length`, when given, does
-  not equal the declared `size` (`size-mismatch`). A request with no known length skips that
+  `Content-Encoding` header (`content-encoding`), or a request whose `Content-Length`, when given,
+  does not equal the declared `size` (`size-mismatch`). A request with no known length skips that
   comparison. The receiver then counts the streamed bytes and refuses a body that is shorter or
   longer than `size` (`size-mismatch`). While reading, it hashes the stream with SHA-256, reads at
   most `size + 1` bytes, and writes to a temporary file inside the upload's `bodies/` directory.
@@ -1919,10 +1919,10 @@ wire them are `not built`.
   passes that failure to the `report` callback given to `export.OpenStore` for the receiver to log.
   The next sweep retries failed deletions, but it does not retry a failed directory sync. Recovery
   at `OpenStore` returns at once when `active` already names the `high-water` generation. It
-  restores the swap after a crash only when the two differ. A commit that fails before `active` is swapped
-  leaves the previous export active. If it failed after `high-water` was written, its sequence is
-  accepted, and retrying the commit is refused as `replayed`. The publisher's next manifest, signed
-  later, replaces the upload.
+  restores the swap after a crash only when the two differ. A commit that fails before `active` is
+  swapped leaves the previous export active. If it failed after `high-water` was written, its
+  sequence is accepted, and retrying the commit is refused as `replayed`. The publisher's next
+  manifest, signed later, replaces the upload.
 - **Refusals:** A refused request returns the code's HTTP status and a `valley-web-error/v1` JSON
   object:
   `{ "schema": "valley-web-error/v1", "error": <code>, "message": <string>, "high_water" (with replayed), "needs" (with incomplete) }`.

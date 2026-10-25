@@ -41,6 +41,9 @@
 #   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
+#   webui.nix        webui-unit — the web UI's export contract: the
+#                    projection, the manifest, the upload's checks and the
+#                    receiver's state, over the shared fixture and real git
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, rebase-unit,
 #                    valley-go-unit, valley-status, valley-ready,
@@ -139,6 +142,7 @@ import ./checks/host-module.nix args
 // import ./checks/hooks.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args
+// import ./checks/webui.nix args
 // import ./checks/cli.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args

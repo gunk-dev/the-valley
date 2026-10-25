@@ -410,6 +410,33 @@ rec {
     dir = ../note;
   };
 
+  # The web UI (webui/). Package export is the contract between the
+  # publisher on a valley host and the web server it pushes to: the public
+  # export and the projection onto it, the signed manifest, the upload and
+  # the receiver's state directory. It reads names and IDs by the plan
+  # graph's rules (../knot) and the manifest with the note module (../note).
+  # No program is built from it yet, so the package is a library build. Its
+  # tests accept bundles and build the shared fixture's repositories with
+  # real git, and go vet runs after them. The fixture's expected export
+  # (export/exporttest/testdata/) is read by the tests alone. Go, standard
+  # library only, so no module is fetched.
+  webui = goModule {
+    pname = "valley-webui";
+    dir = ../webui;
+    modules = [
+      ../knot
+      ../note
+    ];
+    preBuild = readsGoMod;
+    tests = {
+      reads = [ ../webui/export/exporttest/testdata ];
+      nativeCheckInputs = [ pkgs.git ];
+      postCheck = ''
+        go vet ./...
+      '';
+    };
+  };
+
   # The plan graph (knot/): its canonical form, its layout, cycles and
   # transitions, held by its own tests. The package is knotcheck, which
   # knot-agree runs to hold the Go validator to the CUE schema and the

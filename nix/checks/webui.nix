@@ -17,8 +17,8 @@
   # receiver's state directory. For the state directory: readers holding
   # a generation through activations, every file of a generation synced
   # before high-water names it, a repository a crash interrupted built
-  # again, recovery checking a generation before it activates it, and
-  # injected sweep and swap failures, reported apart from the commit. go
-  # vet runs after them.
+  # again, recovery checking a generation before it activates it and
+  # keeping one whose check git did not finish, and injected sweep and
+  # swap failures, reported apart from the commit. go vet runs after them.
   webui-unit = packages.webui.unit;
 }

@@ -423,7 +423,9 @@ rec {
   # publisher's tests run it against a valley built with real git and the
   # CLI itself (bin/valley, run by bash, with valley-go on PATH), read
   # declarations with cue under schema/web.cue, and upload to a receiver
-  # over a real store. go vet runs after them. The fixture's expected
+  # over a real store. One lands a change as the integrator does, with a
+  # transfer statement attest signs under a key ssh-keygen makes, which the
+  # CLI verifies with attest. go vet runs after them. The fixture's expected
   # export (export/exporttest/testdata/) is read by the tests alone. Go,
   # standard library only, so no module is fetched.
   webui = goModule {
@@ -448,7 +450,9 @@ rec {
         pkgs.git
         pkgs.bash
         pkgs.cue
+        pkgs.openssh
         valley-go
+        attest
       ];
       # A test that cannot find a tool it needs fails rather than skipping.
       preCheck = ''

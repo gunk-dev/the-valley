@@ -7,11 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -40,7 +43,8 @@ const (
 // bundles are each exported project's bundle of main, by project: the
 // file, and the body it makes. A bundle is made once for each source tip
 // and kept in the cache, so the body a manifest declares for a tip is the
-// same in every pass.
+// same in every pass. Once they are made, checkSizes holds them and the
+// publisher's storage to their bounds.
 func (p *publisher) bundles(ctx context.Context, r *reading) (map[string]string, map[string]export.Body, error) {
 	root := filepath.Join(p.cache, "bundles")
 	paths, bodies := map[string]string{}, map[string]export.Body{}
@@ -78,7 +82,59 @@ func (p *publisher) bundles(ctx context.Context, r *reading) (map[string]string,
 			os.RemoveAll(filepath.Join(root, d.Name()))
 		}
 	}
+	if err := p.checkSizes(bodies); err != nil {
+		return nil, nil, err
+	}
 	return paths, bodies, nil
+}
+
+// checkSizes holds the bundles of an export to --max-bundles together, and
+// the state directory and the cache, with the bundles made, to
+// --max-storage. A bundle carries main's whole history, as the export
+// requires, so the bound is on that whole history.
+func (p *publisher) checkSizes(bodies map[string]export.Body) error {
+	var total int64
+	var each []string
+	for _, name := range slices.Sorted(maps.Keys(bodies)) {
+		total += bodies[name].Size
+		each = append(each, fmt.Sprintf("%s %d", name, bodies[name].Size))
+	}
+	if total > int64(p.cfg.maxBundles) {
+		return fmt.Errorf("the bundles hold %d bytes together (%s), more than --max-bundles %d, so the pass sends nothing", total, strings.Join(each, ", "), p.cfg.maxBundles)
+	}
+	used, err := p.storageUsed()
+	if err != nil {
+		return err
+	}
+	if used > int64(p.cfg.maxStorage) {
+		return fmt.Errorf("the state directory and the cache hold %d bytes, more than --max-storage %d, so the pass sends nothing", used, p.cfg.maxStorage)
+	}
+	return nil
+}
+
+// storageUsed is the size of every regular file the publisher keeps: in
+// its state directory, its cache, and the valley CLI's cache beside it,
+// which holds the CLI's clones of every project.
+func (p *publisher) storageUsed() (int64, error) {
+	var total int64
+	for _, dir := range []string{p.cfg.state, p.cache, filepath.Join(filepath.Dir(p.cache), "valley")} {
+		err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				var info fs.FileInfo
+				if info, err = d.Info(); err == nil {
+					total += info.Size()
+				}
+			}
+			if errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		})
+		if err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
 }
 
 // makeBundle writes a full bundle of the mirror's main to path, made under

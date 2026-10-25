@@ -35,6 +35,16 @@ const (
 	changeID     = "pqrstuvwxyzkpqrstuvwxyzkpqrstuvw"
 )
 
+// The private sentinels: a line of site's source, the body of site's one
+// knot, and a comment on it. site is private in every valley newValley
+// makes until a test declares it public, so no export or bundle of a pass
+// before that may hold any of them.
+const (
+	sentinelSource  = "site-private-source-7f3a91"
+	sentinelBody    = "site-private-body-91c2e4"
+	sentinelComment = "site-private-comment-4e8d07"
+)
+
 // testValley is a valley made for one test: an instance repository
 // (valley), two projects (app and site), a clone of each, and the
 // publisher's state, cache and display mapping.
@@ -64,7 +74,8 @@ func needTool(t *testing.T, name string) string {
 }
 
 // newValley makes the valley. The instance allows app and site; app
-// declares itself public, and site declares nothing.
+// declares itself public, and site declares nothing. site carries the
+// private sentinels.
 func newValley(t *testing.T) *testValley {
 	t.Helper()
 	bash := needTool(t, "bash")
@@ -118,7 +129,11 @@ func newValley(t *testing.T) *testValley {
 
 	for _, name := range []string{"app", "site"} {
 		v.write(filepath.Join(v.work[name], "policy", "valley"), filepath.Join(v.srv, "valley.git")+"\n")
-		v.write(filepath.Join(v.work[name], "README.md"), "# "+name+"\n")
+		readme := "# " + name + "\n"
+		if name == "site" {
+			readme += sentinelSource + "\n"
+		}
+		v.write(filepath.Join(v.work[name], "README.md"), readme)
 		v.commit(name, name+": the first commit")
 	}
 	v.declare("app", `project: visibility: "public"`)
@@ -128,6 +143,8 @@ func newValley(t *testing.T) *testValley {
 	// does not name, and a change ready for approval.
 	v.siteTitle = "Private work in site"
 	v.knots["site"] = v.newKnot("app", "outcome", v.siteTitle, "--project", "site")
+	v.runInput(v.work["app"], sentinelBody+"\n", "valley", "knot", "edit", v.knots["site"], "--body", "-", "--project", "site")
+	v.valley("app", "knot", "comment", v.knots["site"], "-m", sentinelComment, "--project", "site")
 	v.knots["milestone"] = v.newKnot("app", "outcome", "Publish the plan")
 	v.knots["blocked"] = v.newKnot("app", "outcome", "Ship it", "--parent", v.knots["milestone"], "--blocked-by", "site:"+v.knots["site"])
 	v.knots["bug"] = v.newKnot("app", "bug", "The page is slow", "--parent", v.knots["milestone"])

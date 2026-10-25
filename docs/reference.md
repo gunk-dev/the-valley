@@ -699,9 +699,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   flake's `git`, `cue`, and `valley`, and with `VALLEY_WEB_SCHEMA` set to `schema/web.cue`. On a
   host, `services.valley.webPublisher` runs it on a timer (see
   [The web publisher's options](#the-web-publishers-options)).
-  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--schema <file>] [--recheck <duration>]`
+  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--schema <file>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
     - `--instance-repo <url>`: The instance repository. It is the `origin` of the publisher's own
-      bare repository, which the CLI discovers projects through.
+      bare repository, which the CLI discovers projects and signers through. Its `main` must hold
+      `policy/instance` and no `policy/valley`.
     - `--instance <name>`: The instance the manifest names. The export key signs under
       `<name>/web-export`.
     - `--destination <name>`: The receiver the manifest is for.
@@ -716,10 +717,15 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--schema <file>`: The web visibility schema (default `$VALLEY_WEB_SCHEMA`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
+    - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
+    - `--max-storage <size>`: The most the state directory and the cache may hold once the bundles
+      are made (default `16G`).
+    - A `<size>` is a number of bytes, or a number followed by `K`, `M`, `G`, or `T` for KiB, MiB,
+      GiB, or TiB.
   - Prints `valley-web-publish: public: <projects>; private: <projects>` on every pass, then one
     line for what it did. Warnings go to `stderr`, and so does what the CLI prints there.
   - Exits `0` when the pass uploaded the export, found nothing to send, or wrote `--out`. It exits
-    `1` when the pass failed, and `2` for invalid flags.
+    `1` when the pass failed, and `2` for invalid flags. A pass that fails sends and writes nothing.
 
 ---
 
@@ -2069,43 +2075,69 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **A pass:** In order, the pass:
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
   2. reads the export key, or makes one on the first start;
-  3. fetches the instance repository's `main` into the publisher's own bare repository,
-     `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is `--instance-repo`, and
-     requires that `main` carry `policy/instance`;
+  3. fetches the instance repository's `main` and `refs/the-valley/projects` into the publisher's
+     own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is
+     `--instance-repo`. It requires that `main` carry `policy/instance` and no `policy/valley`;
   4. reads the instance's `policy/web` at that `main`;
   5. runs `valley plan --all --json` and `valley pending --all --json` in the publisher's
      repository, so the CLI discovers the projects through `refs/the-valley/projects` and the
      signers through `refs/the-valley/signers`. `VALLEY_KNOWN_SIGNERS` and
-     `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment;
+     `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment. Each listing must name
+     exactly the projects the fetched `refs/the-valley/projects` lists;
   6. for each project the instance allows, fetches `main` from the URL the pending listing gives
      into a mirror, `$XDG_CACHE_HOME/valley-web-publish/repos/<project>.git`, and reads the
      project's own `policy/web` at that `main`;
-  7. runs `valley knot show --project <project> <id> --json` for every knot of every public project,
-     and builds the export with `export.Build`;
-  8. uploads the export, or writes it to `--out`.
+  7. runs `valley knot show --project <project> <id> --json` for every knot of every public project;
+  8. fetches the instance repository's `main` and `refs/the-valley/projects` again, which must name
+     the objects step 3 fetched, and builds the export with `export.Build`;
+  9. makes the bundles, and checks them against `--max-bundles` and the state and cache against
+     `--max-storage`;
+  10. uploads the export, or writes it to `--out`.
+- **One instance:** The CLI follows a `policy/valley` on the instance repository's `main` to the
+  instance it names, for the projects and for the signers. So a `main` that carries `policy/valley`
+  fails the pass before any project is read, at step 3, or at step 8 when it lands during the read.
+  Two instances can serve projects of the same name, and the pass reads only the one given.
 - **Visibility:** A project is public when the instance's declaration holds
   `instance: projects: <project>: visibility: "public"` and the project's own declaration holds
-  `project: visibility: "public"`. Every other project is private: one the instance does not name,
-  one with no declaration, one whose declaration `schema/web.cue` refuses, one whose `main` cannot
-  be read, and one the pending listing gives no URL for. A refused declaration or an unreadable
-  `main` is said on `stderr`. A missing or refused instance declaration makes every project private,
-  and the pass uploads an export with no project.
+  `project: visibility: "public"`. Every other project is private: one the instance does not name or
+  does not allow, one with no `main`, one with no declaration, and one whose declaration
+  `schema/web.cue` refuses. A refused declaration is said on `stderr`. A missing or refused instance
+  declaration makes every project private, and the pass uploads an export with no project.
+- **Read failures:** A failure to read is not a private project. The pass fails, and sends and
+  writes nothing, when the instance repository or its project list cannot be fetched, when a listing
+  names other projects than the instance publishes, as the CLI's listing of its own repository alone
+  does when discovery fails, or when the schema does not load. It fails the same way for a project
+  the instance allows when the pending listing could not read it or gives no URL for it, when its
+  `main` cannot be fetched, or when git or `cue` cannot be run over its declaration. `export.Build`
+  refuses a public project that the plan could not read. An export without such a project would take
+  it off the web.
 - **Reading a declaration:** The pass reads the `*.cue` files directly in `policy/web/` of the
   commit, as regular files only, with `git ls-tree` and `git cat-file`, never a checkout. It copies
   them into a scratch directory with no `cue.mod`, so `cue` resolves no import beyond its standard
   library, and runs `cue export --out json` with the schema and the files. `CUE_*` variables are
   removed from `cue`'s environment. A declaration with more than 32 files, a file over 64 KiB, a
-  `cue` run longer than a minute, or exported JSON with a field the schema does not define is
-  refused.
+  `cue` run longer than a minute, more than 1 MiB of exported JSON, or exported JSON with a field
+  the schema does not define is refused. Before it reads any declaration, the pass runs `cue export`
+  over the schema alone, and fails when that fails.
+- **Output bounds:** The pass holds at most 64 MiB of what a `valley` command prints, 4 MiB of what
+  a `git` command prints, and 1 MiB of what `cue` prints. A command that prints more fails the pass,
+  except `cue`, whose declaration is then refused. What a command prints on `stderr` is kept to its
+  first 64 KiB.
 - **Consistent reads:** `export.Build` fails with `export.ErrInconsistent` when a knot's detail was
-  read at another graph tip than the plan. The pass then reads the valley again, up to three reads
-  in all, and fails when every read was inconsistent.
+  read at another graph tip than the plan. Step 8 fails the same way when the instance repository's
+  `main` or project list moved during the read. The pass then reads the valley again, up to three
+  reads in all, and fails when every read was inconsistent.
 - **Bundles:** Each public project's bundle is `git bundle create <file> refs/heads/main` in its
   mirror, kept under `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A
   bundle is made once per source tip, so the body a manifest declares for a tip is the same in every
   pass. The pass checks with `git bundle list-heads` that the bundle carries `refs/heads/main` at
   the source tip. It deletes the bundles of a project's earlier tips, and of projects the export
   does not hold.
+- **Size bounds:** A bundle carries the whole history of `main`, as the export requires. Once the
+  bundles are made, the pass fails when they hold more than `--max-bundles` together, or when the
+  state directory, `$XDG_CACHE_HOME/valley-web-publish`, and the CLI's `$XDG_CACHE_HOME/valley` hold
+  more than `--max-storage`. Either way it sends and writes nothing. The check runs after the
+  fetches, so one pass can grow the cache past `--max-storage` before it fails.
 - **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends nothing when the
   last acknowledgement names the same receiver, destination, and digest, and is less than
   `--recheck` old. Otherwise it posts a manifest. When the inventory's `active.digest` is the

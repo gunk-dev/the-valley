@@ -10,22 +10,30 @@
 //  1. take the lock in the state directory, so two passes never overlap;
 //  2. read the export key from the state directory, or make one on the
 //     first start, and say its verifier line whenever it changes;
-//  3. fetch main of the instance repository into the publisher's own bare
-//     repository, whose origin it is, and read the instance's policy/web;
+//  3. fetch main and refs/the-valley/projects of the instance repository
+//     into the publisher's own bare repository, whose origin it is, refuse
+//     a main that carries policy/valley, and read the instance's
+//     policy/web;
 //  4. run valley plan --all --json and valley pending --all --json in that
 //     repository, which discover the projects and the signers through the
-//     host's own publications;
+//     instance repository's own publications, and hold both listings to
+//     the project list it fetched;
 //  5. for each project the instance allows, fetch main into a mirror under
 //     the cache and read the project's own policy/web there;
 //  6. run valley knot show --project P <id> --json for every knot of every
-//     public project, and build the export with export.Build, reading
-//     again when the inputs were read at different graph tips;
-//  7. upload it, unless the receiver acknowledged the same content digest
+//     public project, fetch the instance repository again, and build the
+//     export with export.Build, reading again when the inputs were read at
+//     different graph tips or the instance repository moved;
+//  7. bundle each public project's main, and hold the bundles to
+//     --max-bundles and the state and cache to --max-storage;
+//  8. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago, or write it to --out instead.
 //
 // A project is public only when the instance's policy/web and its own both
 // say public (schema/web.cue). A declaration that is missing, or that the
-// schema refuses, means private.
+// schema refuses, means private. A project the instance allows that
+// cannot be read fails the pass, which then sends nothing: an export
+// without it would take it off the web.
 package main
 
 import (
@@ -35,9 +43,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -47,13 +57,15 @@ import (
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME
                           (--receiver URL | --out DIR) [--principals FILE]
                           [--state DIR] [--schema FILE] [--recheck DURATION]
+                          [--max-bundles SIZE] [--max-storage SIZE]
 
 One pass of the web publisher: read the valley's public projects, and
 upload them to the receiver at URL, or write them to DIR.
 
   --instance-repo URL  the instance repository: the origin of the
                        publisher's own bare repository, which the valley
-                       CLI discovers projects through
+                       CLI discovers projects and signers through; its
+                       main holds policy/instance and no policy/valley
   --instance NAME      the instance the manifest names, and the export
                        key's signing name, NAME/web-export
   --destination NAME   the receiver the manifest is for
@@ -71,6 +83,14 @@ upload them to the receiver at URL, or write them to DIR.
   --recheck DURATION   how long an acknowledgement is trusted: a pass whose
                        digest the receiver acknowledged less than this ago
                        sends nothing (default 1h)
+  --max-bundles SIZE   the most the bundles of one export may hold
+                       together; a pass past it sends nothing (default 1G)
+  --max-storage SIZE   the most the state directory and the cache may hold
+                       once the bundles are made; a pass past it sends
+                       nothing (default 16G)
+
+A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
+GiB or TiB.
 
 The cache is $XDG_CACHE_HOME (default $HOME/.cache): the valley CLI's
 clones under valley/, the publisher's repository and mirrors under
@@ -112,10 +132,12 @@ type config struct {
 	state        string
 	schema       string
 	recheck      time.Duration
+	maxBundles   byteSize
+	maxStorage   byteSize
 }
 
 func parseArgs(args []string) (config, error) {
-	var c config
+	c := config{maxBundles: 1 << 30, maxStorage: 16 << 30}
 	fs := flag.NewFlagSet("valley-web-publish", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&c.instanceRepo, "instance-repo", "", "")
@@ -127,6 +149,8 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.state, "state", "", "")
 	fs.StringVar(&c.schema, "schema", os.Getenv("VALLEY_WEB_SCHEMA"), "")
 	fs.DurationVar(&c.recheck, "recheck", time.Hour, "")
+	fs.Var(&c.maxBundles, "max-bundles", "")
+	fs.Var(&c.maxStorage, "max-storage", "")
 	if err := fs.Parse(args); err != nil {
 		return c, err
 	}
@@ -164,6 +188,28 @@ func parseArgs(args []string) (config, error) {
 	}
 	return c, nil
 }
+
+// byteSize is a size flag's value in bytes. It is set from a number, or a
+// number with K, M, G or T for 1024 to the first to fourth power, as
+// systemd reads a size.
+type byteSize int64
+
+func (b *byteSize) Set(v string) error {
+	number, unit := v, int64(1)
+	if n := len(v); n > 1 {
+		if i := strings.IndexByte("KMGT", v[n-1]); i >= 0 {
+			number, unit = v[:n-1], 1<<(10*(i+1))
+		}
+	}
+	x, err := strconv.ParseInt(number, 10, 64)
+	if err != nil || x <= 0 || x > math.MaxInt64/unit {
+		return fmt.Errorf("%q is not a size: a positive number of bytes, or one with K, M, G or T", v)
+	}
+	*b = byteSize(x * unit)
+	return nil
+}
+
+func (b *byteSize) String() string { return strconv.FormatInt(int64(*b), 10) }
 
 // publisher is one pass's configuration and what it reads and writes
 // through: its state and cache directories, its key, the receiver, and
@@ -257,13 +303,7 @@ func (p *publisher) sayVisibility(r *reading) {
 	for _, proj := range r.export.Projects {
 		public = append(public, proj.Name)
 	}
-	list := func(names []string) string {
-		if len(names) == 0 {
-			return "none"
-		}
-		return strings.Join(names, ", ")
-	}
-	p.say("public: %s; private: %s", list(public), list(r.private))
+	p.say("public: %s; private: %s", listNames(public), listNames(r.private))
 }
 
 func (p *publisher) say(format string, args ...any) {

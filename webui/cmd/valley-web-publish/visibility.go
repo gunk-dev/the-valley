@@ -19,17 +19,32 @@ import (
 const webDir = "policy/web"
 
 // The bounds on a declaration: how many documents it may have, how large
-// each may be, and how long cue may take over them. A declaration past
-// them is invalid, so the project is private.
+// each may be, how long cue may take over them, and how much it may print.
+// A declaration past them is invalid, so the project is private.
 const (
 	maxDeclarationFiles = 32
 	maxDeclarationFile  = 64 << 10
 	cueTimeout          = time.Minute
+	maxCueOutput        = 1 << 20
 )
 
 // errNoDeclaration is readDeclaration's error for a commit with no
 // policy/web/*.cue.
 var errNoDeclaration = errors.New("no policy/web declaration")
+
+// invalidDeclaration is readDeclaration's error for a declaration that is
+// there and is not one: the schema refuses it, or it is past the bounds. A
+// project whose declaration is invalid is private. Any other error of
+// readDeclaration's is a failure to read the declaration, which ends the
+// pass.
+type invalidDeclaration struct{ err error }
+
+func (e *invalidDeclaration) Error() string { return e.err.Error() }
+func (e *invalidDeclaration) Unwrap() error { return e.err }
+
+func invalid(format string, args ...any) error {
+	return &invalidDeclaration{fmt.Errorf(format, args...)}
+}
 
 // declaration is a policy/web declaration as cue exports it under
 // schema/web.cue.
@@ -48,20 +63,29 @@ type visibility struct {
 // *.cue documents directly in policy/web/, taken out with ls-tree and
 // cat-file rather than a checkout, and exported by cue under the schema.
 // Only regular files are read; a symbolic link or a submodule is not a
-// document. Its error is errNoDeclaration when the commit has none, and
-// another error when the declaration is invalid.
+// document. Its error is errNoDeclaration when the commit has none, an
+// *invalidDeclaration when the declaration is invalid, and any other error
+// when git or cue could not be run over it.
 func readDeclaration(ctx context.Context, repo, commit, schema string) (*declaration, error) {
-	listing, err := git(ctx, repo, "ls-tree", "-z", commit+":"+webDir)
+	entry, err := git(ctx, repo, "ls-tree", "-z", commit, "--", webDir)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		return nil, errNoDeclaration // no such directory
+		return nil, err
+	}
+	if len(entry) == 0 {
+		return nil, errNoDeclaration
+	}
+	meta, _, _ := strings.Cut(string(entry), "\t")
+	if f := strings.Fields(meta); len(f) != 3 || f[1] != "tree" {
+		return nil, invalid("%s is not a directory", webDir)
+	} else if entry, err = git(ctx, repo, "ls-tree", "-z", f[2]); errors.Is(err, errTooLong) {
+		return nil, invalid("%s lists more than %d bytes of entries", webDir, maxGitOutput)
+	} else if err != nil {
+		return nil, err
 	}
 	type document struct{ name, oid string }
 	var docs []document
-	for _, entry := range strings.Split(string(listing), "\x00") {
-		meta, name, ok := strings.Cut(entry, "\t")
+	for _, e := range strings.Split(string(entry), "\x00") {
+		meta, name, ok := strings.Cut(e, "\t")
 		if !ok || !strings.HasSuffix(name, ".cue") {
 			continue
 		}
@@ -75,7 +99,7 @@ func readDeclaration(ctx context.Context, repo, commit, schema string) (*declara
 		return nil, errNoDeclaration
 	}
 	if len(docs) > maxDeclarationFiles {
-		return nil, fmt.Errorf("%s holds %d documents, more than the %d a declaration may have", webDir, len(docs), maxDeclarationFiles)
+		return nil, invalid("%s holds %d documents, more than the %d a declaration may have", webDir, len(docs), maxDeclarationFiles)
 	}
 
 	scratch, err := os.MkdirTemp("", "valley-web-publish-")
@@ -94,7 +118,7 @@ func readDeclaration(ctx context.Context, repo, commit, schema string) (*declara
 			return nil, fmt.Errorf("git cat-file -s %s: %w", d.oid, err)
 		}
 		if size > maxDeclarationFile {
-			return nil, fmt.Errorf("%s/%s is %d bytes, more than the %d a document may be", webDir, d.name, size, maxDeclarationFile)
+			return nil, invalid("%s/%s is %d bytes, more than the %d a document may be", webDir, d.name, size, maxDeclarationFile)
 		}
 		body, err := git(ctx, repo, "cat-file", "blob", d.oid)
 		if err != nil {
@@ -107,30 +131,68 @@ func readDeclaration(ctx context.Context, repo, commit, schema string) (*declara
 		files = append(files, path)
 	}
 
-	cueCtx, cancel := context.WithTimeout(ctx, cueTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(cueCtx, "cue", append([]string{"export", "--out", "json"}, files...)...)
-	cmd.Dir = scratch
-	cmd.Env = cueEnvironment(os.Environ())
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		first, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
-		return nil, fmt.Errorf("cue export: %v: %s", err, first)
+	out, err := cueExport(ctx, scratch, files)
+	if err != nil {
+		return nil, err
 	}
-	dec := json.NewDecoder(&stdout)
+	dec := json.NewDecoder(bytes.NewReader(out))
 	dec.DisallowUnknownFields()
 	var d declaration
 	if err := dec.Decode(&d); err != nil {
-		return nil, fmt.Errorf("the declaration is not what schema/web.cue exports: %w", err)
+		return nil, invalid("the declaration is not what schema/web.cue exports: %w", err)
 	}
 	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
-		return nil, errors.New("cue exported more than one document")
+		return nil, invalid("cue exported more than one document")
 	}
 	return &d, nil
+}
+
+// cueExport runs cue export --out json over the files, in dir. A run that
+// cue ends with an error, that is past cueTimeout or that prints more than
+// maxCueOutput is an *invalidDeclaration, since what cue was given decides
+// it. A cue that could not be run, or a pass that was cancelled, is any
+// other error.
+func cueExport(ctx context.Context, dir string, files []string) ([]byte, error) {
+	cueCtx, cancel := context.WithTimeout(ctx, cueTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(cueCtx, "cue", append([]string{"export", "--out", "json"}, files...)...)
+	cmd.Dir = dir
+	cmd.Env = cueEnvironment(os.Environ())
+	stdout := &bounded{max: maxCueOutput, strict: true}
+	stderr := &bounded{max: maxStderr}
+	cmd.Stdout, cmd.Stderr = stdout, stderr
+	err := cmd.Run()
+	var exit *exec.ExitError
+	switch {
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	case stdout.over:
+		return nil, invalid("cue exported more than %d bytes", maxCueOutput)
+	case cueCtx.Err() != nil:
+		return nil, invalid("cue took longer than %v", cueTimeout)
+	case errors.As(err, &exit):
+		first, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
+		return nil, invalid("cue export: %v: %s", err, first)
+	case err != nil:
+		return nil, fmt.Errorf("could not run cue: %w", err)
+	}
+	return stdout.Bytes(), nil
+}
+
+// checkSchema holds the schema to exporting on its own, as schema/web.cue
+// does, before any declaration is read under it. Without it a schema that
+// cannot be read would make every declaration invalid, and every project
+// private.
+func checkSchema(ctx context.Context, schema string) error {
+	dir, err := os.MkdirTemp("", "valley-web-publish-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(dir)
+	if _, err := cueExport(ctx, dir, []string{schema}); err != nil {
+		return fmt.Errorf("the schema %s does not load: %w", schema, err)
+	}
+	return nil
 }
 
 // cueEnvironment is the caller's environment without CUE's own variables,

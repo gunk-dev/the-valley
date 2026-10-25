@@ -21,6 +21,12 @@ Write clearly, simply, and without compression that would tax a knowledgeable so
 - The docs speak from the project, never about its participants. State a position as the project's
   own, and refer to people only by role (the integrator, the instance's human operator). Prior art
   and external authors may be cited freely.
+- The repository names no deployment. Code, tests, fixtures, examples, docs, commit messages, and
+  knots never name a real host, project, person, account, address, or domain of anyone who runs the
+  valley. Use neutral names: projects `app` and `site`, the instance `valley`, hosts `valley-host`
+  and `workstation`, principals `operator` and `alice`, the domain `example.org`, and addresses from
+  the documentation range 192.0.2.0/24. Deployment specifics are configuration that a consuming
+  project supplies and documents.
 
 The test for every paragraph: could an engineer new to this repo read it once and correctly say it
 back?

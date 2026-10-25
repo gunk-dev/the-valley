@@ -330,7 +330,7 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 			x.Edges = append(x.Edges, edge)
 		}
 		for _, c := range d.Knot.Comments {
-			c.Author = shown(c.Author)
+			c.Author, c.EditedBy = shown(c.Author), shown(c.EditedBy)
 			x.Comments = append(x.Comments, c)
 		}
 		if k.Active && k.Status == "in-progress" && !inFlight[k.ID] {

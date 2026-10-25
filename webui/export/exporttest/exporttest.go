@@ -7,7 +7,7 @@
 // app has a milestone with five children, among them a claimed knot, an
 // unclaimed knot in progress, a knot blocked by a local knot and by one of
 // site's, a bug whose body and comment hold HTML, and comments by mapped
-// and unmapped principals. It has one ready change, whose earlier version,
+// and unmapped principals, one of them edited. It has one ready change, whose earlier version,
 // draft, branch and repository URL the export drops. Each project has a
 // real bare repository whose main has a few commits.
 //

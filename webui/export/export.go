@@ -132,12 +132,16 @@ const (
 )
 
 // Comment is one comment on a knot, oldest first. Op is the operation that
-// wrote it, which with the knot names the comment.
+// wrote it, which with the knot names the comment. A comment that has been
+// edited says when it was last edited, in Edited, and by whom, in
+// EditedBy; one never edited has neither.
 type Comment struct {
-	Author string `json:"author"`
-	At     string `json:"at"`
-	Op     string `json:"op"`
-	Body   string `json:"body"`
+	Author   string `json:"author"`
+	At       string `json:"at"`
+	Op       string `json:"op"`
+	Edited   string `json:"edited,omitempty"`
+	EditedBy string `json:"edited_by,omitempty"`
+	Body     string `json:"body"`
 }
 
 // Residuals are the open bugs under one parent, or under none.
@@ -266,7 +270,7 @@ func (e *Export) Validate() error {
 				}
 			}
 			for _, c := range k.Comments {
-				if !validText(c.Body) || !validText(c.Author) {
+				if !validText(c.Body) || !validText(c.Author) || !validText(c.EditedBy) || !validText(c.Edited) {
 					return fmt.Errorf("a comment on knot %s:%s holds text that is not valid UTF-8 or holds a control character", p.Name, k.ID)
 				}
 			}

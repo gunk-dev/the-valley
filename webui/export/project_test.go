@@ -113,12 +113,19 @@ func TestBuildInFlight(t *testing.T) {
 }
 
 // Principal names pass through the display mapping, and a name it does
-// not map shows as the generic role.
+// not map shows as the generic role. An edited comment's editor is a
+// principal too, and a comment never edited names no editor.
 func TestBuildMapsPrincipals(t *testing.T) {
 	f := exporttest.New(t)
 	claimed := knotOf(t, f.Export, "oc-a000002")
 	if claimed.CreatedBy != "operator" || claimed.Claim.By != "agent" || claimed.Comments[1].Author != "agent" {
 		t.Errorf("the claimed knot shows %q, %q, %q", claimed.CreatedBy, claimed.Claim.By, claimed.Comments[1].Author)
+	}
+	if c := claimed.Comments[1]; c.Edited != "2026-10-25T10:30:00Z" || c.EditedBy != "agent" {
+		t.Errorf("the edited comment shows edited %q by %q", c.Edited, c.EditedBy)
+	}
+	if c := claimed.Comments[0]; c.Edited != "" || c.EditedBy != "" {
+		t.Errorf("a comment never edited shows edited %q by %q", c.Edited, c.EditedBy)
 	}
 	bug := knotOf(t, f.Export, "bd-a000004")
 	if bug.CreatedBy != export.Unmapped || bug.Comments[0].Author != export.Unmapped {

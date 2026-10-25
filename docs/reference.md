@@ -1792,7 +1792,9 @@ compact JSON ending with a newline.
   - `roots` and `open_residuals`: Same as in [`valley-plan/v1`](#valley-planv1).
   - `knots` (`array`): Every knot in the project, in tree order. Each item carries the `planKnot`
     fields of `valley-plan/v1` plus `body` and `comments` from the knot's detail JSON. It omits
-    `path`, `claimed_by`, and `claimed_at`; claim details live in the `claim` object.
+    `path`, `claimed_by`, and `claimed_at`; claim details live in the `claim` object. Each comment
+    carries `author`, `at`, `op`, and `body`. An edited comment also carries `edited` (when it was
+    last edited) and `edited_by` (who edited it); a comment never edited has neither field.
   - `in_flight` (`array` of `string`): Active claimed knots ordered from oldest claim to newest,
     followed in tree order by active unclaimed knots whose status is `in-progress`.
   - `changes` (`array`): Ready changes whose active version has not landed. Each item carries
@@ -1806,9 +1808,10 @@ compact JSON ending with a newline.
   repository's `url`, `error`, `drafts`, and `branches`. From each change, it omits `record`, `seq`,
   `state`, `restack`, and every version except the active one; from the active version, it omits
   `branch`, `landed_commit`, and `request.ref`. From each knot, it omits `path`, `claimed_by`, and
-  `claimed_at`.
+  `claimed_at`. From each comment, it omits `id`.
 - **Principal names:** The display mapping (`export.Principals`) rewrites `created_by`, `owner`,
-  `claim.by`, each comment's `author`, a change's `owner`, and a version's `uploader` to configured
+  `claim.by`, each comment's `author` and `edited_by`, a change's `owner`, and a version's
+  `uploader` to configured
   display names such as `operator` or `agent`. Each display name is 1 to 64 bytes of UTF-8 with no
   control characters. An empty field stays empty, and any unmapped name becomes `contributor`.
   Free-text fields (`title`, `body`, comment bodies, and `source`) are exported as written.
@@ -1830,8 +1833,8 @@ compact JSON ending with a newline.
   and `public` visibility, and knot IDs to be valid and unique within each project. Each project's
   `source_tip`, non-empty `graph_tip`, and each change's `version.head` must be a 40- or 64-hex
   lowercase object ID. Every knot's `title`, `body`, `source`, `created_by`, and `owner`, and every
-  comment's `body` and `author`, must be valid UTF-8 with no control characters other than `\n` and
-  `\t`.
+  comment's `body`, `author`, `edited`, and `edited_by`, must be valid UTF-8 with no control
+  characters other than `\n` and `\t`.
 - **Content digest (`Export.Digest`):** `Export.Digest` is the 64-hex SHA-256 of the export's JSON
   with `collected` cleared and each claim's `age_seconds` and `stale` zeroed. Those fields change
   with the clock rather than with the valley, so two exports of the same valley state have the same

@@ -230,10 +230,11 @@ project: {
 	}
 
 	// The web UI's module: the export contract, its shared fixture, the
-	// server and valley-web. The server builds on the contract, so every
-	// change to the module requires both checks.
+	// publisher, and the server. The publisher's tests also read declarations
+	// under the web visibility schema. Changes require both checks.
 	classes: webui: {
 		paths: "webui/**":             true
+		paths: "schema/web.cue":       true
 		requires: "webui-unit":        true
 		requires: "webui-server-unit": true
 	}
@@ -245,6 +246,8 @@ project: {
 	// valley-plan drives plan against the golden files under
 	// status/testdata/plan/, and valley-self-update drives --version and
 	// self-update. derive-unit holds the script's deriver to the Go one.
+	// The web publisher reads the valley through plan, pending and knot
+	// show, and its tests in webui-unit run the CLI itself.
 	classes: cli: {
 		paths: "bin/valley":            true
 		paths: "status/**":             true
@@ -262,6 +265,7 @@ project: {
 		requires: "valley-self-update": true
 		requires: "policy-deriver":     true
 		requires: "derive-unit":        true
+		requires: "webui-unit":         true
 	}
 
 	// Self-update: its module (selfupdate/), the policy the package ships

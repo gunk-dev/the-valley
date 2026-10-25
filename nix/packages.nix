@@ -411,17 +411,21 @@ rec {
     dir = ../note;
   };
 
-  # The web UI's export contract (webui/export/). Package export is the
-  # contract between the publisher on a valley host and the web server it
-  # pushes to: the public export and the projection onto it, the signed
-  # manifest, the upload and the receiver's state directory. It reads names
-  # and IDs by the plan graph's rules (../knot) and the manifest with the
-  # note module (../note). The package is a library build; the server and
-  # its command are valley-web's, below. Its tests accept bundles and build
-  # the shared fixture's repositories with real git, and go vet runs after
-  # them. The fixture's expected export (export/exporttest/testdata/) is
-  # read by the tests alone. Go, standard library only, so no module is
-  # fetched.
+  # The web UI (webui/). Package export is the contract between the
+  # publisher on a valley host and the web server it pushes to: the public
+  # export and the projection onto it, the signed manifest, the upload and
+  # the receiver's state directory. It reads names and IDs by the plan
+  # graph's rules (../knot) and the manifest with the note module (../note).
+  # The program built from it is the publisher, cmd/valley-web-publish,
+  # which valley-web-publish below wraps. The server and its command are
+  # built by valley-web below. The export's tests accept bundles
+  # and build the shared fixture's repositories with real git. The
+  # publisher's tests run it against a valley built with real git and the
+  # CLI itself (bin/valley, run by bash, with valley-go on PATH), read
+  # declarations with cue under schema/web.cue, and upload to a receiver
+  # over a real store. go vet runs after them. The fixture's expected
+  # export (export/exporttest/testdata/) is read by the tests alone. Go,
+  # standard library only, so no module is fetched.
   webui = goModule {
     pname = "valley-webui";
     dir = ../webui;
@@ -431,16 +435,30 @@ rec {
     ];
     excluded = [
       ../webui/server
-      ../webui/cmd
+      ../webui/cmd/valley-web
     ];
     preBuild = readsGoMod;
     tests = {
-      reads = [ ../webui/export/exporttest/testdata ];
-      nativeCheckInputs = [ pkgs.git ];
+      reads = [
+        ../webui/export/exporttest/testdata
+        ../bin/valley
+        ../schema/web.cue
+      ];
+      nativeCheckInputs = [
+        pkgs.git
+        pkgs.bash
+        pkgs.cue
+        valley-go
+      ];
+      # A test that cannot find a tool it needs fails rather than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+      '';
       postCheck = ''
         go vet ./...
       '';
     };
+    meta.mainProgram = "valley-web-publish";
   };
 
   # The web UI's server (webui/server/) and its command, valley-web
@@ -459,7 +477,10 @@ rec {
       ../knot
       ../note
     ];
-    excluded = [ ../webui/export/exporttest/testdata ];
+    excluded = [
+      ../webui/export/exporttest/testdata
+      ../webui/cmd/valley-web-publish
+    ];
     subPackages = [ "cmd/valley-web" ];
     preBuild = readsGoMod;
     ldflags = [ "-X the-valley/webui/export.GitProgram=${lib.getExe pkgs.git}" ];
@@ -470,11 +491,35 @@ rec {
       ];
       nativeCheckInputs = [ pkgs.git ];
       postCheck = ''
-        go vet ./server/... ./cmd/...
+        go vet ./server/... ./cmd/valley-web/...
       '';
     };
     meta.mainProgram = "valley-web";
   };
+
+  # The web publisher: one pass of valley-web-publish, which reads a valley
+  # host's public projects through the CLI's JSON commands and uploads them
+  # to a web receiver. It runs this flake's git, cue and CLI, and the web
+  # visibility schema travels with it, as the verification schema does with
+  # the CLI.
+  valley-web-publish =
+    pkgs.runCommand "valley-web-publish"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley-web-publish";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe webui} $out/bin/valley-web-publish \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.cue
+              valley-script
+            ]
+          } \
+          --set-default VALLEY_WEB_SCHEMA ${../schema/web.cue}
+      '';
 
   # The plan graph (knot/): its canonical form, its layout, cycles and
   # transitions, held by its own tests. The package is knotcheck, which

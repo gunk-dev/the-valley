@@ -132,6 +132,7 @@
               valleyhook
               sigverify
               valley-web
+              valley-web-publish
               ;
             default = packages.valley;
           }

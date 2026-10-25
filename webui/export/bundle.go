@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -77,7 +78,9 @@ func checkBundleHeader(path, tip string) (format string, err error) {
 		return "", err
 	}
 	defer f.Close()
-	r := bufio.NewReader(f)
+	// The bound is on the file, not on the lines read from it, so a line
+	// with no end is never buffered past it.
+	r := bufio.NewReader(io.LimitReader(f, maxBundleHeader+1))
 	read := 0
 	line := func() (string, error) {
 		s, err := r.ReadString('\n')

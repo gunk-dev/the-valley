@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"the-valley/webui/export"
@@ -169,6 +170,51 @@ func TestAcceptBundleRefuses(t *testing.T) {
 			t.Errorf("the refusal removed the directory that was there: %v", err)
 		}
 	})
+}
+
+// A bundle's header is read through a 64 KiB bound on the file. A header
+// with no line end, a thousand times longer, is refused once the bound
+// is reached: the receiver reads about 64 KiB of it, not the whole of it.
+// The bundle is a named pipe, so the test counts what was read.
+func TestAcceptBundleBoundsTheHeader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "endless.bundle")
+	if err := syscall.Mkfifo(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const offered = 64 << 20
+	taken := make(chan int64, 1)
+	go func() {
+		w, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			taken <- -1
+			return
+		}
+		defer w.Close()
+		n, _ := w.Write([]byte("# v2 git bundle\n"))
+		total := int64(n)
+		chunk := bytes.Repeat([]byte("a"), 32<<10)
+		for total < offered {
+			n, err := w.Write(chunk)
+			total += int64(n)
+			if err != nil {
+				break // the receiver closed the bundle
+			}
+		}
+		taken <- total
+	}()
+	repo := filepath.Join(t.TempDir(), "app.git")
+	err := export.AcceptBundle(context.Background(), path, repo, strings.Repeat("1", 40))
+	if err == nil || !strings.Contains(err.Error(), "longer than") {
+		t.Fatalf("AcceptBundle gave %v, want a refusal of the header's length", err)
+	}
+	wantCode(t, err, export.CodeBadBundle)
+	// What the pipe holds unread comes on top of what was read.
+	if n := <-taken; n < 0 || n > 4<<20 {
+		t.Errorf("the receiver took %d bytes of a header with no end, want about 64 KiB", n)
+	}
+	if _, err := os.Lstat(repo); !os.IsNotExist(err) {
+		t.Errorf("the refusal left %s behind", repo)
+	}
 }
 
 // bundleTip is the one ref a bundle's header names.

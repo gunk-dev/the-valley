@@ -1708,19 +1708,22 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
 
 ### Web export (`the-valley/web-export/v1`)
 
-The web export is what a valley host sends to a web server that shows public projects read-only. It
-is three things: `export.json`, one git bundle of `main` for each exported project, and a signed
-manifest that authenticates both. The host pushes the export, and the web server never connects
-back. Package `export` of the `webui` module ([`webui/export/`](../webui/export/)) holds the types,
-every check below, and the receiver's state directory. The publisher command, the web server, and
-the receiver's HTTP handlers that use the package are `not built`.
+A web export is the snapshot a valley host sends to a read-only web server for public projects. It
+consists of `export.json`, one git bundle of `main` for each exported project, and a signed manifest
+that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
+the web server, and the web server never connects back to the host. Package `export` of the `webui`
+module ([`webui/export/`](../webui/export/)) implements the types, the verification checks below,
+and the receiver's state directory. The publisher command, the receiver's HTTP handlers, and the web
+server that call the package are `not built`.
 
 #### `export.json` (`valley-web-export/v1`)
 
-`export.Build` projects the valley's own JSON onto the export. It reads `valley plan --all --json`,
-`valley pending --all --json`, and `valley knot show --project <project> <id> --json` for each knot
-of each public project. The publisher also gives it each project's visibility, each public project's
-`main` commit, and a display mapping for principal names.
+`export.Build` builds `export.json` from the valley CLI's JSON output and the publisher's
+configuration. It reads `valley plan --all --json`, `valley pending --all --json`, and
+`valley knot show --project <project> <id> --json` for every knot in every public project. The
+publisher also gives it each project's visibility, each public project's `main` commit
+(`source_tip`), and a display mapping for principal names. `Export.Encode` writes the export as
+compact JSON ending with a newline.
 
 ```json
 {
@@ -1742,59 +1745,70 @@ of each public project. The publisher also gives it each project's visibility, e
 }
 ```
 
-- **What is exported:** Visibility is per project. A project is exported only when its visibility is
-  `public`, the one visibility v1 has. Every knot and every comment of an exported project is
-  exported.
+- **What is exported:** Visibility is set per project. A project is exported only when its
+  visibility is `public`, the only visibility value in v1. Projects omitted from the visibility map
+  are not exported. Every knot and every comment of an exported project is included.
 - **Top-level fields:** `schema` (`"valley-web-export/v1"`), `collected` (`string`, the plan's
-  `now`), and `projects` (in name order).
+  `now`), and `projects` (sorted by project name).
 - **`projects[]` fields:**
-  - `project` (`string`): A project name (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, at most 64 bytes). Such a
-    name holds no slash and is never a dot segment, so it is safe as a file name.
+  - `project` (`string`): Project name (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, at most 64 bytes). The
+    pattern forbids `/` and dot segments (`.` and `..`), so the name is safe to use as a file name.
   - `visibility` (`"public"`).
-  - `graph_tip` (`string`): The commit of `refs/the-valley/knots` the knots were read at, or `""`
-    for a project with no plan graph.
-  - `source_tip` (`string`): The commit of `main` that the project's bundle carries.
-  - `roots` and `open_residuals`: As in [`valley-plan/v1`](#valley-planv1).
-  - `knots` (`array`): Every knot, in tree order. Each holds the `planKnot` fields of
-    `valley-plan/v1`, with `body` and `comments` from the knot's detail. It has no `path`, and no
-    `claimed_by` or `claimed_at`, which the `claim` object carries.
-  - `in_flight` (`array` of `string`): The plan's claimed knots, oldest claim first, then the active
-    knots whose status is `in-progress` and that nobody claims, in tree order.
-  - `changes` (`array`): The changes ready for approval. Each holds `change_id`, `handle`, `target`,
-    `owner`, `includes`, `knots`, and its active version alone as `version`:
+  - `graph_tip` (`string`): Commit object ID of `refs/the-valley/knots` where the knots were read,
+    or `""` when the project has no plan graph.
+  - `source_tip` (`string`): Commit object ID of `refs/heads/main` carried by the project's bundle.
+  - `roots` and `open_residuals`: Same as in [`valley-plan/v1`](#valley-planv1).
+  - `knots` (`array`): Every knot in the project, in tree order. Each item carries the `planKnot`
+    fields of `valley-plan/v1` plus `body` and `comments` from the knot's detail JSON. It omits
+    `path`, `claimed_by`, and `claimed_at`; claim details live in the `claim` object.
+  - `in_flight` (`array` of `string`): Active claimed knots ordered from oldest claim to newest,
+    followed in tree order by active unclaimed knots whose status is `in-progress`.
+  - `changes` (`array`): Ready changes whose active version has not landed. Each item carries
+    `change_id`, `handle`, `target`, `owner`, `includes`, `knots`, and the active version alone as
+    `version`:
     `{ "n", "head", "title", "uploader", "landing", "request": { "commit" } or null, "outcome": { "decision", "head", "tip" } or null }`.
-    `includes` names only changes the export carries.
-- **What is left out:** The plan's `operator` and `waiting_on_you`. The pending listing's `host`,
-  repository `url`, `error`, `drafts`, and `branches`. A change's `record`, `seq`, `state`,
-  `restack`, and every version but the active one. A version's `branch` and `landed_commit`, and its
-  request's `ref`. A knot's `path`. A field the valley adds to its JSON is not exported until the
-  projection names it.
-- **Principal names:** `created_by`, `owner`, `claim.by`, each comment's `author`, a change's
-  `owner`, and a version's `uploader` pass through the display mapping, for example to `operator` or
-  `agent`. A name the mapping does not hold shows as `contributor`. Names inside titles, bodies,
-  comments, and `source` are exported as written.
-- **References to hidden projects:** A `blocked_by` or `target` reference to a knot of a project
-  that is not exported keeps only the reference. Its edge has `"state": "hidden"` and `null` for
-  `why`, `status`, and `title`. The reference is dropped from `waiting_on`, `cleared_by_ending`,
-  `dangling`, and `unresolved`, since each of those says something about the hidden knot's status.
-  The referring knot's `state` and `ready` are unchanged, so a hidden blocker still holds it up. Its
-  own `blocked_by` and `target` are exported as written.
-- **Refusals:** `export.Build` fails rather than export part of a project. It fails when the plan or
-  the pending listing could not read a public project, and when a knot of a public project has no
-  detail. It fails with `export.ErrInconsistent` when a detail was read at another graph tip than
-  the plan. The publisher then reads its inputs again.
-- **Strict reading:** `export.Decode` refuses an unknown field, a second document, a project name
-  that is not a name, a tip that is not an object ID, a knot ID twice in one project, and text that
-  holds a control character other than newline and tab.
-- **Content digest:** `Export.Digest` is SHA-256 over the export's JSON with `collected` and each
-  claim's `age_seconds` and `stale` cleared. These fields change with the clock and not with the
-  valley, so two exports of one valley state have one digest. A reader derives a claim's age from
-  `claim.at`.
+    `includes` lists only changes that are also in `changes`.
+- **What is left out:** `export.Build` reads only the fields it knows, so any field added to the
+  CLI's JSON is ignored until the projection names it. From the plan, it omits `operator`,
+  `waiting_on_you`, and each project's `error`. From the pending listing, it omits `host` and each
+  repository's `url`, `error`, `drafts`, and `branches`. From each change, it omits `record`, `seq`,
+  `state`, `restack`, and every version except the active one; from the active version, it omits
+  `branch`, `landed_commit`, and `request.ref`. From each knot, it omits `path`, `claimed_by`, and
+  `claimed_at`.
+- **Principal names:** The display mapping (`export.Principals`) rewrites `created_by`, `owner`,
+  `claim.by`, each comment's `author`, a change's `owner`, and a version's `uploader` to configured
+  display names such as `operator` or `agent`. Each display name is 1 to 64 bytes of UTF-8 with no
+  control characters. An empty field stays empty, and any unmapped name becomes `contributor`.
+  Free-text fields (`title`, `body`, comment bodies, and `source`) are exported as written.
+- **References to hidden projects:** When a knot's `blocked_by` or `target` refers to a project that
+  is not exported, the knot's `blocked_by` and `target` fields keep the `"<project>:<id>"` string as
+  written. The corresponding entry in `edges` has `"state": "hidden"` and `null` for `why`,
+  `status`, and `title`. The reference is removed from `waiting_on`, `cleared_by_ending`,
+  `dangling`, and `unresolved`, because those lists reflect the hidden knot's status. The referring
+  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it.
+- **Refusals (`export.Build`):** `export.Build` fails rather than build a partial export. It fails
+  when a public project is missing or has an `error` in the plan or the pending listing, or when a
+  knot in a public project is missing its detail, appears twice, or has no `body`. It fails with
+  `export.ErrInconsistent` when a knot's detail was read at a different graph `tip` than the plan or
+  its comment count disagrees with `comment_count`. On `ErrInconsistent`, the publisher reads its
+  inputs again.
+- **Strict reading (`export.Decode`):** `export.Decode` rejects unknown JSON fields and any
+  non-whitespace token after the root JSON object. It requires `schema` to be
+  `"valley-web-export/v1"`, projects to appear once in ascending name order with valid project names
+  and `public` visibility, and knot IDs to be valid and unique within each project. Each project's
+  `source_tip`, non-empty `graph_tip`, and each change's `version.head` must be a 40- or 64-hex
+  lowercase object ID. Every knot's `title`, `body`, `source`, `created_by`, and `owner`, and every
+  comment's `body` and `author`, must be valid UTF-8 with no control characters other than `\n` and
+  `\t`.
+- **Content digest (`Export.Digest`):** `Export.Digest` is the 64-hex SHA-256 of the export's JSON
+  with `collected` cleared and each claim's `age_seconds` and `stale` zeroed. Those fields change
+  with the clock rather than with the valley, so two exports of the same valley state have the same
+  digest. A reader computes a claim's age from `claim.at`.
 
 #### Web export manifest
 
 The manifest is a [signed note](#signed-notes-and-attestation-statement-the-valleyattestationv1)
-around this text:
+signed by the publisher's export key:
 
 ```text
 the-valley/web-export/v1
@@ -1808,78 +1822,98 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 — valley-host/web-export e7kLV5lThaGSbsBUVC2cJ8I1vn6XJWS9+L0wwWmdRAYL827G/au5kE5OidGXMH+ofpnTprs+o4GgPNuTwqOexf8zrgw=
 ```
 
-- **Records:** The first line is exactly `the-valley/web-export/v1`. Each later line is a keyword
-  and its fields, separated by single spaces:
-  - `instance <name>`: The valley instance that signed the manifest.
-  - `destination <name>`: The receiver the manifest is for, as the receiver is configured.
-  - `sequence <decimal>`: The signing time in Unix nanoseconds. There is no other counter.
-  - `file export.json <sha256> <size>`: `export.json`'s SHA-256 and size in bytes.
-  - `project <name> public <graph-tip> <source-tip>` and `bundle <name> <sha256> <size>`: one pair
-    for each exported project. A project with no plan graph has `-` for its graph tip.
-- **Rules:** `instance`, `destination`, `sequence`, and `file` appear once each. Each project has
-  one `project` record and one `bundle` record. Names are project names. Hashes are 64 lowercase hex
-  digits. Sizes and the sequence are positive decimals with no leading zero. Two bodies with one
-  hash declare one size. Records may come in any order, and the publisher writes them in the order
-  above, projects in name order.
-- **Admission (`export.VerifyManifest`):** The receiver runs these steps in this order, each its
-  own:
-  1. read at most 64 KiB;
-  2. open the note with the pinned verifier key;
-  3. require the first line, then read the records;
-  4. require the configured instance and destination;
-  5. require a sequence greater than the receiver's high-water mark;
-  6. require a signing time no more than three days old and no more than one minute ahead.
+- **Records:** Line 1 is `the-valley/web-export/v1`. Each remaining line in the note body is a
+  keyword and its fields, separated by single spaces:
+  - `instance <name>`: Name of the valley instance that signed the manifest.
+  - `destination <name>`: Name of the target receiver, matching the receiver's configuration.
+  - `sequence <decimal>`: Signing time in Unix nanoseconds. There is no separate sequence counter.
+  - `file export.json <sha256> <size>`: SHA-256 digest and byte size of `export.json`.
+  - `project <name> public <graph-tip> <source-tip>` and `bundle <name> <sha256> <size>`: One pair
+    for each exported project. A project with no plan graph writes `-` for `<graph-tip>`.
+- **Grammar rules (`export.ParseManifest`, `Manifest.Text`):** `instance`, `destination`,
+  `sequence`, and `file` appear once each. Each exported project has one `project` record and one
+  `bundle` record; no project may appear twice, and no `bundle` record may name a project without a
+  `project` record. Names in `instance`, `destination`, `project`, and `bundle` follow the
+  project-name rule (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, at most 64 bytes). Tips (other than `-`) are
+  40- or 64-hex lowercase object IDs. Hashes are 64 lowercase hex digits. Sizes and `sequence` are
+  positive 64-bit decimal integers with no sign and no leading zero. If two declared bodies share a
+  hash, they must declare the same size. `ParseManifest` accepts records in any order;
+  `Manifest.Text` writes them in the order shown above, with projects sorted by name.
+- **Admission (`export.VerifyManifest`):** The receiver verifies a manifest in six separate steps,
+  in this exact order:
+  1. Read at most 64 KiB (`MaxManifest = 65,536` bytes).
+  2. Open the signed note under the receiver's pinned verifier keys.
+  3. Check the `the-valley/web-export/v1` header line and parse the records.
+  4. Require `instance` and `destination` to match the receiver's configured instance and
+     destination.
+  5. Require `sequence` to be strictly greater than the receiver's `high-water` mark.
+  6. Require the signing time (`sequence`) to be at most 72 hours (`MaxAge`) behind and at most 1
+     minute (`MaxAhead`) ahead of the receiver's clock.
 
-  The time window bounds how long a replayed manifest can be admitted after the receiver loses its
-  high-water mark. It does not expire an export the receiver accepted.
+  The signing-time window bounds how old a manifest can be replayed if the receiver loses its
+  `high-water` file. It never expires an export after the receiver has accepted it.
 
-- **Agreement (`Manifest.CheckExport`):** `export.json` has the declared hash and size, is a valid
-  export, and names the same projects with the same visibility and tips.
+- **Agreement (`Manifest.CheckExport`):** `Manifest.CheckExport` checks that `export.json` has the
+  SHA-256 and byte size declared in the `file` record, passes `export.Decode`, and lists the same
+  projects as the manifest with the same `visibility`, `graph_tip`, and `source_tip`.
 
 #### Web export upload
 
-The upload is three HTTP requests from the publisher to the receiver. Every reply is JSON. The
-package defines the paths, the replies, and the checks each step runs; the handlers that serve them
-are `not built`.
+The publisher uploads an export to the receiver in three HTTP requests. Every response body is JSON.
+Package `export` defines the paths, reply schemas, and checks for each step; the HTTP handlers that
+wire them are `not built`.
 
 | Step | Request                                                                       | Reply                                                                                                                                                                                                                               |
 | :--- | :---------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1    | `POST /web-export/v1/manifest` with the signed manifest                       | `200` and `valley-web-inventory/v1`: `active` (the served export's `sequence` and content `digest`, or `null`), `holds` (each project's `source_tip` with a verified repository), and `needs` (bodies to send, `export.json` first) |
-| 2    | `PUT /web-export/v1/<sequence>/<sha256>` for each needed body, with its bytes | `204` once the body verified                                                                                                                                                                                                        |
+| 2    | `PUT /web-export/v1/<sequence>/<sha256>` for each needed body, with its bytes | `204` once the body has been verified and staged                                                                                                                                                                                    |
 | 3    | `POST /web-export/v1/<sequence>/commit` with an empty body                    | `200` and `valley-web-committed/v1`: the `sequence` activated                                                                                                                                                                       |
 
-- **Retries:** Posting the same manifest again is harmless, and returns the same inventory less what
-  has been sent. A body already staged is accepted again without being read.
-- **Commit outcome:** A commit has succeeded once `high-water` holds its sequence and `active`
-  points at its generation. The reply is then `200`. A later failure does not change the reply:
-  deleting old generations, stale staging directories and the trash, or syncing the swap to disk.
-  `Store` passes such a failure to the report function given to `export.OpenStore`, for the receiver
-  to log, and the next sweep or `OpenStore` repairs it. A commit that fails before then leaves the
-  active export as it was. If it failed after `high-water` was written, its sequence is accepted,
-  and the commit retried is refused as `replayed`. The publisher's next manifest, signed later,
-  replaces the upload.
-- **Held repositories:** A bundle is not needed when the receiver holds its project at the declared
-  source tip. The new generation carries that repository. A publisher whose digest the receiver
-  already serves, and for which it needs no bundle, may stop after step 1. The next manifest it
-  posts supersedes the staged one.
-- **Body check (`export.StageBody`):** The receiver refuses a body declared larger than its cap
-  before reading it. It refuses any `Content-Encoding`, and a `Content-Length` other than the
-  declared size. It hashes the body while it reads, reads at most one byte past the declared size,
-  and writes nothing outside the upload's staging directory.
+- **Held repositories:** When the receiver's active export already holds a project's repository at
+  the manifest's `source_tip`, the inventory lists that project in `holds` and omits its bundle from
+  `needs`. On commit, the new generation copies `refs/heads/main` from the held repository
+  (`export.CarryRepo`). If `active.digest` matches the publisher's `Export.Digest` and `needs`
+  includes no bundles, the receiver already serves the same content and repositories. The publisher
+  may then stop after step 1 without sending `export.json` or committing, and the next manifest it
+  posts replaces the staged upload.
+- **Retries:** Posting the same manifest again is harmless: it keeps the staging directory and
+  returns the same inventory minus any bodies already staged. Sending a body that is already staged
+  returns `204` immediately without reading the request body again.
+- **Body check (`export.StageBody`):** Before reading the request body, the receiver refuses a body
+  whose declared `size` exceeds the receiver's cap (`too-large`), a request with a
+  `Content-Encoding` header (`content-encoding`), or a request whose `Content-Length` does not equal
+  the declared `size` (`size-mismatch`). While reading, it hashes the stream with SHA-256, reads at
+  most `size + 1` bytes, and writes to a temporary file inside the upload's `bodies/` directory.
+  Once the byte count and SHA-256 match the manifest, it syncs and renames the temporary file to
+  `bodies/<sha256>`. Nothing is written outside the upload's staging directory.
 - **Bundle acceptance (`export.AcceptBundle`):**
-  1. the bundle's header has no prerequisite;
-  2. it carries exactly one ref, `refs/heads/main`, at the declared source tip;
-  3. git fetches it into a fresh bare repository with the refspec `refs/heads/main:refs/heads/main`,
-     `--no-tags`, and `transfer.fsckObjects=true`;
-  4. the repository then holds `main` at the tip and no other ref.
+  1. Read the bundle header, bounded to at most 64 KiB before buffering a line: require a v2 or v3
+     git bundle header with no prerequisite commits.
+  2. Require the header to list exactly one ref, `refs/heads/main`, at the project's declared
+     `source_tip`.
+  3. Initialize a fresh bare repository and fetch the bundle into it with the refspec
+     `refs/heads/main:refs/heads/main`, `--no-tags`, `transfer.fsckObjects=true`, and
+     `core.fsync=all`.
+  4. Verify that the repository holds `refs/heads/main` at `source_tip` and no other ref.
 
-  A refused bundle leaves no repository behind.
+  A bundle that fails any step is refused as `bad-bundle` and leaves no repository behind.
 
-- **Reachability (`export.Reachable`):** A bundle can carry objects that `main` does not reach.
-  Browsing serves a commit only when it is a commit the tip reaches.
-- **Refusals:** A refusal is a `valley-web-error/v1` object:
-  `{ "schema", "error": <code>, "message", "high_water" (with replayed), "needs" (with incomplete) }`.
-  The code is stable, and the message is for people.
+- **Reachability (`export.Reachable`):** A git bundle can contain objects that `refs/heads/main`
+  does not reach. When serving a repository, browsing serves a commit only when `export.Reachable`
+  confirms that it is a commit reachable from `source_tip`.
+- **Commit outcome:** A commit has succeeded once `Store.Activate` has written the upload's sequence
+  to `high-water` and swapped the `active` symlink to the new generation. The receiver then replies
+  `200` with `valley-web-committed/v1`. A later failure while syncing the swap to disk or deleting
+  old generations, stale staging directories, and `trash/` does not change the `200` reply. `Store`
+  passes that failure to the `report` callback given to `export.OpenStore` for the receiver to log,
+  and the next sweep or `OpenStore` repairs it. A commit that fails before `active` is swapped
+  leaves the previous export active. If it failed after `high-water` was written, its sequence is
+  accepted, and retrying the commit is refused as `replayed`. The publisher's next manifest, signed
+  later, replaces the upload.
+- **Refusals:** A refused request returns the code's HTTP status and a `valley-web-error/v1` JSON
+  object:
+  `{ "schema": "valley-web-error/v1", "error": <code>, "message": <string>, "high_water" (with replayed), "needs" (with incomplete) }`.
+  The `error` code is stable for programs to act on; `message` is human-readable text.
 
 | Code                | HTTP  | Step | Meaning                                                                                                   |
 | :------------------ | :---- | :--- | :-------------------------------------------------------------------------------------------------------- |
@@ -1909,47 +1943,75 @@ The receiver keeps every accepted export as an immutable generation in one state
 (`export.OpenStore`):
 
 ```text
-<state>/lock                   serialises activations
+<state>/lock                   flock(2) lock serialising Stage, Activate, and OpenStore
 <state>/high-water             the greatest sequence accepted
 <state>/active                 symlink to exports/<sequence>
 <state>/exports/<sequence>/    one generation: export.json and repos/<project>.git
 <state>/staging/<sequence>/    one upload until it is committed:
-    bodies/<sha256>            the bodies sent
+    bodies/<sha256>            verified bodies written by StageBody
+    export.json                moved from bodies/ during Activate
     tmp/<project>.git          a repository being built
-    repos/<project>.git        a repository once it is accepted
-<state>/trash/                 generations being deleted
+    repos/<project>.git        a repository once accepted and synced
+<state>/trash/                 generations renamed away before deletion
 ```
 
-- **Activation (`Store.Activate`):** Holding the lock, it refuses an upload that is not newer than
-  the high-water mark, that a newer staged upload supersedes, or that still needs a body. It holds
-  `export.json` to the manifest. It gives each project its repository: the staged bundle through
-  bundle acceptance, or the active generation's repository at the same source tip. It builds each
-  repository under `tmp/` and renames it into `repos/` only once it is accepted, so a repository a
-  crash interrupted is never taken for an accepted one, and the next commit builds it again. It
-  renames the staging directory into `exports/`, writes `high-water` durably, and then swaps
-  `active` by renaming a new symlink over it. A failed bundle or `export.json` is removed from
-  staging, so the inventory names it as needed again.
-- **Reading (`Store.Open`):** A request resolves `active` once, and holds that generation with a
-  shared `flock(2)` on its directory until it releases it. One response therefore never mixes two
-  generations. A generation is deleted only once an exclusive lock on it can be taken, which no
-  reader holds. It is renamed into `trash/` under that lock before it is removed.
+- **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<state>/lock`, `Activate`
+  runs these steps in order:
+  1. Refuse the upload if its `sequence` is not greater than `high-water` (`replayed`), if a newer
+     manifest is staged (`superseded`), or if any needed body is missing (`incomplete`, with
+     `needs`).
+  2. Move `export.json` from `bodies/<sha256>` to `<staging>/<sequence>/export.json` and check it
+     against the manifest with `Manifest.CheckExport`. If `CheckExport` fails, remove `export.json`
+     from staging so `Inventory` lists it as needed again.
+  3. Build `repos/<project>.git` for each project not already in `repos/`. It removes any leftover
+     `tmp/<project>.git`, then builds the repository in `tmp/<project>.git` from the staged bundle
+     with `AcceptBundle` or from the active generation's repository at the same `source_tip` with
+     `CarryRepo`. It syncs every file and directory in `tmp/<project>.git` to disk and renames it to
+     `repos/<project>.git`. If `AcceptBundle` fails, the staged bundle is removed from `bodies/` so
+     `Inventory` lists it as needed again. A build interrupted by a crash stays in `tmp/` and is
+     rebuilt on the next commit.
+  4. Remove `bodies/` and `tmp/`, and verify that the staging directory holds only `export.json` and
+     `repos/`, with each project's repository holding `refs/heads/main` at its `source_tip`.
+  5. Sync `export.json`, `repos/`, and the staging directory, rename `<staging>/<sequence>` to
+     `exports/<sequence>`, and sync `exports/` and `staging/`.
+  6. Write `<sequence>\n` durably to `high-water`.
+  7. Swap `active` by renaming a new symlink (`exports/<sequence>`) over it.
+  8. Sync `<state>` and sweep inactive generations that no reader holds, staging directories with
+     `sequence <= high-water`, and `trash/`.
 - **Durability:** Every file and directory of a generation is synced to disk before `high-water`
-  names it. git syncs what it fetches but not what `git init` writes, so each repository is synced
-  in full before it is renamed into `repos/`.
-- **Recovery:** A crash before `high-water` is written leaves the old generation active, and the
-  next `OpenStore` deletes the new one. A crash after `high-water` is written and before the swap is
-  finished by the next `OpenStore`. It first checks the generation `high-water` names: `export.json`
-  is a valid export, and each repository passes `git fsck` and holds `main` at its source tip and no
-  other ref. Only then does it swap `active` to that generation. A generation that fails the check
-  is reported and not activated. The old generation keeps serving, the damaged one is deleted, and
-  the publisher's next manifest replaces it. A repository fails `git fsck` only when git exits on
-  its own and names a problem. A check that does not finish says nothing about the generation:
-  `git fsck` killed by a signal, git failing to start, or git exiting without naming a problem, as
-  when it runs out of memory. `OpenStore` then returns the error and deletes nothing, and the
-  receiver tries again.
-- **Fixture:** Package `exporttest` builds a complete, valid export from a synthetic valley with a
-  public project `app` and a hidden project `site`. It yields the export directory, the bundles, the
-  signed manifest and its verifier, so the publisher's, receiver's, and server's tests share bytes.
+  names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
+  `git init` creates beforehand, so `Activate` recursively syncs each repository before renaming it
+  into `repos/`.
+- **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves `active`
+  and holds a shared `flock(2)` (`LOCK_SH`) on `exports/<sequence>` until the caller releases it
+  (`export.ErrNoExport` if no export has been activated yet). Because a request serves everything
+  from that single opened generation, a concurrent activation never mixes two generations in one
+  response. An old generation is deleted only when a sweep can acquire a non-blocking exclusive
+  `flock(2)` (`LOCK_EX | LOCK_NB`) on its directory, which fails while any reader holds it. Under
+  that exclusive lock, the sweep renames the generation into `trash/` before removing its files.
+- **Recovery (`export.OpenStore`):** When `OpenStore` opens `<state>`, it locks `<state>/lock`,
+  recovers any interrupted activation, and sweeps leftover directories:
+  - A crash before `high-water` is written leaves the previous generation at `active`, and the next
+    `OpenStore` deletes the unactivated generation and any staging directory with
+    `sequence <= high-water`.
+  - A crash after `high-water` is written and before `active` is swapped is finished by the next
+    `OpenStore`. Before swapping `active` to `exports/<high-water>`, `OpenStore` checks that
+    generation: `export.json` must pass `export.Decode`, and each project's repository must pass
+    `git fsck` and hold `refs/heads/main` at its `source_tip` and no other ref. If the check passes,
+    `OpenStore` swaps `active` to that generation and syncs `<state>`.
+  - If the generation fails the check, `OpenStore` passes the error to `report` and does not
+    activate the generation. The previous generation keeps serving, the sweep deletes the damaged
+    generation, and the publisher's next manifest replaces it.
+  - A repository fails `git fsck` only when `git` exits on its own with a non-zero status and its
+    output names a problem (`error: `, `missing `, `broken link from `,
+    `fatal: not a git repository`, or `fatal: ... is corrupt`). Any other `git fsck` failure means
+    the check did not finish: `git` was killed by a signal, failed to start, or exited without
+    naming a problem (as when it runs out of memory). `OpenStore` then returns the error without
+    running the sweep and deletes nothing, so the receiver can try again.
+- **Fixture (`exporttest`):** Package `exporttest` builds a complete, valid export from a synthetic
+  valley with a public project `app` and a hidden project `site`. It yields the export directory,
+  the bundles, the signed manifest, and its verifier key, so tests for the publisher, the receiver,
+  and the web server share the same bytes.
 
 ---
 

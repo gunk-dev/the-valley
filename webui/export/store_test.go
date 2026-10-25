@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -827,4 +828,176 @@ func TestStoreReportsASwapNotOnDisk(t *testing.T) {
 		t.Errorf("the store reported %v, want the failed sync", errs)
 	}
 	wantServing(t, s, u)
+}
+
+// fileID is a file's device and inode, which a rename keeps.
+type fileID struct{ dev, ino uint64 }
+
+func idOf(t *testing.T, fi os.FileInfo) fileID {
+	t.Helper()
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("no inode for %s", fi.Name())
+	}
+	return fileID{uint64(st.Dev), st.Ino}
+}
+
+// Every file and directory of a generation is on disk before high-water
+// names it. The test records the store's syncs and renames in order. It
+// holds every file and directory in the generation to a sync before
+// high-water is written, and every directory a rename changed to a sync
+// after that rename. The first upload builds its repository from the
+// bundle, and the second carries it from the first generation.
+func TestStoreSyncsAGenerationBeforeHighWater(t *testing.T) {
+	f := exporttest.New(t)
+	s := openStore(t, t.TempDir())
+	type event struct {
+		synced  fileID // the file a sync synced
+		renamed string // the new name of a rename
+		into    fileID // the directory the rename changed
+	}
+	var events []event
+	inject(t, export.SyncFile, func(file *os.File) error {
+		fi, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		events = append(events, event{synced: idOf(t, fi)})
+		return file.Sync()
+	})
+	inject(t, export.Rename, func(old, new string) error {
+		if err := os.Rename(old, new); err != nil {
+			return err
+		}
+		fi, err := os.Stat(filepath.Dir(new))
+		if err != nil {
+			return err
+		}
+		events = append(events, event{renamed: new, into: idOf(t, fi)})
+		return nil
+	})
+	highWater := filepath.Join(s.Dir(), "high-water")
+	for _, u := range []upload{fixtureUpload(t, f), later(t, f, time.Minute)} {
+		events = nil
+		g, err := send(t, f, s, u)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hw := slices.IndexFunc(events, func(e event) bool { return e.renamed == highWater })
+		if hw < 0 {
+			t.Fatal("no rename wrote high-water")
+		}
+		syncedIn := func(from int, id fileID) bool {
+			return slices.ContainsFunc(events[from:hw], func(e event) bool { return e.renamed == "" && e.synced == id })
+		}
+		walked := 0
+		err = filepath.WalkDir(g.Dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			walked++
+			if !syncedIn(0, idOf(t, fi)) {
+				rel, _ := filepath.Rel(s.Dir(), path)
+				t.Errorf("generation %d: %s was not synced before high-water was written", u.m.Sequence, rel)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if walked < 10 {
+			t.Fatalf("generation %d holds %d files and directories; the walk missed the repository", u.m.Sequence, walked)
+		}
+		for i, e := range events[:hw] {
+			if e.renamed != "" && !syncedIn(i+1, e.into) {
+				rel, _ := filepath.Rel(s.Dir(), e.renamed)
+				t.Errorf("generation %d: the directory of %s was not synced after the rename into it", u.m.Sequence, rel)
+			}
+		}
+	}
+}
+
+// Recovery activates the generation high-water names only once it checks
+// whole: export.json valid, and each repository passing git fsck and
+// holding main at its source tip. A generation whose repository the disk
+// lost is reported and not activated. The old generation keeps serving,
+// the damaged one is deleted, and the publisher's next manifest
+// activates.
+func TestStoreRecoveryChecksTheGeneration(t *testing.T) {
+	emptyFiles := func(t *testing.T, root string) {
+		t.Helper()
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || !d.Type().IsRegular() {
+				return err
+			}
+			// git writes its objects read-only.
+			if err := os.Chmod(path, 0o644); err != nil {
+				return err
+			}
+			return os.Truncate(path, 0)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		name   string
+		damage func(t *testing.T, repo string)
+	}{
+		{"every file emptied", emptyFiles},
+		// The refs and HEAD are intact, so only git fsck finds this.
+		{"the objects emptied", func(t *testing.T, repo string) { emptyFiles(t, filepath.Join(repo, "objects")) }},
+		{"the repository gone", func(t *testing.T, repo string) {
+			if err := os.RemoveAll(repo); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := exporttest.New(t)
+			dir := t.TempDir()
+			s := openStore(t, dir)
+			u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
+			if _, err := send(t, f, s, u1); err != nil {
+				t.Fatal(err)
+			}
+			_, release, _ := s.Open() // keeps the first generation from deletion
+			if _, err := send(t, f, s, u2); err != nil {
+				t.Fatal(err)
+			}
+			release()
+			// A crash between high-water and the swap, after which the disk
+			// has lost part of the new generation.
+			active := filepath.Join(dir, "active")
+			os.Remove(active)
+			if err := os.Symlink("exports/"+seqName(u1), active); err != nil {
+				t.Fatal(err)
+			}
+			c.damage(t, filepath.Join(dir, "exports", seqName(u2), "repos", "app.git"))
+
+			var r reports
+			s, err := export.OpenStore(dir, r.report)
+			if err != nil {
+				t.Fatalf("OpenStore failed on a damaged generation: %v", err)
+			}
+			if errs := r.all(); len(errs) != 1 || !strings.Contains(errs[0].Error(), "generation "+seqName(u2)) {
+				t.Errorf("the store reported %v, want the damaged generation", errs)
+			}
+			wantServing(t, s, u1)
+			if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u1)}) {
+				t.Errorf("after recovery the generations are %s", got)
+			}
+			if hw, _ := s.HighWater(); hw != u2.m.Sequence {
+				t.Errorf("high-water is %d; recovery leaves it", hw)
+			}
+			if _, err := send(t, f, s, u3); err != nil {
+				t.Fatal(err)
+			}
+			wantServing(t, s, u3)
+		})
+	}
 }

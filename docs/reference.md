@@ -1933,9 +1933,16 @@ The receiver keeps every accepted export as an immutable generation in one state
   shared `flock(2)` on its directory until it releases it. One response therefore never mixes two
   generations. A generation is deleted only once an exclusive lock on it can be taken, which no
   reader holds. It is renamed into `trash/` under that lock before it is removed.
+- **Durability:** Every file and directory of a generation is synced to disk before `high-water`
+  names it. git syncs what it fetches but not what `git init` writes, so each repository is synced
+  in full before it is renamed into `repos/`.
 - **Recovery:** A crash before `high-water` is written leaves the old generation active, and the
   next `OpenStore` deletes the new one. A crash after `high-water` is written and before the swap is
-  finished by the next `OpenStore`, which swaps `active` to the generation `high-water` names.
+  finished by the next `OpenStore`. It first checks the generation `high-water` names: `export.json`
+  is a valid export, and each repository passes `git fsck` and holds `main` at its source tip and no
+  other ref. Only then does it swap `active` to that generation. A generation that fails the check
+  is reported and not activated. The old generation keeps serving, the damaged one is deleted, and
+  the publisher's next manifest replaces it.
 - **Fixture:** Package `exporttest` builds a complete, valid export from a synthetic valley with a
   public project `app` and a hidden project `site`. It yields the export directory, the bundles, the
   signed manifest and its verifier, so the publisher's, receiver's, and server's tests share bytes.

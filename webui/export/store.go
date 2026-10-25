@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -99,9 +101,10 @@ func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 //
 // report is told of each failure the store works past rather than
 // returns: deleting what no activation can use, which the next sweep
-// tries again, and syncing a swap of active to disk, which the next
-// OpenStore repeats after a crash. Neither undoes an activation. A
-// receiver logs them. A nil report drops them.
+// tries again; syncing a swap of active to disk, which the next
+// OpenStore repeats after a crash; and a generation high-water names that
+// recovery found damaged and did not activate. None undoes an activation
+// that succeeded. A receiver logs them. A nil report drops them.
 func OpenStore(dir string, report func(error)) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -313,12 +316,15 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //  3. gives every project its repository: one already staged, the staged
 //     bundle through AcceptBundle, or the active generation's repository
 //     at the same source tip through CarryRepo. A repository is built
-//     under tmp/ and renamed into repos/ only once it is accepted;
+//     under tmp/, every file and directory of it is synced to disk, and
+//     only then is it renamed into repos/;
 //  4. removes the bodies and tmp/, and checks that the staging directory
 //     holds export.json and exactly those repositories, each at its
 //     source tip;
-//  5. renames the staging directory into exports/;
-//  6. writes high-water durably;
+//  5. syncs export.json, repos/ and the staging directory, renames the
+//     staging directory into exports/, and syncs both parents;
+//  6. writes high-water durably, once every file and directory of the
+//     generation is on disk;
 //  7. swaps active to the new generation;
 //  8. syncs the swap to disk, and deletes the generations no reader holds
 //     and the stale staging directories.
@@ -399,8 +405,8 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	if err := checkStaged(ctx, st); err != nil {
 		return Generation{}, err
 	}
-	for _, d := range []string{filepath.Join(st.Dir, "repos"), st.Dir} {
-		if err := syncPath(d); err != nil {
+	for _, p := range []string{exportPath, filepath.Join(st.Dir, "repos"), st.Dir} {
+		if err := syncPath(p); err != nil {
 			return Generation{}, err
 		}
 	}
@@ -430,10 +436,10 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 
 // build gives the project its repository in staging, from the staged
 // bundle through AcceptBundle or from the active generation through
-// carry. It builds the repository under tmp/ and renames it into repos/
-// only once it is accepted, so a repository in repos/ is always an
-// accepted one. A build a crash interrupted is left under tmp/, where the
-// next build of the project starts again.
+// carry. It builds the repository under tmp/, syncs it to disk, and only
+// then renames it into repos/, so a repository in repos/ is always an
+// accepted one, whole on disk. A build a crash interrupted is left under
+// tmp/, where the next build of the project starts again.
 func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error {
 	tmp := filepath.Join(st.tmp(), p.Name+".git")
 	if err := removeAll(tmp); err != nil {
@@ -448,6 +454,10 @@ func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error 
 			return err
 		}
 	} else if err := s.carry(ctx, p, tmp); err != nil {
+		return err
+	}
+	// git syncs what it fetches, but not what git init wrote before.
+	if err := syncTree(tmp); err != nil {
 		return err
 	}
 	return rename(tmp, st.Repo(p.Name))
@@ -508,6 +518,50 @@ func checkStaged(ctx context.Context, st Staging) error {
 	return nil
 }
 
+// errNotWhole is checkGeneration's finding that a generation is damaged.
+var errNotWhole = errors.New("the generation is not whole")
+
+// checkGeneration holds the activated generation at dir to what Activate
+// checked before high-water named it, and to git fsck. export.json is a
+// valid export, and each of its projects has a repository that git fsck
+// finds whole and that holds refs/heads/main at the project's source tip
+// and no other ref. A generation that fails gives an error that wraps
+// errNotWhole. Any other error, such as git failing to start, says
+// nothing about the generation.
+func checkGeneration(ctx context.Context, dir string) error {
+	g := Generation{Dir: dir}
+	data, err := os.ReadFile(g.ExportPath())
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w: it holds no export.json", errNotWhole)
+	}
+	if err != nil {
+		return err
+	}
+	e, err := Decode(data)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errNotWhole, err)
+	}
+	for _, p := range e.Projects {
+		repo, _ := g.Repo(p.Name)
+		var refs []byte
+		_, err := git(ctx, repo, "fsck", "--no-progress", "--no-dangling")
+		if err == nil {
+			refs, err = git(ctx, repo, "for-each-ref", "--format=%(objectname) %(refname)")
+		}
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return fmt.Errorf("%w: the repository of %s: %v", errNotWhole, p.Name, err)
+		}
+		if err != nil {
+			return err
+		}
+		if got, want := strings.TrimSuffix(string(refs), "\n"), p.SourceTip+" "+MainRef; got != want {
+			return fmt.Errorf("%w: the repository of %s holds %q, not %q", errNotWhole, p.Name, got, want)
+		}
+	}
+	return nil
+}
+
 // checkNewer refuses a manifest whose sequence is not greater than the
 // high-water mark.
 func (s *Store) checkNewer(m *Manifest) error {
@@ -549,8 +603,12 @@ func (s *Store) swap(sequence int64) error {
 }
 
 // recover finishes an activation interrupted between writing high-water
-// and swapping active: the generation high-water names is complete, since
-// it was renamed into exports/ before high-water was written.
+// and swapping active. The generation high-water names was on disk before
+// high-water was written, so it is whole unless the disk lost what it was
+// told to keep. recover holds it to checkGeneration before it swaps
+// active to it. A generation that fails is reported and not activated:
+// the old generation keeps serving, the sweep after recovery deletes the
+// damaged one, and the publisher's next manifest replaces it.
 func (s *Store) recover() error {
 	hw, err := s.HighWater()
 	if err != nil || hw == 0 {
@@ -563,8 +621,15 @@ func (s *Store) recover() error {
 	if ok && seq == hw {
 		return nil
 	}
-	if !exists(s.exportDir(hw)) {
+	dir := s.exportDir(hw)
+	if !exists(dir) {
 		return nil
+	}
+	if err := checkGeneration(context.Background(), dir); errors.Is(err, errNotWhole) {
+		s.report(fmt.Errorf("generation %d, which high-water names, is not activated: %w", hw, err))
+		return nil
+	} else if err != nil {
+		return err
 	}
 	if err := s.swap(hw); err != nil {
 		return err
@@ -685,6 +750,20 @@ func writeDurably(path string, data []byte) error {
 		return err
 	}
 	return syncPath(filepath.Dir(path))
+}
+
+// syncTree syncs every file and directory in the tree at root. A symlink
+// is not followed: syncing its directory makes it durable.
+func syncTree(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && !d.Type().IsRegular() {
+			return nil
+		}
+		return syncPath(path)
+	})
 }
 
 // syncPath syncs the file or directory at path. Syncing a directory makes

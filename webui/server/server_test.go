@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"the-valley/knot"
 	"the-valley/webui/export"
 	"the-valley/webui/export/exporttest"
 )
@@ -671,6 +672,98 @@ func TestLongFileIsShownInPart(t *testing.T) {
 	}
 	if n := strings.Count(page, "a line of the README"); n != MaxLines {
 		t.Errorf("the long README shows %d lines, not %d", n, MaxLines)
+	}
+}
+
+// A chain of knots as deep as the graph's knot limit allows renders its
+// milestone to MaxPlanDepth levels, counts every knot under it, and
+// names MaxPlanDepth parents in the deepest knot's trail. The plan page's
+// structure is built once for the generation. Siblings that block one
+// another in a cycle share the last stage of their path.
+func TestDeepPlan(t *testing.T) {
+	h := newHarness(t)
+	var chain []string
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, func(e *export.Export) {
+		p := &e.Projects[0]
+		for i := range knot.MaxKnots - len(p.Knots) - 3 {
+			id := fmt.Sprintf("oc-c%06x", i)
+			k := export.Knot{ID: id, Type: "outcome", Status: "open", Active: true, State: "ready",
+				Title: fmt.Sprintf("Level %d of the chain", i), Created: "2026-10-01", CreatedBy: "operator"}
+			if i == 0 {
+				p.Roots = append(p.Roots, id)
+			} else {
+				k.Parent = chain[i-1]
+				p.Knots[len(p.Knots)-1].Children = []string{id}
+			}
+			chain = append(chain, id)
+			p.Knots = append(p.Knots, k)
+		}
+		// Under the first link, a path whose two last siblings wait on
+		// each other.
+		free, a, b := "oc-d000001", "oc-d000002", "oc-d000003"
+		for _, k := range []export.Knot{
+			{ID: free, BlockedBy: []string{}},
+			{ID: a, BlockedBy: []string{free, b}},
+			{ID: b, BlockedBy: []string{a}},
+		} {
+			k.Type, k.Status, k.State, k.Title, k.Parent = "outcome", "open", "blocked", "Sibling "+k.ID, chain[0]
+			p.Knots = append(p.Knots, k)
+		}
+		for i := range p.Knots {
+			if p.Knots[i].ID == chain[0] {
+				p.Knots[i].Children = append(p.Knots[i].Children, free, a, b)
+			}
+		}
+	})
+
+	page := h.page("/")
+	if want := fmt.Sprintf("%d of %d done", 0, len(chain)-1+3); !strings.Contains(page, want) {
+		t.Errorf("the chain's milestone does not count every knot under it as %q", want)
+	}
+	if !strings.Contains(page, `href="/knots/app/`+chain[MaxPlanDepth]+`"`) || strings.Contains(page, `href="/knots/app/`+chain[MaxPlanDepth+1]+`"`) {
+		t.Errorf("the chain's tree is not shown to %d levels", MaxPlanDepth)
+	}
+	if n := strings.Count(page, ">more on its page<"); n != 1 {
+		t.Errorf("%d rows say there is more on their page; the chain's deepest shown row does", n)
+	}
+	if len(page) > 256<<10 {
+		t.Errorf("the plan page is %d bytes", len(page))
+	}
+	paths := section(t, page, `id="paths-h"`, `id="ms-h"`)
+	stage := regexp.MustCompile(`<span class="stage-num">(\d+)</span><ul class="plain">(.*?)</ul>`)
+	var stages []string
+	for _, m := range stage.FindAllStringSubmatch(paths, -1) {
+		if strings.Contains(m[2], "Sibling") {
+			var ids []string
+			for _, id := range regexp.MustCompile(`"mono muted">(oc-d00000\d)<`).FindAllStringSubmatch(m[2], -1) {
+				ids = append(ids, id[1])
+			}
+			stages = append(stages, m[1]+":"+strings.Join(ids, ","))
+		}
+	}
+	if got := strings.Join(stages, " "); got != "1:oc-d000001 2:oc-d000002,oc-d000003" {
+		t.Errorf("the siblings' path has stages %q", got)
+	}
+
+	h.srv.mu.Lock()
+	plan := h.srv.cached.idx.plan
+	h.srv.mu.Unlock()
+	h.page("/")
+	h.srv.mu.Lock()
+	again := h.srv.cached.idx.plan
+	h.srv.mu.Unlock()
+	if plan != again {
+		t.Error("the plan page's structure was built again for the same generation")
+	}
+
+	deepest := chain[len(chain)-1]
+	page = h.page("/knots/app/" + deepest)
+	trail := section(t, page, `<nav class="trail"`, `</nav>`)
+	if n := strings.Count(trail, `<a href="/knots/`); n != MaxPlanDepth || !strings.Contains(trail, "<span>…</span>") {
+		t.Errorf("the deepest knot's trail names %d parents, or does not mark those above them", n)
+	}
+	if !strings.Contains(trail, chain[len(chain)-2]) || strings.Contains(trail, `"/knots/app/`+chain[len(chain)-2-MaxPlanDepth]+`"`) {
+		t.Error("the trail does not name the nearest parents alone")
 	}
 }
 

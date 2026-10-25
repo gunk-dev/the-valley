@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -16,6 +17,7 @@ type knotPage struct {
 	Type      string
 	Status    string
 	Trail     []knotLink
+	TrailCut  bool
 	Facts     []fact
 	BlockedBy []reference
 	Blocks    []knotLink
@@ -66,17 +68,23 @@ func (q *request) knot(project, id string) {
 	}
 	page := knotPage{Knot: linkOf(p.Name, k), Type: k.Type, Status: k.Status, Body: trimEnd(k.Body)}
 
-	// The trail runs from the milestone down to the knot's parent.
+	// The trail runs from the milestone down to the knot's parent. It
+	// names the nearest MaxPlanDepth parents, and marks any above them.
 	seen := map[string]bool{k.ID: true}
 	for at := k.Parent; at != "" && !seen[at]; {
-		seen[at] = true
 		parent, ok := knots[at]
 		if !ok {
 			break
 		}
-		page.Trail = append([]knotLink{linkOf(p.Name, parent)}, page.Trail...)
+		if len(page.Trail) == MaxPlanDepth {
+			page.TrailCut = true
+			break
+		}
+		seen[at] = true
+		page.Trail = append(page.Trail, linkOf(p.Name, parent))
 		at = parent.Parent
 	}
+	slices.Reverse(page.Trail)
 
 	add := func(label, text, url string) {
 		if text != "" {

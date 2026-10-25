@@ -11,13 +11,16 @@ import (
 	"the-valley/webui/export"
 )
 
-// index is an export's projects and knots by name, built once per
-// generation.
+// index is an export's projects and knots by name, and its plan page's
+// structure, built once per generation.
 type index struct {
 	projects map[string]*export.Project
 	knots    map[string]map[string]*export.Knot
 	// public are the public projects' names, in the export's order.
 	public []string
+	// plan is the plan page, but for what is in flight, whose ages are
+	// read at each request. Requests share it and do not change it.
+	plan *planPage
 }
 
 func newIndex(e *export.Export) *index {
@@ -34,6 +37,7 @@ func newIndex(e *export.Export) *index {
 		}
 		idx.knots[p.Name] = byID
 	}
+	idx.plan = idx.planPage()
 	return idx
 }
 
@@ -136,12 +140,23 @@ func rank(state string) int {
 	return len(stateRank)
 }
 
+// plan serves the plan page: the generation's structure, and what is in
+// flight as of the request.
 func (q *request) plan() {
-	var p planPage
-	p.Projects = strings.Join(q.idx.public, " · ")
-	counts := map[string]int{}
+	p := *q.idx.plan
 	for _, name := range q.idx.public {
-		proj := q.idx.projects[name]
+		p.InFlight = append(p.InFlight, q.inFlight(q.idx.projects[name])...)
+	}
+	q.page(http.StatusOK, "plan", "Plan", p)
+}
+
+// planPage is the plan page's structure, without what is in flight.
+func (idx *index) planPage() *planPage {
+	var p planPage
+	p.Projects = strings.Join(idx.public, " · ")
+	counts := map[string]int{}
+	for _, name := range idx.public {
+		proj := idx.projects[name]
 		roots := set(proj.Roots)
 		for i := range proj.Knots {
 			k := &proj.Knots[i]
@@ -149,15 +164,14 @@ func (q *request) plan() {
 				counts[k.State]++
 			}
 		}
-		p.InFlight = append(p.InFlight, q.inFlight(proj)...)
-		p.Changes = append(p.Changes, q.readyChanges(proj)...)
-		p.Paths = append(p.Paths, q.paths(proj)...)
-		p.Milestones = append(p.Milestones, q.milestones(proj)...)
+		p.Changes = append(p.Changes, idx.readyChanges(proj)...)
+		p.Paths = append(p.Paths, idx.paths(proj)...)
+		p.Milestones = append(p.Milestones, idx.milestones(proj)...)
 	}
 	for _, s := range []string{"done", "in-progress", "ready", "blocked"} {
 		p.Tally = append(p.Tally, tally{counts[s], stateLabel(s)})
 	}
-	q.page(http.StatusOK, "plan", "Plan", p)
+	return &p
 }
 
 // inFlight is the project's knots in flight, in the export's order: the
@@ -189,7 +203,7 @@ func (q *request) inFlight(p *export.Project) []flight {
 // readyChanges are the project's changes ready for approval, each with
 // its active version, whether an integration request approves it, and the
 // integrator's last decision.
-func (q *request) readyChanges(p *export.Project) []readyChange {
+func (idx *index) readyChanges(p *export.Project) []readyChange {
 	var out []readyChange
 	for _, c := range p.Changes {
 		v := c.Version
@@ -206,7 +220,7 @@ func (q *request) readyChanges(p *export.Project) []readyChange {
 		rc := readyChange{Handle: c.Handle, Title: v.Title, Version: p.Name + " v" + strconv.Itoa(v.N),
 			Note: strings.Join(notes, " · ")}
 		for _, ref := range c.Knots {
-			if k, ok := q.idx.knots[p.Name][ref.ID]; ok {
+			if k, ok := idx.knots[p.Name][ref.ID]; ok {
 				rc.Knots = append(rc.Knots, linkOf(p.Name, k))
 			}
 		}
@@ -220,72 +234,65 @@ func (q *request) readyChanges(p *export.Project) []readyChange {
 // latest stage of the siblings in its blocked_by, done or not, so
 // children with no order between them share a stage and can run in
 // parallel. Abandoned children are left out.
-func (q *request) paths(p *export.Project) []path {
-	knots := q.idx.knots[p.Name]
+func (idx *index) paths(p *export.Project) []path {
+	knots := idx.knots[p.Name]
 	var out []path
 	for i := range p.Knots {
 		parent := &p.Knots[i]
 		var kids []*export.Knot
 		siblings := map[string]bool{}
 		for _, id := range parent.Children {
-			if k, ok := knots[id]; ok && k.State != "abandoned" {
+			if k, ok := knots[id]; ok && k.State != "abandoned" && !siblings[id] {
 				kids = append(kids, k)
 				siblings[id] = true
 			}
 		}
-		ordered := false
+		// waits counts each child's sibling blockers not yet placed, and
+		// next lists the siblings each child blocks.
+		waits, next := map[string]int{}, map[string][]string{}
 		for _, k := range kids {
 			for _, b := range k.BlockedBy {
-				ordered = ordered || siblings[b]
+				if siblings[b] {
+					waits[k.ID]++
+					next[b] = append(next[b], k.ID)
+				}
 			}
 		}
-		if !ordered {
+		if len(next) == 0 {
 			continue
 		}
-		stage := map[string]int{}
-		// Each pass places the children whose sibling blockers are all
-		// placed. The graph holds blocked_by acyclic; a cycle it did not
-		// would end the passes, and its knots share a last stage.
-		for placed := 0; placed < len(kids); {
-			progress := false
-			for _, k := range kids {
-				if _, done := stage[k.ID]; done {
-					continue
-				}
-				at, ready := 0, true
-				for _, b := range k.BlockedBy {
-					if !siblings[b] {
-						continue
-					}
-					s, ok := stage[b]
-					if !ok {
-						ready = false
-						break
-					}
-					at = max(at, s+1)
-				}
-				if ready {
-					stage[k.ID] = at
-					placed++
-					progress = true
+		// A child is placed once its sibling blockers all are, each child
+		// and each edge once.
+		stage, placed := map[string]int{}, map[string]bool{}
+		var ready []string
+		for _, k := range kids {
+			if waits[k.ID] == 0 {
+				ready, placed[k.ID] = append(ready, k.ID), true
+			}
+		}
+		for len(ready) > 0 {
+			id := ready[0]
+			ready = ready[1:]
+			for _, c := range next[id] {
+				stage[c] = max(stage[c], stage[id]+1)
+				if waits[c]--; waits[c] == 0 {
+					ready, placed[c] = append(ready, c), true
 				}
 			}
-			if !progress {
-				last := 0
-				for _, s := range stage {
-					last = max(last, s+1)
-				}
-				for _, k := range kids {
-					if _, done := stage[k.ID]; !done {
-						stage[k.ID] = last
-						placed++
-					}
-				}
-			}
+		}
+		// The graph holds blocked_by acyclic. A cycle it did not would
+		// leave its knots, and those waiting on them, unplaced, and they
+		// share a last stage.
+		last := 0
+		for id := range placed {
+			last = max(last, stage[id]+1)
 		}
 		pa := path{Parent: linkOf(p.Name, parent)}
 		for _, k := range kids {
 			s := stage[k.ID]
+			if !placed[k.ID] {
+				s = last
+			}
 			for len(pa.Stages) <= s {
 				pa.Stages = append(pa.Stages, nil)
 			}
@@ -297,20 +304,22 @@ func (q *request) paths(p *export.Project) []path {
 }
 
 // milestones are the project's roots, each with its tree, and then its
-// knots that have no parent and are no root, as one more box.
-func (q *request) milestones(p *export.Project) []milestone {
-	knots := q.idx.knots[p.Name]
+// knots that have no parent and are no root, as one more box. A knot is
+// shown once in the project's trees, and counted once, however the
+// graph's children lists name it.
+func (idx *index) milestones(p *export.Project) []milestone {
+	knots := idx.knots[p.Name]
 	var out []milestone
+	counted, shown := map[string]bool{}, map[string]bool{}
 	for _, id := range p.Roots {
 		k, ok := knots[id]
-		if !ok {
+		if !ok || shown[id] {
 			continue
 		}
-		var desc []*export.Knot
-		q.descendants(p.Name, k, &desc, map[string]bool{k.ID: true})
+		counted[id], shown[id] = true, true
 		done, of := 0, 0
 		var cord []string
-		for _, d := range desc {
+		for _, d := range idx.descendants(p.Name, k, counted) {
 			if d.State == "abandoned" {
 				continue
 			}
@@ -331,7 +340,7 @@ func (q *request) milestones(p *export.Project) []milestone {
 		link := linkOf(p.Name, k)
 		out = append(out, milestone{Knot: &link, Title: k.Title, Project: p.Name,
 			Count: strconv.Itoa(done) + " of " + strconv.Itoa(of) + " done", Cord: cord,
-			Tree: q.tree(p.Name, k.Children, map[string]bool{k.ID: true})})
+			Tree: idx.tree(p.Name, k.Children, 1, shown)})
 	}
 	roots := set(p.Roots)
 	var loose []string
@@ -342,43 +351,55 @@ func (q *request) milestones(p *export.Project) []milestone {
 	}
 	if len(loose) > 0 {
 		out = append(out, milestone{Title: "Unfiled", Project: p.Name, Count: count(len(loose), "knot"),
-			Tree: q.tree(p.Name, loose, map[string]bool{})})
+			Tree: idx.tree(p.Name, loose, 1, shown)})
 	}
 	return out
 }
 
-// descendants appends every knot under k, depth first. seen guards
-// against a parent cycle the graph would not hold.
-func (q *request) descendants(project string, k *export.Knot, into *[]*export.Knot, seen map[string]bool) {
-	for _, id := range k.Children {
-		c, ok := q.idx.knots[project][id]
-		if !ok || seen[id] {
-			continue
+// descendants is every knot under k that counted does not hold, each
+// added to counted as it is found. It walks the graph with a stack, so a
+// chain of any depth takes no recursion, and counted guards against a
+// parent cycle the graph would not hold.
+func (idx *index) descendants(project string, k *export.Knot, counted map[string]bool) []*export.Knot {
+	var out []*export.Knot
+	stack := []*export.Knot{k}
+	for len(stack) > 0 {
+		k := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		for _, id := range k.Children {
+			if c, ok := idx.knots[project][id]; ok && !counted[id] {
+				counted[id] = true
+				out = append(out, c)
+				stack = append(stack, c)
+			}
 		}
-		seen[id] = true
-		*into = append(*into, c)
-		q.descendants(project, c, into, seen)
 	}
+	return out
 }
 
 // tree is the knots called ids and everything under them, each level
-// ordered by state.
-func (q *request) tree(project string, ids []string, seen map[string]bool) []node {
+// ordered by state, at depth depth of a milestone's tree. shown holds the
+// knots the project's trees show already, which are not shown again, so a
+// tree takes one step for each knot and each child it lists. A knot at
+// MaxPlanDepth is shown without the knots under it, and says they are on
+// its page.
+func (idx *index) tree(project string, ids []string, depth int, shown map[string]bool) []node {
 	var kids []*export.Knot
 	for _, id := range ids {
-		if k, ok := q.idx.knots[project][id]; ok && !seen[id] {
+		if k, ok := idx.knots[project][id]; ok && !shown[id] {
+			shown[id] = true
 			kids = append(kids, k)
 		}
 	}
 	sort.SliceStable(kids, func(i, j int) bool { return rank(kids[i].State) < rank(kids[j].State) })
 	var out []node
 	for _, k := range kids {
-		inner := map[string]bool{k.ID: true}
-		for id := range seen {
-			inner[id] = true
+		n := node{Row: idx.row(project, k), Open: k.State != "done" && k.State != "abandoned"}
+		if depth < MaxPlanDepth {
+			n.Children = idx.tree(project, k.Children, depth+1, shown)
+		} else if len(k.Children) > 0 {
+			n.Row.Chips = append(n.Row.Chips, chip{"quiet", "more on its page"})
 		}
-		n := node{Row: q.row(project, k), Open: k.State != "done" && k.State != "abandoned"}
-		n.Children = q.tree(project, k.Children, inner)
 		out = append(out, n)
 	}
 	return out
@@ -386,13 +407,13 @@ func (q *request) tree(project string, ids []string, seen map[string]bool) []nod
 
 // row is a knot's line in a tree. Filter is the state the page's filters
 // read: abandoned work is finished work, as done is.
-func (q *request) row(project string, k *export.Knot) row {
+func (idx *index) row(project string, k *export.Knot) row {
 	r := row{knotLink: linkOf(project, k), Filter: k.State}
 	if k.State == "abandoned" {
 		r.Filter = "done"
 	}
 	if k.Target != "" && k.Target != project {
-		text, _ := q.idx.named(project, k.Target)
+		text, _ := idx.named(project, k.Target)
 		r.Chips = append(r.Chips, chip{"quiet", "lands in " + text})
 	}
 	if k.Claim != nil {
@@ -400,7 +421,7 @@ func (q *request) row(project string, k *export.Knot) row {
 	}
 	if k.State == "blocked" {
 		if len(k.WaitingOn) > 0 {
-			r.Chips = append(r.Chips, chip{"blocked", "waits on " + q.idx.waitsOn(k.WaitingOn)})
+			r.Chips = append(r.Chips, chip{"blocked", "waits on " + idx.waitsOn(k.WaitingOn)})
 		} else {
 			r.Chips = append(r.Chips, chip{"blocked", "waits on " + unpublishedKnot})
 		}

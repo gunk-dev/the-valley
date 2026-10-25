@@ -75,6 +75,9 @@ const (
 	MaxRead = 4 << 20
 	// MaxDepth is the most path segments a source route takes.
 	MaxDepth = 64
+	// MaxPlanDepth is the most levels of knots a milestone's tree
+	// shows, and the most parents a knot's trail names.
+	MaxPlanDepth = 32
 	// LogPage is the number of commits on one page of a log.
 	LogPage = 50
 	// MaxGit is the most source requests that run git at once. Others

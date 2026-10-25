@@ -9,7 +9,8 @@
 //
 //  1. take the lock in the state directory, so two passes never overlap;
 //  2. read the export key from the state directory, or make one on the
-//     first start, and say its verifier line whenever it changes;
+//     first start, say its verifier line whenever it changes, and hold the
+//     state and the caches to --max-storage before anything is fetched;
 //  3. fetch main and refs/the-valley/projects of the instance repository
 //     into the publisher's own bare repository, whose origin it is, once
 //     for the whole pass, refuse a main that carries policy/valley, and
@@ -24,9 +25,10 @@
 //  6. run valley knot show --project P <id> --json for every knot of every
 //     public project, in the publisher's repository, and build the export
 //     with export.Build, reading again when the inputs were read at
-//     different graph tips;
-//  7. bundle each public project's main, and hold the bundles to
-//     --max-bundles and the state and cache to --max-storage;
+//     different graph tips; then hold the state and the caches to
+//     --max-storage again;
+//  7. bundle each public project's main, writing each bundle only into
+//     what --max-bundles and --max-storage leave;
 //  8. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago, or write it to --out instead.
 //
@@ -87,10 +89,14 @@ upload them to the receiver at URL, or write them to DIR.
                        digest the receiver acknowledged less than this ago
                        sends nothing (default 1h)
   --max-bundles SIZE   the most the bundles of one export may hold
-                       together; a pass past it sends nothing (default 1G)
-  --max-storage SIZE   the most the state directory and the cache may hold
-                       once the bundles are made; a pass past it sends
-                       nothing (default 16G)
+                       together; a bundle is written only into what it
+                       leaves, and a pass past it sends nothing
+                       (default 1G)
+  --max-storage SIZE   the most the state directory and the caches may
+                       hold, checked before the pass fetches and once it
+                       has read the valley; a bundle is written only into
+                       what it leaves, and a pass past it sends nothing
+                       (default 16G)
 
 A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
 GiB or TiB.
@@ -285,8 +291,14 @@ func (p *publisher) pass(ctx context.Context) error {
 	if p.key, err = p.loadKey(); err != nil {
 		return err
 	}
+	if err := p.checkStorage(); err != nil {
+		return err
+	}
 	read, err := p.collect(ctx)
 	if err != nil {
+		return err
+	}
+	if err := p.checkStorage(); err != nil {
 		return err
 	}
 	digest, err := read.export.Digest()

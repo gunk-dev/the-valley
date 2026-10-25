@@ -719,8 +719,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
     - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
-    - `--max-storage <size>`: The most the state directory and the cache may hold once the bundles
-      are made (default `16G`).
+    - `--max-storage <size>`: The most the state directory and the caches may hold (default `16G`).
     - A `<size>` is a number of bytes, or a number followed by `K`, `M`, `G`, or `T` for KiB, MiB,
       GiB, or TiB.
   - Prints `valley-web-publish: public: <projects>; private: <projects>` on every pass, then one
@@ -935,7 +934,7 @@ services.valley.webPublisher = {
 | `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`. |
 | `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.             |
 | `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                 |
-| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold once a pass has made its bundles.                                   |
+| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                    |
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
@@ -2086,7 +2085,8 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 
 - **A pass:** In order, the pass:
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
-  2. reads the export key, or makes one on the first start;
+  2. reads the export key, or makes one on the first start, and checks the state and the caches
+     against `--max-storage`;
   3. fetches the instance repository's `main` and `refs/the-valley/projects` into the publisher's
      own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is
      `--instance-repo`. It fetches them once for the whole pass. It requires that `main` carry
@@ -2102,9 +2102,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
      project's own `policy/web` at that `main`;
   7. runs `valley knot show --project <project> <id> --json` in the publisher's own bare repository,
      for every knot of every public project;
-  8. builds the export with `export.Build`;
-  9. makes the bundles, and checks them against `--max-bundles` and the state and cache against
-     `--max-storage`;
+  8. builds the export with `export.Build`, and checks the state and the caches against
+     `--max-storage` again;
+  9. makes the bundles, each within what `--max-bundles` and `--max-storage` leave;
   10. uploads the export, or writes it to `--out`.
 - **One instance:** The pass reads the instance repository's `main` once, at step 3. No command of
   the pass reads it again:
@@ -2152,17 +2152,27 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **Consistent reads:** `export.Build` fails with `export.ErrInconsistent` when a knot's detail was
   read at another graph tip than the plan. The pass then reads the valley again, from step 4 with
   the instance step 3 fetched, up to three reads in all, and fails when every read was inconsistent.
-- **Bundles:** Each public project's bundle is `git bundle create <file> refs/heads/main` in its
-  mirror, kept under `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A
-  bundle is made once per source tip, so the body a manifest declares for a tip is the same in every
-  pass. The pass checks with `git bundle list-heads` that the bundle carries `refs/heads/main` at
-  the source tip. It deletes the bundles of a project's earlier tips, and of projects the export
-  does not hold.
-- **Size bounds:** A bundle carries the whole history of `main`, as the export requires. Once the
-  bundles are made, the pass fails when they hold more than `--max-bundles` together, or when the
-  state directory, `$XDG_CACHE_HOME/valley-web-publish`, and the CLI's `$XDG_CACHE_HOME/valley` hold
-  more than `--max-storage`. Either way it sends and writes nothing. The check runs after the
-  fetches, so one pass can grow the cache past `--max-storage` before it fails.
+- **Bundles:** Each public project's bundle is what `git bundle create - refs/heads/main` prints in
+  its mirror. The pass writes it to a temporary file, and keeps it as
+  `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A bundle is made once
+  per source tip, so the body a manifest declares for a tip is the same in every pass. The pass
+  checks with `git bundle list-heads` that the bundle carries `refs/heads/main` at the source tip.
+  Before it makes any bundle, it deletes the bundles of a project's earlier tips, the bundles of
+  projects the export does not hold, and any partial bundle an earlier pass left.
+- **Size bounds:** A bundle carries the whole history of `main`, as the export requires.
+  `--max-bundles` bounds the bundles of one export together. `--max-storage` bounds the state
+  directory, `$XDG_CACHE_HOME/valley-web-publish`, and the CLI's `$XDG_CACHE_HOME/valley` together.
+  - Every pass checks `--max-storage` twice: before it fetches anything, and once it has read the
+    valley. The second check runs even when the pass then sends nothing for an acknowledged digest.
+  - The pass writes each bundle only into the room that both bounds leave. When a bundle is larger,
+    the pass stops writing at that room. It deletes what it wrote of that bundle and every bundle it
+    made in the pass, and fails.
+  - A fetch has no bound of its own. So one pass's fetches can grow the caches past `--max-storage`.
+    That pass fails at its second check, and each later pass fails at its first check until the
+    caches are smaller.
+
+  A pass that fails on a bound sends and writes nothing.
+
 - **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends nothing when the
   last acknowledgement names the same receiver, destination, and digest, and is less than
   `--recheck` old. Otherwise it posts a manifest. When the inventory's `active.digest` is the

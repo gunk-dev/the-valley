@@ -166,8 +166,9 @@ in
       default = "1G";
       description = ''
         The most the bundles of one export may hold together. Each bundle
-        carries a public project's whole history on main. A pass past it
-        sends nothing (`--max-bundles`).
+        carries a public project's whole history on main. A bundle is
+        written only into what this leaves, and a pass past it sends
+        nothing (`--max-bundles`).
       '';
     };
 
@@ -175,10 +176,11 @@ in
       type = size;
       default = "16G";
       description = ''
-        The most the state and cache directories may hold once a pass has
-        made its bundles. The cache holds a clone of every project the host
-        serves, and a mirror and a bundle of each public one. A pass past
-        it sends nothing (`--max-storage`).
+        The most the state and cache directories may hold. The cache holds
+        a clone of every project the host serves, and a mirror and a bundle
+        of each public one. A pass checks it before it fetches and once it
+        has read the valley, and writes a bundle only into what it leaves.
+        A pass past it sends nothing (`--max-storage`).
       '';
     };
 

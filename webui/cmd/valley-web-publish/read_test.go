@@ -3,9 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -309,7 +311,7 @@ func TestACueThatDoesNotFinishFailsThePass(t *testing.T) {
 func TestBoundsStopThePass(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
-	mustSay(t, "--max-bundles", v.fails(rv, "--max-bundles", "100"), "more than --max-bundles 100")
+	mustSay(t, "--max-bundles", v.fails(rv, "--max-bundles", "100"), "app: its bundle is larger than the 100 bytes --max-bundles 100 leaves for it")
 	mustSay(t, "--max-storage", v.fails(nil, "--max-storage", "1K"), "more than --max-storage 1024")
 	for _, size := range []string{"0", "-1", "1X", "K", "9000000000T"} {
 		var stdout, stderr bytes.Buffer
@@ -329,6 +331,100 @@ instance: projects: {for i in list.Range(0, 9000, 1) {"project-with-a-long-name-
 	stdout, stderr := v.publish("--out", filepath.Join(t.TempDir(), "export"))
 	mustSay(t, "a declaration past cue's bound", stdout, "public: none")
 	mustSay(t, "a declaration past cue's bound", stderr, "cue exported more than")
+}
+
+// du is what the regular files under dirs hold together. A file that goes
+// while it is counted is not counted.
+func du(dirs ...string) int64 {
+	var total int64
+	for _, dir := range dirs {
+		filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+			if err == nil && d.Type().IsRegular() {
+				if info, err := d.Info(); err == nil {
+					total += info.Size()
+				}
+			}
+			return nil
+		})
+	}
+	return total
+}
+
+// peakSize runs f, and returns the most the files under dirs held together
+// at any moment it looked while f ran. It looks again as soon as it has
+// looked.
+func peakSize(dirs []string, f func()) int64 {
+	done, peak := make(chan struct{}), make(chan int64)
+	go func() {
+		var most int64
+		for {
+			most = max(most, du(dirs...))
+			select {
+			case <-done:
+				peak <- most
+				return
+			default:
+			}
+		}
+	}()
+	f()
+	close(done)
+	return <-peak
+}
+
+// A pass over its budget writes no more than the budget, and leaves no
+// bundle behind. A bundle is written only into what --max-bundles and
+// --max-storage leave, and its writing stops there. A pass whose state and
+// cache are past --max-storage stops before it fetches anything, and that
+// holds for a pass that would send nothing because the receiver
+// acknowledged its digest.
+func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
+	v := newValley(t)
+	cache := filepath.Join(v.root, "cache")
+	bundles := filepath.Join(cache, "valley-web-publish", "bundles")
+	// What --max-storage bounds: the state directory, the publisher's
+	// cache, and the CLI's.
+	storage := []string{v.state, filepath.Join(cache, "valley-web-publish"), filepath.Join(cache, "valley")}
+	mustSay(t, "--max-storage 1", v.fails(nil, "--max-storage", "1"), "more than --max-storage 1,")
+	if _, err := os.Stat(filepath.Join(cache, "valley-web-publish")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a pass whose state was past --max-storage fetched before it stopped")
+	}
+
+	// app's history grows by 4 MiB that do not compress, so its bundle is
+	// past every budget below.
+	noise := make([]byte, 4<<20)
+	if _, err := rand.Read(noise); err != nil {
+		t.Fatal(err)
+	}
+	v.write(filepath.Join(v.work["app"], "noise"), string(noise))
+	v.commit("app", "app: a large history")
+
+	var said string
+	peak := peakSize([]string{bundles}, func() { said = v.fails(nil, "--max-bundles", "64K") })
+	mustSay(t, "--max-bundles", said, "app: its bundle is larger than the 65536 bytes --max-bundles 65536 leaves for it")
+	if peak > 64<<10 {
+		t.Errorf("the bundles held %d bytes while the pass ran, more than --max-bundles 65536", peak)
+	}
+	if left, _ := os.ReadDir(bundles); len(left) != 0 {
+		t.Errorf("the refused pass left %v behind in the bundles", left)
+	}
+
+	// The cache now holds what a read fetches, and the budget leaves
+	// 256 KiB beside it.
+	budget := du(storage...) + 256<<10
+	peak = peakSize(storage, func() { said = v.fails(nil, "--max-storage", strconv.FormatInt(budget, 10)) })
+	mustSay(t, "--max-storage", said, fmt.Sprintf("--max-storage %d leaves for it", budget))
+	if peak > budget {
+		t.Errorf("the state and the cache held %d bytes while the pass ran, more than --max-storage %d", peak, budget)
+	}
+	if left, _ := os.ReadDir(bundles); len(left) != 0 {
+		t.Errorf("the refused pass left %v behind in the bundles", left)
+	}
+
+	rv := newReceiver(t, v)
+	v.publish("--receiver", rv.server.URL)
+	mustSay(t, "an acknowledged digest past --max-storage", v.fails(rv, "--max-storage", strconv.FormatInt(budget, 10)),
+		fmt.Sprintf("more than --max-storage %d", budget))
 }
 
 // objects is every object a repository holds, decompressed, as git

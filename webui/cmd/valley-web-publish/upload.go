@@ -8,13 +8,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"maps"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -43,73 +41,107 @@ const (
 // bundles are each exported project's bundle of main, by project: the
 // file, and the body it makes. A bundle is made once for each source tip
 // and kept in the cache, so the body a manifest declares for a tip is the
-// same in every pass. Once they are made, checkSizes holds them and the
-// publisher's storage to their bounds.
+// same in every pass. The bundles the export does not declare are removed
+// first. Each bundle still to be made is then written only into the room
+// --max-bundles and --max-storage leave: its writing stops there, and the
+// pass then removes every bundle it wrote and sends nothing.
 func (p *publisher) bundles(ctx context.Context, r *reading) (map[string]string, map[string]export.Body, error) {
 	root := filepath.Join(p.cache, "bundles")
-	paths, bodies := map[string]string{}, map[string]export.Body{}
-	keep := map[string]bool{}
+	paths := map[string]string{}
 	for _, proj := range r.export.Projects {
-		keep[proj.Name] = true
-		dir := filepath.Join(root, proj.Name)
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			return nil, nil, err
-		}
-		path := filepath.Join(dir, proj.SourceTip+".bundle")
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-			if err := makeBundle(ctx, r.mirrors[proj.Name], path, proj.SourceTip); err != nil {
-				return nil, nil, fmt.Errorf("%s: %w", proj.Name, err)
-			}
-		} else if err != nil {
-			return nil, nil, err
-		}
-		body, err := export.FileBody(proj.Name, path)
-		if err != nil {
-			return nil, nil, err
-		}
-		paths[proj.Name], bodies[proj.Name] = path, body
-		// The bundles of the project's earlier tips are no longer declared.
-		old, _ := filepath.Glob(filepath.Join(dir, "*"))
-		for _, f := range old {
-			if f != path {
-				os.Remove(f)
-			}
-		}
+		paths[proj.Name] = filepath.Join(root, proj.Name, proj.SourceTip+".bundle")
 	}
-	dirs, _ := os.ReadDir(root)
-	for _, d := range dirs {
-		if !keep[d.Name()] {
-			os.RemoveAll(filepath.Join(root, d.Name()))
-		}
-	}
-	if err := p.checkSizes(bodies); err != nil {
+	pruneBundles(root, paths)
+	used, err := p.storageUsed()
+	if err != nil {
 		return nil, nil, err
+	}
+	var held int64 // what the export's bundles hold together
+	var missing []export.Project
+	for _, proj := range r.export.Projects {
+		info, err := os.Stat(paths[proj.Name])
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			missing = append(missing, proj)
+		case err != nil:
+			return nil, nil, err
+		default:
+			held += info.Size()
+		}
+	}
+	if held > int64(p.cfg.maxBundles) {
+		return nil, nil, fmt.Errorf("the bundles hold %d bytes together, more than --max-bundles %d, so the pass sends nothing", held, p.cfg.maxBundles)
+	}
+	if used > int64(p.cfg.maxStorage) {
+		return nil, nil, p.overStorage(used)
+	}
+	var made []string
+	for _, proj := range missing {
+		room, bound := int64(p.cfg.maxBundles)-held, fmt.Sprintf("--max-bundles %d", p.cfg.maxBundles)
+		if left := int64(p.cfg.maxStorage) - used; left < room {
+			room, bound = left, fmt.Sprintf("--max-storage %d", p.cfg.maxStorage)
+		}
+		size, err := makeBundle(ctx, r.mirrors[proj.Name], paths[proj.Name], proj.SourceTip, room)
+		if errors.Is(err, errOverBudget) {
+			err = fmt.Errorf("its bundle is larger than the %d bytes %s leaves for it, so the pass sends nothing and removes the bundles it wrote", room, bound)
+		}
+		if err != nil {
+			// Each bundle's directory goes with it, once it is empty.
+			for _, path := range append(made, paths[proj.Name]) {
+				os.Remove(path)
+				os.Remove(filepath.Dir(path))
+			}
+			return nil, nil, fmt.Errorf("%s: %w", proj.Name, err)
+		}
+		made = append(made, paths[proj.Name])
+		held += size
+		used += size
+	}
+	bodies := map[string]export.Body{}
+	for name, path := range paths {
+		if bodies[name], err = export.FileBody(name, path); err != nil {
+			return nil, nil, err
+		}
 	}
 	return paths, bodies, nil
 }
 
-// checkSizes holds the bundles of an export to --max-bundles together, and
-// the state directory and the cache, with the bundles made, to
-// --max-storage. A bundle carries main's whole history, as the export
-// requires, so the bound is on that whole history.
-func (p *publisher) checkSizes(bodies map[string]export.Body) error {
-	var total int64
-	var each []string
-	for _, name := range slices.Sorted(maps.Keys(bodies)) {
-		total += bodies[name].Size
-		each = append(each, fmt.Sprintf("%s %d", name, bodies[name].Size))
+// pruneBundles removes everything under root but the bundles keep names:
+// the bundles of a project's earlier tips, of projects the export does not
+// hold, and what a pass that was stopped left of one it was writing.
+func pruneBundles(root string, keep map[string]string) {
+	projects, _ := os.ReadDir(root)
+	for _, d := range projects {
+		dir := filepath.Join(root, d.Name())
+		if _, ok := keep[d.Name()]; !ok || !d.IsDir() {
+			os.RemoveAll(dir)
+			continue
+		}
+		files, _ := os.ReadDir(dir)
+		for _, f := range files {
+			if path := filepath.Join(dir, f.Name()); path != keep[d.Name()] {
+				os.RemoveAll(path)
+			}
+		}
 	}
-	if total > int64(p.cfg.maxBundles) {
-		return fmt.Errorf("the bundles hold %d bytes together (%s), more than --max-bundles %d, so the pass sends nothing", total, strings.Join(each, ", "), p.cfg.maxBundles)
-	}
+}
+
+// checkStorage holds the state directory and the caches to --max-storage.
+// A pass checks before it fetches anything, and again once it has read the
+// valley, whether it then sends anything or not.
+func (p *publisher) checkStorage() error {
 	used, err := p.storageUsed()
 	if err != nil {
 		return err
 	}
 	if used > int64(p.cfg.maxStorage) {
-		return fmt.Errorf("the state directory and the cache hold %d bytes, more than --max-storage %d, so the pass sends nothing", used, p.cfg.maxStorage)
+		return p.overStorage(used)
 	}
 	return nil
+}
+
+func (p *publisher) overStorage(used int64) error {
+	return fmt.Errorf("the state directory and the cache hold %d bytes, more than --max-storage %d, so the pass sends nothing", used, p.cfg.maxStorage)
 }
 
 // storageUsed is the size of every regular file the publisher keeps: in
@@ -137,24 +169,64 @@ func (p *publisher) storageUsed() (int64, error) {
 	return total, nil
 }
 
-// makeBundle writes a full bundle of the mirror's main to path, made under
-// a temporary name and renamed into place once git bundle list-heads shows
-// it carries main at tip.
-func makeBundle(ctx context.Context, mirror, path, tip string) error {
+// errOverBudget is makeBundle's error for a bundle larger than the room
+// it is given.
+var errOverBudget = errors.New("the bundle is larger than the room left for it")
+
+// makeBundle writes a full bundle of the mirror's main to path, and returns
+// its size. git writes the bundle to its stdout, and the publisher writes
+// it to a temporary name, which is renamed into place once git bundle
+// list-heads shows it carries main at tip. At most room bytes reach the
+// file: a write past them fails, which ends git at its next write, and
+// makeBundle removes the file and returns errOverBudget.
+func makeBundle(ctx context.Context, mirror, path, tip string, room int64) (int64, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return 0, err
+	}
 	tmp := path + ".new"
-	os.Remove(tmp)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return 0, err
+	}
 	defer os.Remove(tmp)
-	if _, err := git(ctx, mirror, "bundle", "create", "--quiet", tmp, export.MainRef); err != nil {
-		return err
+	w := &budgeted{w: f, room: room}
+	err = gitStream(ctx, mirror, nil, w, "bundle", "create", "--quiet", "-", export.MainRef)
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if w.over {
+		return 0, errOverBudget
+	}
+	if err != nil {
+		return 0, err
 	}
 	heads, err := git(ctx, mirror, "bundle", "list-heads", tmp)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if got, want := strings.TrimSpace(string(heads)), tip+" "+export.MainRef; got != want {
-		return fmt.Errorf("the bundle made of main carries %q, not %q", got, want)
+		return 0, fmt.Errorf("the bundle made of main carries %q, not %q", got, want)
 	}
-	return os.Rename(tmp, path)
+	return w.written, os.Rename(tmp, path)
+}
+
+// budgeted writes through to w until room bytes are written. A write that
+// would pass room writes nothing, fails, and sets over. It is no
+// io.ReaderFrom, so os/exec copies through Write.
+type budgeted struct {
+	w             io.Writer
+	room, written int64
+	over          bool
+}
+
+func (b *budgeted) Write(p []byte) (int, error) {
+	if int64(len(p)) > b.room-b.written {
+		b.over = true
+		return 0, errOverBudget
+	}
+	n, err := b.w.Write(p)
+	b.written += int64(n)
+	return n, err
 }
 
 // writeOut writes the export to --out, as an upload would send it: the

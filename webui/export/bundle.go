@@ -201,8 +201,8 @@ func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
 		return false, nil
 	}
 	cmd := command(ctx, repo, "merge-base", "--is-ancestor", commit, tip)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &head{max: maxStderr}
+	cmd.Stderr = stderr
 	err = cmd.Run()
 	var exit *exec.ExitError
 	switch {
@@ -214,27 +214,142 @@ func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
 	return false, fmt.Errorf("git merge-base: %w: %s", err, strings.TrimSpace(stderr.String()))
 }
 
+// ErrOutputLimit is the error of a git command that writes more output
+// than its caller set as the limit. git is stopped, and waited for, before
+// the error is returned.
+var ErrOutputLimit = errors.New("git wrote more than its output limit")
+
+// The bounds on what this package keeps of a git command's output.
+const (
+	// maxStderr is the most of git's standard error kept for an error's
+	// message. The rest is read and dropped.
+	maxStderr = 16 << 10
+	// maxOutput is the most standard output this package reads from a
+	// git command it runs for itself: a ref listing or an object's type.
+	maxOutput = 64 << 10
+)
+
 // Git runs git with args on the bare repository at repo and returns what
-// git prints. It runs git the way this package runs every git:
-// replacement refs off, none of the caller's GIT_ variables, and no system
-// or global configuration. --git-dir names the repository, so git never
-// reads a repository it finds above repo. Git holds all of git's output in
-// memory, so a caller bounds what it asks for. A server reads a
-// generation's repositories with it, and gives it object IDs it has
-// checked, never a name a reader typed.
-func Git(ctx context.Context, repo string, args ...string) ([]byte, error) {
-	if len(args) == 0 {
-		return nil, errors.New("git needs a command")
-	}
-	cmd := command(ctx, "", append([]string{"--git-dir=" + repo}, args...)...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		return out, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
-	}
-	return out, nil
+// git prints, which may be at most limit bytes. It runs git the way this
+// package runs every git: replacement refs off, none of the caller's GIT_
+// variables, and no system or global configuration. --git-dir names the
+// repository, so git never reads a repository it finds above repo. When
+// git prints more than limit bytes, Git stops it and fails with
+// ErrOutputLimit. A server reads a generation's repositories with it, and
+// gives it object IDs it has checked, never a name a reader typed.
+func Git(ctx context.Context, repo string, limit int64, args ...string) ([]byte, error) {
+	var out []byte
+	err := GitStream(ctx, repo, limit, func(r io.Reader) (err error) {
+		out, err = io.ReadAll(r)
+		return err
+	}, args...)
+	return out, err
 }
+
+// GitStream runs git as Git does, and calls read with git's standard
+// output as git prints it. read may read at most limit bytes: a read past
+// them fails with ErrOutputLimit. read may also return before the output
+// ends, once it has what it needs. Once read returns, GitStream stops git
+// if it is still running, and waits for it to exit, so no git outlives the
+// call. GitStream returns read's error. When read succeeds, it returns
+// git's own failure only if read reached the end of the output: a git
+// stopped early is not held to how it exited.
+func GitStream(ctx context.Context, repo string, limit int64, read func(io.Reader) error, args ...string) error {
+	if len(args) == 0 {
+		return errors.New("git needs a command")
+	}
+	return run(command(ctx, "", append([]string{"--git-dir=" + repo}, args...)...), args[0], nil, limit, read)
+}
+
+// run starts cmd, with stdin as its standard input when it is not nil,
+// and gives read cmd's standard output, at most limit bytes of it. It
+// keeps the first maxStderr bytes of cmd's standard error for its error,
+// which names git's verb.
+func run(cmd *exec.Cmd, verb string, stdin []byte, limit int64, read func(io.Reader) error) error {
+	if stdin != nil {
+		cmd.Stdin = bytes.NewReader(stdin)
+	}
+	stderr := &head{max: maxStderr}
+	cmd.Stderr = stderr
+	pipe, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("git %s: %w", verb, err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("git %s: %w", verb, err)
+	}
+	out := &bounded{r: pipe, n: limit, err: fmt.Errorf("git %s: %w", verb, ErrOutputLimit)}
+	readErr := read(out)
+	if readErr != nil || !out.eof {
+		// git may be blocked writing to a pipe nobody reads any more.
+		cmd.Process.Kill()
+	}
+	err = cmd.Wait()
+	switch {
+	case readErr != nil:
+		return readErr
+	case !out.eof:
+		return nil
+	case err != nil:
+		return fmt.Errorf("git %s: %w: %s", verb, err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// bounded reads r, at most n bytes of it. A read once n bytes are read
+// fails with err if r holds more, and is the end of the output if it does
+// not. eof is set once r's end is read.
+type bounded struct {
+	r    io.Reader
+	n    int64
+	err  error
+	over bool
+	eof  bool
+}
+
+func (b *bounded) Read(p []byte) (int, error) {
+	switch {
+	case b.over:
+		return 0, b.err
+	case b.eof:
+		return 0, io.EOF
+	case len(p) == 0:
+		return 0, nil
+	case b.n <= 0:
+		// One byte more is past the limit, and the end is not.
+		var one [1]byte
+		n, err := b.r.Read(one[:])
+		if n > 0 {
+			b.over = true
+			return 0, b.err
+		}
+		b.eof = err == io.EOF
+		return 0, err
+	}
+	if int64(len(p)) > b.n {
+		p = p[:b.n]
+	}
+	n, err := b.r.Read(p)
+	b.n -= int64(n)
+	b.eof = err == io.EOF
+	return n, err
+}
+
+// head keeps the first max bytes written to it and drops the rest, so a
+// command's standard error is read to its end and never held whole.
+type head struct {
+	max int
+	b   bytes.Buffer
+}
+
+func (h *head) Write(p []byte) (int, error) {
+	if room := h.max - h.b.Len(); room > 0 {
+		h.b.Write(p[:min(len(p), room)])
+	}
+	return len(p), nil
+}
+
+func (h *head) String() string { return h.b.String() }
 
 // command is git, run in dir unless it is "", with replacement refs off
 // and an environment that holds none of the caller's GIT_ variables and
@@ -269,19 +384,14 @@ func git(ctx context.Context, dir string, args ...string) ([]byte, error) {
 }
 
 func gitInput(ctx context.Context, dir string, stdin []byte, args ...string) ([]byte, error) {
-	cmd := command(ctx, dir, args...)
-	if stdin != nil {
-		cmd.Stdin = bytes.NewReader(stdin)
+	verb := args[0]
+	for i := 0; verb == "-c" && i+2 < len(args); i += 2 {
+		verb = args[i+2]
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
-		verb := args[0]
-		for i := 0; verb == "-c" && i+2 < len(args); i += 2 {
-			verb = args[i+2]
-		}
-		return out, fmt.Errorf("git %s: %w: %s", verb, err, strings.TrimSpace(stderr.String()))
-	}
-	return out, nil
+	var out []byte
+	err := run(command(ctx, dir, args...), verb, stdin, maxOutput, func(r io.Reader) (err error) {
+		out, err = io.ReadAll(r)
+		return err
+	})
+	return out, err
 }

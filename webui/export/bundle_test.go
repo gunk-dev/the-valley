@@ -3,7 +3,9 @@ package export_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -336,11 +338,49 @@ func TestGit(t *testing.T) {
 	if err := export.AcceptBundle(ctx, s.bundle(t, "main"), repo, s.tip); err != nil {
 		t.Fatal(err)
 	}
-	out, err := export.Git(ctx, repo, "rev-parse", export.MainRef)
+	out, err := export.Git(ctx, repo, 1<<10, "rev-parse", export.MainRef)
 	if err != nil || strings.TrimSpace(string(out)) != s.tip {
 		t.Errorf("Git read main as %q, %v; want %s", out, err, s.tip)
 	}
-	if out, err := export.Git(ctx, filepath.Join(repo, "refs"), "rev-parse", export.MainRef); err == nil {
+	if out, err := export.Git(ctx, filepath.Join(repo, "refs"), 1<<10, "rev-parse", export.MainRef); err == nil {
 		t.Errorf("Git read %q from a directory inside the repository", out)
+	}
+}
+
+// Git reads no more output than its limit: git printing more is stopped
+// and waited for, and the read fails. Output of exactly the limit is
+// read whole. A reader that returns before the output ends stops git too,
+// and is not failed for it. A git left writing to a pipe nobody reads
+// would never exit, so each call returning shows git was stopped.
+func TestGitOutputLimit(t *testing.T) {
+	ctx := context.Background()
+	repo := filepath.Join(t.TempDir(), "big.git")
+	git(t, "", nil, "init", "--quiet", "--bare", repo)
+	big := strings.Repeat("eight MiB of output\n", (8<<20)/20)
+	blob := git(t, repo, []byte(big), "hash-object", "-w", "--stdin")
+
+	if out, err := export.Git(ctx, repo, 1<<20, "cat-file", "blob", blob); !errors.Is(err, export.ErrOutputLimit) {
+		t.Errorf("Git read %d bytes of an 8 MiB blob with a 1 MiB limit, and returned %v", len(out), err)
+	}
+	if out, err := export.Git(ctx, repo, int64(len(big)), "cat-file", "blob", blob); err != nil || string(out) != big {
+		t.Errorf("Git read %d bytes of a blob exactly its limit long: %v", len(out), err)
+	}
+
+	var first []byte
+	err := export.GitStream(ctx, repo, 64<<20, func(r io.Reader) error {
+		first = make([]byte, 5)
+		_, err := io.ReadFull(r, first)
+		return err
+	}, "cat-file", "blob", blob)
+	if err != nil || string(first) != "eight" {
+		t.Errorf("a reader that stopped early read %q and got %v", first, err)
+	}
+
+	// A git that fails is reported once its output is read to the end.
+	if err := export.GitStream(ctx, repo, 1<<10, func(r io.Reader) error {
+		_, err := io.ReadAll(r)
+		return err
+	}, "cat-file", "blob", strings.Repeat("0", 40)); err == nil {
+		t.Error("GitStream did not report git's failure")
 	}
 }

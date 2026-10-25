@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -838,9 +840,6 @@ func TestARequestKeepsItsGeneration(t *testing.T) {
 	}()
 	old := <-paused
 
-	renamed := func(title string) func(*export.Export) {
-		return func(e *export.Export) { e.Projects[0].Knots[0].Title = title }
-	}
 	next := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
 	if next.Sequence == old.Sequence {
 		t.Fatal("the publish did not activate a new generation")
@@ -861,6 +860,265 @@ func TestARequestKeepsItsGeneration(t *testing.T) {
 	h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
 	if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
 		t.Errorf("the released generation is still on disk: %v", err)
+	}
+}
+
+// eventually waits up to ten seconds for cond to hold.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !cond(); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+	}
+}
+
+// renamed changes the title of the fixture's first knot.
+func renamed(title string) func(*export.Export) {
+	return func(e *export.Export) { e.Projects[0].Knots[0].Title = title }
+}
+
+// Requests that open a generation together read its export once. While
+// it is read, a newer generation is read and served on its own, at most
+// MaxLoads exports are read at once, and an older read that finishes
+// last does not displace the newest generation's snapshot.
+func TestExportLoadsCoalesce(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	loads := map[int64]int{}
+	holds := map[int64]chan struct{}{}
+	hold := func(g export.Generation) chan struct{} {
+		mu.Lock()
+		defer mu.Unlock()
+		if holds[g.Sequence] == nil {
+			holds[g.Sequence] = make(chan struct{})
+		}
+		return holds[g.Sequence]
+	}
+	h.srv.loading = func(g export.Generation) {
+		mu.Lock()
+		loads[g.Sequence]++
+		mu.Unlock()
+		<-hold(g)
+	}
+	loaded := func(g export.Generation) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return loads[g.Sequence]
+	}
+	var opens atomic.Int32
+	h.srv.opened = func(export.Generation) { opens.Add(1) }
+	get := func(n int) chan *httptest.ResponseRecorder {
+		served := make(chan *httptest.ResponseRecorder, n)
+		for range n {
+			go func() {
+				w := httptest.NewRecorder()
+				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/knots/app/oc-a000001", nil))
+				served <- w
+			}()
+		}
+		return served
+	}
+	expect := func(served chan *httptest.ResponseRecorder, n int, title string) {
+		t.Helper()
+		for range n {
+			if w := <-served; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), title) {
+				t.Errorf("a request answered %d, not with %q", w.Code, title)
+			}
+		}
+	}
+
+	first := h.active()
+	firstServed := get(10)
+	eventually(t, "ten requests open the first generation", func() bool { return opens.Load() == 10 })
+	second := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
+	secondServed := get(1)
+	eventually(t, "the second generation is read", func() bool { return loaded(second) == 1 })
+
+	// Both loaders are taken, so the third generation waits for one.
+	third := h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
+	thirdServed := get(1)
+	eventually(t, "a request opens the third generation", func() bool { return opens.Load() == 12 })
+	time.Sleep(20 * time.Millisecond)
+	if n := loaded(third); n != 0 {
+		t.Errorf("a third export was read while %d were", MaxLoads)
+	}
+	close(hold(second))
+	expect(secondServed, 1, "Readers browse the second plan")
+	close(hold(third))
+	expect(thirdServed, 1, "Readers browse the third plan")
+	close(hold(first))
+	expect(firstServed, 10, "Readers browse the app&#39;s plan")
+
+	if !strings.Contains(h.page("/knots/app/oc-a000001"), "Readers browse the third plan") {
+		t.Error("the first generation's read displaced the third's")
+	}
+	for _, g := range []export.Generation{first, second, third} {
+		if n := loaded(g); n != 1 {
+			t.Errorf("generation %d's export was read %d times", g.Sequence, n)
+		}
+	}
+}
+
+// Source requests past MaxGit wait, MaxWaiting of them, and one more
+// answers 503 at once. A waiting request holds no generation, so an
+// activation while the server is saturated deletes the old generation,
+// and every waiting request serves the new one. A request's time runs
+// from its arrival, so one that waits past it answers 503.
+func TestSourceAdmission(t *testing.T) {
+	h := newHarness(t)
+	var admitted atomic.Int32
+	release := make(chan struct{})
+	h.srv.admitted = func() {
+		admitted.Add(1)
+		<-release
+	}
+	target := "/source/app/tree/" + h.tip() + "/"
+	get := func(n int) chan *httptest.ResponseRecorder {
+		served := make(chan *httptest.ResponseRecorder, n)
+		for range n {
+			go func() {
+				w := httptest.NewRecorder()
+				h.srv.ServeHTTP(w, httptest.NewRequest("GET", target, nil))
+				served <- w
+			}()
+		}
+		return served
+	}
+
+	old := h.active()
+	served := get(MaxGit + MaxWaiting)
+	eventually(t, "every slot is taken and MaxWaiting requests wait", func() bool {
+		return admitted.Load() == MaxGit && len(h.srv.waiting) == MaxWaiting
+	})
+	if w := h.get(target); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+		t.Errorf("a source request past MaxWaiting answered %d, Retry-After %q", w.Code, w.Header().Get("Retry-After"))
+	}
+	h.page("/") // a page that runs no git is served still
+
+	tip, bundle := h.commitMain("app: a commit while the server is saturated\n", file{"100644", "saturated.txt", "saturated\n"})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
+		t.Errorf("a generation no request had opened outlived the activation: %v", err)
+	}
+	close(release)
+	for range MaxGit + MaxWaiting {
+		if w := <-served; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/source/app/tree/"+tip+"/") {
+			t.Errorf("a waiting request answered %d, not from the new generation", w.Code)
+		}
+	}
+
+	// A request that waits past its time answers 503. Those that held
+	// the slots meanwhile ran out of time too.
+	h.srv.timeout = 200 * time.Millisecond
+	h.srv.log = func(error) {}
+	admitted.Store(0)
+	release = make(chan struct{})
+	held := get(MaxGit)
+	eventually(t, "every slot is taken", func() bool { return admitted.Load() == MaxGit })
+	start := time.Now()
+	if w := h.get(target); w.Code != http.StatusServiceUnavailable {
+		t.Errorf("a request that waited past its time answered %d", w.Code)
+	}
+	if waited := time.Since(start); waited > 5*time.Second {
+		t.Errorf("a request waited %v past its time of 200ms", waited)
+	}
+	close(release)
+	for range MaxGit {
+		if w := <-held; w.Code != http.StatusServiceUnavailable {
+			t.Errorf("a request that ran out of time answered %d", w.Code)
+		}
+	}
+}
+
+// stallingListener accepts connections whose writes stall until release
+// is closed, while stall is set. Each sends on stalled the first time one
+// of its writes stalls.
+type stallingListener struct {
+	net.Listener
+	stall   atomic.Bool
+	release chan struct{}
+	stalled chan struct{}
+}
+
+func (l *stallingListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil || !l.stall.Load() {
+		return c, err
+	}
+	return &stallingConn{Conn: c, l: l}, nil
+}
+
+type stallingConn struct {
+	net.Conn
+	l    *stallingListener
+	once sync.Once
+}
+
+func (c *stallingConn) Write(p []byte) (int, error) {
+	c.once.Do(func() { c.l.stalled <- struct{}{} })
+	<-c.l.release
+	return c.Conn.Write(p)
+}
+
+// Readers that never read their responses hold no git slot and no
+// generation: more of them than MaxGit and MaxWaiting together are
+// stalled writing, and a new reader is still served, and an activation
+// deletes the generation they were served from.
+func TestSlowReadersHoldNothing(t *testing.T) {
+	h := newHarness(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := MaxGit + MaxWaiting + 4
+	sl := &stallingListener{Listener: ln, release: make(chan struct{}), stalled: make(chan struct{}, n)}
+	sl.stall.Store(true)
+	srv := &http.Server{Handler: h.srv}
+	go srv.Serve(sl)
+	var conns []net.Conn
+	defer func() {
+		close(sl.release)
+		for _, c := range conns {
+			c.Close()
+		}
+		srv.Close()
+	}()
+
+	old := h.active()
+	target := "/source/app/blob/" + h.tip() + "/docs/guide.md"
+	for range n {
+		c, err := net.Dial("tcp", ln.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, c)
+		fmt.Fprintf(c, "GET %s HTTP/1.1\r\nHost: valley-host\r\n\r\n", target)
+	}
+	for i := range n {
+		select {
+		case <-sl.stalled:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%d of %d slow readers' responses were written; the rest wait", i, n)
+		}
+	}
+	sl.stall.Store(false)
+	if len(h.srv.slots) != 0 || len(h.srv.waiting) != 0 {
+		t.Errorf("slow readers hold %d git slots, and %d requests wait", len(h.srv.slots), len(h.srv.waiting))
+	}
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("http://" + ln.Addr().String() + target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("a new reader answered %d while slow readers stall", resp.StatusCode)
+	}
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, func(*export.Export) {})
+	if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
+		t.Errorf("the generation slow readers were served from outlived the activation: %v", err)
 	}
 }
 

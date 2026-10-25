@@ -5,9 +5,24 @@
 // # Snapshots
 //
 // Every request opens the store's active generation once, with
-// export.Store.Open, and serves its whole response from that generation.
-// It releases the generation when the response is written. An activation
-// during the request changes nothing the request reads.
+// export.Store.Open, and renders its whole response from that
+// generation. An activation during the request changes nothing the
+// request reads. Each generation's export is read once, however many
+// requests open it at once, and is kept while the generation is the
+// newest one read.
+//
+// # Admission
+//
+// A source request runs git, and at most MaxGit run at once. A source
+// request takes one of those slots before it opens a generation, and
+// waits for one only while fewer than MaxWaiting wait. Its time is
+// bounded from when it arrives: the wait, its git commands and its
+// rendering. A source request the server cannot admit, or that runs out
+// of time, answers 503.
+//
+// A response is rendered whole before it is written. A request gives back
+// its generation and its git slot before it writes, so a reader that
+// reads slowly holds neither.
 //
 // # Routes
 //
@@ -47,6 +62,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,11 +96,17 @@ const (
 	MaxPlanDepth = 32
 	// LogPage is the number of commits on one page of a log.
 	LogPage = 50
-	// MaxGit is the most source requests that run git at once. Others
-	// wait for one to finish.
+	// MaxGit is the most source requests that run git at once.
 	MaxGit = 8
-	// gitTimeout bounds the git commands of one request.
+	// MaxWaiting is the most source requests that wait for one of the
+	// MaxGit to finish. A source request that finds every slot taken
+	// and MaxWaiting waiting answers 503 at once.
+	MaxWaiting = 16
+	// gitTimeout bounds a source request from when it arrives: its wait
+	// for a slot, its git commands and its rendering.
 	gitTimeout = 15 * time.Second
+	// MaxLoads is the most generations whose export is read at once.
+	MaxLoads = 2
 )
 
 // Config is what a Server serves from.
@@ -103,19 +125,36 @@ type Server struct {
 	store *export.Store
 	now   func() time.Time
 	log   func(error)
-	git   chan struct{}
+	// timeout is gitTimeout, which a test shortens.
+	timeout time.Duration
+	// slots holds a token for each source request running git, and
+	// waiting one for each source request waiting for a slot.
+	slots   chan struct{}
+	waiting chan struct{}
+	// loaders holds a token for each export being read.
+	loaders chan struct{}
 
-	mu     sync.Mutex
+	mu sync.Mutex
+	// cached is the newest generation's snapshot read so far.
 	cached *snapshot
+	// loads are the reads of generations' exports under way, by sequence.
+	loads map[int64]*load
 
-	// opened, when set, is called with each generation a request opens,
-	// before the request reads anything from it.
-	opened func(export.Generation)
+	// The test hooks. opened, when set, is called with each generation a
+	// request opens, before the request reads anything from it. admitted
+	// is called when a source request takes a git slot, before it opens
+	// a generation. loading is called with each generation whose export
+	// is read, before it is read.
+	opened   func(export.Generation)
+	admitted func()
+	loading  func(export.Generation)
 }
 
 // New is a Server over c's store.
 func New(c Config) *Server {
-	s := &Server{store: c.Store, now: c.Now, log: c.Log, git: make(chan struct{}, MaxGit)}
+	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: gitTimeout,
+		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
+		loaders: make(chan struct{}, MaxLoads), loads: map[int64]*load{}}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -126,37 +165,78 @@ func New(c Config) *Server {
 }
 
 // snapshot is one generation's export, decoded, and its index. A
-// generation is immutable once active, and its directory names its
-// sequence, so a snapshot is kept for as long as its generation is the
-// one requests open.
+// generation is immutable once active, and its sequence names it, so a
+// snapshot serves every request that opens its generation.
 type snapshot struct {
-	dir string
+	seq int64
 	e   *export.Export
 	idx *index
 }
 
-// request is one request, and the generation it serves from.
+// load is one read of a generation's export, which every request that
+// opens the generation while it runs waits for.
+type load struct {
+	done chan struct{}
+	snap *snapshot
+	err  error
+}
+
+// request is one request, the generation it serves from, and the
+// response it renders.
 type request struct {
-	s   *Server
-	w   http.ResponseWriter
-	r   *http.Request
+	s *Server
+	w http.ResponseWriter
+	r *http.Request
+	// ctx is the context the request's git commands run under. A source
+	// request's ends at its deadline.
+	ctx context.Context
 	g   export.Generation
 	e   *export.Export
 	idx *index
 	now time.Time
+
+	// The response: a status and a page, or a redirect. It is written
+	// once the request has given back its generation and git slot.
+	status   int
+	ctype    string
+	body     []byte
+	location string
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setHeaders(w.Header())
-	q := &request{s: s, w: w, r: r, now: s.now()}
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		w.Header().Set("Allow", "GET, HEAD")
+	q := &request{s: s, w: w, r: r, ctx: r.Context(), now: s.now()}
+	q.serve()
+	q.write()
+}
+
+// serve renders the request's response. A source request is admitted
+// first, and holds its git slot until serve returns. Every request holds
+// its generation until serve returns.
+func (q *request) serve() {
+	if q.r.Method != http.MethodGet && q.r.Method != http.MethodHead {
+		q.w.Header().Set("Allow", "GET, HEAD")
 		q.page(http.StatusMethodNotAllowed, "error", "Method not allowed", errorPage{
 			Heading: "Method not allowed", Text: "This server answers GET and HEAD alone.",
 		})
 		return
 	}
-	g, release, err := s.store.Open()
+	parts, ok := segments(q.r.URL.EscapedPath())
+	if ok && runsGit(parts) {
+		ctx, cancel := context.WithTimeout(q.r.Context(), q.s.timeout)
+		defer cancel()
+		done, admitted := q.s.admit(ctx)
+		if !admitted {
+			q.busy()
+			return
+		}
+		defer done()
+		q.ctx = ctx
+		if q.s.admitted != nil {
+			q.s.admitted()
+		}
+	}
+	g, release, err := q.s.store.Open()
 	defer release()
 	if errors.Is(err, export.ErrNoExport) {
 		q.page(http.StatusServiceUnavailable, "error", "Nothing published", errorPage{
@@ -168,42 +248,102 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		q.fail(err)
 		return
 	}
-	if s.opened != nil {
-		s.opened(g)
+	if q.s.opened != nil {
+		q.s.opened(g)
 	}
-	snap, err := s.snapshot(g)
+	snap, err := q.s.snapshot(q.ctx, g)
 	if err != nil {
 		q.fail(err)
 		return
 	}
 	q.g, q.e, q.idx = g, snap.e, snap.idx
-	q.route()
+	q.route(parts, ok)
 }
 
-// snapshot reads the generation's export, or keeps the one read last when
-// it is the same generation's.
-func (s *Server) snapshot(g export.Generation) (*snapshot, error) {
+// runsGit reports whether a path is a source route that reads a
+// repository: a tree, a file or a log.
+func runsGit(parts []string) bool {
+	return len(parts) >= 3 && parts[0] == "source" && (parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
+}
+
+// admit takes a git slot for a source request. When every slot is taken,
+// it waits for one until ctx is done, unless MaxWaiting requests wait
+// already. done gives the slot back.
+func (s *Server) admit(ctx context.Context) (done func(), ok bool) {
+	give := func() { <-s.slots }
+	select {
+	case s.slots <- struct{}{}:
+		return give, true
+	default:
+	}
+	select {
+	case s.waiting <- struct{}{}:
+	default:
+		return nil, false
+	}
+	defer func() { <-s.waiting }()
+	select {
+	case s.slots <- struct{}{}:
+		return give, true
+	case <-ctx.Done():
+		return nil, false
+	}
+}
+
+// snapshot is the generation's snapshot: the cached one when it is the
+// generation's, and otherwise the one a single read of the generation's
+// export gives every request that waits for it. A request stops waiting
+// when ctx is done. At most MaxLoads exports are read at once. A read is
+// kept only when its generation is newer than the cached one, so a
+// request still serving an older generation never displaces a newer.
+func (s *Server) snapshot(ctx context.Context, g export.Generation) (*snapshot, error) {
 	s.mu.Lock()
-	cached := s.cached
+	if c := s.cached; c != nil && c.seq == g.Sequence {
+		s.mu.Unlock()
+		return c, nil
+	}
+	l, ok := s.loads[g.Sequence]
+	if !ok {
+		l = &load{done: make(chan struct{})}
+		s.loads[g.Sequence] = l
+		go s.load(g, l)
+	}
 	s.mu.Unlock()
-	if cached != nil && cached.dir == g.Dir {
-		return cached, nil
+	select {
+	case <-l.done:
+		return l.snap, l.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+// load reads g's export for every request waiting on l. It reads while
+// those requests hold g open. Should they all go away first, an
+// activation may delete g, and the read fails, for no one.
+func (s *Server) load(g export.Generation, l *load) {
+	s.loaders <- struct{}{}
+	defer func() { <-s.loaders }()
+	if s.loading != nil {
+		s.loading(g)
 	}
 	e, err := g.Export()
-	if err != nil {
-		return nil, err
+	if err == nil {
+		l.snap = &snapshot{seq: g.Sequence, e: e, idx: newIndex(e)}
 	}
-	snap := &snapshot{dir: g.Dir, e: e, idx: newIndex(e)}
+	l.err = err
 	s.mu.Lock()
-	s.cached = snap
+	delete(s.loads, g.Sequence)
+	if l.snap != nil && (s.cached == nil || s.cached.seq < g.Sequence) {
+		s.cached = l.snap
+	}
 	s.mu.Unlock()
-	return snap, nil
+	close(l.done)
 }
 
 // route dispatches on the path's segments, each unescaped on its own, so
-// an escaped slash stays inside its segment.
-func (q *request) route() {
-	parts, ok := segments(q.r.URL.EscapedPath())
+// an escaped slash stays inside its segment. ok is false for a path whose
+// segments do not unescape.
+func (q *request) route(parts []string, ok bool) {
 	switch {
 	case !ok:
 		q.notFound()
@@ -258,27 +398,51 @@ func (q *request) notFound() {
 
 // fail logs err and answers with the one 500 page, which says nothing of
 // the failure. A reader that went away is answered with nothing: git
-// killed for it fails, and that is no failure of the server's.
+// killed for it fails, and that is no failure of the server's. A source
+// request that ran out of time answers 503.
 func (q *request) fail(err error) {
 	if q.r.Context().Err() != nil {
 		return
 	}
 	q.s.log(err)
+	if q.ctx.Err() != nil {
+		q.busy()
+		return
+	}
 	q.page(http.StatusInternalServerError, "error", "Error", errorPage{
 		Heading: "Something went wrong", Text: "The server could not read this page.",
 	})
 }
 
-// gitContext is the context the request's git commands run under. It
-// waits for one of the MaxGit slots, and done gives the slot back.
-func (q *request) gitContext() (ctx context.Context, done func(), err error) {
-	select {
-	case q.s.git <- struct{}{}:
-	case <-q.r.Context().Done():
-		return nil, func() {}, q.r.Context().Err()
+// busy answers a source request the server has no time for: it could not
+// be admitted, or it ran out of time. A reader that went away is answered
+// with nothing.
+func (q *request) busy() {
+	if q.r.Context().Err() != nil {
+		return
 	}
-	ctx, cancel := context.WithTimeout(q.r.Context(), gitTimeout)
-	return ctx, func() { cancel(); <-q.s.git }, nil
+	q.w.Header().Set("Retry-After", "5")
+	q.page(http.StatusServiceUnavailable, "error", "Busy", errorPage{
+		Heading: "Busy", Text: "The server is reading too many pages at once. Try again in a few seconds.",
+	})
+}
+
+// redirect answers with a redirect to url.
+func (q *request) redirect(url string) { q.location = url }
+
+// write writes the rendered response, or nothing for a reader that went
+// away.
+func (q *request) write() {
+	switch {
+	case q.location != "":
+		http.Redirect(q.w, q.r, q.location, http.StatusFound)
+	case q.status != 0:
+		h := q.w.Header()
+		h.Set("Content-Type", q.ctype)
+		h.Set("Content-Length", strconv.Itoa(len(q.body)))
+		q.w.WriteHeader(q.status)
+		q.w.Write(q.body)
+	}
 }
 
 // setHeaders sets the headers every response carries.

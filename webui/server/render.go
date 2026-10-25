@@ -72,9 +72,9 @@ type link struct {
 	URL  string
 }
 
-// page renders the page called name with content, and writes it with
-// status. A page is rendered whole before anything is written, so a
-// failure to render answers 500 rather than half a page.
+// page renders the page called name with content as the response, to be
+// written with status. A page is rendered whole before anything is
+// written, so a failure to render answers 500 rather than half a page.
 func (q *request) page(status int, name, title string, content any) {
 	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
 	if name == "plan" {
@@ -91,16 +91,11 @@ func (q *request) page(status int, name, title string, content any) {
 	var b bytes.Buffer
 	if err := pages[name].ExecuteTemplate(&b, "layout", data); err != nil {
 		q.s.log(fmt.Errorf("rendering %s: %w", name, err))
-		q.w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		q.w.WriteHeader(http.StatusInternalServerError)
-		fmt.Fprintln(q.w, "The server could not render this page.")
+		q.status, q.ctype, q.body = http.StatusInternalServerError, "text/plain; charset=utf-8",
+			[]byte("The server could not render this page.\n")
 		return
 	}
-	h := q.w.Header()
-	h.Set("Content-Type", "text/html; charset=utf-8")
-	h.Set("Content-Length", strconv.Itoa(b.Len()))
-	q.w.WriteHeader(status)
-	q.w.Write(b.Bytes())
+	q.status, q.ctype, q.body = status, "text/html; charset=utf-8", b.Bytes()
 }
 
 // freshness is the export's collection time and its age, as of the

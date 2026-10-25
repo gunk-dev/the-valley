@@ -61,7 +61,7 @@ func (q *request) source(project string, rest []string) {
 	var view func(ctx context.Context) error
 	switch {
 	case len(rest) == 0 || len(rest) == 1 && rest[0] == "":
-		http.Redirect(q.w, q.r, treeURL(p.Name, p.SourceTip, nil), http.StatusFound)
+		q.redirect(treeURL(p.Name, p.SourceTip, nil))
 		return
 	case len(rest) >= 2 && rest[0] == "tree":
 		path := rest[2:]
@@ -86,12 +86,7 @@ func (q *request) source(project string, rest []string) {
 		q.notFound()
 		return
 	}
-	ctx, done, err := q.gitContext()
-	if err != nil {
-		return // the reader went away
-	}
-	defer done()
-	if err := view(ctx); err != nil {
+	if err := view(q.ctx); err != nil {
 		q.fail(err)
 	}
 }

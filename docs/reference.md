@@ -17,7 +17,7 @@ and [A guide to working in the valley](./guide.md) for step-by-step workflows.
   push permissions, object types, and size limits.
 - [Wire formats and JSON schemas](#wire-formats-and-json-schemas) — change records, restack reports,
   review records, signed notes, digest manifests, transfer statements, outcome records, knots, CLI
-  JSON contracts, and the web export.
+  JSON contracts, the web export, and the web server.
 - [CUE configuration schemas](#cue-configuration-schemas) — `schema/valley.cue`,
   `schema/verification.cue`, `schema/attestation.cue`, `schema/identity.cue`, `schema/node.cue`, and
   `schema/events.cue`.
@@ -1745,8 +1745,9 @@ consists of `export.json`, one git bundle of `main` for each exported project, a
 that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
 the web server, and the web server never connects back to the host. Package `export` of the `webui`
 module ([`webui/export/`](../webui/export/)) implements the types, the verification checks below,
-and the receiver's state directory. The publisher command, the receiver's HTTP handlers, and the web
-server that call the package are `not built`.
+and the receiver's state directory. The web server, [`valley-web`](#web-server-valley-web), reads
+the receiver's state directory with the package. The publisher command and the receiver's HTTP
+handlers are `not built`.
 
 #### `export.json` (`valley-web-export/v1`)
 
@@ -1811,10 +1812,10 @@ compact JSON ending with a newline.
   `claimed_at`. From each comment, it omits `id`.
 - **Principal names:** The display mapping (`export.Principals`) rewrites `created_by`, `owner`,
   `claim.by`, each comment's `author` and `edited_by`, a change's `owner`, and a version's
-  `uploader` to configured
-  display names such as `operator` or `agent`. Each display name is 1 to 64 bytes of UTF-8 with no
-  control characters. An empty field stays empty, and any unmapped name becomes `contributor`.
-  Free-text fields (`title`, `body`, comment bodies, and `source`) are exported as written.
+  `uploader` to configured display names such as `operator` or `agent`. Each display name is 1 to 64
+  bytes of UTF-8 with no control characters. An empty field stays empty, and any unmapped name
+  becomes `contributor`. Free-text fields (`title`, `body`, comment bodies, and `source`) are
+  exported as written.
 - **References to hidden projects:** When a knot's `blocked_by` or `target` refers to a project that
   is not exported, the knot's `blocked_by` and `target` fields keep the `"<project>:<id>"` string as
   written. The corresponding entry in `edges` has `"state": "hidden"` and `null` for `why`,
@@ -2060,6 +2061,99 @@ The receiver keeps every accepted export as an immutable generation in one state
   valley with a public project `app` and a hidden project `site`. It yields the export directory,
   the bundles, the signed manifest, and its verifier key, so tests for the publisher, the receiver,
   and the web server share the same bytes.
+
+#### Web server (`valley-web`)
+
+`valley-web` serves the active export of a receiver's state directory to anonymous readers over
+HTTP: the plan page, one page per knot, and a source browser over each public project's `main`.
+Package `server` of the `webui` module ([`webui/server/`](../webui/server/)) implements it, and
+[`webui/cmd/valley-web/`](../webui/cmd/valley-web/) is the command. The flake builds it as the
+`valley-web` package.
+
+```sh
+valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
+```
+
+- **Flags:** Both flags are required.
+  - `--state DIR` names the receiver's state directory. `valley-web` opens it with
+    `export.OpenStore`, which creates the layout when it is missing and finishes an interrupted
+    activation.
+  - `--listen ADDR` is the TCP address to listen on. Port `0` picks a free port.
+- **Running:** Once it listens, `valley-web` prints `valley-web: listening on <addr>` on `stderr`.
+  It logs failures on `stderr`. On `SIGINT` or `SIGTERM` it stops accepting requests and gives
+  requests in flight up to 5 seconds. It exits `0` after a clean stop, `1` on a runtime failure, and
+  `2` on invalid flags, with the usage on `stderr`. `--help` prints the usage and exits `0`.
+- **Routes:** The server answers `GET` and `HEAD`. Any other method gets `405` with
+  `Allow: GET, HEAD`.
+
+| Route                                     | Page                                                              |
+| :---------------------------------------- | :---------------------------------------------------------------- |
+| `/`                                       | The plan page                                                     |
+| `/knots/<project>/<id>`                   | One knot                                                          |
+| `/source/<project>/`                      | `302` redirect to the tree of the project's `source_tip`          |
+| `/source/<project>/tree/<commit>/<path>/` | One directory, and its README                                     |
+| `/source/<project>/blob/<commit>/<path>`  | One file                                                          |
+| `/source/<project>/log/<commit>?skip=<n>` | 50 commits of the history that ends at `<commit>`, from the `n`th |
+
+- **One generation per request:** Each request calls `Store.Open` once and serves its whole response
+  from that generation. It releases the generation after the response is written. An activation
+  during the request does not change the response, and the old generation is not deleted until the
+  request releases it. Before the first activation, every route answers `503`.
+- **Plan page:** The page shows four sections, in this order:
+  1. **Waiting on you:** Empty. Every reader sees the same public page.
+  2. **In flight:** The export's `in_flight` knots, each with who claims it and how long ago. Beside
+     them, one card titled "Ready changes — order not assessed" lists the export's `changes`. Each
+     change shows its handle, its active version's title, whether an integration request approves
+     it, and the integrator's last decision.
+  3. **Paths:** For each knot whose children wait on one another, its children in stages. A child's
+     stage is one after the latest stage of the siblings in its `blocked_by`, whether or not they
+     are done. Children with no order between them share a stage. Abandoned children are left out.
+  4. **Milestones:** Each root with the tree of knots under it, children ordered by state. A
+     project's knots that have no parent and are not roots are listed under "Unfiled".
+
+  A knot whose `state` is `ready` shows as "free to start". The legend defines that as an open,
+  unclaimed, unblocked outcome or bug. The page's one script runs the milestone filters. Without it,
+  every knot shows, and the trees still open and close.
+
+- **Freshness:** Every page shows the export's `collected` time and its age when the request is
+  served. A page marks the export `stale` when it is more than five minutes old
+  (`server.StaleAfter`).
+- **Knot page:** It shows the knot's type, status, state, and fields, the chain of parents above it,
+  and links to the knots it is blocked by, the knots it blocks, and its children. The body and each
+  comment are shown as escaped preformatted text. A comment that carries `edited` is marked
+  "edited", with its `edited` time and `edited_by`. A `blocked_by` reference into a project the
+  export does not hold is shown as text marked "not published", with no link.
+- **Source browser:** The server reads each generation's repositories with `git` subprocesses
+  through `export.Git`. It passes `git` only object IDs it has checked, never text from the request.
+  - A source route serves `<commit>` only when it is a full object ID and `export.Reachable` finds
+    it reachable from the project's `source_tip`. Anything else answers `404`: an unreachable
+    commit, a tree or blob ID, an abbreviated ID, or a name such as `main`.
+  - The server resolves `<path>` from the commit's tree one segment at a time, with `git ls-tree` on
+    object IDs. A path deeper than 64 segments, or with a segment that is empty, `.`, or `..`, or
+    that holds `/` or NUL, answers `404`.
+  - Every source link names the project, a full commit ID, and a path.
+  - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. It shows
+    the directory's README below the listing: `README.md`, `README`, or `README.txt`, or else the
+    first file named `readme` in any case with any extension.
+  - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`.
+  - A file larger than 1 MiB (`server.MaxFile`) is not read. A file that holds a NUL byte or is not
+    valid UTF-8 is not shown, and the page says it is binary. A symbolic link shows its target and
+    is not followed. A submodule is listed with its commit and has no link.
+  - At most 8 source requests run `git` at once (`server.MaxGit`). The `git` commands of one request
+    have 15 seconds in all.
+- **Access:** Every route that names a project checks that the export holds the project with
+  visibility `public`. Every `404` is the same page, whatever the reason: a hidden or missing
+  project, a missing knot or path, or a commit the server does not serve.
+- **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
+  escapes every value from the export or a repository. The stylesheet and the plan page's script are
+  embedded in the binary and inlined; nothing else is loaded. No route serves a repository file as
+  its own content. Every response carries these headers:
+  - `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  - `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
+    `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and
+    `Cache-Control: no-cache`.
+- **Errors:** When the server cannot read the export or a repository, it answers `500` with a page
+  that gives no detail, and logs the error on `stderr`.
 
 ---
 

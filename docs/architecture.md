@@ -2590,9 +2590,9 @@ Checked by `valley-plan`, which builds a graph with the real knot verbs and comp
 the JSON with golden files in `status/testdata/plan/`, and by the Go tests in `status/` for progress
 and ordering.
 
-`valley plan --json` prints `valley-plan/v1`, an indented JSON document. The web UI is to render it,
-so it is a contract with a version, like the status object. A change to the name or meaning of any
-field is a new version.
+`valley plan --json` prints `valley-plan/v1`, an indented JSON document. The web export reads it to
+build the plan the web server shows, so it is a contract with a version, like the status object. A
+change to the name or meaning of any field is a new version.
 
 ```json
 {

@@ -223,7 +223,7 @@ integration requests, or knots. A **grant** is a capability assigned to a princi
   requests (`refs/the-valley/integration-requests/<target>/<change>`), update any change record, and
   delete change records. The two names are one grant. A principal holding either holds it, and a
   principal holding both holds it once. Who holds `approve` is a **deployment choice** (for example,
-  in the reference deployment only the human operator holds it).
+  a deployment may give it to the human operator alone).
 - **`restack`** — allows a principal to push restack reports
   (`refs/the-valley/restack/<target>/<id>`) and add a single restacked version to another owner's
   `ready` change while keeping its active branch and title. (The restack report schema, hook

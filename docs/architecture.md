@@ -3,8 +3,8 @@
 This document describes what the-valley runs today, read from the code, and the architectural
 principles its design follows. It makes four kinds of statement. A principle is a rule the design
 follows, with the reason for it; the code that carries it out is cited like any other behaviour.
-Behaviour is what the code does, cited to the files that do it. A deployment record reports an
-observation of a host, and names the record and its date. A guarantee names the flake check
+Behaviour is what the code does, cited to the files that do it. A deployment choice is what a host's
+configuration decides rather than the code, and is labelled so. A guarantee names the flake check
 (`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement of behaviour with no named
 check is unchecked. Security and rollouts are in [security.md](./security.md), planned work lives in
 [the plan graph](./concepts.md#records-project-storage-the-plan-graph-and-knots) (`valley plan`),
@@ -120,8 +120,8 @@ user, `git`. The git user's login shell runs `valleyhook shell` (`nix/valley-hos
 
 The sshd `Match User git` block turns off TCP, agent and X11 forwarding and tunnels, and sets
 `ExposeAuthInfo` so the shell can see which key logged in. It leaves stream-local (Unix socket)
-forwarding on. cosmo adds its own block with `DisableForwarding yes` and `PermitTTY no` (cosmo
-`hosts/classic-laddie/default.nix`). Build-time assertions refuse an sshd config that would let a
+forwarding on. A host's configuration can add its own block with `DisableForwarding yes` and
+`PermitTTY no` (**deployment choice**). Build-time assertions refuse an sshd config that would let a
 client set `VALLEY_PRINCIPAL` or `GIT_*` (`nix/valley-host.nix`). Checked by `ssh-e2e` (a real sshd
 in a VM), `module-eval` and `valleyhook-unit`.
 
@@ -194,8 +194,8 @@ because it lands code there. Checked by `module-eval`, `signers-e2e` and `publis
 
 The build slice caps the total CPU and memory that all Nix daemon builds on a host can use at once.
 It keeps a runaway build from starving the host's other services (knot oc-03b6f8c). A host turns it
-on with `services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is off by default, and no
-host turns it on (**deployment choice**). The check worker cannot be enabled without it
+on with `services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is off by default, and
+turning it on is a **deployment choice**. The check worker cannot be enabled without it
 (`implemented`).
 
 Every user who builds through the Nix daemon shares one pool of CPU and memory. That pool covers the
@@ -245,7 +245,7 @@ the plan graph by `knots-e2e`.
 | Ref namespace                                       | Who may push                                                                                     | Rule                                                                                                                                                                    |
 | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `refs/heads/*` (topic branches)                     | Any key                                                                                          | Create, update and delete.                                                                                                                                              |
-| Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk. cosmo names `integrator` as a writer of both its projects.                                                                           |
+| Protected refs (default `refs/heads/main`)          | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                        |
 | `refs/the-valley/attestations/<tree>/<key-hash>`    | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
 | `refs/the-valley/integration-requests/<target>/<c>` | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
 | `refs/the-valley/changes/main/<change-id>`          | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
@@ -302,7 +302,8 @@ and can leave an old request in place. So `valley withdraw` warns when origin ho
 the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
 under the name a branch's request has, for the branch of each of the change's versions. Only an
 `approve` holder may touch a request ref, so the warning says the operator must drop it if the
-change is readied first. Approvals are not records yet either; they become records with M1-C.
+change is readied first. Approvals are not records either: signed approval statements are **not
+built**.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -378,7 +379,7 @@ its own integrator, so no other repository is held up.
 
 The writer numbers versions, and the hook holds them to append-only and gap-free. The integrator
 takes this numbering as it is. A change is owned by the principal whose key pushed its first record,
-so `klaus-env` owns every agent change.
+so an agent's principal owns every change the agent starts.
 
 A record keeps every head it names reachable, because each head is a parent of a record commit. So
 records retain source objects the way topic branches do, and the hook restricts them no further.
@@ -525,10 +526,6 @@ instances of one unit at the same time, and nothing else pushes the mirrors. A m
 push runs stays in the queue, so the next run pushes the newer `main`. `mirror-e2e` stalls a push in
 that window: two pushers at once rewind the mirror, and the service ends at the newer `main`.
 
-That cosmo's deployed hosts run a publish queue is a deployment record: cosmo #934 merged and laddie
-healthy, in the handoff of 2026-10-04. At that point the service also published the integrator's
-events, and a push ran its own mirror pusher.
-
 The bus is NATS with JetStream, listening on `127.0.0.1:4222`. `valley-bus-init` creates one stream,
 `valley`, over the subjects `valley.>`, with file storage and NATS defaults. The events are defined
 in `schema/events.cue`: `ref-updated`, `integration-succeeded` and `request-stale`. The bus has no
@@ -621,7 +618,7 @@ It does not enforce it atomically. The integrator reads the records last just be
 target, and a record written between that read and the move is not seen. So a head the operator
 approved can still land after its author has paused it. Content the operator did not approve can
 never land this way. The race-free form binds each approval to the record's withdraw generation, in
-the signed approval statements of M1-C.
+signed approval statements, which are **not built**.
 
 The records are read with the parser the hook and the CLI share (`change/`), under the bounds the
 hook admits them under (`integrator/records.go`). Each pass reads every ref under
@@ -901,7 +898,7 @@ lands its evidence with the real integrator.
 
 `services.valley.worker.enable` runs `valley-worker` on a timer so ready changes have their Nix
 checks built and signed before an operator approves them (`nix/valley-host.nix`). It is off by
-default, and no host turns it on (**deployment choice**). When enabled, the module creates
+default, and turning it on is a **deployment choice**. When enabled, the module creates
 (`implemented`):
 
 - the `valley-worker` system user and group, with a `0700` state directory at `worker.stateDir`
@@ -934,8 +931,8 @@ From there, `valley-worker` discovers each project in `worker.projects` through
 The service pins the worker's SSH connections to the local host. It writes the host's own SSH host
 keys to `<stateDir>/known_hosts` under `localhost` and passes `HostKeyAlias=localhost` and
 `StrictHostKeyChecking=yes` in `GIT_SSH_COMMAND`. If a project's `policy/valley` names this host by
-its public hostname, such as `git@classic-laddie:qinling.git`, SSH still verifies it against the
-local host key. A server presenting an unrecognized host key fails verification. This host-key pin
+its public hostname, such as `git@valley-host:valley.git`, SSH still verifies it against the local
+host key. A server presenting an unrecognized host key fails verification. This host-key pin
 restricts SSH connections only; it does not cut the worker off from the network. When the worker
 fetches an instance floor named in `policy/valley`, `valley-go` sets
 `GIT_ALLOW_PROTOCOL=ssh:git:https:file` in its own child environment (`status/list.go`), so the host
@@ -970,9 +967,9 @@ then, `sshd` rejects the worker's connection and each pass stops at its first re
    services.valley.worker = {
      enable = true;
      projects = [ "the-valley" ];
-     signerName = "laddie-worker/attestations";
+     signerName = "worker/attestations";
    };
-   services.valley.integrator.signerProjects."laddie-worker/attestations" = [ "the-valley" ];
+   services.valley.integrator.signerProjects."worker/attestations" = [ "the-valley" ];
    ```
 
 2. After `valley-worker.service` has run once, read the worker's public key and verifier line:
@@ -988,15 +985,15 @@ then, `sshd` rejects the worker's connection and each pass stops at its first re
    `authorized_keys`:
 
    ```cue
-   "laddie-worker": {
+   "worker": {
    	kind: "machine"
    	keys: [{
    		class:  "ssh-ed25519"
    		bound:  "host"
    		public: "ssh-ed25519 AAAA..."
-   		signs:  "laddie-worker/attestations"
+   		signs:  "worker/attestations"
    	}]
-   	grants: push: boundary: "classic-laddie-push"
+   	grants: push: boundary: "valley-host-push"
    	expires: "2027-06-01"
    }
    ```
@@ -1019,10 +1016,10 @@ At NixOS evaluation time, `services.valley.worker` refuses to build unless all o
 - `worker.signerName` differs from the integrator's signing name.
 - `integrator.signerProjects.<signerName>` lists the exact projects in `worker.projects`.
 
-Once enrolled in the identity registry with a `git-push` grant (**deployment choice** for the
-single-host pilot on `classic-laddie`), the worker's key authenticates as a named principal
-(`VALLEY_PRINCIPAL=laddie-worker`) on every repository the host serves. `valleyhook pre-receive`
-allows a named principal without `approve` or `restack` grants to push (`implemented`):
+Once enrolled in the identity registry with a `git-push` grant (**deployment choice**), the worker's
+key authenticates as a named principal (`VALLEY_PRINCIPAL=worker`) on every repository the host
+serves. `valleyhook pre-receive` allows a named principal without `approve` or `restack` grants to
+push (`implemented`):
 
 - attestation refs (`refs/the-valley/attestations/<tree>/<key-hash>`), which are all the worker
   writes in normal operation;
@@ -1030,15 +1027,15 @@ allows a named principal without `approve` or `restack` grants to push (`impleme
 - change records (`refs/the-valley/changes/main/<change-id>`) that name it as the owner;
 - new commits on the plan graph (`refs/the-valley/knots`).
 
-The pilot does not grant the worker permission to write protected refs such as `main`, and the hook
-enforces that deployment choice (`implemented`). The hook also stops the worker from filing
-integration requests or updating another principal's change records. `integrator.signerProjects`
-restricts which projects count the worker's signed notes; it does not restrict which repositories
-the key can push to. An untagged key in `services.valley.authorizedKeys` has no principal name
-(`VALLEY_PRINCIPAL=""`), so the hook allows it to push only attestation refs and topic branches. A
-registry key can push to topic branches, its own change records, and the plan graph, which a worker
-does not need. A permission that limits a key to attestation pushes is **not built** (knot
-oc-6da5273). It must exist before the worker runs on any host beyond the `classic-laddie` pilot.
+A host that leaves the worker out of `protection.writers` keeps it from writing protected refs such
+as `main`, and the hook enforces that deployment choice (`implemented`). The hook also stops the
+worker from filing integration requests or updating another principal's change records.
+`integrator.signerProjects` restricts which projects count the worker's signed notes; it does not
+restrict which repositories the key can push to. An untagged key in `services.valley.authorizedKeys`
+has no principal name (`VALLEY_PRINCIPAL=""`), so the hook allows it to push only attestation refs
+and topic branches. A registry key can push to topic branches, its own change records, and the plan
+graph, which a worker does not need. A permission that limits a key to attestation pushes is **not
+built** (knot oc-6da5273). It must exist before a worker runs on more than one host.
 
 The worker's builds are capped at one check build at a time, 4 CPUs, and 8 GiB of memory
 (**deployment choice**). `valley-builds.slice` enforces the 4-CPU and 8-GiB limits across the Nix
@@ -1497,7 +1494,7 @@ touch, and those tools accept the signature.
 - Plain software keys pass only with `--allow-non-sk` or `--allow-class software`.
 
 Checked by `sigverify-unit` and `sigverify-e2e`, including a touchless-signature negative test.
-Nothing in the-valley or cosmo calls `sigverify` yet.
+Nothing in the-valley calls `sigverify` yet.
 
 ## The valley command
 
@@ -1604,17 +1601,17 @@ was.
 ready says so on the first line shown, above its diff, and again in place of the usual prompt:
 
 - A draft:
-  `nxvp v2 is a draft: its owner (klaus-env) hasn't marked it ready, so it can't be approved yet.`
+  `nxvp v2 is a draft: its owner (alice) hasn't marked it ready, so it can't be approved yet.`
 - A withdrawn change: `nxvp is withdrawn: there is nothing to approve.`
 
 The prompt then offers only `[v]iew full diff` and `[s]kip`. A change is often a draft because an
-agent is working on it: klaus unreadies a change while its run works, and readies the new head when
-the run finishes. `[a]pprove` would be refused. `[b]ase` is not offered either, since adding the
-rebased head as a version would ready the change behind its owner's back. `[r]eject` is not offered,
-because it records nothing on the change. It only deletes the branch, which the owner may still be
-working on. The state can change while the review is open, so `[a]pprove` and `[b]ase` still read
-the record again when they act, and refuse a change that is not ready. A branch no record is on has
-no state, and is offered the usual prompt.
+agent is working on it: an agent runner unreadies a change while its run works, and readies the new
+head when the run finishes. `[a]pprove` would be refused. `[b]ase` is not offered either, since
+adding the rebased head as a version would ready the change behind its owner's back. `[r]eject` is
+not offered, because it records nothing on the change. It only deletes the branch, which the owner
+may still be working on. The state can change while the review is open, so `[a]pprove` and `[b]ase`
+still read the record again when they act, and refuse a change that is not ready. A branch no record
+is on has no state, and is offered the usual prompt.
 
 `review` also shows the knots a change does. These are the knots in the project's plan graph whose
 `changes` lists `valley:<project>/<change ID>` (see [The plan graph](#the-plan-graph)). The project
@@ -1675,12 +1672,12 @@ too.
 
 A change with nothing under it is reviewed against `main`.
 
-`valley approve` and `valley rebase` are for front ends, such as the klaus dashboard, that show a
-change their own way. Each runs the same code as its key, so the checks, the request write and the
-refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review the
-result, and it leaves a stack that already fast-forwards from `main` alone. Checked by `valley-cli`,
-`valley-request`, `valley-status`, `valley-ready`, `valley-changes`, `review-notes` and
-`integrator-e2e`.
+`valley approve` and `valley rebase` are for front ends, such as an agent runner's dashboard, that
+show a change their own way. Each runs the same code as its key, so the checks, the request write
+and the refusals are the same. `approve` exits non-zero when it refuses. `rebase` does not re-review
+the result, and it leaves a stack that already fast-forwards from `main` alone. Checked by
+`valley-cli`, `valley-request`, `valley-status`, `valley-ready`, `valley-changes`, `review-notes`
+and `integrator-e2e`.
 
 `approve`, and so `[a]pprove`, refuses a head before any check runs when two things hold:
 
@@ -1699,8 +1696,8 @@ it onto `main`.
 An approval of a change with a record binds one head, and the request names exactly that head:
 
 - `valley approve <change> --head <sha>` approves `<sha>`. It refuses unless `<sha>` is one of the
-  record's version heads, active or not. The dashboard passes the head it showed (klaus's
-  `approve_command`), so what is approved is what was seen.
+  record's version heads, active or not. A front end passes the head it showed, so what is approved
+  is what was seen.
 - Without `--head`, `approve` prints the active version's head and title and asks for confirmation.
   It does this only on a terminal, and refuses when it is not on one.
 - `valley review <change>` shows the active version's head, and `[a]pprove` approves that head.
@@ -1794,16 +1791,16 @@ these results for the terminal. Checked by `rebase-unit`, over real repositories
 `valley ready [--head <sha>] [--change <id>] [--if-active <sha>] [--stamp] [<branch>]` writes a
 change's record (`status/ready.go`). The branch is the current one unless named. The head is
 `--head` when given, and otherwise the branch's head on origin. Either way the head must already be
-on origin. klaus passes `--head` with the head it pushed, so the version names exactly that head.
-ready reads the existing record, if there is one, and adds a version. For a ready change, it refuses
-a head equal to the active version's. It pushes the record ref with a lease on the value it read,
-and prints the handle and version, such as `cosmo nxvp v2 ready`. A draft or a withdrawn change
-comes back by `ready` too. At the head of its active version, it is ready again at that version, and
-the record commit's one parent is the record before it. At another head, it gains the next version.
-The record names the principal from `git config valley.principal`. The host derives the pushing
-principal from the key, and the client cannot ask it, so the hook refuses a record that names anyone
-else. `--if-active <sha>` adds the version only while the change is `ready` at an active version
-whose head is `<sha>`.
+on origin. An agent runner passes `--head` with the head it pushed, so the version names exactly
+that head. ready reads the existing record, if there is one, and adds a version. For a ready change,
+it refuses a head equal to the active version's. It pushes the record ref with a lease on the value
+it read, and prints the handle and version, such as `app nxvp v2 ready`. A draft or a withdrawn
+change comes back by `ready` too. At the head of its active version, it is ready again at that
+version, and the record commit's one parent is the record before it. At another head, it gains the
+next version. The record names the principal from `git config valley.principal`. The host derives
+the pushing principal from the key, and the client cannot ask it, so the hook refuses a record that
+names anyone else. `--if-active <sha>` adds the version only while the change is `ready` at an
+active version whose head is `<sha>`.
 
 ready takes the change ID from the first of these that has one:
 
@@ -1869,11 +1866,10 @@ reads each plain branch in the stack again, and refuses when one names a change 
 `valley unready <change>` and `valley withdraw <change>` write a record that changes the state alone
 (`status/ready.go`). Either may be run by the change's owner or by the operator, who holds the
 `approve` grant; the hook refuses anyone else. They take a change by any of its names, and print the
-handle, the active version and the new state, such as `cosmo nxvp v2 draft`. Each says when a
-request for the change is pending, and `withdraw` warns, as [Change records](#change-records)
-describes. `valley pending` lists the changes whose record says they are drafts in a section of
-their own, at the head of each active version. A branch whose tip is a draft's head is listed only
-there.
+handle, the active version and the new state, such as `app nxvp v2 draft`. Each says when a request
+for the change is pending, and `withdraw` warns, as [Change records](#change-records) describes.
+`valley pending` lists the changes whose record says they are drafts in a section of their own, at
+the head of each active version. A branch whose tip is a draft's head is listed only there.
 
 `unready` and `withdraw` stop an approval that begins after them, on the client. They do not always
 stop one already under way there. An approval reads the record one last time just before it files
@@ -1991,9 +1987,8 @@ the whole diff and asks again. Checked by `valley-go-unit`, `valley-ready` and `
 
 ### The status object
 
-`valley status --json <change>` prints one JSON object on one line. Front ends read it, klaus among
-them, so it is a contract with a version. A change to the name or meaning of any field is a new
-version.
+`valley status --json <change>` prints one JSON object on one line. Front ends read it, so it is a
+contract with a version. A change to the name or meaning of any field is a new version.
 
 ```json
 {
@@ -2071,8 +2066,8 @@ tests in `status/` for the outcome record's parser.
 ### Listing changes
 
 `valley changes --json` prints every change a repository holds a record of, in every state, as the
-`valley-changes/v1` object (`status/list.go`). klaus reads it, so it is a contract with a version,
-like the status object. `valley pending` is the view a person reads (`status/pending.go`).
+`valley-changes/v1` object (`status/list.go`). Front ends read it, so it is a contract with a
+version, like the status object. `valley pending` is the view a person reads (`status/pending.go`).
 
 Both read one snapshot of origin for each repository they list. For each version of each change,
 they decide its landing evidence (`status/inventory.go`). The first rule that applies is the answer:
@@ -2151,18 +2146,18 @@ configuration.
 ```json
 {
   "schema": "valley-changes/v1",
-  "host": "classic-laddie",
+  "host": "valley-host",
   "repos": [
     {
-      "repo": "cosmo",
-      "url": "git@classic-laddie:cosmo.git",
+      "repo": "app",
+      "url": "git@valley-host:app.git",
       "error": null,
       "changes": [
         {
           "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
           "handle": "nxvp",
           "target": "main",
-          "owner": "klaus-env",
+          "owner": "alice",
           "state": "ready",
           "record": "<record commit>",
           "seq": 3,
@@ -2173,7 +2168,7 @@ configuration.
               "head": "<sha>",
               "title": "the head's subject",
               "branch": "topic",
-              "uploader": "klaus-env",
+              "uploader": "alice",
               "landing": "not-landed",
               "landed_commit": null,
               "request": { "ref": "refs/the-valley/integration-requests/main/topic", "commit": "<sha>" },
@@ -2207,10 +2202,9 @@ configuration.
 - A handle is unique among every change listed, in every repository. Every record of a listed
   repository counts, so a handle also names its change within that repository alone. When one change
   ID is recorded in more than one listed repository, each of those entries has the qualified handle
-  `<repo>:<prefix>`, such as `cosmo:nxvp`. git refuses a colon in a ref name, so a qualified handle
-  is never also a branch, and never reads as `origin/<branch>`. Every verb that takes a handle
-  accepts the qualified form, in the repository it names, and refuses one that names another
-  repository.
+  `<repo>:<prefix>`, such as `app:nxvp`. git refuses a colon in a ref name, so a qualified handle is
+  never also a branch, and never reads as `origin/<branch>`. Every verb that takes a handle accepts
+  the qualified form, in the repository it names, and refuses one that names another repository.
 - `landed_commit` is the commit on `main` the version landed as: its own head when `landed`, the
   transfer statement's commit when `landed-recorded`, and otherwise `null`.
 - `request` is the request filed at the version's head under either of its request names, or `null`.
@@ -2270,29 +2264,29 @@ have not landed.
 
 ```text
 ready
-pppp v1                                                 1 minute ago · klaus-env
+pppp v1                                                     1 minute ago · alice
   stack-c: build on stack-b · oc-6335749
   1 commit · 1 file +5 −0
   approving it lands the 2 below too
-  ├ mmmm v1                                            2 minutes ago · klaus-env
+  ├ mmmm v1                                                2 minutes ago · alice
   │   stack-b: build on stack-a
   │   1 commit · 1 file +12 −3
-  └ nxvp v1                                            3 minutes ago · klaus-env
+  └ nxvp v1                                                3 minutes ago · alice
       stack-a: the first layer
       2 commits · 4 files +80 −1
 
-vvvv v1                                                   1 hour ago · klaus-env
+vvvv v1                                                       1 hour ago · alice
   lost: a change whose request was consumed
   1 commit · 1 file +1 −0
   uncertain: it may have landed without its evidence being stored
 
 branches
-loose                                                  6 seconds ago · klaus-env
+loose                                                      6 seconds ago · alice
   loose: work no record is on
   1 commit · 1 file +1 −0
 
 drafts
-qqqq v1 on paused                                         3 days ago · klaus-env
+qqqq v1 on paused                                             3 days ago · alice
   paused: not ready yet
   1 commit · 1 file +1 −0
 ```
@@ -2319,8 +2313,8 @@ rebuild. It is for a machine where `valley` is a working tool, such as an agent'
 the operator approves from, and the valley host, keep the version their system configuration pins.
 So a commit on `main` never changes the tool that approves or admits the next one.
 
-Self-update is a Go module (`selfupdate/`) that `valley-go` runs. It mirrors klaus's self-update:
-the same steps, state file and flags. Each run:
+Self-update is a Go module (`selfupdate/`) that `valley-go` runs. It installs only a commit it has
+built and smoke-tested, and it keeps the previous install to roll back to. Each run:
 
 1. resolves the branch with `git ls-remote`;
 2. stops if the installed `valley` was built from that commit. The state file says which commit
@@ -2344,7 +2338,7 @@ The repository and branch come from `--repo` and `--branch`, or from the user's 
 repository's own config is read. A repository is refused unless it is an `https://`, `ssh://`,
 `git://` or `file://` URL, an absolute path, or `user@host:path`, with no character that nix's
 flake-ref parser would rewrite. `user@host:path` is read under the login's home, as git reads it, so
-`git@classic-laddie:the-valley` is `ssh://git@classic-laddie/~/the-valley` to both git and nix. Nix
+`git@valley-host:the-valley` is `ssh://git@valley-host/~/the-valley` to both git and nix. Nix
 fetches the repository as the user who runs self-update, with that user's ssh keys and config.
 
 The flake's home-manager module, `homeManagerModules.valley` (`nix/home-module.nix`), runs
@@ -2421,12 +2415,12 @@ push the hook refuses is not tried again, and the CLI prints what the hook said.
 The host decides every push to the ref in `valleyhook` (`valleyhook/knots.go`), with the knot
 module. It matches `refs/the-valley/knots` exactly, so a ref that only begins with that name stays
 in the closed namespace. Any named principal may write the graph, and an untagged key may not. Every
-writer can change every knot in every project's graph: with two principals, the operator's and
-`klaus-env`, that is intended, and a principal added later gets the same reach. A push that creates
-the ref brings one commit with no parent. An update brings one commit whose only parent is the old
-tip, so a push is one operation and the ref never rewinds. No push deletes the ref; a graph that
-must be recovered is recovered on the host, and its history stays the record. The commit's committer
-is the pushing principal, and its message ends with a `Valley-Op` trailer.
+writer can change every knot in every project's graph. That is intended where the writers are the
+operator and the operator's agents, and a principal added later gets the same reach. A push that
+creates the ref brings one commit with no parent. An update brings one commit whose only parent is
+the old tip, so a push is one operation and the ref never rewinds. No push deletes the ref; a graph
+that must be recovered is recovered on the host, and its history stays the record. The commit's
+committer is the pushing principal, and its message ends with a `Valley-Op` trailer.
 
 The hook reads the old and new trees with the bounded walk attestations use, with the graph's own
 budget: trees 3 deep, 20,000 entries in one tree and 30,005 in all, a shared subtree counted each
@@ -2522,17 +2516,17 @@ bold, unless `NO_COLOR` is set.
 
 ○ oc-1b5d5fe  Slice two lands                                    2/10 ██░░░░░░░░
   ✓ oc-7125815  Read the graph once
-  ◇ qn-f10cc70  Choose the glyphs · owner patrick
-  ◇ ida-9c65fa3 Colour the glyphs · owner patrick
-  ○ oc-c9066f1  Document the schema · owner patrick
+  ◇ qn-f10cc70  Choose the glyphs · owner operator
+  ◇ ida-9c65fa3 Colour the glyphs · owner operator
+  ○ oc-c9066f1  Document the schema · owner operator
                 blocked by oc-23ebda7 (abandoned)
-                lands in cosmo:oc-7654321 (dangling)
-  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+                lands in app:oc-7654321 (dangling)
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner alice
     ⊘ oc-70947c5  Golden files · blocked by bd-6e27560
     ✓ bd-b198e52  The tree misses a level
     ○ bd-6e27560  Width is off by one
   ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
-  ⊘ oc-f982ae7  Ship it · blocked by cosmo:oc-2172d43,
+  ⊘ oc-f982ae7  Ship it · blocked by app:oc-2172d43,
                 ghost:oc-0123456 (dangling), oc-70947c5
   ✗ oc-23ebda7  Use a tree widget
 
@@ -2542,17 +2536,17 @@ no milestone
   ○ bd-bee76f4  A stray report
   ◇ ida-162ff1b The graph as a web page
 
-waiting on you (patrick)
-  ◇ qn-f10cc70  Choose the glyphs · owner patrick
-  ○ oc-c9066f1  Document the schema · owner patrick
+waiting on you (operator)
+  ◇ qn-f10cc70  Choose the glyphs · owner operator
+  ○ oc-c9066f1  Document the schema · owner operator
                 blocked by oc-23ebda7 (abandoned)
-                lands in cosmo:oc-7654321 (dangling)
+                lands in app:oc-7654321 (dangling)
   ready for approval
     pqrs v1  the-valley  plan: the plan graph as a view
 
 in flight
   ◐ oc-a7dff99  Old work · claimed by run-0 13d ago, stale
-  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner klaus-env
+  ◐ oc-c23db6f  Draw the tree · claimed by run-7 11h ago · owner alice
 
 open residuals
   ○ bd-bee76f4  A stray report
@@ -2580,7 +2574,7 @@ field is a new version.
 {
   "schema": "valley-plan/v1",
   "now": "2026-10-15T09:00:00Z",
-  "operator": "patrick",
+  "operator": "operator",
   "projects": [
     {
       "project": "the-valley",
@@ -2595,9 +2589,9 @@ field is a new version.
           "active": true,
           "title": "Draw the tree",
           "created": "2026-10-02",
-          "created_by": "patrick",
+          "created_by": "operator",
           "parent": "oc-1b5d5fe",
-          "owner": "klaus-env",
+          "owner": "alice",
           "blocked_by": [],
           "claimed_by": "run-7",
           "claimed_at": "2026-10-14T21:30:00Z",
@@ -2694,22 +2688,24 @@ exit status is 1.
 
 A branch no record is on is approved by its name and requested under it.
 
-## How cosmo deploys it
+## What a deployment supplies
 
-This section describes the reference deployment (**deployment choice**): `cosmo` is the reference
-NixOS fleet, `klaus` is the agent runner, `classic-laddie` is the primary valley host, and `qinling`
-is the instance repository.
+The host module installs the mechanism, and the deployment supplies the rest (**deployment
+choice**). [Running a valley host](./guide.md#running-a-valley-host) walks through each step.
 
-cosmo's `hosts/classic-laddie/default.nix` imports `the-valley.nixosModules.valley-host` and points
-`services.valley.config` at `hosts/classic-laddie/valley.cue`. It turns on the bus, the integrator
-and the identity compiler, with the private repository `qinling` as the instance project. The host
-declares a small set of static keys beside the compiled registry keys.
-
-`valley.cue` declares two projects, `the-valley` and `qinling`. Both protect `main`. `the-valley`
-mirrors to GitHub at `gunk-dev/the-valley`, and `qinling` has no mirror. The mirror push uses the
-git user's ssh key, from an agenix secret. Backups are a nightly restic run of `/srv/git` to an
-offsite Storage Box over sftp, kept 7 daily, 4 weekly and 6 monthly. The backup target still needs
-provisioning, so the run logs a failure until it is set up.
+- **The host configuration.** It imports `the-valley.nixosModules.valley-host` and points
+  `services.valley.config` at the host's `valley.cue`. It turns on the parts the host uses, such as
+  the bus, the integrator and the identity compiler. It names the instance repository in
+  `services.valley.integrator.instanceProject`. It may declare static keys in
+  `services.valley.authorizedKeys` beside the keys the registry compiles.
+- **The declaration.** `valley.cue` names the projects, the refs each one protects, their mirrors,
+  and the backup policy. A backup is a restic run of the data directory over sftp. By default it
+  runs nightly and keeps 7 daily, 4 weekly and 6 monthly snapshots (`schema/valley.cue`).
+- **The secrets.** The deployment provisions each one as a file outside the Nix store. They are the
+  integrator's signing key (`services.valley.integrator.signingKeyFile`), the git user's ssh key,
+  which mirror pushes use, and the backup's repository URL, password, ssh key and known hosts
+  (`services.valley.backup.*`). The build refuses a host whose declaration enables backup without
+  those four files (`nix/valley-host.nix`).
 
 ## Not deployed or not wired yet
 
@@ -2721,12 +2717,10 @@ provisioning, so the run logs a failure until it is set up.
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
 | The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
-| The check worker                            | The host module runs it on a timer (`services.valley.worker`). No host turns it on.                |
-| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. No host turns it on.              |
+| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.               |
+| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.             |
 | Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                 |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |
-| Registry compile on a qinling landing       | The compiler runs on its 5-minute timer only.                                                      |
+| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                      |
 | Bus authentication                          | The bus listens on localhost with no authentication.                                               |
-| Other projects on the valley                | cosmo and klaus are not hosted on the valley.                                                      |
-| Self-update in the agent guest              | The home-manager module exists. cosmo does not enable it yet.                                      |

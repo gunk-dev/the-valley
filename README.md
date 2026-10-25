@@ -56,5 +56,5 @@ valley review kqxm              # inspect the diff (and interactively approve)
 - **[Security](./docs/security.md)** — Threat model, trust boundaries, and rollout gates.
 - **[Plan graph](./docs/concepts.md#records-project-storage-the-plan-graph-and-knots)** — The
   project's plan lives in the plan graph (`valley plan` on `refs/the-valley/knots`), which the
-  host's mirror publisher does not mirror to GitHub.
+  host's mirror publisher does not copy to mirrors.
 - **[Archive](./archive/)** and **[Research](./research/)** — Historical nodes and research notes.

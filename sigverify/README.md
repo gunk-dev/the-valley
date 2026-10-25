@@ -224,11 +224,11 @@ worth logging about a refusal or an error is on stderr.
 A verified release tag looks like this:
 
 ```
-$ sigverify git-tag --repo /srv/git/cosmo.git --tag v2026.10.04 \
-    --allowed-signers /etc/cosmo/release-signers --principal release@cosmo --require-uv
+$ sigverify git-tag --repo /srv/git/app.git --tag v2026.10.04 \
+    --allowed-signers /etc/app/release-signers --principal release@example.org --require-uv
 verified
 namespace git
-principal release@cosmo
+principal release@example.org
 class fido-sk
 key-type sk-ssh-ed25519@openssh.com
 fingerprint SHA256:...
@@ -258,8 +258,8 @@ The flake exposes the command as `packages.<system>.sigverify`, for `x86_64-linu
 
 sigverify answers one question: does this signature verify against this file, under this policy?
 These requirements are for the host-side caller that turns that answer into an activated release,
-such as cosmo's converge. Each one closes a hole that sigverify cannot close by itself. The caller
-must meet all of them before a host activates anything on sigverify's word.
+such as a host's deploy step. Each one closes a hole that sigverify cannot close by itself. The
+caller must meet all of them before a host activates anything on sigverify's word.
 
 1. **Keep every trust root out of the operator account's reach.** The operator account must not be
    able to write any of these:

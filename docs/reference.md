@@ -661,9 +661,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     `--publish-queue`, `--system`, `--interval`, `--now`).
   - `--signer-projects <file>` restricts signers to projects. Each line names a signer, then the
     projects whose evidence it may sign, separated by spaces, as in
-    `laddie-worker/attestations the-valley cosmo`. A signer the file names counts only in the
-    projects on its line. The project is the one the controller serves (`--project`, by default the
-    repository's name). In any other project the controller reports that signer's evidence as
+    `worker/attestations the-valley app`. A signer the file names counts only in the projects on its
+    line. The project is the one the controller serves (`--project`, by default the repository's
+    name). In any other project the controller reports that signer's evidence as
     `signed by no signer the integrator holds`. A line with a name and no project lets that signer
     count nowhere. A signer the file does not name counts wherever `--known-signers` lets it. Blank
     lines and lines that open with `#` are skipped. Every name and project is printable ASCII with
@@ -866,7 +866,7 @@ services.valley = {
 | `integrator.enable`, `integrator.user`                                                       | `false`, `"valley-integrator"`                     | Spawns `valley-integrator@<project>` for every git-enabled project in `valley.cue` that declares a `protection` block (requires at least one protected project; `integrator.user` must differ from `services.valley.user`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | `integrator.signingKeyFile`, `integrator.signingName`                                        | `null` (required when enabled), `null`             | Runtime path to the integrator's Ed25519 private key and optional signer name (when `null`, `integrator` defaults to `<hostname>/attestations`). The effective name is published at `refs/the-valley/signers`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `integrator.knownSignersFile`                                                                | `null`                                             | Runtime path to the `known-signers` file of trusted verifier keys (used by both `valleyhook` and `valley-integrator`). Required when `integrator.enable = true` and `identity.enable = false`; must be `null` whenever `identity.enable = true`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `integrator.signerProjects`                                                                  | `{}`                                               | Signer names mapped to the projects their evidence counts in, as in `{ "laddie-worker/attestations" = [ "the-valley" ]; }`. Rendered into the controllers' `--signer-projects` and published. An empty list counts nowhere. Names and projects are printable ASCII with no space; the integrator's own name is refused.                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `integrator.signerProjects`                                                                  | `{}`                                               | Signer names mapped to the projects their evidence counts in, as in `{ "worker/attestations" = [ "the-valley" ]; }`. Rendered into the controllers' `--signer-projects` and published. An empty list counts nowhere. Names and projects are printable ASCII with no space; the integrator's own name is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | `integrator.instanceProject`, `integrator.instancePolicy`                                    | `null`, `null`                                     | Exactly one must be set when `integrator.enable = true`: `instanceProject` names the hosted repository carrying `policy/instance/` (whose `refs/heads/main` must be protected) and causes `valley-init` to write `refs/the-valley/projects` and `valley-signers` to write `refs/the-valley/signers` there; `instancePolicy` names a local directory of floor `*.cue` files.                                                                                                                                                                                                                                                                                                                                                                      |
 | `integrator.interval`                                                                        | `"15s"`                                            | Poll interval between `integrator watch` reconciliation passes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `identity.enable`, `identity.ref`, `identity.directory`, `identity.interval`                 | `false`, `"refs/heads/main"`, `"identity"`, `"5m"` | Compiles `<directory>/*.cue` from `integrator.instanceProject` at `<ref>` (which must be covered by `protection`) into `/var/lib/valley-identity/{known-signers,authorized_keys.<user>,grants}` on a timer (`knownSignersFile` must be `null`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -1099,7 +1099,7 @@ push to `refs/the-valley/reviews/`.
   "change_id": "nxvpwlkmqtsrzyoukklnpmqrstuvwxyz",
   "target": "main",
   "review": "docs-style",
-  "reviewer": "klaus-env",
+  "reviewer": "alice",
   "verdict": "request-changes",
   "withdraws": null,
   "binding": {
@@ -1121,7 +1121,7 @@ push to `refs/the-valley/reviews/`.
     }
   ],
   "provenance": {
-    "harness": "klaus 0.9.1",
+    "harness": "agent-runner 0.9.1",
     "model": "claude-opus-5-5",
     "settings": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "inputs": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -1414,7 +1414,7 @@ created: 2026-10-19
 created_by: "operator"
 parent: oc-7654321
 owner: "operator"
-blocked_by: [bd-89abcde, "cosmo:oc-0123456"]
+blocked_by: ["app:oc-0123456", bd-89abcde]
 changes: ["valley:the-valley/nxvpwlkmqtsrzyoukklnpmqrstuvwxyz"]
 ---
 

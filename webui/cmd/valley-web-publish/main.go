@@ -81,7 +81,7 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	cfg, err := parseArgs(args, stderr)
+	cfg, err := parseArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(stdout, usage)
 		return 0
@@ -114,7 +114,7 @@ type config struct {
 	recheck      time.Duration
 }
 
-func parseArgs(args []string, stderr io.Writer) (config, error) {
+func parseArgs(args []string) (config, error) {
 	var c config
 	fs := flag.NewFlagSet("valley-web-publish", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

@@ -239,7 +239,7 @@ func (v *testValley) publish(more ...string) (stdout, stderr string) {
 func (v *testValley) tryPublish(adjust func(*publisher), more ...string) (string, string, error) {
 	v.t.Helper()
 	var stdout, stderr bytes.Buffer
-	cfg, err := parseArgs(v.args(more...), &stderr)
+	cfg, err := parseArgs(v.args(more...))
 	if err != nil {
 		v.t.Fatal(err)
 	}

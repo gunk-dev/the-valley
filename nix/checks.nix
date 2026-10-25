@@ -5,8 +5,9 @@
 # is only what builds it, what it is given, and why it exists.
 #
 #   hosts.nix        the eval-only host declarations the module checks share
-#   host-module.nix  module-eval — what the NixOS module renders from a
-#                    declaration, and what it must refuse
+#   host-module.nix  module-eval — what the NixOS modules render from a
+#                    declaration, and what they must refuse: the host
+#                    module and the web publisher's beside it
 #   schema.nix       cue-vet, attest-schema, identity-schema — the schemas
 #                    against the examples they accept and the ones they
 #                    must reject

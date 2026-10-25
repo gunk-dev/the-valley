@@ -1,4 +1,5 @@
 # What the NixOS module renders from a declaration, and what it must refuse.
+# The web publisher's module, which sits beside it, is held here too.
 # The refusals are eval-time: a host that must not evaluate is caught by a
 # throw here, since there is nothing to build once it has. What a host does
 # render is pinned by module-eval.sh over the rendered scripts.
@@ -12,6 +13,7 @@
 {
   pkgs,
   lib,
+  self,
   stubbedHosts,
   ...
 }:
@@ -46,6 +48,51 @@ let
     integratorNamedWorkerHost
     ;
 
+  # The web publisher's module (nix/webui-publisher.nix) beside the host
+  # module, over integratorHost: its instance repository is the one the
+  # controllers read the floor from. The host also has a backup key the
+  # publisher must not read. The publisher is a stand-in, as the host's
+  # programs are. webPublisherOffHost imports the module and leaves it off.
+  webPublisherStub = pkgs.writeShellScriptBin "valley-web-publish" ''
+    echo "valley-web-publish: a stand-in the module checks render hosts over, which runs nothing" >&2
+    exit 1
+  '';
+  webPublisherOffHost = stubbedHosts.integratorHost.extendModules {
+    modules = [
+      self.nixosModules.webui-publisher
+      { services.valley.webPublisher.package = webPublisherStub; }
+    ];
+  };
+  webPublisherHost = webPublisherOffHost.extendModules {
+    modules = [
+      {
+        networking.hostName = "valley-host";
+        services.valley.backup.sshKeyFile = "/run/agenix/valley-git-ssh-key";
+        services.valley.webPublisher = {
+          enable = true;
+          destination = "example.org";
+          receiver = "https://example.org";
+          principals = {
+            operator = "operator";
+            alice = "agent";
+          };
+        };
+      }
+    ];
+  };
+  # The publisher with no instance repository to discover the projects and
+  # the signers through.
+  noInstanceWebPublisherHost = webPublisherHost.extendModules {
+    modules = [
+      {
+        services.valley.integrator = {
+          instanceProject = lib.mkForce null;
+          instancePolicy = "/var/lib/valley-instance/policy/instance";
+        };
+      }
+    ];
+  };
+
   failedAssertions = builtins.filter (a: !a.assertion) (
     host.config.assertions
     ++ noBackupHost.config.assertions
@@ -58,6 +105,8 @@ let
     ++ identityHost.config.assertions
     ++ workerHost.config.assertions
     ++ buildSliceHost.config.assertions
+    ++ webPublisherHost.config.assertions
+    ++ webPublisherOffHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -140,6 +189,11 @@ let
       host = conflictingKeysHost;
       says = "more than one principal tag";
       why = "a key declared under two tags would push as whichever entry sshd reads first";
+    }
+    {
+      host = noInstanceWebPublisherHost;
+      says = "services.valley.webPublisher needs services.valley.integrator.instanceProject";
+      why = "a publisher with no instance repository has no publication to discover the projects and their signers through";
     }
   ];
 
@@ -496,6 +550,68 @@ let
     || !(lib.hasInfix "git -C \"$origin\" remote add origin git@localhost:sealed.git\n" unit.script)
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
+
+  # The web publisher (nix/webui-publisher.nix). Off, it renders nothing.
+  # On, one pass is a oneshot on a five-minute timer whose first pass waits
+  # five minutes after the timer starts, and which no switch starts or
+  # restarts. It runs as a dynamic user in the git group, with an exact
+  # safe.directory entry for each repository the host serves and no
+  # wildcard, the repositories read-only, nothing writable but its state
+  # and cache, and the mirror, backup and signing keys out of reach. It
+  # reads the instance repository the controllers read, names the host as
+  # the instance, and is given the receiver, the destination and the
+  # display mapping.
+  webPublisherRenderedWithoutEnable =
+    webPublisherOffHost.config.systemd.services ? valley-web-publish
+    || webPublisherOffHost.config.systemd.timers ? valley-web-publish;
+
+  webPublisherMisrendered =
+    let
+      unit = webPublisherHost.config.systemd.services.valley-web-publish;
+      service = unit.serviceConfig;
+      env = unit.environment;
+      timer = webPublisherHost.config.systemd.timers.valley-web-publish;
+      repos = [
+        "/srv/git/guarded.git"
+        "/srv/git/open.git"
+        "/srv/git/released.git"
+        "/srv/git/sealed.git"
+      ];
+      entries = lib.genList (i: {
+        key = env."GIT_CONFIG_KEY_${toString i}" or null;
+        value = env."GIT_CONFIG_VALUE_${toString i}" or null;
+      }) (lib.length (lib.filter (lib.hasPrefix "GIT_CONFIG_KEY_") (lib.attrNames env)));
+      command = service.ExecStart;
+    in
+    service.Type or null != "oneshot"
+    || service.DynamicUser or null != true
+    || service ? User
+    || service.SupplementaryGroups or [ ] != [ "git" ]
+    || env.GIT_CONFIG_COUNT or null != toString (lib.length repos)
+    || entries != map (r: {
+      key = "safe.directory";
+      value = r;
+    }) repos
+    || lib.any (e: lib.hasInfix "*" e.value) entries
+    || service.ProtectSystem or null != "strict"
+    || service ? ReadWritePaths
+    || service.ReadOnlyPaths or [ ] != map (r: "-${r}") repos
+    || service.StateDirectory or null != "valley-web-publish"
+    || service.CacheDirectory or null != "valley-web-publish"
+    || env.XDG_CACHE_HOME or null != "/var/cache/valley-web-publish"
+    || !(lib.all (p: builtins.elem p service.InaccessiblePaths) [
+      "-/srv/git/.ssh"
+      "-/run/agenix/valley-integrator-key"
+      "-/run/agenix/valley-git-ssh-key"
+      "-/var/lib/valley-integrator"
+    ])
+    || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --principals /nix/store/" command)
+    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish" command)
+    || unit.restartIfChanged != false
+    || unit.wantedBy != [ ]
+    || timer.timerConfig.OnActiveSec or null != "5min"
+    || timer.timerConfig.OnUnitInactiveSec or null != "5min"
+    || !(builtins.elem "timers.target" timer.wantedBy);
 in
 {
   module-eval =
@@ -577,6 +693,10 @@ in
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
       throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer counted from the end of each pass"
+    else if webPublisherRenderedWithoutEnable then
+      throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
+    else if webPublisherMisrendered then
+      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with one exact safe.directory entry per served repository, the repositories read-only, only its state and cache writable and the host's keys inaccessible, reading the instance repository and naming the host, the receiver, the destination and the display mapping"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

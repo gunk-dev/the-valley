@@ -2101,9 +2101,13 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   generation is not deleted until the request releases it. Before the first activation, every route
   answers `503`.
 - **One read per generation:** The server reads a generation's `export.json` once, however many
-  requests open the generation at the same time. It reads at most 2 exports at once
-  (`server.MaxLoads`). It keeps the newest generation it has read, and builds the plan page's
-  structure once for it.
+  requests open the generation at the same time. It keeps the newest generation it has read, and
+  builds the plan page's structure once for it.
+  - It reads at most 2 exports at once (`server.MaxLoads`). A read starts only once it has one of
+    those 2 places.
+  - A read runs in one of the requests that wait for it, which holds the generation open while it
+    reads. No read is queued for a generation that no request waits for.
+  - A request stops waiting for a read when its reader disconnects or its time runs out.
 - **Plan page:** The page shows four sections, in this order:
   1. **Waiting on you:** Empty. Every reader sees the same public page.
   2. **In flight:** The export's `in_flight` knots, each with who claims it and how long ago. Beside
@@ -2173,15 +2177,26 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   - A log page shows the first 1 KiB of each commit's subject and author name. When a page's commits
     pass 4 MiB of `git log` output, the page ends at the commit the bound cut, shown as far as it
     was read. The page says it ends early, and links the commits after it.
+- **Time:** Every request has 15 seconds from when it arrives. The time covers its waits, its `git`
+  commands, and its rendering. A request that runs out of time answers `503` with `Retry-After: 5`.
 - **Admission:** A tree, file, or log request runs `git`, and is admitted before it opens a
   generation.
   - At most 8 such requests run at once (`server.MaxGit`). At most 16 more wait for one of them to
     finish (`server.MaxWaiting`). A request that finds both full answers `503` at once, with
     `Retry-After: 5`.
-  - A request has 15 seconds from when it arrives, for its wait, its `git` commands and its
-    rendering. A request that runs out of time answers `503`.
   - A request gives back its place among the 8 before it writes its response. A reader that reads
     slowly holds no place and no generation.
+- **Response size and memory:** Every page is rendered whole before it is written.
+  - A page is at most 8 MiB (`server.MaxResponse`), whatever its route and whatever it shows. A page
+    that would be larger stops rendering at the bound. The server answers `500` with a short page
+    titled "Page too large", and logs the failure.
+  - The server holds at most 64 MiB of rendered responses at once (`server.MaxBuffered`). A response
+    takes this memory in 64 KiB pieces as it renders. It gives the memory back once the response is
+    written, so a reader that reads slowly holds its response's share until then. `valley-web` stops
+    writing a response 60 seconds after it read the request's headers.
+  - A request whose page needs more memory than is left answers `503` with `Retry-After: 5`.
+  - The "Busy" page that answers `503` and the "Page too large" page are rendered once, when the
+    server starts. They show no export, and take none of the 64 MiB.
 - **Access:** Every route that names a project checks that the export holds the project with
   visibility `public`. Every `404` is the same page, whatever the reason: a hidden or missing
   project, a missing knot or path, or a commit the server does not serve.
@@ -2194,8 +2209,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and
     `Cache-Control: no-cache`.
 - **Errors:** When the server cannot read the export or a repository, it answers `500` with a page
-  that gives no detail, and logs the error on `stderr`. A source request that runs out of time
-  answers `503`. If its time ran out after it was admitted, the error is logged.
+  that gives no detail, and logs the error on `stderr`. A request that runs out of time answers
+  `503`. The error is logged when the time ran out while the request waited for its export to be
+  read, ran `git`, or rendered. The server does not log a request it refused at admission, one whose
+  time ran out while it waited to be admitted, or one it had no response memory for.
 
 ---
 

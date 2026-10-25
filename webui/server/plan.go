@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"sort"
@@ -14,6 +15,8 @@ import (
 // index is an export's projects and knots by name, and its plan page's
 // structure, built once per generation.
 type index struct {
+	// building is set only while the worker constructs the index.
+	building context.Context
 	projects map[string]*export.Project
 	knots    map[string]map[string]*export.Knot
 	// public are the public projects' names, in the export's order.
@@ -23,9 +26,32 @@ type index struct {
 	plan *planPage
 }
 
-func newIndex(e *export.Export) *index {
-	idx := &index{projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{}}
+// indexCancelled unwinds the nested graph walks when their worker stops.
+type indexCancelled struct{ err error }
+
+func (idx *index) checkBuild() {
+	if idx.building != nil {
+		if err := idx.building.Err(); err != nil {
+			panic(indexCancelled{err})
+		}
+	}
+}
+
+func newIndex(ctx context.Context, e *export.Export) (result *index, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			if stopped, ok := p.(indexCancelled); ok {
+				result, err = nil, stopped.err
+			} else {
+				panic(p)
+			}
+		}
+	}()
+	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{}}
+	idx.checkBuild()
+	defer func() { idx.building = nil }()
 	for i := range e.Projects {
+		idx.checkBuild()
 		p := &e.Projects[i]
 		idx.projects[p.Name] = p
 		if p.Visibility == export.Public {
@@ -33,12 +59,14 @@ func newIndex(e *export.Export) *index {
 		}
 		byID := map[string]*export.Knot{}
 		for j := range p.Knots {
+			idx.checkBuild()
 			byID[p.Knots[j].ID] = &p.Knots[j]
 		}
 		idx.knots[p.Name] = byID
 	}
 	idx.plan = idx.planPage()
-	return idx
+	idx.checkBuild()
+	return idx, nil
 }
 
 func knotURL(project, id string) string {
@@ -156,9 +184,11 @@ func (idx *index) planPage() *planPage {
 	p.Projects = strings.Join(idx.public, " · ")
 	counts := map[string]int{}
 	for _, name := range idx.public {
+		idx.checkBuild()
 		proj := idx.projects[name]
-		roots := set(proj.Roots)
+		roots := idx.buildSet(proj.Roots)
 		for i := range proj.Knots {
+			idx.checkBuild()
 			k := &proj.Knots[i]
 			if (k.Type == "outcome" || k.Type == "bug") && !roots[k.ID] {
 				counts[k.State]++
@@ -169,6 +199,7 @@ func (idx *index) planPage() *planPage {
 		p.Milestones = append(p.Milestones, idx.milestones(proj)...)
 	}
 	for _, s := range []string{"done", "in-progress", "ready", "blocked"} {
+		idx.checkBuild()
 		p.Tally = append(p.Tally, tally{counts[s], stateLabel(s)})
 	}
 	return &p
@@ -206,6 +237,7 @@ func (q *request) inFlight(p *export.Project) []flight {
 func (idx *index) readyChanges(p *export.Project) []readyChange {
 	var out []readyChange
 	for _, c := range p.Changes {
+		idx.checkBuild()
 		v := c.Version
 		notes := []string{"not approved"}
 		if v.Request != nil {
@@ -220,6 +252,7 @@ func (idx *index) readyChanges(p *export.Project) []readyChange {
 		rc := readyChange{Handle: c.Handle, Title: v.Title, Version: p.Name + " v" + strconv.Itoa(v.N),
 			Note: strings.Join(notes, " · ")}
 		for _, ref := range c.Knots {
+			idx.checkBuild()
 			if k, ok := idx.knots[p.Name][ref.ID]; ok {
 				rc.Knots = append(rc.Knots, linkOf(p.Name, k))
 			}
@@ -238,10 +271,12 @@ func (idx *index) paths(p *export.Project) []path {
 	knots := idx.knots[p.Name]
 	var out []path
 	for i := range p.Knots {
+		idx.checkBuild()
 		parent := &p.Knots[i]
 		var kids []*export.Knot
 		siblings := map[string]bool{}
 		for _, id := range parent.Children {
+			idx.checkBuild()
 			if k, ok := knots[id]; ok && k.State != "abandoned" && !siblings[id] {
 				kids = append(kids, k)
 				siblings[id] = true
@@ -251,7 +286,9 @@ func (idx *index) paths(p *export.Project) []path {
 		// next lists the siblings each child blocks.
 		waits, next := map[string]int{}, map[string][]string{}
 		for _, k := range kids {
+			idx.checkBuild()
 			for _, b := range k.BlockedBy {
+				idx.checkBuild()
 				if siblings[b] {
 					waits[k.ID]++
 					next[b] = append(next[b], k.ID)
@@ -266,14 +303,17 @@ func (idx *index) paths(p *export.Project) []path {
 		stage, placed := map[string]int{}, map[string]bool{}
 		var ready []string
 		for _, k := range kids {
+			idx.checkBuild()
 			if waits[k.ID] == 0 {
 				ready, placed[k.ID] = append(ready, k.ID), true
 			}
 		}
 		for len(ready) > 0 {
+			idx.checkBuild()
 			id := ready[0]
 			ready = ready[1:]
 			for _, c := range next[id] {
+				idx.checkBuild()
 				stage[c] = max(stage[c], stage[id]+1)
 				if waits[c]--; waits[c] == 0 {
 					ready, placed[c] = append(ready, c), true
@@ -285,15 +325,18 @@ func (idx *index) paths(p *export.Project) []path {
 		// share a last stage.
 		last := 0
 		for id := range placed {
+			idx.checkBuild()
 			last = max(last, stage[id]+1)
 		}
 		pa := path{Parent: linkOf(p.Name, parent)}
 		for _, k := range kids {
+			idx.checkBuild()
 			s := stage[k.ID]
 			if !placed[k.ID] {
 				s = last
 			}
 			for len(pa.Stages) <= s {
+				idx.checkBuild()
 				pa.Stages = append(pa.Stages, nil)
 			}
 			pa.Stages[s] = append(pa.Stages[s], linkOf(p.Name, k))
@@ -312,6 +355,7 @@ func (idx *index) milestones(p *export.Project) []milestone {
 	var out []milestone
 	counted, shown := map[string]bool{}, map[string]bool{}
 	for _, id := range p.Roots {
+		idx.checkBuild()
 		k, ok := knots[id]
 		if !ok || shown[id] {
 			continue
@@ -320,6 +364,7 @@ func (idx *index) milestones(p *export.Project) []milestone {
 		done, of := 0, 0
 		var cord []string
 		for _, d := range idx.descendants(p.Name, k, counted) {
+			idx.checkBuild()
 			if d.State == "abandoned" {
 				continue
 			}
@@ -331,6 +376,7 @@ func (idx *index) milestones(p *export.Project) []milestone {
 		}
 		// The cord reads finished work first, then the rest by state.
 		sort.SliceStable(cord, func(i, j int) bool {
+			idx.checkBuild()
 			di, dj := cord[i] == "done", cord[j] == "done"
 			if di != dj {
 				return di
@@ -342,9 +388,10 @@ func (idx *index) milestones(p *export.Project) []milestone {
 			Count: strconv.Itoa(done) + " of " + strconv.Itoa(of) + " done", Cord: cord,
 			Tree: idx.tree(p.Name, k.Children, 1, shown)})
 	}
-	roots := set(p.Roots)
+	roots := idx.buildSet(p.Roots)
 	var loose []string
 	for _, k := range p.Knots {
+		idx.checkBuild()
 		if k.Parent == "" && !roots[k.ID] {
 			loose = append(loose, k.ID)
 		}
@@ -364,9 +411,11 @@ func (idx *index) descendants(project string, k *export.Knot, counted map[string
 	var out []*export.Knot
 	stack := []*export.Knot{k}
 	for len(stack) > 0 {
+		idx.checkBuild()
 		k := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
 		for _, id := range k.Children {
+			idx.checkBuild()
 			if c, ok := idx.knots[project][id]; ok && !counted[id] {
 				counted[id] = true
 				out = append(out, c)
@@ -386,14 +435,16 @@ func (idx *index) descendants(project string, k *export.Knot, counted map[string
 func (idx *index) tree(project string, ids []string, depth int, shown map[string]bool) []node {
 	var kids []*export.Knot
 	for _, id := range ids {
+		idx.checkBuild()
 		if k, ok := idx.knots[project][id]; ok && !shown[id] {
 			shown[id] = true
 			kids = append(kids, k)
 		}
 	}
-	sort.SliceStable(kids, func(i, j int) bool { return rank(kids[i].State) < rank(kids[j].State) })
+	sort.SliceStable(kids, func(i, j int) bool { idx.checkBuild(); return rank(kids[i].State) < rank(kids[j].State) })
 	var out []node
 	for _, k := range kids {
+		idx.checkBuild()
 		n := node{Row: idx.row(project, k), Open: k.State != "done" && k.State != "abandoned"}
 		if depth < MaxPlanDepth {
 			n.Children = idx.tree(project, k.Children, depth+1, shown)
@@ -438,6 +489,15 @@ func (idx *index) row(project string, k *export.Knot) row {
 func set(list []string) map[string]bool {
 	m := map[string]bool{}
 	for _, s := range list {
+		m[s] = true
+	}
+	return m
+}
+
+func (idx *index) buildSet(list []string) map[string]bool {
+	m := map[string]bool{}
+	for _, s := range list {
+		idx.checkBuild()
 		m[s] = true
 	}
 	return m

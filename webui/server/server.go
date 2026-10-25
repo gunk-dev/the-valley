@@ -78,6 +78,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -89,6 +90,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"the-valley/webui/export"
@@ -501,7 +503,17 @@ func (s *Server) run(ctx context.Context, l *load) {
 // and indexes the generation's export. It reads nothing when the
 // generation is cached already or another load reads it, and its waiting
 // requests look again. It stops reading once ctx is done.
-func (s *Server) read(ctx context.Context, l *load) (*snapshot, error) {
+func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) {
+	// Cancellation can close the file during any operation. Report the
+	// context error instead of the resulting descriptor error.
+	defer func() {
+		if stopped := ctx.Err(); stopped != nil {
+			snap, err = nil, stopped
+		}
+	}()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	g, release, err := s.store.Open()
 	if err != nil {
 		return nil, err
@@ -522,36 +534,69 @@ func (s *Server) read(ctx context.Context, l *load) (*snapshot, error) {
 	if s.loading != nil {
 		s.loading(g)
 	}
-	f, err := os.Open(g.ExportPath())
+	f, err := os.OpenFile(g.ExportPath(), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	data, err := io.ReadAll(contextReader{ctx, f})
+	// Nonblocking open avoids waiting for a FIFO writer. Go's file poller
+	// waits for reads, and Close wakes a read when the last waiter leaves.
+	stop := context.AfterFunc(ctx, func() { _ = f.Close() })
+	defer stop()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	data, err := io.ReadAll(&contextReader{ctx: ctx, r: f, waitForData: info.Mode()&os.ModeNamedPipe != 0})
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading generation %d's export: %w", g.Sequence, err)
 	}
-	e, err := export.Decode(data)
+	e, err := export.DecodeContext(ctx, bytes.NewReader(data))
 	if err != nil {
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &snapshot{seq: g.Sequence, e: e, idx: newIndex(e)}, nil
+	idx, err := newIndex(ctx, e)
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot{seq: g.Sequence, e: e, idx: idx}, nil
 }
 
 // contextReader reads from r until ctx is done.
 type contextReader struct {
-	ctx context.Context
-	r   io.Reader
+	ctx         context.Context
+	r           io.Reader
+	waitForData bool
 }
 
-func (c contextReader) Read(p []byte) (int, error) {
-	if err := c.ctx.Err(); err != nil {
-		return 0, err
+func (c *contextReader) Read(p []byte) (int, error) {
+	for {
+		if err := c.ctx.Err(); err != nil {
+			return 0, err
+		}
+		n, err := c.r.Read(p)
+		if n > 0 {
+			c.waitForData = false
+		}
+		if !c.waitForData || err != io.EOF {
+			return n, err
+		}
+		// A nonblocking FIFO reports EOF before its first writer arrives.
+		// Wait for that writer without holding a blocking open syscall.
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-c.ctx.Done():
+			timer.Stop()
+			return 0, c.ctx.Err()
+		case <-timer.C:
+		}
 	}
-	return c.r.Read(p)
 }
 
 // route dispatches on the path's segments, each unescaped on its own, so

@@ -2,8 +2,11 @@ package export_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -338,4 +341,66 @@ func TestDigest(t *testing.T) {
 	if f.Export.Collected == "" || knotOf(t, f.Export, "oc-a000002").Claim.AgeSeconds == 0 {
 		t.Error("Digest changed the export it read")
 	}
+}
+
+// Incremental decoding preserves the export's values and rejects malformed
+// fields, including nested fields and integer overflow.
+func TestDecodeContextValues(t *testing.T) {
+	f := exporttest.New(t)
+	for _, data := range [][]byte{
+		f.ExportJSON,
+		[]byte(`{"schema":"valley-web-export/v1","projects":null}`),
+		[]byte(`{"schema":"valley-web-export/v1","projects":[]}`),
+	} {
+		var want export.Export
+		if err := json.Unmarshal(data, &want); err != nil {
+			t.Fatal(err)
+		}
+		got, err := export.DecodeContext(context.Background(), bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, &want) {
+			t.Fatal("incremental decoding changed export values")
+		}
+	}
+	for _, field := range []string{
+		`"knots":{}`, `"roots":[1]`, `"knots":[{"id":"oc-a000001","active":1}]`,
+		`"knots":[{"id":"oc-a000001","comment_count":9223372036854775808}]`,
+		`"knots":[{"id":"oc-a000001","comment_count":1.5}]`, `"knots":[{"id":"oc-a000001","unknown":true}]`,
+	} {
+		data := []byte(`{"schema":"valley-web-export/v1","projects":[{"project":"app","visibility":"public","source_tip":"` + strings.Repeat("a", 40) + `",` + field + `}]}`)
+		if _, err := export.DecodeContext(context.Background(), bytes.NewReader(data)); err == nil {
+			t.Errorf("accepted %s", field)
+		}
+	}
+}
+
+// A token that spans many reads observes cancellation before consuming its
+// remaining bytes.
+func TestDecodeContextDuringToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &cancelDecodeReader{Reader: strings.NewReader(`{"schema":"` + strings.Repeat("x", 1<<20) + `"}`), cancel: cancel}
+	if _, err := export.DecodeContext(ctx, r); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+	if r.n > 8192 {
+		t.Fatalf("read %d bytes after cancellation", r.n)
+	}
+}
+
+type cancelDecodeReader struct {
+	io.Reader
+	cancel context.CancelFunc
+	n      int
+}
+
+func (r *cancelDecodeReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.n += n
+	if r.n >= 4096 {
+		r.cancel()
+	}
+	return n, err
 }

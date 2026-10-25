@@ -45,6 +45,9 @@ valley review kqxm              # inspect the diff (and interactively approve)
   restacks, skipping already-attested checks in `valley approve`, hardware-key (`sk-*`) touch-bound
   approval envelopes, and atomic multi-ref landing transactions are also not built yet.
 
+**Implemented:** The web reader releases an export load when its last waiting request leaves. This
+includes loads reading a stalled pipe or processing the export for display.
+
 ## Documentation
 
 - **[Concepts and glossary](./docs/concepts.md)** — Core concepts and every term defined.

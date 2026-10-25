@@ -2,11 +2,12 @@ package export
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"strings"
+	"reflect"
 	"unicode"
 	"unicode/utf8"
 
@@ -212,19 +213,24 @@ func (e *Export) Encode() ([]byte, error) {
 // anything but white space after the document, or an export Validate
 // refuses, fails the read.
 func Decode(data []byte) (*Export, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
+	return DecodeContext(context.Background(), bytes.NewReader(data))
+}
+
+// DecodeContext reads and validates an export while ctx remains active.
+func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
+	dec := json.NewDecoder(decodeReader{ctx, r})
+	dec.UseNumber()
 	var e Export
-	if err := dec.Decode(&e); err != nil {
+	if err := decodeValue(ctx, dec, reflect.ValueOf(&e).Elem()); err != nil {
 		return nil, fmt.Errorf("export.json: %w", err)
 	}
-	// More reports false at a closing bracket or brace, so only a second
-	// Decode that finds the end of the input proves there is nothing after
-	// the document.
-	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+	if _, err := dec.Token(); err != io.EOF {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, errors.New("export.json holds more than its one document")
 	}
-	if err := e.Validate(); err != nil {
+	if err := e.ValidateContext(ctx); err != nil {
 		return nil, err
 	}
 	return &e, nil
@@ -236,10 +242,21 @@ func Decode(data []byte) (*Export, error) {
 // that are unique within their project. Text fields are valid UTF-8 with
 // no control character other than a newline or a tab.
 func (e *Export) Validate() error {
+	return e.ValidateContext(context.Background())
+}
+
+// ValidateContext checks the export while ctx remains active.
+func (e *Export) ValidateContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if e.Schema != Schema {
 		return fmt.Errorf("export.json has schema %q, not %q", e.Schema, Schema)
 	}
 	for i, p := range e.Projects {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if !ValidName(p.Name) {
 			return fmt.Errorf("export.json names a project %q, which is not a project name", p.Name)
 		}
@@ -257,6 +274,9 @@ func (e *Export) Validate() error {
 		}
 		seen := map[string]bool{}
 		for _, k := range p.Knots {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !knot.IsLocalID(k.ID) {
 				return fmt.Errorf("project %s holds a knot %q, which is not a knot ID", p.Name, k.ID)
 			}
@@ -265,17 +285,32 @@ func (e *Export) Validate() error {
 			}
 			seen[k.ID] = true
 			for _, s := range []string{k.Title, k.Body, k.Source, k.CreatedBy, k.Owner} {
-				if !validText(s) {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !validTextContext(ctx, s) {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("knot %s:%s holds text that is not valid UTF-8 or holds a control character", p.Name, k.ID)
 				}
 			}
 			for _, c := range k.Comments {
-				if !validText(c.Body) || !validText(c.Author) || !validText(c.EditedBy) || !validText(c.Edited) {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+				if !validTextContext(ctx, c.Body) || !validTextContext(ctx, c.Author) || !validTextContext(ctx, c.EditedBy) || !validTextContext(ctx, c.Edited) {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					return fmt.Errorf("a comment on knot %s:%s holds text that is not valid UTF-8 or holds a control character", p.Name, k.ID)
 				}
 			}
 		}
 		for _, c := range p.Changes {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if !ValidObjectID(c.Version.Head) {
 				return fmt.Errorf("change %s of project %s has head %q, which is not an object ID", c.ChangeID, p.Name, c.Version.Head)
 			}
@@ -307,7 +342,23 @@ func isHex(s string) bool {
 // validText is valid UTF-8 holding no control character but a newline or
 // a tab.
 func validText(s string) bool {
-	return utf8.ValidString(s) && !strings.ContainsFunc(s, func(r rune) bool {
-		return unicode.IsControl(r) && r != '\n' && r != '\t'
-	})
+	return validTextContext(context.Background(), s)
+}
+
+func validTextContext(ctx context.Context, s string) bool {
+	nextCheck := 0
+	for i := 0; i < len(s); {
+		if i >= nextCheck {
+			if ctx.Err() != nil {
+				return false
+			}
+			nextCheck = i + 4096
+		}
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if (r == utf8.RuneError && n == 1) || (unicode.IsControl(r) && r != '\n' && r != '\t') {
+			return false
+		}
+		i += n
+	}
+	return ctx.Err() == nil
 }

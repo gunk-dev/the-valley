@@ -216,6 +216,7 @@ func (idx *index) waitsOn(refs []string) string {
 	var out []string
 	hidden := false
 	for _, ref := range refs {
+		idx.checkBuild()
 		if other, _, ok := strings.Cut(ref, ":"); ok {
 			if _, public := idx.project(other); !public {
 				if !hidden {

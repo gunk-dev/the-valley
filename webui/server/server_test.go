@@ -1657,3 +1657,128 @@ func TestRenderingIsWithinTheDeadline(t *testing.T) {
 		t.Errorf("a page that stopped rendering kept %d pieces of the budget", n)
 	}
 }
+
+// A FIFO with a writer that sends no bytes keeps Read blocked until the
+// request deadline. A FIFO without a writer must not block Open.
+func TestStalledLoadReleasesGeneration(t *testing.T) {
+	for _, writer := range []bool{false, true} {
+		t.Run(fmt.Sprint(writer), func(t *testing.T) {
+			h := newHarness(t)
+			h.srv.timeout = 100 * time.Millisecond
+			h.srv.log = func(error) {}
+			old := h.active()
+			data, err := os.ReadFile(old.ExportPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(old.ExportPath()); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(old.ExportPath(), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if writer {
+				f, err := os.OpenFile(old.ExportPath(), os.O_RDWR|syscall.O_NONBLOCK, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				if _, err := f.Write([]byte("{")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if w := h.get("/"); w.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d", w.Code)
+			}
+			eventually(t, "the stalled worker exits", func() bool { return len(h.srv.loaders) == 0 })
+			h.srv.mu.Lock()
+			cached := h.srv.cached
+			h.srv.mu.Unlock()
+			if cached != nil {
+				t.Fatal("stalled load cached a snapshot")
+			}
+			if err := os.Remove(old.ExportPath()); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(old.ExportPath(), data, 0644); err != nil {
+				t.Fatal(err)
+			}
+			h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("The second plan"))
+			if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
+				t.Fatalf("generation retained: %v", err)
+			}
+			h.srv.timeout = requestTimeout
+			if !strings.Contains(h.page("/knots/app/oc-a000001"), "The second plan") {
+				t.Fatal("loader slot is not reusable")
+			}
+		})
+	}
+}
+
+// cancelInPhase cancels a real context on the third cancellation check
+// inside a named processing function. It makes cancellation during CPU
+// work deterministic without replacing decoding or graph traversal.
+type cancelInPhase struct {
+	context.Context
+	cancel context.CancelFunc
+	phase  string
+	checks int
+}
+
+func (c *cancelInPhase) Err() error {
+	var pcs [32]uintptr
+	n := runtime.Callers(2, pcs[:])
+	frames := runtime.CallersFrames(pcs[:n])
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, c.phase) {
+			c.checks++
+			if c.checks == 3 {
+				c.cancel()
+			}
+			break
+		}
+		if !more {
+			break
+		}
+	}
+	return c.Context.Err()
+}
+
+func TestProcessingCancellationReleasesGeneration(t *testing.T) {
+	for _, phase := range []string{".decodeValue", ".(*Export).ValidateContext", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
+		t.Run(phase, func(t *testing.T) {
+			h := newHarness(t)
+			old := h.active()
+			base, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &cancelInPhase{Context: base, cancel: cancel, phase: phase}
+			l := &load{done: make(chan struct{}), cancel: cancel}
+			h.srv.loads[l] = struct{}{}
+			h.srv.loaders <- struct{}{}
+			finished := make(chan struct{})
+			go func() { h.srv.run(ctx, l); close(finished) }()
+			select {
+			case <-finished:
+			case <-time.After(2 * time.Second):
+				t.Fatal("processing did not stop")
+			}
+			if ctx.checks < 3 {
+				t.Fatalf("phase was not reached: %d checks", ctx.checks)
+			}
+			if !errors.Is(l.err, context.Canceled) {
+				t.Fatalf("load error = %v", l.err)
+			}
+			if h.srv.cached != nil || len(h.srv.loaders) != 0 || len(h.srv.loads) != 0 {
+				t.Fatal("cancelled processing retained load state")
+			}
+			h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("The second plan"))
+			if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
+				t.Fatalf("generation retained: %v", err)
+			}
+			if !strings.Contains(h.page("/knots/app/oc-a000001"), "The second plan") {
+				t.Fatal("loader slot is not reusable")
+			}
+		})
+	}
+}

@@ -183,7 +183,7 @@ in
       boot.kernel.sysctl."vm.panic_on_oom" = 0;
       # The test starts each pass itself until it checks the timer, so no
       # pass runs before the test is ready for it.
-      systemd.timers.valley-worker.timerConfig.OnBootSec = lib.mkForce "1h";
+      systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
     };
 
     testScript = ''

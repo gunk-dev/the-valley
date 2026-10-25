@@ -2449,7 +2449,8 @@ in
       description = "Run the valley check worker";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnBootSec = "1m";
+        # The first pass waits after activation, so it never runs inside a switch.
+        OnActiveSec = "5m";
         OnUnitInactiveSec = cfg.worker.interval;
       };
     };

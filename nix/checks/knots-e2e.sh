@@ -275,6 +275,16 @@ refused "an edit by a principal without the approve grant" 'is a comment by bob,
 refused "a deleted edited comment" 'a comment is never deleted' reviewer origin "$(push_graph "$(craft "$good" reviewer - "-$bob_path")")"
 refused "a new comment that records an edit" 'is a new comment that records an edit' bob origin \
   "$(push_graph "$(craft "$good" bob - "+comments/$milestone/$stamp-0123456789abcdef.md=$(edit bob bob 'Never written.')")")"
+# A comment's creation time is the stamp in its file's name, so changing
+# it moves the comment to another path. The move keeps the comment's
+# content and the op in its name, and changes only the stamp. The hook
+# refuses it as a deletion of the comment at the old path.
+moved_path="comments/$bug/$stamp-${comment_path##*-}"
+[ "$moved_path" != "$comment_path" ] || fail "the moved comment's path is the one it moves from"
+: > "$w/guarded.runs"
+refused "a comment moved to another stamp" "$comment_path: is deleted, and a comment is never deleted" operator origin \
+  "$(push_graph "$(craft "$good" operator - "-$comment_path" "100644:$moved_path=$(git rev-parse "$good:$comment_path")")")"
+[ "$(wc -l < "$w/guarded.runs")" -eq 1 ] || fail "a moved comment ran the hook $(wc -l < "$w/guarded.runs") times, not once"
 refused "a deleted knot" 'a knot is never deleted' operator origin "$(push_graph "$(craft "$good" operator - "-$bug_path")")"
 refused "a changed id" 'filename says id' operator origin \
   "$(push_graph "$(craft "$good" operator - "+$bug_path=${bug_text/id: $bug/id: bd-0000000}")")"
@@ -443,4 +453,9 @@ as bob git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" bob - "+$
   || fail "a comment's author could not edit it after another had"
 [ "$(git -C "$w/guarded.git" cat-file blob "refs/the-valley/knots:$bob_path")" = "$(edit bob bob 'Restored.')" ] \
   || fail "the last edit is not what the comment holds"
+
+# The moved comment, added beside the one it copies, is admitted, so the
+# move above was refused for the deletion alone.
+as operator git push --quiet origin "$(push_graph "$(craft "$(tip guarded)" operator - "100644:$moved_path=$(git rev-parse "$good:$comment_path")")")" 2> "$w/err" \
+  || fail "the moved comment, added beside the one it copies, was refused"
 touch "$out"

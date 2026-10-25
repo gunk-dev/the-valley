@@ -1853,11 +1853,11 @@ are `not built`.
 - **Commit outcome:** A commit has succeeded once `high-water` holds its sequence and `active`
   points at its generation. The reply is then `200`. A later failure does not change the reply:
   deleting old generations, stale staging directories and the trash, or syncing the swap to disk.
-  `Store` passes such a failure to the report function given to `export.OpenStore`, for the
-  receiver to log, and the next sweep or `OpenStore` repairs it. A commit that fails before then
-  leaves the active export as it was. If it failed after `high-water` was written, its sequence is
-  accepted, and the commit retried is refused as `replayed`. The publisher's next manifest, signed
-  later, replaces the upload.
+  `Store` passes such a failure to the report function given to `export.OpenStore`, for the receiver
+  to log, and the next sweep or `OpenStore` repairs it. A commit that fails before then leaves the
+  active export as it was. If it failed after `high-water` was written, its sequence is accepted,
+  and the commit retried is refused as `replayed`. The publisher's next manifest, signed later,
+  replaces the upload.
 - **Held repositories:** A bundle is not needed when the receiver holds its project at the declared
   source tip. The new generation carries that repository. A publisher whose digest the receiver
   already serves, and for which it needs no bundle, may stop after step 1. The next manifest it

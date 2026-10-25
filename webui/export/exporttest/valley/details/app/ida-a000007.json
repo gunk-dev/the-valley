@@ -1,0 +1,26 @@
+{
+  "schema": "valley-knot/v1",
+  "project": "app",
+  "tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+  "knot": {
+    "id": "ida-a000007",
+    "type": "idea",
+    "status": "raw",
+    "active": true,
+    "title": "Render Markdown in a later slice",
+    "created": "2026-10-07",
+    "created_by": "app-operator",
+    "blocked_by": [],
+    "changes": [],
+    "path": "ideas/ida-a000007-render-markdown-in-a-later-slice.md",
+    "body": "Slice 1 shows README as escaped preformatted text.\n",
+    "comment_count": 0,
+    "ready": false,
+    "waiting_on": [],
+    "cleared_by_ending": [],
+    "dangling": [],
+    "unresolved": [],
+    "children": [],
+    "blocks": []
+  }
+}

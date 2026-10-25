@@ -1,0 +1,38 @@
+{
+  "schema": "valley-knot/v1",
+  "project": "app",
+  "tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+  "knot": {
+    "id": "oc-a000001",
+    "type": "outcome",
+    "status": "open",
+    "active": true,
+    "title": "Readers browse the app's plan",
+    "created": "2026-10-01",
+    "created_by": "app-operator",
+    "source": "2026-10-01, the app's roadmap",
+    "owner": "app-operator",
+    "blocked_by": [],
+    "changes": [],
+    "path": "outcomes/oc-a000001-readers-browse-the-apps-plan.md",
+    "body": "The app's plan is readable without a login.\n\nDone when a reader can drill from this milestone to any knot.\n",
+    "comment_count": 0,
+    "ready": true,
+    "waiting_on": [],
+    "cleared_by_ending": [],
+    "dangling": [],
+    "unresolved": [],
+    "children": [
+      "oc-a000002",
+      "oc-a000003",
+      "bd-a000004",
+      "qn-a000005",
+      "oc-a000006"
+    ],
+    "blocks": [],
+    "progress": {
+      "done": 1,
+      "of": 5
+    }
+  }
+}

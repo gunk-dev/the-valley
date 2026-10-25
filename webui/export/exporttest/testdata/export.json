@@ -1,0 +1,299 @@
+{
+  "schema": "valley-web-export/v1",
+  "collected": "2026-10-25T12:00:00Z",
+  "projects": [
+    {
+      "project": "app",
+      "visibility": "public",
+      "graph_tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+      "source_tip": "ff4ea8a16ee7db8ebda8169da1ce9d6cc2a2ede1",
+      "roots": [
+        "oc-a000001"
+      ],
+      "knots": [
+        {
+          "id": "oc-a000001",
+          "type": "outcome",
+          "status": "open",
+          "active": true,
+          "title": "Readers browse the app's plan",
+          "created": "2026-10-01",
+          "created_by": "operator",
+          "source": "2026-10-01, the app's roadmap",
+          "owner": "operator",
+          "blocked_by": [],
+          "changes": [],
+          "state": "ready",
+          "ready": true,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [
+            "oc-a000002",
+            "oc-a000003",
+            "bd-a000004",
+            "qn-a000005",
+            "oc-a000006"
+          ],
+          "blocks": [],
+          "progress": {
+            "done": 1,
+            "of": 5
+          },
+          "edges": [],
+          "body": "The app's plan is readable without a login.\n\nDone when a reader can drill from this milestone to any knot.\n",
+          "comments": [],
+          "comment_count": 0
+        },
+        {
+          "id": "oc-a000002",
+          "type": "outcome",
+          "status": "in-progress",
+          "active": true,
+          "title": "The plan page lists milestones",
+          "created": "2026-10-02",
+          "created_by": "operator",
+          "parent": "oc-a000001",
+          "blocked_by": [],
+          "changes": [
+            "valley:app/kmnopqrstuvwxyzkmnopqrstuvwxyzkm"
+          ],
+          "state": "in-progress",
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [
+            "oc-a000003"
+          ],
+          "claim": {
+            "by": "agent",
+            "at": "2026-10-25T10:00:00Z",
+            "age_seconds": 7200,
+            "stale": false
+          },
+          "edges": [],
+          "body": "Each milestone is listed with its progress.\n",
+          "comments": [
+            {
+              "author": "operator",
+              "at": "2026-10-20T09:00:00Z",
+              "op": "0a1b2c3d4e5f6071",
+              "body": "Start with the milestones that have open children.\n"
+            },
+            {
+              "author": "agent",
+              "at": "2026-10-25T10:05:00Z",
+              "op": "1b2c3d4e5f607182",
+              "body": "Claimed; the change is ready for approval.\n"
+            }
+          ],
+          "comment_count": 2
+        },
+        {
+          "id": "oc-a000003",
+          "type": "outcome",
+          "status": "open",
+          "active": true,
+          "title": "The source browser shows main",
+          "created": "2026-10-03",
+          "created_by": "operator",
+          "parent": "oc-a000001",
+          "blocked_by": [
+            "oc-a000002",
+            "site:oc-b000001"
+          ],
+          "changes": [],
+          "target": "site",
+          "state": "blocked",
+          "ready": false,
+          "waiting_on": [
+            "oc-a000002"
+          ],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "edges": [
+            {
+              "field": "blocked_by",
+              "ref": "site:oc-b000001",
+              "project": "site",
+              "id": "oc-b000001",
+              "state": "hidden",
+              "why": null,
+              "status": null,
+              "title": null
+            }
+          ],
+          "body": "The browser reads README, trees, files and main's log.\n",
+          "comments": [],
+          "comment_count": 0
+        },
+        {
+          "id": "bd-a000004",
+          "type": "bug",
+          "status": "open",
+          "active": true,
+          "title": "README markup reaches the page",
+          "created": "2026-10-04",
+          "created_by": "contributor",
+          "parent": "oc-a000001",
+          "blocked_by": [],
+          "changes": [],
+          "target": "site:oc-b000002",
+          "state": "ready",
+          "ready": true,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "edges": [
+            {
+              "field": "target",
+              "ref": "site:oc-b000002",
+              "project": "site",
+              "id": "oc-b000002",
+              "state": "hidden",
+              "why": null,
+              "status": null,
+              "title": null
+            }
+          ],
+          "body": "A README holding \u003cscript\u003ealert(\"knot\")\u003c/script\u003e must show as text.\n",
+          "comments": [
+            {
+              "author": "contributor",
+              "at": "2026-10-21T08:30:00Z",
+              "op": "2c3d4e5f60718293",
+              "body": "Also \u003cimg src=x onerror=alert(1)\u003e in a comment.\n"
+            }
+          ],
+          "comment_count": 1
+        },
+        {
+          "id": "qn-a000005",
+          "type": "question",
+          "status": "answered",
+          "active": false,
+          "title": "Which projects export?",
+          "created": "2026-10-05",
+          "created_by": "operator",
+          "parent": "oc-a000001",
+          "owner": "operator",
+          "blocked_by": [],
+          "changes": [],
+          "state": "done",
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "edges": [],
+          "body": "Answered: the public ones.\n",
+          "comments": [],
+          "comment_count": 0
+        },
+        {
+          "id": "oc-a000006",
+          "type": "outcome",
+          "status": "in-progress",
+          "active": true,
+          "title": "Changes show their approval state",
+          "created": "2026-10-06",
+          "created_by": "agent",
+          "parent": "oc-a000001",
+          "blocked_by": [],
+          "changes": [],
+          "state": "in-progress",
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "edges": [],
+          "body": "Ready changes show their request and outcome.\n",
+          "comments": [],
+          "comment_count": 0
+        },
+        {
+          "id": "ida-a000007",
+          "type": "idea",
+          "status": "raw",
+          "active": true,
+          "title": "Render Markdown in a later slice",
+          "created": "2026-10-07",
+          "created_by": "operator",
+          "blocked_by": [],
+          "changes": [],
+          "state": "active",
+          "ready": false,
+          "waiting_on": [],
+          "cleared_by_ending": [],
+          "dangling": [],
+          "unresolved": [],
+          "children": [],
+          "blocks": [],
+          "edges": [],
+          "body": "Slice 1 shows README as escaped preformatted text.\n",
+          "comments": [],
+          "comment_count": 0
+        }
+      ],
+      "in_flight": [
+        "oc-a000002",
+        "oc-a000006"
+      ],
+      "open_residuals": [
+        {
+          "parent": "oc-a000001",
+          "bugs": [
+            "bd-a000004"
+          ]
+        }
+      ],
+      "changes": [
+        {
+          "change_id": "kmnopqrstuvwxyzkmnopqrstuvwxyzkm",
+          "handle": "kmno",
+          "target": "main",
+          "owner": "agent",
+          "version": {
+            "n": 2,
+            "head": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+            "title": "plan: list the milestones",
+            "uploader": "agent",
+            "landing": "not-landed",
+            "request": {
+              "commit": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d"
+            },
+            "outcome": {
+              "decision": "stale",
+              "head": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+              "tip": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+            }
+          },
+          "includes": [],
+          "knots": [
+            {
+              "id": "oc-a000002",
+              "type": "outcome",
+              "status": "in-progress",
+              "title": "The plan page lists milestones"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

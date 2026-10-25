@@ -1,0 +1,28 @@
+{
+  "schema": "valley-knot/v1",
+  "project": "app",
+  "tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+  "knot": {
+    "id": "qn-a000005",
+    "type": "question",
+    "status": "answered",
+    "active": false,
+    "title": "Which projects export?",
+    "created": "2026-10-05",
+    "created_by": "app-operator",
+    "parent": "oc-a000001",
+    "owner": "app-operator",
+    "blocked_by": [],
+    "changes": [],
+    "path": "questions/qn-a000005-which-projects-export.md",
+    "body": "Answered: the public ones.\n",
+    "comment_count": 0,
+    "ready": false,
+    "waiting_on": [],
+    "cleared_by_ending": [],
+    "dangling": [],
+    "unresolved": [],
+    "children": [],
+    "blocks": []
+  }
+}

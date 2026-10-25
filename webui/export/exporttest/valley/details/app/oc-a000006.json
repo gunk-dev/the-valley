@@ -1,0 +1,27 @@
+{
+  "schema": "valley-knot/v1",
+  "project": "app",
+  "tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
+  "knot": {
+    "id": "oc-a000006",
+    "type": "outcome",
+    "status": "in-progress",
+    "active": true,
+    "title": "Changes show their approval state",
+    "created": "2026-10-06",
+    "created_by": "app-agent",
+    "parent": "oc-a000001",
+    "blocked_by": [],
+    "changes": [],
+    "path": "outcomes/oc-a000006-changes-show-their-approval-state.md",
+    "body": "Ready changes show their request and outcome.\n",
+    "comment_count": 0,
+    "ready": false,
+    "waiting_on": [],
+    "cleared_by_ending": [],
+    "dangling": [],
+    "unresolved": [],
+    "children": [],
+    "blocks": []
+  }
+}

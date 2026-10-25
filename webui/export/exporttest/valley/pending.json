@@ -1,0 +1,135 @@
+{
+  "schema": "valley-pending/v1",
+  "host": "git@valley-host",
+  "repos": [
+    {
+      "repo": "app",
+      "url": "git@valley-host:app.git",
+      "error": null,
+      "changes": [
+        {
+          "change_id": "kmnopqrstuvwxyzkmnopqrstuvwxyzkm",
+          "handle": "kmno",
+          "target": "main",
+          "owner": "app-agent",
+          "state": "ready",
+          "record": "6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e",
+          "seq": 3,
+          "active": 2,
+          "versions": [
+            {
+              "n": 1,
+              "head": "4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c",
+              "title": "plan: list milestones",
+              "branch": "app-agent-session-1",
+              "uploader": "app-agent",
+              "landing": "not-landed",
+              "landed_commit": null,
+              "request": null,
+              "outcome": null
+            },
+            {
+              "n": 2,
+              "head": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+              "title": "plan: list the milestones",
+              "branch": "app-agent-session-2",
+              "uploader": "app-agent",
+              "landing": "not-landed",
+              "landed_commit": null,
+              "request": {
+                "ref": "refs/the-valley/integration-requests/main/c-kmnopqrstuvwxyzkmnopqrstuvwxyzkm",
+                "commit": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d"
+              },
+              "outcome": {
+                "decision": "stale",
+                "head": "5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d",
+                "tip": "7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f7f"
+              }
+            }
+          ],
+          "includes": [
+            "zyxwvutsrqponmlkzyxwvutsrqponmlk"
+          ],
+          "restack": null,
+          "knots": [
+            {
+              "id": "oc-a000002",
+              "type": "outcome",
+              "status": "in-progress",
+              "title": "The plan page lists milestones"
+            }
+          ]
+        }
+      ],
+      "drafts": [
+        {
+          "change_id": "zyxwvutsrqponmlkzyxwvutsrqponmlk",
+          "handle": "zyxw",
+          "target": "main",
+          "owner": "app-agent",
+          "state": "draft",
+          "record": "9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a9a",
+          "seq": 1,
+          "active": 1,
+          "versions": [
+            {
+              "n": 1,
+              "head": "8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b8b",
+              "title": "wip: a draft that stays on the host",
+              "branch": "app-agent-draft",
+              "uploader": "app-agent",
+              "landing": "not-landed",
+              "landed_commit": null,
+              "request": null,
+              "outcome": null
+            }
+          ],
+          "includes": [],
+          "restack": null,
+          "knots": []
+        }
+      ],
+      "branches": [
+        {
+          "branch": "scratch",
+          "head": "abababababababababababababababababababab"
+        }
+      ]
+    },
+    {
+      "repo": "site",
+      "url": "git@valley-host:site.git",
+      "error": null,
+      "changes": [
+        {
+          "change_id": "lmnoplmnoplmnoplmnoplmnoplmnoplm",
+          "handle": "lmno",
+          "target": "main",
+          "owner": "site-operator",
+          "state": "ready",
+          "record": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+          "seq": 2,
+          "active": 1,
+          "versions": [
+            {
+              "n": 1,
+              "head": "efefefefefefefefefefefefefefefefefefefef",
+              "title": "deploy: a hidden change",
+              "branch": "site-branch",
+              "uploader": "site-operator",
+              "landing": "not-landed",
+              "landed_commit": null,
+              "request": null,
+              "outcome": null
+            }
+          ],
+          "includes": [],
+          "restack": null,
+          "knots": []
+        }
+      ],
+      "drafts": [],
+      "branches": []
+    }
+  ]
+}

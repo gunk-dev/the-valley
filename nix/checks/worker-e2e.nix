@@ -182,8 +182,17 @@ in
       # below is stopped by the slice's OOM, so a host's default is restored.
       boot.kernel.sysctl."vm.panic_on_oom" = 0;
       # The test starts each pass itself until it checks the timer, so no
-      # pass runs before the test is ready for it.
+      # pass runs before the test is ready for it. When it checks the timer,
+      # the next pass starts a second after the last one ended, rather than
+      # a minute and up to a minute of systemd's accuracy later.
       systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
+      services.valley.worker.interval = "1s";
+      systemd.timers.valley-worker.timerConfig.AccuracySec = "1s";
+      # The machine has no network. Without these, every new build waits
+      # for the daemon's lookups in cache.nixos.org to fail, and every boot
+      # waits for a DHCP lease on an interface nothing here uses.
+      nix.settings.substituters = lib.mkForce [ ];
+      networking.useDHCP = false;
     };
 
     testScript = ''

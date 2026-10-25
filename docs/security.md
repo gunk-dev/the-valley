@@ -126,8 +126,10 @@ signed approval statement (**not built**).
 This gate is **not built**. Its design gives the `approve` grant to hardware keys that need a touch
 for every signature, and verifies each filing with `sigverify`. Until it is built, filing a request
 needs the operator's principal and no touch. `sigverify` itself is checked by `sigverify-unit` and
-`sigverify-e2e`, including a touchless-signature negative test. The registry schema does not accept
-hardware-backed keys yet.
+`sigverify-e2e`, including a touchless-signature negative test. Enrolling a hardware-backed key is
+`implemented`: the registry schema accepts `bound: "hardware"` with an attestation, the identity
+renderer verifies the attestation, and it lists qualifying keys in the hardware approval-signers
+output. Enforcing a touch when an approval is filed is **not built**.
 
 ### 4. Hosts deploy only what the operator signed (not built)
 

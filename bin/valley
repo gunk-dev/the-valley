@@ -769,15 +769,15 @@ usage: valley knot <verb> [args]
                      show <id> [--at COMMIT] [--json]
                                   its fields, body and comments, each
                                   comment with its id, and the edges both
-                                  ways. --at shows the knot as a commit of
-                                  the graph left it; its claim's age and
-                                  other projects' knots are still read
-                                  as they are now.
+                                  ways. --at shows the knot at a commit of
+                                  the graph; claim age uses the current
+                                  clock, and other projects' knots use
+                                  their current tips.
                      log <id> [--json]
                                   every commit of the graph that touched
                                   the knot or its comments, newest first:
-                                  when, by whom, its operation, and the
-                                  files it added or changed
+                                  time, committer, operation, and the
+                                  files it added, changed or deleted
                      list [--type T] [--status S] [--owner P] [--ready]
                                   every knot. --status takes a status,
                                   active or terminal. --ready lists the
@@ -801,15 +801,15 @@ usage: valley knot <verb> [args]
                      edit <id> --body -
                                   replace the body with stdin
                      comment <id> (-m TEXT | --body -) [--edit COMMENT-ID]
-                                  add a comment. --edit replaces the text
-                                  of the comment with that id instead; its
-                                  author and stamp stay, and it records
-                                  who edited it and when. its author, or a
-                                  holder of the approve grant, may edit
-                                  it. a comment that another edit changed
-                                  meanwhile is a conflict. comments are
-                                  never deleted, and log and show --at
-                                  read every earlier text.
+                                  add a comment. --edit replaces the body
+                                  of the comment with that id; its author
+                                  and file stay, and it records who edited
+                                  it and when. only the comment's author
+                                  or a holder of the approve grant may
+                                  edit it. a comment that another edit
+                                  changed meanwhile is a conflict.
+                                  comments are never deleted; log and
+                                  show --at read every earlier text.
                      claim <id> --run RUN
                                   claim an active outcome or bug for a
                                   run; an open outcome becomes

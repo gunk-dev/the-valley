@@ -404,34 +404,60 @@ func TestSourceBrowser(t *testing.T) {
 	}
 }
 
-// hostileMain writes a commit onto the fixture's app main that holds a
-// file of HTML, a file larger than a page shows, a binary file, a file
-// whose name is HTML, and a symbolic link out of the repository. It
-// returns the new tip and a bundle of it.
-func (h *harness) hostileMain() (tip, bundle string) {
+// file is one file a test commits: its mode, path and content.
+type file struct{ mode, path, content string }
+
+// commitMain writes a commit onto the fixture's app main, with message,
+// that holds the files given beside what main holds. It returns the new
+// tip and a bundle of it. Each content is written once, however many
+// files hold it.
+func (h *harness) commitMain(message string, files ...file) (tip, bundle string) {
 	t := h.t
+	t.Helper()
 	repo := h.f.Repos["app"]
 	var b bytes.Buffer
 	data := func(s string) { fmt.Fprintf(&b, "data %d\n%s\n", len(s), s) }
+	marks := map[string]int{}
+	for _, f := range files {
+		if _, ok := marks[f.content]; !ok {
+			marks[f.content] = len(marks) + 1
+			fmt.Fprintf(&b, "blob\nmark :%d\n", marks[f.content])
+			data(f.content)
+		}
+	}
 	who := "Example Author <author@example.org> 1791190800 +0000"
 	fmt.Fprintf(&b, "commit refs/heads/main\nauthor %s\ncommitter %s\n", who, who)
-	data("hostile: <script>alert(\"subject\")</script>\n")
-	fmt.Fprintf(&b, "from %s\n", h.tip())
-	for _, f := range []struct{ mode, path, content string }{
-		{"100644", "page.html", "<html><script>alert(\"file\")</script><img src=x onerror=alert(2)></html>\n"},
-		{"100644", "big.txt", strings.Repeat("big\n", (MaxFile/4)+1)},
-		{"100644", "binary.bin", "\x7fELF\x00\x01\x02<script>alert(\"binary\")</script>"},
-		{"100644", "<img src=x onerror=alert(3)>.txt", "named\n"},
-		{"120000", "link", "../../etc/passwd"},
-	} {
-		fmt.Fprintf(&b, "M %s inline %s\n", f.mode, f.path)
-		data(f.content)
+	data(message)
+	fmt.Fprintf(&b, "from %s\n", git(t, repo, nil, "rev-parse", export.MainRef))
+	for _, f := range files {
+		fmt.Fprintf(&b, "M %s :%d %s\n", f.mode, marks[f.content], f.path)
 	}
 	git(t, repo, b.Bytes(), "fast-import", "--quiet")
 	tip = git(t, repo, nil, "rev-parse", export.MainRef)
 	bundle = filepath.Join(t.TempDir(), "app.bundle")
 	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
 	return tip, bundle
+}
+
+// publishMain activates a generation whose app main is tip, carried by
+// bundle.
+func (h *harness) publishMain(at time.Time, tip, bundle string) {
+	h.t.Helper()
+	h.publish(at, map[string]string{"app": bundle}, func(e *export.Export) { e.Projects[0].SourceTip = tip })
+}
+
+// hostileMain writes a commit onto the fixture's app main that holds a
+// file of HTML, a file larger than a page shows, a binary file, a file
+// whose name is HTML, and a symbolic link out of the repository. It
+// returns the new tip and a bundle of it.
+func (h *harness) hostileMain() (tip, bundle string) {
+	return h.commitMain("hostile: <script>alert(\"subject\")</script>\n",
+		file{"100644", "page.html", "<html><script>alert(\"file\")</script><img src=x onerror=alert(2)></html>\n"},
+		file{"100644", "big.txt", strings.Repeat("big\n", (MaxFile/4)+1)},
+		file{"100644", "binary.bin", "\x7fELF\x00\x01\x02<script>alert(\"binary\")</script>"},
+		file{"100644", "<img src=x onerror=alert(3)>.txt", "named\n"},
+		file{"120000", "link", "../../etc/passwd"},
+	)
 }
 
 // HTML, scripts, large files and binary files from a repository or the
@@ -484,6 +510,117 @@ func TestHostileContentRendersInert(t *testing.T) {
 	inert(at, h.page(at),
 		`A README holding &lt;script&gt;alert(&#34;knot&#34;)&lt;/script&gt; must show as text.`,
 		`Also &lt;img src=x onerror=alert(1)&gt; in a comment.`)
+}
+
+// A directory larger than a page reads is listed in part, and a commit
+// message larger than a page reads ends its page of history early. git
+// is stopped once its listing passes MaxRead, and nothing past a record's
+// bound is kept.
+func TestOversizedTreeAndHistory(t *testing.T) {
+	h := newHarness(t)
+	// Each entry of huge/ takes 308 bytes of git ls-tree's output, so
+	// 15,000 of them pass MaxRead at about entry 13,600.
+	longest := "!" + strings.Repeat("l", 4095)
+	files := []file{{"100644", "huge/" + longest, "x\n"}}
+	name := func(i int) string { return fmt.Sprintf("%05d-%s", i, strings.Repeat("n", 240)) }
+	for i := range 15_000 {
+		files = append(files, file{"100644", "huge/" + name(i), "x\n"})
+	}
+	if n := 15_000 * (6 + 1 + 4 + 1 + 40 + 1 + 7 + 1 + 246 + 1); n <= MaxRead {
+		t.Fatalf("the listing of huge/ is %d bytes, within MaxRead", n)
+	}
+	h.commitMain("app: a directory larger than a page reads\n", files...)
+	h.commitMain("long: " + strings.Repeat("a long subject ", (100<<10)/15) + "\n")
+	tip, bundle := h.commitMain("longer: " + strings.Repeat("a subject past the bound ", (5<<20)/25) + "\n")
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	at := "/source/app/tree/" + tip + "/huge/"
+	page := h.page(at)
+	if !strings.Contains(page, "This directory is larger than a page reads, so only part of it is listed.") {
+		t.Error("huge/ is not marked as listed in part")
+	}
+	if n := strings.Count(page, `<tr><td class="name">`); n != MaxEntries {
+		t.Errorf("huge/ lists %d entries, not %d", n, MaxEntries)
+	}
+	if !strings.Contains(page, `">`+longest+`</a>`) {
+		t.Error("the entry with the longest name git accepts is not listed whole")
+	}
+	if len(page) > 1<<20 {
+		t.Errorf("huge/'s page is %d bytes", len(page))
+	}
+	if w := h.get("/source/app/blob/" + tip + "/huge/" + name(0)); w.Code != http.StatusOK {
+		t.Errorf("an entry read before MaxRead answered %d", w.Code)
+	}
+	if w := h.get("/source/app/blob/" + tip + "/huge/" + name(14_999)); w.Code != http.StatusNotFound {
+		t.Errorf("an entry past MaxRead answered %d", w.Code)
+	}
+
+	at = "/source/app/log/" + tip
+	page = h.page(at)
+	if !strings.Contains(page, "This page ends early: its commits are larger than a page reads.") {
+		t.Error("the page of history holding a 5 MiB message does not end early")
+	}
+	if n := strings.Count(page, `<tr><td class="name">`); n != 1 {
+		t.Errorf("the page that ends early lists %d commits, not the one it cut", n)
+	}
+	if m := regexp.MustCompile(`<td>(longer: a subject past the bound[^<]*)…</td>`).FindStringSubmatch(page); m == nil || len(m[1]) > maxLogText {
+		t.Error("the cut commit's subject is not shown cut to maxLogText")
+	}
+	if !strings.Contains(page, `href="/source/app/log/`+tip+`?skip=1"`) {
+		t.Error("the page that ends early does not link the commits after the one it cut")
+	}
+	page = h.page(at + "?skip=1")
+	if strings.Contains(page, "ends early") || !strings.Contains(page, "long: a long subject") || !strings.Contains(page, "app: the first README") {
+		t.Errorf("the next page of history is not whole:\n%s", page)
+	}
+	if strings.Contains(page, strings.Repeat("a long subject ", (maxLogText/15)+1)) {
+		t.Error("a subject longer than a page shows is not cut")
+	}
+	for _, p := range []string{at, at + "?skip=1"} {
+		if n := len(h.page(p)); n > 64<<10 {
+			t.Errorf("GET %s is %d bytes", p, n)
+		}
+	}
+}
+
+// A file of exactly MaxFile bytes of newlines is shown to MaxLines lines,
+// and its page says where it stops. A README longer than a page shows is
+// shown in part.
+func TestLongFileIsShownInPart(t *testing.T) {
+	h := newHarness(t)
+	tip, bundle := h.commitMain("app: long files\n",
+		file{"100644", "newlines.txt", strings.Repeat("\n", MaxFile)},
+		file{"100644", "long/README.md", strings.Repeat("a line of the README\n", 2*MaxLines)},
+		file{"100644", "wide.txt", strings.Repeat("<", MaxFile)},
+	)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	page := h.page("/source/app/blob/" + tip + "/newlines.txt")
+	last := fmt.Sprintf(`id="L%d"`, MaxLines)
+	if !strings.Contains(page, last) || strings.Contains(page, fmt.Sprintf(`id="L%d"`, MaxLines+1)) {
+		t.Errorf("the file of newlines is not shown to line %d", MaxLines)
+	}
+	if want := fmt.Sprintf("The page stops at line %d of %d.", MaxLines, MaxFile); !strings.Contains(page, want) {
+		t.Errorf("the page does not say %q", want)
+	}
+	if len(page) > MaxShown {
+		t.Errorf("the page of a file of newlines is %d bytes, past MaxShown", len(page))
+	}
+
+	// One line of MaxFile characters that each escape to four bytes is
+	// cut where MaxShown is reached.
+	page = h.page("/source/app/blob/" + tip + "/wide.txt")
+	if !strings.Contains(page, "The page stops at line 1 of 1.") || len(page) > MaxShown+64<<10 {
+		t.Errorf("the page of one wide line is %d bytes", len(page))
+	}
+
+	page = h.page("/source/app/tree/" + tip + "/long/")
+	if !strings.Contains(page, "This README is longer than a page shows, and only its start is shown.") {
+		t.Error("the long README is not marked as shown in part")
+	}
+	if n := strings.Count(page, "a line of the README"); n != MaxLines {
+		t.Errorf("the long README shows %d lines, not %d", n, MaxLines)
+	}
 }
 
 // Every response carries the strict policy, and the policy admits the

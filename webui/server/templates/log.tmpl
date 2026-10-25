@@ -11,6 +11,9 @@
       {{- end}}
     </tbody>
   </table>
+  {{- if .Partial}}
+  <p class="notice">This page ends early: its commits are larger than a page reads.</p>
+  {{- end}}
 </div>
 <nav class="pager" aria-label="Pages of history">{{with .Newer}}<a href="{{.}}">Newer</a>{{end}}{{with .Older}}<a href="{{.}}">Older</a>{{end}}</nav>
 {{end}}

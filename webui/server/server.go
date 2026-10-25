@@ -61,8 +61,18 @@ const StaleAfter = 5 * time.Minute
 const (
 	// MaxFile is the largest file a page shows, README or otherwise.
 	MaxFile = 1 << 20
+	// MaxLines is the most lines of a file a page shows.
+	MaxLines = 10_000
+	// MaxShown is the most bytes a page spends on a file's text once it
+	// is escaped, counting each line's markup on a file page. A page
+	// stops at the line that would take it past MaxShown.
+	MaxShown = 2 << 20
 	// MaxEntries is the most entries a directory page lists.
 	MaxEntries = 1000
+	// MaxRead is the most bytes of output a page reads from one git
+	// listing: a directory's entries, or a page of history. git is
+	// stopped once it prints more.
+	MaxRead = 4 << 20
 	// MaxDepth is the most path segments a source route takes.
 	MaxDepth = 64
 	// LogPage is the number of commits on one page of a log.

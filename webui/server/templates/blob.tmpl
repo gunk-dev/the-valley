@@ -6,6 +6,9 @@
   {{- if .Notice}}
   <p class="notice">{{.Notice}}</p>
   {{- else}}
+  {{- with .Partial}}
+  <p class="notice">{{.}}</p>
+  {{- end}}
   <div class="code"><table class="code"><tbody>{{range $i, $line := .Lines}}<tr id="L{{inc $i}}"><td class="ln"><a href="#L{{inc $i}}">{{inc $i}}</a></td><td class="src">{{$line}}</td></tr>{{end}}</tbody></table></div>
   {{- end}}
 </div>

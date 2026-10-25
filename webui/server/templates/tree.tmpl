@@ -11,14 +11,16 @@
       {{- end}}
     </tbody>
   </table>
-  {{- if .Omitted}}
+  {{- if .Partial}}
+  <p class="notice">This directory is larger than a page reads, so only part of it is listed.</p>
+  {{- else if .Omitted}}
   <p class="notice">{{.Omitted}} more entries are not listed.</p>
   {{- end}}
 </div>
 {{- with .Readme}}
 <section class="panel" aria-labelledby="readme-h">
   <h2 id="readme-h"><a href="{{.URL}}">{{.Name}}</a></h2>
-  <div class="card">{{if .Notice}}<p class="notice">{{.Notice}}</p>{{else}}<pre class="text">{{.Text}}</pre>{{end}}</div>
+  <div class="card">{{if .Notice}}<p class="notice">{{.Notice}}</p>{{else}}{{if .Partial}}<p class="notice">This README is longer than a page shows, and only its start is shown.</p>{{end}}<pre class="text">{{.Text}}</pre>{{end}}</div>
 </section>
 {{- end}}
 {{end}}

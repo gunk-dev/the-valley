@@ -234,11 +234,27 @@ for c in $(jq -r '.commits[].commit' "$w/out"); do
     = "$(TZ=UTC git -C "$graph" log -1 --date=format-local:%Y-%m-%dT%H:%M:%SZ --format='%cd %(trailers:key=Valley-Op,valueonly)' "$c")" ] \
     || fail "log does not give commit $c's time and operation"
 done
+cp "$w/out" "$w/log.json"
 ok valley knot log "$milestone" --json
 holds ".commits[-1].commit == \"$first\""
 ok valley knot log "$work"
 line "^${restated:0:7} [0-9-]+ [0-9:]+Z $me  knot comment $work: edit $finding$"
 line "^    changed comments/$work/$finding.md$"
+cp "$w/out" "$w/log.txt"
+# log reads the graph's paths from the top of its tree, so it lists the
+# same history from a subdirectory of the work tree, and with
+# diff.relative set there.
+mkdir -p "$w/work/docs"
+cd "$w/work/docs"
+ok valley knot log "$work" --json
+cmp -s "$w/out" "$w/log.json" || fail "log --json from a subdirectory lists another history"
+ok valley knot log "$work"
+cmp -s "$w/out" "$w/log.txt" || fail "log from a subdirectory lists another history"
+git config diff.relative true
+ok valley knot log "$work" --json
+cmp -s "$w/out" "$w/log.json" || fail "log --json with diff.relative lists another history"
+git config --unset diff.relative
+cd "$w/work"
 
 # show --at reads the knot as a commit of the graph left it, so every
 # earlier text of a comment is read back.

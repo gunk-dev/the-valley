@@ -1356,9 +1356,15 @@ func knotLog(r remote, a knotArgs, w io.Writer) error {
 	}
 	comments := knot.CommentsDirectory + "/" + id + "/"
 	// --root lists what the root commit added, whatever log.showRoot
-	// says, and --topo-order lists a parent after its child.
-	out, err := r.g.output(true, "log", "--no-color", "--topo-order", "--root", "--no-renames", "--name-status",
-		"--format=%x1e%H", s.tip, "--", f.Path, comments)
+	// says, and --topo-order lists a parent after its child. The paths
+	// are relative to the top of the graph's tree, and git reads a
+	// pathspec relative to the directory it runs in. So each pathspec is
+	// anchored at the top with :(top), and taken literally.
+	// --no-relative lists each file's path from the top as well, even
+	// when diff.relative is set. --no-literal-pathspecs keeps the
+	// pathspecs' magic working when the caller sets GIT_LITERAL_PATHSPECS.
+	out, err := r.g.output(true, "--no-literal-pathspecs", "log", "--no-color", "--topo-order", "--root", "--no-renames",
+		"--no-relative", "--name-status", "--format=%x1e%H", s.tip, "--", ":(top,literal)"+f.Path, ":(top,literal)"+comments)
 	if err != nil {
 		return failure("could not read the history of the graph of " + r.name)
 	}

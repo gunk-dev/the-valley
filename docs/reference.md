@@ -2064,11 +2064,11 @@ The receiver keeps every accepted export as an immutable generation in one state
 
 #### Web server (`valley-web`)
 
-`valley-web` serves the active export of a receiver's state directory to anonymous readers over
-HTTP: the plan page, one page per knot, and a source browser over each public project's `main`.
-Package `server` of the `webui` module ([`webui/server/`](../webui/server/)) implements it, and
-[`webui/cmd/valley-web/`](../webui/cmd/valley-web/) is the command. The flake builds it as the
-`valley-web` package.
+`valley-web` serves the active export in a receiver's state directory to anonymous readers over
+HTTP. It serves the plan page, one page per knot, and a source browser over each public project's
+`main`. Package `server` of the `webui` module ([`webui/server/`](../webui/server/)) implements the
+HTTP handler, and [`webui/cmd/valley-web/`](../webui/cmd/valley-web/) is the command. The flake
+builds it as the `valley-web` package.
 
 ```sh
 valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
@@ -2076,149 +2076,160 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 
 - **Flags:** Both flags are required.
   - `--state DIR` names the receiver's state directory. `valley-web` opens it with
-    `export.OpenStore`, which creates the layout when it is missing and finishes an interrupted
-    activation.
-  - `--listen ADDR` is the TCP address to listen on. Port `0` picks a free port.
-- **Running:** Once it listens, `valley-web` prints `valley-web: listening on <addr>` on `stderr`.
-  It logs failures on `stderr`. On `SIGINT` or `SIGTERM` it stops accepting requests and gives
-  requests in flight up to 5 seconds. It exits `0` after a clean stop, `1` on a runtime failure, and
-  `2` on invalid flags, with the usage on `stderr`. `--help` prints the usage and exits `0`.
-- **Routes:** The server answers `GET` and `HEAD`. Any other method gets `405` with
+    `export.OpenStore`, which creates the directory layout if it is missing and finishes any
+    interrupted activation.
+  - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
+- **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
+  logs runtime errors on `stderr`. On `SIGINT` or `SIGTERM`, it stops accepting new requests and
+  gives in-flight requests up to 5 seconds to finish. It exits `0` after a clean stop and `1` on a
+  runtime failure. On invalid flags, it prints usage on `stderr` and exits `2`. `--help` prints
+  usage on `stderr` and exits `0`.
+- **Routes:** The server answers `GET` and `HEAD`. Any other method answers `405` with
   `Allow: GET, HEAD`.
 
-| Route                                     | Page                                                              |
-| :---------------------------------------- | :---------------------------------------------------------------- |
-| `/`                                       | The plan page                                                     |
-| `/knots/<project>/<id>`                   | One knot                                                          |
-| `/source/<project>/`                      | `302` redirect to the tree of the project's `source_tip`          |
-| `/source/<project>/tree/<commit>/<path>/` | One directory, and its README                                     |
-| `/source/<project>/blob/<commit>/<path>`  | One file                                                          |
-| `/source/<project>/log/<commit>?skip=<n>` | 50 commits of the history that ends at `<commit>`, from the `n`th |
+| Route                                     | Page                                                                       |
+| :---------------------------------------- | :------------------------------------------------------------------------- |
+| `/`                                       | The plan page                                                              |
+| `/knots/<project>/<id>`                   | One knot                                                                   |
+| `/source/<project>/`                      | `302` redirect to the root tree at the project's `source_tip`              |
+| `/source/<project>/tree/<commit>/<path>/` | One directory and its README                                               |
+| `/source/<project>/blob/<commit>/<path>`  | One file                                                                   |
+| `/source/<project>/log/<commit>?skip=<n>` | Up to 50 commits of history ending at `<commit>`, skipping the first `<n>` |
 
-- **One generation per request:** Each request calls `Store.Open` once and renders its whole
-  response from that generation. It releases the generation once the response is rendered, before it
-  writes the response. An activation during the request does not change the response, and the old
-  generation is not deleted until the request releases it. Before the first activation, every route
-  answers `503`.
-- **One read per generation:** The server reads a generation's `export.json` once, however many
-  requests wait for it at the same time. It keeps the newest generation it has read, and builds the
-  plan page's structure once for it. A request opens its generation only once the server has read
-  that generation.
-  - Each read runs in a worker of its own. The worker opens the active generation, holds it while it
-    reads, and releases it once the read ends. A request that waits for a read holds no generation.
-  - At most 2 workers run at once (`server.MaxLoads`). A worker starts only when a request that
-    waits for the read takes one of those 2 places. No read is queued that no request waits for.
-  - A request stops waiting for a read when its reader disconnects or its time runs out. Once no
-    request waits for a read, the worker stops reading, and the server keeps nothing of that read.
+- **One generation per request:** Each request opens the active generation once with `Store.Open`
+  and renders its entire response from that generation. It releases the generation once rendering
+  finishes, before writing the response. Activating a new export during a request does not change
+  that request's response, and a sweep cannot delete the old generation until the request releases
+  it. Before the first activation, every route answers `503`.
+- **One read per generation:** The server reads and decodes each generation's `export.json` once,
+  even when many requests wait for it at the same time. It caches the newest generation it has read
+  and builds the plan page's structure once for that generation. A request opens its generation on
+  disk only after the server has read that generation.
+  - Each read runs in its own worker. The worker opens the active generation, holds it while reading
+    `export.json`, and releases it when the read finishes. A request waiting for a read holds no
+    generation.
+  - At most 2 read workers run at once (`server.MaxLoads`). A worker starts only when a waiting
+    request takes one of those 2 worker slots. The server never queues a read without a waiting
+    request.
+  - A request stops waiting for a read if its reader disconnects or its 15-second deadline runs out.
+    When no request is left waiting for a read, the worker stops reading and the server discards the
+    unfinished read.
 - **Plan page:** The page shows four sections, in this order:
-  1. **Waiting on you:** Empty. Every reader sees the same public page.
-  2. **In flight:** The export's `in_flight` knots, each with who claims it and how long ago. Beside
-     them, one card titled "Ready changes — order not assessed" lists the export's `changes`. Each
-     change shows its handle, its active version's title, whether an integration request approves
-     it, and the integrator's last decision.
-  3. **Paths:** For each knot whose children wait on one another, its children in stages. A child's
-     stage is one after the latest stage of the siblings in its `blocked_by`, whether or not they
-     are done. Children with no order between them share a stage. Abandoned children are left out.
-  4. **Milestones:** Each root with the tree of knots under it, children ordered by state. A
-     project's knots that have no parent and are not roots are listed under "Unfiled". A tree shows
-     at most 32 levels of knots (`server.MaxPlanDepth`). A knot on the last level says there is more
-     on its page. Each knot appears once in a project's trees. A milestone's count includes every
-     knot under it, at any depth.
+  1. **Waiting on you:** Always empty. Every reader sees the same public page.
+  2. **In flight:** The export's `in_flight` knots, showing who claims each knot and how long ago.
+     Beside them, a card titled "Ready changes — order not assessed" lists the export's `changes`.
+     Each change shows its handle, its active version's title, whether an integration request
+     approves it, and the integrator's last decision.
+  3. **Paths:** One card per knot whose children wait on one another, grouping those children into
+     numbered stages. A child's stage is one after the latest stage of any sibling in its
+     `blocked_by`, whether or not that sibling is done. Children with no blocker order between them
+     share a stage. Abandoned children are left out.
+  4. **Milestones:** Each root knot with the tree of knots under it, ordering children at each level
+     by state. Knots that have no parent and are not roots appear under "Unfiled". A tree shows at
+     most 32 levels of knots (`server.MaxPlanDepth`). If a knot on the 32nd level has children, its
+     row notes that there is more on its page. Each knot appears once in a project's trees. A
+     milestone's count includes every knot under it, at any depth.
 
-  A knot whose `state` is `ready` shows as "free to start". The legend defines that as an open,
-  unclaimed, unblocked outcome or bug. The page's one script runs the milestone filters. Without it,
-  every knot shows, and the trees still open and close.
+  A knot whose `state` is `ready` is labeled "free to start". The legend defines this as an open,
+  unclaimed, unblocked outcome or bug. The page's single inline script runs the milestone filters.
+  Without the script, every knot shows and the trees still open and close.
 
 - **Freshness:** Every page shows the export's `collected` time and its age when the request is
   served. A page marks the export `stale` when it is more than five minutes old
   (`server.StaleAfter`).
-- **Knot page:** It shows the knot's type, status, state, and fields, the chain of parents above it,
-  and links to the knots it is blocked by, the knots it blocks, and its children. The chain names
-  the nearest 32 parents, and marks any above them with `…`. The body and each comment are shown as
-  escaped preformatted text. A comment that carries `edited` is marked "edited", with its `edited`
-  time and `edited_by`.
-- **References into unpublished projects:** A page never shows the name of a project the export does
-  not hold as public, or the text of a reference into one. Each such reference is shown with fixed
-  words and no link:
-  - A `blocked_by` entry, a `target`, or a `graduated_into` that names another project's knot is
-    shown as "a knot in an unpublished project".
-  - A `target` that names only a project is shown as "an unpublished project".
-  - A `changes` link `valley:<project>/<change ID>` is shown as "a change in an unpublished
+- **Knot page:** A knot page shows the knot's type, status, state, and fields, the chain of parents
+  above it, and links to the knots that block it, the knots it blocks, and its children. The parent
+  chain names the nearest 32 parents (`server.MaxPlanDepth`) and marks any parents above them with
+  `…`. The body and each comment render as escaped preformatted text. A comment with an `edited`
+  timestamp is marked "edited" and shows its `edited` time and `edited_by`.
+- **References into unpublished projects:** A page never shows the name of a project that is not
+  public in the export, or the text of a reference into one. Every such reference is replaced with
+  fixed text and no link:
+  - A `blocked_by` entry, `target`, or `graduated_into` that names a knot in an unpublished project
+    is shown as "a knot in an unpublished project".
+  - A `target` that names only an unpublished project is shown as "an unpublished project".
+  - A `changes` link `valley:<project>/<change ID>` into an unpublished project is shown as "a
+    change in an unpublished project".
+  - A tree row's "waits on" chip lists any unpublished blockers once, as "a knot in an unpublished
     project".
-  - A tree row's "waits on" chip names such knots once, as "a knot in an unpublished project".
 
-  A `blocked_by` entry that names a missing knot of a public project is still shown with its text.
+  A `blocked_by` entry that names a missing knot in a public project still shows its reference text.
   It is marked "not found in its graph" when its edge is `dangling`, and "not found" otherwise.
 
-- **Source browser:** The server reads each generation's repositories with `git` subprocesses
-  through `export.Git` and `export.GitStream`. It passes `git` only object IDs it has checked, never
-  text from the request.
+- **Source browser:** The server reads each generation's repositories by running `git` subprocesses
+  through `export.Git` and `export.GitStream`. It passes `git` only verified object IDs, never text
+  from the request.
   - A source route serves `<commit>` only when it is a full object ID and `export.Reachable` finds
-    it reachable from the project's `source_tip`. Anything else answers `404`: an unreachable
-    commit, a tree or blob ID, an abbreviated ID, or a name such as `main`.
-  - The server resolves `<path>` from the commit's tree one segment at a time, with `git ls-tree` on
-    object IDs. A path deeper than 64 segments, or with a segment that is empty, `.`, or `..`, or
-    that holds `/` or NUL, answers `404`.
+    it reachable from the project's `source_tip`. Anything else answers `404`, including an
+    unreachable commit, a tree or blob ID, an abbreviated ID, or a ref name such as `main`.
+  - The server resolves `<path>` from the commit's root tree one segment at a time with
+    `git ls-tree` on tree object IDs. A path answers `404` if it is deeper than 64 segments
+    (`server.MaxDepth`) or if any segment is empty, `.`, `..`, or contains `/` or NUL.
   - Every source link names the project, a full commit ID, and a path.
-  - The server reads `git` output as `git` prints it, through `export.GitStream`. It reads at most 4
-    MiB of one directory listing or one page of history (`server.MaxRead`). It stops `git` and waits
-    for it to exit once `git` prints more.
-  - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. A
-    directory whose listing is longer than 4 MiB is listed in part, and the page says so. A path
-    through an entry past the first 4 MiB of its directory's listing answers `404`. The page shows
-    the directory's README below the listing: `README.md`, `README`, or `README.txt`, or else the
-    first file named `readme` in any case with any extension.
+  - The server streams `git` output through `export.GitStream` and reads at most 4 MiB of a
+    directory listing or history page (`server.MaxRead`). Once `git` prints more than 4 MiB, the
+    server stops `git` and waits for it to exit.
+  - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. If a
+    directory's `git ls-tree` output exceeds 4 MiB, the page lists only the entries from the first 4
+    MiB and notes that the listing is partial. A path through an entry past the first 4 MiB of its
+    directory's listing answers `404`. Below the listing, the page shows the directory's README:
+    `README.md`, `README`, or `README.txt` in that order, or else the first file named `readme` in
+    any case with any extension.
   - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`. It
     shows at most 10,000 lines (`server.MaxLines`). It stops at the line that would take the escaped
-    text and its rows' markup past 2 MiB (`server.MaxShown`). When the file is longer, the page says
-    "The page stops at line `<n>` of `<total>`." A README shows at most 10,000 lines and 2 MiB of
-    escaped text, and says when it is shown in part.
-  - A file larger than 1 MiB (`server.MaxFile`) is not read. A file that holds a NUL byte or is not
-    valid UTF-8 is not shown, and the page says it is binary. A symbolic link shows its target and
-    is not followed. A submodule is listed with its commit and has no link.
-  - A log page shows the first 1 KiB of each commit's subject and author name. When a page's commits
-    pass 4 MiB of `git log` output, the page ends at the commit the bound cut, shown as far as it
-    was read. The page says it ends early, and links the commits after it.
-- **Time:** Every request has 15 seconds from when it arrives. The time covers its waits, its `git`
-  commands, and its rendering. A request that runs out of time answers `503` with `Retry-After: 5`.
-- **Admission:** A tree, file, or log request runs `git`, and is admitted before it opens a
-  generation.
-  - At most 8 such requests run at once (`server.MaxGit`). At most 16 more wait for one of them to
-    finish (`server.MaxWaiting`). A request that finds both full answers `503` at once, with
-    `Retry-After: 5`.
-  - A request gives back its place among the 8 before it writes its response. A reader that reads
-    slowly holds no place and no generation.
-  - A request whose generation the server has not read yet waits for the read. It is admitted among
-    the requests that wait for reads before it opens anything. At most 64 of them wait at once
-    (`server.MaxLoadWaiting`). A request that finds them full answers `503` at once, with
-    `Retry-After: 5`.
-- **Response size and memory:** Every page is rendered whole before it is written.
-  - A page is at most 8 MiB (`server.MaxResponse`), whatever its route and whatever it shows. A page
-    that would be larger stops rendering at the bound. The server answers `500` with a short page
-    titled "Page too large", and logs the failure.
+    text and row markup past 2 MiB (`server.MaxShown`). When the file is longer, the page says "The
+    page stops at line `<n>` of `<total>`." A README shows at most 10,000 lines and 2 MiB of escaped
+    text, and notes when it is shown in part.
+  - A file larger than 1 MiB (`server.MaxFile`) is not read. A file that contains a NUL byte or is
+    not valid UTF-8 is not shown, and the page says it is binary. A symbolic link shows its target
+    path and is not followed. A submodule is listed with its commit ID and has no link.
+  - A log page shows the first 1 KiB of each commit's subject and author name. If a page's commits
+    exceed 4 MiB of `git log` output, the page ends at the commit cut off by the 4 MiB bound,
+    showing as much of that commit as was read. The page notes that it ends early and links to the
+    older commits after it.
+- **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
+  `git` commands, and rendering the page. A request that runs out of time answers `503` with
+  `Retry-After: 5`.
+- **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
+  check runs before the request opens a generation.
+  - A tree, file, or log request runs `git`. At most 8 such requests run at once (`server.MaxGit`),
+    and at most 16 more wait for one to finish (`server.MaxWaiting`). A request that finds both full
+    answers `503` immediately with `Retry-After: 5`.
+  - A request releases its `git` slot and its generation before writing the response. A slow reader
+    holds neither a `git` slot nor a generation.
+  - Any request whose generation the server has not read yet must wait for the read before opening a
+    generation. At most 64 requests wait for export reads at once (`server.MaxLoadWaiting`). A
+    request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.
+- **Response size and memory:** Every page is rendered in full before the server writes the
+  response.
+  - A page is at most 8 MiB (`server.MaxResponse`) on any route. A page that would exceed 8 MiB
+    stops rendering at that bound. The server logs the failure and answers `500` with a short page
+    titled "Page too large".
   - The server holds at most 64 MiB of rendered responses at once (`server.MaxBuffered`). A response
-    takes this memory in 64 KiB pieces as it renders. It gives the memory back once the response is
-    written, so a reader that reads slowly holds its response's share until then. `valley-web` stops
-    writing a response 60 seconds after it read the request's headers.
-  - A request whose page needs more memory than is left answers `503` with `Retry-After: 5`.
-  - The "Busy" page that answers `503` and the "Page too large" page are rendered once, when the
-    server starts. They show no export, and take none of the 64 MiB.
+    claims this budget in 64 KiB pieces as it renders and releases them once the response has been
+    written. A slow reader holds its response's share of the budget until the write finishes.
+    `valley-web` stops writing a response 60 seconds after reading the request's headers.
+  - A request whose page needs more memory than remains in the 64 MiB budget answers `503` with
+    `Retry-After: 5`.
+  - The "Busy" (`503`) and "Page too large" (`500`) pages are rendered once when the server starts.
+    They show no export data and take none of the 64 MiB budget.
 - **Access:** Every route that names a project checks that the export holds the project with
-  visibility `public`. Every `404` is the same page, whatever the reason: a hidden or missing
-  project, a missing knot or path, or a commit the server does not serve.
+  visibility `public`. Every `404` serves the same page, whether the project is hidden or missing,
+  the knot or path does not exist, or the commit is not served.
 - **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
   escapes every value from the export or a repository. The stylesheet and the plan page's script are
-  embedded in the binary and inlined; nothing else is loaded. No route serves a repository file as
-  its own content. Every response carries these headers:
+  embedded in the binary and inlined into the page; nothing else is loaded. No route serves a
+  repository file as raw content. Every response carries these headers:
   - `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
     `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and
     `Cache-Control: no-cache`.
-- **Errors:** When the server cannot read the export or a repository, it answers `500` with a page
-  that gives no detail, and logs the error on `stderr`. A request that runs out of time answers
-  `503`. The error is logged when the time ran out while the request waited for its export to be
-  read, ran `git`, or rendered. The server does not log a request it refused at admission, one whose
-  time ran out while it waited to be admitted, or one it had no response memory for.
+- **Errors:** When the server cannot read the export or a repository, it logs the error on `stderr`
+  and answers `500` with a generic error page that gives no detail. A request that runs out of time
+  answers `503`. The timeout is logged when time runs out while the request waits for its export to
+  be read, runs `git`, or renders the page. The server does not log a request refused at admission,
+  a request whose time runs out while waiting for a `git` slot, or a request refused because the 64
+  MiB response budget is full.
 
 ---
 

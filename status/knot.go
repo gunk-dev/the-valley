@@ -1423,7 +1423,7 @@ func knotLog(r remote, a knotArgs, w io.Writer) error {
 	}
 	var b strings.Builder
 	for _, e := range entries {
-		fmt.Fprintf(&b, "%s %s %s  %s\n", short(e.Commit), minute(e.At), visible(e.Committer), visible(e.Subject))
+		fmt.Fprintf(&b, "%s %s %s op %s  %s\n", short(e.Commit), minute(e.At), visible(e.Committer), e.Op, visible(e.Subject))
 		for _, f := range e.Files {
 			fmt.Fprintf(&b, "    %-7s %s\n", f.Change, f.Path)
 		}

@@ -237,9 +237,12 @@ done
 cp "$w/out" "$w/log.json"
 ok valley knot log "$milestone" --json
 holds ".commits[-1].commit == \"$first\""
+# The text form gives each commit's operation as well.
 ok valley knot log "$work"
-line "^${restated:0:7} [0-9-]+ [0-9:]+Z $me  knot comment $work: edit $finding$"
+line "^${restated:0:7} [0-9-]+ [0-9:]+Z $me op $(git -C "$graph" log -1 --format='%(trailers:key=Valley-Op,valueonly)' "$restated")  knot comment $work: edit $finding$"
 line "^    changed comments/$work/$finding.md$"
+[ "$(grep -c '^[0-9a-f]' "$w/out")" = "$(jq '.commits | length' "$w/log.json")" ] || fail "the text log lists other commits than the JSON"
+while read -r entry; do line "$entry"; done < <(jq -r ".commits[] | \"^\\(.commit[0:7]) [0-9-]+ [0-9:]+Z $me op \\(.op)  \"" "$w/log.json")
 cp "$w/out" "$w/log.txt"
 # log reads the graph's paths from the top of its tree, so it lists the
 # same history from a subdirectory of the work tree, and with

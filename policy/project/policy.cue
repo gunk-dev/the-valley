@@ -46,6 +46,7 @@ project: {
 		"signers-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
+		"webui-unit",
 		"rebase-unit",
 		"valley-go-unit",
 		"valley-cli",
@@ -128,7 +129,8 @@ project: {
 	// with and the hook validates it with. knot-agree holds its validator
 	// to the node schema and the knowledge lint, valley-knot and
 	// valley-plan drive the verbs that use it, and knots-e2e pushes
-	// through the hook.
+	// through the hook. The web export reads names and knot IDs by its
+	// rules, so webui-unit is here too.
 	classes: knot: {
 		paths: "knot/**":            true
 		requires: "knot-unit":       true
@@ -138,6 +140,7 @@ project: {
 		requires: "valley-plan":     true
 		requires: "valleyhook-unit": true
 		requires: "knots-e2e":       true
+		requires: "webui-unit":      true
 	}
 
 	// valley-delta-v1, which the CLI's Go verbs compare a version with its
@@ -173,8 +176,9 @@ project: {
 	}
 
 	// The note envelope. The hook and attest both read notes through it,
-	// and the identity compiler reads its approval files back with it, so a
-	// change to it requires their tests as well as its own.
+	// the identity compiler reads its approval files back with it, and the
+	// web export's manifest is a note, so a change to it requires their
+	// tests as well as its own.
 	classes: note: {
 		paths: "note/**":            true
 		requires: "note-unit":       true
@@ -183,6 +187,7 @@ project: {
 		requires: "attest-unit":     true
 		requires: "attest-e2e":      true
 		requires: "identity-unit":   true
+		requires: "webui-unit":      true
 	}
 
 	// The attestation helper, and the conformance vectors under
@@ -218,6 +223,12 @@ project: {
 		paths: "sigverify/**":      true
 		requires: "sigverify-unit": true
 		requires: "sigverify-e2e":  true
+	}
+
+	// The web UI's module: the export contract and its shared fixture.
+	classes: webui: {
+		paths: "webui/**":      true
+		requires: "webui-unit": true
 	}
 
 	// The valley CLI: the script, its Go verbs (status/), the rebase engine
@@ -398,6 +409,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
+		"webui.nix": ["webui-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

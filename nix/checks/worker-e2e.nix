@@ -67,9 +67,10 @@ let
   # The project's flake, with no inputs, so the machine builds it offline.
   # Each check runs a script from the project's tree in the sandbox's
   # shell, and the script is the derivation's one input. The project's own
-  # scripts spin for a few seconds, so two builds at once would be seen at
-  # once, and write the cores the daemon gave them. The runaway change's
-  # first script instead doubles a string until something stops it.
+  # scripts spin for about half a second, several of the sampler's ticks,
+  # so two builds at once would be seen at once, and write the cores the
+  # daemon gave them. The runaway change's first script instead doubles a
+  # string until something stops it.
   flake = pkgs.writeText "flake.nix" ''
     {
       outputs =
@@ -93,7 +94,7 @@ let
   flakeLock = pkgs.writeText "flake.lock" ''{"nodes":{"root":{}},"root":"root","version":7}'';
   spin = pkgs.writeText "spin.sh" ''
     i=0
-    while [ $i -lt 1000000 ]; do i=$((i+1)); done
+    while [ $i -lt 250000 ]; do i=$((i+1)); done
     echo $NIX_BUILD_CORES > $out
   '';
   runaway = pkgs.writeText "runaway.sh" ''
@@ -102,15 +103,20 @@ let
   '';
 
   # Builds that are not the worker's, through the same daemon. small and
-  # big each hold a string of 1 MiB or 128 MiB and then spin for a while;
-  # cpu spins on six CPUs until it is stopped.
+  # big each hold a string of 1 MiB or 128 MiB. Then each waits without
+  # using a CPU, so it takes none from the worker's pass: it reads its own
+  # standard output, where no input ever arrives. big waits until it is
+  # stopped. small waits until it is sent SIGUSR1, and then finishes, so
+  # the test decides when it ends. cpu spins on six CPUs until it is
+  # stopped.
   unrelated = pkgs.writeText "unrelated.nix" ''
     { kind }:
     let
-      hold = n: "x=a; n=0; while [ $n -lt ''${n} ]; do x=$x$x; n=$((n+1)); done; i=0; while [ $i -lt 8000000 ]; do i=$((i+1)); done; echo ok > $out";
+      hold = n: "x=a; n=0; while [ $n -lt ''${n} ]; do x=$x$x; n=$((n+1)); done";
+      idle = "read y < /proc/self/fd/1";
       scripts = {
-        small = hold "20";
-        big = hold "27";
+        small = hold "20" + "; trap 'echo ok > $out; exit 0' USR1; ''${idle}";
+        big = hold "27" + "; ''${idle}";
         cpu = "for i in 1 2 3 4 5 6; do (while :; do :; done) & done; wait";
       };
     in
@@ -382,12 +388,14 @@ in
       with subtest("a build that wants six CPUs gets the slice's four"):
           unrelated("cpu")
           host.wait_until_succeeds("test \"$(ps -eo user= | grep -c '^nixbld')\" -ge 7", timeout=60)
-          host.sleep(2)
+          # The quota is enforced every 100 ms, so five seconds holds fifty
+          # of its periods.
+          host.sleep(1)
           stat = lambda: dict(line.split() for line in host.succeed(f"cat {cgroup}/cpu.stat").splitlines())
           before = stat()
-          host.sleep(10)
+          host.sleep(5)
           after = stat()
-          cpus = (int(after["usage_usec"]) - int(before["usage_usec"])) / 10e6
+          cpus = (int(after["usage_usec"]) - int(before["usage_usec"])) / 5e6
           assert 3.0 < cpus < 4.5, cpus
           assert int(after["nr_throttled"]) > int(before["nr_throttled"]), (before, after)
           host.succeed("systemctl stop unrelated-cpu")
@@ -426,8 +434,12 @@ in
           assert len(attestations()) == 1
           # The kernel killed the biggest process in the slice: the unrelated
           # big build, before the runaway grew past it, and then the runaway.
-          # The small build was never the biggest, and it finishes.
-          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value unrelated-small)\" = exited", timeout=300)
+          # The small build was never the biggest. It is still running, and
+          # once it is told to finish, it does.
+          small = host.succeed("ps -eo pid=,user=,args= | awk '$2 ~ /^nixbld/ && /USR1/ {print $1}'").split()
+          assert len(small) == 1, small
+          host.succeed(f"kill -USR1 {small[0]}")
+          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value unrelated-small)\" = exited", timeout=60)
           assert unit_property("unrelated-small", "Result") == "success"
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value unrelated-big)\" = failed", timeout=60)
           # The units the host runs are as they were, the daemon still

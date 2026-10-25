@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -48,7 +49,7 @@ func receiver() int {
 	if err != nil {
 		return fail(err)
 	}
-	s, err := export.OpenStore(os.Getenv("EXPORT_TEST_STATE"))
+	s, err := export.OpenStore(os.Getenv("EXPORT_TEST_STATE"), func(err error) { fmt.Fprintln(os.Stderr, err) })
 	if err != nil {
 		return fail(err)
 	}
@@ -181,9 +182,11 @@ func putNeed(t *testing.T, st export.Staging, u upload, n export.Need) {
 	}
 }
 
+// openStore opens the store at dir. Nothing should go wrong in it, so
+// whatever it reports fails the test.
 func openStore(t *testing.T, dir string) *export.Store {
 	t.Helper()
-	s, err := export.OpenStore(dir)
+	s, err := export.OpenStore(dir, func(err error) { t.Errorf("the store reported: %v", err) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -661,4 +664,167 @@ func TestStoreDiscardsAnActivationThatDidNotFinish(t *testing.T) {
 			t.Errorf("%s survived", d)
 		}
 	}
+}
+
+// errInjected is the failure a test makes one of the store's calls give.
+var errInjected = errors.New("injected failure")
+
+// inject replaces one of the store's file system calls until the test
+// ends.
+func inject[F any](t *testing.T, call *F, with F) {
+	t.Helper()
+	was := *call
+	*call = with
+	t.Cleanup(func() { *call = was })
+}
+
+// reports collects what a store reports.
+type reports struct {
+	mu   sync.Mutex
+	errs []error
+}
+
+func (r *reports) report(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.errs = append(r.errs, err)
+}
+
+func (r *reports) all() []error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]error{}, r.errs...)
+}
+
+func wantServing(t *testing.T, s *export.Store, u upload) {
+	t.Helper()
+	g, release, err := s.Open()
+	release()
+	if err != nil || g.Sequence != u.m.Sequence {
+		t.Errorf("Open gave %v, %v; want generation %d", g, err, u.m.Sequence)
+	}
+}
+
+// A deletion that fails after the swap does not fail the commit. The new
+// generation serves, the failure is reported, and the next sweep deletes
+// what was left.
+func TestStoreReportsASweepThatFails(t *testing.T) {
+	f := exporttest.New(t)
+	dir := t.TempDir()
+	u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
+	if _, err := send(t, f, openStore(t, dir), u1); err != nil {
+		t.Fatal(err)
+	}
+	var r reports
+	s, err := export.OpenStore(dir, r.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(s.Dir(), "trash")
+	inject(t, export.RemoveAll, func(path string) error {
+		if strings.HasPrefix(path, trash+string(filepath.Separator)) {
+			return errInjected
+		}
+		return os.RemoveAll(path)
+	})
+	g, err := send(t, f, s, u2)
+	if err != nil || g.Sequence != u2.m.Sequence {
+		t.Fatalf("the commit gave %v, %v; a deletion that fails after the swap does not fail it", g, err)
+	}
+	if errs := r.all(); len(errs) != 1 || !errors.Is(errs[0], errInjected) {
+		t.Errorf("the store reported %v, want the failed deletion", errs)
+	}
+	wantServing(t, s, u2)
+	if left := entries(t, trash); len(left) != 1 || !strings.HasPrefix(left[0], seqName(u1)+"-") {
+		t.Errorf("the trash holds %v, want the first generation", left)
+	}
+
+	*export.RemoveAll = os.RemoveAll
+	s = openStore(t, dir)
+	if left := entries(t, trash); len(left) != 0 {
+		t.Errorf("the next sweep left %v in the trash", left)
+	}
+	if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u2)}) {
+		t.Errorf("after the next sweep the generations are %s", got)
+	}
+}
+
+// A swap of active that fails fails the commit and leaves the old
+// generation serving. high-water was written first, so the sequence is
+// accepted, and the commit retried is refused as replayed. The
+// publisher's next manifest, signed later, activates.
+func TestStoreSwapThatFailsFailsTheCommit(t *testing.T) {
+	f := exporttest.New(t)
+	s := openStore(t, t.TempDir())
+	u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
+	if _, err := send(t, f, s, u1); err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(s.Dir(), "active")
+	inject(t, export.Rename, func(old, new string) error {
+		if new == active {
+			return errInjected
+		}
+		return os.Rename(old, new)
+	})
+	st := stage(t, f, s, u2)
+	inv, err := s.Inventory(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range inv.Needs {
+		putNeed(t, st, u2, n)
+	}
+	if _, err := s.Activate(context.Background(), st); !errors.Is(err, errInjected) {
+		t.Fatalf("the commit gave %v, want the failed swap", err)
+	}
+	wantServing(t, s, u1)
+	if hw, _ := s.HighWater(); hw != u2.m.Sequence {
+		t.Errorf("high-water is %d; it was written before the swap", hw)
+	}
+	_, err = s.Activate(context.Background(), st)
+	wantCode(t, err, export.CodeReplayed)
+
+	*export.Rename = os.Rename
+	if _, err := send(t, f, s, u3); err != nil {
+		t.Fatal(err)
+	}
+	wantServing(t, s, u3)
+	if got := fmt.Sprint(generations(t, s)); got != fmt.Sprint([]string{seqName(u3)}) {
+		t.Errorf("the generations are %s", got)
+	}
+}
+
+// Once active points at the new generation the commit has succeeded. A
+// failure to sync the swap to disk is reported, and the commit returns
+// the new generation: after a crash, the next OpenStore swaps active to
+// the generation high-water names.
+func TestStoreReportsASwapNotOnDisk(t *testing.T) {
+	f := exporttest.New(t)
+	var r reports
+	s, err := export.OpenStore(t.TempDir(), r.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(s.Dir(), "active")
+	swapped := false
+	inject(t, export.Rename, func(old, new string) error {
+		err := os.Rename(old, new)
+		swapped = swapped || new == active && err == nil
+		return err
+	})
+	inject(t, export.SyncFile, func(file *os.File) error {
+		if swapped && file.Name() == s.Dir() {
+			return errInjected
+		}
+		return file.Sync()
+	})
+	u := fixtureUpload(t, f)
+	if g, err := send(t, f, s, u); err != nil || g.Sequence != u.m.Sequence {
+		t.Fatalf("the commit gave %v, %v; a swap not yet on disk does not fail it", g, err)
+	}
+	if errs := r.all(); len(errs) != 1 || !errors.Is(errs[0], errInjected) {
+		t.Errorf("the store reported %v, want the failed sync", errs)
+	}
+	wantServing(t, s, u)
 }

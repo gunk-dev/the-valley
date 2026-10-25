@@ -71,6 +71,17 @@
 // pass the mark rather than publish out of order. A refused upload
 // leaves the active export as it was.
 //
+// A commit has succeeded once the receiver has written its sequence to
+// the high-water mark and swapped the active export to it, and the reply
+// is then 200 with Committed. A later failure does not change the reply:
+// deleting old exports, stale uploads and the trash, or syncing the swap
+// to disk. Store passes it to the report function given to OpenStore,
+// for the receiver to log, and the next sweep or OpenStore repairs it. A
+// commit that fails before then leaves the active export as it was. If
+// it failed after the high-water mark was written, its sequence is
+// accepted, and the commit retried is refused as replayed. The
+// publisher's next manifest, signed later, replaces the upload.
+//
 // # The receiver's state
 //
 // Store is the receiver's state directory: its generations, the active

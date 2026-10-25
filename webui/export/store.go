@@ -42,7 +42,8 @@ var ErrNoExport = errors.New("no export has been activated")
 // The locks are flock(2) locks, so readers and activations in different
 // processes on one host are held to the same rule as goroutines are.
 type Store struct {
-	dir string
+	dir    string
+	report func(error)
 }
 
 // Generation is one activated export: its sequence and its directory.
@@ -95,12 +96,21 @@ func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 // OpenStore opens the state directory at dir, creating its layout. It
 // finishes an activation a crash interrupted after high-water was written,
 // and deletes what no activation can use.
-func OpenStore(dir string) (*Store, error) {
+//
+// report is told of each failure the store works past rather than
+// returns: deleting what no activation can use, which the next sweep
+// tries again, and syncing a swap of active to disk, which the next
+// OpenStore repeats after a crash. Neither undoes an activation. A
+// receiver logs them. A nil report drops them.
+func OpenStore(dir string, report func(error)) (*Store, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{dir: abs}
+	if report == nil {
+		report = func(error) {}
+	}
+	s := &Store{dir: abs, report: report}
 	for _, d := range []string{abs, s.path("exports"), s.path("staging"), s.path("trash")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
@@ -114,7 +124,10 @@ func OpenStore(dir string) (*Store, error) {
 	if err := s.recover(); err != nil {
 		return nil, err
 	}
-	return s, s.sweep()
+	if err := s.sweep(); err != nil {
+		s.report(err)
+	}
+	return s, nil
 }
 
 // Dir is the state directory.
@@ -227,7 +240,7 @@ func (s *Store) Stage(m *Manifest) (Staging, error) {
 			return Staging{}, refuse(CodeSuperseded, "the upload with sequence %d supersedes this one, %d", seq, m.Sequence)
 		}
 		if seq < m.Sequence {
-			if err := os.RemoveAll(s.path("staging", strconv.FormatInt(seq, 10))); err != nil {
+			if err := removeAll(s.path("staging", strconv.FormatInt(seq, 10))); err != nil {
 				return Staging{}, err
 			}
 		}
@@ -307,13 +320,20 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //  5. renames the staging directory into exports/;
 //  6. writes high-water durably;
 //  7. swaps active to the new generation;
-//  8. deletes the generations no reader holds and the stale staging
-//     directories.
+//  8. syncs the swap to disk, and deletes the generations no reader holds
+//     and the stale staging directories.
 //
-// A crash before step 6 leaves the old generation active, and the next
-// OpenStore deletes the new one. A crash between 6 and 7 is finished by
-// the next OpenStore, which swaps active to the generation high-water
-// names.
+// The activation has succeeded once step 7 is done: the new generation
+// serves, and high-water names it, so the next OpenStore restores it
+// after a crash. What fails in step 8 goes to the store's report, and
+// Activate still returns the new generation.
+//
+// A failure before step 7 is returned, and leaves the old generation
+// active. A crash before step 6 leaves the old generation active, and the
+// next OpenStore deletes the new one. After step 6 the sequence is
+// accepted: a commit retried after a failure between 6 and 7 is refused
+// as replayed. A crash between 6 and 7 is finished by the next OpenStore,
+// which swaps active to the generation high-water names.
 func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	unlock, err := s.lock()
 	if err != nil {
@@ -349,7 +369,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	// as needed again rather than keep a body that cannot be activated.
 	exportPath := filepath.Join(st.Dir, ExportFile)
 	if !exists(exportPath) {
-		if err := os.Rename(st.Body(m.File), exportPath); err != nil {
+		if err := rename(st.Body(m.File), exportPath); err != nil {
 			return Generation{}, err
 		}
 	}
@@ -372,7 +392,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	}
 
 	for _, d := range []string{st.Bodies(), st.tmp()} {
-		if err := os.RemoveAll(d); err != nil {
+		if err := removeAll(d); err != nil {
 			return Generation{}, err
 		}
 	}
@@ -380,16 +400,16 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		return Generation{}, err
 	}
 	for _, d := range []string{filepath.Join(st.Dir, "repos"), st.Dir} {
-		if err := syncDir(d); err != nil {
+		if err := syncPath(d); err != nil {
 			return Generation{}, err
 		}
 	}
 	dir := s.exportDir(m.Sequence)
-	if err := os.Rename(st.Dir, dir); err != nil {
+	if err := rename(st.Dir, dir); err != nil {
 		return Generation{}, err
 	}
 	for _, d := range []string{s.path("exports"), s.path("staging")} {
-		if err := syncDir(d); err != nil {
+		if err := syncPath(d); err != nil {
 			return Generation{}, err
 		}
 	}
@@ -399,7 +419,13 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	if err := s.swap(m.Sequence); err != nil {
 		return Generation{}, err
 	}
-	return Generation{Sequence: m.Sequence, Dir: dir}, s.sweep()
+	if err := syncPath(s.dir); err != nil {
+		s.report(fmt.Errorf("the swap of active to generation %d is not on disk: %w", m.Sequence, err))
+	}
+	if err := s.sweep(); err != nil {
+		s.report(err)
+	}
+	return Generation{Sequence: m.Sequence, Dir: dir}, nil
 }
 
 // build gives the project its repository in staging, from the staged
@@ -410,7 +436,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 // next build of the project starts again.
 func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error {
 	tmp := filepath.Join(st.tmp(), p.Name+".git")
-	if err := os.RemoveAll(tmp); err != nil {
+	if err := removeAll(tmp); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(st.tmp(), 0o755); err != nil {
@@ -424,7 +450,7 @@ func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error 
 	} else if err := s.carry(ctx, p, tmp); err != nil {
 		return err
 	}
-	return os.Rename(tmp, st.Repo(p.Name))
+	return rename(tmp, st.Repo(p.Name))
 }
 
 // carry gives a project the active generation's repository, when that
@@ -508,17 +534,18 @@ func (s *Store) staged() ([]int64, error) {
 	return seqs, nil
 }
 
-// swap points active at the generation with sequence, atomically.
+// swap points active at the generation with sequence, atomically. The
+// caller syncs the state directory.
 func (s *Store) swap(sequence int64) error {
 	tmp := s.path("active." + random())
 	if err := os.Symlink("exports/"+strconv.FormatInt(sequence, 10), tmp); err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, s.path("active")); err != nil {
+	if err := rename(tmp, s.path("active")); err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	return syncDir(s.dir)
+	return nil
 }
 
 // recover finishes an activation interrupted between writing high-water
@@ -539,52 +566,49 @@ func (s *Store) recover() error {
 	if !exists(s.exportDir(hw)) {
 		return nil
 	}
-	return s.swap(hw)
+	if err := s.swap(hw); err != nil {
+		return err
+	}
+	return syncPath(s.dir)
 }
 
 // sweep deletes every generation but the active one that no reader holds,
 // every staging directory not newer than the high-water mark, and the
-// trash. A generation a reader holds is left for a later sweep.
+// trash. A generation a reader holds is left for a later sweep. A
+// deletion that fails does not stop the others, and the next sweep tries
+// it again.
 func (s *Store) sweep() error {
 	active, ok, err := s.active()
 	if err != nil {
-		return err
+		return fmt.Errorf("sweeping %s: %w", s.dir, err)
 	}
 	hw, err := s.HighWater()
 	if err != nil {
-		return err
+		return fmt.Errorf("sweeping %s: %w", s.dir, err)
 	}
+	var errs []error
 	exports, err := os.ReadDir(s.path("exports"))
-	if err != nil {
-		return err
-	}
+	errs = append(errs, err)
 	for _, e := range exports {
 		if n, valid := decimal(e.Name()); valid && ok && n == active {
 			continue
 		}
-		if err := s.delete(s.path("exports", e.Name())); err != nil {
-			return err
-		}
+		errs = append(errs, s.delete(s.path("exports", e.Name())))
 	}
 	staging, err := os.ReadDir(s.path("staging"))
-	if err != nil {
-		return err
-	}
+	errs = append(errs, err)
 	for _, e := range staging {
 		if n, valid := decimal(e.Name()); !valid || n <= hw {
-			if err := os.RemoveAll(s.path("staging", e.Name())); err != nil {
-				return err
-			}
+			errs = append(errs, removeAll(s.path("staging", e.Name())))
 		}
 	}
 	trash, err := os.ReadDir(s.path("trash"))
-	if err != nil {
-		return err
-	}
+	errs = append(errs, err)
 	for _, e := range trash {
-		if err := os.RemoveAll(s.path("trash", e.Name())); err != nil {
-			return err
-		}
+		errs = append(errs, removeAll(s.path("trash", e.Name())))
+	}
+	if err := errors.Join(errs...); err != nil {
+		return fmt.Errorf("sweeping %s: %w", s.dir, err)
 	}
 	return nil
 }
@@ -607,11 +631,11 @@ func (s *Store) delete(dir string) error {
 		return err
 	}
 	trash := s.path("trash", filepath.Base(dir)+"-"+random())
-	if err := os.Rename(dir, trash); err != nil {
+	if err := rename(dir, trash); err != nil {
 		return err
 	}
 	f.Close()
-	return os.RemoveAll(trash)
+	return removeAll(trash)
 }
 
 // lock takes the store's activation lock, waiting for it.
@@ -648,29 +672,39 @@ func writeDurably(path string, data []byte) error {
 	}
 	_, err = f.Write(data)
 	if err == nil {
-		err = f.Sync()
+		err = syncFile(f)
 	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp, path)
+		err = rename(tmp, path)
 	}
 	if err != nil {
 		os.Remove(tmp)
 		return err
 	}
-	return syncDir(filepath.Dir(path))
+	return syncPath(filepath.Dir(path))
 }
 
-func syncDir(dir string) error {
-	f, err := os.Open(dir)
+// syncPath syncs the file or directory at path. Syncing a directory makes
+// its entries durable.
+func syncPath(path string) error {
+	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return f.Sync()
+	return syncFile(f)
 }
+
+// The calls the store syncs, renames and deletes with. A test replaces
+// them to record their order or to make one fail.
+var (
+	syncFile  = (*os.File).Sync
+	rename    = os.Rename
+	removeAll = os.RemoveAll
+)
 
 func exists(path string) bool {
 	_, err := os.Lstat(path)

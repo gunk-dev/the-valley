@@ -942,9 +942,10 @@ services.valley.webPublisher = {
   starts it: nothing wants the service, and a changed unit is not restarted
   (`restartIfChanged = false`). A pass that runs longer than an hour is stopped (`TimeoutStartSec`).
 - **The timer:** `valley-web-publish.timer` starts the first pass five minutes after the timer
-  starts (`OnActiveSec`), so the first pass never runs inside the switch that starts the timer.
-  After that it starts a pass five minutes after the last one ended (`OnUnitInactiveSec`). Nothing
-  keeps a later pass out of a later switch.
+  starts (`OnActiveSec`). After that it starts a pass five minutes after the last one ended
+  (`OnUnitInactiveSec`). Both are delays only. When the switch that starts the timer runs longer
+  than five minutes, the first pass can start inside it, and a later pass can start inside any later
+  switch.
 - **The sandbox:** The service runs as a dynamic user (`DynamicUser`) with the git group
   (`SupplementaryGroups`), so it can read the repositories and owns nothing on disk but its state
   and cache. Its environment carries `safe.directory` entries as `GIT_CONFIG_COUNT`,

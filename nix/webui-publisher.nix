@@ -274,10 +274,11 @@ in
       };
     };
 
-    # Every five minutes, counted from the end of each pass. The first
-    # pass waits five minutes after the timer is started, so the first pass
-    # never runs inside the switch that starts the timer. Nothing keeps a
-    # later pass out of a later switch.
+    # The first pass starts five minutes after the timer starts, and each
+    # later pass five minutes after the last one ended. These are delays
+    # and nothing more: a switch that runs longer than five minutes can
+    # see the first pass start inside it, and any later switch can see a
+    # pass start inside it.
     systemd.timers.valley-web-publish = {
       description = "Run the valley web publisher";
       wantedBy = [ "timers.target" ];

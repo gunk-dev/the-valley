@@ -2131,17 +2131,20 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   names other projects than the instance publishes, as the CLI's listing of its own repository alone
   does when discovery fails, or when the schema does not load. It fails the same way for a project
   the instance allows when the pending listing could not read it or gives no URL for it, when its
-  `main` cannot be fetched, or when git or `cue` cannot be run over its declaration. `export.Build`
-  refuses a public project that the plan could not read. An export without such a project would take
-  it off the web.
+  `main` cannot be fetched, or when git or `cue` cannot be run over its declaration. A `cue` run
+  that does not finish fails the pass, over the instance's declaration or a project's: one that
+  cannot be started, is killed, exits with any status but 1, or runs longer than a minute.
+  `export.Build` refuses a public project that the plan could not read. An export without such a
+  project would take it off the web.
 - **Reading a declaration:** The pass reads the `*.cue` files directly in `policy/web/` of the
   commit, as regular files only, with `git ls-tree` and `git cat-file`, never a checkout. It copies
   them into a scratch directory with no `cue.mod`, so `cue` resolves no import beyond its standard
   library, and runs `cue export --out json` with the schema and the files. `CUE_*` variables are
-  removed from `cue`'s environment. A declaration with more than 32 files, a file over 64 KiB, a
-  `cue` run longer than a minute, more than 1 MiB of exported JSON, or exported JSON with a field
-  the schema does not define is refused. Before it reads any declaration, the pass runs `cue export`
-  over the schema alone, and fails when that fails.
+  removed from `cue`'s environment. A declaration is refused when `cue` exits with status 1, which
+  is how `cue` reports an error in what it was given. A declaration with more than 32 files, a file
+  over 64 KiB, more than 1 MiB of exported JSON, or exported JSON with a field the schema does not
+  define is refused too. Before it reads any declaration, the pass runs `cue export` over the schema
+  alone, and fails when that fails.
 - **Output bounds:** The pass holds at most 64 MiB of what a `valley` command prints, 4 MiB of what
   a `git` command prints, and 1 MiB of what `cue` prints. A command that prints more fails the pass,
   except `cue`, whose declaration is then refused. What a command prints on `stderr` is kept to its

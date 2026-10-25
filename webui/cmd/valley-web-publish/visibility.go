@@ -19,24 +19,32 @@ import (
 const webDir = "policy/web"
 
 // The bounds on a declaration: how many documents it may have, how large
-// each may be, how long cue may take over them, and how much it may print.
-// A declaration past them is invalid, so the project is private.
+// each may be, and how much cue may print for it. A declaration past them
+// is invalid, so the project is private.
 const (
 	maxDeclarationFiles = 32
 	maxDeclarationFile  = 64 << 10
-	cueTimeout          = time.Minute
 	maxCueOutput        = 1 << 20
 )
+
+// cueTimeout is how long a cue run may take. A run past it fails the pass:
+// how long cue takes depends on the host as much as on the declaration.
+var cueTimeout = time.Minute
+
+// cueRefused is the exit status cue ends with when it reports an error in
+// what it was given, as when the schema refuses a declaration. A Go
+// program that panics exits 2, and one the kernel kills has no status.
+const cueRefused = 1
 
 // errNoDeclaration is readDeclaration's error for a commit with no
 // policy/web/*.cue.
 var errNoDeclaration = errors.New("no policy/web declaration")
 
 // invalidDeclaration is readDeclaration's error for a declaration that is
-// there and is not one: the schema refuses it, or it is past the bounds. A
-// project whose declaration is invalid is private. Any other error of
-// readDeclaration's is a failure to read the declaration, which ends the
-// pass.
+// there and is not one: cue ran over it to the end and refused it, or it
+// is past the bounds. A project whose declaration is invalid is private.
+// Any other error of readDeclaration's is a failure to read the
+// declaration, which ends the pass.
 type invalidDeclaration struct{ err error }
 
 func (e *invalidDeclaration) Error() string { return e.err.Error() }
@@ -147,11 +155,12 @@ func readDeclaration(ctx context.Context, repo, commit, schema string) (*declara
 	return &d, nil
 }
 
-// cueExport runs cue export --out json over the files, in dir. A run that
-// cue ends with an error, that is past cueTimeout or that prints more than
-// maxCueOutput is an *invalidDeclaration, since what cue was given decides
-// it. A cue that could not be run, or a pass that was cancelled, is any
-// other error.
+// cueExport runs cue export --out json over the files, in dir. Only what
+// the files decide is an *invalidDeclaration: a run that ends with
+// cueRefused, and a run that prints more than maxCueOutput. Every other
+// failure is an error of its own, which ends the pass: a cue that could
+// not be started, that crashed, that was killed or that ran past
+// cueTimeout, and a pass that was cancelled.
 func cueExport(ctx context.Context, dir string, files []string) ([]byte, error) {
 	cueCtx, cancel := context.WithTimeout(ctx, cueTimeout)
 	defer cancel()
@@ -162,6 +171,10 @@ func cueExport(ctx context.Context, dir string, files []string) ([]byte, error) 
 	stderr := &bounded{max: maxStderr}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	err := cmd.Run()
+	said := fmt.Sprint(err)
+	if first, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n"); first != "" {
+		said += ": " + first
+	}
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
@@ -169,10 +182,11 @@ func cueExport(ctx context.Context, dir string, files []string) ([]byte, error) 
 	case stdout.over:
 		return nil, invalid("cue exported more than %d bytes", maxCueOutput)
 	case cueCtx.Err() != nil:
-		return nil, invalid("cue took longer than %v", cueTimeout)
+		return nil, fmt.Errorf("cue took longer than %v, so the declaration was not read", cueTimeout)
+	case errors.As(err, &exit) && exit.ExitCode() == cueRefused:
+		return nil, invalid("cue export: %s", said)
 	case errors.As(err, &exit):
-		first, _, _ := strings.Cut(strings.TrimSpace(stderr.String()), "\n")
-		return nil, invalid("cue export: %v: %s", err, first)
+		return nil, fmt.Errorf("cue did not finish reading the declaration: %s", said)
 	case err != nil:
 		return nil, fmt.Errorf("could not run cue: %w", err)
 	}

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"the-valley/webui/export"
 )
@@ -261,6 +262,44 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 		stdout, _ := v.publish("--out", filepath.Join(t.TempDir(), "export"))
 		mustSay(t, "a project with no main", stdout, "public: app; private: fresh, site, valley")
 	})
+}
+
+// Only a cue run that ends by refusing a declaration makes it invalid, and
+// so private. A cue that is killed, that crashes or that runs past its
+// timeout has read nothing, and the pass fails, sending and writing
+// nothing: taken as invalid, the instance's declaration would make every
+// project private and take them all off the web.
+func TestACueThatDoesNotFinishFailsThePass(t *testing.T) {
+	cases := []struct {
+		name, does, says string
+		timeout          time.Duration
+	}{
+		{name: "killed", does: "kill -KILL $$", says: "cue did not finish reading the declaration: signal: killed"},
+		{name: "crashed", does: "echo 'panic: runtime error' >&2; exit 2",
+			says: "cue did not finish reading the declaration: exit status 2: panic: runtime error"},
+		{name: "past its timeout", does: "exec sleep 60", says: "cue took longer than 3s", timeout: 3 * time.Second},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			v := newValley(t)
+			bash, cue := needTool(t, "bash"), needTool(t, "cue")
+			// The schema is checked with cue over it alone; a declaration is
+			// read with cue over the schema and the declaration's files.
+			wrapper := filepath.Join(v.root, "bin", "cue")
+			v.write(wrapper, fmt.Sprintf("#!%s\nif [ \"$#\" -gt 4 ]; then %s; fi\nexec %s \"$@\"\n", bash, c.does, cue))
+			if err := os.Chmod(wrapper, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if c.timeout != 0 {
+				was := cueTimeout
+				cueTimeout = c.timeout
+				t.Cleanup(func() { cueTimeout = was })
+			}
+			said := v.fails(nil)
+			mustSay(t, c.name, said, "could not read the instance's policy/web")
+			mustSay(t, c.name, said, c.says)
+		})
+	}
 }
 
 // The bundles of an export are held to --max-bundles together, and the

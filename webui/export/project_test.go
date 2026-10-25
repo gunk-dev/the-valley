@@ -260,6 +260,29 @@ func TestDecodeIsStrict(t *testing.T) {
 	}
 }
 
+// Nothing but white space may follow export.json's document: not a
+// closing bracket or brace, which ends a document without starting
+// another, and not a malformed suffix. A receiver refuses such an
+// export.json as bad-export even when the manifest declares its bytes.
+func TestDecodeRefusesTrailingInput(t *testing.T) {
+	f := exporttest.New(t)
+	for _, suffix := range []string{"]", "}", "]garbage", "}}", "],", "garbage", ",", "{", `"`, "nul", "\x00", "{}", "[]", "1"} {
+		data := append(append([]byte{}, f.ExportJSON...), suffix...)
+		if _, err := export.Decode(data); err == nil {
+			t.Errorf("Decode took export.json followed by %q", suffix)
+		}
+		m := *f.Manifest
+		m.File = export.BodyOf(export.ExportFile, data)
+		if _, err := m.CheckExport(data); export.CodeOf(err) != export.CodeBadExport {
+			t.Errorf("CheckExport gave %v for export.json followed by %q, want bad-export", err, suffix)
+		}
+	}
+	data := append(append([]byte{}, f.ExportJSON...), " \t\r\n\n"...)
+	if _, err := export.Decode(data); err != nil {
+		t.Errorf("Decode refused export.json followed by white space: %v", err)
+	}
+}
+
 // The content digest ignores display-time fields and nothing else.
 func TestDigest(t *testing.T) {
 	f := exporttest.New(t)

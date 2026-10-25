@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -203,8 +204,9 @@ func (e *Export) Encode() ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// Decode reads export.json strictly: a field the schema does not name, a
-// second document, or an export Validate refuses, fails the read.
+// Decode reads export.json strictly: a field the schema does not name,
+// anything but white space after the document, or an export Validate
+// refuses, fails the read.
 func Decode(data []byte) (*Export, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -212,8 +214,11 @@ func Decode(data []byte) (*Export, error) {
 	if err := dec.Decode(&e); err != nil {
 		return nil, fmt.Errorf("export.json: %w", err)
 	}
-	if dec.More() {
-		return nil, errors.New("export.json holds more than one document")
+	// More reports false at a closing bracket or brace, so only a second
+	// Decode that finds the end of the input proves there is nothing after
+	// the document.
+	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
+		return nil, errors.New("export.json holds more than its one document")
 	}
 	if err := e.Validate(); err != nil {
 		return nil, err

@@ -101,10 +101,15 @@ func (g streamGraph) blob(id string, max int) ([]byte, error) {
 //     a Valley-Op trailer.
 //   - Its tree is exactly the graph's layout, and every knot and comment
 //     the commit adds or changes holds to the module's rules, against the
-//     graph before it (knot.Push): no knot or comment is deleted, no
-//     comment changes, a knot keeps its id, type, created and created_by,
-//     a new knot's created_by and a new comment's author name the pusher,
-//     every edge resolves, and no edge forms a cycle.
+//     graph before it (knot.Push): no knot or comment is deleted, a knot
+//     keeps its id, type, created and created_by, a new knot's created_by
+//     and a new comment's author name the pusher, an edited comment keeps
+//     its author and names the pusher in edited_by, every edge resolves,
+//     and no edge forms a cycle.
+//   - A comment is edited by its author, or by a holder of the approve
+//     grant, under either of its names. The module checks what an edit
+//     records, and the hook decides who may make it, since the grants are
+//     the host's.
 func (p policy) checkGraph(principal string, u update) (verb, why string) {
 	switch {
 	case principal == "":
@@ -155,7 +160,13 @@ func (p policy) checkGraph(principal string, u update) (verb, why string) {
 			return verb, "the tip it replaces: " + err.Error()
 		}
 	}
-	if err := (knot.Push{Old: before, New: after, Read: g.blob, Pusher: principal}).Check(); err != nil {
+	mayEdit := func(string) error {
+		if p.grants.holds(principal, grantApprove) {
+			return nil
+		}
+		return fmt.Errorf("a comment is edited by its author, or by a holder of the %s", approveGrant)
+	}
+	if err := (knot.Push{Old: before, New: after, Read: g.blob, Pusher: principal, MayEdit: mayEdit}).Check(); err != nil {
 		return verb, err.Error()
 	}
 	// A read past the deadline is refused as it fails, but a read that

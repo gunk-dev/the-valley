@@ -84,11 +84,13 @@ A write is allowed only if every rule that applies to its ref allows it:
                     tip, committed by the pusher, with a Valley-Op
                     trailer. Its tree is read within fixed bounds, and
                     must be exactly the graph's layout. No knot or
-                    comment is deleted, no comment changes, a knot keeps
-                    its id, type, created and created_by, a new knot's
-                    created_by and a new comment's author name the
-                    pusher, every edge resolves, and no edge forms a
-                    cycle. No push deletes the ref.
+                    comment is deleted, a knot keeps its id, type,
+                    created and created_by, a new knot's created_by and a
+                    new comment's author name the pusher, every edge
+                    resolves, and no edge forms a cycle. A comment's
+                    author, or a holder of the approve grant, may edit
+                    it: the edit keeps the author and names the pusher
+                    in edited_by. No push deletes the ref.
   anything else     principals a named grant of the project opens the ref
                     to. Tags open only this way.
   a protected ref   also a declared writer of the project. Protection adds

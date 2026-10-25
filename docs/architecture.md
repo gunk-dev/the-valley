@@ -4,9 +4,10 @@ This document describes what the-valley runs today, read from the code, and the 
 principles its design follows. It makes four kinds of statement. A principle is a rule the design
 follows, with the reason for it; the code that carries it out is cited like any other behaviour.
 Behaviour is what the code does, cited to the files that do it. A deployment choice is what a host's
-configuration decides rather than the code, and is labelled so. A guarantee names the flake check
-(`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement of behaviour with no named
-check is unchecked. Security and rollouts are in [security.md](./security.md), planned work lives in
+configuration decides, rather than the code. It is labelled **deployment choice**. A guarantee names
+the flake check (`checks.x86_64-linux.<name>`) or test that demonstrates it; a statement of
+behaviour with no named check is unchecked. Security and rollouts are in
+[security.md](./security.md), planned work lives in
 [the plan graph](./concepts.md#records-project-storage-the-plan-graph-and-knots) (`valley plan`),
 and the project's purpose and principles are in [purpose.md](./purpose.md).
 
@@ -302,8 +303,8 @@ and can leave an old request in place. So `valley withdraw` warns when origin ho
 the change, and `valley unready` notes one. The request is looked for under `c-<change-id>`, and
 under the name a branch's request has, for the branch of each of the change's versions. Only an
 `approve` holder may touch a request ref, so the warning says the operator must drop it if the
-change is readied first. Approvals are not records either: signed approval statements are **not
-built**.
+change is readied first. Approvals have no records of their own: signed approval statements are
+**not built**.
 
 The ref `refs/the-valley/changes/main/<change-id>` points at a record commit. The commit's tree
 holds one entry, `record.json`, as a plain file. Its schema is `valley-change-record/v1`, read by
@@ -617,8 +618,8 @@ Readiness is the author's workflow signal, and the integrator enforces it as clo
 It does not enforce it atomically. The integrator reads the records last just before it moves the
 target, and a record written between that read and the move is not seen. So a head the operator
 approved can still land after its author has paused it. Content the operator did not approve can
-never land this way. The race-free form binds each approval to the record's withdraw generation, in
-signed approval statements, which are **not built**.
+never land this way. The race-free design binds each approval to the record's withdraw generation in
+a signed approval statement (**not built**).
 
 The records are read with the parser the hook and the CLI share (`change/`), under the bounds the
 hook admits them under (`integrator/records.go`). Each pass reads every ref under
@@ -2415,8 +2416,8 @@ push the hook refuses is not tried again, and the CLI prints what the hook said.
 The host decides every push to the ref in `valleyhook` (`valleyhook/knots.go`), with the knot
 module. It matches `refs/the-valley/knots` exactly, so a ref that only begins with that name stays
 in the closed namespace. Any named principal may write the graph, and an untagged key may not. Every
-writer can change every knot in every project's graph. That is intended where the writers are the
-operator and the operator's agents, and a principal added later gets the same reach. A push that
+writer can change every knot in every project's graph. That fits a deployment where the writers are
+the operator and the operator's agents. Any principal added later gets the same reach. A push that
 creates the ref brings one commit with no parent. An update brings one commit whose only parent is
 the old tip, so a push is one operation and the ref never rewinds. No push deletes the ref; a graph
 that must be recovered is recovered on the host, and its history stays the record. The commit's
@@ -2690,22 +2691,23 @@ A branch no record is on is approved by its name and requested under it.
 
 ## What a deployment supplies
 
-The host module installs the mechanism, and the deployment supplies the rest (**deployment
-choice**). [Running a valley host](./guide.md#running-a-valley-host) walks through each step.
+The host module installs the valley's services and hooks (`nix/valley-host.nix`). A deployment
+supplies the host configuration, the project declaration and the secrets (**deployment choice**).
+[Running a valley host](./guide.md#running-a-valley-host) walks through each step.
 
-- **The host configuration.** It imports `the-valley.nixosModules.valley-host` and points
-  `services.valley.config` at the host's `valley.cue`. It turns on the parts the host uses, such as
-  the bus, the integrator and the identity compiler. It names the instance repository in
-  `services.valley.integrator.instanceProject`. It may declare static keys in
-  `services.valley.authorizedKeys` beside the keys the registry compiles.
+- **The host configuration.** The host's NixOS configuration imports
+  `the-valley.nixosModules.valley-host` and points `services.valley.config` at `valley.cue`. It
+  enables the services the host runs, such as the bus, the integrator and the identity compiler, and
+  names the instance repository in `services.valley.integrator.instanceProject`. It can also declare
+  static SSH keys in `services.valley.authorizedKeys` beside the keys the registry compiles.
 - **The declaration.** `valley.cue` names the projects, the refs each one protects, their mirrors,
   and the backup policy. A backup is a restic run of the data directory over sftp. By default it
   runs nightly and keeps 7 daily, 4 weekly and 6 monthly snapshots (`schema/valley.cue`).
-- **The secrets.** The deployment provisions each one as a file outside the Nix store. They are the
-  integrator's signing key (`services.valley.integrator.signingKeyFile`), the git user's ssh key,
-  which mirror pushes use, and the backup's repository URL, password, ssh key and known hosts
-  (`services.valley.backup.*`). The build refuses a host whose declaration enables backup without
-  those four files (`nix/valley-host.nix`).
+- **The secrets.** The deployment provisions each secret as a file outside the Nix store. These are
+  the integrator's signing key (`services.valley.integrator.signingKeyFile`), the git user's ssh key
+  for mirror pushes, and the four backup files (`services.valley.backup.*`): the repository URL,
+  password, ssh key and known hosts. The build refuses a host whose declaration enables backup
+  without all four backup files (`nix/valley-host.nix`).
 
 ## Not deployed or not wired yet
 

@@ -1,18 +1,18 @@
 # Security and rollouts
 
-This document describes how the-valley protects the hosts it runs on, and the hosts that deploy what
+This document describes how the-valley protects the hosts it runs on and the hosts that deploy what
 lands on it. It follows the path a change takes, and names the gate at each step and its status. The
 components are described in [architecture.md](./architecture.md), and the planned gates live in
 [the plan graph](./concepts.md#records-project-storage-the-plan-graph-and-knots) (`valley plan`).
 
 The document makes three kinds of statement:
 
-- **Behaviour** is what the code does, cited to the files that do it, and labelled `implemented`
-  where the kind is not plain. A guarantee names the executable check that demonstrates it. A
-  statement with no named check is unchecked, and says so.
+- **Behaviour** is what the code does, cited to the files that do it. It is labelled `implemented`
+  where needed. A guarantee names the executable check that demonstrates it. A statement with no
+  named check is unchecked, and says so.
 - **A deployment choice** is what a deployment configures or must supply. It is labelled
   **deployment choice**, and the code does not enforce it.
-- **A gate that is not built** is designed, and does not work yet. It is labelled **not built**.
+- **A gate that is not built** has a design but does not work yet. It is labelled **not built**.
 
 The main threat is an AI agent acting as the operator. So the gates must hold even when an agent
 ignores its instructions. The human act of authority is a touch on a hardware key. An approval gate
@@ -39,18 +39,18 @@ operator's account, keys and secrets (**deployment choice**).
 
 - **The boundary.** A deployment runs its agents outside the operator's Unix account, in a boundary
   such as a VM with its own kernel. The boundary has no host directory shares and no operator
-  secrets. Root inside it is assumed.
-- **Its own identities.** Agents push with keys of their own, enrolled under a principal of their
-  own, with a push grant and no `approve` grant (**deployment choice**). The hook takes the
-  principal from the key that logged in (`valleyhook/shell.go`). Like any admitted key, an agent's
-  key can push topic branches and create attestation refs. The hook accepts an attestation ref only
-  when every note in it verifies under a known signer (`valleyhook/policy.go`,
-  `valleyhook/attestation.go`). An agent's key can also create change records, which makes the
-  agents' principal the owner of the changes they start, and add versions to them
-  (`valleyhook/record.go`). A record never makes anything land. The integrator reads records only to
-  refuse a request, and to void a withdrawn change's requests (`integrator/records.go`). So any
-  principal that may create a record can hold back a head, by recording it in a change it then
-  unreadies. Only an `approve` holder may delete that record, and deleting it releases the head.
+  secrets. An agent is assumed to have root inside the boundary.
+- **Their own identities.** Agents push with their own keys under their own principal, with a push
+  grant and no `approve` grant (**deployment choice**). The hook takes the principal from the key
+  that logged in (`valleyhook/shell.go`). Like any admitted key, an agent's key can push topic
+  branches and create attestation refs. The hook accepts an attestation ref only when every note in
+  it verifies under a known signer (`valleyhook/policy.go`, `valleyhook/attestation.go`). An agent's
+  key can also create change records, which makes the agent's principal the owner of those changes,
+  and add versions to them (`valleyhook/record.go`). A record never makes anything land. The
+  integrator reads records only to refuse a request or to void a withdrawn change's requests
+  (`integrator/records.go`). Any principal that can create a record can hold back a head by
+  recording it in a change and unreadying that change. Only an `approve` holder may delete that
+  record, and deleting it releases the head.
 - **Caps.** The deployment caps the boundary's CPU, memory and I/O, so agents cannot starve the
   valley host.
 - **Egress.** The boundary reaches only what agents need, such as name resolution, ssh to the valley
@@ -62,7 +62,7 @@ operator's account, keys and secrets (**deployment choice**).
   deployment adds `DisableForwarding yes` and `PermitTTY no` to close the rest (see
   [Repositories and the git user](./architecture.md#repositories-and-the-git-user)).
 - **Tools that follow `main`.** `valley self-update` can keep an agent's `valley` at the tip of
-  `main`, through the flake's home-manager module (architecture,
+  `main`, through the flake's home-manager module (see
   [Version and self-update](./architecture.md#version-and-self-update)). It installs only a commit
   that has landed, built from the exact commit `git ls-remote` named, once it passes a smoke test.
   The valley host and the machine the operator approves from must not run it. Their `valley` stays
@@ -118,8 +118,8 @@ Readiness is different. A change record's state is the author's workflow signal,
 enforces it as closely as refs allow. It does not enforce it atomically. A record written between
 the integrator's last read of the records and its move of the target can be missed. That can land a
 head the operator approved and the author has since paused. It can never land content the operator
-did not approve. The race-free form binds each approval to the record's withdraw generation, in
-signed approval statements, which are **not built**.
+did not approve. The race-free design binds each approval to the record's withdraw generation in a
+signed approval statement (**not built**).
 
 ### 3. Filing takes a touch (not built)
 
@@ -134,9 +134,8 @@ hardware-backed keys yet.
 A host that deploys what lands on the valley should activate only a release the operator signed. The
 design has each such host verify a signed, sequenced release tag before it activates anything, and
 never track `main`. `sigverify` verifies such a tag (`implemented`, checked by `sigverify-unit` and
-`sigverify-e2e`). Nothing calls it yet. The host-side caller is the deployment's to supply, and it
-must meet [sigverify's caller's contract](../sigverify/README.md#the-callers-contract) (**not
-built**).
+`sigverify-e2e`). Nothing calls it yet. The deployment supplies the host-side caller, which must
+meet [sigverify's caller's contract](../sigverify/README.md#the-callers-contract) (**not built**).
 
 Until a host verifies signed releases, a host that builds and activates the tip of `main` deploys
 whatever lands, without checking who made it (**deployment choice**). Nothing bounds the delay
@@ -227,15 +226,16 @@ A deployment must keep these secrets, and every key that decrypts them, out of a
 properties of encrypted secrets bear on that:
 
 - A copy of any recipient's private key decrypts every secret encrypted to it, on any machine. When
-  secrets are encrypted to host keys, each host's key is such a recipient, kept in software.
+  secrets are encrypted to host keys, each host's key is a software private key that can decrypt
+  them.
 - Old ciphertext stays decryptable by every key it was encrypted to. A secret once encrypted to a
-  key that agents could read must be rotated, not only encrypted again.
+  key that agents could read must be replaced with a new secret, not only re-encrypted.
 
 ## What the operator does
 
 - Approves changes, with `[a]pprove` in `valley review` or with `valley approve`. Approving a change
   files its integration request. This is the only act on this list that a check enforces (step 2).
-- Holds the hardware keys, and manages the deployment's secrets.
+- Holds the hardware keys and manages the deployment's secrets.
 - Signs releases and approves protected path classes, once those gates exist (**not built**).
 
 ## The autonomy ladder
@@ -250,8 +250,8 @@ themselves when to deploy.
 3. **A batched cadence.** A scheduled release promotes everything accumulated, and one touch signs
    it.
 4. **Approved upstreams.** When a deployment's inputs, the-valley among them, land through
-   approval-gated integration, a change that only updates them can land when its checks pass. They
-   still ship through releases.
+   approval-gated integration, a change that only updates those inputs can land when its checks
+   pass. Those updates still ship through releases.
 5. **A delegated release signer.** A machine key in the release environment, out of agents' reach,
    signs releases that touch only declared low-risk path classes. The operator signs that policy
    with a touch. Entry criterion: a record of health-gated rollback catching real failures in
@@ -259,24 +259,25 @@ themselves when to deploy.
 
 ## Residual risks
 
-- **Agents must not be able to land outside the valley.** An agent whose forge account can merge to
-  a repository that a host deploys from can deploy without an approval. A deployment gives agents'
+- **Agents must not be able to land outside the valley.** If a host deploys from a repository on a
+  forge, an agent with merge rights there can deploy without an approval. A deployment gives agents'
   accounts no merge rights on such a repository.
 - **Old secret ciphertext stays decryptable.** A secret encrypted to a key that agents could once
   read stays readable with that key, in every copy of the ciphertext, until the secret is rotated.
-- **An escape from an agent VM on the valley host lands on the valley host.** The VM has its own
-  kernel. An escape through KVM or the hypervisor reaches the host that runs the valley.
+- **An escape from an agent VM on the valley host reaches the host.** The VM has its own kernel, and
+  an escape through KVM or the hypervisor reaches the host that runs the valley.
 - **Every key of the operator's principal holds `approve`.** Filing needs no touch until step 3 is
   built.
 - **Check definitions come from the change.** A change can edit the flake check it is judged by
   ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md)).
-- **Hosts must not update from an unsigned branch.** A host that upgrades itself from a branch, with
-  no signature check, deploys whatever reaches that branch. When the branch is on a forge rather
-  than on the valley, no gate in this document applies to it.
+- **Hosts must not update from an unsigned branch.** A host that upgrades itself from a branch
+  without a signature check deploys whatever reaches that branch. When the branch is on a forge
+  rather than on the valley, no gate in this document applies to it.
 - **Readiness is not enforced atomically.** A change paused in the moment before the integrator
   moves the target can still land, at the head the operator approved (step 2).
 - **The bus has no authentication.** Any local process on the valley host can publish events.
   Nothing treats an event as authoritative.
-- **`integrator` can be a named writer of `main`.** The integrator moves `main` on disk, and needs
-  no place in `protection.writers`. A deployment that lists `integrator` there lets a key tagged
-  `integrator` push `main` directly. So no declared or registry key may carry that tag.
+- **Listing `integrator` in `protection.writers` opens a push path to `main`.** The integrator moves
+  `main` on disk and needs no place in `protection.writers`. A deployment that lists `integrator`
+  there lets any key tagged `integrator` push `main` directly. No declared or registry key may carry
+  that tag.

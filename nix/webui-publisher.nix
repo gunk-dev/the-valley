@@ -44,19 +44,23 @@ let
   instanceRepo = "${toString host.dataDir}/${toString host.integrator.instanceProject}.git";
 
   # The repositories belong to the git user and the service does not, so
-  # git refuses them as dubiously owned. One exact safe.directory entry per
-  # repository rides in the unit's environment, which every git the
-  # publisher and the valley CLI run inherits. GIT_CONFIG_* is command
-  # scope, which git reads safe.directory from. Never a wildcard.
+  # git refuses them as dubiously owned. The unit's environment carries
+  # safe.directory entries, which every git the publisher and the valley
+  # CLI run inherits. GIT_CONFIG_* is command scope, which git reads
+  # safe.directory from, after the system and global configuration. The
+  # entries add to what those set, so the first is empty, which resets the
+  # list (git-config(1)), and one exact entry per repository follows. A
+  # system configuration that trusts every directory trusts none of them
+  # here. Never a wildcard.
   safeDirectories = {
-    GIT_CONFIG_COUNT = toString (lib.length repositories);
+    GIT_CONFIG_COUNT = toString (lib.length repositories + 1);
   }
   // lib.listToAttrs (
     lib.concatLists (
       lib.imap0 (i: repo: [
         (lib.nameValuePair "GIT_CONFIG_KEY_${toString i}" "safe.directory")
         (lib.nameValuePair "GIT_CONFIG_VALUE_${toString i}" repo)
-      ]) repositories
+      ]) ([ "" ] ++ repositories)
     )
   );
 
@@ -90,7 +94,11 @@ let
     "--receiver ${lib.escapeShellArg cfg.receiver}"
     "--principals ${principalsFile}"
     "--state ${lib.escapeShellArg (toString cfg.stateDir)}"
+    "--max-bundles ${cfg.maxBundles}"
+    "--max-storage ${cfg.maxStorage}"
   ];
+
+  size = lib.types.strMatching "[1-9][0-9]*[KMGT]?";
 in
 {
   options.services.valley.webPublisher = {
@@ -143,6 +151,37 @@ in
       '';
     };
 
+    memoryMax = lib.mkOption {
+      type = size;
+      default = "1G";
+      description = ''
+        The most memory a pass may use, the publisher and every git, cue
+        and valley it runs together (`MemoryMax`, with no swap). Past it,
+        the kernel ends the pass.
+      '';
+    };
+
+    maxBundles = lib.mkOption {
+      type = size;
+      default = "1G";
+      description = ''
+        The most the bundles of one export may hold together. Each bundle
+        carries a public project's whole history on main. A pass past it
+        sends nothing (`--max-bundles`).
+      '';
+    };
+
+    maxStorage = lib.mkOption {
+      type = size;
+      default = "16G";
+      description = ''
+        The most the state and cache directories may hold once a pass has
+        made its bundles. The cache holds a clone of every project the host
+        serves, and a mirror and a bundle of each public one. A pass past
+        it sends nothing (`--max-storage`).
+      '';
+    };
+
     # The publisher as this flake packages it. Internal, like the host
     # module's packages: module-eval sets it to a stand-in.
     package = lib.mkOption {
@@ -186,8 +225,11 @@ in
       serviceConfig = {
         Type = "oneshot";
         ExecStart = command;
-        # A pass that hangs is ended, and the timer starts the next.
+        # A pass that hangs is ended, and the timer starts the next. One
+        # that outgrows its memory is ended too.
         TimeoutStartSec = "1h";
+        MemoryMax = cfg.memoryMax;
+        MemorySwapMax = "0";
         DynamicUser = true;
         SupplementaryGroups = [ host.group ];
         StateDirectory = stateName;
@@ -231,8 +273,9 @@ in
     };
 
     # Every five minutes, counted from the end of each pass. The first
-    # pass waits five minutes after the timer is started, so it never runs
-    # inside the switch that started it.
+    # pass waits five minutes after the timer is started, so the first pass
+    # never runs inside the switch that starts the timer. Nothing keeps a
+    # later pass out of a later switch.
     systemd.timers.valley-web-publish = {
       description = "Run the valley web publisher";
       wantedBy = [ "timers.target" ];

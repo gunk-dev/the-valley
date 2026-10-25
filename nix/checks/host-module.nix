@@ -554,13 +554,15 @@ let
   # The web publisher (nix/webui-publisher.nix). Off, it renders nothing.
   # On, one pass is a oneshot on a five-minute timer whose first pass waits
   # five minutes after the timer starts, and which no switch starts or
-  # restarts. It runs as a dynamic user in the git group, with an exact
-  # safe.directory entry for each repository the host serves and no
-  # wildcard, the repositories read-only, nothing writable but its state
-  # and cache, and the mirror, backup and signing keys out of reach. It
-  # reads the instance repository the controllers read, names the host as
-  # the instance, and is given the receiver, the destination and the
-  # display mapping.
+  # restarts. It runs as a dynamic user in the git group, with an empty
+  # safe.directory entry that resets the system's and the user's, then an
+  # exact entry for each repository the host serves and no wildcard, the
+  # repositories read-only, nothing writable but its state and cache, and
+  # the mirror, backup and signing keys out of reach. Its memory is capped
+  # with no swap. It reads the instance repository the controllers read,
+  # names the host as the instance, and is given the receiver, the
+  # destination, the display mapping and the bounds on its bundles and its
+  # storage.
   webPublisherRenderedWithoutEnable =
     webPublisherOffHost.config.systemd.services ? valley-web-publish
     || webPublisherOffHost.config.systemd.timers ? valley-web-publish;
@@ -587,11 +589,11 @@ let
     || service.DynamicUser or null != true
     || service ? User
     || service.SupplementaryGroups or [ ] != [ "git" ]
-    || env.GIT_CONFIG_COUNT or null != toString (lib.length repos)
+    || env.GIT_CONFIG_COUNT or null != toString (lib.length repos + 1)
     || entries != map (r: {
       key = "safe.directory";
       value = r;
-    }) repos
+    }) ([ "" ] ++ repos)
     || lib.any (e: lib.hasInfix "*" e.value) entries
     || service.ProtectSystem or null != "strict"
     || service ? ReadWritePaths
@@ -606,7 +608,9 @@ let
       "-/var/lib/valley-integrator"
     ])
     || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --principals /nix/store/" command)
-    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish" command)
+    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G" command)
+    || service.MemoryMax or null != "1G"
+    || service.MemorySwapMax or null != "0"
     || unit.restartIfChanged != false
     || unit.wantedBy != [ ]
     || timer.timerConfig.OnActiveSec or null != "5min"
@@ -696,7 +700,7 @@ in
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then
-      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with one exact safe.directory entry per served repository, the repositories read-only, only its state and cache writable and the host's keys inaccessible, reading the instance repository and naming the host, the receiver, the destination and the display mapping"
+      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, the destination, the display mapping and the bounds on its bundles and storage"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

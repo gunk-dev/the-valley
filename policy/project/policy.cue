@@ -75,6 +75,7 @@ project: {
 		"ssh-e2e",
 		"publish-e2e",
 		"worker-e2e",
+		"webui-publisher-e2e",
 	]
 	for n in ownChecks {
 		checks: (n): {
@@ -84,12 +85,13 @@ project: {
 	}
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
-	// publish-e2e and worker-e2e boot NixOS machines. Every other check here
-	// takes seconds once its packages are built.
-	checks: "integrator-e2e": cost: "slow"
-	checks: "ssh-e2e": cost:        "slow"
-	checks: "publish-e2e": cost:    "slow"
-	checks: "worker-e2e": cost:     "slow"
+	// publish-e2e, worker-e2e and webui-publisher-e2e boot NixOS machines.
+	// Every other check here takes seconds once its packages are built.
+	checks: "integrator-e2e": cost:      "slow"
+	checks: "ssh-e2e": cost:             "slow"
+	checks: "publish-e2e": cost:         "slow"
+	checks: "worker-e2e": cost:          "slow"
+	checks: "webui-publisher-e2e": cost: "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
 	// A path in two classes requires both sets. A Go module's unit check is
@@ -314,6 +316,14 @@ project: {
 		paths: "status/list.go":        true
 		paths: "rebase/snapshot.go":    true
 		requires: "signers-e2e":        true
+	}
+
+	// The web publisher's module, which runs the publisher on a timer in a
+	// sandbox of its own. webui-publisher-e2e runs the unit it renders in a
+	// NixOS machine. module-eval, in the nix class, holds what it renders.
+	classes: "webui-publisher": {
+		paths: "nix/webui-publisher.nix": true
+		requires: "webui-publisher-e2e":  true
 	}
 
 	// The verification policy: this layer, the pointer to the owning

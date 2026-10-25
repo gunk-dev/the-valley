@@ -932,23 +932,34 @@ services.valley.webPublisher = {
 | `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                |
 | `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                          |
 | `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`. |
+| `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.             |
+| `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                 |
+| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold once a pass has made its bundles.                                   |
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
-  with the destination, receiver, display mapping, and state directory above. No switch starts it:
-  nothing wants the service, and a changed unit is not restarted (`restartIfChanged = false`). A
-  pass that runs longer than an hour is stopped (`TimeoutStartSec`).
-- **The timer:** `valley-web-publish.timer` starts a pass five minutes after the timer starts
-  (`OnActiveSec`), so a pass never runs inside the switch that started the timer. After that it
-  starts a pass five minutes after the last one ended (`OnUnitInactiveSec`).
+  with the destination, receiver, display mapping, state directory, and size bounds above. No switch
+  starts it: nothing wants the service, and a changed unit is not restarted
+  (`restartIfChanged = false`). A pass that runs longer than an hour is stopped (`TimeoutStartSec`).
+- **The timer:** `valley-web-publish.timer` starts the first pass five minutes after the timer
+  starts (`OnActiveSec`), so the first pass never runs inside the switch that starts the timer.
+  After that it starts a pass five minutes after the last one ended (`OnUnitInactiveSec`). Nothing
+  keeps a later pass out of a later switch.
 - **The sandbox:** The service runs as a dynamic user (`DynamicUser`) with the git group
   (`SupplementaryGroups`), so it can read the repositories and owns nothing on disk but its state
-  and cache. Its environment carries one `safe.directory` entry for each repository the host
-  declaration serves, as `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and `GIT_CONFIG_VALUE_<n>`, with
-  no wildcard. `ProtectSystem=strict` leaves the filesystem read-only except the state and cache
+  and cache. Its environment carries `safe.directory` entries as `GIT_CONFIG_COUNT`,
+  `GIT_CONFIG_KEY_<n>`, and `GIT_CONFIG_VALUE_<n>`. git reads them after the system and global
+  configuration, and adds them to what those set. So the first entry is empty, which resets the
+  list, and one exact entry follows for each repository the host declaration serves, with no
+  wildcard. A system configuration with `safe.directory=*` then trusts no other repository for the
+  service. `ProtectSystem=strict` leaves the filesystem read-only except the state and cache
   directories, and the repositories are listed in `ReadOnlyPaths`. `InaccessiblePaths` holds the git
   user's `<dataDir>/.ssh`, `/var/lib/valley-integrator`, the integrator's signing key file, the
   worker's state directory when the worker runs, and the backup's secret files.
+  `webui-publisher-e2e` runs the unit in a NixOS machine, with a probe in place of the publisher,
+  under a system configuration with `safe.directory=*`. The probe reads a served repository, and
+  cannot read an undeclared one, write a repository, or read the git user's ssh key or the backup's
+  key.
 
 ---
 

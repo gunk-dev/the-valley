@@ -64,6 +64,10 @@
 #                    NixOS machine: the worker's key, its enrollment and
 #                    its evidence on origin, and the slice's caps on its
 #                    builds and on builds that are not its own
+#   webui-publisher-e2e.nix
+#                    webui-publisher-e2e — the web publisher's sandbox in
+#                    a NixOS machine: the unit the module renders, with a
+#                    probe in place of the publisher
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation
@@ -149,3 +153,4 @@ import ./checks/host-module.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args
 // import ./checks/worker-e2e.nix args
+// import ./checks/webui-publisher-e2e.nix args

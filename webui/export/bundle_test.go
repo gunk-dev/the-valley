@@ -326,3 +326,21 @@ func TestCarryRepo(t *testing.T) {
 		t.Error("the refusal left a repository behind")
 	}
 }
+
+// Git reads the repository it is given and no other: a directory that is
+// not a repository fails, even when a repository holds it.
+func TestGit(t *testing.T) {
+	ctx := context.Background()
+	s := newSource(t, "sha1")
+	repo := filepath.Join(t.TempDir(), "app.git")
+	if err := export.AcceptBundle(ctx, s.bundle(t, "main"), repo, s.tip); err != nil {
+		t.Fatal(err)
+	}
+	out, err := export.Git(ctx, repo, "rev-parse", export.MainRef)
+	if err != nil || strings.TrimSpace(string(out)) != s.tip {
+		t.Errorf("Git read main as %q, %v; want %s", out, err, s.tip)
+	}
+	if out, err := export.Git(ctx, filepath.Join(repo, "refs"), "rev-parse", export.MainRef); err == nil {
+		t.Errorf("Git read %q from a directory inside the repository", out)
+	}
+}

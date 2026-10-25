@@ -214,6 +214,28 @@ func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
 	return false, fmt.Errorf("git merge-base: %w: %s", err, strings.TrimSpace(stderr.String()))
 }
 
+// Git runs git with args on the bare repository at repo and returns what
+// git prints. It runs git the way this package runs every git:
+// replacement refs off, none of the caller's GIT_ variables, and no system
+// or global configuration. --git-dir names the repository, so git never
+// reads a repository it finds above repo. Git holds all of git's output in
+// memory, so a caller bounds what it asks for. A server reads a
+// generation's repositories with it, and gives it object IDs it has
+// checked, never a name a reader typed.
+func Git(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	if len(args) == 0 {
+		return nil, errors.New("git needs a command")
+	}
+	cmd := command(ctx, "", append([]string{"--git-dir=" + repo}, args...)...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return out, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(stderr.String()))
+	}
+	return out, nil
+}
+
 // command is git, run in dir unless it is "", with replacement refs off
 // and an environment that holds none of the caller's GIT_ variables and
 // reads no system or global configuration.

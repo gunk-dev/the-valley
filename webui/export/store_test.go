@@ -7,15 +7,92 @@ import (
 	"fmt"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
+	"the-valley/note"
 	"the-valley/webui/export"
 	"the-valley/webui/export/exporttest"
 )
+
+// roleEnv names the part a run of the test binary plays when it is not
+// running the tests: a receiver that commits the upload staged in a state
+// directory, or the git that receiver runs.
+const roleEnv = "EXPORT_TEST_ROLE"
+
+func TestMain(m *testing.M) {
+	switch os.Getenv(roleEnv) {
+	case "receiver":
+		os.Exit(receiver())
+	case "git":
+		os.Exit(gitThatCrashesOnFetch())
+	}
+	os.Exit(m.Run())
+}
+
+// receiver admits the signed manifest at $EXPORT_TEST_MANIFEST, stages it
+// in the store at $EXPORT_TEST_STATE, and commits it, with the test binary
+// as its git.
+func receiver() int {
+	fail := func(err error) int {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	signed, err := os.ReadFile(os.Getenv("EXPORT_TEST_MANIFEST"))
+	if err != nil {
+		return fail(err)
+	}
+	s, err := export.OpenStore(os.Getenv("EXPORT_TEST_STATE"))
+	if err != nil {
+		return fail(err)
+	}
+	hw, err := s.HighWater()
+	if err != nil {
+		return fail(err)
+	}
+	m, err := export.VerifyManifest(bytes.NewReader(signed), export.Admission{
+		Verifiers:   []note.VerifierKey{exporttest.Verifier()},
+		Instance:    exporttest.Instance,
+		Destination: exporttest.Destination,
+		HighWater:   hw,
+		Now:         exporttest.SignedAt.Add(time.Second),
+	})
+	if err != nil {
+		return fail(err)
+	}
+	st, err := s.Stage(m)
+	if err != nil {
+		return fail(err)
+	}
+	if export.GitProgram, err = os.Executable(); err != nil {
+		return fail(err)
+	}
+	os.Setenv(roleEnv, "git")
+	if _, err := s.Activate(context.Background(), st); err != nil {
+		return fail(err)
+	}
+	return 0
+}
+
+// gitThatCrashesOnFetch is the git at $EXPORT_TEST_GIT, except that when
+// it is asked to fetch it kills the receiver that runs it, as a crash
+// would, and fetches nothing.
+func gitThatCrashesOnFetch() int {
+	if slices.Contains(os.Args[1:], "fetch") {
+		syscall.Kill(os.Getppid(), syscall.SIGKILL)
+		return 1
+	}
+	git := os.Getenv("EXPORT_TEST_GIT")
+	err := syscall.Exec(git, append([]string{git}, os.Args[1:]...), os.Environ())
+	fmt.Fprintln(os.Stderr, err)
+	return 1
+}
 
 // upload is a signed manifest and the bytes of every body it declares, by
 // SHA-256.
@@ -298,6 +375,70 @@ func TestStoreDropsABundleThatFails(t *testing.T) {
 	release()
 	if !errors.Is(err, export.ErrNoExport) {
 		t.Errorf("a refused bundle activated something: %v", err)
+	}
+}
+
+// A receiver that crashes after git init has made a project's repository
+// and before git fetch has filled it leaves no repository the store takes
+// for an accepted one. The upload posted again still has its bundle
+// staged, and its commit builds the repository again.
+func TestStoreRebuildsARepositoryACrashInterrupted(t *testing.T) {
+	f := exporttest.New(t)
+	dir := t.TempDir()
+	s := openStore(t, dir)
+	u := fixtureUpload(t, f)
+	st := stage(t, f, s, u)
+	inv, err := s.Inventory(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range inv.Needs {
+		putNeed(t, st, u, n)
+	}
+
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest")
+	if err := os.WriteFile(manifest, f.Signed, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), roleEnv+"=receiver", "EXPORT_TEST_STATE="+dir,
+		"EXPORT_TEST_MANIFEST="+manifest, "EXPORT_TEST_GIT="+realGit)
+	out, err := cmd.CombinedOutput()
+	// git fetch runs only after git init succeeded, so a receiver killed
+	// at the fetch was interrupted between the two.
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
+		t.Fatalf("the receiver was not killed as it fetched: %v: %s", err, out)
+	}
+	if _, err := os.Lstat(st.Repo("app")); !os.IsNotExist(err) {
+		t.Errorf("the crash left a repository at %s", st.Repo("app"))
+	}
+
+	s = openStore(t, dir)
+	st = stage(t, f, s, u)
+	inv, err = s.Inventory(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inv.Needs) != 0 {
+		t.Errorf("after the crash the inventory needs %+v; the bodies are still staged", inv.Needs)
+	}
+	g, err := s.Activate(context.Background(), st)
+	if err != nil {
+		t.Fatalf("the commit after the crash failed: %v", err)
+	}
+	repo, _ := g.Repo("app")
+	tip := f.Export.Projects[0].SourceTip
+	if ok, err := export.Reachable(context.Background(), repo, tip, tip); !ok || err != nil {
+		t.Errorf("the rebuilt repository does not hold main at its tip: %v", err)
 	}
 }
 

@@ -28,6 +28,9 @@ var ErrNoExport = errors.New("no export has been activated")
 //	    repos/<project>.git
 //	<state>/staging/<sequence>/           one upload, until it is committed
 //	    bodies/<sha256>
+//	    export.json
+//	    tmp/<project>.git                 a repository being built
+//	    repos/<project>.git               a repository once it is accepted
 //	<state>/trash/                        generations being deleted
 //
 // A generation is activated by renaming its staging directory into
@@ -85,6 +88,9 @@ func (st Staging) Body(b Body) string { return filepath.Join(st.Bodies(), b.SHA2
 func (st Staging) Repo(name string) string {
 	return filepath.Join(st.Dir, "repos", name+".git")
 }
+
+// tmp is the directory a staged repository is built in.
+func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 
 // OpenStore opens the state directory at dir, creating its layout. It
 // finishes an activation a crash interrupted after high-water was written,
@@ -293,9 +299,11 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     manifest with CheckExport;
 //  3. gives every project its repository: one already staged, the staged
 //     bundle through AcceptBundle, or the active generation's repository
-//     at the same source tip through CarryRepo;
-//  4. checks that the staging directory holds export.json and exactly
-//     those repositories, each at its source tip, and removes the bodies;
+//     at the same source tip through CarryRepo. A repository is built
+//     under tmp/ and renamed into repos/ only once it is accepted;
+//  4. removes the bodies and tmp/, and checks that the staging directory
+//     holds export.json and exactly those repositories, each at its
+//     source tip;
 //  5. renames the staging directory into exports/;
 //  6. writes high-water durably;
 //  7. swaps active to the new generation;
@@ -355,24 +363,18 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	}
 
 	for _, p := range m.Projects {
-		repo := st.Repo(p.Name)
-		if exists(repo) {
+		if exists(st.Repo(p.Name)) {
 			continue
 		}
-		if bundle := st.Body(p.Bundle); exists(bundle) {
-			if err := AcceptBundle(ctx, bundle, repo, p.SourceTip); err != nil {
-				os.Remove(bundle)
-				return Generation{}, err
-			}
-			continue
-		}
-		if err := s.carry(ctx, p, repo); err != nil {
+		if err := s.build(ctx, st, p); err != nil {
 			return Generation{}, err
 		}
 	}
 
-	if err := os.RemoveAll(st.Bodies()); err != nil {
-		return Generation{}, err
+	for _, d := range []string{st.Bodies(), st.tmp()} {
+		if err := os.RemoveAll(d); err != nil {
+			return Generation{}, err
+		}
 	}
 	if err := checkStaged(ctx, st); err != nil {
 		return Generation{}, err
@@ -398,6 +400,31 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		return Generation{}, err
 	}
 	return Generation{Sequence: m.Sequence, Dir: dir}, s.sweep()
+}
+
+// build gives the project its repository in staging, from the staged
+// bundle through AcceptBundle or from the active generation through
+// carry. It builds the repository under tmp/ and renames it into repos/
+// only once it is accepted, so a repository in repos/ is always an
+// accepted one. A build a crash interrupted is left under tmp/, where the
+// next build of the project starts again.
+func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error {
+	tmp := filepath.Join(st.tmp(), p.Name+".git")
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(st.tmp(), 0o755); err != nil {
+		return err
+	}
+	if bundle := st.Body(p.Bundle); exists(bundle) {
+		if err := AcceptBundle(ctx, bundle, tmp, p.SourceTip); err != nil {
+			os.Remove(bundle)
+			return err
+		}
+	} else if err := s.carry(ctx, p, tmp); err != nil {
+		return err
+	}
+	return os.Rename(tmp, st.Repo(p.Name))
 }
 
 // carry gives a project the active generation's repository, when that

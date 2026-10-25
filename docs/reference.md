@@ -1905,17 +1905,22 @@ The receiver keeps every accepted export as an immutable generation in one state
 <state>/high-water             the greatest sequence accepted
 <state>/active                 symlink to exports/<sequence>
 <state>/exports/<sequence>/    one generation: export.json and repos/<project>.git
-<state>/staging/<sequence>/    one upload until it is committed: bodies/<sha256>
+<state>/staging/<sequence>/    one upload until it is committed:
+    bodies/<sha256>            the bodies sent
+    tmp/<project>.git          a repository being built
+    repos/<project>.git        a repository once it is accepted
 <state>/trash/                 generations being deleted
 ```
 
 - **Activation (`Store.Activate`):** Holding the lock, it refuses an upload that is not newer than
   the high-water mark, that a newer staged upload supersedes, or that still needs a body. It holds
   `export.json` to the manifest. It gives each project its repository: the staged bundle through
-  bundle acceptance, or the active generation's repository at the same source tip. It renames the
-  staging directory into `exports/`, writes `high-water` durably, and then swaps `active` by
-  renaming a new symlink over it. A failed bundle or `export.json` is removed from staging, so the
-  inventory names it as needed again.
+  bundle acceptance, or the active generation's repository at the same source tip. It builds each
+  repository under `tmp/` and renames it into `repos/` only once it is accepted, so a repository a
+  crash interrupted is never taken for an accepted one, and the next commit builds it again. It
+  renames the staging directory into `exports/`, writes `high-water` durably, and then swaps
+  `active` by renaming a new symlink over it. A failed bundle or `export.json` is removed from
+  staging, so the inventory names it as needed again.
 - **Reading (`Store.Open`):** A request resolves `active` once, and holds that generation with a
   shared `flock(2)` on its directory until it releases it. One response therefore never mixes two
   generations. A generation is deleted only once an exclusive lock on it can be taken, which no

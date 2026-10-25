@@ -701,8 +701,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   [The web publisher's options](#the-web-publishers-options)).
   - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--schema <file>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
     - `--instance-repo <url>`: The instance repository. It is the `origin` of the publisher's own
-      bare repository, which the CLI discovers projects and signers through. Its `main` must hold
-      `policy/instance` and no `policy/valley`.
+      bare repository, and the CLI discovers projects and signers through it. Its `main` must hold
+      `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no control character, and
+      no space at either end, because `policy/valley` cannot name such a URL.
     - `--instance <name>`: The instance the manifest names. The export key signs under
       `<name>/web-export`.
     - `--destination <name>`: The receiver the manifest is for.
@@ -2088,26 +2089,37 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   2. reads the export key, or makes one on the first start;
   3. fetches the instance repository's `main` and `refs/the-valley/projects` into the publisher's
      own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is
-     `--instance-repo`. It requires that `main` carry `policy/instance` and no `policy/valley`;
+     `--instance-repo`. It fetches them once for the whole pass. It requires that `main` carry
+     `policy/instance` and no `policy/valley`;
   4. reads the instance's `policy/web` at that `main`;
-  5. runs `valley plan --all --json` and `valley pending --all --json` in the publisher's
-     repository, so the CLI discovers the projects through `refs/the-valley/projects` and the
-     signers through `refs/the-valley/signers`. `VALLEY_KNOWN_SIGNERS` and
-     `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment. Each listing must name
-     exactly the projects the fetched `refs/the-valley/projects` lists;
+  5. runs `valley plan --all --json` and `valley pending --all --json` in the pointer repository,
+     `$XDG_CACHE_HOME/valley-web-publish/_pointer.git`, so the CLI discovers the projects through
+     `refs/the-valley/projects` and the signers through `refs/the-valley/signers`.
+     `VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment.
+     Each listing must name exactly the projects the fetched `refs/the-valley/projects` lists;
   6. for each project the instance allows, fetches `main` from the URL the pending listing gives
      into a mirror, `$XDG_CACHE_HOME/valley-web-publish/repos/<project>.git`, and reads the
      project's own `policy/web` at that `main`;
-  7. runs `valley knot show --project <project> <id> --json` for every knot of every public project;
-  8. fetches the instance repository's `main` and `refs/the-valley/projects` again, which must name
-     the objects step 3 fetched, and builds the export with `export.Build`;
+  7. runs `valley knot show --project <project> <id> --json` in the publisher's own bare repository,
+     for every knot of every public project;
+  8. builds the export with `export.Build`;
   9. makes the bundles, and checks them against `--max-bundles` and the state and cache against
      `--max-storage`;
   10. uploads the export, or writes it to `--out`.
-- **One instance:** The CLI follows a `policy/valley` on the instance repository's `main` to the
-  instance it names, for the projects and for the signers. So a `main` that carries `policy/valley`
-  fails the pass before any project is read, at step 3, or at step 8 when it lands during the read.
-  Two instances can serve projects of the same name, and the pass reads only the one given.
+- **One instance:** The pass reads the instance repository's `main` once, at step 3. No command of
+  the pass reads it again:
+  - The pointer repository is a bare repository whose `origin` is itself. Its `main` holds one file,
+    `policy/valley`, which names `--instance-repo`. The CLI finds the instance at `policy/valley` on
+    its repository's `origin` `main`, and follows it no further. So `plan` and `pending` read the
+    projects and signers that `--instance-repo` publishes.
+  - `valley knot show --project` finds a project beside its repository's `origin`, the instance
+    repository, and reads no `policy/valley`.
+
+  So a `policy/valley` that lands on the instance repository's `main` during a pass is never
+  followed, even when it is gone again before the pass ends. A `main` that carries `policy/valley`
+  at step 3 fails the pass, because it names another instance. Two instances can serve projects of
+  the same name, and the pass reads only the one given.
+
 - **Visibility:** A project is public when the instance's declaration holds
   `instance: projects: <project>: visibility: "public"` and the project's own declaration holds
   `project: visibility: "public"`. Every other project is private: one the instance does not name or
@@ -2135,9 +2147,8 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   except `cue`, whose declaration is then refused. What a command prints on `stderr` is kept to its
   first 64 KiB.
 - **Consistent reads:** `export.Build` fails with `export.ErrInconsistent` when a knot's detail was
-  read at another graph tip than the plan. Step 8 fails the same way when the instance repository's
-  `main` or project list moved during the read. The pass then reads the valley again, up to three
-  reads in all, and fails when every read was inconsistent.
+  read at another graph tip than the plan. The pass then reads the valley again, from step 4 with
+  the instance step 3 fetched, up to three reads in all, and fails when every read was inconsistent.
 - **Bundles:** Each public project's bundle is `git bundle create <file> refs/heads/main` in its
   mirror, kept under `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A
   bundle is made once per source tip, so the body a manifest declares for a tip is the same in every

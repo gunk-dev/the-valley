@@ -11,19 +11,20 @@
 //  2. read the export key from the state directory, or make one on the
 //     first start, and say its verifier line whenever it changes;
 //  3. fetch main and refs/the-valley/projects of the instance repository
-//     into the publisher's own bare repository, whose origin it is, refuse
-//     a main that carries policy/valley, and read the instance's
-//     policy/web;
-//  4. run valley plan --all --json and valley pending --all --json in that
-//     repository, which discover the projects and the signers through the
-//     instance repository's own publications, and hold both listings to
-//     the project list it fetched;
+//     into the publisher's own bare repository, whose origin it is, once
+//     for the whole pass, refuse a main that carries policy/valley, and
+//     read the instance's policy/web at that main;
+//  4. run valley plan --all --json and valley pending --all --json in the
+//     pointer repository, whose main names the instance repository at
+//     policy/valley, so they discover the projects and the signers through
+//     the instance repository's own publications and never read its main;
+//     and hold both listings to the project list it fetched;
 //  5. for each project the instance allows, fetch main into a mirror under
 //     the cache and read the project's own policy/web there;
 //  6. run valley knot show --project P <id> --json for every knot of every
-//     public project, fetch the instance repository again, and build the
-//     export with export.Build, reading again when the inputs were read at
-//     different graph tips or the instance repository moved;
+//     public project, in the publisher's repository, and build the export
+//     with export.Build, reading again when the inputs were read at
+//     different graph tips;
 //  7. bundle each public project's main, and hold the bundles to
 //     --max-bundles and the state and cache to --max-storage;
 //  8. upload it, unless the receiver acknowledged the same content digest
@@ -65,7 +66,9 @@ upload them to the receiver at URL, or write them to DIR.
   --instance-repo URL  the instance repository: the origin of the
                        publisher's own bare repository, which the valley
                        CLI discovers projects and signers through; its
-                       main holds policy/instance and no policy/valley
+                       main holds policy/instance and no policy/valley;
+                       URL holds no #, no control character, and no space
+                       at either end
   --instance NAME      the instance the manifest names, and the export
                        key's signing name, NAME/web-export
   --destination NAME   the receiver the manifest is for
@@ -93,8 +96,8 @@ A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
 GiB or TiB.
 
 The cache is $XDG_CACHE_HOME (default $HOME/.cache): the valley CLI's
-clones under valley/, the publisher's repository and mirrors under
-valley-web-publish/.`
+clones under valley/, the publisher's repositories, mirrors and bundles
+under valley-web-publish/.`
 
 func main() {
 	os.Exit(run(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
@@ -159,6 +162,11 @@ func parseArgs(args []string) (config, error) {
 		return c, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	case c.instanceRepo == "":
 		return c, errors.New("--instance-repo is required")
+	case strings.ContainsFunc(c.instanceRepo, func(r rune) bool { return r == '#' || r < 0x20 || r == 0x7f }),
+		strings.TrimSpace(c.instanceRepo) != c.instanceRepo:
+		// The pointer repository names it in policy/valley, which the CLI
+		// reads up to a # and without the spaces around it.
+		return c, fmt.Errorf("--instance-repo %q holds a #, a control character or a space at either end, which policy/valley cannot name", c.instanceRepo)
 	case !export.ValidName(c.instance):
 		return c, fmt.Errorf("--instance %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.instance)
 	case !export.ValidName(c.destination):
@@ -219,9 +227,13 @@ type publisher struct {
 	stdout, stderr io.Writer
 
 	// cache is the publisher's own cache, under $XDG_CACHE_HOME. origin is
-	// its bare repository, whose origin is the instance repository.
-	cache  string
-	origin string
+	// its bare repository, whose origin is the instance repository. pointer
+	// is the repository whose main names the instance repository at
+	// policy/valley (preparePointer); the CLI calls it _pointer, which is
+	// no project's name.
+	cache   string
+	origin  string
+	pointer string
 
 	principals export.Principals
 	signer     string
@@ -251,7 +263,7 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 	cache := filepath.Join(base, "valley-web-publish")
 	return &publisher{
 		cfg: cfg, stdout: stdout, stderr: stderr,
-		cache: cache, origin: filepath.Join(cache, "origin.git"),
+		cache: cache, origin: filepath.Join(cache, "origin.git"), pointer: filepath.Join(cache, "_pointer.git"),
 		principals: principals,
 		signer:     cfg.instance + "/web-export",
 		client:     newClient(),

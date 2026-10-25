@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -91,37 +92,92 @@ func TestAnotherInstanceIsNeverRead(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(v.root, "cache", "valley-web-publish", "repos", "app.git")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("the pass fetched a project before it refused the instance repository")
 	}
+
+	// The CLI reads policy/valley up to a # and without the spaces around
+	// it, so an instance repository whose URL holds them is refused before
+	// the pass runs: policy/valley would name another.
+	instance := filepath.Join(v.srv, "valley.git")
+	for _, url := range []string{instance + "#other", " " + instance, instance + "\n" + other} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), v.args("--out", t.TempDir(), "--instance-repo", url), &stdout, &stderr); code != 2 {
+			t.Errorf("--instance-repo %q: the pass exited %d, want 2", url, code)
+		}
+	}
 }
 
-// A policy/valley that lands on the instance repository's main while the
-// CLI reads is caught: the read is confirmed against main once it is done,
-// and the confirmation refuses the pointer. Without it, the other
-// instance's app would be published.
-func TestAPointerLandingDuringAReadIsCaught(t *testing.T) {
-	v := newValley(t)
-	other := v.elsewhere("elsewhere-app-source-c3d1")
-	work := v.work["valley"]
-	v.run(work, "git", "checkout", "--quiet", "-b", "pointer")
-	v.write(filepath.Join(work, "policy", "valley"), other+"\n")
-	v.run(work, "git", "add", "--all")
-	v.run(work, "git", "commit", "--quiet", "-m", "valley: point at another instance")
-	pointer := strings.TrimSpace(v.run(work, "git", "rev-parse", "HEAD"))
-	v.run(work, "git", "push", "--quiet", "origin", "pointer")
+// The pass reads the instance repository at the main it began with, and
+// the CLI never reads that main again. So a policy/valley that lands on
+// main while the CLI reads changes nothing in the read: not when main is
+// put back before the read ends, which no comparison of main before and
+// after the read could see, and not when it stays, which the next pass
+// refuses. Read through the pointer, the export would hold the other
+// instance's app.
+func TestAPointerLandingDuringAReadIsNeverRead(t *testing.T) {
+	const otherSource = "elsewhere-app-source-c3d1"
+	for _, restored := range []bool{true, false} {
+		t.Run(fmt.Sprintf("restored %v", restored), func(t *testing.T) {
+			v := newValley(t)
+			other := v.elsewhere(otherSource)
+			instance := filepath.Join(v.srv, "valley.git")
+			began := strings.TrimSpace(v.run("", "git", "-C", instance, "rev-parse", "main"))
+			work := v.work["valley"]
+			v.run(work, "git", "checkout", "--quiet", "-b", "pointer")
+			v.write(filepath.Join(work, "policy", "valley"), other+"\n")
+			v.run(work, "git", "add", "--all")
+			v.run(work, "git", "commit", "--quiet", "-m", "valley: point at another instance")
+			pointer := strings.TrimSpace(v.run(work, "git", "rev-parse", "HEAD"))
+			v.run(work, "git", "push", "--quiet", "origin", "pointer")
 
-	// The CLI's first command moves main to the pointer before it runs.
-	wrapper := filepath.Join(v.root, "bin", "valley")
-	data, err := os.ReadFile(wrapper)
-	if err != nil {
-		t.Fatal(err)
-	}
-	shebang, rest, _ := strings.Cut(string(data), "\n")
-	moved := filepath.Join(v.root, "moved")
-	v.write(wrapper, fmt.Sprintf("%s\nif [ ! -e %s ]; then : > %s; git -C %s update-ref refs/heads/main %s; fi\n%s",
-		shebang, moved, moved, filepath.Join(v.srv, "valley.git"), pointer, rest))
+			// The CLI's first command moves main to the pointer before it
+			// runs. When restored, main is put back once the second, the
+			// pending listing, is done: the CLI has then read the pointer
+			// twice, if it reads main at all, and main is where the pass
+			// began.
+			wrapper := filepath.Join(v.root, "bin", "valley")
+			data, err := os.ReadFile(wrapper)
+			if err != nil {
+				t.Fatal(err)
+			}
+			shebang, rest, _ := strings.Cut(string(data), "\n")
+			rest = strings.Replace(rest, "exec ", "", 1)
+			count := filepath.Join(v.root, "count")
+			restore := ":"
+			if restored {
+				restore = fmt.Sprintf("git -C %s update-ref refs/heads/main %s", instance, began)
+			}
+			v.write(wrapper, fmt.Sprintf(`%s
+n=$(( $(cat %[2]s 2>/dev/null || echo 0) + 1 )); echo "$n" > %[2]s
+if [ "$n" = 1 ]; then git -C %[3]s update-ref refs/heads/main %[4]s; fi
+rc=0
+%[5]s || rc=$?
+if [ "$n" = 2 ]; then %[6]s; fi
+exit "$rc"
+`, shebang, count, instance, pointer, strings.TrimSpace(rest), restore))
 
-	mustSay(t, "a pointer landing during the read", v.fails(nil), "holds policy/valley on main")
-	if _, err := os.Stat(moved); err != nil {
-		t.Errorf("the CLI never ran, so the pointer was refused before the read: %v", err)
+			dir, _, e := v.out()
+			if calls, _ := strconv.Atoi(strings.TrimSpace(v.run("", "cat", count))); calls < 2 {
+				t.Fatalf("the CLI ran %d commands, so the pointer was never in place while it read", calls)
+			}
+			if got := names(e); !reflect.DeepEqual(got, []string{"app"}) {
+				t.Fatalf("the export holds %v, want app alone", got)
+			}
+			app := strings.TrimSpace(v.run("", "git", "-C", filepath.Join(v.srv, "app.git"), "rev-parse", "main"))
+			if e.Projects[0].SourceTip != app {
+				t.Errorf("the export's app is at %s, and this instance's app is at %s", e.Projects[0].SourceTip, app)
+			}
+			if strings.Contains(v.unbundled(filepath.Join(dir, "bundles", "app.bundle")), otherSource) {
+				t.Errorf("the bundle of app holds the other instance's source")
+			}
+			if len(knotOf(t, e.Projects[0], v.knots["bug"]).Comments) != 1 {
+				t.Errorf("the export's app does not hold this instance's plan")
+			}
+
+			if restored {
+				return
+			}
+			v.write(wrapper, shebang+"\n"+rest)
+			mustSay(t, "the next pass", v.fails(nil), "holds policy/valley on main")
+		})
 	}
 }
 
@@ -164,7 +220,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
 				return nil
 			},
-			says: "valley plan --all lists valley, and the instance repository publishes app, not a name, site, valley",
+			says: "valley plan --all lists _pointer, and the instance repository publishes app, not a name, site, valley",
 		},
 		{
 			name: "the instance publishes no project list",

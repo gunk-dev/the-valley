@@ -39,11 +39,11 @@ type reading struct {
 	private []string
 }
 
-// collect reads the valley and builds the export. Each knot's detail is
-// read after the plan, so a write to the graph in between makes the two
-// disagree; export.Build says so with ErrInconsistent, and collect reads
-// everything again. It does the same when the instance repository moved
-// during a read.
+// collect reads the valley and builds the export. It fetches the instance
+// repository once, and every read of the pass reads the instance at that
+// fetch. Each knot's detail is read after the plan, so a write to the graph
+// in between makes the two disagree; export.Build says so with
+// ErrInconsistent, and collect reads everything again.
 func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	if err := p.prepareOrigin(ctx); err != nil {
 		return nil, err
@@ -51,10 +51,16 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	if err := checkSchema(ctx, p.cfg.schema); err != nil {
 		return nil, err
 	}
-	var err error
+	inst, err := p.fetchInstance(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.preparePointer(ctx); err != nil {
+		return nil, err
+	}
 	for attempt := 1; attempt <= readAttempts; attempt++ {
 		var r *reading
-		r, err = p.read(ctx)
+		r, err = p.read(ctx, inst)
 		if err == nil {
 			return r, nil
 		}
@@ -88,15 +94,12 @@ type (
 	}
 )
 
-// read is one read of the valley. A project is private when the instance
-// does not allow it, or when its own declaration is missing, invalid or
-// private. Any other failure to read a project the instance allows ends
-// the pass: an export without it would take it off the web.
-func (p *publisher) read(ctx context.Context) (*reading, error) {
-	inst, err := p.fetchInstance(ctx)
-	if err != nil {
-		return nil, err
-	}
+// read is one read of the valley, with the instance as fetchInstance read
+// it. A project is private when the instance does not allow it, or when its
+// own declaration is missing, invalid or private. Any other failure to read
+// a project the instance allows ends the pass: an export without it would
+// take it off the web.
+func (p *publisher) read(ctx context.Context, inst instanceRead) (*reading, error) {
 	allowed := map[string]bool{}
 	decl, err := readDeclaration(ctx, p.origin, inst.tip, p.cfg.schema)
 	var bad *invalidDeclaration
@@ -112,11 +115,11 @@ func (p *publisher) read(ctx context.Context) (*reading, error) {
 		}
 	}
 
-	planJSON, err := p.valley(ctx, "plan", "--all", "--json")
+	planJSON, err := p.valley(ctx, p.pointer, "plan", "--all", "--json")
 	if err != nil {
 		return nil, err
 	}
-	pendingJSON, err := p.valley(ctx, "pending", "--all", "--json")
+	pendingJSON, err := p.valley(ctx, p.pointer, "pending", "--all", "--json")
 	if err != nil {
 		return nil, err
 	}
@@ -171,15 +174,12 @@ func (p *publisher) read(ctx context.Context) (*reading, error) {
 		}
 		in.Visibility[name] = export.Public
 		for _, k := range proj.Knots {
-			detail, err := p.valley(ctx, "knot", "show", "--project", name, k.ID, "--json")
+			detail, err := p.valley(ctx, p.origin, "knot", "show", "--project", name, k.ID, "--json")
 			if err != nil {
 				return nil, err
 			}
 			in.Details = append(in.Details, detail)
 		}
-	}
-	if err := p.confirmInstance(ctx, inst); err != nil {
-		return nil, err
 	}
 	sort.Strings(r.private)
 	if r.export, err = export.Build(in); err != nil {
@@ -247,20 +247,60 @@ func (p *publisher) prepareOrigin(ctx context.Context) error {
 	if err := os.MkdirAll(p.cache, 0o700); err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(p.origin, "HEAD")); errors.Is(err, os.ErrNotExist) {
-		if err := os.RemoveAll(p.origin); err != nil {
+	return bareWithOrigin(ctx, p.origin, p.cfg.instanceRepo)
+}
+
+// bareWithOrigin makes a bare repository at dir, unless one is there, and
+// sets its origin to url.
+func bareWithOrigin(ctx context.Context, dir, url string) error {
+	if _, err := os.Stat(filepath.Join(dir, "HEAD")); errors.Is(err, os.ErrNotExist) {
+		if err := os.RemoveAll(dir); err != nil {
 			return err
 		}
-		if _, err := git(ctx, "", "init", "--quiet", "--bare", "--template=", p.origin); err != nil {
+		if _, err := git(ctx, "", "init", "--quiet", "--bare", "--template=", dir); err != nil {
 			return err
 		}
 	}
-	got, err := git(ctx, p.origin, "config", "--get", "remote.origin.url")
-	if err == nil && strings.TrimSpace(string(got)) == p.cfg.instanceRepo {
+	got, err := git(ctx, dir, "config", "--get", "remote.origin.url")
+	if err == nil && strings.TrimSpace(string(got)) == url {
 		return nil
 	}
-	_, _ = git(ctx, p.origin, "remote", "remove", "origin")
-	_, err = git(ctx, p.origin, "remote", "add", "--end-of-options", "origin", p.cfg.instanceRepo)
+	_, _ = git(ctx, dir, "remote", "remove", "origin")
+	_, err = git(ctx, dir, "remote", "add", "--end-of-options", "origin", url)
+	return err
+}
+
+// preparePointer makes the repository valley plan and valley pending run
+// in: a bare repository whose origin is itself, and whose main holds one
+// file, policy/valley, naming the instance repository. The CLI finds the
+// instance at policy/valley on origin's main, as it does from any project,
+// and follows it no further. So it reads the projects and the signers the
+// instance repository publishes, and never reads the instance repository's
+// main, where a policy/valley could land and be taken away again while the
+// pass reads. Only the publisher writes to this repository, and main's
+// commit is the same in every pass for the same --instance-repo.
+func (p *publisher) preparePointer(ctx context.Context) error {
+	if err := bareWithOrigin(ctx, p.pointer, p.pointer); err != nil {
+		return err
+	}
+	blob, err := gitInput(ctx, p.pointer, p.cfg.instanceRepo+"\n", "hash-object", "-w", "--stdin")
+	if err != nil {
+		return err
+	}
+	policy, err := gitInput(ctx, p.pointer, "100644 blob "+strings.TrimSpace(string(blob))+"\tvalley\n", "mktree")
+	if err != nil {
+		return err
+	}
+	tree, err := gitInput(ctx, p.pointer, "040000 tree "+strings.TrimSpace(string(policy))+"\tpolicy\n", "mktree")
+	if err != nil {
+		return err
+	}
+	commit, err := gitInput(ctx, p.pointer, "", "-c", "user.name=valley-web-publish", "-c", "user.email=valley-web-publish@localhost",
+		"commit-tree", "-m", "policy/valley: the instance the publisher reads", strings.TrimSpace(string(tree)))
+	if err != nil {
+		return err
+	}
+	_, err = git(ctx, p.pointer, "update-ref", "refs/heads/main", strings.TrimSpace(string(commit)))
 	return err
 }
 
@@ -272,7 +312,7 @@ const (
 	originProjects = "refs/remotes/origin/projects"
 )
 
-// instanceRead is the instance repository as a read found it: main's tip,
+// instanceRead is the instance repository as a pass found it: main's tip,
 // the project list it publishes, and the projects that list names.
 type instanceRead struct {
 	tip, list string
@@ -280,11 +320,10 @@ type instanceRead struct {
 }
 
 // fetchInstance fetches the instance repository's main and its project
-// list into the publisher's repository. A repository whose main carries no
-// policy/instance is not an instance repository. One whose main carries
-// policy/valley is refused: the valley CLI would follow it to the instance
-// it names, for the projects and for the signers, and the publisher reads
-// through no instance but the one it is given.
+// list into the publisher's repository, once a pass. A repository whose
+// main carries no policy/instance is not an instance repository. One whose
+// main carries policy/valley is refused too: it names another instance as
+// its own.
 func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	var r instanceRead
 	if _, err := git(ctx, p.origin, "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "origin",
@@ -299,7 +338,7 @@ func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 		return r, fmt.Errorf("%s holds no policy/instance on main, so it is not an instance repository", p.cfg.instanceRepo)
 	}
 	if _, err := git(ctx, p.origin, "cat-file", "-e", r.tip+":policy/valley"); err == nil {
-		return r, fmt.Errorf("%s holds policy/valley on main, which would point the valley CLI at another instance; an instance repository the publisher reads holds policy/instance and no policy/valley", p.cfg.instanceRepo)
+		return r, fmt.Errorf("%s holds policy/valley on main, which names another instance; an instance repository the publisher reads holds policy/instance and no policy/valley", p.cfg.instanceRepo)
 	}
 	if r.list, err = revParse(ctx, p.origin, originProjects); err != nil {
 		return r, err
@@ -315,21 +354,6 @@ func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	}
 	sort.Strings(r.projects)
 	return r, nil
-}
-
-// confirmInstance fetches the instance repository again once a read is
-// done. Each valley command reads main and the project list afresh, so the
-// read holds only when both are where it began; a main that moved may have
-// carried a policy/valley the CLI followed.
-func (p *publisher) confirmInstance(ctx context.Context, began instanceRead) error {
-	now, err := p.fetchInstance(ctx)
-	if err != nil {
-		return err
-	}
-	if now.tip != began.tip || now.list != began.list {
-		return fmt.Errorf("%w: the instance repository's main or project list moved during the read", export.ErrInconsistent)
-	}
-	return nil
 }
 
 // errNoMain is fetchMain's error for a project with no main.
@@ -400,12 +424,12 @@ func revParse(ctx context.Context, repo, rev string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// valley runs one of the CLI's JSON commands in the publisher's repository
-// and returns what it printed, up to maxValleyOutput. What it says on
-// stderr is passed on.
-func (p *publisher) valley(ctx context.Context, args ...string) ([]byte, error) {
+// valley runs one of the CLI's JSON commands in dir, one of the
+// publisher's repositories, and returns what it printed, up to
+// maxValleyOutput. What it says on stderr is passed on.
+func (p *publisher) valley(ctx context.Context, dir string, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, "valley", args...)
-	cmd.Dir = p.origin
+	cmd.Dir = dir
 	cmd.Env = valleyEnvironment(os.Environ())
 	stdout := &bounded{max: maxValleyOutput, strict: true}
 	cmd.Stdout = stdout
@@ -437,32 +461,62 @@ func valleyEnvironment(environ []string) []string {
 	return env
 }
 
-// git runs git in repo, unless it is "", with replacement refs off, git
-// held to the transports a URL from data may use, and no prompt, and
-// returns what it printed, up to maxGitOutput. It keeps the caller's
-// GIT_CONFIG_* variables, which carry the safe.directory entries a host
-// gives the publisher for repositories it does not own.
+// git runs git in repo, unless it is "", and returns what it printed, up
+// to maxGitOutput.
 func git(ctx context.Context, repo string, args ...string) ([]byte, error) {
+	return gitInput(ctx, repo, "", args...)
+}
+
+// gitInput is git with input on its stdin. With no input, stdin is the
+// null device.
+func gitInput(ctx context.Context, repo, input string, args ...string) ([]byte, error) {
+	var stdin io.Reader
+	if input != "" {
+		stdin = strings.NewReader(input)
+	}
+	stdout := &bounded{max: maxGitOutput, strict: true}
+	err := gitStream(ctx, repo, stdin, stdout, args...)
+	if stdout.over {
+		return nil, fmt.Errorf("git %s: %w", gitVerb(args), errTooLong)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return stdout.Bytes(), nil
+}
+
+// gitStream runs git in repo, unless it is "", with stdin and stdout
+// given: with replacement refs off, git held to the transports a URL from
+// data may use, no prompt, and a fixed date for any commit it writes. It
+// keeps the caller's GIT_CONFIG_* variables, which carry the
+// safe.directory entries a host gives the publisher for repositories it
+// does not own.
+func gitStream(ctx context.Context, repo string, stdin io.Reader, stdout io.Writer, args ...string) error {
 	if repo != "" {
 		args = append([]string{"-C", repo}, args...)
 	}
 	cmd := exec.CommandContext(ctx, "git", append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Env = gitEnvironment(os.Environ())
-	stdout := &bounded{max: maxGitOutput, strict: true}
 	stderr := &bounded{max: maxStderr}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
-	err := cmd.Run()
-	verb := args[0]
-	if verb == "-C" && len(args) > 2 {
-		verb = args[2]
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = stdin, stdout, stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("git %s: %w: %s", gitVerb(args), err, strings.TrimSpace(stderr.String()))
 	}
-	if stdout.over {
-		return nil, fmt.Errorf("git %s: %w", verb, errTooLong)
+	return nil
+}
+
+// gitVerb is the git command args run, for messages: the first argument
+// after -C and the options git takes before its command.
+func gitVerb(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-C", "-c":
+			i++
+		default:
+			return args[i]
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", verb, err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
+	return "git"
 }
 
 // errTooLong is the error for a program that printed more than its bound.
@@ -499,7 +553,9 @@ func gitEnvironment(environ []string) []string {
 	var env []string
 	for _, kv := range environ {
 		name, _, _ := strings.Cut(kv, "=")
-		if redirectsGit(name) || name == "GIT_ALLOW_PROTOCOL" || name == "GIT_TERMINAL_PROMPT" {
+		switch {
+		case redirectsGit(name), name == "GIT_ALLOW_PROTOCOL", name == "GIT_TERMINAL_PROMPT",
+			name == "GIT_AUTHOR_DATE", name == "GIT_COMMITTER_DATE":
 			continue
 		}
 		env = append(env, kv)
@@ -508,6 +564,8 @@ func gitEnvironment(environ []string) []string {
 		"GIT_ALLOW_PROTOCOL=ssh:git:https:file",
 		"GIT_TERMINAL_PROMPT=0",
 		"GIT_NO_REPLACE_OBJECTS=1",
+		"GIT_AUTHOR_DATE=@0 +0000",
+		"GIT_COMMITTER_DATE=@0 +0000",
 	)
 }
 

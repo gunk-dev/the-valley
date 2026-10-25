@@ -19,10 +19,11 @@ type Graph struct {
 	children, blocks map[string][]string
 }
 
-// Noted is one comment as the graph holds it: what it says, where it is,
-// when it was written, and the operation that wrote it.
+// Noted is one comment as the graph holds it: what it says, its ID and
+// where it is, when it was written, and the operation that wrote it.
 type Noted struct {
 	Comment
+	ID   string
 	Path string
 	At   time.Time
 	Op   string
@@ -56,7 +57,7 @@ func Load(idx *Index, read Reader) (*Graph, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s: its stamp %s is no time", path, f.Stamp)
 		}
-		g.Comments[f.ID] = append(g.Comments[f.ID], Noted{Comment: *c, Path: path, At: at, Op: f.Op})
+		g.Comments[f.ID] = append(g.Comments[f.ID], Noted{Comment: *c, ID: f.CommentID(), Path: path, At: at, Op: f.Op})
 	}
 	for _, list := range g.Comments {
 		sort.Slice(list, func(i, j int) bool { return list[i].Path < list[j].Path })

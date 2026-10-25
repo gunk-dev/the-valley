@@ -253,11 +253,26 @@ func (k *Knot) Clone() *Knot {
 }
 
 // Comment is one comment on a knot: who wrote it, and what it says. Its
-// filename says when, and which operation wrote it.
+// filename says when, and which operation wrote it. A comment that has
+// been edited also says when it was last edited, and by whom; one that
+// has not leaves both empty.
 type Comment struct {
 	Author string
 	Body   string
+	// Edited is when the comment was last edited, as a UTC time, and
+	// EditedBy is the principal that edited it.
+	Edited   string
+	EditedBy string
 }
+
+// CommentPath is where the comment with commentID on the knot with knotID
+// lives in the graph's tree.
+func CommentPath(knotID, commentID string) string {
+	return CommentsDirectory + "/" + knotID + "/" + commentID + ".md"
+}
+
+// IsCommentID reports whether s is a comment's ID, <stamp>-<op>.
+func IsCommentID(s string) bool { return commentID.MatchString(s) }
 
 // IsLocalID reports whether s is a knot ID.
 func IsLocalID(s string) bool { return localID.MatchString(s) }

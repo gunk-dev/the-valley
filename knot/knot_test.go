@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 // tree is a graph's files in memory, each named by the SHA-1 of its
@@ -325,7 +326,7 @@ func TestWhatAPushMayChange(t *testing.T) {
 		{"a comment on no knot", change(func(t tree) {
 			t[CommentsDirectory+"/oc-0000000/20261016T000000Z-0123456789abcdef.md"] = string(RenderComment(&Comment{Author: "operator", Body: "Yes.\n"}))
 		}), "operator", RuleEdgeResolves},
-		{"a changed comment", change(func(t tree) { t[comment] = string(RenderComment(&Comment{Author: "operator", Body: "Unsaid.\n"})) }), "operator", RuleTransition},
+		{"a changed comment that records no edit", change(func(t tree) { t[comment] = string(RenderComment(&Comment{Author: "operator", Body: "Unsaid.\n"})) }), "operator", RuleProvenance},
 		{"a deleted comment", change(func(t tree) { delete(t, comment) }), "operator", RuleTransition},
 		{"a deleted knot", change(func(t tree) { delete(t, b.Path()) }), "operator", RuleTransition},
 		{"a moved knot", change(func(t tree) {
@@ -350,6 +351,116 @@ func TestWhatAPushMayChange(t *testing.T) {
 		if err := push(before, x.after, x.pusher); ruleOf(err) != x.rule {
 			t.Errorf("%s: %v, want rule %q", x.what, err, x.rule)
 		}
+	}
+}
+
+// A comment is edited in place: the edit replaces its body, keeps its
+// author, and records who edited it and when. Its author edits it, and
+// another principal only where the push's MayEdit allows, as the hook's
+// grants do. A whole graph is held to the form of its comments alone.
+func TestWhoMayEditAComment(t *testing.T) {
+	a := newKnot("outcome", "A")
+	a.CreatedBy = "alice"
+	id := "20261025T120000Z-0123456789abcdef"
+	at := CommentPath(a.ID, id)
+	written := &Comment{Author: "alice", Body: "First thought.\n"}
+	before := tree{}.with(a)
+	before[at] = string(RenderComment(written))
+	if err := (Push{New: before.index(t), Read: before.reader(), Pusher: "alice"}).Check(); err != nil {
+		t.Fatalf("the create: %v", err)
+	}
+	with := func(c Comment) tree {
+		next := tree{}.with(a)
+		next[at] = string(RenderComment(&c))
+		return next
+	}
+	edit := func(by, body string) Comment {
+		return Comment{Author: "alice", Body: body, Edited: "2026-10-25T13:00:00Z", EditedBy: by}
+	}
+	byApprover := func(string) error { return nil }
+	refusing := func(string) error { return errors.New("only an approver edits another's comment") }
+	for _, x := range []struct {
+		what    string
+		before  tree
+		after   tree
+		pusher  string
+		mayEdit func(string) error
+		rule    Rule
+	}{
+		{"its author's edit", before, with(edit("alice", "Second thought.\n")), "alice", nil, ""},
+		{"its author's second edit", with(edit("alice", "Second thought.\n")), with(edit("alice", "Third thought.\n")), "alice", nil, ""},
+		{"another's edit, with no MayEdit", before, with(edit("operator", "Removed.\n")), "operator", nil, RuleTransition},
+		{"another's edit, which MayEdit allows", before, with(edit("operator", "Removed.\n")), "operator", byApprover, ""},
+		{"another's edit, which MayEdit refuses", before, with(edit("operator", "Removed.\n")), "operator", refusing, RuleTransition},
+		{"an edit that records no edit", before, with(Comment{Author: "alice", Body: "Quietly.\n"}), "alice", nil, RuleProvenance},
+		{"an edit naming another editor", before, with(edit("operator", "Not mine.\n")), "alice", byApprover, RuleProvenance},
+		{"an edit that changes the author", before, with(Comment{Author: "operator", Body: "Mine now.\n", Edited: "2026-10-25T13:00:00Z", EditedBy: "operator"}), "operator", byApprover, RuleTransition},
+		{"an edit that deletes the comment", before, tree{}.with(a), "alice", nil, RuleTransition},
+		{"a new comment that records an edit", tree{}.with(a), with(edit("alice", "Never written.\n")), "alice", nil, RuleProvenance},
+		{"a create whose comment records an edit", nil, with(edit("alice", "Never written.\n")), "alice", nil, RuleProvenance},
+	} {
+		p := Push{New: x.after.index(t), Read: x.after.mergedReader(x.before), Pusher: x.pusher, MayEdit: x.mayEdit}
+		if x.before != nil {
+			p.Old = x.before.index(t)
+		}
+		err := p.Check()
+		if ruleOf(err) != x.rule {
+			t.Errorf("%s: %v, want rule %q", x.what, err, x.rule)
+		}
+	}
+	refused := Push{Old: before.index(t), New: with(edit("operator", "Removed.\n")).index(t), Pusher: "operator", MayEdit: refusing,
+		Read: with(edit("operator", "Removed.\n")).mergedReader(before)}.Check()
+	if refused == nil || !strings.Contains(refused.Error(), "a comment by alice, and operator is editing it: only an approver edits another's comment") {
+		t.Errorf("a refused edit does not say whose comment it is, who edits it, and MayEdit's reason: %v", refused)
+	}
+
+	// A whole graph holds edited comments, and what it reads of one is
+	// what the edit wrote.
+	edited := with(edit("operator", "Removed.\n"))
+	g, err := Load(edited.index(t), edited.reader())
+	if err != nil {
+		t.Fatalf("a graph with an edited comment: %v", err)
+	}
+	if n := g.Comments[a.ID][0]; n.ID != id || n.Author != "alice" || n.EditedBy != "operator" || n.Edited != "2026-10-25T13:00:00Z" || n.Body != "Removed.\n" {
+		t.Errorf("the edited comment reads as %+v", n)
+	}
+}
+
+// A comment's frontmatter is the author line, and on an edited comment the
+// two edit lines after it, both or neither. A comment written before edits
+// existed reads and writes back unchanged.
+func TestACommentsForm(t *testing.T) {
+	legacy := "---\nauthor: \"alice\"\n---\n\nNoted.\n"
+	c, err := ParseComment("c", []byte(legacy))
+	if err != nil || c.Edited != "" || c.EditedBy != "" || string(RenderComment(c)) != legacy {
+		t.Fatalf("a comment that was never edited reads as %+v, %v", c, err)
+	}
+	edited := "---\nauthor: \"alice\"\nedited: \"2026-10-25T13:00:00Z\"\nedited_by: \"operator\"\n---\n\nNoted.\n"
+	if c, err := ParseComment("c", []byte(edited)); err != nil || string(RenderComment(c)) != edited {
+		t.Fatalf("an edited comment reads as %+v, %v", c, err)
+	}
+	for _, x := range []struct {
+		what, front string
+		rule        Rule
+	}{
+		{"the edit lines in the other order", "author: \"alice\"\nedited_by: \"operator\"\nedited: \"2026-10-25T13:00:00Z\"\n", RuleCanonical},
+		{"the author after the edit", "edited: \"2026-10-25T13:00:00Z\"\nedited_by: \"operator\"\nauthor: \"alice\"\n", RuleCanonical},
+		{"edited alone", "author: \"alice\"\nedited: \"2026-10-25T13:00:00Z\"\n", RuleProvenance},
+		{"edited_by alone", "author: \"alice\"\nedited_by: \"operator\"\n", RuleProvenance},
+		{"an edit time that is no UTC time", "author: \"alice\"\nedited: \"2026-10-25 13:00\"\nedited_by: \"operator\"\n", RuleFieldShape},
+		{"an editor that is no name", "author: \"alice\"\nedited: \"2026-10-25T13:00:00Z\"\nedited_by: \"two words\"\n", RuleFieldShape},
+		{"an edit time as a bare token", "author: \"alice\"\nedited: 2026-10-25T13:00:00Z\nedited_by: \"operator\"\n", RuleCanonical},
+		{"an author named twice", "author: \"alice\"\nauthor: \"alice\"\n", RuleCanonical},
+		{"no author", "edited: \"2026-10-25T13:00:00Z\"\nedited_by: \"operator\"\n", RuleCanonical},
+		{"another key", "author: \"alice\"\nowner: \"alice\"\n", RuleCanonical},
+	} {
+		if _, err := ParseComment("c", []byte("---\n"+x.front+"---\n\nNoted.\n")); ruleOf(err) != x.rule {
+			t.Errorf("%s: %v, want rule %q", x.what, err, x.rule)
+		}
+	}
+	if !IsCommentID("20261025T120000Z-0123456789abcdef") || IsCommentID("20261025T120000Z-0123456789abcdef.md") ||
+		IsCommentID("../oc-1234567/20261025T120000Z-0123456789abcdef") {
+		t.Error("IsCommentID does not hold a comment's ID to <stamp>-<op>")
 	}
 }
 
@@ -520,8 +631,17 @@ func TestACommitNamesItsOperationOnce(t *testing.T) {
 	tree := strings.Repeat("a", 40)
 	head := "tree " + tree + "\nparent " + strings.Repeat("b", 40) + "\nauthor p <p> 1 +0000\ncommitter operator <p@x> 1 +0000\n\n"
 	c, err := ParseCommit([]byte(head+Message("knot new oc-1234567: x", "0123456789abcdef")), 20)
-	if err != nil || c.Op != "0123456789abcdef" || c.Committer != "operator" || len(c.Parents) != 1 {
+	if err != nil || c.Op != "0123456789abcdef" || c.Committer != "operator" || len(c.Parents) != 1 || !c.Time.Equal(time.Unix(1, 0)) {
 		t.Fatalf("ParseCommit = %+v, %v", c, err)
+	}
+	zoned := strings.Replace(head, "committer operator <p@x> 1 +0000", "committer operator <p@x> 1761397200 -0700", 1)
+	if c, err := ParseCommit([]byte(zoned+Message("x", "0123456789abcdef")), 20); err != nil || c.Time != time.Date(2025, 10, 25, 13, 0, 0, 0, time.UTC) {
+		t.Errorf("a commit's time in another zone reads as %v, %v", c.Time, err)
+	}
+	for _, line := range []string{"committer operator <p@x>", "committer operator <p@x> soon +0000", "committer operator <p@x> 1 UTC"} {
+		if _, err := ParseCommit([]byte(strings.Replace(head, "committer operator <p@x> 1 +0000", line, 1)+Message("x", "0123456789abcdef")), 20); err == nil {
+			t.Errorf("a committer line %q was read", line)
+		}
 	}
 	for _, bad := range []string{
 		"knot new\n",

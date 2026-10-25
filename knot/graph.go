@@ -1,6 +1,7 @@
 package knot
 
 import (
+	"errors"
 	"fmt"
 	"path"
 	"slices"
@@ -41,6 +42,11 @@ type File struct {
 	ID, Type, Slug string
 	Stamp, Op      string
 }
+
+// CommentID is a comment's ID: its file's name without .md,
+// <stamp>-<op>. No two comments on one knot share it, and it stays the
+// comment's for good, since a comment's file is never moved or deleted.
+func (f File) CommentID() string { return f.Stamp + "-" + f.Op }
 
 // Layout reads a graph's listing into its index, and refuses any listing
 // that is not exactly a graph's layout: the root holds only the four type
@@ -198,9 +204,15 @@ type Reader func(oid string, max int) ([]byte, error)
 type Push struct {
 	Old, New *Index
 	Read     Reader
-	// Pusher is the principal pushing. A new knot's created_by and a new
-	// comment's author must name it.
+	// Pusher is the principal pushing. A new knot's created_by, a new
+	// comment's author and an edited comment's edited_by must name it.
 	Pusher string
+	// MayEdit decides whether the pusher may edit a comment another
+	// principal wrote: it returns nil when the pusher may edit a comment
+	// by author, and the reason it may not otherwise. Who may is the
+	// host's decision, so the hook supplies it from the host's grants.
+	// When it is nil, a pusher edits only its own comments.
+	MayEdit func(author string) error
 }
 
 // Check holds a push to every rule. The graph before it was valid, so only
@@ -255,7 +267,7 @@ func (p Push) check(push bool) *Error {
 	var touched []string
 	for _, path := range changed {
 		if c, ok := p.New.Comments[path]; ok {
-			if err := p.checkComment(g, c); err != nil {
+			if err := p.checkComment(g, c, push); err != nil {
 				return err
 			}
 			continue
@@ -276,15 +288,16 @@ func (p Push) check(push bool) *Error {
 	return g.checkCycles(touched)
 }
 
-// checkComment holds a comment the push adds to its rules. A comment is
-// only ever added: one whose path the old graph has already is a change to
-// it, and is refused.
-func (p Push) checkComment(g *graph, c File) *Error {
-	if p.Old != nil {
-		if _, ok := p.Old.Files[c.Path]; ok {
-			return refuse(RuleTransition, c.Path, "changes a comment, and a comment stays exactly as it was written")
-		}
-	}
+// checkComment holds a comment the push adds or changes to its rules. A
+// whole graph's comments are held to their form alone, edited or not.
+//
+// A comment the push adds names the pusher as its author, and records no
+// edit. A comment the push changes is an edit: it keeps its author, names
+// the pusher in edited_by, and says when in edited. The pusher edits its
+// own comments, and another principal's only where MayEdit allows. A
+// comment's path, and so its ID, never changes, since no comment is
+// deleted.
+func (p Push) checkComment(g *graph, c File, push bool) *Error {
 	// A comment the push leaves unchanged is on a knot the graph holds,
 	// since no knot is deleted. One it adds must be too.
 	if _, ok := p.New.Knots[c.ID]; !ok {
@@ -298,8 +311,48 @@ func (p Push) checkComment(g *graph, c File) *Error {
 	if perr != nil {
 		return perr
 	}
-	if p.Pusher != "" && comment.Author != p.Pusher {
-		return refuse(RuleProvenance, c.Path, fmt.Sprintf("names %s as its author, and %s is pushing it: a comment's author is the principal that writes it", comment.Author, p.Pusher))
+	if !push {
+		return nil
+	}
+	var before string
+	if p.Old != nil {
+		before = p.Old.Files[c.Path]
+	}
+	if before == "" {
+		switch {
+		case comment.Edited != "":
+			return refuse(RuleProvenance, c.Path, "is a new comment that records an edit, and edited and edited_by are written only by an edit to a comment already in the graph")
+		case p.Pusher != "" && comment.Author != p.Pusher:
+			return refuse(RuleProvenance, c.Path, fmt.Sprintf("names %s as its author, and %s is pushing it: a comment's author is the principal that writes it", comment.Author, p.Pusher))
+		}
+		return nil
+	}
+	data, err = g.read(before, MaxCommentSize)
+	if err != nil {
+		return refuse(RuleLimit, c.Path, "as it was: "+err.Error())
+	}
+	old, perr := parseComment(c.Path, data)
+	if perr != nil {
+		return refuse(perr.Rule, c.Path, "as it was: "+perr.Msg)
+	}
+	switch {
+	case comment.Author != old.Author:
+		return refuse(RuleTransition, c.Path, fmt.Sprintf("changes its author from %q to %q, and a comment's author never changes", old.Author, comment.Author))
+	case comment.Edited == "":
+		return refuse(RuleProvenance, c.Path, "changes a comment without recording the edit: an edited comment says when it was edited and by whom, in edited and edited_by")
+	case p.Pusher == "":
+		return nil
+	case comment.EditedBy != p.Pusher:
+		return refuse(RuleProvenance, c.Path, fmt.Sprintf("names %s in edited_by, and %s is pushing it: an edit names the principal that makes it", comment.EditedBy, p.Pusher))
+	case p.Pusher == old.Author:
+		return nil
+	}
+	why := errors.New("a comment is edited only by its author")
+	if p.MayEdit != nil {
+		why = p.MayEdit(old.Author)
+	}
+	if why != nil {
+		return refuse(RuleTransition, c.Path, fmt.Sprintf("is a comment by %s, and %s is editing it: %v", old.Author, p.Pusher, why))
 	}
 	return nil
 }

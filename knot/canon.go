@@ -350,12 +350,19 @@ func quote(s string) string {
 // ParseComment reads a comment's file:
 //
 //	---
-//	author: "operator"
+//	author: "alice"
+//	edited: "2026-10-25T15:00:00Z"
+//	edited_by: "operator"
 //	---
 //
 //	The comment, as markdown.
 //
-// The body is required, and the form is as canonical as a knot's.
+// author comes first. edited and edited_by follow it, in that order, on a
+// comment that has been edited, and a comment holds both or neither. Each
+// value is a JSON string. A comment that was never edited is the author
+// line alone, so a comment written before edits existed reads as it
+// always has. The body is required, and the form is as canonical as a
+// knot's.
 func ParseComment(path string, data []byte) (*Comment, error) {
 	c, err := parseComment(path, data)
 	if err != nil {
@@ -376,17 +383,35 @@ func parseComment(path string, data []byte) (*Comment, *Error) {
 		return nil, err
 	}
 	c := &Comment{Body: readBody(rest)}
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "author: ") {
-		return nil, refuse(RuleCanonical, path, "a comment's frontmatter is one line, author: \"<principal>\"")
+	fields := map[string]*string{"author": &c.Author, "edited": &c.Edited, "edited_by": &c.EditedBy}
+	seen := map[string]bool{}
+	for _, line := range lines {
+		key, value, _ := strings.Cut(line, ": ")
+		field := fields[key]
+		switch {
+		case field == nil:
+			return nil, refuse(RuleCanonical, path, fmt.Sprintf("holds the line %q, and a comment's frontmatter is author: \"<principal>\", and on an edited comment edited: \"<UTC time>\" and edited_by: \"<principal>\" after it", line))
+		case seen[key]:
+			return nil, refuse(RuleCanonical, path, fmt.Sprintf("names %s twice", key))
+		}
+		seen[key] = true
+		s, rerr := readScalar(value)
+		if rerr != nil {
+			return nil, refuse(RuleCanonical, path, key+": "+rerr.Error())
+		}
+		*field = s
 	}
-	author, rerr := readScalar(strings.TrimPrefix(lines[0], "author: "))
-	if rerr != nil {
-		return nil, refuse(RuleCanonical, path, "author: "+rerr.Error())
-	}
-	c.Author = author
 	switch {
+	case !seen["author"]:
+		return nil, refuse(RuleCanonical, path, "a comment's frontmatter opens with author: \"<principal>\"")
 	case !IsName(c.Author):
 		return nil, refuse(RuleFieldShape, path, fmt.Sprintf("its author %q is not a principal's name", c.Author))
+	case seen["edited"] && !IsTimestamp(c.Edited):
+		return nil, refuse(RuleFieldShape, path, fmt.Sprintf("edited is %q, and it is a UTC time, YYYY-MM-DDTHH:MM:SSZ", c.Edited))
+	case seen["edited_by"] && !IsName(c.EditedBy):
+		return nil, refuse(RuleFieldShape, path, fmt.Sprintf("edited_by is %q, and it is a principal's name", c.EditedBy))
+	case seen["edited"] != seen["edited_by"]:
+		return nil, refuse(RuleProvenance, path, "edited and edited_by come together: an edit names when it was made and who made it")
 	case c.Body == "":
 		return nil, refuse(RuleRequired, path, "a comment has a body")
 	case c.Body != NormalBody(c.Body):
@@ -400,5 +425,12 @@ func parseComment(path string, data []byte) (*Comment, *Error) {
 
 // RenderComment writes a comment in its canonical form.
 func RenderComment(c *Comment) []byte {
-	return []byte(fence + "author: " + quote(c.Author) + "\n" + fence + "\n" + c.Body)
+	front := "author: " + quote(c.Author) + "\n"
+	if c.Edited != "" {
+		front += "edited: " + quote(c.Edited) + "\n"
+	}
+	if c.EditedBy != "" {
+		front += "edited_by: " + quote(c.EditedBy) + "\n"
+	}
+	return []byte(fence + front + fence + "\n" + c.Body)
 }

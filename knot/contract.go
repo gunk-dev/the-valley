@@ -133,6 +133,8 @@ var (
 	// allows below the root.
 	knotFile    = regexp.MustCompile(`^((oc|bd|ida|qn)-[0-9a-f]{7})-([a-z0-9-]+)\.md$`)
 	commentFile = regexp.MustCompile(`^([0-9]{8}T[0-9]{6}Z)-([0-9a-f]{16})\.md$`)
+	// commentID is a comment's ID: its file's name without .md.
+	commentID = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{16}$`)
 	// opID is the ID an operation carries in its Valley-Op trailer.
 	opID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
@@ -175,7 +177,7 @@ const (
 	RuleLimit      Rule = "limit"      // within the limits above
 	RuleCycle      Rule = "cycle"      // parent and blocked_by edges form no cycle
 	RuleTransition Rule = "transition" // what a push may change
-	RuleProvenance Rule = "provenance" // created_by and author name the pusher
+	RuleProvenance Rule = "provenance" // created_by, author and edited_by name the pusher
 	RuleClaim      Rule = "claim"      // claimed_by and claimed_at come together
 	RuleCutoff     Rule = "cutoff"     // created after IDRuleCutoff
 )

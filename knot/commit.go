@@ -4,7 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // OpTrailer is the trailer every graph commit carries: the ID of the
@@ -15,12 +18,15 @@ import (
 const OpTrailer = "Valley-Op"
 
 // Commit is what a graph commit says: its tree, its parents in order, the
-// name its committer line gives, and the operation its trailer names.
+// name and the time its committer line gives, and the operation its
+// trailer names.
 type Commit struct {
 	Tree      string
 	Parents   []string
 	Committer string
-	Op        string
+	// Time is when the commit was committed, in UTC.
+	Time time.Time
+	Op   string
 }
 
 // ParseCommit reads a commit object as git stores it, with object IDs of
@@ -57,11 +63,17 @@ func ParseCommit(body []byte, hashSize int) (Commit, error) {
 			return Commit{}, errors.New("it names a parent after its other headers, which git does not read as a parent")
 		case strings.HasPrefix(line, "committer "):
 			committers++
-			who, _, ok := strings.Cut(strings.TrimPrefix(line, "committer "), " <")
-			if !ok {
+			who, rest, ok := strings.Cut(strings.TrimPrefix(line, "committer "), " <")
+			end := strings.LastIndex(rest, "> ")
+			if !ok || end < 0 {
 				return Commit{}, errors.New("its committer line names no email, as git writes one")
 			}
 			c.Committer = who
+			when, err := commitTime(rest[end+2:])
+			if err != nil {
+				return Commit{}, err
+			}
+			c.Time = when
 		}
 	}
 	if committers != 1 {
@@ -74,6 +86,20 @@ func ParseCommit(body []byte, hashSize int) (Commit, error) {
 	c.Op = op
 	return c, nil
 }
+
+// commitTime reads the time a committer line ends with, as git writes it:
+// seconds since the epoch, and the committer's offset from UTC.
+func commitTime(s string) (time.Time, error) {
+	seconds, zone, ok := strings.Cut(s, " ")
+	n, err := strconv.ParseInt(seconds, 10, 64)
+	if !ok || err != nil || !zoneShape.MatchString(zone) {
+		return time.Time{}, errors.New("its committer line ends with no time, as git writes one: seconds since the epoch and a zone, +HHMM")
+	}
+	return time.Unix(n, 0).UTC(), nil
+}
+
+// zoneShape is a commit time's offset from UTC.
+var zoneShape = regexp.MustCompile(`^[+-][0-9]{4}$`)
 
 // OpOf is the operation a graph commit's message names in its trailer:
 // the message's last line is "Valley-Op: <16 hex digits>", and no other

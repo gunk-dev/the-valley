@@ -392,16 +392,17 @@ func (q *request) row(project string, k *export.Knot) row {
 		r.Filter = "done"
 	}
 	if k.Target != "" && k.Target != project {
-		r.Chips = append(r.Chips, chip{"quiet", "lands in " + k.Target})
+		text, _ := q.idx.named(project, k.Target)
+		r.Chips = append(r.Chips, chip{"quiet", "lands in " + text})
 	}
 	if k.Claim != nil {
 		r.Chips = append(r.Chips, chip{"", "claimed by " + k.Claim.By})
 	}
 	if k.State == "blocked" {
 		if len(k.WaitingOn) > 0 {
-			r.Chips = append(r.Chips, chip{"blocked", "waits on " + strings.Join(k.WaitingOn, ", ")})
+			r.Chips = append(r.Chips, chip{"blocked", "waits on " + q.idx.waitsOn(k.WaitingOn)})
 		} else {
-			r.Chips = append(r.Chips, chip{"blocked", "waits on an unpublished knot"})
+			r.Chips = append(r.Chips, chip{"blocked", "waits on " + unpublishedKnot})
 		}
 	}
 	if k.Progress != nil && k.Progress.Of > 0 {

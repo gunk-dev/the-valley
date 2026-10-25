@@ -234,8 +234,10 @@ func segments(escaped string) ([]string, bool) {
 // project is the export's project called name, when the export holds it
 // as public. Every route that names a project asks here first, and a
 // project it refuses answers as one that does not exist.
-func (q *request) project(name string) (*export.Project, bool) {
-	p, ok := q.idx.projects[name]
+func (q *request) project(name string) (*export.Project, bool) { return q.idx.project(name) }
+
+func (idx *index) project(name string) (*export.Project, bool) {
+	p, ok := idx.projects[name]
 	if !ok || p.Visibility != export.Public {
 		return nil, false
 	}

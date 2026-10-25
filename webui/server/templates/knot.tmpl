@@ -12,7 +12,7 @@
     {{- end}}
     {{- if .BlockedBy}}
     <dt>Blocked by</dt>
-    <dd><ul class="plain">{{range .BlockedBy}}<li class="item">{{with .Knot}}{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.Project}}:{{.ID}}</span></span>{{else}}<span class="nochild"></span><span class="t"><span class="mono">{{.Ref}}</span> <span class="muted">{{.Note}}</span></span>{{end}}</li>{{end}}</ul></dd>
+    <dd><ul class="plain">{{range .BlockedBy}}<li class="item">{{with .Knot}}{{template "glyph" .State}}<span class="t"><a href="{{.URL}}">{{.Title}}</a> <span class="mono muted">{{.Project}}:{{.ID}}</span></span>{{else}}<span class="nochild"></span><span class="t">{{with .Ref}}<span class="mono">{{.}}</span> {{end}}<span class="muted">{{.Note}}</span></span>{{end}}</li>{{end}}</ul></dd>
     {{- end}}
     {{- if .Blocks}}
     <dt>Blocks</dt>

@@ -233,9 +233,14 @@ func TestPlanPage(t *testing.T) {
 		t.Errorf("the path does not order oc-a000003 after oc-a000002:\n%s", paths)
 	}
 
-	// Nothing of the hidden project is linked, and nothing is fetched
-	// from another origin.
-	for _, unwanted := range []string{"/knots/site/", "/source/site/", "http://", "https://", `class="chip stale"`} {
+	// Nothing of the hidden project is linked or named, and nothing is
+	// fetched from another origin.
+	for _, want := range []string{"lands in an unpublished project", "lands in a knot in an unpublished project"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the plan page does not show %q", want)
+		}
+	}
+	for _, unwanted := range append([]string{"/knots/site/", "/source/site/", "http://", "https://", `class="chip stale"`}, unpublishedText...) {
 		if strings.Contains(page, unwanted) {
 			t.Errorf("the plan page holds %q", unwanted)
 		}
@@ -248,8 +253,14 @@ func TestPlanPage(t *testing.T) {
 	}
 }
 
-// A knot's page shows its body and comments, marks the edited comment,
-// and names a blocker in a hidden project without linking it.
+// unpublishedText is what of the hidden project site the fixture's
+// references hold: its name and its knots' IDs. No page shows any of it.
+var unpublishedText = []string{"site:", "oc-b000001", "oc-b000002", "lands in site", ">site<", "valley:site"}
+
+// A knot's page shows its body and comments, and marks the edited
+// comment. A reference into a hidden project is shown as unpublished,
+// with nothing of its text, and a missing knot of a public project is
+// named as missing.
 func TestKnotPage(t *testing.T) {
 	h := newHarness(t)
 	page := h.page("/knots/app/oc-a000002")
@@ -272,14 +283,54 @@ func TestKnotPage(t *testing.T) {
 	if !strings.Contains(page, `<a href="/knots/app/oc-a000002">The plan page lists milestones</a>`) {
 		t.Error("the local blocker is not linked")
 	}
-	if !strings.Contains(page, `<span class="mono">site:oc-b000001</span> <span class="muted">not published</span>`) {
-		t.Error("the hidden blocker is not named as not published")
+	for _, want := range []string{
+		`<span class="nochild"></span><span class="t"><span class="muted">a knot in an unpublished project</span></span>`,
+		"<dt>Lands in</dt><dd>an unpublished project</dd>",
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the knot's page does not show %q", want)
+		}
 	}
-	if strings.Contains(page, "/knots/site/") || strings.Contains(page, "/source/site/") {
-		t.Error("the knot's page links into the hidden project")
+	page += h.page("/knots/app/bd-a000004")
+	if !strings.Contains(page, "<dt>Lands in</dt><dd>a knot in an unpublished project</dd>") {
+		t.Error("a target in the hidden project is not shown as unpublished")
+	}
+	for _, unwanted := range append([]string{"/knots/site/", "/source/site/"}, unpublishedText...) {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("the knot's page shows %q", unwanted)
+		}
 	}
 	if w := h.get("/knots/app/oc-fffffff"); w.Code != http.StatusNotFound {
 		t.Errorf("a missing knot answered %d", w.Code)
+	}
+
+	// A knot of a public project the graph does not hold, and a local
+	// knot that is not there, are named as missing. A change of the
+	// hidden project is not named.
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, func(e *export.Export) {
+		for i := range e.Projects[0].Knots {
+			if k := &e.Projects[0].Knots[i]; k.ID == "oc-a000003" {
+				k.BlockedBy = append(k.BlockedBy, "app:oc-fffffff", "oc-eeeeeee")
+				k.Edges = append(k.Edges, export.Edge{Field: "blocked_by", Ref: "app:oc-fffffff", Project: "app", ID: "oc-fffffff", State: export.EdgeDangling})
+				k.Changes = append(k.Changes, "valley:site/kmnopqrstuvwxyzkmnopqrstuvwxyzkm", "valley:app/kmnopqrstuvwxyzkmnopqrstuvwxyzkm")
+			}
+		}
+	})
+	page = h.page("/knots/app/oc-a000003")
+	for _, want := range []string{
+		`<span class="mono">app:oc-fffffff</span> <span class="muted">not found in its graph</span>`,
+		`<span class="mono">oc-eeeeeee</span> <span class="muted">not found</span>`,
+		`<li class="mono">a change in an unpublished project</li>`,
+		`<li class="mono">valley:app/kmnopqrstuvwxyzkmnopqrstuvwxyzkm</li>`,
+	} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the knot's page does not show %q", want)
+		}
+	}
+	for _, unwanted := range unpublishedText {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("the knot's page shows %q", unwanted)
+		}
 	}
 }
 

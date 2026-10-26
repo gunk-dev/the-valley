@@ -41,6 +41,13 @@ import (
 // map, an interface or a json.RawMessage are data, and any key passes: a
 // map's values are held to its element type, and the rest are checked for
 // repeated keys alone.
+//
+// Decode does not read embedded structs. encoding/json reads the fields of
+// a struct embedded with no json tag name as fields of the struct that
+// embeds it, chosen by Go's rules for selecting a field, and the check
+// does not follow those rules. So Decode refuses any object read into a
+// struct that embeds a struct, or a pointer to one, with no json tag name.
+// A struct embedded under a json tag name is an ordinary field.
 func Decode(data []byte, v any) error {
 	t := reflect.TypeOf(v)
 	if t == nil || t.Kind() != reflect.Pointer {
@@ -86,7 +93,9 @@ func check(dec *json.Decoder, t reflect.Type, path string) error {
 	case json.Delim('{'):
 		var fields map[string]reflect.Type
 		if t.Kind() == reflect.Struct {
-			fields = tagged(t)
+			if fields, err = tagged(t); err != nil {
+				return fmt.Errorf("%s is read into %w", where(path), err)
+			}
 		}
 		seen := map[string]bool{}
 		for dec.More() {
@@ -123,16 +132,25 @@ func check(dec *json.Decoder, t reflect.Type, path string) error {
 }
 
 // tagged maps the name each json tag of struct type t gives to the type
-// of its field.
-func tagged(t reflect.Type) map[string]reflect.Type {
+// of its field. Its error is for a t that embeds a struct with no json tag
+// name, which Decode does not read.
+func tagged(t reflect.Type) (map[string]reflect.Type, error) {
 	fields := map[string]reflect.Type{}
 	for i := range t.NumField() {
 		f := t.Field(i)
-		if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
+		name, _, _ := strings.Cut(f.Tag.Get("json"), ",")
+		embedded := f.Type
+		if embedded.Kind() == reflect.Pointer {
+			embedded = embedded.Elem()
+		}
+		if f.Anonymous && name == "" && embedded.Kind() == reflect.Struct {
+			return nil, fmt.Errorf("%s, which embeds %s, and exactjson reads no embedded struct", t, f.Type)
+		}
+		if name != "" && name != "-" {
 			fields[name] = f.Type
 		}
 	}
-	return fields
+	return fields, nil
 }
 
 // unknown is the error for a key no field of the struct at path names.

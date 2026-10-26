@@ -130,7 +130,7 @@ func TestAKeyTwiceOrASecondDocumentIsRefused(t *testing.T) {
 			`{"principals": {"alice": {"grants": {"push": {"boundary": "x", "boundary": "b"}}}}}`,
 			`principals["alice"].grants["push"] holds the key "boundary" twice`},
 		{"escaped",
-			`{"genesis": "alice", "genesis": "mallory"}`,
+			`{"genesis": "alice", "\u0067enesis": "mallory"}`,
 			`the document holds the key "genesis" twice`},
 		{"in a raw value",
 			`{"derived": [{"a": 1, "a": 2}]}`,
@@ -149,5 +149,61 @@ func TestAKeyTwiceOrASecondDocumentIsRefused(t *testing.T) {
 	}
 	if err := Decode([]byte(`{}`), doc{}); err == nil || !strings.Contains(err.Error(), "non-pointer") {
 		t.Errorf("Decode into a value: %v", err)
+	}
+}
+
+// Structs that embed a struct, as a value, as a pointer, and under a json
+// tag name.
+type embeds struct {
+	grant
+	Name string `json:"name"`
+}
+
+type embedsPointer struct {
+	*grant
+}
+
+type embedsTagged struct {
+	Extra `json:"extra"`
+}
+
+type Extra struct {
+	Slot string `json:"slot"`
+}
+
+// encoding/json reads the fields of an embedded struct as the embedding
+// struct's own, and Decode does not follow it there: it refuses any
+// object read into a struct that embeds one, at any depth, whatever the
+// object holds. A struct embedded under a json tag name is an ordinary
+// field.
+func TestAnEmbeddedStructIsRefused(t *testing.T) {
+	var e embeds
+	if err := json.Unmarshal([]byte(`{"boundary": "b"}`), &e); err != nil || e.Boundary != "b" {
+		t.Fatalf("encoding/json read %+v, %v", e, err)
+	}
+	for _, c := range []struct {
+		name, data, says string
+		v                any
+	}{
+		{"a struct", `{"boundary": "b"}`,
+			`the document is read into exactjson.embeds, which embeds exactjson.grant, and exactjson reads no embedded struct`,
+			&embeds{}},
+		{"an empty object", `{}`,
+			`the document is read into exactjson.embeds, which embeds exactjson.grant, and exactjson reads no embedded struct`,
+			&embeds{}},
+		{"a pointer, in a map", `{"push": {"boundary": "b"}}`,
+			`["push"] is read into exactjson.embedsPointer, which embeds *exactjson.grant, and exactjson reads no embedded struct`,
+			&map[string]embedsPointer{}},
+	} {
+		if err := Decode([]byte(c.data), c.v); err == nil || err.Error() != c.says {
+			t.Errorf("%s: Decode read %+v, %v, not %q", c.name, c.v, err, c.says)
+		}
+	}
+	var tagged embedsTagged
+	if err := Decode([]byte(`{"extra": {"slot": "s"}}`), &tagged); err != nil || tagged.Slot != "s" {
+		t.Errorf("a struct embedded under a tag name: Decode read %+v, %v", tagged, err)
+	}
+	if err := Decode([]byte(`{"slot": "s"}`), &embedsTagged{}); err == nil {
+		t.Errorf("a struct embedded under a tag name: Decode read its field's key as the embedding struct's")
 	}
 }

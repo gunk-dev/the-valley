@@ -2133,9 +2133,10 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **Visibility:** A project is public when the instance's declaration holds
   `instance: projects: <project>: visibility: "public"` and the project's own declaration holds
   `project: visibility: "public"`. Every other project is private: one the instance does not name or
-  does not allow, one with no `main`, one with no declaration, and one whose declaration
-  `schema/web.cue` refuses. A refused declaration is said on `stderr`. A missing or refused instance
-  declaration makes every project private, and the pass uploads an export with no project.
+  does not allow, one with no `main`, one with no declaration, and one whose declaration is refused,
+  as **Reading a declaration** below sets out. A refused declaration is said on `stderr`. A missing
+  or refused instance declaration makes every project private, and the pass uploads an export with
+  no project.
 - **Read failures:** A failure to read is not a private project. The pass fails, and sends and
   writes nothing, when the instance repository or its project list cannot be fetched, when a listing
   names other projects than the instance publishes, as the CLI's listing of its own repository alone
@@ -2152,9 +2153,12 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   library, and runs `cue export --out json` with the schema and the files. `CUE_*` variables are
   removed from `cue`'s environment. A declaration is refused when `cue` exits with status 1, which
   is how `cue` reports an error in what it was given. A declaration with more than 32 files, a file
-  over 64 KiB, more than 1 MiB of exported JSON, or exported JSON with a field the schema does not
-  define is refused too. Before it reads any declaration, the pass runs `cue export` over the schema
-  alone, and fails when that fails.
+  over 64 KiB, or more than 1 MiB of exported JSON is refused too. So is one whose exported JSON
+  holds a key that is not a field of the schema spelled exactly, or a key twice in one object
+  (`exactjson/`). A declaration may reopen `#Declaration` and add a field, such as `Visibility`
+  beside `visibility`. Go's JSON decoder alone would read that field as `visibility`. Before it
+  reads any declaration, the pass runs `cue export` over the schema alone, and fails when that
+  fails.
 - **Output bounds:** The pass holds at most 64 MiB of what a `valley` command prints, 4 MiB of what
   a `git` command prints, and 1 MiB of what `cue` prints. A command that prints more fails the pass,
   except `cue`, whose declaration is then refused. What a command prints on `stderr` is kept to its

@@ -1,18 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"the-valley/exactjson"
 )
 
 // webDir is where a repository keeps its web visibility declaration.
@@ -143,14 +142,9 @@ func readDeclaration(ctx context.Context, repo, commit, schema string) (*declara
 	if err != nil {
 		return nil, err
 	}
-	dec := json.NewDecoder(bytes.NewReader(out))
-	dec.DisallowUnknownFields()
 	var d declaration
-	if err := dec.Decode(&d); err != nil {
+	if err := exactjson.Decode(out, &d); err != nil {
 		return nil, invalid("the declaration is not what schema/web.cue exports: %w", err)
-	}
-	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
-		return nil, invalid("cue exported more than one document")
 	}
 	return &d, nil
 }

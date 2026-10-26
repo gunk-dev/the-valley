@@ -474,6 +474,60 @@ func TestVisibilityNeedsBothDeclarations(t *testing.T) {
 	}
 }
 
+// A declaration may reopen #Declaration and add a field, so cue exports
+// Visibility beside visibility. encoding/json alone would read the second
+// into the first, and a project that declares itself private, or that the
+// instance keeps private, would be published. The publisher refuses the
+// declaration instead, so the project stays private.
+func TestAVisibilitySpelledAnotherWayIsRefused(t *testing.T) {
+	v := newValley(t)
+	reopened := "#Declaration: Visibility?: string\n"
+	steps := []struct {
+		what   string
+		change func()
+		public []string
+		warns  string
+	}{
+		{"site is private, and public spelled another way", func() {
+			v.declare("site", reopened+`project: {
+	visibility: "private"
+	Visibility: "public"
+}`)
+		}, []string{"app"}, `site: its policy/web at`},
+		{"the instance keeps site private, and allows it spelled another way", func() {
+			v.declare("site", `project: visibility: "public"`)
+			v.declare("valley", reopened+`instance: projects: {
+	app: visibility: "public"
+	site: {
+		visibility: "private"
+		Visibility: "public"
+	}
+}`)
+		}, []string{}, `the instance's policy/web at`},
+	}
+	for _, step := range steps {
+		step.change()
+		dir := filepath.Join(t.TempDir(), "export")
+		_, stderr := v.publish("--out", dir)
+		data, err := os.ReadFile(filepath.Join(dir, export.ExportFile))
+		if err != nil {
+			t.Fatal(err)
+		}
+		e, err := export.Decode(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := names(e); !reflect.DeepEqual(got, step.public) {
+			t.Errorf("%s: the export holds %v, want %v", step.what, got, step.public)
+		}
+		for _, says := range []string{step.warns, `holds the key "Visibility", which is its field "visibility" spelled another way`} {
+			if !strings.Contains(stderr, says) {
+				t.Errorf("%s: the pass did not warn %q:\n%s", step.what, says, stderr)
+			}
+		}
+	}
+}
+
 // The key is made on the first start and kept: a second pass signs with
 // the same key, and says the verifier line only when it is new.
 func TestKeyIsMadeOnceAndKept(t *testing.T) {

@@ -981,7 +981,7 @@ func TestCrowdedHistoryEndsEarly(t *testing.T) {
 	if shown := logged.FindAllStringSubmatch(page, -1); len(shown) != 1 || shown[0][1] != tip {
 		t.Errorf("the page shows %d commits, not the tip alone", len(shown))
 	}
-	if !strings.Contains(page, "This page ends early, before a merge that would leave more lines of history than one page can link to.") {
+	if !strings.Contains(page, "This page ends early, before a commit that would leave more lines of history than one page can link to.") {
 		t.Error("the page does not say it ends early")
 	}
 	if n := len(continued.FindAllString(page, -1)); n != 1+100-MaxFrontier {

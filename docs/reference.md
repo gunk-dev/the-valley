@@ -1909,12 +1909,13 @@ compact JSON ending with a newline.
   written. The corresponding entry in `edges` has `"state": "hidden"` and `null` for `why`,
   `status`, and `title`. The reference is removed from `waiting_on`, `cleared_by_ending`,
   `dangling`, and `unresolved`, because those lists reflect the hidden knot's status. The referring
-  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. When a
-  knot has one or more open blockers in hidden projects, it carries `"waiting_on_hidden": true`. The
-  field omits the hidden knots' IDs and count. Other knots omit `waiting_on_hidden`, and
-  `export.Decode` accepts exports without it (see
-  [Unpublished blockers](./architecture.md#unpublished-blockers) for what a reader can infer when
-  `blocked_by` names a single hidden knot).
+  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. When
+  the export removes at least one reference from the knot's `waiting_on`, the knot carries
+  `"waiting_on_hidden": true`. `waiting_on` lists each reference that remains a blocker: one that
+  names an open knot, a missing knot, or a knot in a graph that could not be read. The field omits
+  the hidden knots' IDs and count. Other knots omit `waiting_on_hidden`, and `export.Decode` accepts
+  exports without it (see [Unpublished blockers](./architecture.md#unpublished-blockers) for what a
+  reader can infer when `blocked_by` names a single hidden knot).
 - **Refusals (`export.Build`):** `export.Build` fails rather than build a partial export. It fails
   when a public project is missing or has an `error` in the plan or the pending listing, or when a
   knot in a public project is missing its detail, appears twice, or has no `body`. It fails with
@@ -2282,12 +2283,18 @@ The receiver keeps every accepted export as an immutable generation in one state
   names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
   `git init` creates beforehand, so `Activate` recursively syncs each repository before renaming it
   into `repos/`.
-- **Modes:** The store sets every file and directory mode explicitly, independent of the receiver's
+- **Modes:** The store sets the modes of the paths below explicitly, independent of the receiver's
   umask (see [Reading the state directory](./architecture.md#reading-the-state-directory)).
-  - `staging/` and each upload directory inside it have mode `0700`, and each staged body has mode
-    `0600`.
+  - `staging/`, each upload directory inside it, and the upload's `bodies/` and `repos/` have mode
+    `0700`.
   - `exports/` has mode `0755`. Inside each generation, every directory has mode `0755` and every
     file has mode `0644`, or `0444` when git wrote the file read-only.
+  - The store creates `trash/` with mode `0755`, `lock` and `high-water` with mode `0644`, and each
+    staged body with mode `0600`. The receiver's umask can narrow these creation modes.
+  - `Activate` keeps a repository that an upload's `repos/` already holds as it is. Each repository
+    that the receiver builds gets the generation modes before it enters `repos/`. A repository that
+    an earlier build of the receiver staged keeps the modes that build gave it. Whether any upload
+    holds such a repository is a `deployment choice`.
   - The state directory's own mode is a `deployment choice`: `OpenStore` creates the directory if
     needed and leaves its mode unchanged.
 - **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves `active`
@@ -2463,11 +2470,12 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   - A log page lists commits in `git log --date-order`, which always places a child before its
     parents. Each page asks `git` for 50 commits, regardless of how far back in history the page
     starts. Its "Older" link points to the same route with `?from=` naming the frontier of remaining
-    commits: the parents of the commits shown on the page, plus the commits the page started from,
-    minus the commits shown on the page (see
-    [A source request's git work](./architecture.md#a-source-requests-git-work)). While every page
-    leaves at most 64 commits in that frontier, following "Older" from the first page visits every
-    reachable commit once, including across merges.
+    commits: the retained parents of the commits shown on the page, plus the commits the page
+    started from, minus the commits shown on the page (see
+    [A source request's git work](./architecture.md#a-source-requests-git-work)). A commit's
+    retained parents are its first 128 parents. While every page leaves at most 64 commits in that
+    frontier, following "Older" from the first page visits once every commit reached through
+    retained parents, including across merges.
   - The `from` query parameter takes a single value of 1 to 64 full commit IDs
     (`server.MaxFrontier`), separated by commas, in ascending order, each appearing once. Each
     commit in `from` must be reachable from `<commit>`. Any other `from` value answers `404`. Every
@@ -2475,16 +2483,17 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   - When a page leaves more than 64 commits to show, its "Older" link starts from the first 64 in
     ascending order. Below the commit list, the page notes how many lines of history continue and
     links each remaining commit by its short ID to `?from=<id>` for that single commit. Together,
-    "Older" and those individual links reach every older commit along the parents the page follows,
-    though two of those branches may later visit the same ancestor.
+    "Older" and those individual links reach every older commit along retained parents, though two
+    of those branches may later visit the same ancestor.
   - A page leaves at most 192 commits to show (`server.MaxLeftToShow`), so it renders at most 128
-    individual branch links in addition to "Older". Before adding a merge commit that would push the
+    individual branch links in addition to "Older". Before adding a commit that would push the
     frontier past 192 commits, the page stops early and notes why. Every page shows at least its
     first commit, which leaves at most 63 other starting commits plus 128 parents.
-  - A page follows at most the first 128 parents of any commit (`server.MaxParents`). A merge with
-    more than 128 parents still renders, with a note on that commit stating that older pages follow
-    only its first 128 parents; commits reachable only through later parents are omitted from older
-    pages.
+  - A page retains at most the first 128 parents of any commit for older pages
+    (`server.MaxParents`). A merge with more than 128 parents still renders, with a note on that
+    commit stating that older pages follow only its first 128 parents. `git log` still walks every
+    parent, so a commit reachable only through later parents may appear on the same page. Commits
+    reachable only through later parents may be omitted from older pages.
 - **Time:** Every request has a 15-second deadline from when it arrives, covering waiting, running
   `git` commands, and rendering the page. A request that exceeds 15 seconds answers `503` with
   `Retry-After: 5`. Within that deadline, a source request may hold its `git` slot for at most 5

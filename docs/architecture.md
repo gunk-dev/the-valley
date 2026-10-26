@@ -2756,8 +2756,9 @@ draw their memory in 64 KiB pieces from a shared 64 MiB budget (`server.MaxBuffe
 pieces until the write finishes or the 60-second write timeout expires (`webui/server/render.go`).
 Without a cap on large responses, a few clients that stop reading large knot, directory, or file
 pages could hold the entire 64 MiB budget until the write timeout, causing every other request to
-answer `503`. Per-address limits cannot prevent this behind a reverse proxy, where every request
-arrives from the proxy's address.
+answer `503`. Behind a reverse proxy, every request arrives from the proxy's address. A per-address
+limit there is one limit shared by every reader of the proxy, because it cannot tell those readers
+apart.
 
 To keep room for small pages, the budget caps the memory held by responses larger than 256 KiB
 (`server.SmallPage`) at 48 MiB (`server.MaxLarge`; see
@@ -2791,40 +2792,52 @@ share one 4 MiB output budget (`server.MaxRead`), so resolving a deep path reads
 than listing a single directory.
 
 On a history page, the server runs `git log --date-order --max-count=50` starting from the page's
-starting commits (`<commit>` on the first page, or the commits in `?from=` on an older page).
-Because each page starts `git log` directly at those commits without skipping earlier ones, `git`
-does bounded work for each page regardless of how far back in history the page is. As the page lists
-commits, it tracks the frontier of unshown ancestors for the next older page: the page's starting
-commits plus the followed parents of each commit shown on the page, minus the commits shown on the
-page. Because `--date-order` never lists a commit before any of its children, every unshown ancestor
-of `<commit>` is reachable from that frontier, and no commit already shown on this page or a newer
-page is reachable from it.
+starting commits (`<commit>` on the first page, or the commits in `?from=` on an older page). Each
+page starts `git log` directly at those commits and skips no commits of newer pages. For each page,
+`git` prints at most 50 commits (`server.LogPage`), and the page reads at most 4 MiB of that output
+(`server.MaxRead`). All of this `git` work runs within the 5 seconds that the request holds its
+`git` slot.
+
+As the page lists commits, it tracks the frontier for the next older page: the page's starting
+commits plus the retained parents of each commit shown on the page, minus the commits shown on the
+page. A commit's retained parents are its first 128 parents (`server.MaxParents`). Only a merge with
+more than 128 parents has parents that are not retained. Because `--date-order` never lists a commit
+before any of its children, every unshown ancestor that `<commit>` reaches through retained parents
+is reachable from that frontier. No commit already shown on this page or a newer page is reachable
+from it.
 
 While the frontier holds at most 64 commits (`server.MaxFrontier`), the "Older" link passes all of
-them in `?from=`, and following "Older" from the first page visits every ancestor commit once,
-including across merges. When wide merges leave more than 64 commits in the frontier, the "Older"
-link passes the first 64 and the page adds a separate `?from=<id>` link for each remaining commit.
-Those links keep every ancestor along the followed parents reachable, though two separate links may
-converge on a shared ancestor and show it on both paths. To bound the number of links on a page, a
-page stops before any commit after the first that would leave more than 192 unshown commits
-(`server.MaxLeftToShow`). The first commit on a page always fits within 192 because the page starts
-from at most 64 commits (leaving 63 others) and follows at most 128 parents (`server.MaxParents`).
+them in `?from=`. Following "Older" from the first page then visits each ancestor reached through
+retained parents once, including across merges. When wide merges leave more than 64 commits in the
+frontier, the "Older" link passes the first 64 and the page adds a separate `?from=<id>` link for
+each remaining commit. Those links keep every ancestor along retained parents reachable, though two
+separate links may converge on a shared ancestor and show it on both paths. To bound the number of
+links on a page, a page stops before any commit after the first that would leave more than 192
+unshown commits (`server.MaxLeftToShow`). The first commit on a page always fits within 192 because
+the page starts from at most 64 commits (leaving 63 others) and follows at most 128 parents
+(`server.MaxParents`).
 
 `git log` prints all of a commit's parent IDs on one line, which for a merge with 400 parents
 exceeds 16 KiB. To keep a long parent line from truncating a commit's ID or subject, the server
 formats each commit as two NUL-terminated records — first its ID and parents, then its date, author,
 and subject — and keeps up to 16 KiB of each record. Sixteen KiB holds a commit ID and 128 parents
 in both SHA-1 and SHA-256 object formats. When a merge has more than 128 parents, the page shows the
-commit with a note and ignores its remaining parents, so a merge with any number of parents renders
-without failing.
+commit with a note. The page parses only the first 128 parents, so a parent line cut at 16 KiB still
+parses. A merge with any number of parents therefore renders, within the request's usual limits on
+output and time.
+
+The page retains only a merge's first 128 parents for older pages. This limit applies to the
+frontier alone. `git log` still walks every parent of the merge, so a commit reached only through a
+later parent may appear on the same page, and the page retains that commit's parents in turn.
+Commits reached only through later parents may be omitted from older pages.
 
 When the receiver accepts a bundle or carries a repository into a new generation, it writes a
 commit-graph into the repository (`webui/export/bundle.go`). Already-activated generations are left
 untouched, so a generation activated without commit-graphs has none until the next activation
 carries its repositories again. With a commit-graph, `git merge-base` checks commit reachability
-without parsing each commit, and `git log --date-order` reads only the commits that a page shows.
-Without a commit-graph, `git log --date-order` walks the commit history before printing a commit,
-within the 5 seconds that the request holds its `git` slot.
+without parsing each commit, and `git log --date-order` walks the history faster. Without a
+commit-graph, `git log --date-order` walks the commit history before printing a commit, within the 5
+seconds that the request holds its `git` slot.
 
 `export.Reachable` requires every commit ID to match the length of the project's `source_tip`
 (`webui/export/bundle.go`). In a SHA-256 repository, `git` treats 40 hex digits as an abbreviated
@@ -2849,17 +2862,19 @@ and both object formats.
 
 ### Unpublished blockers
 
-In `export.json`, `waiting_on` lists only a knot's open blockers in public projects
-(`webui/export/project.go`). Open blockers in unpublished projects are removed from `waiting_on`,
-while the knot's `state` remains `blocked`. When a knot has at least one open blocker in an
-unpublished project, the export sets `"waiting_on_hidden": true` on the knot so the plan page's
-"waits on" chip can include "a knot in an unpublished project" alongside any public blockers
-(`webui/server/knot.go`; see [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
+A knot's `waiting_on` lists each `blocked_by` reference that remains a blocker. A reference remains
+a blocker while it names an open knot, a missing knot, or a knot in a graph that could not be read
+(`knot/derive.go`). In `export.json`, the export removes every reference into an unpublished project
+from `waiting_on` (`webui/export/project.go`). The knot's `state` is unchanged. When the export
+removes at least one reference from a knot's `waiting_on`, it sets `"waiting_on_hidden": true` on
+the knot. The plan page's "waits on" chip then includes "a knot in an unpublished project" alongside
+any public blockers (`webui/server/knot.go`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
 In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
 reference. When a knot names a single hidden blocker, a reader of `export.json` can tell from
-`waiting_on_hidden` whether that hidden knot is still open: the field is present while the hidden
-knot blocks the knot, and absent once it finishes, even when a public blocker still keeps the knot
+`waiting_on_hidden` whether that reference remains a blocker. The field is present while it does,
+and absent once the hidden knot has a terminal status, even when a public blocker keeps the knot
 `blocked`. The export permits this inference.
 
 Checked by `webui-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set

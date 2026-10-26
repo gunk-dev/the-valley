@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode"
@@ -609,8 +611,11 @@ type logPage struct {
 	// Partial is set when the page's commits are larger than a page
 	// reads, and the page ends early.
 	Partial bool
-	Newer   string
-	Older   string
+	// Wide is set when the older page would start from more than
+	// MaxFrontier commits, and so is not linked.
+	Wide   bool
+	Newest string
+	Older  string
 }
 
 type logEntry struct {
@@ -622,27 +627,53 @@ type logEntry struct {
 	Date    string
 }
 
+// log serves one page of the history that ends at commit: LogPage
+// commits, newest first, and none before any of its children, as git log
+// --date-order gives them. The first page starts from commit, and an
+// older page from the commits its ?from= names, each of which commit must
+// reach.
+//
+// A page's older page starts from what the page leaves to show: the
+// commits it started from and the parents of each commit it shows, less
+// the commits it shows. Since no page shows a commit before its children,
+// those commits reach every commit of the history that no page before
+// showed, and none that one did. So the older links show each commit of
+// the history once, merges and all, and each page asks git for LogPage
+// commits however old it is.
 func (q *request) log(ctx context.Context, p *export.Project, repo, commit string) error {
-	skip := 0
-	if s := q.r.URL.Query().Get("skip"); s != "" {
-		n, err := strconv.Atoi(s)
-		if err != nil || n < 0 || n > MaxSkip || strconv.Itoa(n) != s {
-			q.notFound()
-			return nil
-		}
-		skip = n
-	}
 	if _, ok, err := commitTree(ctx, p, repo, commit); err != nil || !ok {
 		q.missing(err)
 		return nil
 	}
-	// One commit past the page says whether there is an older page. A
-	// listing cut at MaxRead ends the page at the commit it cut, shown
-	// as far as it was read, and the older page starts after it.
 	page := logPage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip}
+	from := []string{commit}
+	if query := q.r.URL.Query(); query.Has("from") {
+		ids, ok := frontier(query["from"])
+		if !ok {
+			q.notFound()
+			return nil
+		}
+		if ok, err := export.Reachable(ctx, repo, commit, ids...); err != nil || !ok {
+			q.missing(err)
+			return nil
+		}
+		from, page.Newest = ids, logURL(p.Name, commit)
+	}
+	// older is what the older page starts from. git gives no commit
+	// before its children, so no parent added is a commit shown already.
+	older := map[string]bool{}
+	for _, id := range from {
+		older[id] = true
+	}
+	args := []string{"log", "--date-order", "--no-mailmap", "--no-notes", "--no-show-signature",
+		"--no-decorate", "--no-color", "-z", "--format=%H%n%P%n%aI%n%an%n%s",
+		"--max-count=" + strconv.Itoa(LogPage)}
+	args = append(append(args, from...), "--")
+	// A listing cut at MaxRead ends the page at the commit it cut, shown
+	// as far as it was read once its ID and parents were read whole.
 	err := export.GitStream(ctx, repo, MaxRead, func(r io.Reader) error {
 		recs := newRecords(r, 0, maxLogRecord)
-		for len(page.Commits) <= LogPage {
+		for len(page.Commits) < LogPage {
 			rec, _, err := recs.next()
 			cut := errors.Is(err, export.ErrOutputLimit)
 			if err == io.EOF {
@@ -651,8 +682,18 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 			if err != nil && !cut {
 				return err
 			}
-			if e, ok := logEntryOf(p.Name, string(rec)); ok {
-				page.Commits = append(page.Commits, e)
+			e, parents, ok := logEntryOf(p.Name, string(rec))
+			if !ok && len(page.Commits) == 0 {
+				return fmt.Errorf("git log gave a first commit whose ID and parents are not whole: %q", clip(string(rec), maxLogText))
+			}
+			if !ok {
+				page.Partial = true // the older page starts from the commit
+				return nil
+			}
+			page.Commits = append(page.Commits, e)
+			delete(older, e.Commit)
+			for _, id := range parents {
+				older[id] = true
 			}
 			if cut {
 				page.Partial = true
@@ -660,51 +701,61 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 			}
 		}
 		return nil
-	}, "log", "--no-mailmap", "--no-notes", "--no-show-signature",
-		"--no-decorate", "--no-color", "-z", "--format=%H%n%aI%n%an%n%s",
-		"--max-count="+strconv.Itoa(LogPage+1), "--skip="+strconv.Itoa(skip), commit, "--")
+	}, args...)
 	if err != nil {
 		return err
 	}
-	// The older page skips the commits shown. Past MaxSkip, it is the
-	// history that ends at the last commit shown, less that commit.
-	older := 0
+	ids := slices.Sorted(maps.Keys(older))
 	switch {
-	case len(page.Commits) > LogPage:
-		page.Commits = page.Commits[:LogPage]
-		older = LogPage
-	case page.Partial && len(page.Commits) > 0:
-		older = len(page.Commits)
-	}
-	if older > 0 {
-		page.Older = logURL(p.Name, commit) + "?skip=" + strconv.Itoa(skip+older)
-		if skip+older > MaxSkip {
-			page.Older = logURL(p.Name, page.Commits[older-1].Commit) + "?skip=1"
-		}
-	}
-	if skip > 0 {
-		page.Newer = logURL(p.Name, commit)
-		if skip > LogPage {
-			page.Newer += "?skip=" + strconv.Itoa(skip-LogPage)
-		}
+	case len(ids) > MaxFrontier:
+		page.Wide = true
+	case len(ids) > 0:
+		page.Older = logURL(p.Name, commit) + "?from=" + strings.Join(ids, ",")
 	}
 	q.page(http.StatusOK, "log", "History of "+p.Name+" at "+commit[:12], page)
 	return nil
 }
 
-// logEntryOf is one record of git log: a commit's ID, author date,
-// author and subject, each on a line of its own. A record cut short is
-// shown as far as it goes. ok is false for a record that names no commit.
-func logEntryOf(project, rec string) (e logEntry, ok bool) {
-	f := strings.SplitN(rec, "\n", 4)
-	if !export.ValidObjectID(f[0]) {
-		return logEntry{}, false
+// frontier is the commits a ?from= names: one value, of 1 to MaxFrontier
+// object IDs, separated by commas, in ascending order and none twice, so
+// each page has one address. ok is false for anything else. Whether the
+// page's commit reaches each of them is Reachable's to say.
+func frontier(values []string) (ids []string, ok bool) {
+	if len(values) != 1 {
+		return nil, false
 	}
-	for len(f) < 4 {
+	ids = strings.Split(values[0], ",")
+	if len(ids) > MaxFrontier {
+		return nil, false
+	}
+	for i, id := range ids {
+		if !export.ValidObjectID(id) || i > 0 && ids[i-1] >= id {
+			return nil, false
+		}
+	}
+	return ids, true
+}
+
+// logEntryOf is one record of git log: a commit's ID, its parents, and its
+// author date, author and subject, each on a line of its own. A record cut
+// short is shown as far as it goes. ok is false for a record whose ID and
+// parents were not read whole.
+func logEntryOf(project, rec string) (e logEntry, parents []string, ok bool) {
+	f := strings.SplitN(rec, "\n", 5)
+	if len(f) < 3 || !export.ValidObjectID(f[0]) {
+		return logEntry{}, nil, false
+	}
+	parents = strings.Fields(f[1])
+	for _, id := range parents {
+		if !export.ValidObjectID(id) {
+			return logEntry{}, nil, false
+		}
+	}
+	for len(f) < 5 {
 		f = append(f, "")
 	}
-	return logEntry{Commit: f[0], Short: f[0][:12], URL: treeURL(project, f[0], nil), Date: stampOf(f[1]),
-		Author: clip(oneLine(f[2]), maxLogText), Subject: clip(oneLine(f[3]), maxLogText)}, true
+	return logEntry{Commit: f[0], Short: f[0][:12], URL: treeURL(project, f[0], nil), Date: stampOf(f[2]),
+		Author: clip(oneLine(f[3]), maxLogText), Subject: clip(oneLine(f[4]), maxLogText)}, parents, true
 }
 
 // missing answers a source route whose commit or path names nothing it

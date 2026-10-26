@@ -2334,16 +2334,17 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 - **Routes:** The server answers `GET` and `HEAD`. Any other method answers `405` with
   `Allow: GET, HEAD`.
 
-| Route                                     | Page                                                                       |
-| :---------------------------------------- | :------------------------------------------------------------------------- |
-| `/`                                       | The plan page                                                              |
-| `/<project>/` and `/<project>`            | `302` redirect to the root tree at the project's `source_tip`              |
-| `/<project>/knots/<id>`                   | One knot                                                                   |
-| `/<project>/source/`                      | `302` redirect to the root tree at the project's `source_tip`              |
-| `/<project>/source/tree/<commit>/<path>/` | One directory and its README                                               |
-| `/<project>/source/blob/<commit>/<path>`  | One file                                                                   |
-| `/<project>/source/log/<commit>?skip=<n>` | Up to 50 commits of history ending at `<commit>`, skipping the first `<n>` |
-| `/-/…`                                    | Reserved for the server's own paths. Every path here answers `404`.        |
+| Route                                       | Page                                                                         |
+| :------------------------------------------ | :--------------------------------------------------------------------------- |
+| `/`                                         | The plan page                                                                |
+| `/<project>/` and `/<project>`              | `302` redirect to the root tree at the project's `source_tip`                |
+| `/<project>/knots/<id>`                     | One knot                                                                     |
+| `/<project>/source/`                        | `302` redirect to the root tree at the project's `source_tip`                |
+| `/<project>/source/tree/<commit>/<path>/`   | One directory and its README                                                 |
+| `/<project>/source/blob/<commit>/<path>`    | One file                                                                     |
+| `/<project>/source/log/<commit>`            | Up to 50 commits of history ending at `<commit>`, newest first               |
+| `/<project>/source/log/<commit>?from=<ids>` | The next older page of that history, starting from the commits `<ids>` names |
+| `/-/…`                                      | Reserved for the server's own paths. Every path here answers `404`.          |
 
 - **Reserved paths:** Every path but `/` and those under `/-/` starts with a project name. A project
   name cannot start with `-` (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`), so a project's path is never one of
@@ -2445,9 +2446,17 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     exceed 4 MiB of `git log` output, the page ends at the commit cut off by the 4 MiB bound,
     showing as much of that commit as was read. The page notes that it ends early and links to the
     older commits after it.
-  - A log page skips at most 10,000 commits (`server.MaxSkip`), and a larger `skip` answers `404`. A
-    page whose older commits are past that bound links them as the log of its last commit with
-    `?skip=1`.
+  - A log page lists commits as `git log --date-order` does: never a commit before any of its
+    children. Its Older link is the same history with `?from=` naming the commits the older page
+    starts from. Those are the parents of the commits the page shows, and the commits it started
+    from, less the commits it shows. Following the Older links from a commit's first page shows
+    every commit of its history once, across merges too. Each page asks git for 50 commits, however
+    old the page is.
+  - A `from` is one value: 1 to 64 full commit IDs (`server.MaxFrontier`), separated by commas, in
+    ascending order and none twice. Each must be a commit that `<commit>` reaches. Anything else
+    answers `404`. A page past the first links the history's first page as "Newest".
+  - A page whose older page would start from more than 64 commits has no Older link and says so.
+    Each commit it lists links its tree, whose history link starts that commit's own history.
 - **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
   `git` commands, and rendering the page. A request that runs out of time answers `503` with
   `Retry-After: 5`. A source request holds its `git` slot for at most 5 seconds, from when it takes

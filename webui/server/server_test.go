@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -548,7 +549,7 @@ func TestSourceBrowser(t *testing.T) {
 		"/app/source/blob/" + tip + "/docs/../README.md",
 		"/app/source/blob/" + tip + "/docs%2Fguide.md",
 		"/app/source/tree/" + tip + "//",
-		"/app/source/log/" + tip + "?skip=-1",
+		"/app/source/log/" + tip + "?from=" + strings.ToUpper(tip),
 	} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d", target, w.Code)
@@ -718,17 +719,18 @@ func TestOversizedTreeAndHistory(t *testing.T) {
 	if m := regexp.MustCompile(`<td>(longer: a subject past the bound[^<]*)…</td>`).FindStringSubmatch(page); m == nil || len(m[1]) > maxLogText {
 		t.Error("the cut commit's subject is not shown cut to maxLogText")
 	}
-	if !strings.Contains(page, `href="/app/source/log/`+tip+`?skip=1"`) {
+	older := at + "?from=" + git(t, h.f.Repos["app"], nil, "rev-parse", tip+"~1")
+	if !strings.Contains(page, `href="`+older+`"`) {
 		t.Error("the page that ends early does not link the commits after the one it cut")
 	}
-	page = h.page(at + "?skip=1")
+	page = h.page(older)
 	if strings.Contains(page, "ends early") || !strings.Contains(page, "long: a long subject") || !strings.Contains(page, "app: the first README") {
 		t.Errorf("the next page of history is not whole:\n%s", page)
 	}
 	if strings.Contains(page, strings.Repeat("a long subject ", (maxLogText/15)+1)) {
 		t.Error("a subject longer than a page shows is not cut")
 	}
-	for _, p := range []string{at, at + "?skip=1"} {
+	for _, p := range []string{at, older} {
 		if n := len(h.page(p)); n > 64<<10 {
 			t.Errorf("GET %s is %d bytes", p, n)
 		}
@@ -764,51 +766,125 @@ func TestResolveSharesOneBudget(t *testing.T) {
 	}
 }
 
-// A page of history skips at most MaxSkip commits. The page at MaxSkip
-// links the commits older than it as the history that ends at its last
-// commit, less that commit, and that page is served.
-func TestLogSkipIsBounded(t *testing.T) {
-	h := newHarness(t)
+// lines writes onto the fixture's app main a merge of n lines of
+// history, each of length commits, all from main's tip. The lines' commits
+// are dated in turn, one line's after another's, so a log interleaves
+// them, and each page ends with commits of every line still to show. The
+// merge is an octopus when n is more than two. It returns the merge and a
+// bundle of it.
+func (h *harness) lines(n, length int) (tip, bundle string) {
+	t := h.t
+	t.Helper()
 	repo := h.f.Repos["app"]
+	base := git(t, repo, nil, "rev-parse", export.MainRef)
 	var b bytes.Buffer
-	who := "Example Author <author@example.org> 1791190800 +0000"
-	n := MaxSkip + LogPage + 10
-	for i := range n {
-		fmt.Fprintf(&b, "commit refs/heads/main\nauthor %s\ncommitter %s\n", who, who)
-		msg := fmt.Sprintf("commit %d\n", i)
-		fmt.Fprintf(&b, "data %d\n%s\n", len(msg), msg)
-		if i == 0 {
-			fmt.Fprintf(&b, "from %s\n", git(t, repo, nil, "rev-parse", export.MainRef))
+	commit := func(ref string, mark, at int, message string) {
+		who := fmt.Sprintf("Example Author <author@example.org> %d +0000", 1791190800+at)
+		fmt.Fprintf(&b, "commit %s\nmark :%d\nauthor %s\ncommitter %s\ndata %d\n%s\n", ref, mark, who, who, len(message), message)
+	}
+	for i := range length {
+		for l := range n {
+			commit(fmt.Sprintf("refs/heads/line-%d", l), 1+i*n+l, i*n+l, fmt.Sprintf("line %d, commit %d\n", l, i))
+			if i == 0 {
+				fmt.Fprintf(&b, "from %s\n", base)
+			}
 		}
 	}
+	commit("refs/heads/main", 1+length*n, length*n, fmt.Sprintf("merge %d lines\n", n))
+	fmt.Fprintf(&b, "from :%d\n", 1+(length-1)*n)
+	for l := 1; l < n; l++ {
+		fmt.Fprintf(&b, "merge :%d\n", 1+(length-1)*n+l)
+	}
 	git(t, repo, b.Bytes(), "fast-import", "--quiet")
-	tip := git(t, repo, nil, "rev-parse", export.MainRef)
-	bundle := filepath.Join(t.TempDir(), "app.bundle")
+	for l := range n {
+		git(t, repo, nil, "update-ref", "-d", fmt.Sprintf("refs/heads/line-%d", l))
+	}
+	tip = git(t, repo, nil, "rev-parse", export.MainRef)
+	bundle = filepath.Join(t.TempDir(), "app.bundle")
 	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
+	return tip, bundle
+}
+
+// logged is the commits a page of history lists, in order.
+var logged = regexp.MustCompile(`<td class="name"><a href="/app/source/tree/([0-9a-f]+)/">`)
+
+// A page of history links the older page as the commits it leaves to
+// show next, so the history of a merge whose lines run past a page is
+// shown whole: following the older links from the tip shows every commit
+// main reaches, each once. A page past the first links the newest page. A
+// ?from= that is not ascending, names a commit the page's commit does
+// not reach, or names more than MaxFrontier commits answers 404.
+func TestHistoryAcrossMerges(t *testing.T) {
+	h := newHarness(t)
+	tip, bundle := h.lines(2, 60)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
 	at := "/app/source/log/" + tip
-	if page := h.page(at + fmt.Sprintf("?skip=%d", MaxSkip-LogPage)); !strings.Contains(page, fmt.Sprintf(`href="%s?skip=%d"`, at, MaxSkip)) {
-		t.Errorf("the page before MaxSkip does not link the page at it")
+	seen := map[string]int{}
+	merged := false
+	for target, pages := at, 0; target != ""; pages++ {
+		if pages > 10 {
+			t.Fatal("the older links do not end")
+		}
+		page := h.page(target)
+		for _, m := range logged.FindAllStringSubmatch(page, -1) {
+			seen[m[1]]++
+		}
+		if target != at && !strings.Contains(page, `href="`+at+`">Newest`) {
+			t.Errorf("%s does not link the newest page", target)
+		}
+		target = ""
+		if m := regexp.MustCompile(`href="(/app/source/log/[0-9a-f]+\?from=([0-9a-f,]+))">Older`).FindStringSubmatch(page); m != nil {
+			target, merged = m[1], merged || strings.Contains(m[2], ",")
+		}
 	}
-	page := h.page(at + fmt.Sprintf("?skip=%d", MaxSkip))
-	// The page at MaxSkip shows commits n-1-MaxSkip down to
-	// n-MaxSkip-LogPage, the last of them, counting from the oldest new
-	// commit as 0.
-	last := git(t, repo, nil, "rev-parse", fmt.Sprintf("%s~%d", tip, MaxSkip+LogPage-1))
-	older := "/app/source/log/" + last + "?skip=1"
-	if !strings.Contains(page, `href="`+older+`"`) {
-		t.Errorf("the page at MaxSkip does not link its older commits as the history of %s", last)
+	all := strings.Fields(git(t, h.f.Repos["app"], nil, "rev-list", tip))
+	if len(seen) != len(all) {
+		t.Errorf("the older links show %d commits of the %d main reaches", len(seen), len(all))
 	}
-	page = h.page(older)
-	if !strings.Contains(page, fmt.Sprintf("commit %d<", n-MaxSkip-LogPage-1)) || !strings.Contains(page, "app: the first README") {
-		t.Errorf("the history past MaxSkip is not served:\n%s", page)
+	for _, id := range all {
+		if seen[id] != 1 {
+			t.Errorf("the older links show %s %d times", id, seen[id])
+		}
 	}
-	if strings.Contains(page, fmt.Sprintf("commit %d<", n-MaxSkip-LogPage)) {
-		t.Error("the history past MaxSkip shows the commit it starts after")
+	if !merged {
+		t.Error("no page ends with both lines still to show")
 	}
-	if w := h.get(at + fmt.Sprintf("?skip=%d", MaxSkip+1)); w.Code != http.StatusNotFound {
-		t.Errorf("a page skipping past MaxSkip answered %d", w.Code)
+
+	line := strings.Fields(git(t, h.f.Repos["app"], nil, "rev-list", "--max-count=2", tip+"^2"))
+	slices.Sort(line)
+	for _, from := range []string{
+		line[1] + "," + line[0], // not ascending
+		line[0] + "," + line[0], // twice
+		tip,                     // not reached from the page's commit
+		strings.Repeat("1", 40), // no object
+		strings.Repeat(line[0]+",", MaxFrontier) + line[1],
+		line[0][:12],
+		"",
+	} {
+		target := "/app/source/log/" + line[1] + "?from=" + from
+		if w := h.get(target); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s answered %d", target, w.Code)
+		}
+	}
+	if w := h.get(at + "?from=" + line[0] + "&from=" + line[1]); w.Code != http.StatusNotFound {
+		t.Errorf("two from parameters answered %d", w.Code)
+	}
+}
+
+// A page whose older page would start from more than MaxFrontier commits
+// links no older page, and says so: here a merge of more lines than that,
+// each still to show once the first page ends.
+func TestWideHistoryLinksNoOlderPage(t *testing.T) {
+	h := newHarness(t)
+	tip, bundle := h.lines(MaxFrontier+1, 2)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	page := h.page("/app/source/log/" + tip)
+	if n := len(logged.FindAllString(page, -1)); n != LogPage {
+		t.Errorf("the page shows %d commits", n)
+	}
+	if strings.Contains(page, ">Older<") || !strings.Contains(page, "The older history runs along more lines at once than a page links.") {
+		t.Error("a page whose older page would start from more than MaxFrontier commits does not say so")
 	}
 }
 
@@ -1556,7 +1632,7 @@ func TestPageTooLarge(t *testing.T) {
 	h.tooLarge(at + "wide/")
 	h.page(at + "docs/")
 	h.tooLarge("/app/source/log/" + tip)
-	h.page("/app/source/log/" + tip + "?skip=8")
+	h.page("/app/source/log/" + git(t, h.f.Repos["app"], nil, "rev-parse", tip+"~8"))
 	h.tooLarge("/")
 
 	if len(logged) != 5 {

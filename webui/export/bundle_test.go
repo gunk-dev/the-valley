@@ -336,6 +336,23 @@ func TestReachable(t *testing.T) {
 			if _, err := export.Reachable(ctx, repo, "main", s.tip); err == nil {
 				t.Error("Reachable took a tip that is no object ID")
 			}
+			// Several commits are reachable only when each of them is.
+			for _, c := range []struct {
+				commits []string
+				want    bool
+			}{
+				{[]string{s.first, s.tip}, true},
+				{[]string{s.first, s.side}, false},
+				{[]string{s.first, tree}, false},
+				{[]string{s.side, s.tip}, false},
+			} {
+				if got, err := export.Reachable(ctx, repo, s.tip, c.commits...); err != nil || got != c.want {
+					t.Errorf("Reachable of %d commits gave %v, %v; want %v", len(c.commits), got, err, c.want)
+				}
+			}
+			if _, err := export.Reachable(ctx, repo, s.tip); err == nil {
+				t.Error("Reachable of no commit did not fail")
+			}
 		})
 	}
 }

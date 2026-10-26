@@ -68,6 +68,7 @@
 //	/<project>/source/tree/<commit>/<path>  a directory and its README
 //	/<project>/source/blob/<commit>/<path>  a file
 //	/<project>/source/log/<commit>          the history that ends at a commit
+//	/<project>/source/log/<commit>?from=…   an older page of that history
 //	/-/...                                  the server's own paths
 //
 // Every path but / and those under /-/ starts with a project's name. No
@@ -141,10 +142,10 @@ const (
 	MaxPlanDepth = 32
 	// LogPage is the number of commits on one page of a log.
 	LogPage = 50
-	// MaxSkip is the most commits a page of a log skips, which git walks
-	// before the page. The page whose older page would skip more links
-	// it as the log that ends at its last commit, less that commit.
-	MaxSkip = 10_000
+	// MaxFrontier is the most commits a link to an older page of a log
+	// names: the commits that page starts from. A page whose older page
+	// would start from more links none.
+	MaxFrontier = 64
 	// MaxGit is the most source requests that run git at once.
 	MaxGit = 8
 	// MaxWaiting is the most source requests that wait for one of the

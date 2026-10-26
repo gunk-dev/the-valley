@@ -2772,11 +2772,22 @@ slot before it renders its page, so rendering holds no slot.
 What a request asks of git is bounded too. The directories along a path are listed without sizes,
 because `git ls-tree --long` looks up the size of every blob it lists. They share one budget of 4
 MiB of output, so a deep path through large directories reads no more than one large directory does.
-A page of history skips at most 10,000 commits. The page at that bound links the older commits as
-the history of its last commit, so all of the history stays reachable by links. Every repository has
-a commit-graph, which the receiver writes when it accepts the repository (`webui/export/bundle.go`).
-With it, `git merge-base`, which checks that a commit is reachable, and `git log` walk the history
-without parsing each commit.
+A page of history lists commits as `git log --date-order` does, never a commit before any of its
+children (`webui/server/source.go`). Its Older link names the commits the older page starts from:
+the parents of the commits it shows, and the commits it started from, less the commits it shows.
+Since no page shows a commit before its children, those commits reach every commit no page before
+showed, and none that one did. So the Older links show each commit of the history once, across
+merges too, and each page asks git for 50 commits however old it is. A page whose older page would
+start from more than 64 commits links none, and says so. Each commit it lists links its tree, whose
+history link starts that commit's own history.
+
+The receiver writes a commit-graph into each repository when it accepts or carries it
+(`webui/export/bundle.go`), and never into a generation already activated. So a generation activated
+without commit-graphs has none until the next activation carries its repositories again. With a
+commit-graph, `git merge-base`, which checks that a commit is reachable, walks the history without
+parsing each commit, and `git log --date-order` reads only the commits a page shows. Without one,
+`git log --date-order` walks the whole history before it prints a commit, within the 5 seconds the
+request holds its slot.
 
 A commit is named by its full ID in the project's object format alone. git reads 40 hex digits in a
 SHA-256 repository as an abbreviation, and 64 hex digits in a SHA-1 repository as the commit their
@@ -2788,7 +2799,8 @@ Checked by `webui-server-unit`:
 - `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad` and `TestRenderingHoldsNoGitSlot`
   serve a git that never finishes, an export read slowly, and a page that renders slowly.
 - `TestResolveSharesOneBudget` serves a path through two large directories.
-- `TestLogSkipIsBounded` serves history past 10,000 commits.
+- `TestHistoryAcrossMerges` follows the Older links through a merge whose two lines run across
+  pages, and finds every commit once. `TestWideHistoryLinksNoOlderPage` serves a merge of 65 lines.
 - `TestSHA256CommitIDs` serves a SHA-256 project.
 
 Also by `webui-unit`, whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both

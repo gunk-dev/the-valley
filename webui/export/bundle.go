@@ -184,46 +184,63 @@ func fetchMain(ctx context.Context, source, repo, tip, format string) (err error
 	return err
 }
 
-// Reachable reports whether commit is a commit that tip reaches in repo.
-// Browsing serves a commit only when it is: a bundle can carry objects
-// main does not reach, and those are never shown. An argument that is not
-// an object ID, an object repo does not hold, and an object that is not a
-// commit are all unreachable. So is an object ID of another length than
-// tip's: git reads 40 hex digits in a SHA-256 repository as an
-// abbreviation, and a commit is named by its full ID alone.
-func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
+// Reachable reports whether each of commits is a commit that tip reaches
+// in repo. Browsing serves a commit only when it is: a bundle can carry
+// objects main does not reach, and those are never shown. An argument
+// that is not an object ID, an object repo does not hold, and an object
+// that is not a commit are all unreachable. So is an object ID of another
+// length than tip's: git reads 40 hex digits in a SHA-256 repository as
+// an abbreviation, and a commit is named by its full ID alone. Reachable
+// fails when it is given no commit.
+func Reachable(ctx context.Context, repo, tip string, commits ...string) (bool, error) {
 	if !ValidObjectID(tip) {
 		return false, fmt.Errorf("%q is not an object ID", tip)
 	}
-	if !ValidObjectID(commit) || len(commit) != len(tip) {
-		return false, nil
+	if len(commits) == 0 {
+		return false, errors.New("no commit to check")
+	}
+	var stdin bytes.Buffer
+	for _, commit := range commits {
+		if !ValidObjectID(commit) || len(commit) != len(tip) {
+			return false, nil
+		}
+		stdin.WriteString(commit + "\n")
 	}
 	// --git-dir, as Git does, so git neither looks above repo nor holds
 	// a repository another user owns to safe.directory.
 	var out []byte
 	err := run(command(ctx, "", "--git-dir="+repo, "cat-file", "--batch-check=%(objecttype)"), "cat-file",
-		[]byte(commit+"\n"), maxOutput, func(r io.Reader) (err error) {
+		stdin.Bytes(), maxOutput, func(r io.Reader) (err error) {
 			out, err = io.ReadAll(r)
 			return err
 		})
 	if err != nil {
 		return false, err
 	}
-	if strings.TrimSpace(string(out)) != "commit" {
-		return false, nil
+	types := strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
+	if len(types) != len(commits) {
+		return false, fmt.Errorf("git cat-file gave %d types for %d objects", len(types), len(commits))
 	}
-	cmd := command(ctx, "", "--git-dir="+repo, "merge-base", "--is-ancestor", commit, tip)
-	stderr := &head{max: maxStderr}
-	cmd.Stderr = stderr
-	err = cmd.Run()
-	var exit *exec.ExitError
-	switch {
-	case err == nil:
-		return true, nil
-	case errors.As(err, &exit) && exit.ExitCode() == 1:
-		return false, nil
+	for _, t := range types {
+		if t != "commit" {
+			return false, nil
+		}
 	}
-	return false, fmt.Errorf("git merge-base: %w: %s", err, strings.TrimSpace(stderr.String()))
+	for _, commit := range commits {
+		cmd := command(ctx, "", "--git-dir="+repo, "merge-base", "--is-ancestor", commit, tip)
+		stderr := &head{max: maxStderr}
+		cmd.Stderr = stderr
+		err = cmd.Run()
+		var exit *exec.ExitError
+		switch {
+		case err == nil:
+			continue
+		case errors.As(err, &exit) && exit.ExitCode() == 1:
+			return false, nil
+		}
+		return false, fmt.Errorf("git merge-base: %w: %s", err, strings.TrimSpace(stderr.String()))
+	}
+	return true, nil
 }
 
 // ErrOutputLimit is the error of a git command that writes more output

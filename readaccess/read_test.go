@@ -439,14 +439,29 @@ readers: {}`,
 		mustInvalid(t, what, err)
 	}
 
-	// Reopened in the registry, #Grant and #Anyone take fields cue then
-	// accepts: a note on a grant, and a key for anyone. The reader refuses
-	// both.
+	// Reopened in the registry, #Grant, #Anyone and #Principal take fields
+	// cue then accepts: a note on a grant, and a key for anyone. A field
+	// can also be spelled again in another case, which cue keeps apart from
+	// the schema's and encoding/json would read as the schema's: Grants
+	// beside an empty grants, and Projects beside an empty projects. The
+	// reader refuses every one.
 	for what, more := range map[string]string{
 		"a grant reopened to a note": `#Grant: note?: string
 anyone: grants: read: {boundary: "web", projects: "all", note: "widened"}`,
 		"anyone reopened to keys": `#Anyone: keys?: [...]
 anyone: {keys: [{class: "ssh-ed25519", bound: "host", public: "` + key + `"}], grants: read: {boundary: "web", projects: "all"}}`,
+		"anyone's grants spelled Grants": `#Anyone: Grants?: _
+anyone: grants: {}
+anyone: Grants: read: {boundary: "web", projects: "all"}`,
+		"a grant's projects spelled Projects": `#Grant: Projects?: _
+anyone: grants: read: {boundary: "web", projects: {}, Projects: "all"}`,
+		"a principal's grants spelled Grants": `#Principal: Grants?: _
+principals: alice: {
+	kind: "human"
+	keys: [{class: "ssh-ed25519", bound: "hardware", public: "` + key + `"}]
+	grants: {}
+	Grants: read: {boundary: "web", projects: "all"}
+}`,
 	} {
 		files := registry(more)
 		dir := t.TempDir()

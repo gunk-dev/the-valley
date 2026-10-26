@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -45,8 +46,9 @@ func invalid(format string, args ...any) error {
 // checkout, copies them into a scratch directory with no cue.mod, so cue
 // resolves no import beyond its standard library, and exports them as JSON
 // with cue under the document's schema. Its Go reading then holds the JSON
-// to the schema's fields and names again, so a document that redeclares a
-// definition of the schema widens nothing.
+// to the schema's fields, each spelled exactly as the schema spells it, and
+// to its names again, so a document that redeclares a definition of the
+// schema widens nothing.
 type Reader struct {
 	// ReadSchema is schema/read.cue, and IdentitySchema is
 	// schema/identity.cue.
@@ -372,13 +374,129 @@ func (r *Reader) read(ctx context.Context, repo, commit, dir, schema string, lim
 	if err != nil {
 		return err
 	}
-	dec := json.NewDecoder(bytes.NewReader(out))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(doc); err != nil {
+	if err := decodeStrict(out, doc); err != nil {
 		return invalid("%s is not what its schema exports: %w", dir, err)
 	}
-	if err := dec.Decode(&json.RawMessage{}); err != io.EOF {
-		return invalid("cue exported more than one document for %s", dir)
+	return nil
+}
+
+// decodeStrict decodes one JSON document into doc, and refuses any object
+// key that is not a field of doc's type spelled exactly as its json tag
+// spells it. encoding/json matches a key to a field without regard to
+// case, and cue keeps keys that differ in case apart. So a document that
+// reopens a definition could carry anyone.Grants beside an empty
+// anyone.grants, and json would decode the first into the second.
+// decodeStrict checks every key against the field names first, at every
+// depth, and then decodes. It refuses a key that appears twice in one
+// object, and any second document.
+func decodeStrict(data []byte, doc any) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := checkKeys(dec, reflect.TypeOf(doc), ""); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return errors.New("it holds more than one document")
+	}
+	dec = json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	return dec.Decode(doc)
+}
+
+var rawMessage = reflect.TypeFor[json.RawMessage]()
+
+// checkKeys reads one value from dec and checks the keys of every object
+// in it against t, the type the value is decoded into. A struct takes the
+// fields its json tags name, spelled exactly. A map takes any key, and a
+// json.RawMessage is taken whole, unread. at is where the value is in the
+// document, for messages, and "" at its top.
+func checkKeys(dec *json.Decoder, t reflect.Type, at string) error {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || t == rawMessage {
+		if ok {
+			return skipValue(dec)
+		}
+		return nil
+	}
+	if delim == '[' {
+		elem := t
+		if t.Kind() == reflect.Slice || t.Kind() == reflect.Array {
+			elem = t.Elem()
+		}
+		for i := 0; dec.More(); i++ {
+			if err := checkKeys(dec, elem, fmt.Sprintf("%s[%d]", at, i)); err != nil {
+				return err
+			}
+		}
+		_, err := dec.Token()
+		return err
+	}
+	fields := map[string]reflect.Type{}
+	if t.Kind() == reflect.Struct {
+		for i := range t.NumField() {
+			f := t.Field(i)
+			if name, _, _ := strings.Cut(f.Tag.Get("json"), ","); name != "" && name != "-" {
+				fields[name] = f.Type
+			}
+		}
+	}
+	seen := map[string]bool{}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key := tok.(string)
+		if seen[key] {
+			return fmt.Errorf("%s holds the key %q twice", place(at), key)
+		}
+		seen[key] = true
+		elem, path := t, fmt.Sprintf("%s[%q]", at, key)
+		switch t.Kind() {
+		case reflect.Struct:
+			if elem, ok = fields[key]; !ok {
+				return fmt.Errorf("%s holds the field %q, which is not one of the schema's", place(at), key)
+			}
+			path = strings.TrimPrefix(at+"."+key, ".")
+		case reflect.Map:
+			elem = t.Elem()
+		}
+		if err := checkKeys(dec, elem, path); err != nil {
+			return err
+		}
+	}
+	_, err = dec.Token()
+	return err
+}
+
+// place is where at is in the document, for messages.
+func place(at string) string {
+	if at == "" {
+		return "the document"
+	}
+	return at
+}
+
+// skipValue reads the rest of an object or an array whose opening
+// delimiter dec has read.
+func skipValue(dec *json.Decoder) error {
+	for depth := 1; depth > 0; {
+		tok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		switch tok {
+		case json.Delim('{'), json.Delim('['):
+			depth++
+		case json.Delim('}'), json.Delim(']'):
+			depth--
+		}
 	}
 	return nil
 }

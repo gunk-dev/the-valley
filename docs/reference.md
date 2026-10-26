@@ -2168,11 +2168,12 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   - The pass writes each bundle only into the room that both bounds leave. When a bundle is larger,
     the pass stops writing at that room. It deletes what it wrote of that bundle and every bundle it
     made in the pass, and fails.
-  - **Implemented:** The publisher's own repository caches borrow objects from absolute local
+  - The publisher’s repository caches and the CLI’s caches borrow objects from absolute local
     repository paths through Git alternates. They copy no history. Before replacing each cache, the
     publisher checks that its complete metadata fits alongside the existing storage. It checks
     storage again before installing the replacement and removes partial replacements on failure.
-  - The CLI's separate caches remain covered by the checks before and after collection.
+  - The pointer repository is built in memory and staged within the same storage budget. Collection
+    reserves room for the CLI’s ref metadata before each command and checks storage afterward.
 
   A pass that fails on a bound sends and writes nothing.
 

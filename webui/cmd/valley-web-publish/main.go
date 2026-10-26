@@ -240,9 +240,10 @@ type publisher struct {
 	// is the repository whose main names the instance repository at
 	// policy/valley (preparePointer); the CLI calls it _pointer, which is
 	// no project's name.
-	cache   string
-	origin  string
-	pointer string
+	collectionRoom int64
+	cache          string
+	origin         string
+	pointer        string
 
 	principals export.Principals
 	signer     string

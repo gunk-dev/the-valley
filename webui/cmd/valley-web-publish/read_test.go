@@ -204,7 +204,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				}
 				return nil
 			},
-			says: "site: the pending listing could not read it",
+			says: "site: could not prepare CLI cache",
 		},
 		{
 			name: "a project mirror cannot be staged",
@@ -222,7 +222,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
 				return nil
 			},
-			says: "valley plan --all lists _pointer, and the instance repository publishes app, not a name, site, valley",
+			says: "invalid project name",
 		},
 		{
 			name: "the instance publishes no project list",
@@ -414,17 +414,17 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 	}
 
 	var said string
-	peak := peakSize([]string{bundles}, func() { said = v.fails(nil, "--max-bundles", "64K") })
+	peak := peakSize(storage, func() { said = v.fails(nil, "--max-bundles", "64K", "--max-storage", "256K") })
 	mustSay(t, "--max-bundles", said, "app: its bundle is larger than the 65536 bytes --max-bundles 65536 leaves for it")
-	if peak > 64<<10 {
-		t.Errorf("the bundles held %d bytes while the pass ran, more than --max-bundles 65536", peak)
+	if peak > 256<<10 {
+		t.Errorf("the cold pass held %d bytes, more than --max-storage 262144", peak)
 	}
 	if left, _ := os.ReadDir(bundles); len(left) != 0 {
 		t.Errorf("the refused pass left %v behind in the bundles", left)
 	}
 
 	publisherCache := filepath.Join(cache, "valley-web-publish")
-	if size := du(publisherCache); size > int64(len(noise))/16 {
+	if size := du(storage...); size > int64(len(noise))/16 {
 		t.Fatalf("shared cache grew to %d bytes for a %d-byte history", size, len(noise))
 	}
 	for _, repo := range []string{"origin.git", "repos/app.git"} {
@@ -435,6 +435,19 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 		entries, err := os.ReadDir(objects)
 		if err != nil || len(entries) != 1 || entries[0].Name() != "info" {
 			t.Fatalf("cache copied objects: %v, %v", entries, err)
+		}
+	}
+
+	cliRepos := filepath.Join(cache, "valley", "repos")
+	entries, err := os.ReadDir(cliRepos)
+	if err != nil || len(entries) != 3 {
+		t.Fatalf("CLI caches: %v, %v", entries, err)
+	}
+	for _, entry := range entries {
+		objects := filepath.Join(cliRepos, entry.Name(), ".git", "objects")
+		files, err := os.ReadDir(objects)
+		if err != nil || len(files) != 1 || files[0].Name() != "info" {
+			t.Fatalf("CLI copied objects: %v, %v", files, err)
 		}
 	}
 
@@ -721,5 +734,84 @@ func TestSharedCacheRefreshBudget(t *testing.T) {
 	}
 	if tip, err := revParse(ctx, dir, "refs/heads/main"); err != nil || tip == old {
 		t.Fatalf("refresh did not advance main: %s, %v", tip, err)
+	}
+}
+
+// Refusing a pointer replacement leaves the previous pointer readable.
+func TestPointerBudget(t *testing.T) {
+	v := newValley(t)
+	cache := filepath.Join(v.root, "cache", "valley-web-publish")
+	p := &publisher{cache: cache, pointer: filepath.Join(cache, "_pointer.git"), cfg: config{instanceRepo: filepath.Join(v.srv, "valley.git"), state: v.state, maxStorage: 1}}
+	ctx := context.Background()
+	if err := p.preparePointer(ctx); err == nil {
+		t.Fatal("cold pointer exceeded budget")
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) != 0 {
+		t.Fatalf("partial pointer: %v", entries)
+	}
+	p.cfg.maxStorage = 1 << 20
+	if err := p.preparePointer(ctx); err != nil {
+		t.Fatal(err)
+	}
+	tip, err := revParse(ctx, p.pointer, "refs/heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	used, err := p.storageUsed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.cfg.maxStorage = byteSize(used)
+	if err := p.preparePointer(ctx); err == nil {
+		t.Fatal("warm pointer exceeded budget")
+	}
+	if got, err := revParse(ctx, p.pointer, "refs/heads/main"); err != nil || got != tip {
+		t.Fatalf("pointer changed: %s, %v", got, err)
+	}
+	if entries, _ := os.ReadDir(cache); len(entries) != 1 {
+		t.Fatalf("partial pointer: %v", entries)
+	}
+}
+
+// The CLI's cache must be complete enough for cacheComplete to reuse it,
+// and a refusal must leave no repository for the CLI to mistake as complete.
+func TestCLICacheBudget(t *testing.T) {
+	v := newValley(t)
+	cache := filepath.Join(v.root, "cache", "valley-web-publish")
+	p := &publisher{cache: cache, cfg: config{instanceRepo: filepath.Join(v.srv, "valley.git"), state: v.state, maxStorage: 1}}
+	ctx := context.Background()
+	if err := p.prepareCLICaches(ctx, []string{"app"}); err == nil {
+		t.Fatal("cold CLI cache exceeded budget")
+	}
+	root := filepath.Join(v.root, "cache", "valley", "repos")
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Fatalf("partial CLI cache: %v", entries)
+	}
+	p.cfg.maxStorage = 1 << 20
+	if err := p.prepareCLICaches(ctx, []string{"app"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("CLI cache: %v, %v", entries, err)
+	}
+	dir := filepath.Join(root, entries[0].Name())
+	got := strings.TrimSpace(v.run(dir, "git", "config", "--file", ".git/config", "--get", "remote.origin.url"))
+	if got != filepath.Join(v.srv, "app.git") {
+		t.Fatalf("CLI cache origin: %q", got)
+	}
+	used, err := p.storageUsed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.cfg.maxStorage = byteSize(used)
+	if err := p.prepareCLICaches(ctx, []string{"app"}); err == nil {
+		t.Fatal("warm CLI cache exceeded budget")
+	}
+	if after, _ := p.storageUsed(); after != used {
+		t.Fatalf("refusal changed storage: %d -> %d", used, after)
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 1 {
+		t.Fatalf("partial CLI replacement: %v", entries)
 	}
 }

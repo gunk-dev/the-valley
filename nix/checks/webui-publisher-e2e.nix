@@ -66,6 +66,15 @@ let
       git -C "$shared" update-ref refs/heads/main "$tip"
       git -C "$shared" cat-file -e "$tip^{commit}" || fail "shared objects could not be read"
       test "$(find "$shared/objects" -type f | wc -l)" -eq 1 || fail "objects were copied"
+      # The CLI uses a worktree-shaped cache with the same borrowed objects.
+      cli="$CACHE_DIRECTORY/cli"
+      git init --quiet --template= "$cli"
+      cp "$shared/objects/info/alternates" "$cli/.git/objects/info/alternates"
+      git -C "$cli" config remote.origin.url /srv/git/app.git
+      git -C "$cli" config core.logallrefupdates false
+      git -C "$cli" update-ref refs/remotes/origin/main "$tip"
+      git -C "$cli" cat-file -e "$tip^{commit}" || fail "CLI shared objects could not be read"
+      test "$(find "$cli/.git/objects" -type f | wc -l)" -eq 1 || fail "CLI objects were copied"
       touch "$STATE_DIRECTORY/written" || fail "the state directory could not be written"
       touch "$CACHE_DIRECTORY/written" || fail "the cache directory could not be written"
       echo "probe: confined"

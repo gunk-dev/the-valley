@@ -2,7 +2,11 @@ package main
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
+	"crypto/sha1"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +54,9 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	}
 	inst, err := p.fetchInstance(ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := p.prepareCLICaches(ctx, inst.projects); err != nil {
 		return nil, err
 	}
 	if err := p.preparePointer(ctx); err != nil {
@@ -238,26 +245,6 @@ func (p *publisher) projectVisibility(ctx context.Context, name string, repo pen
 	return true, nil
 }
 
-// bareWithOrigin makes a bare repository at dir, unless one is there, and
-// sets its origin to url.
-func bareWithOrigin(ctx context.Context, dir, url string) error {
-	if _, err := os.Stat(filepath.Join(dir, "HEAD")); errors.Is(err, os.ErrNotExist) {
-		if err := os.RemoveAll(dir); err != nil {
-			return err
-		}
-		if _, err := git(ctx, "", "init", "--quiet", "--bare", "--template=", dir); err != nil {
-			return err
-		}
-	}
-	got, err := git(ctx, dir, "config", "--get", "remote.origin.url")
-	if err == nil && strings.TrimSpace(string(got)) == url {
-		return nil
-	}
-	_, _ = git(ctx, dir, "remote", "remove", "origin")
-	_, err = git(ctx, dir, "remote", "add", "--end-of-options", "origin", url)
-	return err
-}
-
 // preparePointer makes the repository valley plan and valley pending run
 // in: a bare repository whose origin is itself, and whose main holds one
 // file, policy/valley, naming the instance repository. The CLI finds the
@@ -268,28 +255,76 @@ func bareWithOrigin(ctx context.Context, dir, url string) error {
 // pass reads. Only the publisher writes to this repository, and main's
 // commit is the same in every pass for the same --instance-repo.
 func (p *publisher) preparePointer(ctx context.Context) error {
-	if err := bareWithOrigin(ctx, p.pointer, p.pointer); err != nil {
-		return err
-	}
-	blob, err := gitInput(ctx, p.pointer, p.cfg.instanceRepo+"\n", "hash-object", "-w", "--stdin")
+	files, err := sharedFiles(ctx, p.cfg.instanceRepo, nil)
 	if err != nil {
 		return err
 	}
-	policy, err := gitInput(ctx, p.pointer, "100644 blob "+strings.TrimSpace(string(blob))+"\tvalley\n", "mktree")
+	// Build the four small Git objects in memory so their compressed sizes
+	// are known before any cache file is written.
+	object := func(kind string, data []byte) []byte {
+		raw := append([]byte(fmt.Sprintf("%s %d\x00", kind, len(data))), data...)
+		h := sha1.New()
+		if strings.Contains(files["config"], "objectformat = sha256") {
+			h = sha256.New()
+		}
+		h.Write(raw)
+		digest := h.Sum(nil)
+		name := hex.EncodeToString(digest)
+		var compressed bytes.Buffer
+		w := zlib.NewWriter(&compressed)
+		_, _ = w.Write(raw)
+		_ = w.Close()
+		files["objects/"+name[:2]+"/"+name[2:]] = compressed.String()
+		return digest
+	}
+	blob := object("blob", []byte(p.cfg.instanceRepo+"\n"))
+	policy := object("tree", append([]byte("100644 valley\x00"), blob...))
+	tree := object("tree", append([]byte("40000 policy\x00"), policy...))
+	commit := object("commit", []byte(fmt.Sprintf("tree %x\nauthor valley-web-publish <operator@example.org> 0 +0000\ncommitter valley-web-publish <operator@example.org> 0 +0000\n\npolicy/valley: the instance the publisher reads\n", tree)))
+	files["refs/heads/main"] = hex.EncodeToString(commit) + "\n"
+	files["config"] = strings.Replace(files["config"], quoteGit(p.cfg.instanceRepo), quoteGit(p.pointer), 1)
+	return p.stageFiles(p.pointer, files)
+}
+
+// prepareCLICaches uses the CLI's URL hash and .git layout (status/list.go).
+// Both the project and instance objects are borrowed: the CLI reads the
+// instance's signers while inspecting each project's records.
+func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error {
+	instance, err := sharedFiles(ctx, p.cfg.instanceRepo, nil)
 	if err != nil {
 		return err
 	}
-	tree, err := gitInput(ctx, p.pointer, "040000 tree "+strings.TrimSpace(string(policy))+"\tpolicy\n", "mktree")
-	if err != nil {
-		return err
+	for _, name := range names {
+		if !export.ValidName(name) {
+			return fmt.Errorf("invalid project name %q", name)
+		}
+		u := strings.TrimRight(p.cfg.instanceRepo, "/")
+		cut := strings.LastIndex(u, "/") + 1
+		suffix := ""
+		if strings.HasSuffix(u[cut:], ".git") {
+			suffix = ".git"
+		}
+		url := u[:cut] + name + suffix
+		files, err := sharedFiles(ctx, url, nil)
+		if err != nil {
+			return fmt.Errorf("%s: could not prepare CLI cache: %w", name, err)
+		}
+		files["config"] = strings.Replace(files["config"], "bare = true", "bare = false", 1) + "[core]\n\tlogallrefupdates = false\n"
+		files["objects/info/alternates"] += instance["objects/info/alternates"]
+		wrapped := map[string]string{}
+		for path, data := range files {
+			wrapped[".git/"+path] = data
+		}
+		sum := sha256.Sum256([]byte(url))
+		dir := filepath.Join(filepath.Dir(p.cache), "valley", "repos", hex.EncodeToString(sum[:8])+"-"+name)
+		if err := p.stageFiles(dir, wrapped); err != nil {
+			return err
+		}
 	}
-	commit, err := gitInput(ctx, p.pointer, "", "-c", "user.name=valley-web-publish", "-c", "user.email=valley-web-publish@localhost",
-		"commit-tree", "-m", "policy/valley: the instance the publisher reads", strings.TrimSpace(string(tree)))
-	if err != nil {
-		return err
-	}
-	_, err = git(ctx, p.pointer, "update-ref", "refs/heads/main", strings.TrimSpace(string(commit)))
-	return err
+	// Each CLI cache can write main and its lock file. Leave room for
+	// those bounded metadata writes before invoking any collection command.
+	p.collectionRoom = int64(len(names)+1) * 4096
+	return p.reserveStorage(p.collectionRoom)
 }
 
 // The instance repository's project list, and where the publisher's
@@ -376,16 +411,28 @@ func (p *publisher) fetchMain(ctx context.Context, name, url string) (string, st
 // copied. All bytes to be written are known before staging starts. Old
 // caches remain counted until the replacement is complete.
 func (p *publisher) shareRepository(ctx context.Context, dir, source string, refs map[string]string) error {
+	files, err := sharedFiles(ctx, source, refs)
+	if err != nil {
+		return err
+	}
+	return p.stageFiles(dir, files)
+}
+
+func quoteGit(s string) string {
+	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\t", "\\t").Replace(s)
+}
+
+func sharedFiles(ctx context.Context, source string, refs map[string]string) (map[string]string, error) {
 	if !filepath.IsAbs(source) || strings.ContainsAny(source, "\n\r") {
-		return fmt.Errorf("repository must be an absolute local path: %q", source)
+		return nil, fmt.Errorf("repository must be an absolute local path: %q", source)
 	}
 	objects, err := git(ctx, source, "rev-parse", "--path-format=absolute", "--git-path", "objects")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	format, err := git(ctx, source, "rev-parse", "--show-object-format")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	config := "[core]\n\tbare = true\n\trepositoryformatversion = 0\n"
 	switch strings.TrimSpace(string(format)) {
@@ -393,9 +440,9 @@ func (p *publisher) shareRepository(ctx context.Context, dir, source string, ref
 	case "sha256":
 		config = "[core]\n\tbare = true\n\trepositoryformatversion = 1\n[extensions]\n\tobjectformat = sha256\n"
 	default:
-		return fmt.Errorf("unsupported object format %q", format)
+		return nil, fmt.Errorf("unsupported object format %q", format)
 	}
-	quoted := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\t", "\\t").Replace(source)
+	quoted := quoteGit(source)
 	config += "[remote \"origin\"]\n\turl = \"" + quoted + "\"\n"
 	files := map[string]string{
 		"HEAD": "ref: refs/heads/main\n", "config": config,
@@ -404,10 +451,25 @@ func (p *publisher) shareRepository(ctx context.Context, dir, source string, ref
 	for dest, ref := range refs {
 		tip, err := revParse(ctx, source, ref)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		files[dest] = tip + "\n"
 	}
+	return files, nil
+}
+
+func (p *publisher) reserveStorage(added int64) error {
+	used, err := p.storageUsed()
+	if err != nil {
+		return err
+	}
+	if used > int64(p.cfg.maxStorage)-added {
+		return p.overStorage(used + added)
+	}
+	return nil
+}
+
+func (p *publisher) stageFiles(dir string, files map[string]string) error {
 	used, err := p.storageUsed()
 	if err != nil {
 		return err
@@ -427,6 +489,13 @@ func (p *publisher) shareRepository(ctx context.Context, dir, source string, ref
 		return err
 	}
 	defer os.RemoveAll(stage)
+	prefix := stage
+	if _, ok := files[".git/HEAD"]; ok {
+		prefix = filepath.Join(stage, ".git")
+	}
+	if err := os.MkdirAll(filepath.Join(prefix, "refs"), 0o700); err != nil {
+		return err
+	}
 	for name, content := range files {
 		path := filepath.Join(stage, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -469,6 +538,9 @@ func revParse(ctx context.Context, repo, rev string) (string, error) {
 // publisher's repositories, and returns what it printed, up to
 // maxValleyOutput. What it says on stderr is passed on.
 func (p *publisher) valley(ctx context.Context, dir string, args ...string) ([]byte, error) {
+	if err := p.reserveStorage(p.collectionRoom); err != nil {
+		return nil, err
+	}
 	cmd := exec.CommandContext(ctx, "valley", args...)
 	cmd.Dir = dir
 	cmd.Env = valleyEnvironment(os.Environ())
@@ -476,6 +548,9 @@ func (p *publisher) valley(ctx context.Context, dir string, args ...string) ([]b
 	cmd.Stdout = stdout
 	cmd.Stderr = p.stderr
 	err := cmd.Run()
+	if budget := p.checkStorage(); budget != nil {
+		return nil, budget
+	}
 	if stdout.over {
 		return nil, fmt.Errorf("valley %s: %w", strings.Join(args, " "), errTooLong)
 	}

@@ -294,6 +294,17 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 	if err != nil {
 		return err
 	}
+	reposDir := p.cliReposDir()
+	if err := os.MkdirAll(reposDir, 0o700); err != nil {
+		return err
+	}
+	// A killed pass may leave the parent sealed. Only the publisher
+	// stages repositories; the CLI may only use the current staged set.
+	if err := os.Chmod(reposDir, 0o700); err != nil {
+		return err
+	}
+	urls := make(map[string]string, len(names))
+	staged := make(map[string]bool, len(names))
 	for _, name := range names {
 		if !export.ValidName(name) {
 			return fmt.Errorf("invalid project name %q", name)
@@ -305,6 +316,23 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 			suffix = ".git"
 		}
 		url := u[:cut] + name + suffix
+		urls[name] = url
+		sum := sha256.Sum256([]byte(url))
+		staged[hex.EncodeToString(sum[:8])+"-"+name] = true
+	}
+	entries, err := os.ReadDir(reposDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if !staged[entry.Name()] {
+			if err := os.RemoveAll(filepath.Join(reposDir, entry.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	for _, name := range names {
+		url := urls[name]
 		files, err := sharedFiles(ctx, url, nil)
 		if err != nil {
 			return fmt.Errorf("%s: could not prepare CLI cache: %w", name, err)
@@ -316,7 +344,7 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 			wrapped[".git/"+path] = data
 		}
 		sum := sha256.Sum256([]byte(url))
-		dir := filepath.Join(filepath.Dir(p.cache), "valley", "repos", hex.EncodeToString(sum[:8])+"-"+name)
+		dir := filepath.Join(reposDir, hex.EncodeToString(sum[:8])+"-"+name)
 		if err := p.stageFiles(dir, wrapped); err != nil {
 			return err
 		}
@@ -325,6 +353,10 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 	// those bounded metadata writes before invoking any collection command.
 	p.collectionRoom = int64(len(names)+1) * 4096
 	return p.reserveStorage(p.collectionRoom)
+}
+
+func (p *publisher) cliReposDir() string {
+	return filepath.Join(filepath.Dir(p.cache), "valley", "repos")
 }
 
 // The instance repository's project list, and where the publisher's
@@ -541,6 +573,15 @@ func (p *publisher) valley(ctx context.Context, dir string, args ...string) ([]b
 	if err := p.reserveStorage(p.collectionRoom); err != nil {
 		return nil, err
 	}
+	// Discovery can see a newly listed project, and knot details can name
+	// an unlisted project. Deny creation in the parent before either can
+	// make an unshared cache and fetch objects. Staged .git directories
+	// remain writable for their bounded ref updates.
+	reposDir := p.cliReposDir()
+	if err := os.Chmod(reposDir, 0o500); err != nil {
+		return nil, err
+	}
+	defer os.Chmod(reposDir, 0o700)
 	cmd := exec.CommandContext(ctx, "valley", args...)
 	cmd.Dir = dir
 	cmd.Env = valleyEnvironment(os.Environ())

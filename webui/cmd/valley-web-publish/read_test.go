@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -813,5 +814,90 @@ func TestCLICacheBudget(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(root); len(entries) != 1 {
 		t.Fatalf("partial CLI replacement: %v", entries)
+	}
+}
+
+// Neither live discovery nor a foreign knot edge may make an unshared
+// cache after the publisher has staged its snapshot's project list.
+func TestUnstagedCLICachesCannotGrowStorage(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("directory permissions require an unprivileged user")
+	}
+	for _, added := range []bool{false, true} {
+		t.Run(fmt.Sprintf("added during collection %v", added), func(t *testing.T) {
+			v := newValley(t)
+			foreign := filepath.Join(v.srv, "unlisted.git")
+			v.run("", "git", "init", "--quiet", "--bare", foreign)
+			noise := make([]byte, 4<<20)
+			if _, err := rand.Read(noise); err != nil {
+				t.Fatal(err)
+			}
+			blob := strings.TrimSpace(v.runInput("", string(noise), "git", "-C", foreign, "hash-object", "-w", "--stdin"))
+			tree := strings.TrimSpace(v.runInput("", "100644 blob "+blob+"\tnoise\n", "git", "-C", foreign, "mktree"))
+			commit := strings.TrimSpace(v.runInput("", "large history\n", "git", "-C", foreign, "commit-tree", tree))
+			for _, ref := range []string{"refs/heads/main", "refs/the-valley/knots"} {
+				v.run("", "git", "-C", foreign, "update-ref", ref, commit)
+			}
+			if !added {
+				v.newKnot("app", "outcome", "Wait for external work", "--blocked-by", "unlisted:oc-a000001")
+			} else {
+				instance := filepath.Join(v.srv, "valley.git")
+				list := strings.TrimSpace(v.runInput("", "app\nsite\nunlisted\nvalley\n", "git", "-C", instance, "hash-object", "-w", "--stdin"))
+				wrapper := filepath.Join(v.root, "bin", "valley")
+				data, err := os.ReadFile(wrapper)
+				if err != nil {
+					t.Fatal(err)
+				}
+				shebang, rest, _ := strings.Cut(string(data), "\n")
+				v.write(wrapper, fmt.Sprintf("%s\ngit -C %s update-ref %s %s\n%s", shebang, instance, projectsRef, list, rest))
+			}
+			cache := filepath.Join(v.root, "cache")
+			if err := os.RemoveAll(cache); err != nil {
+				t.Fatal(err)
+			}
+			repos := filepath.Join(cache, "valley", "repos")
+			// Remove an obsolete complete cache and recover a parent sealed
+			// by an interrupted earlier pass before staging the new set.
+			sum := sha256.Sum256([]byte(foreign))
+			stale := filepath.Join(repos, fmt.Sprintf("%x-unlisted", sum[:8]))
+			v.run("", "git", "init", "--quiet", stale)
+			v.run(stale, "git", "remote", "add", "origin", foreign)
+
+			if err := os.Chmod(repos, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			const budget = 256 << 10
+			storage := []string{v.state, filepath.Join(cache, "valley"), filepath.Join(cache, "valley-web-publish")}
+			peak := peakSize(storage, func() {
+				if added {
+					mustSay(t, "new project", v.fails(nil, "--max-storage", "256K"), "valley plan --all lists")
+				} else {
+					v.publish("--out", filepath.Join(v.root, "export"), "--max-storage", "256K")
+				}
+			})
+			if peak > budget {
+				t.Fatalf("storage reached %d bytes, budget %d", peak, budget)
+			}
+			entries, err := os.ReadDir(repos)
+			if err != nil || len(entries) != 3 {
+				t.Fatalf("unstaged caches: %v, %v", entries, err)
+			}
+			for _, entry := range entries {
+				if strings.HasSuffix(entry.Name(), "-unlisted") || entry.Name() == "obsolete" {
+					t.Fatalf("unstaged cache %s", entry.Name())
+				}
+				objects, err := os.ReadDir(filepath.Join(repos, entry.Name(), ".git", "objects"))
+				if err != nil || len(objects) != 1 || objects[0].Name() != "info" {
+					t.Fatalf("copied objects: %v, %v", objects, err)
+				}
+			}
+			info, err := os.Stat(repos)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o700 {
+				t.Fatalf("cache parent remains sealed: %v", info.Mode())
+			}
+		})
 	}
 }

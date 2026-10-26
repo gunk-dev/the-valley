@@ -2174,6 +2174,10 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
     storage again before installing the replacement and removes partial replacements on failure.
   - The pointer repository is built in memory and staged within the same storage budget. Collection
     reserves room for the CLI’s ref metadata before each command and checks storage afterward.
+  - Before collection, the publisher removes CLI caches outside the current project list. During
+    each CLI command, the cache parent is read-only. Existing caches remain usable, but discovery
+    and foreign knot references cannot create unstaged caches. The next pass restores write access
+    before staging, including after an interrupted command.
 
   A pass that fails on a bound sends and writes nothing.
 

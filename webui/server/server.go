@@ -45,10 +45,11 @@
 // from a budget of MaxBuffered bytes, which they give back once they are
 // written. A request that finds the budget spent answers 503.
 //
-// A response's first SmallPage bytes may take any of the budget, and the
-// rest of it only MaxLarge of it. So readers that never read large pages
-// hold at most MaxLarge, and the rest of the budget is always there for
-// small pages: the plan, most knots, and most directories and files.
+// Responses larger than SmallPage hold at most MaxLarge of the budget
+// between them, counting their first SmallPage bytes. So readers that
+// never read large pages hold at most MaxLarge, however many there are,
+// and the rest of the budget is always there for small pages: the plan,
+// most knots, and most directories and files.
 //
 // # Routes
 //
@@ -167,11 +168,12 @@ const (
 	// written. A response takes them in pieces of pieceSize as it
 	// renders.
 	MaxBuffered = 64 << 20
-	// SmallPage is how much of a response may take any of MaxBuffered.
+	// SmallPage is the largest response that takes from MaxBuffered
+	// alone.
 	SmallPage = 256 << 10
-	// MaxLarge is the most of MaxBuffered that responses hold past their
-	// first SmallPage bytes. The rest, MaxBuffered less MaxLarge, only
-	// a response's first SmallPage bytes may take.
+	// MaxLarge is the most of MaxBuffered that responses larger than
+	// SmallPage hold between them, all of each counted. The rest,
+	// MaxBuffered less MaxLarge, is left to smaller responses.
 	MaxLarge = 48 << 20
 	// pieceSize is the size of the pieces a response is rendered into.
 	pieceSize = 64 << 10
@@ -206,12 +208,13 @@ type Server struct {
 	// for each request waiting for a load.
 	loaders     chan struct{}
 	loadWaiting chan struct{}
-	// budget holds a token for each piece of a response that is being
-	// rendered or written: MaxBuffered bytes, in pieces of pieceSize.
-	// large holds a second token for each such piece past a response's
-	// first SmallPage bytes: MaxLarge bytes.
-	budget chan struct{}
-	large  chan struct{}
+	// pieces guards the response budget. held counts the pieces of
+	// responses being rendered or written, of MaxBuffered bytes in pieces
+	// of pieceSize. large counts the pieces of those responses that are
+	// larger than SmallPage, every piece of each, of MaxLarge bytes.
+	pieces sync.Mutex
+	held   int
+	large  int
 
 	mu sync.Mutex
 	// cached is the newest generation's snapshot read so far.
@@ -236,7 +239,6 @@ func New(c Config) *Server {
 		timeout: requestTimeout, gitTime: gitTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
 		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
-		budget: make(chan struct{}, MaxBuffered/pieceSize), large: make(chan struct{}, MaxLarge/pieceSize),
 		loads: map[*load]struct{}{}}
 	if s.now == nil {
 		s.now = time.Now

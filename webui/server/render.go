@@ -165,9 +165,9 @@ var (
 // body is a response's body: the pieces it is held in, and their length.
 // A page is rendered into pieces of pieceSize, each taken from the
 // server's budget and given back by free, until its request's ctx is
-// done. A piece past the first SmallPage bytes is taken from the large
-// budget too. A static page is one piece of its own, and its body has no
-// server.
+// done. Once a body grows past its first SmallPage bytes, all of its
+// pieces are held against the large budget too. A static page is one
+// piece of its own, and its body has no server.
 type body struct {
 	s      *Server
 	ctx    context.Context
@@ -178,8 +178,8 @@ type body struct {
 // Write appends p to the body. It writes nothing of p that would take the
 // body past the server's maxResponse, and fails with errTooLarge, and
 // nothing once ctx is done. It fails with errNoBudget when the budget, or
-// for a piece past the first SmallPage bytes the large budget, has no
-// piece left for the rest of p.
+// for a body past its first SmallPage bytes the large budget, has no room
+// left for the rest of p.
 func (b *body) Write(p []byte) (int, error) {
 	if err := b.ctx.Err(); err != nil {
 		return 0, err
@@ -209,43 +209,52 @@ func (b *body) Write(p []byte) (int, error) {
 // free gives the body's pieces back to the budget, once.
 func (b *body) free() {
 	if b.s != nil {
-		for i := range b.pieces {
-			b.s.give(i)
-		}
+		b.s.give(len(b.pieces))
 	}
 	b.pieces, b.n = nil, 0
 }
 
-// smallPieces is how many of a response's pieces SmallPage is.
-const smallPieces = SmallPage / pieceSize
+// The budget in pieces: all of it, the large budget, and how many of a
+// response's pieces SmallPage is.
+const (
+	budgetPieces = MaxBuffered / pieceSize
+	largePieces  = MaxLarge / pieceSize
+	smallPieces  = SmallPage / pieceSize
+)
 
-// take takes a response's piece i from the budget, and from the large
-// budget too when i is past its first SmallPage bytes. It takes nothing
-// and is false when either has no piece left.
+// take takes a response's piece i from the budget. A response's first
+// smallPieces pieces take from the budget alone. The piece that takes it
+// past them takes from the large budget too, for itself and for every
+// piece before it, and each piece after that takes one more. So responses
+// larger than SmallPage hold at most MaxLarge in all, counting their
+// first SmallPage bytes, and the rest of the budget is left to the
+// others. take takes nothing and is false when either budget has too
+// little left.
 func (s *Server) take(i int) bool {
-	if i >= smallPieces {
-		select {
-		case s.large <- struct{}{}:
-		default:
-			return false
-		}
+	large := 0
+	switch {
+	case i == smallPieces:
+		large = smallPieces + 1
+	case i > smallPieces:
+		large = 1
 	}
-	select {
-	case s.budget <- struct{}{}:
-		return true
-	default:
-		if i >= smallPieces {
-			<-s.large
-		}
+	s.pieces.Lock()
+	defer s.pieces.Unlock()
+	if s.held == budgetPieces || s.large+large > largePieces {
 		return false
 	}
+	s.held++
+	s.large += large
+	return true
 }
 
-// give gives back a response's piece i, which take took.
-func (s *Server) give(i int) {
-	<-s.budget
-	if i >= smallPieces {
-		<-s.large
+// give gives back the n pieces a response took.
+func (s *Server) give(n int) {
+	s.pieces.Lock()
+	defer s.pieces.Unlock()
+	s.held -= n
+	if n > smallPieces {
+		s.large -= n
 	}
 }
 

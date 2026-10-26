@@ -66,12 +66,13 @@
   # a knot, and past a smaller bound on a file, a directory, a page of
   # history and the plan, answering the one short page that says it is
   # too large; readers that never read holding no git slot and no
-  # generation, and, asking for twice MaxBuffered in large pages, holding
-  # no more of the heap than it and no more than MaxLarge past their
-  # pages' starts, with a large page it has no room for answering 503
-  # while the plan, a knot and a directory still render; and
-  # valley-web run as a process of its own, serving and stopping on
-  # SIGTERM, and serving every page from a state directory that reads as
-  # another user's, with nothing in it writable. go vet runs after them.
+  # generation, and, asking for more than MaxBuffered in large pages of
+  # three sizes, holding no more of the heap than it and no more than
+  # MaxLarge, their pages' starts counted, with a large page it has no
+  # room for answering 503 while the plan, a knot and a directory still
+  # render; and valley-web run as a process of its own, serving and
+  # stopping on SIGTERM, and serving every page from a state directory
+  # that reads as another user's, with nothing in it writable. go vet
+  # runs after them.
   webui-server-unit = packages.valley-web.unit;
 }

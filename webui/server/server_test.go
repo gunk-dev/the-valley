@@ -1417,7 +1417,7 @@ func (h *harness) tooLarge(target string) {
 	if w.Code != http.StatusInternalServerError || !bytes.Equal(w.Body.Bytes(), tooLargePage) {
 		h.t.Errorf("GET %s answered %d with %d bytes, not the page that says it is too large", target, w.Code, w.Body.Len())
 	}
-	if n := len(h.srv.budget); n != 0 {
+	if n, _ := h.srv.holding(); n != 0 {
 		h.t.Errorf("GET %s kept %d pieces of the budget", target, n)
 	}
 }
@@ -1477,16 +1477,34 @@ func TestPageTooLarge(t *testing.T) {
 	}
 }
 
+// holding is how many pieces of the budget responses hold, and how many
+// of those the large budget counts.
+func (s *Server) holding() (held, large int) {
+	s.pieces.Lock()
+	defer s.pieces.Unlock()
+	return s.held, s.large
+}
+
 // Rendered responses share a budget of MaxBuffered bytes, which each
-// holds from when it starts rendering until it is written. What a
-// response renders past its first SmallPage bytes takes only MaxLarge of
-// it. Readers that never read large pages ask for twice the budget in
-// all, with pages sized so that, but for MaxLarge, sixteen of them would
-// hold all of it. Once their pages hold MaxLarge, a large page answers
-// 503 at once, while small pages still render: the plan, a knot and a
+// holds from when it starts rendering until it is written. Responses
+// larger than SmallPage hold at most MaxLarge of it between them, their
+// first SmallPage bytes counted. Readers that never read large pages ask
+// for more than the whole budget, in pages of three sizes: one piece past
+// SmallPage, 1 MiB, and 4 MiB. Without the first SmallPage bytes counted,
+// 64 readers of the 1 MiB page would hold all of the budget. Once the
+// readers' pages hold what fits in MaxLarge, a large page answers 503 at
+// once, while small pages still render: the plan, a knot and a
 // directory. The server's heap grows by no more than the budget, and the
 // budget is whole again once the readers read.
 func TestSlowReadersShareTheBudget(t *testing.T) {
+	for _, pieces := range []int{smallPieces + 1, 16, 64} {
+		t.Run(fmt.Sprintf("%d pieces", pieces), func(t *testing.T) { slowReadersOfPages(t, pieces) })
+	}
+}
+
+// slowReadersOfPages runs TestSlowReadersShareTheBudget with large pages
+// of the number of pieces given.
+func slowReadersOfPages(t *testing.T, pieces int) {
 	h := newHarness(t)
 	target := "/app/knots/" + h.f.Export.Projects[0].Knots[0].ID
 	body := func(at time.Duration, text string) {
@@ -1494,14 +1512,13 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 	}
 	body(time.Minute, "x")
 	rest := len(h.page(target)) - 1
-	pieces := 64
 	body(2*time.Minute, strings.Repeat("a line of a long body\n", (pieces*pieceSize-rest-1024)/22))
 	size := len(h.page(target))
-	if got := (size + pieceSize - 1) / pieceSize; got != pieces || cap(h.srv.budget)%pieces != 0 {
-		t.Fatalf("the large page takes %d pieces, not %d, which divide the budget", got, pieces)
+	if got := (size + pieceSize - 1) / pieceSize; got != pieces {
+		t.Fatalf("the large page takes %d pieces, not %d", got, pieces)
 	}
-	fit := cap(h.srv.large) / (pieces - smallPieces)
-	n := 2*MaxBuffered/size + 1
+	fit := largePieces / pieces
+	n := MaxBuffered/size + 2
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1545,8 +1562,8 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 	var after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	if held, large := len(h.srv.budget), len(h.srv.large); held != fit*pieces || large != fit*(pieces-smallPieces) {
-		t.Errorf("slow readers hold %d pieces, %d of them large; %d pages of %d pieces fit", held, large, fit, pieces)
+	if held, large := h.srv.holding(); held != fit*pieces || large != fit*pieces {
+		t.Errorf("slow readers hold %d pieces, %d of them counted as large; %d pages of %d pieces fit", held, large, fit, pieces)
 	}
 	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > MaxBuffered+8<<20 {
 		t.Errorf("%d slow readers of %d bytes each grew the heap by %d bytes, past MaxBuffered", n, size, grew)
@@ -1592,7 +1609,7 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 		t.Errorf("of %d slow readers, %d were served and %d answered 503; %d pages fit the budget",
 			n, codes[http.StatusOK], codes[http.StatusServiceUnavailable], fit)
 	}
-	eventually(t, "the budget is whole again", func() bool { return len(h.srv.budget) == 0 })
+	eventually(t, "the budget is whole again", func() bool { held, _ := h.srv.holding(); return held == 0 })
 }
 
 // A load starts only once a request that waits for it takes a loader
@@ -1910,7 +1927,7 @@ func TestRenderingIsWithinTheDeadline(t *testing.T) {
 	if len(logged) != 1 || !strings.Contains(logged[0], "rendering plan: context deadline exceeded") {
 		t.Errorf("the server logged %q", logged)
 	}
-	if n := len(h.srv.budget); n != 0 {
+	if n, _ := h.srv.holding(); n != 0 {
 		t.Errorf("a page that stopped rendering kept %d pieces of the budget", n)
 	}
 }

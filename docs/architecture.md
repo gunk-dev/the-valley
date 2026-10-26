@@ -2748,14 +2748,17 @@ until the server's write timeout. Without a reserve, a few such readers of large
 the whole budget: a knot with many comments, a large directory, or a large file. Every other page
 would then answer `503` until the timeout, and the readers could ask again.
 
-So the budget keeps a reserve for small pages. A response's first 256 KiB may take any of the
-budget, and the rest of it only 48 MiB. Readers of large pages hold at most those 48 MiB past their
-pages' starts, and small pages, as most pages are, render from the rest. The server does not limit
-readers by address, because behind a proxy every reader has the proxy's address.
+So the budget keeps a reserve for small pages. Responses larger than 256 KiB hold at most 48 MiB of
+the budget between them. A response takes from the whole budget until it grows past 256 KiB, and
+from then on all of it counts against the 48 MiB, its first 256 KiB too. So readers of large pages
+hold at most 48 MiB however many there are, and small pages, as most pages are, render from the
+other 16 MiB. The server does not limit readers by address, because behind a proxy every reader has
+the proxy's address.
 
-Checked by `webui-server-unit`, whose `TestSlowReadersShareTheBudget` fills the 48 MiB with readers
-of large pages that never read, sized so that without the reserve they would hold all 64 MiB. The
-plan, a knot and a directory still render meanwhile.
+Checked by `webui-server-unit`, whose `TestSlowReadersShareTheBudget` asks for more than the whole
+budget with readers that never read, in pages of three sizes: one piece past 256 KiB, 1 MiB and 4
+MiB. Had only what each page renders past 256 KiB counted, 64 readers of the 1 MiB page would hold
+all 64 MiB. The readers hold 48 MiB at most, and the plan, a knot and a directory still render.
 
 ### A source request's git work
 

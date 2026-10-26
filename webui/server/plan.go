@@ -70,7 +70,7 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 }
 
 func knotURL(project, id string) string {
-	return "/knots/" + url.PathEscape(project) + "/" + url.PathEscape(id)
+	return "/" + url.PathEscape(project) + "/knots/" + url.PathEscape(id)
 }
 
 // knotLink is a knot as a page links to it.

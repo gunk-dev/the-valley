@@ -19,7 +19,7 @@ import (
 
 // treeURL is the directory at path in commit. It ends in a slash.
 func treeURL(project, commit string, path []string) string {
-	u := "/source/" + url.PathEscape(project) + "/tree/" + commit + "/"
+	u := "/" + url.PathEscape(project) + "/source/tree/" + commit + "/"
 	if len(path) > 0 {
 		u += escapePath(path) + "/"
 	}
@@ -28,12 +28,12 @@ func treeURL(project, commit string, path []string) string {
 
 // blobURL is the file at path in commit.
 func blobURL(project, commit string, path []string) string {
-	return "/source/" + url.PathEscape(project) + "/blob/" + commit + "/" + escapePath(path)
+	return "/" + url.PathEscape(project) + "/source/blob/" + commit + "/" + escapePath(path)
 }
 
 // logURL is the history that ends at commit.
 func logURL(project, commit string) string {
-	return "/source/" + url.PathEscape(project) + "/log/" + commit
+	return "/" + url.PathEscape(project) + "/source/log/" + commit
 }
 
 func escapePath(path []string) string {
@@ -44,7 +44,7 @@ func escapePath(path []string) string {
 	return strings.Join(parts, "/")
 }
 
-// source serves the routes under /source/<project>/. The project is
+// source serves the routes under /<project>/source/. The project is
 // checked first, so everything under a project the export does not hold
 // as public answers as a missing project does.
 func (q *request) source(project string, rest []string) {

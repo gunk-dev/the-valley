@@ -2090,11 +2090,11 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 | Route                                     | Page                                                                       |
 | :---------------------------------------- | :------------------------------------------------------------------------- |
 | `/`                                       | The plan page                                                              |
-| `/knots/<project>/<id>`                   | One knot                                                                   |
-| `/source/<project>/`                      | `302` redirect to the root tree at the project's `source_tip`              |
-| `/source/<project>/tree/<commit>/<path>/` | One directory and its README                                               |
-| `/source/<project>/blob/<commit>/<path>`  | One file                                                                   |
-| `/source/<project>/log/<commit>?skip=<n>` | Up to 50 commits of history ending at `<commit>`, skipping the first `<n>` |
+| `/<project>/knots/<id>`                   | One knot                                                                   |
+| `/<project>/source/`                      | `302` redirect to the root tree at the project's `source_tip`              |
+| `/<project>/source/tree/<commit>/<path>/` | One directory and its README                                               |
+| `/<project>/source/blob/<commit>/<path>`  | One file                                                                   |
+| `/<project>/source/log/<commit>?skip=<n>` | Up to 50 commits of history ending at `<commit>`, skipping the first `<n>` |
 
 - **One generation per request:** Each request opens the active generation once with `Store.Open`
   and renders its entire response from that generation. It releases the generation once rendering

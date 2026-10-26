@@ -50,11 +50,11 @@
 // The server answers GET and HEAD alone:
 //
 //	/                                       the plan page
-//	/knots/<project>/<id>                   one knot, with its body and comments
-//	/source/<project>/                      a redirect to the tree at main's tip
-//	/source/<project>/tree/<commit>/<path>  a directory and its README
-//	/source/<project>/blob/<commit>/<path>  a file
-//	/source/<project>/log/<commit>          the history that ends at a commit
+//	/<project>/knots/<id>                   one knot, with its body and comments
+//	/<project>/source/                      a redirect to the tree at main's tip
+//	/<project>/source/tree/<commit>/<path>  a directory and its README
+//	/<project>/source/blob/<commit>/<path>  a file
+//	/<project>/source/log/<commit>          the history that ends at a commit
 //
 // Every source link names its project, a full commit ID and a path. A
 // commit is served only when export.Reachable finds it reachable from the
@@ -325,7 +325,7 @@ func (q *request) serve() {
 // runsGit reports whether a path is a source route that reads a
 // repository: a tree, a file or a log.
 func runsGit(parts []string) bool {
-	return len(parts) >= 3 && parts[0] == "source" && (parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
+	return len(parts) >= 3 && parts[1] == "source" && (parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
 }
 
 // admit takes a git slot for a source request. When every slot is taken,
@@ -608,10 +608,10 @@ func (q *request) route(parts []string, ok bool) {
 		q.notFound()
 	case len(parts) == 1 && parts[0] == "":
 		q.plan()
-	case len(parts) == 3 && parts[0] == "knots":
-		q.knot(parts[1], parts[2])
-	case len(parts) >= 2 && parts[0] == "source":
-		q.source(parts[1], parts[2:])
+	case len(parts) == 3 && parts[1] == "knots":
+		q.knot(parts[0], parts[2])
+	case len(parts) >= 2 && parts[1] == "source":
+		q.source(parts[0], parts[2:])
 	default:
 		q.notFound()
 	}

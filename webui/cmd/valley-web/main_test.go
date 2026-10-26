@@ -71,9 +71,9 @@ func TestServesTheStateDirectory(t *testing.T) {
 
 	for target, status := range map[string]int{
 		"/":                     http.StatusOK,
-		"/knots/app/oc-a000002": http.StatusOK,
-		"/source/app/tree/" + f.Export.Projects[0].SourceTip + "/": http.StatusOK,
-		"/source/site/": http.StatusNotFound,
+		"/app/knots/oc-a000002": http.StatusOK,
+		"/app/source/tree/" + f.Export.Projects[0].SourceTip + "/": http.StatusOK,
+		"/site/source/": http.StatusNotFound,
 	} {
 		res, err := http.Get("http://" + addr + target)
 		if err != nil {

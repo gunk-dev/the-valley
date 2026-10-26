@@ -173,6 +173,7 @@ a push while that record does not match the running configuration (`nix/valley-h
 | A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.          |
 | A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                           |
 | The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).      |
+| A reader of the edge                | Reads only what both consents let `anyone` read. A project `anyone` may not read never reaches the edge (see [Who can read a project](#who-can-read-a-project)).             |
 
 ## Trust roots
 
@@ -216,6 +217,51 @@ The restacker reads neither the publication nor the variables, only its own flag
 A wrong publication cannot by itself make a version read `landed-recorded`. That also takes the
 integrator's outcome record for the version, saying it landed at the version's head, and no push may
 write an outcome record. A wrong publication can make a real landing read `uncertain`.
+
+## Who can read a project
+
+Read access is a grant to a principal, and it takes two consents
+([Read access](./architecture.md#read-access)). A project's own `policy/read` names the principals
+it lets read it. The instance's identity registry grants principals read at an edge read boundary,
+for named projects or for every project. Neither consent alone lets anyone read, so the project's
+policy and the instance's registry each hold a key (`implemented`, `readaccess/access.go`).
+
+- **`anyone`**, the reader who presents no credential, reads at an edge the projects whose policy
+  names `anyone` and which a grant to `anyone` covers there (`implemented`).
+- **A named principal**, the operator included, holds read grants the same way. The edge
+  authenticates no reader, so a named principal reads there only what `anyone` may.
+- **Membership, push access, approval and restacking** give no read access at the edge.
+
+Who is named in each project's policy and granted in the registry is a **deployment choice**.
+
+**What reaches the edge.** The publisher sends a destination only the projects `anyone` may read
+there (`implemented`, `webui/cmd/valley-web-publish/valley.go`). For each, the edge holds the
+project's reader view in plaintext: every knot and comment of its plan graph, its ready changes, and
+`main` with its history. The edge is the security boundary for what it holds. Its administrators,
+and any process with access to its storage, can read all of it. A read grant at an edge read
+boundary is consent to send a project's reader view to the destination the boundary names. A project
+`anyone` may not read never leaves the valley host.
+
+**A grant is bound to a project.** A grant that names a project names its publication identity too,
+so a new project that reuses a name is not covered by the old project's grant. A policy is read only
+from the project it names. A policy or registry that is missing, refused by its schema, or past its
+bounds consents to nothing (`implemented`, `readaccess/read.go`).
+
+**Reading over ssh is not governed by read grants.** On the valley host, every key sshd admits for
+the git user can fetch every repository. The git user's shell holds pushes and leaves fetching open
+(`valleyhook/shell.go`). A key with no principal tag fetches as no principal, and is not `anyone`.
+
+**Withdrawal.** A project leaves the edge when either consent is withdrawn, with the next export the
+receiver activates. A pass that cannot read some project sends nothing, so a withdrawal waits until
+every project reads. While the valley host cannot reach the edge, the edge keeps serving the last
+export it activated, with no expiry. Every part of read access that is not built yet is listed in
+one place, [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
+
+Checks: `readaccess-unit` reads both consents out of real commits under the real schemas, including
+policies that declare a schema definition again and trees with malformed entry names. `webui-unit`
+holds the publisher to both consents (`TestVisibilityNeedsBothConsents`) and finds no private
+sentinel in any export or bundle (`TestPrivateSentinelsNeverLeave`). `cue-vet` and `identity-schema`
+hold the schemas to their rejected examples.
 
 ## Secrets
 
@@ -277,6 +323,10 @@ themselves when to deploy.
   rather than on the valley, no gate in this document applies to it.
 - **Readiness is not enforced atomically.** A change paused in the moment before the integrator
   moves the target can still land, at the head the operator approved (step 2).
+- **Every admitted key can fetch every repository.** Read grants govern the edge alone. A key sshd
+  admits for the git user, an agent's included, can fetch any project on the valley host.
+- **A withdrawal waits on every project's read.** A project leaves the edge only with an export, and
+  a pass that cannot read some project sends none.
 - **The bus has no authentication.** Any local process on the valley host can publish events.
   Nothing treats an event as authoritative.
 - **Listing `integrator` in `protection.writers` opens a push path to `main`.** The integrator moves

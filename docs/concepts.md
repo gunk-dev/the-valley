@@ -232,6 +232,14 @@ integration requests, or knots. A **grant** is a capability assigned to a princi
   validation, CLI display, and the read-only planner `valley-restacker once --report-only` are
   implemented; the restacker's write pass and host service are **not built**.)
 
+A **read grant** lets a principal read a project at an edge, the web server a valley host publishes
+to. Read access takes two consents. The project's own `policy/read` names the principal as a reader,
+and the instance's registry grants the principal read of that project, or of every project.
+**`anyone`** is the reader who presents no credential, and a project is **public** where both
+consents let `anyone` read it. `anyone` is not the anonymous pusher above: it holds read grants
+alone, and no key. The operator reads a project the same way as any other named reader (see
+[Read access](./architecture.md#read-access)).
+
 _How Nix and CUE realize this:_ To manage principals and grants as reviewed changes in the instance
 repository rather than only through NixOS rebuilds, a host can enable
 `services.valley.identity.enable` to compile `identity/*.cue` from the instance repository on a

@@ -4,3 +4,10 @@
 module the-valley/readaccess
 
 go 1.24
+
+require the-valley/exactjson v0.0.0
+
+// The exported JSON is read with exactjson (../exactjson), which holds
+// every key to the spelling of its field. It lives in this repository and
+// is never fetched.
+replace the-valley/exactjson => ../exactjson

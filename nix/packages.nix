@@ -417,9 +417,10 @@ rec {
     dir = ../note;
   };
 
-  # The strict JSON reading (exactjson/) that the identity compiler and the
-  # pre-receive hook read CUE's exports with: every key spelled exactly as
-  # the field it is read into, and no key twice in one object. Its tests
+  # The strict JSON reading (exactjson/) that the identity compiler, the
+  # pre-receive hook and read access read CUE's exports with: every key
+  # spelled exactly as the field it is read into, and no key twice in one
+  # object. Its tests
   # hold it to each spelling encoding/json alone would fold into a field.
   exactjson = goModule {
     pname = "valley-exactjson";
@@ -431,7 +432,8 @@ rec {
   # export and the projection onto it, the signed manifest, the upload and
   # the receiver's state directory. It reads names and IDs by the plan
   # graph's rules (../knot), the manifest with the note module (../note),
-  # and who may read a project through ../readaccess. The program built
+  # and who may read a project through ../readaccess, which reads with
+  # ../exactjson. The program built
   # from it is the publisher, cmd/valley-web-publish, which
   # valley-web-publish below wraps. The server and its command are built by
   # valley-web below. The export's tests accept bundles and build the
@@ -452,6 +454,7 @@ rec {
       ../knot
       ../note
       ../readaccess
+      ../exactjson
     ];
     excluded = [
       ../webui/server
@@ -488,12 +491,15 @@ rec {
   # project, read out of git commits with cue under schema/read.cue and
   # schema/identity.cue, and the evaluator that intersects them. The web
   # publisher reads through it, and its command is the coverage report,
-  # which valley-read-coverage below wraps. Its tests read real commits with
-  # real git and the real cue under both schemas, and go vet runs after
-  # them. Go, standard library only, so no module is fetched.
+  # which valley-read-coverage below wraps. It reads cue's exports with
+  # exactjson (../exactjson). Its tests read real commits with real git and
+  # the real cue under both schemas, and go vet runs after them. Go,
+  # standard library only, so no module is fetched.
   readaccess = goModule {
     pname = "valley-readaccess";
     dir = ../readaccess;
+    modules = [ ../exactjson ];
+    preBuild = readsGoMod;
     tests = {
       reads = [
         ../schema/read.cue
@@ -542,8 +548,8 @@ rec {
   # state directory with package export, so its source is the webui
   # module, less the fixture's expected export, which only webui's tests
   # read. Of ../readaccess, which the publisher reads through and the
-  # server does not, it reads the go.mod alone, which go reads to resolve
-  # the module. The git it reads repositories with is fixed at build time,
+  # server does not, and of ../exactjson, which readaccess reads with, it
+  # reads the go.mod alone, which go reads to resolve the module. The git it reads repositories with is fixed at build time,
   # the way valleyhook's is. Its tests run the real program over the shared
   # fixture and real git, and go vet runs after them. Go, standard library
   # only, so no module is fetched.
@@ -554,6 +560,7 @@ rec {
       ../knot
       ../note
       ../readaccess/go.mod
+      ../exactjson/go.mod
     ];
     excluded = [
       ../webui/export/exporttest/testdata

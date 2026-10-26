@@ -13,12 +13,17 @@ require (
 	the-valley/readaccess v0.0.0
 )
 
+require the-valley/exactjson v0.0.0 // indirect
+
 // The plan graph's names and IDs are read by the rules the graph is
 // written by (../knot), the manifest is a signed note read the way every
 // verifier reads one (../note), and the two consents to read access are
-// read and evaluated by ../readaccess. All three live in this repository
-// and are never fetched.
+// read and evaluated by ../readaccess. readaccess reads cue's exports with
+// exactjson (../exactjson), and only the main module's replace applies,
+// so this one names it too. All four live in this repository and are
+// never fetched.
 replace (
+	the-valley/exactjson => ../exactjson
 	the-valley/knot => ../knot
 	the-valley/note => ../note
 	the-valley/readaccess => ../readaccess

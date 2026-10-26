@@ -564,6 +564,61 @@ reader: {anyone: true}`)
 	}
 }
 
+// A registry may reopen a definition of schema/identity.cue and add a
+// field to it, so cue exports Grants beside grants, or Projects beside
+// projects. encoding/json alone would read each into the field the schema
+// spells, and anyone would read site behind a grant that names app alone.
+// The publisher refuses the registry instead, so every project is private.
+func TestAGrantSpelledAnotherWayIsRefused(t *testing.T) {
+	v := newValley(t)
+	v.declare("site", policy("site", "anyone"))
+	appAlone := `{app: "` + identities["app"] + `"}`
+	steps := []struct {
+		what, more, says string
+	}{
+		{"anyone's grants spelled Grants", `#Anyone: Grants?: _
+anyone: Grants: more: {boundary: "web", projects: "all"}
+`, `anyone holds the key "Grants", which is its field "grants" spelled another way`},
+		{"a grant's projects spelled Projects", `#Grant: Projects?: _
+anyone: grants: read: Projects: "all"
+`, `anyone.grants["read"] holds the key "Projects", which is its field "projects" spelled another way`},
+	}
+	for _, step := range steps {
+		v.grant(appAlone)
+		dir := filepath.Join(t.TempDir(), "export")
+		v.publish("--out", dir)
+		if got := exportedNames(t, dir); !reflect.DeepEqual(got, []string{"app"}) {
+			t.Fatalf("%s: before the field is added, the export holds %v, want [app]", step.what, got)
+		}
+		v.write(filepath.Join(v.work["valley"], "identity", "registry.cue"), registryText(appAlone)+step.more)
+		v.commit("valley", "valley: "+step.what)
+		dir = filepath.Join(t.TempDir(), "export")
+		_, stderr := v.publish("--out", dir)
+		if got := exportedNames(t, dir); len(got) != 0 {
+			t.Errorf("%s: the export holds %v, want no project", step.what, got)
+		}
+		for _, says := range []string{"the instance's identity registry at", step.says} {
+			if !strings.Contains(stderr, says) {
+				t.Errorf("%s: the pass did not warn %q:\n%s", step.what, says, stderr)
+			}
+		}
+	}
+}
+
+// exportedNames is the names of the projects in the export written to dir.
+func exportedNames(t *testing.T, dir string) []string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(dir, export.ExportFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e, err := export.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return names(e)
+}
+
 // The registry is read at --registry-ref, the ref the identity compiler
 // reads it at, which need not be main. A grant revoked on that ref alone
 // is revoked, whatever main still says. An instance repository with no

@@ -51,8 +51,9 @@
   # The note envelope every reader of an attestation shares (note/).
   note-unit = packages.note.unit;
 
-  # The strict JSON reading the hook reads its push policy with, and the
-  # identity compiler its registry (exactjson/).
+  # The strict JSON reading the hook reads its push policy with, the
+  # identity compiler its registry, and read access a policy/read and the
+  # registry (exactjson/).
   exactjson-unit = packages.exactjson.unit;
 
   # The change record the hook guards and the CLI writes (change/): its

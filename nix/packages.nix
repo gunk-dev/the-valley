@@ -317,7 +317,8 @@ rec {
 
   # The identity registry compiler (dcr-b87f6e8). Go, standard library
   # only, note format included, same trade as attest and the integrator, so
-  # no module is fetched. Its unit tests pin the note format's key hash
+  # no module is fetched. It reads the registry's export with exactjson
+  # (../exactjson). Its unit tests pin the note format's key hash
   # against the reference vector attest is held to, and verify a real
   # YubiKey attestation against the Yubico roots it carries. The test
   # vectors (identity/testdata/) are read by the tests and by identity-e2e,
@@ -325,7 +326,10 @@ rec {
   identity-unwrapped = goModule {
     pname = "valley-identity";
     dir = ../identity;
-    modules = [ ../note ];
+    modules = [
+      ../note
+      ../exactjson
+    ];
     preBuild = readsGoMod;
     tests.reads = [ ../identity/testdata ];
     meta.mainProgram = "identity";
@@ -380,7 +384,8 @@ rec {
 
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
-  # with the one reading of a graph the CLI shares (../knot). The same
+  # with the one reading of a graph the CLI shares (../knot), and reads the
+  # project's push policy with exactjson (../exactjson). The same
   # binary is the git user's login shell, which derives the pushing
   # principal and pauses pushes until the host has converged. Go, standard
   # library only, so no module is fetched.
@@ -395,6 +400,7 @@ rec {
       ../note
       ../change
       ../knot
+      ../exactjson
     ];
     preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
@@ -409,6 +415,15 @@ rec {
   note = goModule {
     pname = "valley-note";
     dir = ../note;
+  };
+
+  # The strict JSON reading (exactjson/) that the identity compiler and the
+  # pre-receive hook read CUE's exports with: every key spelled exactly as
+  # the field it is read into, and no key twice in one object. Its tests
+  # hold it to each spelling encoding/json alone would fold into a field.
+  exactjson = goModule {
+    pname = "valley-exactjson";
+    dir = ../exactjson;
   };
 
   # The web UI (webui/). Package export is the contract between the

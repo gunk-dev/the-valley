@@ -8,15 +8,22 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"the-valley/exactjson"
 )
 
-// The registry as the schema exports it (schema/identity.cue). The derived
-// fields the schema uses to hold the floor — genesisGovernance,
-// externalGovernance — are checked by `cue vet` and read by nobody here.
+// The registry as the schema exports it (schema/identity.cue), every field
+// of it. The export is read with exactjson, which refuses a key that no
+// json tag here spells exactly. The derived fields the schema uses to hold
+// the floor — genesisGovernance, externalGovernance — and a principal's
+// external identity are checked by `cue vet` and read by nobody here, so
+// they are taken as raw JSON.
 type registry struct {
-	Boundaries map[string]boundary  `json:"boundaries"`
-	Principals map[string]principal `json:"principals"`
-	Genesis    string               `json:"genesis"`
+	Boundaries         map[string]boundary  `json:"boundaries"`
+	Principals         map[string]principal `json:"principals"`
+	Genesis            string               `json:"genesis"`
+	GenesisGovernance  json.RawMessage      `json:"genesisGovernance"`
+	ExternalGovernance json.RawMessage      `json:"externalGovernance"`
 }
 
 type boundary struct {
@@ -24,10 +31,11 @@ type boundary struct {
 }
 
 type principal struct {
-	Kind    string           `json:"kind"`
-	Keys    []key            `json:"keys"`
-	Grants  map[string]grant `json:"grants"`
-	Expires string           `json:"expires"`
+	Kind     string           `json:"kind"`
+	Keys     []key            `json:"keys"`
+	Grants   map[string]grant `json:"grants"`
+	External json.RawMessage  `json:"external"`
+	Expires  string           `json:"expires"`
 }
 
 type key struct {
@@ -126,7 +134,11 @@ func readRegistry(repo, ref, dir, schema string) (registry, string, error) {
 	if err != nil {
 		return r, "", fmt.Errorf("exporting the registry at %s:\n%s", commit, out)
 	}
-	if err := json.Unmarshal([]byte(out), &r); err != nil {
+	// encoding/json alone matches a key to a field without regard to case.
+	// A registry that reopens a schema definition could then hold a grant
+	// under a field spelled another way, beside the empty grants a
+	// reviewer reads.
+	if err := exactjson.Decode([]byte(out), &r); err != nil {
 		return r, "", fmt.Errorf("the exported registry is not the shape this program reads: %w", err)
 	}
 	return r, commit, nil

@@ -242,8 +242,10 @@ The slice does not cap:
 
 Every repository's `pre-receive` hook runs `valleyhook pre-receive` (`valleyhook/main.go`,
 `valleyhook/policy.go`). The hook is default-deny. If any one ref update is refused, the whole push
-is refused. A push may update at most 1000 refs, and the hook refuses one that updates more before
-it decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic, so it reads a
+is refused. The hook reads the project's push policy with every key spelled exactly as its field
+(`exactjson/`). A policy that holds any other key, or a key twice in one object, refuses the whole
+push. A push may update at most 1000 refs, and the hook refuses one that updates more before it
+decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic, so it reads a
 symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`, and for
 the plan graph by `knots-e2e`.
 
@@ -1487,10 +1489,18 @@ and no gate reads them.
 The compiler refuses a registry where no principal holds a registry grant, where a key's hardware
 attestation does not verify, where one key pushes for two principals, where a pushing key matches a
 host-declared key under a different tag or none, or where a key that approves is also held by
-another unexpired principal. Keys that neither push nor approve are not checked for collisions. It
-computes everything before it writes anything, so a refused registry leaves the last good files in
-place. Checked by `identity-e2e` and `identity-schema`, and by the Go tests in
-`identity/identity_test.go`. Why identity is a governed registry, and why machine keys expire, is in
+another unexpired principal. Keys that neither push nor approve are not checked for collisions.
+
+The compiler reads every key of the registry's export spelled exactly as the schema spells its field
+(`exactjson/`). A registry may reopen a schema definition and add a field to it, such as `Grants`
+beside `grants`. Go's JSON decoder alone would read that field as `grants`. So the compiler refuses
+a registry whose export holds a key that is not a field of the schema, spelled exactly. It also
+refuses an export that holds a key twice in one object.
+
+The compiler computes everything before it writes anything, so a refused registry leaves the last
+good files in place. Checked by `identity-e2e`, `identity-schema` and `exactjson-unit`, and by the
+Go tests in `identity/identity_test.go`. Why identity is a governed registry, and why machine keys
+expire, is in
 [dcr-b87f6e8](../archive/.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) and
 [bd-8a591dc](../archive/.the-valley/bugs/bd-8a591dc-machine-credentials-never-expire.md).
 

@@ -81,6 +81,12 @@ variable or user or system configuration inherited, so the registry
 compiled is the one the tip holds and not an object something else has
 been made to stand in for.
 
+Every key of the registry's export is read spelled exactly as the schema
+spells its field. A key the schema does not give fails the render, and so
+does a key that appears twice in one object. A registry may reopen a
+schema definition and add a field to it, such as Grants beside grants, and
+Go's JSON decoder alone would read that field as grants.
+
 Expiry is enforced here, because a document has no clock. An entry whose
 expiry has arrived is omitted from every artifact and noted on stderr, and
 the rest of the registry still compiles — so access ends at the first

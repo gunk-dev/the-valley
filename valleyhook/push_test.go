@@ -79,3 +79,48 @@ func TestAPushIsBoundInTheRefsItUpdates(t *testing.T) {
 		}
 	}
 }
+
+// The push policy is read with every key spelled exactly. Each policy
+// below makes alice a writer of tags only under a key that does not spell
+// its field exactly, or under a key written twice, and encoding/json alone
+// would read her in: it matches a key to a field without regard to case,
+// under Unicode's case folding, and merges two objects read into one map.
+// Each refuses the whole push, naming the key. The same grant spelled
+// exactly lets her push the tag.
+func TestAPolicyKeyNotSpelledExactlyRefusesThePush(t *testing.T) {
+	r := newRecords(t)
+	h := r.source("one")
+	push := func(policy string) (int, string) {
+		t.Helper()
+		file := filepath.Join(t.TempDir(), "policy.json")
+		if err := os.WriteFile(file, []byte(policy), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var stderr bytes.Buffer
+		code := preReceive([]string{"--project", "project", "--policy", file, "--principal", "alice"},
+			strings.NewReader(zeroID+" "+h+" refs/tags/v1\n"), &stderr, gitRepository{})
+		return code, stderr.String()
+	}
+	const release = `{"refs": ["refs/tags/*"], "writers": ["alice"]}`
+	if code, says := push(`{"grants": {"release": ` + release + `}, "refs": [], "writers": []}`); code != 0 {
+		t.Fatalf("alice under a grant spelled exactly: exit %d, %q", code, says)
+	}
+	// The keys of each policy are in the order Nix writes them, sorted
+	// bytewise, as the host module renders the policy file.
+	for _, c := range []struct{ name, policy, says string }{
+		{"a grant's writers spelled with a long s, after its own writers",
+			`{"grants": {"release": {"refs": ["refs/tags/*"], "writers": ["operator"], "writerſ": ["alice"]}}, "refs": [], "writers": []}`,
+			`grants["release"] holds the key "writerſ", which is its field "writers" spelled another way`},
+		{"Grants beside an empty grants",
+			`{"Grants": {"release": ` + release + `}, "grants": {}, "refs": [], "writers": []}`,
+			`the document holds the key "Grants", which is its field "grants" spelled another way`},
+		{"a grant written twice",
+			`{"grants": {"release": {"refs": ["refs/tags/*"], "writers": ["operator"]}, "release": ` + release + `}, "refs": [], "writers": []}`,
+			`grants holds the key "release" twice`},
+	} {
+		code, says := push(c.policy)
+		if code == 0 || !strings.Contains(says, "its policy could not be applied") || !strings.Contains(says, c.says) {
+			t.Errorf("%s: exit %d, %q", c.name, code, says)
+		}
+	}
+}

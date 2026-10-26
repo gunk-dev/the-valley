@@ -17,7 +17,9 @@
 # vectors, with the attestation the device wrote, compiles it into both
 # approval signers files; that attestation offered for another key, or
 # altered, fails the compilation, and so does the example registry, whose
-# attestation chains to a test-only root.
+# attestation chains to a test-only root. A registry holding a grant or a
+# key under a field spelled another way, beside the field the schema
+# spells, fails the compilation, and so does an export holding a key twice.
 #
 # The schema's own rejections live with the other schemas, in schema.nix.
 {

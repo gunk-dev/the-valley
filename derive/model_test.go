@@ -191,9 +191,10 @@ floor: approval: hardware: true
 		refused(c.name, layered(floor, "package verification\n"+c.doc), c.says)
 	}
 
-	// cue cannot export a value of the wrong kind under the schema, so a
-	// stand-in for cue prints one. encoding/json would read the cap written
-	// as a string as a number.
+	// cue cannot export a value of the wrong kind under the schema, or a
+	// key twice in one object, so a stand-in for cue prints each.
+	// encoding/json would read the cap written as a string as a number, and
+	// keep the second of two equal keys.
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		t.Fatal(err)
@@ -202,6 +203,8 @@ floor: approval: hardware: true
 	for _, c := range []struct{ name, export, says string }{
 		{"a requirement written as a string", `"approval":{"hardware":"false"}`, "policy.approval.hardware is not a bool"},
 		{"a cap written as a string", `"restack":{"maxAutomaticVersions":"64"}`, "policy.restack.maxAutomaticVersions is not a number"},
+		{"approval written twice", `"approval":{"hardware":true},"approval":{"hardware":false}`, `policy holds the key "approval" twice`},
+		{"a requirement written twice", `"approval":{"hardware":true,"hardware":false}`, `policy.approval holds the key "hardware" twice`},
 	} {
 		cue := filepath.Join(t.TempDir(), "cue")
 		script := "#!" + bash + "\nprintf '%s' '{\"checks\":{},\"classes\":{},\"unclassified\":{}," + c.export + "}'\n"

@@ -10,7 +10,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,6 +19,7 @@ import (
 	"strings"
 
 	"the-valley/change"
+	"the-valley/exactjson"
 )
 
 const usage = `usage: valleyhook pre-receive [flags] < ref updates
@@ -103,9 +103,10 @@ A push may update at most 1000 refs. One that updates more is refused as a
 whole, at the first update past the bound, before any ref is decided.
 
 A policy, grants or keys file that cannot be read refuses the whole push.
-The hook fails closed: a policy it cannot read is not a policy it can
-apply. A grants or keys file that does not exist grants nothing and names
-no key.
+So does a policy holding a key that does not spell its field exactly, or a
+key twice in one object. The hook fails closed: a policy it cannot read is
+not a policy it can apply. A grants or keys file that does not exist
+grants nothing and names no key.
 
 flags:
   --project NAME        the project, named in what a refusal says
@@ -311,15 +312,18 @@ func failClosed(stderr io.Writer, err error) int {
 // program ships beside, so an unknown field means the two have drifted
 // apart, and the field could be a restriction the hook would otherwise
 // skip.
+//
+// Every key must spell its field exactly, and no key may appear twice in
+// one object. encoding/json alone matches a key to a field without regard
+// to case. A host declaration that reopens a schema definition could then
+// name a writer under a field spelled another way, beside the writers a
+// reviewer reads.
 func readPolicy(path string, p *pushPolicy) error {
-	f, err := os.Open(path)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	dec := json.NewDecoder(f)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(p); err != nil {
+	if err := exactjson.Decode(data, p); err != nil {
 		return fmt.Errorf("%s: %w", path, err)
 	}
 	return nil

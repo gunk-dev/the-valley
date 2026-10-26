@@ -459,6 +459,93 @@ diff -u last-good-grants "$TMPDIR/grants" || exit 1
 diff -u last-good-approval "$TMPDIR/approval-signers" || exit 1
 diff -u last-good-hardware "$TMPDIR/approval-signers-hardware" || exit 1
 
+# The registry's fields are read spelled exactly as the schema spells them.
+# encoding/json matches a key to a field without regard to case, and cue
+# keeps keys that differ in case apart. A registry may reopen a schema
+# definition and add a field to it, so it can hold a grant under a field
+# spelled another way beside an empty grants, or a second public key beside
+# the one a reviewer reads. A key that appears twice in one object is read
+# the same way, and cue never exports one, so a stand-in for cue adds a
+# second principals to the export. Each is refused, naming the key, and the
+# last good artifacts stand.
+ssh-keygen -q -t ed25519 -N "" -C decoy -f "$TMPDIR/decoy"
+intruder_key="$(cut -d' ' -f1,2 < "$TMPDIR/intruder.pub")"
+decoy_key="$(cut -d' ' -f1,2 < "$TMPDIR/decoy.pub")"
+mkdir -p grants-spelled public-spelled
+for spelled in grants-spelled public-spelled; do
+  cp "$registry/registry.cue" "$spelled/registry.cue"
+  chmod u+w "$spelled/registry.cue"
+done
+cat >> grants-spelled/registry.cue <<SPELLED
+
+#Principal: Grants?: _
+principals: "intruder": {
+	kind: "human"
+	keys: [{class: "ssh-ed25519", bound: "hardware", public: "$intruder_key"}]
+	grants: {}
+	Grants: push: boundary: "valley-host-push"
+}
+SPELLED
+cat >> public-spelled/registry.cue <<SPELLED
+
+#Key: Public?: _
+principals: "intruder": {
+	kind: "human"
+	keys: [{class: "ssh-ed25519", bound: "hardware", public: "$decoy_key", Public: "$intruder_key"}]
+	grants: push: boundary: "valley-host-push"
+}
+SPELLED
+realcue="$(command -v cue)"
+mkdir -p doubling
+cat > doubling/cue <<DOUBLING
+#!/bin/sh
+[ "\$1" = export ] || exec "$realcue" "\$@"
+"$realcue" "\$@" | sed '\$d'
+cat "$TMPDIR/doubled.json"
+DOUBLING
+chmod +x doubling/cue
+printf ', "principals": {"intruder": {"kind": "human", "keys": [{"class": "ssh-ed25519", "bound": "hardware", "public": "%s"}], "grants": {"push": {"boundary": "valley-host-push"}}, "external": null}}}\n' \
+  "$intruder_key" > doubled.json
+if [ "$(PATH="$TMPDIR/doubling:$PATH" cue export "$identitySchema" "$registry"/*.cue | grep -c '"principals"')" != 2 ]; then
+  echo "identity-e2e: the stand-in for cue did not export principals twice, so the check below proves nothing" >&2
+  exit 1
+fi
+# misread <what> <says> <command...>: the command fails to compile the
+# registry, says what it says of the key, and the last good artifacts stand.
+misread() {
+  local what="$1" says="$2"
+  shift 2
+  if "$@" 2> misread.err; then
+    echo "identity-e2e: $what compiled" >&2
+    exit 1
+  fi
+  if ! grep -qF "$says" misread.err; then
+    echo "identity-e2e: the refusal of $what did not say: $says" >&2
+    cat misread.err >&2
+    exit 1
+  fi
+  diff -u last-good-signers "$TMPDIR/signers" || exit 1
+  diff -u last-good-keys "$TMPDIR/keys" || exit 1
+  diff -u last-good-grants "$TMPDIR/grants" || exit 1
+  diff -u last-good-approval "$TMPDIR/approval-signers" || exit 1
+  diff -u last-good-hardware "$TMPDIR/approval-signers-hardware" || exit 1
+}
+serve instance grants-spelled
+misread "a grant under Grants beside an empty grants" \
+  'principals["intruder"] holds the key "Grants", which is its field "grants" spelled another way' \
+  compile --now 2026-08-09
+serve instance public-spelled
+misread "a key's Public beside its public" \
+  'principals["intruder"].keys[0] holds the key "Public", which is its field "public" spelled another way' \
+  compile --now 2026-08-09
+serve instance "$registry"
+misread "an export holding principals twice" 'the document holds the key "principals" twice' \
+  env PATH="$TMPDIR/doubling:$PATH" "$identityUnwrapped" compile --repo "$TMPDIR/instance.git" \
+  --schema "$identitySchema" --known-signers "$TMPDIR/signers" \
+  --authorized-keys "$TMPDIR/keys" --grants "$TMPDIR/grants" \
+  --approval-signers "$TMPDIR/approval-signers" \
+  --approval-signers-hardware "$TMPDIR/approval-signers-hardware" --now 2026-08-09
+
 # Governance the clock orphans. This registry is valid as a document — the
 # genesis entry governs — and the only entry governing carries an expiry, so
 # whether it compiles depends on the day. The schema cannot see this; the

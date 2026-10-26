@@ -292,15 +292,62 @@ var (
 	}}
 )
 
-// check reads data as one JSON value and holds it to s.
+// check reads data as one JSON value and holds it to s. A key that
+// appears twice in one object is refused first. Of two equal keys,
+// encoding/json keeps the second when it reads into an interface, and
+// merges the two when it reads into a map or a struct, so the value s holds
+// and the value the policy is read from could differ.
 func (s shape) check(data []byte) error {
 	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := keysOnce(dec, "policy"); err != nil {
+		return err
+	}
+	dec = json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
 		return err
 	}
 	return s.holds("policy", v)
+}
+
+// keysOnce reads one value from dec, found at path, and refuses an object
+// in it that holds a key twice.
+func keysOnce(dec *json.Decoder, path string) error {
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	switch tok {
+	case json.Delim('['):
+		for i := 0; dec.More(); i++ {
+			if err := keysOnce(dec, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+	case json.Delim('{'):
+		seen := map[string]bool{}
+		for dec.More() {
+			tok, err := dec.Token()
+			if err != nil {
+				return err
+			}
+			key := tok.(string)
+			if seen[key] {
+				return fmt.Errorf("%s holds the key %q twice", path, key)
+			}
+			seen[key] = true
+			if err := keysOnce(dec, path+"."+key); err != nil {
+				return err
+			}
+		}
+	default:
+		return nil
+	}
+	// The closing delimiter.
+	_, err = dec.Token()
+	return err
 }
 
 // holds says whether v, found at path, has the shape s.

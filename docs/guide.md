@@ -67,15 +67,18 @@ to the valley host, and Nix with flakes enabled.
    export VALLEY_INTEGRATOR_SIGNER=integrator
    ```
 
-4. If you approve changes, configure your Ed25519 attestation key and its registered signing name:
+4. If approval runs checks on your machine, configure your Ed25519 attestation key and its
+   registered signing name:
 
    ```sh
    export VALLEY_ATTEST_KEY="$HOME/.ssh/valley-attest"
    export VALLEY_ATTEST_NAME=operator
    ```
 
-   The host must trust that signing key. Your SSH principal must also be allowed to approve. These
-   are separate parts of [identity](./concepts.md#principals-and-grants); see
+   When every required check already has eligible evidence on `origin` (for example, from a check
+   worker), approval needs no signing key. When a check has to run locally, the host must trust that
+   signing key. Your SSH principal must also be allowed to approve. These are separate parts of
+   [identity](./concepts.md#principals-and-grants); see
    [Environment variables and configuration](./reference.md#environment-variables-and-configuration)
    for every client setting.
 
@@ -233,9 +236,11 @@ valley status kqxm
 ```
 
 On a terminal, `approve` asks you to confirm the head and title. For automation, pass the exact
-reviewed commit with `valley approve --head <sha> kqxm`. Approval runs and signs every required
-check, then publishes the evidence and request together. It does not wait for landing. An enabled
-integrator processes the request; `status` tells you what happened.
+reviewed commit with `valley approve --head <sha> kqxm`. Approval reuses eligible evidence already
+on `origin` for the commit's content tree (see [`valley approve`](./reference.md#valley-approve)),
+runs and signs any remaining required checks, and publishes the new evidence and request together.
+When every required check is covered, nothing runs and no signing key is needed. It does not wait
+for landing. An enabled integrator processes the request; `status` tells you what happened.
 
 After a successful landing, update your local `main`:
 

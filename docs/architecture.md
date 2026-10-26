@@ -27,6 +27,10 @@ The parts are:
 - `attest`, which runs checks and signs the evidence (`attest/`, `note/`);
 - the identity compiler, which turns a registry into keys and grants (`identity/`);
 - the `valley` command line tool (`bin/valley`);
+- `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
+  changes before approval (`status/worker.go`);
+- `valley-web` and the web export, which project public projects into a signed export and serve the
+  plan, knots and `main` source over HTTP, and which nothing deploys yet (`webui/`);
 - `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
   which nothing deploys yet (`restack/`);
 - the review record and its history, which nothing writes or admits yet (`review/`);
@@ -906,7 +910,7 @@ default, and turning it on is a **deployment choice**. When enabled, the module 
   (`/var/lib/valley-worker` by default);
 - `valley-worker.service`, a oneshot unit that runs one pass of `valley-worker` over
   `worker.projects` as `valley-worker`, inside `valley-builds.slice`;
-- `valley-worker.timer`, which starts `valley-worker.service` 1 minute after boot and waits
+- `valley-worker.timer`, which starts `valley-worker.service` 5 minutes after activation and waits
   `worker.interval` (`1m` by default, plus up to 1 minute of systemd timer slack) after each pass
   finishes before starting the next.
 
@@ -1112,14 +1116,15 @@ line for anything the policy states once, such as a class's carry mode or a clas
 check. The integrator refuses a report that states one thing twice, such as two carry modes or two
 rows for one check. Checked by `cue-vet`, `policy-deriver` and `integrator-unit`.
 
-A second deriver is written in Go (`derive/`). No caller runs it: `valley checks`, approval and the
-integrator use the one in `bin/valley`. It reads the whole composed policy through `composed.Read`
-(`composed/model.go`): every class's paths, requirements and carry mode, the `unclassified` set, and
-each check's runner, cost and validity. It asks cue whether each requirement is mandatory the way
-`valley checks` asks: it vets the layers with a document setting that requirement to `false`. It
-reads a diff as `valley checks` does, with renames counted on both sides, and keeps every path
-whole, whatever bytes it holds. It matches globs byte by byte, as `valley checks` does. It reads a
-layer's documents as `valley checks` does. Checked by `derive-unit`.
+A second deriver is written in Go (`derive/`). The check worker runs it, while `valley checks`,
+approval and the integrator use the one in `bin/valley`. It reads the whole composed policy through
+`composed.Read` (`composed/model.go`): every class's paths, requirements and carry mode, the
+`unclassified` set, and each check's runner, cost and validity. It asks cue whether each requirement
+is mandatory the way `valley checks` asks: it vets the layers with a document setting that
+requirement to `false`. It reads a diff as `valley checks` does, with renames counted on both sides,
+and keeps every path whole, whatever bytes it holds. It matches globs byte by byte, as
+`valley checks` does. It reads a layer's documents as `valley checks` does. Checked by
+`derive-unit`.
 
 `derive-unit` holds the two derivers to the same answer. It runs both over this repository's own
 policy, the example policies under `examples/policy/`, and paths drawn from a fixed seed. It runs
@@ -1446,11 +1451,13 @@ and its binding must verify.
 
 ## Identity
 
-The identity registry is CUE under `identity/` in the instance repository, read at its `main`
-(`identity/registry.go`, `schema/identity.cue`). It declares principals and boundaries.
+The identity registry is CUE under `identity/` in the instance repository, read from a single commit
+of its `main` (`identity/registry.go`, `schema/identity.cue`). It declares principals and
+boundaries.
 
 - A principal has a kind (`human`, `machine` or `service`), one or more `ssh-ed25519` keys, and
-  grants. A key may also sign attestations, under a name it declares.
+  grants. A key may also sign attestations, under a name it declares, and may carry a YubiKey PIV
+  attestation that the compiler verifies (`identity/attestation.go`).
 - A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `approve` or `restack`.
   The kind `approve` is also accepted as `request`. A registry using either name compiles the same
   files.
@@ -1472,12 +1479,18 @@ The identity registry is CUE under `identity/` in the instance repository, read 
   principal holding both kinds is written once. The line keeps the name `request`, and the hook
   reads it as the `approve` grant.
 
-The compiler refuses a registry where no principal holds a registry grant, where one key pushes for
-two principals, or where a pushing key matches a host-declared key under a different tag or none.
-Keys that only sign are not checked for collisions. It computes everything before it writes
-anything, so a refused registry leaves the last good files in place. Checked by `identity-e2e` and
-`identity-schema`, and by the Go tests in `identity/identity_test.go`. Why identity is a governed
-registry, and why machine keys expire, is in
+When asked, the compiler also writes the approval keys and the touch-always hardware approval keys
+of human principals holding an `approve` grant (see
+[Approval signers files](reference.md#approval-signers-files)). The host module does not write them,
+and no gate reads them.
+
+The compiler refuses a registry where no principal holds a registry grant, where a key's hardware
+attestation does not verify, where one key pushes for two principals, where a pushing key matches a
+host-declared key under a different tag or none, or where a key that approves is also held by
+another unexpired principal. Keys that neither push nor approve are not checked for collisions. It
+computes everything before it writes anything, so a refused registry leaves the last good files in
+place. Checked by `identity-e2e` and `identity-schema`, and by the Go tests in
+`identity/identity_test.go`. Why identity is a governed registry, and why machine keys expire, is in
 [dcr-b87f6e8](../archive/.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) and
 [bd-8a591dc](../archive/.the-valley/bugs/bd-8a591dc-machine-credentials-never-expire.md).
 
@@ -2697,10 +2710,11 @@ exit status is 1.
    `refs/the-valley/changes/main/<change-id>`, with the head as a version. `valley pending` and
    `valley changes --json` list the change by its handle.
 3. The operator approves one head of the change: with `[a]pprove` in `valley review <handle>`, or
-   with `valley approve <handle> --head <sha>` from a front end. The required checks run over that
-   head, and one push files the evidence and the integration request
-   `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The hook verifies each
-   note and the `approve` grant.
+   with `valley approve <handle> --head <sha>` from a front end. Approval reuses eligible evidence
+   `origin` already holds for that head's tree (see [The valley command](#the-valley-command)), runs
+   the remaining required checks over that head, and in one push files any new evidence and the
+   integration request `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The
+   hook verifies each note and the `approve` grant.
 4. On its next pass the integrator reads the records. It refuses a request that would bring a
    version of a change that is not `ready`, and one whose commits hold a merge. Otherwise it builds
    the candidate, derives the policy, judges the evidence, and lands or refuses. If the author
@@ -2737,13 +2751,14 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | What                                        | State                                                                                              |
 | ------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `sigverify`                                 | On `main` and tested. Nothing calls it.                                                            |
-| Hardware-backed keys in the registry        | `schema/identity.cue` accepts `ssh-ed25519` keys only.                                             |
+| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.           |
 | SSHSIG evidence                             | Attestations use the signed-note format.                                                           |
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                   |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                 |
 | The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed. |
 | The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.               |
 | The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.             |
+| The web server and export                   | `valley-web` serves an export (`webui/`). The publisher, upload handler and service are not built. |
 | Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                 |
 | A crash-safe landing ledger                 | Landing is several separate ref updates.                                                           |
 | Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                   |

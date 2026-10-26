@@ -29,8 +29,9 @@ pages nothing; if the version changed files, it pages the comparison (the files 
 differs, the range-diff between the two versions, and the shown version's diff of those files); and
 if there is no approved version or no comparison can be made, it pages the full diff
 (`[v]iew full diff` is available at the prompt in every case). The operator approves the change with
-`valley approve <change>` (or by selecting `[a]pprove` in `valley review`), which runs and signs all
-required checks and writes an integration request binding that one exact commit.
+`valley approve <change>` (or by selecting `[a]pprove` in `valley review`), which reuses eligible
+evidence already on `origin` for the commit's content tree, runs and signs the remaining required
+checks, and writes an integration request binding that one exact commit.
 
 Once the integrator verifies that commit's required check evidence and integrates it into `main`,
 the change version is **submitted**: `landed` when its commit is on `main`'s first-parent history

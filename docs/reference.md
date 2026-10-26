@@ -2556,9 +2556,9 @@ Enrolling hardware keys in the identity registry is `implemented`: the compiler 
 attestation and writes `approval-signers-hardware`. The approval gate that would check approvals
 against that file alone is `not built`. Whether a floor writes the field is a `deployment choice`.
 
-The schema travels with the tools: `valley`, the integrator and the restacker each compose under
-their own packaged copy. A tool with an older schema refuses a policy that writes `approval`, and
-derives no checks for it. Deploy the tools before a policy writes the field.
+The schema travels with the tools: `valley`, the integrator, the check worker and the restacker each
+compose under their own packaged copy. A tool with an older schema refuses a policy that writes
+`approval`, and derives no checks for it. Deploy the tools before a policy writes the field.
 
 ### Web visibility (`schema/web.cue`)
 

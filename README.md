@@ -42,8 +42,8 @@ valley review kqxm              # inspect the diff (and interactively approve)
   `valley review`, the host's `restack` grant and report validation, and the read-only planner
   (`valley-restacker once --report-only`) are built, while the service that rebases ready changes
   automatically after each landing is not built or running yet. Automatic approval carry across
-  restacks, skipping already-attested checks in `valley approve`, hardware-key (`sk-*`) touch-bound
-  approval envelopes, and atomic multi-ref landing transactions are also not built yet.
+  restacks, hardware-key (`sk-*`) touch-bound approval envelopes, and atomic multi-ref landing
+  transactions are also not built yet.
 
 ## Documentation
 

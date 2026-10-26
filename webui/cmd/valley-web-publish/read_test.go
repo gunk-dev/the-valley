@@ -229,7 +229,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", "-d", projectsRef)
 				return nil
 			},
-			says: "could not read main and refs/the-valley/projects in the instance repository",
+			says: "the instance repository publishes no refs/the-valley/projects",
 		},
 		{
 			name:   "the read schema cannot be read",

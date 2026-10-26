@@ -187,7 +187,8 @@ func TestCoverage(t *testing.T) {
 
 // The registry is read at --registry-ref, the ref the identity compiler
 // reads it at. A grant revoked on that ref alone is revoked, whatever main
-// still says, and an instance repository with no such ref grants no read.
+// still says, and an instance repository with no such ref grants no read,
+// whatever another ref git would take the name for grants.
 func TestRegistryRef(t *testing.T) {
 	valley, schemas := coverageValley(t)
 	main := hostGit(t, "", "-C", valley, "rev-parse", "main")
@@ -218,6 +219,18 @@ func TestRegistryRef(t *testing.T) {
 	if !strings.Contains(stderr, "holds no refs/heads/none, so it has no registry, and grants no read") ||
 		!strings.HasSuffix(strings.TrimSpace(stdout), "operator may read 0 of 5 projects at example.org") {
 		t.Errorf("with no registry ref, the report is\n%s\nand the command said\n%s", stdout, stderr)
+	}
+
+	// With refs/heads/registry gone, git rev-parse would resolve the name
+	// to refs/heads/refs/heads/registry, a branch any pusher can make, here
+	// granting anyone read of app and site. The registry is read at the
+	// ref named exactly, so there is none.
+	hostGit(t, "", "-C", valley, "update-ref", "-d", "refs/heads/registry")
+	hostGit(t, "", "-C", valley, "update-ref", "refs/heads/refs/heads/registry", main)
+	stdout, stderr = report(t, valley, schemas, "anyone", "--registry-ref", "refs/heads/registry")
+	if !strings.Contains(stderr, "holds no refs/heads/registry, so it has no registry, and grants no read") ||
+		!strings.HasSuffix(strings.TrimSpace(stdout), "anyone may read 0 of 5 projects at example.org") {
+		t.Errorf("with refs/heads/registry gone, the report is\n%s\nand the command said\n%s", stdout, stderr)
 	}
 
 	for _, ref := range []string{"main", "refs/heads/main~1", "refs/heads/../main", "refs/heads/registry.lock", "refs/heads/a b", "refs//main"} {

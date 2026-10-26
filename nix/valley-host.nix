@@ -966,6 +966,21 @@ let
         "\\${c}"
     ) (lib.stringToCharacters pattern)) ref != null;
 
+  # Whether ref is a full ref name, which the identity registry is read at.
+  # It opens with refs/ and holds letters, digits, dots, dashes, underscores
+  # and slashes alone. git check-ref-format accepts it: no component is
+  # empty, opens with a dot or ends with .lock, and it holds no ".." and
+  # does not end with a dot. readaccess.ValidRef accepts every name this
+  # accepts.
+  fullRefName =
+    ref:
+    builtins.match "refs/[A-Za-z0-9._/-]+" ref != null
+    && !(lib.hasInfix ".." ref)
+    && !(lib.hasSuffix "." ref)
+    && lib.all (part: part != "" && !(lib.hasPrefix "." part) && !(lib.hasSuffix ".lock" part)) (
+      lib.splitString "/" ref
+    );
+
   # Every value sshd is given for one keyword, from the settings and from
   # every line of extraConfig, inside a Match block or not. The keyword is
   # matched in any case, as sshd matches it, with or without `=` after it;
@@ -1562,10 +1577,12 @@ in
         default = "refs/heads/main";
         description = ''
           The ref of the instance repository whose tip carries the
-          registry. A registry edit takes effect at the first compilation
-          after it lands on this ref, and never before: an edit in a
-          branch, in a worktree, or in an integration request that has not
-          been integrated governs nothing. The web publisher
+          registry: a full ref name, opening with `refs/`, in letters,
+          digits, dots, dashes, underscores and slashes. A short name such
+          as `main` is refused. A registry edit takes effect at the first
+          compilation after it lands on this ref, and never before: an edit
+          in a branch, in a worktree, or in an integration request that has
+          not been integrated governs nothing. The web publisher
           (`services.valley.webPublisher`) reads its read grants from the
           registry at this ref too.
         '';
@@ -1731,6 +1748,12 @@ in
         }
       ]
     )
+    # The web publisher (webui-publisher.nix) reads the registry at
+    # identity.ref too, when its module is imported and on.
+    ++ lib.optional (cfg.identity.enable || config.services.valley.webPublisher.enable or false) {
+      assertion = fullRefName cfg.identity.ref;
+      message = "services.valley.identity.ref is ${cfg.identity.ref}, which is not a full ref name. The identity registry is read at that ref, so name it whole, opening with refs/, as git check-ref-format accepts it: refs/heads/main, not main.";
+    }
     ++ lib.optionals (cfg.integrator.instanceProject != null && gitProjects ? ${cfg.integrator.instanceProject}) (
       let
         name = cfg.integrator.instanceProject;

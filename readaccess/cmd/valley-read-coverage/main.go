@@ -105,21 +105,27 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, now time.
 }
 
 // report reads the registry and every project's policy/read, and says
-// which consents each project lacks. It reads the registry at the commit
-// it resolves --registry-ref to once, as the identity compiler does.
+// which consents each project lacks. It resolves --registry-ref once, by
+// its exact name with readaccess.ResolveRef, and reads the registry at the
+// commit that ref held. It reads each project's main the same way.
 func (c *config) report(ctx context.Context, stdout, stderr io.Writer, now time.Time) error {
 	r := &c.access
 	if err := r.CheckSchemas(ctx); err != nil {
 		return err
 	}
 	var grants readaccess.Grants
-	tip, ok, err := revParse(ctx, c.instanceRepo, c.registryRef+"^{commit}")
+	oid, ok, err := readaccess.ResolveRef(ctx, c.instanceRepo, c.registryRef)
 	if err != nil {
 		return err
-	} else if !ok {
-		fmt.Fprintf(stderr, "valley-read-coverage: the instance repository holds no %s, so it has no registry, and grants no read\n", c.registryRef)
-	} else {
+	}
+	if ok {
+		var tip string
+		if tip, err = commitOf(ctx, c.instanceRepo, oid); err != nil {
+			return fmt.Errorf("%s in the instance repository is not a commit: %w", c.registryRef, err)
+		}
 		grants, err = r.Grants(ctx, c.instanceRepo, tip, c.registryDir, c.destination, now)
+	} else {
+		fmt.Fprintf(stderr, "valley-read-coverage: the instance repository holds no %s, so it has no registry, and grants no read\n", c.registryRef)
 	}
 	var bad *readaccess.InvalidError
 	switch {
@@ -131,7 +137,7 @@ func (c *config) report(ctx context.Context, stdout, stderr io.Writer, now time.
 		return fmt.Errorf("could not read the registry: %w", err)
 	}
 
-	list, ok, err := revParse(ctx, c.instanceRepo, "refs/the-valley/projects")
+	list, ok, err := readaccess.ResolveRef(ctx, c.instanceRepo, "refs/the-valley/projects")
 	if err != nil {
 		return err
 	} else if !ok {
@@ -187,11 +193,15 @@ func (c *config) report(ctx context.Context, stdout, stderr io.Writer, now time.
 // no policy/read or an invalid one has none, and why says so. Any other
 // failure is an error.
 func (c *config) consent(ctx context.Context, repo, name string) (*readaccess.Consent, string, error) {
-	tip, ok, err := revParse(ctx, repo, "refs/heads/main^{commit}")
+	oid, ok, err := readaccess.ResolveRef(ctx, repo, "refs/heads/main")
 	if err != nil {
 		return nil, "", err
 	} else if !ok {
 		return nil, "it has no main", nil
+	}
+	tip, err := commitOf(ctx, repo, oid)
+	if err != nil {
+		return nil, "", fmt.Errorf("its main is not a commit: %w", err)
 	}
 	consent, err := c.access.Consent(ctx, repo, tip, name)
 	var bad *readaccess.InvalidError
@@ -206,18 +216,15 @@ func (c *config) consent(ctx context.Context, repo, name string) (*readaccess.Co
 	return &consent, "", nil
 }
 
-// revParse resolves rev in repo. ok is false when the repository holds no
-// such ref; an error is a repository git could not read.
-func revParse(ctx context.Context, repo, rev string) (string, bool, error) {
-	out, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", rev)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return "", false, nil
-	}
+// commitOf peels the object oid to the commit it names in repo. oid is an
+// object ID that readaccess.ResolveRef read, never a ref name: rev-parse
+// given a name reads other refs where repo holds none of that name.
+func commitOf(ctx context.Context, repo, oid string) (string, error) {
+	out, err := git(ctx, repo, "rev-parse", "--verify", "--end-of-options", oid+"^{commit}")
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	return strings.TrimSpace(string(out)), true, nil
+	return strings.TrimSpace(string(out)), nil
 }
 
 // git runs git in repo with replacement refs off, and without the
@@ -235,10 +242,6 @@ func git(ctx context.Context, repo string, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) && exit.ExitCode() == 1 {
-			return nil, err
-		}
 		return nil, fmt.Errorf("git %s in %s: %w: %s", args[0], repo, err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil

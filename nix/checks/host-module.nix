@@ -85,6 +85,11 @@ let
   unprotectedRegistryWebPublisherHost = webPublisherHost.extendModules {
     modules = [ { services.valley.identity.ref = "refs/heads/registry"; } ];
   };
+  # The publisher reading the registry at a short ref name, which git would
+  # resolve by trying other names in turn.
+  shortRegistryRefWebPublisherHost = webPublisherHost.extendModules {
+    modules = [ { services.valley.identity.ref = "registry"; } ];
+  };
   # The publisher with no instance repository to discover the projects and
   # the signers through.
   noInstanceWebPublisherHost = webPublisherHost.extendModules {
@@ -199,6 +204,11 @@ let
       host = unprotectedRegistryWebPublisherHost;
       says = "whose refs/heads/registry is not protected";
       why = "a publisher reading the registry at an unprotected ref would let any key that can push there grant anyone read";
+    }
+    {
+      host = shortRegistryRefWebPublisherHost;
+      says = "services.valley.identity.ref is registry, which is not a full ref name";
+      why = "git resolves a ref that is not a full name by trying several refs in turn, and a pusher can make one of them";
     }
     {
       host = noInstanceWebPublisherHost;

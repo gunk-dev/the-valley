@@ -567,7 +567,8 @@ reader: {anyone: true}`)
 // The registry is read at --registry-ref, the ref the identity compiler
 // reads it at, which need not be main. A grant revoked on that ref alone
 // is revoked, whatever main still says. An instance repository with no
-// such ref has no registry, so every project is private.
+// such ref has no registry, so every project is private, whatever another
+// ref git would take the name for grants.
 func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 	v := newValley(t)
 	v.declare("site", policy("site", "anyone"))
@@ -596,6 +597,16 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 			mustSay(t, c.what, stderr, c.warns)
 		}
 	}
+
+	// With refs/heads/registry gone, git rev-parse would resolve the name
+	// to refs/heads/refs/heads/registry, a branch any pusher can make, here
+	// granting anyone read of app and site. The registry is read at the
+	// ref named exactly, so there is none, and every project is private.
+	v.run(work, "git", "push", "--quiet", "origin", ":refs/heads/registry")
+	v.run(work, "git", "push", "--quiet", "origin", "main:refs/heads/refs/heads/registry")
+	stdout, stderr := v.publish("--out", filepath.Join(t.TempDir(), "export"), "--registry-ref", "refs/heads/registry")
+	mustSay(t, "refs/heads/registry gone", stdout, "public: none; private: app, site, valley")
+	mustSay(t, "refs/heads/registry gone", stderr, "the instance repository holds no refs/heads/registry")
 
 	for _, ref := range []string{"main", "refs/heads/main~1", "refs/heads/../main", "refs/heads/registry.lock", "refs/heads/a b", "refs//main"} {
 		var stdout, stderr bytes.Buffer

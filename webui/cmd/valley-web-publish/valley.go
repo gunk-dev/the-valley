@@ -414,33 +414,56 @@ type instanceRead struct {
 // main carries no policy/instance is not an instance repository. One whose
 // main carries policy/valley is refused too: it names another instance as
 // its own.
+//
+// Each ref is read by its exact name with readaccess.ResolveRef, and
+// everything after reads the object ID it held. git rev-parse would try
+// other names for a ref the instance repository lacks: for a missing
+// refs/heads/registry, it would read refs/heads/refs/heads/registry, which
+// any pusher can make.
 func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	var r instanceRead
-	refs := map[string]string{originMain: "refs/heads/main", originProjects: projectsRef}
-	read := "main and " + projectsRef
-	fromMain := p.cfg.registryRef == "refs/heads/main"
-	if !fromMain {
-		held, err := hasRef(ctx, p.cfg.instanceRepo, p.cfg.registryRef)
+	resolve := func(ref string) (string, bool, error) {
+		oid, ok, err := readaccess.ResolveRef(ctx, p.cfg.instanceRepo, ref)
 		if err != nil {
-			return r, fmt.Errorf("could not read %s in the instance repository: %w", p.cfg.registryRef, err)
+			return "", false, fmt.Errorf("could not read %s in the instance repository: %w", ref, err)
 		}
-		if held {
-			refs[originRegistry] = p.cfg.registryRef
-			read = "main, " + projectsRef + " and " + p.cfg.registryRef
-		}
+		return oid, ok, nil
 	}
-	if err := p.shareRepository(ctx, p.origin, p.cfg.instanceRepo, refs); err != nil {
-		return r, fmt.Errorf("could not read %s in the instance repository: %w", read, err)
-	}
-	var err error
-	if r.tip, err = revParse(ctx, p.origin, originMain+"^{commit}"); err != nil {
+	main, ok, err := resolve("refs/heads/main")
+	if err != nil {
 		return r, err
+	} else if !ok {
+		return r, fmt.Errorf("%s holds no main, so it is not an instance repository", p.cfg.instanceRepo)
 	}
-	switch {
-	case fromMain:
-		r.registry = r.tip
-	case refs[originRegistry] != "":
-		if r.registry, err = revParse(ctx, p.origin, originRegistry+"^{commit}"); err != nil {
+	list, ok, err := resolve(projectsRef)
+	if err != nil {
+		return r, err
+	} else if !ok {
+		return r, fmt.Errorf("the instance repository publishes no %s, so it lists no projects", projectsRef)
+	}
+	registry := main
+	if p.cfg.registryRef != "refs/heads/main" {
+		if registry, _, err = resolve(p.cfg.registryRef); err != nil {
+			return r, err
+		}
+	}
+
+	files, err := sharedFiles(ctx, p.cfg.instanceRepo, nil)
+	if err != nil {
+		return r, fmt.Errorf("could not read the instance repository: %w", err)
+	}
+	files[originMain], files[originProjects] = main+"\n", list+"\n"
+	if registry != "" {
+		files[originRegistry] = registry + "\n"
+	}
+	if err := p.stageFiles(p.origin, files); err != nil {
+		return r, fmt.Errorf("could not read the instance repository: %w", err)
+	}
+	if r.tip, err = revParse(ctx, p.origin, main+"^{commit}"); err != nil {
+		return r, fmt.Errorf("main in the instance repository is not a commit: %w", err)
+	}
+	if registry != "" {
+		if r.registry, err = revParse(ctx, p.origin, registry+"^{commit}"); err != nil {
 			return r, fmt.Errorf("%s in the instance repository is not a commit: %w", p.cfg.registryRef, err)
 		}
 	}
@@ -450,14 +473,12 @@ func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	if _, err := git(ctx, p.origin, "cat-file", "-e", r.tip+":policy/valley"); err == nil {
 		return r, fmt.Errorf("%s holds policy/valley on main, which names another instance; an instance repository the publisher reads holds policy/instance and no policy/valley", p.cfg.instanceRepo)
 	}
-	if r.list, err = revParse(ctx, p.origin, originProjects); err != nil {
-		return r, err
-	}
-	list, err := git(ctx, p.origin, "cat-file", "blob", r.list)
+	r.list = list
+	data, err := git(ctx, p.origin, "cat-file", "blob", r.list)
 	if err != nil {
 		return r, fmt.Errorf("%s in the instance repository is not a list of projects: %w", projectsRef, err)
 	}
-	for _, name := range strings.Split(string(list), "\n") {
+	for _, name := range strings.Split(string(data), "\n") {
 		if name != "" {
 			r.projects = append(r.projects, name)
 		}
@@ -610,17 +631,6 @@ func listsRef(out []byte, ref string) bool {
 		}
 	}
 	return false
-}
-
-// hasRef reports whether repo holds ref. An error is a repository git
-// could not read.
-func hasRef(ctx context.Context, repo, ref string) (bool, error) {
-	_, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref)
-	var exit *exec.ExitError
-	if errors.As(err, &exit) && exit.ExitCode() == 1 {
-		return false, nil
-	}
-	return err == nil, err
 }
 
 func revParse(ctx context.Context, repo, rev string) (string, error) {

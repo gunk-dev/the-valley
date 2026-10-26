@@ -302,6 +302,36 @@ func ValidRef(ref string) bool {
 	return true
 }
 
+// ResolveRef reads the object ID that ref, a full ref name, holds in repo.
+// It reads that one ref, with git show-ref. ok is false when repo holds no
+// ref of that name. An error is a repository git could not read.
+//
+// git rev-parse is not used, because it does not stop at the name it is
+// given. When repo holds no refs/heads/registry, rev-parse goes on to try
+// other names, refs/heads/refs/heads/registry among them, and any pusher
+// can make that branch. So a protected ref that is missing would resolve to
+// a ref that no protection covers. Read what the ref holds through the
+// object ID ResolveRef returns, never through the name again.
+func ResolveRef(ctx context.Context, repo, ref string) (oid string, ok bool, err error) {
+	if !ValidRef(ref) {
+		return "", false, fmt.Errorf("%q is not a full ref name", ref)
+	}
+	// show-ref --exists exits 2 for a ref that is missing, and with
+	// another status for a failure to read.
+	_, err = git(ctx, repo, "show-ref", "--exists", "--end-of-options", ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	out, err := git(ctx, repo, "show-ref", "--verify", "--hash", "--end-of-options", ref)
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(string(out)), true, nil
+}
+
 // plainName reports whether name is one plain path component: not empty,
 // not . or .., and with no slash.
 func plainName(name string) bool {

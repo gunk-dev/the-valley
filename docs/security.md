@@ -247,6 +247,14 @@ so a new project that reuses a name is not covered by the old project's grant. A
 from the project it names. A policy or registry that is missing, refused by its schema, or past its
 bounds consents to nothing (`implemented`, `readaccess/read.go`).
 
+**The registry is read at its ref by that exact name.** The publisher and `valley-read-coverage`
+resolve the registry ref with `git show-ref`, which reads that one ref (`implemented`,
+`readaccess/read.go`). Everything after reads the commit the ref held. `git rev-parse` is not used,
+because it does not stop at the name it is given. For a missing `refs/heads/registry`, it tries
+`refs/heads/refs/heads/registry`, a branch any pusher can make. An instance repository with no ref
+of the registry's name holds no registry, so every project is private. The host module refuses a
+`services.valley.identity.ref` that is not a full ref name (`implemented`, `nix/valley-host.nix`).
+
 **Reading over ssh is not governed by read grants.** On the valley host, every key sshd admits for
 the git user can fetch every repository. The git user's shell holds pushes and leaves fetching open
 (`valleyhook/shell.go`). A key with no principal tag fetches as no principal, and is not `anyone`.
@@ -260,8 +268,11 @@ one place, [Not deployed or not wired yet](./architecture.md#not-deployed-or-not
 Checks: `readaccess-unit` reads both consents out of real commits under the real schemas, including
 policies that declare a schema definition again and trees with malformed entry names. `webui-unit`
 holds the publisher to both consents (`TestVisibilityNeedsBothConsents`) and finds no private
-sentinel in any export or bundle (`TestPrivateSentinelsNeverLeave`). `cue-vet` and `identity-schema`
-hold the schemas to their rejected examples.
+sentinel in any export or bundle (`TestPrivateSentinelsNeverLeave`). Both `webui-unit`
+(`TestTheRegistryIsReadAtItsRef`) and `readaccess-unit` (`TestRegistryRef`) keep every project
+private when the registry ref is missing and `refs/heads/refs/heads/registry` grants `anyone` read.
+`module-eval` refuses a short registry ref. `cue-vet` and `identity-schema` hold the schemas to
+their rejected examples.
 
 ## Secrets
 

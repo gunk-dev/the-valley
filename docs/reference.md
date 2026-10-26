@@ -721,9 +721,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--identity-schema <file>`: The identity registry schema, `schema/identity.cue` (default
       `$VALLEY_IDENTITY_SCHEMA`).
     - `--registry-ref <ref>`: The ref of the instance repository whose tip carries the identity
-      registry, a full ref name (default `refs/heads/main`). The pass reads the registry at the one
-      commit it fetched of `<ref>`. An instance repository with no `<ref>` holds no registry, so
-      every project is private.
+      registry, a full ref name (default `refs/heads/main`). The pass reads `<ref>` by that exact
+      name, once, and reads the registry at the commit it held. An instance repository with no
+      `<ref>` holds no registry, so every project is private. That holds even when the repository
+      has a ref that `git rev-parse` would take the name for, such as
+      `refs/heads/refs/heads/registry` for `refs/heads/registry`.
     - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).

@@ -96,6 +96,7 @@ let
     "--state ${lib.escapeShellArg (toString cfg.stateDir)}"
     "--max-bundles ${cfg.maxBundles}"
     "--max-storage ${cfg.maxStorage}"
+    "--registry-ref ${lib.escapeShellArg host.identity.ref}"
     "--registry-dir ${lib.escapeShellArg host.identity.directory}"
   ];
 
@@ -107,10 +108,13 @@ in
       the valley web publisher: a timer that uploads this host's public
       projects, as signed exports, to a web receiver. A project is public
       when its own policy/read lets anyone read it, and a read grant to
-      anyone in the identity registry, read from the instance repository's
-      main in {option}`services.valley.identity.directory`, covers it at
-      the destination. The manifest names {option}`networking.hostName` as
-      the instance, and is signed under `<hostName>/web-export`
+      anyone in the identity registry covers it at the destination. The
+      registry is read where the identity compiler reads it: in
+      {option}`services.valley.identity.directory` at the instance
+      repository's {option}`services.valley.identity.ref`. The host module
+      requires that ref to be protected. The manifest names
+      {option}`networking.hostName` as the instance, and is signed under
+      `<hostName>/web-export`
     '';
 
     destination = lib.mkOption {

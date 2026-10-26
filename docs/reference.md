@@ -699,7 +699,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   flake's `git`, `cue`, and `valley`, with `VALLEY_READ_SCHEMA` set to `schema/read.cue` and
   `VALLEY_IDENTITY_SCHEMA` set to `schema/identity.cue`. On a host, `services.valley.webPublisher`
   runs it on a timer (see [The web publisher's options](#the-web-publishers-options)).
-  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
+  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
     - `--instance-repo <url>`: An absolute local path to the instance repository. It is the `origin`
       of the publisher's own bare repository, and the CLI discovers projects and signers through it.
       Its `main` must hold `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no
@@ -720,8 +720,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `$VALLEY_READ_SCHEMA`).
     - `--identity-schema <file>`: The identity registry schema, `schema/identity.cue` (default
       `$VALLEY_IDENTITY_SCHEMA`).
-    - `--registry-dir <dir>`: The identity registry's directory in the instance repository's `main`
-      (default `identity`).
+    - `--registry-ref <ref>`: The ref of the instance repository whose tip carries the identity
+      registry, a full ref name (default `refs/heads/main`). The pass reads the registry at the one
+      commit it fetched of `<ref>`. An instance repository with no `<ref>` holds no registry, so
+      every project is private.
+    - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
     - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
@@ -735,9 +738,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
 - **`valley-read-coverage`**
   ([`readaccess/cmd/valley-read-coverage/main.go`](../readaccess/cmd/valley-read-coverage/main.go)):
   Lists the projects a principal cannot read at a destination, and which of the two consents each
-  lacks (see [Read policy](#read-policy-schemareadcue)). It reads the instance repository and each
-  project's `main`, and changes nothing. It is wrapped with this flake's `git` and `cue`, with
-  `VALLEY_READ_SCHEMA` and `VALLEY_IDENTITY_SCHEMA` set to the two schemas.
+  lacks (see [Read policy](#read-policy-schemareadcue)). It reads the registry at the instance
+  repository's `--registry-ref` and each project's `policy/read` at its `main`, and changes nothing.
+  It is wrapped with this flake's `git` and `cue`, with `VALLEY_READ_SCHEMA` and
+  `VALLEY_IDENTITY_SCHEMA` set to the two schemas.
 
   ```sh
   valley-read-coverage --instance-repo /srv/git/valley.git --destination example.org --reader operator
@@ -749,12 +753,14 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   operator may read 2 of 4 projects at example.org
   ```
 
-  - `valley-read-coverage --instance-repo <dir> --destination <name> --reader <principal> [--registry-dir <dir>] [--read-schema <file>] [--identity-schema <file>]`
+  - `valley-read-coverage --instance-repo <dir> --destination <name> --reader <principal> [--registry-ref <ref>] [--registry-dir <dir>] [--read-schema <file>] [--identity-schema <file>]`
     - `--instance-repo <dir>`: An absolute local path to the instance repository. Its
       `refs/the-valley/projects` lists the projects. Each project's repository is beside it, named
       `<project>.git` when `<dir>` ends in `.git`, and `<project>` otherwise.
     - `--reader <principal>`: The principal, or `anyone` for a reader with no credential.
-    - `--registry-dir`, `--read-schema`, `--identity-schema`: As for `valley-web-publish`.
+    - `--registry-ref`, `--registry-dir`, `--read-schema`, `--identity-schema`: As for
+      `valley-web-publish`. Give the same `--registry-ref` the host gives the identity compiler, so
+      the report reads the grants the publisher reads.
   - Prints one line for each project the principal cannot read: `no project consent` when the
     project has no `main`, no valid `policy/read`, or one that does not name the principal, and
     `no instance grant` when no read grant of the principal at the destination covers the project
@@ -973,9 +979,11 @@ services.valley.webPublisher = {
 | `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                 |
 | `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                    |
 
-The module also passes `services.valley.identity.directory` as `--registry-dir`, so the publisher
-reads the registry where the identity compiler does. It reads it at the instance repository's
-`main`.
+The module also passes `services.valley.identity.ref` as `--registry-ref` and
+`services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry where
+the identity compiler does: in that directory, at that ref of the instance repository. With the
+publisher on, the host module requires the instance repository's `protection` to cover that ref, as
+it does with the compiler on (`implemented`, `nix/valley-host.nix`).
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
@@ -2138,12 +2146,12 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
   2. reads the export key, or makes one on the first start, and checks the state and the caches
      against `--max-storage`;
-  3. fetches the instance repository's `main` and `refs/the-valley/projects` into the publisher's
-     own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose `origin` is
-     `--instance-repo`. It fetches them once for the whole pass. It requires that `main` carry
-     `policy/instance` and no `policy/valley`;
-  4. reads the read grants at `--destination` from the identity registry in `--registry-dir` at that
-     `main`;
+  3. fetches the instance repository's `main`, `refs/the-valley/projects` and `--registry-ref` into
+     the publisher's own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose
+     `origin` is `--instance-repo`. It fetches them once for the whole pass. It requires that `main`
+     carry `policy/instance` and no `policy/valley`;
+  4. reads the read grants at `--destination` from the identity registry in `--registry-dir` at the
+     commit of `--registry-ref` it fetched;
   5. runs `valley plan --all --json` and `valley pending --all --json` in the pointer repository,
      `$XDG_CACHE_HOME/valley-web-publish/_pointer.git`, so the CLI discovers the projects through
      `refs/the-valley/projects` and the signers through `refs/the-valley/signers`.

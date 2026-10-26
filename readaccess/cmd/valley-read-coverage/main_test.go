@@ -84,25 +84,10 @@ func policy(name, identity, readers string) map[string]string {
 		"\"\nidentity: \"" + identity + "\"\nreaders: {" + readers + "}\n"}
 }
 
-// The report names each project a reader lacks a consent for, and which:
-// a project with no main, no policy/read, or one that does not name the
-// reader lacks its own consent; a project no grant covers lacks the
-// instance's.
-func TestCoverage(t *testing.T) {
-	needTool(t, "git")
-	needTool(t, "cue")
-	root := t.TempDir()
-	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
-	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "gitconfig"))
-	t.Setenv("HOME", root)
-	schemas, err := filepath.Abs(filepath.Join("..", "..", "..", "schema"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := filepath.Join(root, "srv")
-
-	instance := policy("valley", idValley, "operator: true")
-	instance["identity/registry.cue"] = `package identity
+// registry is the instance's identity registry: the operator governs it
+// and reads every project, and anyone reads the projects in scope.
+func registry(scope string) string {
+	return `package identity
 
 boundaries: {
 	registry: kind: "registry"
@@ -117,8 +102,30 @@ principals: operator: {
 		read: {boundary: "web", projects: "all"}
 	}
 }
-anyone: grants: read: {boundary: "web", projects: {app: "` + idApp + `", site: "` + idSite + `"}}
+anyone: grants: read: {boundary: "web", projects: ` + scope + `}
 `
+}
+
+// coverageValley makes a valley in a new directory: the instance repository
+// valley, whose registry on main lets anyone read app and site, and the
+// projects app, site, docs and fresh beside it. It returns the instance
+// repository and the schemas' directory.
+func coverageValley(t *testing.T) (string, string) {
+	t.Helper()
+	needTool(t, "git")
+	needTool(t, "cue")
+	root := t.TempDir()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", filepath.Join(root, "gitconfig"))
+	t.Setenv("HOME", root)
+	schemas, err := filepath.Abs(filepath.Join("..", "..", "..", "schema"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := filepath.Join(root, "srv")
+
+	instance := policy("valley", idValley, "operator: true")
+	instance["identity/registry.cue"] = registry(`{app: "` + idApp + `", site: "` + idSite + `"}`)
 	valley := project(t, srv, "valley", instance)
 	project(t, srv, "app", policy("app", idApp, "anyone: true, operator: true"))
 	project(t, srv, "site", policy("site", idSite, "anyone: true"))
@@ -126,7 +133,36 @@ anyone: grants: read: {boundary: "web", projects: {app: "` + idApp + `", site: "
 	project(t, srv, "fresh", nil)
 	list := hostGit(t, "app\ndocs\nfresh\nsite\nvalley\n", "-C", valley, "hash-object", "-w", "--stdin")
 	hostGit(t, "", "-C", valley, "update-ref", "refs/the-valley/projects", list)
+	return valley, schemas
+}
 
+// report runs the command over the valley for the reader, with the flags
+// given after the others, and fails the test unless it exits 0.
+func report(t *testing.T, valley, schemas, reader string, more ...string) (stdout, stderr string) {
+	t.Helper()
+	var out, errs bytes.Buffer
+	code := run(context.Background(), append([]string{"--instance-repo", valley, "--destination", "example.org",
+		"--reader", reader, "--read-schema", filepath.Join(schemas, "read.cue"),
+		"--identity-schema", filepath.Join(schemas, "identity.cue")}, more...), &out, &errs, time.Now())
+	if code != 0 {
+		t.Fatalf("%s: exited %d: %s", reader, code, errs.String())
+	}
+	return out.String(), errs.String()
+}
+
+func sameReport(t *testing.T, what, stdout string, want []string) {
+	t.Helper()
+	if got := strings.Split(strings.TrimSpace(stdout), "\n"); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("%s: the report is\n%s\nwant\n%s", what, strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The report names each project a reader lacks a consent for, and which:
+// a project with no main, no policy/read, or one that does not name the
+// reader lacks its own consent; a project no grant covers lacks the
+// instance's.
+func TestCoverage(t *testing.T) {
+	valley, schemas := coverageValley(t)
 	for _, c := range []struct {
 		reader string
 		want   []string
@@ -144,15 +180,52 @@ anyone: grants: read: {boundary: "web", projects: {app: "` + idApp + `", site: "
 			"anyone may read 2 of 5 projects at example.org",
 		}},
 	} {
-		var stdout, stderr bytes.Buffer
-		code := run(context.Background(), []string{"--instance-repo", valley, "--destination", "example.org",
-			"--reader", c.reader, "--read-schema", filepath.Join(schemas, "read.cue"),
-			"--identity-schema", filepath.Join(schemas, "identity.cue")}, &stdout, &stderr, time.Now())
-		if code != 0 {
-			t.Fatalf("%s: exited %d: %s", c.reader, code, stderr.String())
-		}
-		if got := strings.Split(strings.TrimSpace(stdout.String()), "\n"); strings.Join(got, "\n") != strings.Join(c.want, "\n") {
-			t.Errorf("%s: the report is\n%s\nwant\n%s", c.reader, strings.Join(got, "\n"), strings.Join(c.want, "\n"))
+		stdout, _ := report(t, valley, schemas, c.reader)
+		sameReport(t, c.reader, stdout, c.want)
+	}
+}
+
+// The registry is read at --registry-ref, the ref the identity compiler
+// reads it at. A grant revoked on that ref alone is revoked, whatever main
+// still says, and an instance repository with no such ref grants no read.
+func TestRegistryRef(t *testing.T) {
+	valley, schemas := coverageValley(t)
+	main := hostGit(t, "", "-C", valley, "rev-parse", "main")
+	revoked := map[string]string{"identity/registry.cue": registry(`{app: "` + idApp + `"}`)}
+	for name, body := range policy("valley", idValley, "operator: true") {
+		revoked[name] = body
+	}
+	commit := hostGit(t, "", "-C", valley, "-c", "user.name=test", "-c", "user.email=test@example.org",
+		"commit-tree", tree(t, valley, revoked), "-p", main, "-m", "valley: site's grant to anyone is revoked")
+	hostGit(t, "", "-C", valley, "update-ref", "refs/heads/registry", commit)
+
+	noGrant := func(name string) string {
+		return name + ": no project consent (its main holds no policy/read); no instance grant (no read grant of anyone at example.org names " + name + ")"
+	}
+	stdout, _ := report(t, valley, schemas, "anyone", "--registry-ref", "refs/heads/registry")
+	sameReport(t, "anyone at refs/heads/registry", stdout, []string{
+		noGrant("docs"),
+		"fresh: no project consent (it has no main); no instance grant (no read grant of anyone at example.org names fresh)",
+		"site: no instance grant (no read grant of anyone at example.org covers site with the identity " + idSite + ")",
+		"valley: no project consent (its policy/read does not name anyone); no instance grant (no read grant of anyone at example.org covers valley with the identity " + idValley + ")",
+		"anyone may read 1 of 5 projects at example.org",
+	})
+	if stdout, _ := report(t, valley, schemas, "anyone"); !strings.HasSuffix(strings.TrimSpace(stdout), "anyone may read 2 of 5 projects at example.org") {
+		t.Errorf("at main, site's grant is not revoked, and the report is\n%s", stdout)
+	}
+
+	stdout, stderr := report(t, valley, schemas, "operator", "--registry-ref", "refs/heads/none")
+	if !strings.Contains(stderr, "holds no refs/heads/none, so it has no registry, and grants no read") ||
+		!strings.HasSuffix(strings.TrimSpace(stdout), "operator may read 0 of 5 projects at example.org") {
+		t.Errorf("with no registry ref, the report is\n%s\nand the command said\n%s", stdout, stderr)
+	}
+
+	for _, ref := range []string{"main", "refs/heads/main~1", "refs/heads/../main", "refs/heads/registry.lock", "refs/heads/a b", "refs//main"} {
+		var out, errs bytes.Buffer
+		if code := run(context.Background(), []string{"--instance-repo", valley, "--destination", "example.org",
+			"--reader", "anyone", "--registry-ref", ref, "--read-schema", filepath.Join(schemas, "read.cue"),
+			"--identity-schema", filepath.Join(schemas, "identity.cue")}, &out, &errs, time.Now()); code != 2 {
+			t.Errorf("--registry-ref %q: exited %d, want 2", ref, code)
 		}
 	}
 }

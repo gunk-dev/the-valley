@@ -80,6 +80,11 @@ let
       }
     ];
   };
+  # The publisher reading the registry at a ref the instance repository's
+  # protection does not cover.
+  unprotectedRegistryWebPublisherHost = webPublisherHost.extendModules {
+    modules = [ { services.valley.identity.ref = "refs/heads/registry"; } ];
+  };
   # The publisher with no instance repository to discover the projects and
   # the signers through.
   noInstanceWebPublisherHost = webPublisherHost.extendModules {
@@ -189,6 +194,11 @@ let
       host = conflictingKeysHost;
       says = "more than one principal tag";
       why = "a key declared under two tags would push as whichever entry sshd reads first";
+    }
+    {
+      host = unprotectedRegistryWebPublisherHost;
+      says = "whose refs/heads/registry is not protected";
+      why = "a publisher reading the registry at an unprotected ref would let any key that can push there grant anyone read";
     }
     {
       host = noInstanceWebPublisherHost;
@@ -612,7 +622,7 @@ let
       "-/var/lib/valley-integrator"
     ])
     || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --principals /nix/store/" command)
-    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-dir identity" command)
+    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-ref refs/heads/main --registry-dir identity" command)
     || service.MemoryMax or null != "1G"
     || service.MemorySwapMax or null != "0"
     || unit.restartIfChanged != false

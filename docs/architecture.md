@@ -2756,11 +2756,12 @@ names another project than the one it is read from consents to nothing.
 ### Reading the two consents
 
 `readaccess.Reader` reads both consents out of git commits (`readaccess/read.go`): a project's
-`policy/read` at its `main`, and the registry at the instance repository's `main`. It lists the
-directory with `git ls-tree` and reads each `*.cue` regular file with `git cat-file`, never a
-checkout. A directory with an entry whose name has a directory part, is `.` or `..`, or appears
-twice is invalid, and nothing of it is copied out. Otherwise the reader copies the files into a
-scratch directory with no `cue.mod` and exports them with `cue` under the schema.
+`policy/read` at its `main`, and the registry at the instance repository's registry ref, the
+`services.valley.identity.ref` the identity compiler reads it at (default `refs/heads/main`). It
+lists the directory with `git ls-tree` and reads each `*.cue` regular file with `git cat-file`,
+never a checkout. A directory with an entry whose name has a directory part, is `.` or `..`, or
+appears twice is invalid, and nothing of it is copied out. Otherwise the reader copies the files
+into a scratch directory with no `cue.mod` and exports them with `cue` under the schema.
 
 A document may declare a definition of its schema again, and `cue` unifies the two, which can reopen
 a closed definition to fields the schema does not allow. So the reader holds the exported JSON to

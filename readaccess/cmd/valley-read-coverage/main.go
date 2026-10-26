@@ -1,8 +1,8 @@
 // valley-read-coverage lists the projects a principal cannot read at a
 // destination, and which of the two consents each lacks: the project's own
 // policy/read, or a read grant in the instance's identity registry. It reads
-// the instance repository and each project's main on a valley host, and
-// changes nothing. It repairs no project and bypasses no policy.
+// the instance repository's registry ref and each project's main on a valley
+// host, and changes nothing. It repairs no project and bypasses no policy.
 package main
 
 import (
@@ -22,13 +22,14 @@ import (
 )
 
 const usage = `usage: valley-read-coverage --instance-repo DIR --destination NAME
-                            --reader PRINCIPAL [--registry-dir DIR]
-                            [--read-schema FILE] [--identity-schema FILE]
+                            --reader PRINCIPAL [--registry-ref REF]
+                            [--registry-dir DIR] [--read-schema FILE]
+                            [--identity-schema FILE]
 
 List the projects PRINCIPAL cannot read at the destination NAME, and the
 consent each lacks: the project's own, its policy/read on its main, or the
-instance's, a read grant in the identity registry on the instance
-repository's main.
+instance's, a read grant in the identity registry at the instance
+repository's REF.
 
   --instance-repo DIR   an absolute local path to the instance repository,
                         whose refs/the-valley/projects lists the projects;
@@ -38,8 +39,13 @@ repository's main.
   --destination NAME    the destination of the edge read boundary
   --reader PRINCIPAL    the principal, or anyone for a reader with no
                         credential
-  --registry-dir DIR    the registry's directory in the instance
-                        repository's main (default identity)
+  --registry-ref REF    the ref of the instance repository whose tip
+                        carries the registry, as the identity compiler and
+                        the web publisher read it: a full ref name
+                        (default refs/heads/main); an instance repository
+                        with no REF holds no registry, so it grants no read
+  --registry-dir DIR    the registry's directory in that tip (default
+                        identity)
   --read-schema FILE    schema/read.cue (default $VALLEY_READ_SCHEMA)
   --identity-schema FILE
                         schema/identity.cue (default
@@ -55,8 +61,8 @@ func main() {
 }
 
 type config struct {
-	instanceRepo, destination, reader, registryDir string
-	access                                         readaccess.Reader
+	instanceRepo, destination, reader, registryRef, registryDir string
+	access                                                      readaccess.Reader
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer, now time.Time) int {
@@ -66,6 +72,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, now time.
 	fs.StringVar(&c.instanceRepo, "instance-repo", "", "")
 	fs.StringVar(&c.destination, "destination", "", "")
 	fs.StringVar(&c.reader, "reader", "", "")
+	fs.StringVar(&c.registryRef, "registry-ref", "refs/heads/main", "")
 	fs.StringVar(&c.registryDir, "registry-dir", "identity", "")
 	fs.StringVar(&c.access.ReadSchema, "read-schema", os.Getenv("VALLEY_READ_SCHEMA"), "")
 	fs.StringVar(&c.access.IdentitySchema, "identity-schema", os.Getenv("VALLEY_IDENTITY_SCHEMA"), "")
@@ -81,6 +88,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, now time.
 		err = errors.New("--instance-repo must be an absolute local path")
 	case c.destination == "" || c.reader == "":
 		err = errors.New("--destination and --reader are required")
+	case !readaccess.ValidRef(c.registryRef):
+		err = fmt.Errorf("--registry-ref %q is not a full ref name: it opens with refs/, and git check-ref-format accepts it", c.registryRef)
 	case c.access.ReadSchema == "" || c.access.IdentitySchema == "":
 		err = errors.New("no schema: give --read-schema and --identity-schema, or set VALLEY_READ_SCHEMA and VALLEY_IDENTITY_SCHEMA")
 	}
@@ -96,25 +105,28 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, now time.
 }
 
 // report reads the registry and every project's policy/read, and says
-// which consents each project lacks.
+// which consents each project lacks. It reads the registry at the commit
+// it resolves --registry-ref to once, as the identity compiler does.
 func (c *config) report(ctx context.Context, stdout, stderr io.Writer, now time.Time) error {
 	r := &c.access
 	if err := r.CheckSchemas(ctx); err != nil {
 		return err
 	}
-	tip, ok, err := revParse(ctx, c.instanceRepo, "refs/heads/main^{commit}")
+	var grants readaccess.Grants
+	tip, ok, err := revParse(ctx, c.instanceRepo, c.registryRef+"^{commit}")
 	if err != nil {
 		return err
 	} else if !ok {
-		return fmt.Errorf("%s has no main", c.instanceRepo)
+		fmt.Fprintf(stderr, "valley-read-coverage: the instance repository holds no %s, so it has no registry, and grants no read\n", c.registryRef)
+	} else {
+		grants, err = r.Grants(ctx, c.instanceRepo, tip, c.registryDir, c.destination, now)
 	}
-	grants, err := r.Grants(ctx, c.instanceRepo, tip, c.registryDir, c.destination, now)
 	var bad *readaccess.InvalidError
 	switch {
 	case errors.Is(err, readaccess.ErrMissing):
-		fmt.Fprintf(stderr, "valley-read-coverage: the instance repository's main holds no registry in %s/, so it grants no read\n", c.registryDir)
+		fmt.Fprintf(stderr, "valley-read-coverage: the instance repository's %s holds no registry in %s/, so it grants no read\n", c.registryRef, c.registryDir)
 	case errors.As(err, &bad):
-		fmt.Fprintf(stderr, "valley-read-coverage: the registry in %s/ is not valid, so it grants no read: %v\n", c.registryDir, err)
+		fmt.Fprintf(stderr, "valley-read-coverage: the registry in %s/ at %s is not valid, so it grants no read: %v\n", c.registryDir, c.registryRef, err)
 	case err != nil:
 		return fmt.Errorf("could not read the registry: %w", err)
 	}

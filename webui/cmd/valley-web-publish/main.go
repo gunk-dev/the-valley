@@ -11,11 +11,11 @@
 //  2. read the export key from the state directory, or make one on the
 //     first start, say its verifier line whenever it changes, and hold the
 //     state and the caches to --max-storage before anything is fetched;
-//  3. fetch main and refs/the-valley/projects of the instance repository
-//     into the publisher's own bare repository, whose origin it is, once
-//     for the whole pass, refuse a main that carries policy/valley, and
-//     read the read grants at --destination from the identity registry at
-//     that main;
+//  3. fetch main, refs/the-valley/projects and --registry-ref of the
+//     instance repository into the publisher's own bare repository, whose
+//     origin it is, once for the whole pass, refuse a main that carries
+//     policy/valley, and read the read grants at --destination from the
+//     identity registry at the --registry-ref it fetched;
 //  4. run valley plan --all --json and valley pending --all --json in the
 //     pointer repository, whose main names the instance repository at
 //     policy/valley, so they discover the projects and the signers through
@@ -64,9 +64,9 @@ import (
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME
                           (--receiver URL | --out DIR) [--principals FILE]
                           [--state DIR] [--read-schema FILE]
-                          [--identity-schema FILE] [--registry-dir DIR]
-                          [--recheck DURATION] [--max-bundles SIZE]
-                          [--max-storage SIZE]
+                          [--identity-schema FILE] [--registry-ref REF]
+                          [--registry-dir DIR] [--recheck DURATION]
+                          [--max-bundles SIZE] [--max-storage SIZE]
 
 One pass of the web publisher: read the valley's public projects, and
 upload them to the receiver at URL, or write them to DIR.
@@ -96,8 +96,14 @@ upload them to the receiver at URL, or write them to DIR.
   --read-schema FILE   schema/read.cue (default $VALLEY_READ_SCHEMA)
   --identity-schema FILE
                        schema/identity.cue (default $VALLEY_IDENTITY_SCHEMA)
-  --registry-dir DIR   the identity registry's directory in the instance
-                       repository's main (default identity)
+  --registry-ref REF   the ref of the instance repository whose tip carries
+                       the identity registry, as the identity compiler
+                       reads it: a full ref name (default refs/heads/main);
+                       a pass reads the registry at the one commit it
+                       fetched, and an instance repository with no REF
+                       holds no registry, so every project is private
+  --registry-dir DIR   the identity registry's directory in that commit
+                       (default identity)
   --recheck DURATION   how long an acknowledgement is trusted: a pass whose
                        digest the receiver acknowledged less than this ago
                        sends nothing (default 1h)
@@ -154,6 +160,7 @@ type config struct {
 	state        string
 	readSchema   string
 	idSchema     string
+	registryRef  string
 	registryDir  string
 	recheck      time.Duration
 	maxBundles   byteSize
@@ -173,6 +180,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.state, "state", "", "")
 	fs.StringVar(&c.readSchema, "read-schema", os.Getenv("VALLEY_READ_SCHEMA"), "")
 	fs.StringVar(&c.idSchema, "identity-schema", os.Getenv("VALLEY_IDENTITY_SCHEMA"), "")
+	fs.StringVar(&c.registryRef, "registry-ref", "refs/heads/main", "")
 	fs.StringVar(&c.registryDir, "registry-dir", "identity", "")
 	fs.DurationVar(&c.recheck, "recheck", time.Hour, "")
 	fs.Var(&c.maxBundles, "max-bundles", "")
@@ -198,6 +206,8 @@ func parseArgs(args []string) (config, error) {
 		return c, fmt.Errorf("--destination %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.destination)
 	case (c.receiver == "") == (c.out == ""):
 		return c, errors.New("give exactly one of --receiver and --out")
+	case !readaccess.ValidRef(c.registryRef):
+		return c, fmt.Errorf("--registry-ref %q is not a full ref name: it opens with refs/, and git check-ref-format accepts it", c.registryRef)
 	case c.readSchema == "" || c.idSchema == "":
 		return c, errors.New("no schema: give --read-schema and --identity-schema, or set VALLEY_READ_SCHEMA and VALLEY_IDENTITY_SCHEMA")
 	case c.recheck < 0:

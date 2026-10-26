@@ -265,11 +265,18 @@ func (v *testValley) grantIn(instance, projects string) {
 		v.commit(instance, instance+": no registry")
 		return
 	}
-	v.write(filepath.Join(v.work[instance], "identity", "registry.cue"), `package identity
+	v.write(filepath.Join(v.work[instance], "identity", "registry.cue"), registryText(projects))
+	v.commit(instance, instance+": grant read")
+}
+
+// registryText is the instance's identity registry whose read grant to
+// anyone at the destination covers the projects given.
+func registryText(projects string) string {
+	return `package identity
 
 boundaries: {
 	registry: kind: "registry"
-	web: {kind: "edge-read", destination: "`+destination+`"}
+	web: {kind: "edge-read", destination: "` + destination + `"}
 }
 genesis: "operator"
 principals: operator: {
@@ -280,9 +287,8 @@ principals: operator: {
 		read: {boundary: "web", projects: "all"}
 	}
 }
-anyone: grants: read: {boundary: "web", projects: `+projects+`}
-`)
-	v.commit(instance, instance+": grant read")
+anyone: grants: read: {boundary: "web", projects: ` + projects + `}
+`
 }
 
 func (v *testValley) commit(project, message string) {
@@ -554,6 +560,47 @@ reader: {anyone: true}`)
 		}
 		if holds := bytes.Contains(data, []byte(v.siteTitle)); holds != exported {
 			t.Errorf("%s: export.json holds site's knot: %v; site is exported: %v", step.what, holds, exported)
+		}
+	}
+}
+
+// The registry is read at --registry-ref, the ref the identity compiler
+// reads it at, which need not be main. A grant revoked on that ref alone
+// is revoked, whatever main still says. An instance repository with no
+// such ref has no registry, so every project is private.
+func TestTheRegistryIsReadAtItsRef(t *testing.T) {
+	v := newValley(t)
+	v.declare("site", policy("site", "anyone"))
+	work := v.work["valley"]
+	v.run(work, "git", "checkout", "--quiet", "-b", "registry")
+	v.write(filepath.Join(work, "identity", "registry.cue"), registryText(`{app: "`+identities["app"]+`"}`))
+	v.run(work, "git", "commit", "--quiet", "--all", "-m", "valley: site's grant to anyone is revoked")
+	v.run(work, "git", "push", "--quiet", "origin", "registry")
+	v.run(work, "git", "checkout", "--quiet", "main")
+
+	for _, c := range []struct {
+		what   string
+		more   []string
+		public string
+		warns  string
+	}{
+		{"main", nil, "public: app, site; private: valley", ""},
+		{"refs/heads/registry, where site's grant is revoked", []string{"--registry-ref", "refs/heads/registry"},
+			"public: app; private: site, valley", ""},
+		{"a ref the instance repository does not hold", []string{"--registry-ref", "refs/heads/none"},
+			"public: none; private: app, site, valley", "the instance repository holds no refs/heads/none"},
+	} {
+		stdout, stderr := v.publish(append([]string{"--out", filepath.Join(t.TempDir(), "export")}, c.more...)...)
+		mustSay(t, c.what, stdout, c.public)
+		if c.warns != "" {
+			mustSay(t, c.what, stderr, c.warns)
+		}
+	}
+
+	for _, ref := range []string{"main", "refs/heads/main~1", "refs/heads/../main", "refs/heads/registry.lock", "refs/heads/a b", "refs//main"} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), v.args("--out", t.TempDir(), "--registry-ref", ref), &stdout, &stderr); code != 2 {
+			t.Errorf("--registry-ref %q: the pass exited %d, want 2", ref, code)
 		}
 	}
 }

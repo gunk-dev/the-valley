@@ -283,6 +283,25 @@ func validDir(dir string) bool {
 		dir != ".." && !strings.HasPrefix(dir, "../")
 }
 
+// ValidRef reports whether ref is a full ref name, which the registry can be
+// read at: it opens with refs/, and git check-ref-format accepts it. So no
+// component is empty, opens with a dot or ends with .lock, and the name
+// holds no "..", no "@{", no control character, space, ~, ^, :, ?, *, [
+// or backslash, and does not end with a dot.
+func ValidRef(ref string) bool {
+	if !strings.HasPrefix(ref, "refs/") || strings.HasSuffix(ref, ".") ||
+		strings.Contains(ref, "..") || strings.Contains(ref, "@{") ||
+		strings.ContainsFunc(ref, func(r rune) bool { return r < 0x20 || r == 0x7f || strings.ContainsRune(" ~^:?*[\\", r) }) {
+		return false
+	}
+	for _, part := range strings.Split(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
+}
+
 // plainName reports whether name is one plain path component: not empty,
 // not . or .., and with no slash.
 func plainName(name string) bool {

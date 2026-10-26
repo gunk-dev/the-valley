@@ -1565,7 +1565,9 @@ in
           registry. A registry edit takes effect at the first compilation
           after it lands on this ref, and never before: an edit in a
           branch, in a worktree, or in an integration request that has not
-          been integrated governs nothing.
+          been integrated governs nothing. The web publisher
+          (`services.valley.webPublisher`) reads its read grants from the
+          registry at this ref too.
         '';
       };
 
@@ -1733,8 +1735,12 @@ in
       let
         name = cfg.integrator.instanceProject;
         protected = gitProjects.${name}.protection.refs or [ ];
+        # The web publisher (webui-publisher.nix) reads the registry at
+        # identity.ref too, when its module is imported and on.
+        publisher = config.services.valley.webPublisher.enable or false;
         read =
-          lib.optional cfg.integrator.enable "refs/heads/main" ++ lib.optional cfg.identity.enable cfg.identity.ref;
+          lib.optional cfg.integrator.enable "refs/heads/main"
+          ++ lib.optional (cfg.identity.enable || publisher) cfg.identity.ref;
       in
       map (ref: {
         assertion = lib.any (pattern: refPatternMatches pattern ref) protected;

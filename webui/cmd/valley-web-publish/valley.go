@@ -104,6 +104,29 @@ type (
 	}
 )
 
+// readGrants reads the read grants at the destination from the identity
+// registry at the commit fetchInstance fetched of --registry-ref. A
+// registry that is missing or invalid grants nothing, so every project is
+// private. One that cannot be read ends the pass.
+func (p *publisher) readGrants(ctx context.Context, inst instanceRead) (readaccess.Grants, error) {
+	if inst.registry == "" {
+		p.warn("the instance repository holds no %s, so it has no identity registry, and every project is private", p.cfg.registryRef)
+		return nil, nil
+	}
+	grants, err := p.access.Grants(ctx, p.origin, inst.registry, p.cfg.registryDir, p.cfg.destination, p.now())
+	var bad *readaccess.InvalidError
+	switch {
+	case errors.Is(err, readaccess.ErrMissing):
+		return nil, nil
+	case errors.As(err, &bad):
+		p.warn("the instance's identity registry at %s is not valid, so every project is private: %v", short(inst.registry), err)
+		return nil, nil
+	case err != nil:
+		return nil, fmt.Errorf("could not read the instance's identity registry at %s: %w", short(inst.registry), err)
+	}
+	return grants, nil
+}
+
 // read is one read of the valley, with the instance as fetchInstance read
 // it. A project is public when anyone may read it at the destination, by
 // the read grants in the instance's registry and the project's own
@@ -112,16 +135,10 @@ type (
 // other failure to read a project a grant names ends the pass: an export
 // without it would take it off the web.
 func (p *publisher) read(ctx context.Context, inst instanceRead) (*reading, error) {
-	grants, err := p.access.Grants(ctx, p.origin, inst.tip, p.cfg.registryDir, p.cfg.destination, p.now())
-	var bad *readaccess.InvalidError
-	switch {
-	case errors.Is(err, readaccess.ErrMissing):
-	case errors.As(err, &bad):
-		p.warn("the instance's identity registry at %s is not valid, so every project is private: %v", short(inst.tip), err)
-	case err != nil:
-		return nil, fmt.Errorf("could not read the instance's identity registry at %s: %w", short(inst.tip), err)
+	grants, err := p.readGrants(ctx, inst)
+	if err != nil {
+		return nil, err
 	}
-
 	planJSON, err := p.valley(ctx, p.pointer, "plan", "--all", "--json")
 	if err != nil {
 		return nil, err
@@ -368,30 +385,54 @@ const (
 	projectsRef    = "refs/the-valley/projects"
 	originMain     = "refs/remotes/origin/main"
 	originProjects = "refs/remotes/origin/projects"
+	originRegistry = "refs/remotes/origin/registry"
 )
 
 // instanceRead is the instance repository as a pass found it: main's tip,
-// the project list it publishes, and the projects that list names.
+// the commit of --registry-ref, the project list it publishes, and the
+// projects that list names. registry is "" when the instance repository
+// holds no --registry-ref.
 type instanceRead struct {
-	tip, list string
-	projects  []string
+	tip, registry, list string
+	projects            []string
 }
 
-// fetchInstance fetches the instance repository's main and its project
-// list into the publisher's repository, once a pass. A repository whose
+// fetchInstance fetches the instance repository's main, its project list
+// and --registry-ref into the publisher's repository, once a pass. The
+// registry is read at the commit fetched here for the whole pass, as the
+// identity compiler reads it at the commit it resolved. A repository whose
 // main carries no policy/instance is not an instance repository. One whose
 // main carries policy/valley is refused too: it names another instance as
 // its own.
 func (p *publisher) fetchInstance(ctx context.Context) (instanceRead, error) {
 	var r instanceRead
-	if err := p.shareRepository(ctx, p.origin, p.cfg.instanceRepo, map[string]string{
-		originMain: "refs/heads/main", originProjects: projectsRef,
-	}); err != nil {
-		return r, fmt.Errorf("could not read main and %s in the instance repository: %w", projectsRef, err)
+	refs := map[string]string{originMain: "refs/heads/main", originProjects: projectsRef}
+	read := "main and " + projectsRef
+	fromMain := p.cfg.registryRef == "refs/heads/main"
+	if !fromMain {
+		held, err := hasRef(ctx, p.cfg.instanceRepo, p.cfg.registryRef)
+		if err != nil {
+			return r, fmt.Errorf("could not read %s in the instance repository: %w", p.cfg.registryRef, err)
+		}
+		if held {
+			refs[originRegistry] = p.cfg.registryRef
+			read = "main, " + projectsRef + " and " + p.cfg.registryRef
+		}
+	}
+	if err := p.shareRepository(ctx, p.origin, p.cfg.instanceRepo, refs); err != nil {
+		return r, fmt.Errorf("could not read %s in the instance repository: %w", read, err)
 	}
 	var err error
 	if r.tip, err = revParse(ctx, p.origin, originMain+"^{commit}"); err != nil {
 		return r, err
+	}
+	switch {
+	case fromMain:
+		r.registry = r.tip
+	case refs[originRegistry] != "":
+		if r.registry, err = revParse(ctx, p.origin, originRegistry+"^{commit}"); err != nil {
+			return r, fmt.Errorf("%s in the instance repository is not a commit: %w", p.cfg.registryRef, err)
+		}
 	}
 	if _, err := git(ctx, p.origin, "cat-file", "-e", r.tip+":policy/instance"); err != nil {
 		return r, fmt.Errorf("%s holds no policy/instance on main, so it is not an instance repository", p.cfg.instanceRepo)
@@ -559,6 +600,17 @@ func listsRef(out []byte, ref string) bool {
 		}
 	}
 	return false
+}
+
+// hasRef reports whether repo holds ref. An error is a repository git
+// could not read.
+func hasRef(ctx context.Context, repo, ref string) (bool, error) {
+	_, err := git(ctx, repo, "rev-parse", "--verify", "--quiet", "--end-of-options", ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 func revParse(ctx context.Context, repo, rev string) (string, error) {

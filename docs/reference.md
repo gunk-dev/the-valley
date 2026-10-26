@@ -1909,14 +1909,12 @@ compact JSON ending with a newline.
   written. The corresponding entry in `edges` has `"state": "hidden"` and `null` for `why`,
   `status`, and `title`. The reference is removed from `waiting_on`, `cleared_by_ending`,
   `dangling`, and `unresolved`, because those lists reflect the hidden knot's status. The referring
-  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. A knot
-  that waits on one or more hidden knots carries `"waiting_on_hidden": true`. The field names no
-  hidden knot and gives no count. Every other knot omits the field, so an export in which no knot
-  waits on a hidden knot holds none, and `export.Decode` reads an export without it.
-- **What a hidden reference still tells:** `blocked_by` and `edges` keep each hidden reference's ID.
-  So for a knot that names one hidden blocker, `waiting_on_hidden` says whether that hidden knot
-  still blocks it. The field is set while the hidden knot blocks, and absent while it does not, even
-  while a published blocker keeps the knot `blocked`. The export permits this inference.
+  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. When a
+  knot has one or more open blockers in hidden projects, it carries `"waiting_on_hidden": true`. The
+  field omits the hidden knots' IDs and count. Other knots omit `waiting_on_hidden`, and
+  `export.Decode` accepts exports without it (see
+  [Unpublished blockers](./architecture.md#unpublished-blockers) for what a reader can infer when
+  `blocked_by` names a single hidden knot).
 - **Refusals (`export.Build`):** `export.Build` fails rather than build a partial export. It fails
   when a public project is missing or has an `error` in the plan or the pending listing, or when a
   knot in a public project is missing its detail, appears twice, or has no `body`. It fails with
@@ -2044,8 +2042,8 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
 
 - **Reachability (`export.Reachable`):** A git bundle can contain objects that `refs/heads/main`
   does not reach. When serving a repository, browsing serves a commit only when `export.Reachable`
-  confirms that it is a commit reachable from `source_tip`, named by a full object ID as long as
-  `source_tip`.
+  confirms that it is a commit reachable from `source_tip` and that its object ID has the same
+  length as `source_tip`.
 - **Commit outcome:** A commit has succeeded once `Store.Activate` has written the upload's sequence
   to `high-water` and swapped the `active` symlink to the new generation. The receiver then replies
   `200` with `valley-web-committed/v1`. A later failure while syncing the swap to disk or deleting
@@ -2267,11 +2265,10 @@ The receiver keeps every accepted export as an immutable generation in one state
   3. Build `repos/<project>.git` for each project not already in `repos/`. It removes any leftover
      `tmp/<project>.git`, then builds the repository in `tmp/<project>.git` from the staged bundle
      with `AcceptBundle` or from the active generation's repository at the same `source_tip` with
-     `CarryRepo`. It makes every directory in `tmp/<project>.git` mode `0755` and every file `0644`,
-     or `0444` where git wrote it read-only. It then syncs every file and directory to disk and
-     renames the repository to `repos/<project>.git`. If `AcceptBundle` fails, the staged bundle is
-     removed from `bodies/` so `Inventory` lists it as needed again. A build interrupted by a crash
-     stays in `tmp/` and is rebuilt on the next commit.
+     `CarryRepo`. It sets the file and directory modes in `tmp/<project>.git` (see **Modes** below),
+     syncs every file and directory to disk, and renames the repository to `repos/<project>.git`. If
+     `AcceptBundle` fails, the staged bundle is removed from `bodies/` so `Inventory` lists it as
+     needed again. A build interrupted by a crash stays in `tmp/` and is rebuilt on the next commit.
   4. Remove `bodies/` and `tmp/`, and verify that the staging directory holds only `export.json` and
      `repos/`, with each project's repository holding `refs/heads/main` at its `source_tip`.
   5. Set the mode of `repos/` and the staging directory to `0755`. Sync `export.json`, `repos/`, and
@@ -2285,15 +2282,14 @@ The receiver keeps every accepted export as an immutable generation in one state
   names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
   `git init` creates beforehand, so `Activate` recursively syncs each repository before renaming it
   into `repos/`.
-- **Modes:** The store sets each mode itself, so none depends on the receiver's umask.
-  - `staging/` and each upload's directory in it have mode `0700`, and each body `0600`. No other
-    user reads a body before it is verified.
-  - `exports/` has mode `0755`. In each generation, every directory has mode `0755` and every file
-    `0644`, or `0444` where git wrote it read-only. So any user who can reach `exports/` can read
-    every generation.
-  - The state directory's own mode is the deployment's choice: `OpenStore` creates it when it does
-    not exist, and never changes its mode. A server that runs as another user needs search and read
-    access to it.
+- **Modes:** The store sets every file and directory mode explicitly, independent of the receiver's
+  umask (see [Reading the state directory](./architecture.md#reading-the-state-directory)).
+  - `staging/` and each upload directory inside it have mode `0700`, and each staged body has mode
+    `0600`.
+  - `exports/` has mode `0755`. Inside each generation, every directory has mode `0755` and every
+    file has mode `0644`, or `0444` when git wrote the file read-only.
+  - The state directory's own mode is a `deployment choice`: `OpenStore` creates the directory if
+    needed and leaves its mode unchanged.
 - **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves `active`
   and holds a shared `flock(2)` (`LOCK_SH`) on `exports/<sequence>` until the caller releases it
   (`export.ErrNoExport` if no export has been activated yet). Because a request serves everything
@@ -2338,10 +2334,8 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 ```
 
 - **Flags:** Both flags are required.
-  - `--state DIR` names the receiver's state directory, which must exist. `valley-web` only reads
-    it, so it can run as a user with read access alone. That user needs search and read access to
-    the state directory itself, which the deployment gives it; the receiver makes `exports/` and
-    every generation readable by every user (see
+  - `--state DIR` names the receiver's existing state directory. `valley-web` opens it read-only
+    with `export.OpenReadOnly` (see
     [Reading the state directory](./architecture.md#reading-the-state-directory)).
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
@@ -2352,22 +2346,22 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 - **Routes:** The server answers `GET` and `HEAD`. Any other method answers `405` with
   `Allow: GET, HEAD`.
 
-| Route                                       | Page                                                                         |
-| :------------------------------------------ | :--------------------------------------------------------------------------- |
-| `/`                                         | The plan page                                                                |
-| `/<project>/` and `/<project>`              | `302` redirect to the root tree at the project's `source_tip`                |
-| `/<project>/knots/<id>`                     | One knot                                                                     |
-| `/<project>/source/`                        | `302` redirect to the root tree at the project's `source_tip`                |
-| `/<project>/source/tree/<commit>/<path>/`   | One directory and its README                                                 |
-| `/<project>/source/blob/<commit>/<path>`    | One file                                                                     |
-| `/<project>/source/log/<commit>`            | Up to 50 commits of history ending at `<commit>`, newest first               |
-| `/<project>/source/log/<commit>?from=<ids>` | The next older page of that history, starting from the commits `<ids>` names |
-| `/-/…`                                      | Reserved for the server's own paths. Every path here answers `404`.          |
+| Route                                       | Page                                                                       |
+| :------------------------------------------ | :------------------------------------------------------------------------- |
+| `/`                                         | The plan page                                                              |
+| `/<project>/` and `/<project>`              | `302` redirect to the root tree at the project's `source_tip`              |
+| `/<project>/knots/<id>`                     | One knot                                                                   |
+| `/<project>/source/`                        | `302` redirect to the root tree at the project's `source_tip`              |
+| `/<project>/source/tree/<commit>/<path>/`   | One directory and its README                                               |
+| `/<project>/source/blob/<commit>/<path>`    | One file                                                                   |
+| `/<project>/source/log/<commit>`            | Up to 50 commits of history ending at `<commit>`, newest first             |
+| `/<project>/source/log/<commit>?from=<ids>` | The next older page of that history, starting from the commits in `<ids>`  |
+| `/-/…`                                      | Reserved for the server's own routes. Every path under `/-/` answers `404` |
 
-- **Reserved paths:** Every path but `/` and those under `/-/` starts with a project name. A project
-  name cannot start with `-` (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`), so a project's path is never one of
-  the server's own. A project may be named `source`, `knots`, `web-export`, or `robots.txt`, and it
-  is served on every route like any other.
+- **Reserved paths:** Every path other than `/` and `/-/…` starts with a project name. Project names
+  match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a letter or digit. A project may be
+  named `source`, `knots`, `web-export`, or `robots.txt` and is served on every project route (see
+  [Paths](./architecture.md#paths)).
 
 - **One generation per request:** Each request opens the active generation once with `Store.Open`
   and renders its entire response from that generation. It releases the generation once rendering
@@ -2423,10 +2417,11 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   - A `target` that names only an unpublished project is shown as "an unpublished project".
   - A `changes` link `valley:<project>/<change ID>` into an unpublished project is shown as "a
     change in an unpublished project".
-  - A tree row's "waits on" chip names the published knots in the knot's `waiting_on`. When the knot
-    also waits on knots of unpublished projects (`waiting_on_hidden`), the chip ends with "a knot in
-    an unpublished project", once, whatever their number. A blocked knot with no published blocker
-    shows that phrase alone.
+  - On the plan page, a tree row's "waits on" chip lists the published knots in the knot's
+    `waiting_on` list. When the knot also waits on knots in unpublished projects
+    (`waiting_on_hidden`), the chip ends with "a knot in an unpublished project" once, regardless of
+    how many unpublished knots block it. A blocked knot with no published blocker shows "waits on a
+    knot in an unpublished project" alone.
 
   A `blocked_by` entry that names a missing knot in a public project still shows its reference text.
   It is marked "not found in its graph" when its edge is `dangling`, and "not found" otherwise.
@@ -2434,24 +2429,25 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 - **Source browser:** The server reads each generation's repositories by running `git` subprocesses
   through `export.Git` and `export.GitStream`. It passes `git` only verified object IDs, never text
   from the request.
-  - A source route serves `<commit>` only when it is a full object ID as long as the project's
-    `source_tip`, and `export.Reachable` finds it reachable from the `source_tip`. Anything else
-    answers `404`, including an unreachable commit, a tree or blob ID, an abbreviated ID, a ref name
-    such as `main`, and the first 40 hex digits of a SHA-256 commit.
+  - A source route serves `<commit>` only when it is a full object ID with the same length as the
+    project's `source_tip` and `export.Reachable` finds it reachable from `source_tip`. Anything
+    else answers `404`, including an unreachable commit, a tree or blob ID, an abbreviated ID, a ref
+    name such as `main`, and the first 40 hex digits of a SHA-256 commit.
   - The server resolves `<path>` from the commit's root tree one segment at a time with
     `git ls-tree` on tree object IDs, without `--long`. A path answers `404` if it is deeper than 64
-    segments (`server.MaxDepth`) or if any segment is empty, `.`, `..`, or contains `/` or NUL.
+    segments (`server.MaxDepth`) or if any segment is empty, `.`, `..`, or contains `/` or NUL. The
+    directories along `<path>` share one 4 MiB budget of `git ls-tree` output (`server.MaxRead`),
+    read up to the entry each segment names; a path whose entry lies past that 4 MiB budget answers
+    `404`.
   - Every source link names the project, a full commit ID, and a path.
   - The server streams `git` output through `export.GitStream` and reads at most 4 MiB of a
     directory listing or history page (`server.MaxRead`). Once `git` prints more than 4 MiB, the
     server stops `git` and waits for it to exit.
   - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. If a
     directory's `git ls-tree` output exceeds 4 MiB, the page lists only the entries from the first 4
-    MiB and notes that the listing is partial. The directories along a path share one 4 MiB of
-    `git ls-tree` output, read up to the entry each segment names. A path whose entries are past
-    those 4 MiB answers `404`. Below the listing, the page shows the directory's README:
-    `README.md`, `README`, or `README.txt` in that order, or else the first file named `readme` in
-    any case with any extension.
+    MiB and notes that the listing is partial. Below the listing, the page shows the directory's
+    README: `README.md`, `README`, or `README.txt` in that order, or else the first file named
+    `readme` in any case with any extension.
   - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`. It
     shows at most 10,000 lines (`server.MaxLines`). It stops at the line that would take the escaped
     text and row markup past 2 MiB (`server.MaxShown`). When the file is longer, the page says "The
@@ -2464,41 +2460,46 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     exceed 4 MiB of `git log` output, the page ends at the commit cut off by the 4 MiB bound,
     showing as much of that commit as was read. The page notes that it ends early and links to the
     older commits after it.
-  - A log page lists commits as `git log --date-order` does: never a commit before any of its
-    children. Its Older link is the same history with `?from=` naming the commits the older page
-    starts from. Those are the commits the page leaves to show: the parents of the commits it shows,
-    and the commits it started from, less the commits it shows. While no page leaves more than 64,
-    following the Older links from a commit's first page shows every commit of its history once,
-    across merges too. Each page asks git for 50 commits, however old the page is.
-  - A `from` is one value: 1 to 64 full commit IDs (`server.MaxFrontier`), separated by commas, in
-    ascending order and none twice. Each must be a commit that `<commit>` reaches. Anything else
-    answers `404`. A page past the first links the history's first page as "Newest".
-  - A page that leaves more than 64 commits to show starts its Older link from the first 64 in
-    ascending order. Below its commits it lists each of the rest by its short ID. Each links the
-    same history with `?from=` naming that commit alone. The page says how many lines of history
-    continue. So the links from a page reach every older commit along the parents a page follows.
-    Two of the pages they lead to may show the same commit.
-  - A page leaves at most 192 commits to show (`server.MaxLeftToShow`), so it lists at most 128
-    links besides Older. It ends early, before a merge that would leave more, and says so. It always
-    shows its first commit, which leaves at most 63 commits it started from and 128 parents.
-  - A page follows the first 128 parents of a commit (`server.MaxParents`). A merge with more is
-    shown, with a note that older pages follow its first 128. The page leaves none of its other
-    parents to show, so the older pages may miss commits that only those parents reach. However many
-    parents a merge has, its page never fails for it.
-- **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
-  `git` commands, and rendering the page. A request that runs out of time answers `503` with
-  `Retry-After: 5`. A source request holds its `git` slot for at most 5 seconds, from when it takes
-  it. Those 5 seconds cover its wait for its generation's export to be read and all of its `git`
-  commands. A source request still holding its slot when they pass answers `503` with
-  `Retry-After: 5`, and the server logs it.
+  - A log page lists commits in `git log --date-order`, which always places a child before its
+    parents. Each page asks `git` for 50 commits, regardless of how far back in history the page
+    starts. Its "Older" link points to the same route with `?from=` naming the frontier of remaining
+    commits: the parents of the commits shown on the page, plus the commits the page started from,
+    minus the commits shown on the page (see
+    [A source request's git work](./architecture.md#a-source-requests-git-work)). While every page
+    leaves at most 64 commits in that frontier, following "Older" from the first page visits every
+    reachable commit once, including across merges.
+  - The `from` query parameter takes a single value of 1 to 64 full commit IDs
+    (`server.MaxFrontier`), separated by commas, in ascending order, each appearing once. Each
+    commit in `from` must be reachable from `<commit>`. Any other `from` value answers `404`. Every
+    page after the first includes a "Newest" link back to the first page of that history.
+  - When a page leaves more than 64 commits to show, its "Older" link starts from the first 64 in
+    ascending order. Below the commit list, the page notes how many lines of history continue and
+    links each remaining commit by its short ID to `?from=<id>` for that single commit. Together,
+    "Older" and those individual links reach every older commit along the parents the page follows,
+    though two of those branches may later visit the same ancestor.
+  - A page leaves at most 192 commits to show (`server.MaxLeftToShow`), so it renders at most 128
+    individual branch links in addition to "Older". Before adding a merge commit that would push the
+    frontier past 192 commits, the page stops early and notes why. Every page shows at least its
+    first commit, which leaves at most 63 other starting commits plus 128 parents.
+  - A page follows at most the first 128 parents of any commit (`server.MaxParents`). A merge with
+    more than 128 parents still renders, with a note on that commit stating that older pages follow
+    only its first 128 parents; commits reachable only through later parents are omitted from older
+    pages.
+- **Time:** Every request has a 15-second deadline from when it arrives, covering waiting, running
+  `git` commands, and rendering the page. A request that exceeds 15 seconds answers `503` with
+  `Retry-After: 5`. Within that deadline, a source request may hold its `git` slot for at most 5
+  seconds, covering its wait for the generation's export to load and all of its `git` commands. If 5
+  seconds pass while the request still holds its `git` slot, the server logs the timeout and answers
+  `503` with `Retry-After: 5`.
 - **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
   check runs before the request opens a generation.
-  - A tree, file, or log request runs `git`. At most 8 such requests run at once (`server.MaxGit`),
-    and at most 16 more wait for one to finish (`server.MaxWaiting`). A request that finds both full
-    answers `503` immediately with `Retry-After: 5`.
-  - A request releases its `git` slot before rendering its page, and its generation before writing
-    the response. So rendering holds no `git` slot, and a slow reader holds neither a `git` slot nor
-    a generation.
+  - A tree, file, or log request needs a `git` slot. At most 8 such requests hold a `git` slot at
+    once (`server.MaxGit`), and at most 16 more wait for a slot to open (`server.MaxWaiting`). When
+    all 8 slots and 16 waiting places are full, a new source request answers `503` immediately with
+    `Retry-After: 5`.
+  - A source request releases its `git` slot before rendering HTML, and every request releases its
+    generation before writing the response to the client (see
+    [Slow readers](./architecture.md#slow-readers)).
   - Any request whose generation the server has not read yet must wait for the read before opening a
     generation. At most 64 requests wait for export reads at once (`server.MaxLoadWaiting`). A
     request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.
@@ -2508,15 +2509,14 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     stops rendering at that bound. The server logs the failure and answers `500` with a short page
     titled "Page too large".
   - The server holds at most 64 MiB of rendered responses at once (`server.MaxBuffered`). A response
-    claims this budget in 64 KiB pieces as it renders and releases them once the response has been
+    claims this budget in 64 KiB chunks as it renders and releases them once the response has been
     written. A slow reader holds its response's share of the budget until the write finishes.
     `valley-web` stops writing a response 60 seconds after reading the request's headers.
-  - Responses larger than 256 KiB (`server.SmallPage`) hold at most 48 MiB of the budget between
-    them (`server.MaxLarge`), their first 256 KiB counted. A response takes from the 64 MiB alone
-    until it grows past 256 KiB; from then on, all of it counts against the 48 MiB. So slow readers
-    of large pages hold at most 48 MiB however many there are, and small pages render from the other
-    16 MiB.
-  - A request whose page needs more memory than remains in the 64 MiB budget answers `503` with
+  - Responses larger than 256 KiB (`server.SmallPage`) may hold at most 48 MiB of the 64 MiB budget
+    between them (`server.MaxLarge`). Once a response grows past 256 KiB, its entire size—including
+    the first 256 KiB—counts against that 48 MiB cap, leaving at least 16 MiB of the budget for
+    responses of 256 KiB or smaller (see [Slow readers](./architecture.md#slow-readers)).
+  - A request whose page needs more memory than remains in the budget answers `503` with
     `Retry-After: 5`.
   - The "Busy" (`503`) and "Page too large" (`500`) pages are rendered once when the server starts.
     They show no export data and take none of the 64 MiB budget.

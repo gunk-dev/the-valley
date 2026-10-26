@@ -2704,152 +2704,169 @@ exit status is 1.
 
 ## The web server
 
-`valley-web` serves a receiver's state directory to anonymous readers: the plan, each knot, and a
-source browser over each public project's `main` (`webui/server/`, `webui/cmd/valley-web/`). Nothing
-deploys it yet. Its flags, routes and limits are in the
-[reference](./reference.md#web-server-valley-web).
+`valley-web` serves a receiver's state directory over HTTP to anonymous readers: the plan page, each
+knot page, and a source browser for each public project's `main` branch (`webui/server/`,
+`webui/cmd/valley-web/`). Nothing deploys it yet. Its flags, routes, and limits are in
+[Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
 
-The server only reads the receiver's state directory. It opens it with `export.OpenReadOnly`, which
-creates nothing and takes no lock but the shared `flock(2)` a request holds on the generation it
-opens (`webui/export/store.go`). It neither finishes an interrupted activation nor sweeps old
-generations. The receiver does both when it opens the directory with `export.OpenStore`, and until
-then the server serves the generation `active` names.
+`valley-web` only reads the receiver's state directory. It opens the directory with
+`export.OpenReadOnly`, which creates no files and takes only the shared `flock(2)` lock that each
+request holds on the generation it opens (`webui/export/store.go`). Recovering an interrupted
+activation and sweeping old generations are left to the receiver when it opens the directory with
+`export.OpenStore`. Until the receiver finishes an interrupted activation, `valley-web` continues to
+serve the generation that `active` points to.
 
-So the server can run as a user who can only read the receiver's files. The receiver keeps an upload
-private until it is activated, and then makes it readable by every user (`webui/export/store.go`).
-Staged bodies have mode `0600`, in a staging directory of mode `0700`, so no other user reads a body
-before it is verified. When it activates an upload, the receiver sets every directory of the new
-generation to `0755` and every file to `0644`, or `0444` where git wrote it read-only, and
-`exports/` to `0755`. It sets each mode itself, so none depends on its umask.
+Because `valley-web` writes nothing to the state directory, it can run as a separate Unix user with
+read-only access. The receiver keeps each staged upload private to its own user until activation,
+and explicitly sets world-readable modes on `exports/` and on every directory and file of an
+activated generation regardless of its umask (`webui/export/store.go`; see
+[Web export receiver state](./reference.md#web-export-receiver-state) for the file modes). The mode
+of the state directory itself is a **deployment choice**. The receiver creates the directory if it
+does not exist and leaves its mode unchanged, and the deployment grants the server's user read and
+search access to it, for example through its group.
 
-The state directory's own mode is a deployment choice. The receiver creates it when it does not
-exist and never changes its mode. The deployment gives the server's user search and read access to
-it, for example as a member of its group.
+Every `git` command that `valley-web` runs names the repository with `--git-dir`
+(`webui/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
+user without checking `safe.directory`, which the server's isolated `git` configuration cannot set.
 
-Every git command the server runs names its repository with `--git-dir` (`webui/export/bundle.go`).
-With `--git-dir`, git reads a repository another user owns without holding it to `safe.directory`,
-which the server's isolated git configuration cannot set.
-
-Checked by `webui-unit`, whose `TestStoreModes` finds those modes under umask `0077`. Also by
-`webui-server-unit`, whose `TestServesAReadOnlyStateDirectory` runs `valley-web` over a state
-directory the receiver wrote under umask `0077`, read as another user reads it: nothing in it is
-writable, and git takes its repositories to be another user's.
+Checked by `webui-unit` (`TestStoreModes`), which checks the staging and generation modes under
+umask `0077`, and by `webui-server-unit` (`TestServesAReadOnlyStateDirectory`), which runs
+`valley-web` on a state directory written under umask `0077` with read-only permissions and
+repositories that `git` treats as owned by another user.
 
 ### Paths
 
-A project's name is the first segment of every path that shows it: `/app/knots/<id>`,
-`/app/source/…`. So the server's own paths share one space with every name a project may take. The
-server keeps them under the prefix `/-/`, because no project name can start with `-`
-(`webui/server/server.go`). A path the server adds under `/-/` never shadows a project, and no
-project shadows it, whatever the projects are named. The plan page, `/`, is the one path outside
-both.
+Every project route starts with the project's name, such as `/app/knots/<id>` or `/app/source/…`,
+and `/` serves the plan page. To keep server routes separate from project names, `valley-web`
+reserves the prefix `/-/` for its own paths (`webui/server/server.go`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web)). Because a valid project name
+must start with an ASCII letter or digit, paths under `/-/` and project routes never shadow one
+another, regardless of what projects are named.
 
-Checked by `webui-server-unit`, whose `TestProjectNamesBesideTheServersPaths` serves projects named
-`source`, `knots` and `web-export` on every route, and answers `404` under `/-/`.
+Checked by `webui-server-unit` (`TestProjectNamesBesideTheServersPaths`), which serves projects
+named `source`, `knots`, and `web-export` on every route and checks that paths under `/-/` answer
+`404`.
 
 ### Slow readers
 
-A response is rendered whole before it is written. Its memory comes from a budget of 64 MiB, which
-it holds until the write ends (`webui/server/render.go`). A reader that never reads holds its share
-until the server's write timeout. Without a reserve, a few such readers of large pages could hold
-the whole budget: a knot with many comments, a large directory, or a large file. Every other page
-would then answer `503` until the timeout, and the readers could ask again.
+`valley-web` renders each response in full before writing it to the connection. Rendered responses
+draw their memory in 64 KiB pieces from a shared 64 MiB budget (`server.MaxBuffered`) and hold those
+pieces until the write finishes or the 60-second write timeout expires (`webui/server/render.go`).
+Without a cap on large responses, a few clients that stop reading large knot, directory, or file
+pages could hold the entire 64 MiB budget until the write timeout, causing every other request to
+answer `503`. Per-address limits cannot prevent this behind a reverse proxy, where every request
+arrives from the proxy's address.
 
-So the budget keeps a reserve for small pages. Responses larger than 256 KiB hold at most 48 MiB of
-the budget between them. A response takes from the whole budget until it grows past 256 KiB, and
-from then on all of it counts against the 48 MiB, its first 256 KiB too. So readers of large pages
-hold at most 48 MiB however many there are, and small pages, as most pages are, render from the
-other 16 MiB. The server does not limit readers by address, because behind a proxy every reader has
-the proxy's address.
+To keep room for small pages, the budget caps the memory held by responses larger than 256 KiB
+(`server.SmallPage`) at 48 MiB (`server.MaxLarge`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web)). While a response is 256 KiB or
+smaller, its pieces count only against the 64 MiB total. As soon as a response grows past 256 KiB,
+all of its pieces — including the first 256 KiB — count against the 48 MiB large-response cap as
+well. Slow readers of large pages can therefore hold at most 48 MiB at once, leaving at least 16 MiB
+for small pages.
 
-Checked by `webui-server-unit`, whose `TestSlowReadersShareTheBudget` asks for more than the whole
-budget with readers that never read, in pages of three sizes: one piece past 256 KiB, 1 MiB and 4
-MiB. Had only what each page renders past 256 KiB counted, 64 readers of the 1 MiB page would hold
-all 64 MiB. The readers hold 48 MiB at most, and the plan, a knot and a directory still render.
+Checked by `webui-server-unit` (`TestSlowReadersShareTheBudget`), which opens stalled connections
+requesting more than 64 MiB in total across three large page sizes: one 64 KiB piece past 256 KiB, 1
+MiB, and 4 MiB. Counting a large response's first 256 KiB against the 48 MiB cap prevents 64 stalled
+1 MiB responses from consuming all 64 MiB. The stalled readers hold at most 48 MiB, and requests for
+the plan page, a knot page, and a directory page still succeed.
 
 ### A source request's git work
 
-A tree, file or log request runs git, and at most 8 such requests run at once. So the server bounds
-how long each request holds its git slot, well within the request's 15 seconds. A source request
-holds its slot for at most 5 seconds from when it takes it (`webui/server/server.go`). Those 5
-seconds cover its wait for its generation's export to be read and all of its git commands. git is
-stopped past them, and the request answers `503` and gives back its slot. A request gives back its
-slot before it renders its page, so rendering holds no slot.
+At most 8 source requests (tree, file, or log) may run `git` at once (`server.MaxGit`). To keep a
+slow `git` command or export load from holding a slot for the full 15-second request timeout, a
+source request may hold its `git` slot for at most 5 seconds from when it takes the slot
+(`webui/server/server.go`). That 5-second limit covers both waiting for the generation's export to
+be read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
+`git`, releases the slot, and answers `503`. When `git` finishes in time, the request releases its
+`git` slot before rendering HTML, so page rendering holds no `git` slot (`webui/server/render.go`).
 
-What a request asks of git is bounded too. The directories along a path are listed without sizes,
-because `git ls-tree --long` looks up the size of every blob it lists. They share one budget of 4
-MiB of output, so a deep path through large directories reads no more than one large directory does.
-A page of history lists commits as `git log --date-order` does, never a commit before any of its
-children (`webui/server/source.go`). It leaves to show the parents of the commits it shows, and the
-commits it started from, less the commits it shows. Since no page shows a commit before its
-children, those commits reach every commit no page before showed, and none that one did. Older pages
-start from them, and each page asks git for 50 commits however old it is.
+Each source route also bounds the work it asks `git` to do (`webui/server/source.go`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web) for the limits). When resolving a
+path through intermediate directories, the server runs `git ls-tree` without `--long`, because
+`--long` looks up the blob size of every entry in each directory. All directories along the path
+share one 4 MiB output budget (`server.MaxRead`), so resolving a deep path reads no more from `git`
+than listing a single directory.
 
-A link to an older page names at most 64 commits to start from. The Older link starts from the first
-64 the page leaves to show, and each of the rest gets a link of its own. While no page leaves more
-than 64, the Older links alone show each commit of the history once, across merges too. Past that,
-the other links still reach every older commit along the parents a page follows, though two pages
-may show the same one. A page leaves at most 192, so it has at most 128 other links, and it ends
-early before a merge that would leave more. Its first commit always fits: it leaves at most the
-other 63 commits the page started from and 128 parents.
+On a history page, the server runs `git log --date-order --max-count=50` starting from the page's
+starting commits (`<commit>` on the first page, or the commits in `?from=` on an older page).
+Because each page starts `git log` directly at those commits without skipping earlier ones, `git`
+does bounded work for each page regardless of how far back in history the page is. As the page lists
+commits, it tracks the frontier of unshown ancestors for the next older page: the page's starting
+commits plus the followed parents of each commit shown on the page, minus the commits shown on the
+page. Because `--date-order` never lists a commit before any of its children, every unshown ancestor
+of `<commit>` is reachable from that frontier, and no commit already shown on this page or a newer
+page is reachable from it.
 
-A page follows the first 128 parents of a commit. git prints a commit's parents on one line, and
-that line has no bound: a merge of 400 lines takes 16 KiB. So `git log` gives each commit as two
-records, first its ID and parents, then its date, author and subject. The server keeps 16 KiB of
-each, which holds an ID and 128 parents in either object format. A merge with more parents is shown
-with a note, and the page leaves none of the others to show. However many parents a merge has, its
-page never fails for them.
+While the frontier holds at most 64 commits (`server.MaxFrontier`), the "Older" link passes all of
+them in `?from=`, and following "Older" from the first page visits every ancestor commit once,
+including across merges. When wide merges leave more than 64 commits in the frontier, the "Older"
+link passes the first 64 and the page adds a separate `?from=<id>` link for each remaining commit.
+Those links keep every ancestor along the followed parents reachable, though two separate links may
+converge on a shared ancestor and show it on both paths. To bound the number of links on a page, a
+page stops before any commit after the first that would leave more than 192 unshown commits
+(`server.MaxLeftToShow`). The first commit on a page always fits within 192 because the page starts
+from at most 64 commits (leaving 63 others) and follows at most 128 parents (`server.MaxParents`).
 
-The receiver writes a commit-graph into each repository when it accepts or carries it
-(`webui/export/bundle.go`), and never into a generation already activated. So a generation activated
-without commit-graphs has none until the next activation carries its repositories again. With a
-commit-graph, `git merge-base`, which checks that a commit is reachable, walks the history without
-parsing each commit, and `git log --date-order` reads only the commits a page shows. Without one,
-`git log --date-order` walks the whole history before it prints a commit, within the 5 seconds the
-request holds its slot.
+`git log` prints all of a commit's parent IDs on one line, which for a merge with 400 parents
+exceeds 16 KiB. To keep a long parent line from truncating a commit's ID or subject, the server
+formats each commit as two NUL-terminated records — first its ID and parents, then its date, author,
+and subject — and keeps up to 16 KiB of each record. Sixteen KiB holds a commit ID and 128 parents
+in both SHA-1 and SHA-256 object formats. When a merge has more than 128 parents, the page shows the
+commit with a note and ignores its remaining parents, so a merge with any number of parents renders
+without failing.
 
-A commit is named by its full ID in the project's object format alone. git reads 40 hex digits in a
-SHA-256 repository as an abbreviation, and 64 hex digits in a SHA-1 repository as the commit their
-first 40 name. So `export.Reachable` refuses an ID whose length differs from the source tip's, and
-each page has one address.
+When the receiver accepts a bundle or carries a repository into a new generation, it writes a
+commit-graph into the repository (`webui/export/bundle.go`). Already-activated generations are left
+untouched, so a generation activated without commit-graphs has none until the next activation
+carries its repositories again. With a commit-graph, `git merge-base` checks commit reachability
+without parsing each commit, and `git log --date-order` reads only the commits that a page shows.
+Without a commit-graph, `git log --date-order` walks the commit history before printing a commit,
+within the 5 seconds that the request holds its `git` slot.
+
+`export.Reachable` requires every commit ID to match the length of the project's `source_tip`
+(`webui/export/bundle.go`). In a SHA-256 repository, `git` treats 40 hex digits as an abbreviated
+prefix, and in a SHA-1 repository it treats 64 hex digits as the commit named by their first 40 hex
+digits. Requiring the exact length of `source_tip` gives each page a single address.
 
 Checked by `webui-server-unit`:
 
-- `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad` and `TestRenderingHoldsNoGitSlot`
-  serve a git that never finishes, an export read slowly, and a page that renders slowly.
-- `TestResolveSharesOneBudget` serves a path through two large directories.
-- `TestHistoryAcrossMerges` follows the Older links through a merge whose two lines run across
-  pages, and finds every commit once. `TestWideHistoryStaysReachable` follows every link from a
-  merge of 65 lines, and reaches every commit. `TestCrowdedHistoryEndsEarly` serves a merge whose
-  next commit would leave 199 commits to show, and reaches every commit too.
-- `TestMergeOfManyParents` serves a merge of 420 lines, whose ID and parents pass 16 KiB, first on a
-  page and second on another.
+- `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad`, and `TestRenderingHoldsNoGitSlot`
+  test a `git` command that never finishes, a slow export read, and a slow page render.
+- `TestResolveSharesOneBudget` resolves a path through two large directories.
+- `TestHistoryAcrossMerges` follows the "Older" links across a two-branch merge that spans multiple
+  pages and checks that every commit appears once. `TestWideHistoryStaysReachable` follows every
+  link from a 65-branch merge and reaches every commit. `TestCrowdedHistoryEndsEarly` serves a merge
+  whose next commit would leave 199 unshown commits and reaches every commit through its links.
+- `TestMergeOfManyParents` serves a 420-parent merge whose ID and parent line exceed 16 KiB, both as
+  the first commit on a page and as the second.
 - `TestSHA256CommitIDs` serves a SHA-256 project.
 
-Also by `webui-unit`, whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both
-object formats.
+Also checked by `webui-unit` (`TestAcceptBundle` and `TestReachable`), which test the commit-graph
+and both object formats.
 
 ### Unpublished blockers
 
-The export holds a knot's references into projects it does not export only where they say nothing of
-the referred knot's status (`webui/export/project.go`). It drops them from `waiting_on`, which lists
-the blockers still open. A knot blocked by an unpublished knot keeps its `blocked` state, but its
-`waiting_on` then names only the published knots it waits on. So the export marks such a knot with
-`waiting_on_hidden`, which says that it also waits on unpublished work. The field names no knot and
-gives no count. The plan page's chip for the knot ends with "a knot in an unpublished project"
-(`webui/server/knot.go`).
+In `export.json`, `waiting_on` lists only a knot's open blockers in public projects
+(`webui/export/project.go`). Open blockers in unpublished projects are removed from `waiting_on`,
+while the knot's `state` remains `blocked`. When a knot has at least one open blocker in an
+unpublished project, the export sets `"waiting_on_hidden": true` on the knot so the plan page's
+"waits on" chip can include "a knot in an unpublished project" alongside any public blockers
+(`webui/server/knot.go`; see [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
-The field still tells a reader something about a hidden knot. `blocked_by` and `edges` keep each
-hidden reference's ID. So for a knot that names one hidden blocker, `waiting_on_hidden` says whether
-that hidden knot still blocks it: the field is set while it does, and absent while it does not. That
-holds even while a published blocker keeps the knot `blocked`. The export permits this inference.
+In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
+reference. When a knot names a single hidden blocker, a reader of `export.json` can tell from
+`waiting_on_hidden` whether that hidden knot is still open: the field is present while the hidden
+knot blocks the knot, and absent once it finishes, even when a public blocker still keeps the knot
+`blocked`. The export permits this inference.
 
-Checked by `webui-unit`, whose `TestBuildHidesForeignEdges` finds the field on the fixture's one
-knot that waits on a hidden knot, and whose `TestWaitingOnHiddenFollowsAHiddenBlocker` finds it gone
-once that hidden knot is done. Also by `webui-server-unit`, whose `TestWaitsOnChip` shows that
-knot's chip naming its published blocker and the unpublished one.
+Checked by `webui-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set
+on the fixture's knot with a hidden blocker, and `TestWaitingOnHiddenFollowsAHiddenBlocker` checks
+that the field is omitted once that hidden blocker is done. Also checked by `webui-server-unit`
+(`TestWaitsOnChip`), which checks that the plan page's chip lists both the public blocker and the
+unpublished one.
 
 ## The life of a change
 

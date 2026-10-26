@@ -15,10 +15,10 @@
   <p class="notice">This page ends early: its commits are larger than a page reads.</p>
   {{- end}}
   {{- if .Crowded}}
-  <p class="notice">This page ends early, before a merge that would leave more lines of history than a page links.</p>
+  <p class="notice">This page ends early, before a merge that would leave more lines of history than one page can link to.</p>
   {{- end}}
   {{- with .Others}}
-  <p class="notice">The older history runs along {{$.Lines}} lines at once, more than the Older link follows. Each link below follows one of the others.</p>
+  <p class="notice">Older history continues along {{$.Lines}} lines at once, more than the Older link follows. Each link below follows one of the remaining lines.</p>
   <p class="mono">{{range .}}<a href="{{.URL}}">{{.Text}}</a> {{end}}</p>
   {{- end}}
 </div>

@@ -45,6 +45,11 @@
 // from a budget of MaxBuffered bytes, which they give back once they are
 // written. A request that finds the budget spent answers 503.
 //
+// A response's first SmallPage bytes may take any of the budget, and the
+// rest of it only MaxLarge of it. So readers that never read large pages
+// hold at most MaxLarge, and the rest of the budget is always there for
+// small pages: the plan, most knots, and most directories and files.
+//
 // # Routes
 //
 // The server answers GET and HEAD alone:
@@ -154,6 +159,12 @@ const (
 	// written. A response takes them in pieces of pieceSize as it
 	// renders.
 	MaxBuffered = 64 << 20
+	// SmallPage is how much of a response may take any of MaxBuffered.
+	SmallPage = 256 << 10
+	// MaxLarge is the most of MaxBuffered that responses hold past their
+	// first SmallPage bytes. The rest, MaxBuffered less MaxLarge, only
+	// a response's first SmallPage bytes may take.
+	MaxLarge = 48 << 20
 	// pieceSize is the size of the pieces a response is rendered into.
 	pieceSize = 64 << 10
 )
@@ -188,7 +199,10 @@ type Server struct {
 	loadWaiting chan struct{}
 	// budget holds a token for each piece of a response that is being
 	// rendered or written: MaxBuffered bytes, in pieces of pieceSize.
+	// large holds a second token for each such piece past a response's
+	// first SmallPage bytes: MaxLarge bytes.
 	budget chan struct{}
+	large  chan struct{}
 
 	mu sync.Mutex
 	// cached is the newest generation's snapshot read so far.
@@ -212,7 +226,8 @@ func New(c Config) *Server {
 	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
 		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
-		budget: make(chan struct{}, MaxBuffered/pieceSize), loads: map[*load]struct{}{}}
+		budget: make(chan struct{}, MaxBuffered/pieceSize), large: make(chan struct{}, MaxLarge/pieceSize),
+		loads: map[*load]struct{}{}}
 	if s.now == nil {
 		s.now = time.Now
 	}

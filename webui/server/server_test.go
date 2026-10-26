@@ -1275,21 +1275,29 @@ func TestPageTooLarge(t *testing.T) {
 }
 
 // Rendered responses share a budget of MaxBuffered bytes, which each
-// holds from when it starts rendering until it is written. Readers that
-// never read, asking for twice the budget in all, hold no more than it:
-// once their pages fill it, a page it has no room for answers 503 at
-// once, and a small page that fits is still served. The server's heap
-// grows by no more than the budget, and the budget is whole again once
-// the readers read.
+// holds from when it starts rendering until it is written. What a
+// response renders past its first SmallPage bytes takes only MaxLarge of
+// it. Readers that never read large pages ask for twice the budget in
+// all, with pages sized so that, but for MaxLarge, sixteen of them would
+// hold all of it. Once their pages hold MaxLarge, a large page answers
+// 503 at once, while small pages still render: the plan, a knot and a
+// directory. The server's heap grows by no more than the budget, and the
+// budget is whole again once the readers read.
 func TestSlowReadersShareTheBudget(t *testing.T) {
 	h := newHarness(t)
-	h.publish(exporttest.SignedAt.Add(time.Minute), nil, func(e *export.Export) {
-		e.Projects[0].Knots[0].Body = strings.Repeat("a line of a long body\n", (4<<20)/22)
-	})
 	target := "/app/knots/" + h.f.Export.Projects[0].Knots[0].ID
+	body := func(at time.Duration, text string) {
+		h.publish(exporttest.SignedAt.Add(at), nil, func(e *export.Export) { e.Projects[0].Knots[0].Body = text })
+	}
+	body(time.Minute, "x")
+	rest := len(h.page(target)) - 1
+	pieces := 64
+	body(2*time.Minute, strings.Repeat("a line of a long body\n", (pieces*pieceSize-rest-1024)/22))
 	size := len(h.page(target))
-	pieces := (size + pieceSize - 1) / pieceSize
-	fit := cap(h.srv.budget) / pieces
+	if got := (size + pieceSize - 1) / pieceSize; got != pieces || cap(h.srv.budget)%pieces != 0 {
+		t.Fatalf("the large page takes %d pieces, not %d, which divide the budget", got, pieces)
+	}
+	fit := cap(h.srv.large) / (pieces - smallPieces)
 	n := 2*MaxBuffered/size + 1
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1334,8 +1342,8 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 	var after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&after)
-	if held := len(h.srv.budget); held != fit*pieces {
-		t.Errorf("slow readers hold %d pieces; %d pages of %d pieces fit", held, fit, pieces)
+	if held, large := len(h.srv.budget), len(h.srv.large); held != fit*pieces || large != fit*(pieces-smallPieces) {
+		t.Errorf("slow readers hold %d pieces, %d of them large; %d pages of %d pieces fit", held, large, fit, pieces)
 	}
 	if grew := int64(after.HeapAlloc) - int64(before.HeapAlloc); grew > MaxBuffered+8<<20 {
 		t.Errorf("%d slow readers of %d bytes each grew the heap by %d bytes, past MaxBuffered", n, size, grew)
@@ -1355,8 +1363,10 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 	if code, retry := get(target); code != http.StatusServiceUnavailable || retry == "" {
 		t.Errorf("a page the budget has no room for answered %d, Retry-After %q", code, retry)
 	}
-	if code, _ := get("/app/knots/oc-a000002"); code != http.StatusOK {
-		t.Errorf("a small page answered %d while slow readers hold most of the budget", code)
+	for _, small := range []string{"/", "/app/knots/oc-a000002", "/app/source/tree/" + h.tip() + "/"} {
+		if code, _ := get(small); code != http.StatusOK {
+			t.Errorf("the small page %s answered %d while slow readers hold MaxLarge", small, code)
+		}
 	}
 
 	close(sl.release)

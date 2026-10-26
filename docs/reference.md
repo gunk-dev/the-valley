@@ -2458,6 +2458,9 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     claims this budget in 64 KiB pieces as it renders and releases them once the response has been
     written. A slow reader holds its response's share of the budget until the write finishes.
     `valley-web` stops writing a response 60 seconds after reading the request's headers.
+  - A response's first 256 KiB (`server.SmallPage`) may take any of the 64 MiB. What it renders past
+    them takes from 48 MiB of the budget alone (`server.MaxLarge`). So slow readers of large pages
+    hold at most 48 MiB past their pages' first 256 KiB, and small pages render from the rest.
   - A request whose page needs more memory than remains in the 64 MiB budget answers `503` with
     `Retry-After: 5`.
   - The "Busy" (`503`) and "Page too large" (`500`) pages are rendered once when the server starts.

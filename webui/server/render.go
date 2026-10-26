@@ -165,7 +165,8 @@ var (
 // body is a response's body: the pieces it is held in, and their length.
 // A page is rendered into pieces of pieceSize, each taken from the
 // server's budget and given back by free, until its request's ctx is
-// done. A static page is one piece of its own, and its body has no
+// done. A piece past the first SmallPage bytes is taken from the large
+// budget too. A static page is one piece of its own, and its body has no
 // server.
 type body struct {
 	s      *Server
@@ -176,8 +177,9 @@ type body struct {
 
 // Write appends p to the body. It writes nothing of p that would take the
 // body past the server's maxResponse, and fails with errTooLarge, and
-// nothing once ctx is done. It fails with errNoBudget when the budget has
-// no piece left for the rest of p.
+// nothing once ctx is done. It fails with errNoBudget when the budget, or
+// for a piece past the first SmallPage bytes the large budget, has no
+// piece left for the rest of p.
 func (b *body) Write(p []byte) (int, error) {
 	if err := b.ctx.Err(); err != nil {
 		return 0, err
@@ -189,9 +191,7 @@ func (b *body) Write(p []byte) (int, error) {
 	for written < len(p) {
 		last := len(b.pieces) - 1
 		if last < 0 || len(b.pieces[last]) == cap(b.pieces[last]) {
-			select {
-			case b.s.budget <- struct{}{}:
-			default:
+			if !b.s.take(len(b.pieces)) {
 				return written, errNoBudget
 			}
 			b.pieces = append(b.pieces, make([]byte, 0, pieceSize))
@@ -209,11 +209,44 @@ func (b *body) Write(p []byte) (int, error) {
 // free gives the body's pieces back to the budget, once.
 func (b *body) free() {
 	if b.s != nil {
-		for range b.pieces {
-			<-b.s.budget
+		for i := range b.pieces {
+			b.s.give(i)
 		}
 	}
 	b.pieces, b.n = nil, 0
+}
+
+// smallPieces is how many of a response's pieces SmallPage is.
+const smallPieces = SmallPage / pieceSize
+
+// take takes a response's piece i from the budget, and from the large
+// budget too when i is past its first SmallPage bytes. It takes nothing
+// and is false when either has no piece left.
+func (s *Server) take(i int) bool {
+	if i >= smallPieces {
+		select {
+		case s.large <- struct{}{}:
+		default:
+			return false
+		}
+	}
+	select {
+	case s.budget <- struct{}{}:
+		return true
+	default:
+		if i >= smallPieces {
+			<-s.large
+		}
+		return false
+	}
+}
+
+// give gives back a response's piece i, which take took.
+func (s *Server) give(i int) {
+	<-s.budget
+	if i >= smallPieces {
+		<-s.large
+	}
 }
 
 // freshness is the export's collection time and its age, as of the

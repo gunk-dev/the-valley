@@ -370,17 +370,17 @@ func TestNoOldPolicyPath(t *testing.T) {
 	}
 }
 
-// literalTree writes a tree with the entries given, name and blob, as git
-// would never write one: by its bytes, unchecked.
-func (r *repo) literalTree(entries [][2]string) string {
+// literalTree writes a tree with the entries given, mode, name and object,
+// as git would never write one: by its bytes, unchecked.
+func (r *repo) literalTree(entries [][3]string) string {
 	r.t.Helper()
 	var raw []byte
 	for _, e := range entries {
-		oid, err := hex.DecodeString(e[1])
+		oid, err := hex.DecodeString(e[2])
 		if err != nil {
 			r.t.Fatal(err)
 		}
-		raw = append(append(raw, "100644 "+e[0]+"\x00"...), oid...)
+		raw = append(append(raw, e[0]+" "+e[1]+"\x00"...), oid...)
 	}
 	return r.git(string(raw), "hash-object", "-t", "tree", "--literally", "-w", "--stdin")
 }
@@ -390,28 +390,72 @@ func (r *repo) literalTree(entries [][2]string) string {
 // scratch directory the reader copies it into.
 func TestMalformedTreeEntryNames(t *testing.T) {
 	r := newRepo(t)
-	tmp := t.TempDir()
-	t.Setenv("TMPDIR", filepath.Join(tmp, "scratch"))
-	if err := os.Mkdir(filepath.Join(tmp, "scratch"), 0o700); err != nil {
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	t.Setenv("TMPDIR", scratch)
+	if err := os.Mkdir(scratch, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	good := r.git(appPolicy("anyone: true")["policy/read/read.cue"], "hash-object", "-w", "--stdin")
-	for _, entries := range [][][2]string{
-		{{"../escape.cue", good}},
-		{{"read.cue", good}, {"sub/escape.cue", good}},
-		{{"..", good}},
-		{{".", good}},
-		{{"read.cue", good}, {"read.cue", good}},
+	for _, names := range [][]string{
+		{"../escape.cue"},
+		{"read.cue", "sub/escape.cue"},
+		{".."},
+		{"."},
+		{"read.cue", "read.cue"},
 	} {
+		var entries [][3]string
+		for _, name := range names {
+			entries = append(entries, [3]string{"100644", name, good})
+		}
 		read := r.literalTree(entries)
 		policyTree := r.git("040000 tree "+read+"\tread\n", "mktree")
 		root := r.git("040000 tree "+policyTree+"\tpolicy\n", "mktree")
 		_, err := r.reader.Consent(context.Background(), r.dir, r.commitTree(root), "app")
-		mustInvalid(t, entries[len(entries)-1][0], err)
+		mustInvalid(t, names[len(names)-1], err)
 	}
-	if _, err := os.Stat(filepath.Join(tmp, "escape.cue")); !errors.Is(err, os.ErrNotExist) {
+	// The reader copies a document into a directory it makes under
+	// TMPDIR, so ../escape.cue would land in TMPDIR itself. The reader
+	// removes its directory once it has read, so TMPDIR holds nothing.
+	if _, err := os.Stat(filepath.Join(scratch, "escape.cue")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("an entry named ../escape.cue was written outside the scratch directory")
 	}
+	if left, err := os.ReadDir(scratch); err != nil || len(left) != 0 {
+		t.Errorf("TMPDIR holds %v after the reads (%v), want nothing", left, err)
+	}
+}
+
+// A tree written literally can name one directory twice on the way to the
+// document, the first that consents and the second that does not. git
+// ls-tree given the path would take the first. Which is the document is
+// ambiguous, so the policy or the registry is invalid, and consents to
+// nothing.
+func TestAmbiguousDocumentDirectory(t *testing.T) {
+	r := newRepo(t)
+	consents := r.tree(map[string]string{"read.cue": appPolicy("anyone: true")["policy/read/read.cue"]})
+	declines := r.tree(map[string]string{"read.cue": appPolicy("")["policy/read/read.cue"]})
+	under := func(name, tree string) string { return r.git("040000 tree "+tree+"\t"+name+"\n", "mktree") }
+
+	// The consenting tree alone consents, so the cases below test the
+	// ambiguity and nothing else.
+	consent, err := r.reader.Consent(context.Background(), r.dir, r.commitTree(under("policy", under("read", consents))), "app")
+	if err != nil || !consent.Names(Anyone) {
+		t.Fatalf("the consenting tree alone reads as %+v, %v", consent, err)
+	}
+	for what, root := range map[string]string{
+		"read named twice in policy": under("policy", r.literalTree([][3]string{
+			{"40000", "read", consents}, {"40000", "read", declines}})),
+		"policy named twice in the root": r.literalTree([][3]string{
+			{"40000", "policy", under("read", consents)}, {"40000", "policy", under("read", declines)}}),
+	} {
+		_, err := r.reader.Consent(context.Background(), r.dir, r.commitTree(root), "app")
+		mustInvalid(t, what, err)
+	}
+
+	registryTree := r.tree(map[string]string{"registry.cue": registry(`anyone: grants: read: {boundary: "web", projects: "all"}`)["identity/registry.cue"]})
+	empty := r.tree(map[string]string{"registry.cue": registry("")["identity/registry.cue"]})
+	_, err = r.reader.Grants(context.Background(), r.dir, r.commitTree(r.literalTree([][3]string{
+		{"40000", "identity", registryTree}, {"40000", "identity", empty}})), "identity", destination, day)
+	mustInvalid(t, "identity named twice in the root", err)
 }
 
 // A document may declare definitions of the schema's again, and cue unifies

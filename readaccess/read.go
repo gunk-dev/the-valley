@@ -283,28 +283,93 @@ func validDir(dir string) bool {
 		dir != ".." && !strings.HasPrefix(dir, "../")
 }
 
+// plainName reports whether name is one plain path component: not empty,
+// not . or .., and with no slash.
+func plainName(name string) bool {
+	return name != "" && name != "." && name != ".." && !strings.Contains(name, "/")
+}
+
+// treeEntry is one entry of a tree, as git ls-tree lists it.
+type treeEntry struct{ mode, kind, oid, name string }
+
+// listTree lists the entries of a tree in repo, as they are stored: a tree
+// written literally can name an entry twice, or with a directory part. dir
+// is where the tree is, for messages.
+func listTree(ctx context.Context, repo, tree, dir string) ([]treeEntry, error) {
+	listing, err := git(ctx, repo, "ls-tree", "-z", tree)
+	if errors.Is(err, errTooLong) {
+		return nil, invalid("%s lists more than %d bytes of entries", dir, maxGitOutput)
+	} else if err != nil {
+		return nil, err
+	}
+	var entries []treeEntry
+	for _, e := range strings.Split(strings.TrimSuffix(string(listing), "\x00"), "\x00") {
+		if e == "" {
+			continue
+		}
+		meta, name, _ := strings.Cut(e, "\t")
+		f := strings.Fields(meta)
+		if len(f) != 3 {
+			return nil, fmt.Errorf("git ls-tree listed %q in %s, which is not an entry", e, dir)
+		}
+		entries = append(entries, treeEntry{f[0], f[1], f[2], name})
+	}
+	return entries, nil
+}
+
+// findDir finds the tree at dir in a commit of repo, one path component at
+// a time. git ls-tree given the path would take the first of two entries
+// of one name, and a tree written literally can hold two: one that
+// consents, and one that does not. So each component is matched by its
+// name exactly, among every entry of the tree above it, and two entries of
+// that name make the document invalid. A component that is not a
+// directory on the way there means there is no document; the directory
+// itself that is not one is invalid.
+func findDir(ctx context.Context, repo, commit, dir string) (string, error) {
+	tree, at := commit, "the commit's root"
+	parts := strings.Split(dir, "/")
+	for i, part := range parts {
+		if !plainName(part) {
+			return "", fmt.Errorf("%q is not a directory a commit can hold", dir)
+		}
+		entries, err := listTree(ctx, repo, tree, at)
+		if err != nil {
+			return "", err
+		}
+		var found []treeEntry
+		for _, e := range entries {
+			if e.name == part {
+				found = append(found, e)
+			}
+		}
+		at = path.Join(parts[:i+1]...)
+		switch {
+		case len(found) == 0:
+			return "", ErrMissing
+		case len(found) > 1:
+			return "", invalid("%s is named by %d entries of its parent, so which is the document is ambiguous", at, len(found))
+		case found[0].kind != "tree" && i < len(parts)-1:
+			return "", ErrMissing
+		case found[0].kind != "tree":
+			return "", invalid("%s is not a directory", dir)
+		}
+		tree = found[0].oid
+	}
+	return tree, nil
+}
+
 // read reads the document in dir at a commit of repo, exports it with cue
 // under schema, and decodes the JSON into doc, which must take every field
 // cue exported. Its error is ErrMissing when the commit holds no document
 // there, an *InvalidError when the document is invalid, and any other
 // error when git or cue could not be run over it.
 func (r *Reader) read(ctx context.Context, repo, commit, dir, schema string, lim bounds, doc any) error {
-	entry, err := git(ctx, repo, "ls-tree", "-z", commit, "--", dir)
+	tree, err := findDir(ctx, repo, commit, dir)
 	if err != nil {
 		return err
 	}
-	if len(entry) == 0 {
-		return ErrMissing
-	}
-	meta, _, _ := strings.Cut(string(entry), "\t")
-	f := strings.Fields(meta)
-	if len(f) != 3 || f[1] != "tree" {
-		return invalid("%s is not a directory", dir)
-	}
-	listing, err := git(ctx, repo, "ls-tree", "-z", f[2])
-	if errors.Is(err, errTooLong) {
-		return invalid("%s lists more than %d bytes of entries", dir, maxGitOutput)
-	} else if err != nil {
+	entries, err := listTree(ctx, repo, tree, dir)
+	if err != nil {
 		return err
 	}
 
@@ -315,24 +380,18 @@ func (r *Reader) read(ctx context.Context, repo, commit, dir, schema string, lim
 	type document struct{ name, oid string }
 	var docs []document
 	seen := map[string]bool{}
-	for _, e := range strings.Split(strings.TrimSuffix(string(listing), "\x00"), "\x00") {
-		if e == "" {
+	for _, e := range entries {
+		if !plainName(e.name) {
+			return invalid("%s holds an entry named %q, which is not a plain file name", dir, e.name)
+		}
+		if seen[e.name] {
+			return invalid("%s holds two entries named %q", dir, e.name)
+		}
+		seen[e.name] = true
+		if !strings.HasSuffix(e.name, ".cue") || e.kind != "blob" || (e.mode != "100644" && e.mode != "100755") {
 			continue
 		}
-		meta, name, _ := strings.Cut(e, "\t")
-		if name == "" || name == "." || name == ".." || strings.Contains(name, "/") {
-			return invalid("%s holds an entry named %q, which is not a plain file name", dir, name)
-		}
-		if seen[name] {
-			return invalid("%s holds two entries named %q", dir, name)
-		}
-		seen[name] = true
-		fields := strings.Fields(meta)
-		if !strings.HasSuffix(name, ".cue") || len(fields) != 3 || fields[1] != "blob" ||
-			(fields[0] != "100644" && fields[0] != "100755") {
-			continue
-		}
-		docs = append(docs, document{name, fields[2]})
+		docs = append(docs, document{e.name, e.oid})
 	}
 	if len(docs) == 0 {
 		return ErrMissing

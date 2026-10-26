@@ -2821,12 +2821,18 @@ The export holds a knot's references into projects it does not export only where
 the referred knot's status (`webui/export/project.go`). It drops them from `waiting_on`, which lists
 the blockers still open. A knot blocked by an unpublished knot keeps its `blocked` state, but its
 `waiting_on` then names only the published knots it waits on. So the export marks such a knot with
-`waiting_on_hidden`, which says that it also waits on unpublished work and nothing more: not which
-knots, and not how many. The plan page's chip for the knot ends with "a knot in an unpublished
-project" (`webui/server/knot.go`).
+`waiting_on_hidden`, which says that it also waits on unpublished work. The field names no knot and
+gives no count. The plan page's chip for the knot ends with "a knot in an unpublished project"
+(`webui/server/knot.go`).
+
+The field still tells a reader something about a hidden knot. `blocked_by` and `edges` keep each
+hidden reference's ID. So for a knot that names one hidden blocker, `waiting_on_hidden` says whether
+that hidden knot still blocks it: the field is set while it does, and absent while it does not. That
+holds even while a published blocker keeps the knot `blocked`. The export permits this inference.
 
 Checked by `webui-unit`, whose `TestBuildHidesForeignEdges` finds the field on the fixture's one
-knot that waits on a hidden knot, and by `webui-server-unit`, whose `TestWaitsOnChip` shows that
+knot that waits on a hidden knot, and whose `TestWaitingOnHiddenFollowsAHiddenBlocker` finds it gone
+once that hidden knot is done. Also by `webui-server-unit`, whose `TestWaitsOnChip` shows that
 knot's chip naming its published blocker and the unpublished one.
 
 ## The life of a change

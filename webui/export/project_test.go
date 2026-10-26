@@ -92,6 +92,61 @@ func TestBuildHidesForeignEdges(t *testing.T) {
 	}
 }
 
+// The export keeps each hidden reference's ID, in blocked_by and edges,
+// and waiting_on_hidden says whether the knot still waits on a hidden
+// knot. So for a knot that names one hidden blocker, as oc-a000003 names
+// site:oc-b000001, the field says whether that hidden knot still blocks.
+// The export permits this inference: the field is set while
+// site:oc-b000001 is open, and gone once it is done, though oc-a000003
+// stays blocked by its published blocker and still names site:oc-b000001.
+func TestWaitingOnHiddenFollowsAHiddenBlocker(t *testing.T) {
+	f := exporttest.New(t)
+	if !knotOf(t, f.Export, "oc-a000003").WaitingOnHidden {
+		t.Fatal("waiting_on_hidden is not set while the hidden blocker is open")
+	}
+
+	in := f.Inputs
+	var plan map[string]any
+	if err := json.Unmarshal(in.Plan, &plan); err != nil {
+		t.Fatal(err)
+	}
+	knot := func(project, id string) map[string]any {
+		for _, p := range plan["projects"].([]any) {
+			p := p.(map[string]any)
+			for _, k := range p["knots"].([]any) {
+				if k := k.(map[string]any); p["project"] == project && k["id"] == id {
+					return k
+				}
+			}
+		}
+		t.Fatalf("the plan holds no knot %s:%s", project, id)
+		return nil
+	}
+	hidden := knot("site", "oc-b000001")
+	hidden["status"], hidden["active"], hidden["state"], hidden["ready"] = "done", false, "done", false
+	k := knot("app", "oc-a000003")
+	k["waiting_on"] = []string{"oc-a000002"}
+	k["edges"].([]any)[0].(map[string]any)["status"] = "done"
+	var err error
+	if in.Plan, err = json.Marshal(plan); err != nil {
+		t.Fatal(err)
+	}
+	e, err := export.Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	x := knotOf(t, e, "oc-a000003")
+	if x.WaitingOnHidden {
+		t.Error("waiting_on_hidden is still set once the hidden blocker is done")
+	}
+	if x.State != "blocked" || !slices.Equal(x.WaitingOn, []string{"oc-a000002"}) {
+		t.Errorf("the knot is %s, waiting on %v; its published blocker still holds it", x.State, x.WaitingOn)
+	}
+	if !slices.Contains(x.BlockedBy, "site:oc-b000001") || len(x.Edges) != 1 || x.Edges[0].Ref != "site:oc-b000001" {
+		t.Errorf("blocked_by is %v and edges %+v; both still name the hidden blocker", x.BlockedBy, x.Edges)
+	}
+}
+
 // A reference to another exported project's knot keeps what the plan
 // says of it.
 func TestBuildKeepsEdgesBetweenExportedProjects(t *testing.T) {

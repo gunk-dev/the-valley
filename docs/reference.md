@@ -1910,9 +1910,13 @@ compact JSON ending with a newline.
   `status`, and `title`. The reference is removed from `waiting_on`, `cleared_by_ending`,
   `dangling`, and `unresolved`, because those lists reflect the hidden knot's status. The referring
   knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. A knot
-  that waits on one or more hidden knots carries `"waiting_on_hidden": true`, which says neither
-  which nor how many. Every other knot omits the field, so an export in which no knot waits on a
-  hidden knot holds none, and `export.Decode` reads an export without it.
+  that waits on one or more hidden knots carries `"waiting_on_hidden": true`. The field names no
+  hidden knot and gives no count. Every other knot omits the field, so an export in which no knot
+  waits on a hidden knot holds none, and `export.Decode` reads an export without it.
+- **What a hidden reference still tells:** `blocked_by` and `edges` keep each hidden reference's ID.
+  So for a knot that names one hidden blocker, `waiting_on_hidden` says whether that hidden knot
+  still blocks it. The field is set while the hidden knot blocks, and absent while it does not, even
+  while a published blocker keeps the knot `blocked`. The export permits this inference.
 - **Refusals (`export.Build`):** `export.Build` fails rather than build a partial export. It fails
   when a public project is missing or has an `error` in the plan or the pending listing, or when a
   knot in a public project is missing its detail, appears twice, or has no `body`. It fails with

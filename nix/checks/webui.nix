@@ -8,8 +8,9 @@
 {
   # The projection over the shared fixture, which holds every disclosure
   # rule: what reaches export.json, hidden projects' edges, a knot that
-  # waits on a hidden knot marked with waiting_on_hidden alone, the display
-  # mapping. The content digest; strict reading of export.json, with
+  # waits on a hidden knot marked with waiting_on_hidden alone, the field
+  # gone once its one hidden blocker is done, the display mapping. The
+  # content digest; strict reading of export.json, with
   # nothing after its document; each of VerifyManifest's steps, in order;
   # the manifest's grammar and its agreement with export.json; the
   # streaming body check; bundle acceptance against real git, refusing

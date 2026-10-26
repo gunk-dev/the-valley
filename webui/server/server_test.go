@@ -848,11 +848,103 @@ func TestSourceGitHasItsOwnBound(t *testing.T) {
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request's git ran past 300ms") {
+	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request held its git slot past 300ms") {
 		t.Errorf("the server logged %v", logged)
 	}
 	if w := h.get("/app/knots/oc-a000002"); w.Code != http.StatusOK {
 		t.Errorf("a knot answered %d", w.Code)
+	}
+}
+
+// A source request's bound on its git slot runs from when it takes the
+// slot, and covers its wait for its generation's export to be read. A
+// source request whose export is read slowly answers 503 once the bound
+// passes, gives back its slot, and is logged, while a request for the
+// plan, which holds no slot, waits on for the same read and is served.
+func TestGitSlotBoundCoversTheLoad(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var logged []error
+	h.srv.log = func(err error) { mu.Lock(); logged = append(logged, err); mu.Unlock() }
+	h.srv.gitTime = 300 * time.Millisecond
+	hold := make(chan struct{})
+	h.srv.loading = func(export.Generation) { <-hold }
+
+	plan := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		plan <- w
+	}()
+	eventually(t, "the plan waits for the export to be read", func() bool { return len(h.srv.loaders) == 1 })
+	start := time.Now()
+	w := h.get("/app/source/tree/" + h.tip() + "/")
+	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
+		t.Errorf("a source request whose export is read slowly answered %d after %v", w.Code, took)
+	}
+	if len(h.srv.slots) != 0 {
+		t.Errorf("the request holds %d git slots once it answered", len(h.srv.slots))
+	}
+	mu.Lock()
+	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request held its git slot past 300ms") ||
+		!strings.Contains(logged[0].Error(), "export to be read") {
+		t.Errorf("the server logged %v", logged)
+	}
+	mu.Unlock()
+
+	close(hold)
+	select {
+	case w := <-plan:
+		if w.Code != http.StatusOK {
+			t.Errorf("the plan answered %d once its export was read", w.Code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the plan was not served once its export was read")
+	}
+	h.page("/app/source/tree/" + h.tip() + "/")
+}
+
+// A source request gives back its git slot before it renders its page, so
+// a page that renders slowly holds no slot, and is not held to the bound
+// on holding one. While one renders, past that bound, another source
+// request is served, and the first is served in full once it renders.
+func TestRenderingHoldsNoGitSlot(t *testing.T) {
+	h := newHarness(t)
+	h.page("/")
+	h.srv.gitTime = 300 * time.Millisecond
+	rendering, hold := make(chan struct{}), make(chan struct{})
+	var first atomic.Bool
+	h.srv.rendering = func(name string) {
+		if name == "tree" && first.CompareAndSwap(false, true) {
+			close(rendering)
+			<-hold
+		}
+	}
+
+	served := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/app/source/tree/"+h.tip()+"/", nil))
+		served <- w
+	}()
+	select {
+	case <-rendering:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the source request did not render")
+	}
+	if len(h.srv.slots) != 0 {
+		t.Errorf("a source request holds %d git slots while it renders", len(h.srv.slots))
+	}
+	h.page("/app/source/blob/" + h.tip() + "/docs/guide.md")
+	time.Sleep(2 * h.srv.gitTime)
+	close(hold)
+	select {
+	case w := <-served:
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "guide.md") {
+			t.Errorf("a source request that rendered past the bound on its slot answered %d", w.Code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the source request was not served once it rendered")
 	}
 }
 
@@ -1231,6 +1323,9 @@ func TestExportLoadsCoalesce(t *testing.T) {
 // from its arrival, so one that waits past it answers 503.
 func TestSourceAdmission(t *testing.T) {
 	h := newHarness(t)
+	// The requests that hold the slots wait for the test, not for git, so
+	// the bound on holding a slot is no part of this test.
+	h.srv.gitTime = time.Hour
 	var admitted atomic.Int32
 	release := make(chan struct{})
 	h.srv.admitted = func() {

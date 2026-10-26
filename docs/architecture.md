@@ -2763,9 +2763,11 @@ all 64 MiB. The readers hold 48 MiB at most, and the plan, a knot and a director
 ### A source request's git work
 
 A tree, file or log request runs git, and at most 8 such requests run at once. So the server bounds
-each request's git work on its own, well within the request's 15 seconds. Its git commands have 5
-seconds in all, and git is stopped past them (`webui/server/source.go`). The request then answers
-`503` and gives back its git slot.
+how long each request holds its git slot, well within the request's 15 seconds. A source request
+holds its slot for at most 5 seconds from when it takes it (`webui/server/server.go`). Those 5
+seconds cover its wait for its generation's export to be read and all of its git commands. git is
+stopped past them, and the request answers `503` and gives back its slot. A request gives back its
+slot before it renders its page, so rendering holds no slot.
 
 What a request asks of git is bounded too. The directories along a path are listed without sizes,
 because `git ls-tree --long` looks up the size of every blob it lists. They share one budget of 4
@@ -2781,10 +2783,16 @@ SHA-256 repository as an abbreviation, and 64 hex digits in a SHA-1 repository a
 first 40 name. So `export.Reachable` refuses an ID whose length differs from the source tip's, and
 each page has one address.
 
-Checked by `webui-server-unit`, whose `TestResolveSharesOneBudget`, `TestLogSkipIsBounded`,
-`TestSourceGitHasItsOwnBound` and `TestSHA256CommitIDs` serve a path through two large directories,
-history past 10,000 commits, a git that never finishes, and a SHA-256 project. Also by `webui-unit`,
-whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both object formats.
+Checked by `webui-server-unit`:
+
+- `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad` and `TestRenderingHoldsNoGitSlot`
+  serve a git that never finishes, an export read slowly, and a page that renders slowly.
+- `TestResolveSharesOneBudget` serves a path through two large directories.
+- `TestLogSkipIsBounded` serves history past 10,000 commits.
+- `TestSHA256CommitIDs` serves a SHA-256 project.
+
+Also by `webui-unit`, whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both
+object formats.
 
 ### Unpublished blockers
 

@@ -46,7 +46,8 @@ func escapePath(path []string) string {
 
 // source serves the routes under /<project>/source/. The project is
 // checked first, so everything under a project the export does not hold
-// as public answers as a missing project does.
+// as public answers as a missing project does. A view runs git under the
+// request's git context, and gives back its git slot once it renders.
 func (q *request) source(project string, rest []string) {
 	p, ok := q.project(project)
 	if !ok {
@@ -86,10 +87,11 @@ func (q *request) source(project string, rest []string) {
 		q.notFound()
 		return
 	}
-	ctx, cancel := context.WithTimeout(q.ctx, q.s.gitTime)
-	defer cancel()
-	q.git = ctx
-	if err := view(ctx); err != nil {
+	if q.git == nil { // runsGit admits every route that reaches here
+		q.fail(errors.New("a source route was served without a git slot"))
+		return
+	}
+	if err := view(q.git); err != nil {
 		q.fail(err)
 	}
 }

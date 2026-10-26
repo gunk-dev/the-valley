@@ -44,8 +44,10 @@
   # past MaxRead listed in part, and a 5 MiB commit message ending its
   # page of history early; the directories along a path sharing one
   # MaxRead; history skipping at most MaxSkip commits, and linking the
-  # rest from its last commit; a source request's git stopped at a bound
-  # of its own, answering 503 and giving back its slot; a SHA-256
+  # rest from its last commit; a source request's git slot held for a
+  # bound of its own from admission, through a slow export read and its
+  # git, answering 503 and giving back its slot, and given back before it
+  # renders; a SHA-256
   # project served by full commit IDs alone; a file of MaxFile newlines shown to MaxLines;
   # a chain of knots near the graph's limit shown to MaxPlanDepth, with
   # the plan's structure built once; the policy on every response,

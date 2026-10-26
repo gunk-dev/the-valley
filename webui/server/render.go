@@ -80,8 +80,10 @@ type link struct {
 // page that would pass the server's maxResponse stops rendering there,
 // and answers with the short page that says it is too large. A page the
 // response budget has no room for, or whose request runs out of time
-// while it renders, answers 503.
+// while it renders, answers 503. A request runs no git once it renders,
+// so it gives back its git slot first.
 func (q *request) page(status int, name, title string, content any) {
+	q.giveSlot()
 	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
 	if name == "plan" {
 		data.Script = template.JS(planJS)
@@ -95,6 +97,9 @@ func (q *request) page(status int, name, title string, content any) {
 		data.Fresh = freshnessOf(q.e.Collected, q.now)
 	}
 	q.drop()
+	if q.s.rendering != nil {
+		q.s.rendering(name)
+	}
 	b := &body{s: q.s, ctx: q.ctx}
 	err := pages[name].ExecuteTemplate(b, "layout", data)
 	if err == nil {

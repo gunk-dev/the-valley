@@ -32,12 +32,18 @@
 // anything. A request the server cannot admit, or that runs out of time,
 // answers 503.
 //
+// A source request holds its git slot for gitTimeout at most. That time
+// runs from when it takes the slot, and covers its wait for its
+// generation's export to be read and its git commands. It gives the slot
+// back before it renders its page. A source request that runs out of
+// that time answers 503.
+//
 // # Responses
 //
 // A response is rendered whole before it is written. A request gives back
-// its generation and its git slot before it writes, so a reader that
-// reads slowly holds neither. It keeps its response until the response
-// is written.
+// its git slot before it renders, and its generation before it writes, so
+// a reader that reads slowly holds neither. It keeps its response until
+// the response is written.
 //
 // A response's body is at most MaxResponse bytes. A page that would pass
 // it stops rendering there, and the request answers with a short page
@@ -149,9 +155,10 @@ const (
 	// a git slot or for its generation's export to be read, its git
 	// commands and its rendering.
 	requestTimeout = 15 * time.Second
-	// gitTimeout bounds a source request's git commands, all of them
-	// together, from when it holds its git slot. A source request whose
-	// git runs past it answers 503.
+	// gitTimeout bounds how long a source request holds its git slot,
+	// from when it takes it: its wait for its generation's export to be
+	// read, and its git commands, all of them together. A source request
+	// still holding its slot past it answers 503.
 	gitTimeout = 5 * time.Second
 	// MaxLoads is the most loads that run at once, each in a worker of
 	// its own that reads one generation's export.
@@ -228,9 +235,11 @@ type Server struct {
 	// is called when a source request takes a git slot, before it opens
 	// a generation. loading is called by a load's worker with the
 	// generation it opened, before it reads the generation's export.
-	opened   func(export.Generation)
-	admitted func()
-	loading  func(export.Generation)
+	// rendering is called with a page's name before the page renders.
+	opened    func(export.Generation)
+	admitted  func()
+	loading   func(export.Generation)
+	rendering func(name string)
 }
 
 // New is a Server over c's store.
@@ -286,14 +295,17 @@ type request struct {
 	r *http.Request
 	// ctx is the context the request waits and renders under. It ends
 	// at the request's deadline, or when its reader goes away. git is
-	// the context a source request runs git under, which ends gitTime
-	// after its view starts, or with ctx.
-	ctx context.Context
-	git context.Context
-	g   export.Generation
-	e   *export.Export
-	idx *index
-	now time.Time
+	// the context a source request holds its git slot under: it waits
+	// for its generation's export and runs git under it. git ends
+	// gitTime after the request takes its slot, or with ctx. slot gives
+	// the slot back.
+	ctx  context.Context
+	git  context.Context
+	slot func()
+	g    export.Generation
+	e    *export.Export
+	idx  *index
+	now  time.Time
 
 	// The response: a status and a page, or a redirect. It is written
 	// once the request has given back its generation and git slot, and
@@ -315,8 +327,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // serve renders the request's response. A source request is admitted
-// first, and holds its git slot until serve returns. Every request holds
-// its generation until serve returns.
+// first, and holds its git slot until it renders, or until serve returns
+// when it renders nothing. Every request holds its generation until serve
+// returns.
 func (q *request) serve() {
 	if q.r.Method != http.MethodGet && q.r.Method != http.MethodHead {
 		q.w.Header().Set("Allow", "GET, HEAD")
@@ -326,18 +339,24 @@ func (q *request) serve() {
 		return
 	}
 	parts, ok := segments(q.r.URL.EscapedPath())
+	wait := q.ctx
 	if ok && runsGit(parts) {
 		done, admitted := q.s.admit(q.ctx)
 		if !admitted {
 			q.busy()
 			return
 		}
-		defer done()
+		q.slot = done
+		defer q.giveSlot()
+		var cancel context.CancelFunc
+		q.git, cancel = context.WithTimeout(q.ctx, q.s.gitTime)
+		defer cancel()
+		wait = q.git
 		if q.s.admitted != nil {
 			q.s.admitted()
 		}
 	}
-	g, snap, release, err := q.s.open(q.ctx)
+	g, snap, release, err := q.s.open(wait)
 	defer release()
 	switch {
 	case errors.Is(err, export.ErrNoExport):
@@ -364,6 +383,14 @@ func (q *request) serve() {
 func runsGit(parts []string) bool {
 	return len(parts) >= 3 && export.ValidName(parts[0]) && parts[1] == "source" &&
 		(parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
+}
+
+// giveSlot gives back the request's git slot, when it holds one.
+func (q *request) giveSlot() {
+	if q.slot != nil {
+		q.slot()
+		q.slot = nil
+	}
 }
 
 // admit takes a git slot for a source request. When every slot is taken,
@@ -715,13 +742,13 @@ func (q *request) notFound() {
 // fail logs err and answers with the one 500 page, which says nothing of
 // the failure. A reader that went away is answered with nothing: git
 // killed for it fails, and that is no failure of the server's. A request
-// that ran out of time, or whose git did, answers 503.
+// that ran out of time, or held its git slot past gitTime, answers 503.
 func (q *request) fail(err error) {
 	if q.r.Context().Err() != nil {
 		return
 	}
 	if q.ctx.Err() == nil && q.git != nil && q.git.Err() != nil {
-		err = fmt.Errorf("the request's git ran past %v: %w", q.s.gitTime, err)
+		err = fmt.Errorf("the request held its git slot past %v: %w", q.s.gitTime, err)
 	}
 	q.s.log(err)
 	if q.ctx.Err() != nil || q.git != nil && q.git.Err() != nil {

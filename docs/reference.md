@@ -2450,16 +2450,18 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     `?skip=1`.
 - **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
   `git` commands, and rendering the page. A request that runs out of time answers `503` with
-  `Retry-After: 5`. A source request's `git` commands have 5 seconds in all, from when it holds its
-  `git` slot. A source request whose `git` runs past them answers `503` with `Retry-After: 5`, and
-  the server logs it.
+  `Retry-After: 5`. A source request holds its `git` slot for at most 5 seconds, from when it takes
+  it. Those 5 seconds cover its wait for its generation's export to be read and all of its `git`
+  commands. A source request still holding its slot when they pass answers `503` with
+  `Retry-After: 5`, and the server logs it.
 - **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
   check runs before the request opens a generation.
   - A tree, file, or log request runs `git`. At most 8 such requests run at once (`server.MaxGit`),
     and at most 16 more wait for one to finish (`server.MaxWaiting`). A request that finds both full
     answers `503` immediately with `Retry-After: 5`.
-  - A request releases its `git` slot and its generation before writing the response. A slow reader
-    holds neither a `git` slot nor a generation.
+  - A request releases its `git` slot before rendering its page, and its generation before writing
+    the response. So rendering holds no `git` slot, and a slow reader holds neither a `git` slot nor
+    a generation.
   - Any request whose generation the server has not read yet must wait for the read before opening a
     generation. At most 64 requests wait for export reads at once (`server.MaxLoadWaiting`). A
     request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.

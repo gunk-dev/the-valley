@@ -515,7 +515,9 @@ let
   # derivation at a time with 4 cores. The account is not in the git
   # group, so the repositories on disk are not the worker's to read or
   # write, and it reaches them only through this host's sshd, checking the
-  # host's key.
+  # host's key. Its timer starts the first pass five minutes after the
+  # timer starts, not after boot, and each later pass one minute after the
+  # last one ended.
   workerMisrendered =
     let
       unit = workerHost.config.systemd.services.valley-worker;
@@ -548,6 +550,8 @@ let
     ]
     || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\"" unit.script)
     || !(lib.hasInfix "git -C \"$origin\" remote add origin git@localhost:sealed.git\n" unit.script)
+    || timer.timerConfig.OnActiveSec or null != "5m"
+    || timer.timerConfig ? OnBootSec
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
@@ -696,7 +700,7 @@ in
     else if buildSliceMisrendered then
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
-      throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer counted from the end of each pass"
+      throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then

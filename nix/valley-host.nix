@@ -2443,13 +2443,16 @@ in
       };
     };
 
-    # The interval runs from the end of one pass to the start of the next,
-    # so a long batch is never followed at once by another pass.
+    # The first pass starts five minutes after the timer starts. Each later
+    # pass starts one interval after the last one ended, so a long batch is
+    # never followed at once by another pass. These are delays and nothing
+    # more: a switch that runs longer than five minutes can see the first
+    # pass start inside it, and any later switch can see a pass start
+    # inside it.
     systemd.timers.valley-worker = lib.mkIf cfg.worker.enable {
       description = "Run the valley check worker";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        # The first pass waits after activation, so it never runs inside a switch.
         OnActiveSec = "5m";
         OnUnitInactiveSec = cfg.worker.interval;
       };

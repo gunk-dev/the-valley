@@ -36,6 +36,13 @@ var ErrNoExport = errors.New("no export has been activated")
 //	    repos/<project>.git               a repository once it is accepted
 //	<state>/trash/                        generations being deleted
 //
+// staging/ and each upload in it are the receiver's alone, mode 0700, so
+// no other user reads a body before it is verified. exports/ and every
+// generation in it are readable by every user who can reach them:
+// directories 0755 and files 0644, or 0444 for git's read-only objects,
+// whatever the receiver's umask. Who can reach them is the state
+// directory's own mode, which is the deployment's to set.
+//
 // A generation is activated by renaming its staging directory into
 // exports/, writing high-water durably, and then swapping active
 // atomically. A reader resolves active once per request with Open and
@@ -44,8 +51,9 @@ var ErrNoExport = errors.New("no export has been activated")
 //
 // The locks are flock(2) locks, so readers and activations in different
 // processes on one host are held to the same rule as goroutines are. A
-// reader needs only read access to the state directory: the receiver opens
-// it with OpenStore, and a server with OpenReadOnly, which writes nothing.
+// reader needs only to reach the state directory and read it, active and
+// exports/: the receiver opens it with OpenStore, and a server with
+// OpenReadOnly, which writes nothing.
 type Store struct {
 	dir    string
 	report func(error)
@@ -130,6 +138,12 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
+	}
+	if err := os.Chmod(s.path("exports"), 0o755); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(s.path("staging"), 0o700); err != nil {
+		return nil, err
 	}
 	unlock, err := s.lock()
 	if err != nil {
@@ -299,8 +313,11 @@ func (s *Store) Stage(m *Manifest) (Staging, error) {
 		}
 	}
 	st := Staging{Manifest: m, Dir: s.path("staging", strconv.FormatInt(m.Sequence, 10))}
-	for _, d := range []string{st.Bodies(), filepath.Join(st.Dir, "repos")} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
+	for _, d := range []string{st.Dir, st.Bodies(), filepath.Join(st.Dir, "repos")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return Staging{}, err
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
 			return Staging{}, err
 		}
 	}
@@ -361,17 +378,18 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //  1. refuses the upload unless its sequence is still greater than the
 //     high-water mark and nothing newer is staged, and as incomplete,
 //     with the bodies still needed, unless Inventory needs none;
-//  2. moves the staged export.json into place and holds it to the
-//     manifest with CheckExport;
+//  2. moves the staged export.json into place, readable by every user,
+//     and holds it to the manifest with CheckExport;
 //  3. gives every project its repository: one already staged, the staged
 //     bundle through AcceptBundle, or the active generation's repository
 //     at the same source tip through CarryRepo. A repository is built
-//     under tmp/, every file and directory of it is synced to disk, and
-//     only then is it renamed into repos/;
+//     under tmp/, made readable by every user, every file and directory
+//     of it is synced to disk, and only then is it renamed into repos/;
 //  4. removes the bodies and tmp/, and checks that the staging directory
 //     holds export.json and exactly those repositories, each at its
 //     source tip;
-//  5. syncs export.json, repos/ and the staging directory, renames the
+//  5. makes repos/ and the staging directory readable by every user,
+//     syncs export.json, repos/ and the staging directory, renames the
 //     staging directory into exports/, and syncs both parents;
 //  6. writes high-water durably, once every file and directory of the
 //     generation is on disk;
@@ -432,6 +450,9 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 			return Generation{}, err
 		}
 	}
+	if err := os.Chmod(exportPath, 0o644); err != nil {
+		return Generation{}, err
+	}
 	data, err := os.ReadFile(exportPath)
 	if err != nil {
 		return Generation{}, err
@@ -457,6 +478,11 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	}
 	if err := checkStaged(ctx, st); err != nil {
 		return Generation{}, err
+	}
+	for _, d := range []string{filepath.Join(st.Dir, "repos"), st.Dir} {
+		if err := os.Chmod(d, 0o755); err != nil {
+			return Generation{}, err
+		}
 	}
 	for _, p := range []string{exportPath, filepath.Join(st.Dir, "repos"), st.Dir} {
 		if err := syncPath(p); err != nil {
@@ -489,10 +515,11 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 
 // build gives the project its repository in staging, from the staged
 // bundle through AcceptBundle or from the active generation through
-// carry. It builds the repository under tmp/, syncs it to disk, and only
-// then renames it into repos/, so a repository in repos/ is always an
-// accepted one, whole on disk. A build a crash interrupted is left under
-// tmp/, where the next build of the project starts again.
+// carry. It builds the repository under tmp/, makes it readable by every
+// user, syncs it to disk, and only then renames it into repos/, so a
+// repository in repos/ is always an accepted one, whole on disk. A build
+// a crash interrupted is left under tmp/, where the next build of the
+// project starts again.
 func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error {
 	tmp := filepath.Join(st.tmp(), p.Name+".git")
 	if err := removeAll(tmp); err != nil {
@@ -509,7 +536,11 @@ func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error 
 	} else if err := s.carry(ctx, p, tmp); err != nil {
 		return err
 	}
-	// git syncs what it fetches, but not what git init wrote before.
+	if err := readable(tmp); err != nil {
+		return err
+	}
+	// git syncs what it fetches, but not what git init wrote before, nor
+	// the modes readable set.
 	if err := syncTree(tmp); err != nil {
 		return err
 	}
@@ -865,6 +896,28 @@ func writeDurably(path string, data []byte) error {
 		return err
 	}
 	return syncPath(filepath.Dir(path))
+}
+
+// readable makes the tree at root readable by every user who can reach
+// it, whatever the umask it was written under: each directory 0755, and
+// each file 0644, or 0444 when its owner may not write it, as git's
+// objects are. A symlink is left as it is.
+func readable(root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir():
+			return os.Chmod(path, 0o755)
+		case d.Type().IsRegular():
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			return os.Chmod(path, info.Mode().Perm()&0o200|0o444)
+		}
+		return nil
+	})
 }
 
 // syncTree syncs every file and directory in the tree at root. A symlink

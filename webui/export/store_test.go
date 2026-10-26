@@ -281,6 +281,78 @@ func TestStoreActivates(t *testing.T) {
 	}
 }
 
+// An upload's staging directory and its bodies are the receiver's alone,
+// so no other user reads a body before it is verified. An activated
+// generation is readable by every user who can reach it: each directory
+// 0755, and each file 0644 or 0444, with no write for anyone but the
+// owner. The receiver runs here under umask 0077, so each mode comes from
+// the store and none from the umask.
+func TestStoreModes(t *testing.T) {
+	old := syscall.Umask(0o077)
+	t.Cleanup(func() { syscall.Umask(old) })
+	f := exporttest.New(t)
+	s := openStore(t, t.TempDir())
+	mode := func(path string) fs.FileMode {
+		t.Helper()
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return info.Mode().Perm()
+	}
+	u := fixtureUpload(t, f)
+	st := stage(t, f, s, u)
+	inv, err := s.Inventory(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range inv.Needs {
+		putNeed(t, st, u, n)
+	}
+	for _, d := range []string{filepath.Join(s.Dir(), "staging"), st.Dir, st.Bodies()} {
+		if m := mode(d); m != 0o700 {
+			t.Errorf("%s has mode %v, not 0700", d, m)
+		}
+	}
+	for _, n := range inv.Needs {
+		if m := mode(filepath.Join(st.Bodies(), n.SHA256)); m != 0o600 {
+			t.Errorf("the staged body %s has mode %v, not 0600", n.Name, m)
+		}
+	}
+
+	g, err := s.Activate(context.Background(), st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(filepath.Join(s.Dir(), "exports")); m != 0o755 {
+		t.Errorf("exports/ has mode %v, not 0755", m)
+	}
+	files := 0
+	err = filepath.WalkDir(g.Dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		switch m := mode(path); {
+		case d.IsDir() && m != 0o755:
+			t.Errorf("%s has mode %v, not 0755", path, m)
+		case d.Type().IsRegular() && m != 0o644 && m != 0o444:
+			t.Errorf("%s has mode %v, not 0644 or 0444", path, m)
+		case d.Type().IsRegular():
+			files++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := mode(g.ExportPath()); m != 0o644 {
+		t.Errorf("export.json has mode %v, not 0644", m)
+	}
+	if files < 3 {
+		t.Errorf("the generation holds %d files", files)
+	}
+}
+
 // After an activation, the same manifest, or an older one, is refused.
 func TestStoreRefusesReplays(t *testing.T) {
 	f := exporttest.New(t)

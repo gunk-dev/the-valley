@@ -2020,7 +2020,8 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
   longer than `size` (`size-mismatch`). While reading, it hashes the stream with SHA-256, reads at
   most `size + 1` bytes, and writes to a temporary file inside the upload's `bodies/` directory.
   Once the byte count and SHA-256 match the manifest, it syncs and renames the temporary file to
-  `bodies/<sha256>`. Nothing is written outside the upload's staging directory.
+  `bodies/<sha256>`. Nothing is written outside the upload's staging directory. The temporary file
+  and the staged body have mode `0600`.
 - **Bundle acceptance (`export.AcceptBundle`):**
   1. Read the bundle header. The receiver reads at most 64 KiB + 1 byte of the file, so that it can
      tell when the header is too long, and never buffers a line past that bound. Require a v2 or v3
@@ -2256,20 +2257,22 @@ The receiver keeps every accepted export as an immutable generation in one state
   1. Refuse the upload if its `sequence` is not greater than `high-water` (`replayed`), if a newer
      manifest is staged (`superseded`), or if any needed body is missing (`incomplete`, with
      `needs`).
-  2. Move `export.json` from `bodies/<sha256>` to `<staging>/<sequence>/export.json` and check it
-     against the manifest with `Manifest.CheckExport`. If `CheckExport` fails, remove `export.json`
-     from staging so `Inventory` lists it as needed again.
+  2. Move `export.json` from `bodies/<sha256>` to `<staging>/<sequence>/export.json`, set its mode
+     to `0644`, and check it against the manifest with `Manifest.CheckExport`. If `CheckExport`
+     fails, remove `export.json` from staging so `Inventory` lists it as needed again.
   3. Build `repos/<project>.git` for each project not already in `repos/`. It removes any leftover
      `tmp/<project>.git`, then builds the repository in `tmp/<project>.git` from the staged bundle
      with `AcceptBundle` or from the active generation's repository at the same `source_tip` with
-     `CarryRepo`. It syncs every file and directory in `tmp/<project>.git` to disk and renames it to
-     `repos/<project>.git`. If `AcceptBundle` fails, the staged bundle is removed from `bodies/` so
-     `Inventory` lists it as needed again. A build interrupted by a crash stays in `tmp/` and is
-     rebuilt on the next commit.
+     `CarryRepo`. It makes every directory in `tmp/<project>.git` mode `0755` and every file `0644`,
+     or `0444` where git wrote it read-only. It then syncs every file and directory to disk and
+     renames the repository to `repos/<project>.git`. If `AcceptBundle` fails, the staged bundle is
+     removed from `bodies/` so `Inventory` lists it as needed again. A build interrupted by a crash
+     stays in `tmp/` and is rebuilt on the next commit.
   4. Remove `bodies/` and `tmp/`, and verify that the staging directory holds only `export.json` and
      `repos/`, with each project's repository holding `refs/heads/main` at its `source_tip`.
-  5. Sync `export.json`, `repos/`, and the staging directory, rename `<staging>/<sequence>` to
-     `exports/<sequence>`, and sync `exports/` and `staging/`.
+  5. Set the mode of `repos/` and the staging directory to `0755`. Sync `export.json`, `repos/`, and
+     the staging directory, rename `<staging>/<sequence>` to `exports/<sequence>`, and sync
+     `exports/` and `staging/`.
   6. Write `<sequence>\n` durably to `high-water`.
   7. Swap `active` by renaming a new symlink (`exports/<sequence>`) over it.
   8. Sync `<state>` and sweep inactive generations that no reader holds, staging directories with
@@ -2278,6 +2281,15 @@ The receiver keeps every accepted export as an immutable generation in one state
   names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
   `git init` creates beforehand, so `Activate` recursively syncs each repository before renaming it
   into `repos/`.
+- **Modes:** The store sets each mode itself, so none depends on the receiver's umask.
+  - `staging/` and each upload's directory in it have mode `0700`, and each body `0600`. No other
+    user reads a body before it is verified.
+  - `exports/` has mode `0755`. In each generation, every directory has mode `0755` and every file
+    `0644`, or `0444` where git wrote it read-only. So any user who can reach `exports/` can read
+    every generation.
+  - The state directory's own mode is the deployment's choice: `OpenStore` creates it when it does
+    not exist, and never changes its mode. A server that runs as another user needs search and read
+    access to it.
 - **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves `active`
   and holds a shared `flock(2)` (`LOCK_SH`) on `exports/<sequence>` until the caller releases it
   (`export.ErrNoExport` if no export has been activated yet). Because a request serves everything
@@ -2323,7 +2335,9 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 
 - **Flags:** Both flags are required.
   - `--state DIR` names the receiver's state directory, which must exist. `valley-web` only reads
-    it, so it can run as a user with read access alone (see
+    it, so it can run as a user with read access alone. That user needs search and read access to
+    the state directory itself, which the deployment gives it; the receiver makes `exports/` and
+    every generation readable by every user (see
     [Reading the state directory](./architecture.md#reading-the-state-directory)).
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It

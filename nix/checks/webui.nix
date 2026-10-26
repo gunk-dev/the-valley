@@ -18,7 +18,9 @@
   # commit main does not reach, nor one named in the other object
   # format's length, alone or among several; git's
   # output read within its limit, with git stopped past it or when its
-  # reader stops early; and the receiver's state directory. For the state directory: readers holding
+  # reader stops early; and the receiver's state directory. For the state
+  # directory: uploads private to the receiver and generations readable
+  # by every user, whatever its umask; readers holding
   # a generation through activations, every file of a generation synced
   # before high-water names it, a repository a crash interrupted built
   # again, recovery checking a generation before it activates it and
@@ -74,7 +76,7 @@
   # room for answering 503 while the plan, a knot and a directory still
   # render; and valley-web run as a process of its own, serving and
   # stopping on SIGTERM, and serving every page from a state directory
-  # that reads as another user's, with nothing in it writable. go vet
-  # runs after them.
+  # the receiver wrote under umask 0077 and that reads as another
+  # user's, with nothing in it writable. go vet runs after them.
   webui-server-unit = packages.valley-web.unit;
 }

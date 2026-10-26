@@ -41,9 +41,9 @@ func StageBody(dir string, want Body, limit int64, req *http.Request) (string, e
 		return "", err
 	}
 
-	// Readable by others, as git's files are, so a server running as
-	// another user can read export.json once it is activated.
-	f, err := os.OpenFile(filepath.Join(dir, ".partial-"+random()), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
+	// Readable by the receiver alone, in a staging directory that is its
+	// own too. Activation makes export.json readable by others.
+	f, err := os.OpenFile(filepath.Join(dir, ".partial-"+random()), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return "", err
 	}

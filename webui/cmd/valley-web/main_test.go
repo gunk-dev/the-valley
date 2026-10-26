@@ -131,14 +131,22 @@ func TestServesTheStateDirectory(t *testing.T) {
 // valley-web serves every page from a state directory it can only read,
 // as a user other than the receiver's: no file or directory in it is
 // writable, and git holds its repositories to be another user's. The
-// test cannot become another user, so it makes the directory read as one
-// does: each entry's owner and group bits are set to its bits for others,
-// less write. git is told the repositories are another user's with
+// receiver wrote it under umask 0077, so what it reads is readable by
+// others because the receiver made it so. The deployment gives the server
+// the state directory itself, here mode 0755. The test cannot become
+// another user, so it makes the directory read as one does: each entry's
+// owner and group bits are set to its bits for others, less write. git is
+// told the repositories are another user's with
 // GIT_TEST_ASSUME_DIFFERENT_OWNER, as git's own tests tell it, through a
 // git that sets it and runs the real one, since valley-web passes git none
 // of its own GIT_ variables.
 func TestServesAReadOnlyStateDirectory(t *testing.T) {
+	umask := syscall.Umask(0o077)
 	f, state := uploaded(t)
+	syscall.Umask(umask)
+	if err := os.Chmod(state, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	asOthers(t, state)
 	real, err := exec.LookPath(export.GitProgram)
 	if err != nil {

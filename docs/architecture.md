@@ -2717,16 +2717,25 @@ opens (`webui/export/store.go`). It neither finishes an interrupted activation n
 generations. The receiver does both when it opens the directory with `export.OpenStore`, and until
 then the server serves the generation `active` names.
 
-So the server can run as a user who can only read the receiver's files. The receiver writes them
-readable by others: it creates each staged body, `export.json` among them, with mode `0644`
-(`webui/export/body.go`), and git's files follow the receiver's umask. Every git command the server
-runs names its repository with `--git-dir` (`webui/export/bundle.go`). With `--git-dir`, git reads a
-repository another user owns without holding it to `safe.directory`, which the server's isolated git
-configuration cannot set.
+So the server can run as a user who can only read the receiver's files. The receiver keeps an upload
+private until it is activated, and then makes it readable by every user (`webui/export/store.go`).
+Staged bodies have mode `0600`, in a staging directory of mode `0700`, so no other user reads a body
+before it is verified. When it activates an upload, the receiver sets every directory of the new
+generation to `0755` and every file to `0644`, or `0444` where git wrote it read-only, and
+`exports/` to `0755`. It sets each mode itself, so none depends on its umask.
 
-Checked by `webui-server-unit`, whose `TestServesAReadOnlyStateDirectory` runs `valley-web` over a
-state directory that reads as another user's: nothing in it is writable, and git takes its
-repositories to be another user's.
+The state directory's own mode is a deployment choice. The receiver creates it when it does not
+exist and never changes its mode. The deployment gives the server's user search and read access to
+it, for example as a member of its group.
+
+Every git command the server runs names its repository with `--git-dir` (`webui/export/bundle.go`).
+With `--git-dir`, git reads a repository another user owns without holding it to `safe.directory`,
+which the server's isolated git configuration cannot set.
+
+Checked by `webui-unit`, whose `TestStoreModes` finds those modes under umask `0077`. Also by
+`webui-server-unit`, whose `TestServesAReadOnlyStateDirectory` runs `valley-web` over a state
+directory the receiver wrote under umask `0077`, read as another user reads it: nothing in it is
+writable, and git takes its repositories to be another user's.
 
 ### Paths
 

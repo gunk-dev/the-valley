@@ -52,8 +52,9 @@ func mustSay(t *testing.T, what, said, want string) {
 }
 
 // elsewhere makes a second instance beside the first, with projects of the
-// same names: valley, which allows app and site; app, which declares
-// itself public and carries a sentinel of its own; and site, with no main.
+// same names: valley, whose registry grants anyone read of app and site;
+// app, which lets anyone read it and carries a sentinel of its own; and
+// site, with no main.
 // It returns the instance repository.
 func (v *testValley) elsewhere(sentinel string) string {
 	v.t.Helper()
@@ -68,13 +69,10 @@ func (v *testValley) elsewhere(sentinel string) string {
 		v.work["elsewhere/"+name] = work
 	}
 	v.write(filepath.Join(v.work["elsewhere/valley"], "policy", "instance", "floor.cue"), "package verification\n")
-	v.declare("elsewhere/valley", `instance: projects: {
-	app: visibility: "public"
-	site: visibility: "public"
-}`)
+	v.grantIn("elsewhere/valley", anyoneReadsAppAndSite)
 	v.write(filepath.Join(v.work["elsewhere/app"], "policy", "valley"), filepath.Join(srv, "valley.git")+"\n")
 	v.write(filepath.Join(v.work["elsewhere/app"], "source.txt"), sentinel+"\n")
-	v.declare("elsewhere/app", `project: visibility: "public"`)
+	v.declare("elsewhere/app", policy("app", "anyone"))
 	list := v.runInput("", "app\nsite\nvalley\n", "git", "-C", filepath.Join(srv, "valley.git"), "hash-object", "-w", "--stdin")
 	v.run("", "git", "-C", filepath.Join(srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
 	return filepath.Join(srv, "valley.git")
@@ -185,9 +183,9 @@ exit "$rc"
 	}
 }
 
-// A project the instance allows that cannot be read fails the pass, which
-// sends and writes nothing: published without it, the export would take
-// it off the web. A project with no main yet is private, and the pass
+// A project a read grant to anyone names that cannot be read fails the
+// pass, which sends and writes nothing: published without it, the export
+// would take it off the web. A project with no main yet is private, and the pass
 // goes on.
 func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 	cases := []struct {
@@ -234,9 +232,16 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			says: "could not read main and refs/the-valley/projects in the instance repository",
 		},
 		{
-			name:   "the schema cannot be read",
-			breaks: func(v *testValley) []string { return []string{"--schema", filepath.Join(v.root, "no-such.cue")} },
+			name:   "the read schema cannot be read",
+			breaks: func(v *testValley) []string { return []string{"--read-schema", filepath.Join(v.root, "no-such.cue")} },
 			says:   "does not load",
+		},
+		{
+			name: "the identity schema cannot be read",
+			breaks: func(v *testValley) []string {
+				return []string{"--identity-schema", filepath.Join(v.root, "no-such.cue")}
+			},
+			says: "does not load",
 		},
 	}
 	for _, c := range cases {
@@ -256,37 +261,33 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 		v.run("", "git", "init", "--quiet", "--bare", filepath.Join(v.srv, "fresh.git"))
 		list := v.runInput("", "app\nfresh\nsite\nvalley\n", "git", "-C", filepath.Join(v.srv, "valley.git"), "hash-object", "-w", "--stdin")
 		v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
-		v.declare("valley", `instance: projects: {
-	app: visibility: "public"
-	fresh: visibility: "public"
-	site: visibility: "public"
-}`)
+		v.grant(`"all"`)
 		stdout, _ := v.publish("--out", filepath.Join(t.TempDir(), "export"))
 		mustSay(t, "a project with no main", stdout, "public: app; private: fresh, site, valley")
 	})
 }
 
-// Only a cue run that ends by refusing a declaration makes it invalid, and
-// so private. A cue that is killed, that crashes or that runs past its
-// timeout has read nothing, and the pass fails, sending and writing
-// nothing: taken as invalid, the instance's declaration would make every
-// project private and take them all off the web.
+// Only a cue run that ends by refusing a document makes it invalid, and so
+// private. A cue that is killed, that crashes or that runs past its timeout
+// has read nothing, and the pass fails, sending and writing nothing: taken
+// as invalid, the instance's registry would make every project private and
+// take them all off the web.
 func TestACueThatDoesNotFinishFailsThePass(t *testing.T) {
 	cases := []struct {
 		name, does, says string
 		timeout          time.Duration
 	}{
-		{name: "killed", does: "kill -KILL $$", says: "cue did not finish reading the declaration: signal: killed"},
+		{name: "killed", does: "kill -KILL $$", says: "cue did not finish reading the document: signal: killed"},
 		{name: "crashed", does: "echo 'panic: runtime error' >&2; exit 2",
-			says: "cue did not finish reading the declaration: exit status 2: panic: runtime error"},
+			says: "cue did not finish reading the document: exit status 2: panic: runtime error"},
 		{name: "past its timeout", does: "exec sleep 60", says: "cue took longer than 3s", timeout: 3 * time.Second},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			v := newValley(t)
 			bash, cue := needTool(t, "bash"), needTool(t, "cue")
-			// The schema is checked with cue over it alone; a declaration is
-			// read with cue over the schema and the declaration's files.
+			// Each schema is checked with cue over it alone; a document is
+			// read with cue over its schema and its files.
 			wrapper := filepath.Join(v.root, "bin", "cue")
 			v.write(wrapper, fmt.Sprintf("#!%s\nif [ \"$#\" -gt 4 ]; then %s; fi\nexec %s \"$@\"\n", bash, c.does, cue))
 			if err := os.Chmod(wrapper, 0o755); err != nil {
@@ -298,7 +299,7 @@ func TestACueThatDoesNotFinishFailsThePass(t *testing.T) {
 				t.Cleanup(func() { cueTimeout = was })
 			}
 			said := v.fails(nil)
-			mustSay(t, c.name, said, "could not read the instance's policy/web")
+			mustSay(t, c.name, said, "could not read the instance's identity registry")
 			mustSay(t, c.name, said, c.says)
 		})
 	}
@@ -307,7 +308,7 @@ func TestACueThatDoesNotFinishFailsThePass(t *testing.T) {
 // The bundles of an export are held to --max-bundles together, and the
 // state and the cache to --max-storage, before anything is sent. What a
 // program prints is held to a bound: git's output past it fails the call,
-// and a declaration whose export is past cue's bound is invalid.
+// and a policy whose export is past cue's bound is invalid.
 func TestBoundsStopThePass(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
@@ -325,12 +326,14 @@ func TestBoundsStopThePass(t *testing.T) {
 		t.Errorf("git printing more than %d bytes returned %v, want errTooLong", maxGitOutput, err)
 	}
 
-	v.declare("valley", `import "list"
+	v.declare("app", `import "list"
 
-instance: projects: {for i in list.Range(0, 9000, 1) {"project-with-a-long-name-for-the-bound-on-cue-output-\(i)": visibility: "public"}}`)
+project: "app"
+identity: "`+identities["app"]+`"
+readers: {for i in list.Range(0, 20000, 1) {"reader-with-a-long-name-for-the-bound-on-cue-output-\(i)": true}}`)
 	stdout, stderr := v.publish("--out", filepath.Join(t.TempDir(), "export"))
-	mustSay(t, "a declaration past cue's bound", stdout, "public: none")
-	mustSay(t, "a declaration past cue's bound", stderr, "cue exported more than")
+	mustSay(t, "a policy past cue's bound", stdout, "public: none")
+	mustSay(t, "a policy past cue's bound", stderr, "cue exported more than")
 }
 
 // du is what the regular files under dirs hold together. A file that goes
@@ -549,19 +552,19 @@ func TestPrivateSentinelsNeverLeave(t *testing.T) {
 	})
 }
 
-// A project that declares itself private again is gone from the next
+// A project that no longer lets anyone read it is gone from the next
 // export the receiver activates: from export.json and from its
 // repositories.
 func TestAProjectMadePrivateLeavesTheReceiver(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
-	v.declare("site", `project: visibility: "public"`)
+	v.declare("site", policy("site", "anyone"))
 	v.publish("--receiver", rv.server.URL)
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app", "site"}) {
 		t.Fatalf("the receiver serves %v, want app and site", got)
 	}
 
-	v.declare("site", `project: visibility: "private"`)
+	v.declare("site", policy("site", "operator"))
 	stdout, _ := v.publish("--receiver", rv.server.URL)
 	mustSay(t, "site made private", stdout, "public: app; private: site, valley")
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app"}) {

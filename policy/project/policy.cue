@@ -233,11 +233,13 @@ project: {
 	}
 
 	// The web UI's module: the export contract, its shared fixture, the
-	// publisher, and the server. The publisher's tests also read declarations
-	// under the web visibility schema. Changes require both checks.
+	// publisher, and the server. The publisher's tests also read each
+	// project's policy/read and the instance's registry under the read and
+	// identity schemas. Changes require both checks.
 	classes: webui: {
 		paths: "webui/**":             true
-		paths: "schema/web.cue":       true
+		paths: "schema/read.cue":      true
+		paths: "schema/identity.cue":  true
 		requires: "webui-unit":        true
 		requires: "webui-server-unit": true
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,9 +26,10 @@ import (
 // that run no hook, as any git remote would, an instance repository that
 // publishes its projects as valley-init writes the list, and a plan graph
 // written with the real valley knot verbs. The valley CLI is bin/valley
-// itself, run by bash, with valley-go on PATH; declarations are read by
-// the real cue under schema/web.cue. Uploads go to a receiver over a real
-// export.Store.
+// itself, run by bash, with valley-go on PATH; the instance's identity
+// registry and each project's policy/read are read by the real cue under
+// schema/identity.cue and schema/read.cue. Uploads go to a receiver over a
+// real export.Store.
 
 const (
 	instanceName = "valley-host"
@@ -35,9 +37,22 @@ const (
 	changeID     = "pqrstuvwxyzkpqrstuvwxyzkpqrstuvw"
 )
 
+// The publication identities of the test valley's projects, which their
+// policy/read declares and the registry's grants name.
+var identities = map[string]string{
+	"app":    "9da6809f038df92138c131cd16bed76d",
+	"site":   "273d5668702918ea7ae079de374db96b",
+	"valley": "f83927d5a4ed068cdd02a8cdaa09f26d",
+	"fresh":  "0d1f6c8e2b4a59736e8f1a2b3c4d5e6f",
+}
+
+// anyoneReadsAppAndSite is the scope of the registry's read grant to anyone
+// in every valley newValley makes: app and site, by their identities.
+var anyoneReadsAppAndSite = `{app: "` + identities["app"] + `", site: "` + identities["site"] + `"}`
+
 // The private sentinels: a line of site's source, the body of site's one
 // knot, and a comment on it. site is private in every valley newValley
-// makes until a test declares it public, so no export or bundle of a pass
+// makes until a test lets anyone read it, so no export or bundle of a pass
 // before that may hold any of them.
 const (
 	sentinelSource  = "site-private-source-7f3a91"
@@ -52,7 +67,7 @@ type testValley struct {
 	t          *testing.T
 	root, srv  string
 	work       map[string]string
-	schema     string
+	schemas    string
 	state      string
 	principals string
 	// siteTitle is the title of site's one knot, which no export of a
@@ -73,9 +88,11 @@ func needTool(t *testing.T, name string) string {
 	return path
 }
 
-// newValley makes the valley. The instance allows app and site; app
-// declares itself public, and site declares nothing. site carries the
-// private sentinels.
+// newValley makes the valley. The instance's registry grants anyone read
+// of app and site at the destination, and the operator read of every
+// project; app's policy/read lets anyone and the operator read it, and site
+// has none. site carries the private sentinels. The instance repository's
+// own policy/read lets the operator alone read it.
 func newValley(t *testing.T) *testValley {
 	t.Helper()
 	bash := needTool(t, "bash")
@@ -88,7 +105,7 @@ func newValley(t *testing.T) *testValley {
 	}
 	root := t.TempDir()
 	v := &testValley{t: t, root: root, srv: filepath.Join(root, "srv"), work: map[string]string{},
-		schema: filepath.Join(repoRoot, "schema", "web.cue"), state: filepath.Join(root, "state"),
+		schemas: filepath.Join(repoRoot, "schema"), state: filepath.Join(root, "state"),
 		principals: filepath.Join(root, "principals.json"), knots: map[string]string{}}
 
 	bin := filepath.Join(root, "bin")
@@ -108,7 +125,8 @@ func newValley(t *testing.T) *testValley {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "xdg-state"))
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	t.Setenv("GIT_CONFIG_GLOBAL", gitconfig)
-	t.Setenv("VALLEY_WEB_SCHEMA", "")
+	t.Setenv("VALLEY_READ_SCHEMA", "")
+	t.Setenv("VALLEY_IDENTITY_SCHEMA", "")
 	v.write(v.principals, `{"operator": "operator"}`)
 
 	for _, name := range []string{"valley", "app", "site"} {
@@ -120,10 +138,8 @@ func newValley(t *testing.T) *testValley {
 		v.work[name] = work
 	}
 	v.write(filepath.Join(v.work["valley"], "policy", "instance", "floor.cue"), "package verification\n")
-	v.declare("valley", `instance: projects: {
-	app: visibility: "public"
-	site: visibility: "public"
-}`)
+	v.grant(anyoneReadsAppAndSite)
+	v.declare("valley", policy("valley", "operator"))
 	projects := v.runInput(v.srv, "app\nsite\nvalley\n", "git", "-C", filepath.Join(v.srv, "valley.git"), "hash-object", "-w", "--stdin")
 	v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", "refs/the-valley/projects", strings.TrimSpace(projects))
 
@@ -136,7 +152,7 @@ func newValley(t *testing.T) *testValley {
 		v.write(filepath.Join(v.work[name], "README.md"), readme)
 		v.commit(name, name+": the first commit")
 	}
-	v.declare("app", `project: visibility: "public"`)
+	v.declare("app", policy("app", "anyone", "operator"))
 
 	// The plan: a milestone in app with a child blocked by site's one knot,
 	// a bug with a body and a comment by a principal the display mapping
@@ -210,17 +226,63 @@ func (v *testValley) newKnot(from, kind, title string, args ...string) string {
 	return doc.Knot.ID
 }
 
-// declare writes a project's policy/web declaration and pushes it to main.
-// An empty body removes it.
+// declare writes a project's policy/read and pushes it to main. An empty
+// body removes it.
 func (v *testValley) declare(project, body string) {
 	v.t.Helper()
-	path := filepath.Join(v.work[project], "policy", "web", "web.cue")
+	path := filepath.Join(v.work[project], "policy", "read", "read.cue")
 	if body == "" {
-		v.run(v.work[project], "git", "rm", "--quiet", "-r", "policy/web")
+		v.run(v.work[project], "git", "rm", "--quiet", "-r", "policy/read")
 	} else {
-		v.write(path, "package web\n\n"+body+"\n")
+		v.write(path, "package read\n\n"+body+"\n")
 	}
-	v.commit(project, project+": declare its web visibility")
+	v.commit(project, project+": declare who may read it")
+}
+
+// policy is the body of a policy/read for the project, by its name and
+// identity, naming the readers given.
+func policy(project string, readers ...string) string {
+	set := make([]string, len(readers))
+	for i, r := range readers {
+		set[i] = r + ": true"
+	}
+	return fmt.Sprintf("project: %q\nidentity: %q\nreaders: {%s}", project, identities[project], strings.Join(set, ", "))
+}
+
+// grant writes the instance's identity registry, whose read grant to anyone
+// at the destination covers the projects given, and pushes it to main. An
+// empty scope removes the registry. The registry's genesis entry, the
+// operator, governs it and reads every project.
+func (v *testValley) grant(projects string) {
+	v.t.Helper()
+	v.grantIn("valley", projects)
+}
+
+func (v *testValley) grantIn(instance, projects string) {
+	v.t.Helper()
+	if projects == "" {
+		v.run(v.work[instance], "git", "rm", "--quiet", "-r", "identity")
+		v.commit(instance, instance+": no registry")
+		return
+	}
+	v.write(filepath.Join(v.work[instance], "identity", "registry.cue"), `package identity
+
+boundaries: {
+	registry: kind: "registry"
+	web: {kind: "edge-read", destination: "`+destination+`"}
+}
+genesis: "operator"
+principals: operator: {
+	kind: "human"
+	keys: [{class: "ssh-ed25519", bound: "hardware", public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForARejectedFixtureAAAAAAAAAAA"}]
+	grants: {
+		govern: boundary: "registry"
+		read: {boundary: "web", projects: "all"}
+	}
+}
+anyone: grants: read: {boundary: "web", projects: `+projects+`}
+`)
+	v.commit(instance, instance+": grant read")
 }
 
 func (v *testValley) commit(project, message string) {
@@ -236,7 +298,9 @@ func (v *testValley) args(more ...string) []string {
 	return append([]string{
 		"--instance-repo", filepath.Join(v.srv, "valley.git"),
 		"--instance", instanceName, "--destination", destination,
-		"--state", v.state, "--schema", v.schema, "--principals", v.principals,
+		"--state", v.state, "--principals", v.principals,
+		"--read-schema", filepath.Join(v.schemas, "read.cue"),
+		"--identity-schema", filepath.Join(v.schemas, "identity.cue"),
 	}, more...)
 }
 
@@ -407,10 +471,13 @@ func TestOutIsAnExportTheStoreActivates(t *testing.T) {
 	}
 }
 
-// A project is public only when the instance's policy/web and its own both
-// say so. A missing declaration, an invalid one and a private one each keep
-// a project private, on either side.
-func TestVisibilityNeedsBothDeclarations(t *testing.T) {
+// A project is public only when anyone may read it: its own policy/read
+// names anyone, and the registry's read grant to anyone covers it by its
+// identity. A missing policy, an invalid one, one that does not name anyone,
+// and a grant that does not cover the project each keep it private, and
+// the old policy/web is never read. The operator's grant to every project
+// publishes nothing: the edge serves anyone alone.
+func TestVisibilityNeedsBothConsents(t *testing.T) {
 	v := newValley(t)
 	steps := []struct {
 		what    string
@@ -419,22 +486,39 @@ func TestVisibilityNeedsBothDeclarations(t *testing.T) {
 		private []string
 		warns   string
 	}{
-		{"site declares nothing", func() {}, []string{"app"}, []string{"site", "valley"}, ""},
-		{"site declares itself private", func() { v.declare("site", `project: visibility: "private"`) },
+		{"site has no policy/read", func() {}, []string{"app"}, []string{"site", "valley"}, ""},
+		{"site lets the operator alone read it", func() { v.declare("site", policy("site", "operator")) },
 			[]string{"app"}, []string{"site", "valley"}, ""},
-		{"site declares itself public", func() { v.declare("site", `project: visibility: "public"`) },
+		{"site lets no one read it", func() { v.declare("site", policy("site")) },
+			[]string{"app"}, []string{"site", "valley"}, ""},
+		{"site lets anyone read it", func() { v.declare("site", policy("site", "anyone")) },
 			[]string{"app", "site"}, []string{"valley"}, ""},
-		{"the instance keeps site private", func() {
-			v.declare("valley", `instance: projects: {
-	app: visibility: "public"
-	site: visibility: "private"
-}`)
+		{"the instance's grant to anyone no longer covers site", func() {
+			v.grant(`{app: "` + identities["app"] + `"}`)
 		}, []string{"app"}, []string{"site", "valley"}, ""},
-		{"app's declaration is invalid", func() { v.declare("app", `project: visibilty: "public"`) },
-			[]string{}, []string{"app", "site", "valley"}, "app: its policy/web at"},
-		{"app declares itself public again, and the instance drops its declaration", func() {
-			v.declare("app", `project: visibility: "public"`)
-			v.declare("valley", "")
+		{"the instance's grant to anyone covers every project", func() { v.grant(`"all"`) },
+			[]string{"app", "site"}, []string{"valley"}, ""},
+		{"the instance's grant to anyone covers no project", func() { v.grant(`{}`) },
+			[]string{}, []string{"app", "site", "valley"}, ""},
+		{"the instance's grant to anyone covers app under another identity", func() {
+			v.grant(`{app: "` + identities["site"] + `", site: "` + identities["site"] + `"}`)
+		}, []string{"site"}, []string{"app", "valley"}, ""},
+		{"app's policy is invalid", func() {
+			v.grant(anyoneReadsAppAndSite)
+			v.declare("app", `project: "app"
+identity: "`+identities["app"]+`"
+reader: {anyone: true}`)
+		}, []string{"site"}, []string{"app", "valley"}, "app: its policy/read at"},
+		{"app's policy is site's", func() { v.declare("app", policy("site", "anyone")) },
+			[]string{"site"}, []string{"app", "valley"}, `policy/read is for the project "site", and was read from "app"`},
+		{"app declares itself public in the old policy/web alone", func() {
+			v.declare("app", "")
+			v.write(filepath.Join(v.work["app"], "policy", "web", "web.cue"), "package web\n\nproject: visibility: \"public\"\n")
+			v.commit("app", "app: the old declaration")
+		}, []string{"site"}, []string{"app", "valley"}, ""},
+		{"app lets anyone read it again, and the instance drops its registry", func() {
+			v.declare("app", policy("app", "anyone"))
+			v.grant("")
 		}, []string{}, []string{"app", "site", "valley"}, ""},
 	}
 	for _, step := range steps {
@@ -470,60 +554,6 @@ func TestVisibilityNeedsBothDeclarations(t *testing.T) {
 		}
 		if holds := bytes.Contains(data, []byte(v.siteTitle)); holds != exported {
 			t.Errorf("%s: export.json holds site's knot: %v; site is exported: %v", step.what, holds, exported)
-		}
-	}
-}
-
-// A declaration may reopen #Declaration and add a field, so cue exports
-// Visibility beside visibility. encoding/json alone would read the second
-// into the first, and a project that declares itself private, or that the
-// instance keeps private, would be published. The publisher refuses the
-// declaration instead, so the project stays private.
-func TestAVisibilitySpelledAnotherWayIsRefused(t *testing.T) {
-	v := newValley(t)
-	reopened := "#Declaration: Visibility?: string\n"
-	steps := []struct {
-		what   string
-		change func()
-		public []string
-		warns  string
-	}{
-		{"site is private, and public spelled another way", func() {
-			v.declare("site", reopened+`project: {
-	visibility: "private"
-	Visibility: "public"
-}`)
-		}, []string{"app"}, `site: its policy/web at`},
-		{"the instance keeps site private, and allows it spelled another way", func() {
-			v.declare("site", `project: visibility: "public"`)
-			v.declare("valley", reopened+`instance: projects: {
-	app: visibility: "public"
-	site: {
-		visibility: "private"
-		Visibility: "public"
-	}
-}`)
-		}, []string{}, `the instance's policy/web at`},
-	}
-	for _, step := range steps {
-		step.change()
-		dir := filepath.Join(t.TempDir(), "export")
-		_, stderr := v.publish("--out", dir)
-		data, err := os.ReadFile(filepath.Join(dir, export.ExportFile))
-		if err != nil {
-			t.Fatal(err)
-		}
-		e, err := export.Decode(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := names(e); !reflect.DeepEqual(got, step.public) {
-			t.Errorf("%s: the export holds %v, want %v", step.what, got, step.public)
-		}
-		for _, says := range []string{step.warns, `holds the key "Visibility", which is its field "visibility" spelled another way`} {
-			if !strings.Contains(stderr, says) {
-				t.Errorf("%s: the pass did not warn %q:\n%s", step.what, says, stderr)
-			}
 		}
 	}
 }

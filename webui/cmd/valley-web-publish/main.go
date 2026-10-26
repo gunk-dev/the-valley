@@ -1,5 +1,5 @@
 // valley-web-publish publishes a valley host's public projects to a web
-// receiver. One run is one pass. It reads the valley through the CLI's JSON
+// receiver: the projects anyone may read there. One run is one pass. It reads the valley through the CLI's JSON
 // commands, projects what it read onto the public export (package export),
 // signs a manifest for it, and uploads it by the protocol package export
 // defines. The receiver never connects to the host; its replies are all the
@@ -14,14 +14,15 @@
 //  3. fetch main and refs/the-valley/projects of the instance repository
 //     into the publisher's own bare repository, whose origin it is, once
 //     for the whole pass, refuse a main that carries policy/valley, and
-//     read the instance's policy/web at that main;
+//     read the read grants at --destination from the identity registry at
+//     that main;
 //  4. run valley plan --all --json and valley pending --all --json in the
 //     pointer repository, whose main names the instance repository at
 //     policy/valley, so they discover the projects and the signers through
 //     the instance repository's own publications and never read its main;
 //     and hold both listings to the project list it fetched;
-//  5. for each project the instance allows, fetch main into a mirror under
-//     the cache and read the project's own policy/web there;
+//  5. for each project a read grant to anyone names, fetch main into a
+//     mirror under the cache and read the project's own policy/read there;
 //  6. run valley knot show --project P <id> --json for every knot of every
 //     public project, in the publisher's repository, and build the export
 //     with export.Build, reading again when the inputs were read at
@@ -32,10 +33,12 @@
 //  8. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago, or write it to --out instead.
 //
-// A project is public only when the instance's policy/web and its own both
-// say public (schema/web.cue). A declaration that is missing, or that the
-// schema refuses, means private. A project the instance allows that
-// cannot be read fails the pass, which then sends nothing: an export
+// A project is public when anyone may read it: its own policy/read names
+// anyone (schema/read.cue), and a read grant to anyone at the destination
+// covers it (schema/identity.cue). Package readaccess reads and evaluates
+// both. A policy or registry that is missing, or that its schema refuses,
+// consents to nothing, so the project is private. A project a grant names
+// that cannot be read fails the pass, which then sends nothing: an export
 // without it would take it off the web.
 package main
 
@@ -54,13 +57,16 @@ import (
 	"strings"
 	"time"
 
+	"the-valley/readaccess"
 	"the-valley/webui/export"
 )
 
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME
                           (--receiver URL | --out DIR) [--principals FILE]
-                          [--state DIR] [--schema FILE] [--recheck DURATION]
-                          [--max-bundles SIZE] [--max-storage SIZE]
+                          [--state DIR] [--read-schema FILE]
+                          [--identity-schema FILE] [--registry-dir DIR]
+                          [--recheck DURATION] [--max-bundles SIZE]
+                          [--max-storage SIZE]
 
 One pass of the web publisher: read the valley's public projects, and
 upload them to the receiver at URL, or write them to DIR.
@@ -74,7 +80,9 @@ upload them to the receiver at URL, or write them to DIR.
                        at either end
   --instance NAME      the instance the manifest names, and the export
                        key's signing name, NAME/web-export
-  --destination NAME   the receiver the manifest is for
+  --destination NAME   the receiver the manifest is for, and the destination
+                       of the edge read boundary whose read grants decide
+                       what anyone may read there
   --receiver URL       the receiver's base URL, http or https
   --out DIR            write the export to DIR, which must not exist or be
                        empty, instead of uploading it: manifest, export.json
@@ -85,7 +93,11 @@ upload them to the receiver at URL, or write them to DIR.
   --state DIR          the key, its verifier line, the lock and the last
                        acknowledgement (default
                        ${XDG_STATE_HOME:-$HOME/.local/state}/valley/web-publish)
-  --schema FILE        schema/web.cue (default $VALLEY_WEB_SCHEMA)
+  --read-schema FILE   schema/read.cue (default $VALLEY_READ_SCHEMA)
+  --identity-schema FILE
+                       schema/identity.cue (default $VALLEY_IDENTITY_SCHEMA)
+  --registry-dir DIR   the identity registry's directory in the instance
+                       repository's main (default identity)
   --recheck DURATION   how long an acknowledgement is trusted: a pass whose
                        digest the receiver acknowledged less than this ago
                        sends nothing (default 1h)
@@ -140,7 +152,9 @@ type config struct {
 	out          string
 	principals   string
 	state        string
-	schema       string
+	readSchema   string
+	idSchema     string
+	registryDir  string
 	recheck      time.Duration
 	maxBundles   byteSize
 	maxStorage   byteSize
@@ -157,7 +171,9 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.out, "out", "", "")
 	fs.StringVar(&c.principals, "principals", "", "")
 	fs.StringVar(&c.state, "state", "", "")
-	fs.StringVar(&c.schema, "schema", os.Getenv("VALLEY_WEB_SCHEMA"), "")
+	fs.StringVar(&c.readSchema, "read-schema", os.Getenv("VALLEY_READ_SCHEMA"), "")
+	fs.StringVar(&c.idSchema, "identity-schema", os.Getenv("VALLEY_IDENTITY_SCHEMA"), "")
+	fs.StringVar(&c.registryDir, "registry-dir", "identity", "")
 	fs.DurationVar(&c.recheck, "recheck", time.Hour, "")
 	fs.Var(&c.maxBundles, "max-bundles", "")
 	fs.Var(&c.maxStorage, "max-storage", "")
@@ -182,8 +198,8 @@ func parseArgs(args []string) (config, error) {
 		return c, fmt.Errorf("--destination %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.destination)
 	case (c.receiver == "") == (c.out == ""):
 		return c, errors.New("give exactly one of --receiver and --out")
-	case c.schema == "":
-		return c, errors.New("no schema: give --schema, or set VALLEY_WEB_SCHEMA")
+	case c.readSchema == "" || c.idSchema == "":
+		return c, errors.New("no schema: give --read-schema and --identity-schema, or set VALLEY_READ_SCHEMA and VALLEY_IDENTITY_SCHEMA")
 	case c.recheck < 0:
 		return c, errors.New("--recheck is not negative")
 	}
@@ -249,6 +265,9 @@ type publisher struct {
 	signer     string
 	key        ed25519.PrivateKey
 
+	// access reads the two consents to read access.
+	access readaccess.Reader
+
 	client *http.Client
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
@@ -276,6 +295,7 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 		cache: cache, origin: filepath.Join(cache, "origin.git"), pointer: filepath.Join(cache, "_pointer.git"),
 		principals: principals,
 		signer:     cfg.instance + "/web-export",
+		access:     readaccess.Reader{ReadSchema: cfg.readSchema, IdentitySchema: cfg.idSchema, CueTimeout: cueTimeout},
 		client:     newClient(),
 		now:        time.Now,
 		sleep:      sleepContext,

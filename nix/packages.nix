@@ -417,40 +417,41 @@ rec {
     dir = ../note;
   };
 
-  # The strict JSON reading (exactjson/) that the identity compiler, the
-  # pre-receive hook and the web publisher read CUE's exports with: every
-  # key spelled exactly as the field it is read into, and no key twice in
-  # one object. Its tests hold it to each spelling encoding/json alone
-  # would fold into a field.
+  # The strict JSON reading (exactjson/) that the identity compiler and the
+  # pre-receive hook read CUE's exports with: every key spelled exactly as
+  # the field it is read into, and no key twice in one object. Its tests
+  # hold it to each spelling encoding/json alone would fold into a field.
   exactjson = goModule {
     pname = "valley-exactjson";
     dir = ../exactjson;
   };
 
-  # The web UI (webui/). Package export is the contract between the publisher
-  # on a valley host and the web server it pushes to: the public export and
-  # the projection onto it, the signed manifest, the upload and the receiver's
-  # state directory. It reads names and IDs by the plan graph's rules
-  # (../knot) and the manifest with the note module (../note). The publisher
-  # reads web visibility declarations with exactjson (../exactjson). The
-  # program built from it is the publisher, cmd/valley-web-publish, which
+  # The web UI (webui/). Package export is the contract between the
+  # publisher on a valley host and the web server it pushes to: the public
+  # export and the projection onto it, the signed manifest, the upload and
+  # the receiver's state directory. It reads names and IDs by the plan
+  # graph's rules (../knot), the manifest with the note module (../note),
+  # and who may read a project through ../readaccess. The program built
+  # from it is the publisher, cmd/valley-web-publish, which
   # valley-web-publish below wraps. The server and its command are built by
-  # valley-web below. The export's tests accept bundles and build the shared
-  # fixture's repositories with real git. The publisher's tests run it against
-  # a valley built with real git and the CLI itself (bin/valley, run by bash,
-  # with valley-go on PATH), read declarations with cue under schema/web.cue,
-  # and upload to a receiver over a real store. One lands a change as the
-  # integrator does, with a transfer statement attest signs under a key
-  # ssh-keygen makes, which the CLI verifies with attest. go vet runs after
-  # them. The fixture's expected export (export/exporttest/testdata/) is read
-  # by the tests alone. Go, standard library only, so no module is fetched.
+  # valley-web below. The export's tests accept bundles and build the
+  # shared fixture's repositories with real git. The publisher's tests run
+  # it against a valley built with real git and the CLI itself (bin/valley,
+  # run by bash, with valley-go on PATH), read each project's policy/read
+  # and the instance's identity registry with cue under schema/read.cue and
+  # schema/identity.cue, and upload to a receiver over a real store. One
+  # lands a change as the integrator does, with a transfer statement attest
+  # signs under a key ssh-keygen makes, which the CLI verifies with attest.
+  # go vet runs after them. The fixture's expected export
+  # (export/exporttest/testdata/) is read by the tests alone. Go, standard
+  # library only, so no module is fetched.
   webui = goModule {
     pname = "valley-webui";
     dir = ../webui;
     modules = [
       ../knot
       ../note
-      ../exactjson
+      ../readaccess
     ];
     excluded = [
       ../webui/server
@@ -461,7 +462,8 @@ rec {
       reads = [
         ../webui/export/exporttest/testdata
         ../bin/valley
-        ../schema/web.cue
+        ../schema/read.cue
+        ../schema/identity.cue
       ];
       nativeCheckInputs = [
         pkgs.git
@@ -536,12 +538,13 @@ rec {
 
   # The web UI's server (webui/server/) and its command, valley-web
   # (webui/cmd/valley-web/), which serves the active export of a receiver's
-  # state directory to anonymous readers. It reads the export and the state
-  # directory with package export, so its source is the webui module, less the
-  # fixture's expected export, which only webui's tests read. It holds every
-  # module webui's go.mod replaces, exactjson too, which only the publisher
-  # imports. The git it reads repositories with is fixed at build time, the
-  # way valleyhook's is. Its tests run the real program over the shared
+  # state directory to anonymous readers. It reads the export and the
+  # state directory with package export, so its source is the webui
+  # module, less the fixture's expected export, which only webui's tests
+  # read. Of ../readaccess, which the publisher reads through and the
+  # server does not, it reads the go.mod alone, which go reads to resolve
+  # the module. The git it reads repositories with is fixed at build time,
+  # the way valleyhook's is. Its tests run the real program over the shared
   # fixture and real git, and go vet runs after them. Go, standard library
   # only, so no module is fetched.
   valley-web = goModule {
@@ -550,7 +553,7 @@ rec {
     modules = [
       ../knot
       ../note
-      ../exactjson
+      ../readaccess/go.mod
     ];
     excluded = [
       ../webui/export/exporttest/testdata
@@ -574,9 +577,9 @@ rec {
 
   # The web publisher: one pass of valley-web-publish, which reads a valley
   # host's public projects through the CLI's JSON commands and uploads them
-  # to a web receiver. It runs this flake's git, cue and CLI, and the web
-  # visibility schema travels with it, as the verification schema does with
-  # the CLI.
+  # to a web receiver. It runs this flake's git, cue and CLI, and the two
+  # schemas it reads read access under travel with it, as the verification
+  # schema does with the CLI.
   valley-web-publish =
     pkgs.runCommand "valley-web-publish"
       {
@@ -593,7 +596,8 @@ rec {
               valley-script
             ]
           } \
-          --set-default VALLEY_WEB_SCHEMA ${../schema/web.cue}
+          --set-default VALLEY_READ_SCHEMA ${../schema/read.cue} \
+          --set-default VALLEY_IDENTITY_SCHEMA ${../schema/identity.cue}
       '';
 
   # The plan graph (knot/): its canonical form, its layout, cycles and

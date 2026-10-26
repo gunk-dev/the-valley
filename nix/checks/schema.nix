@@ -12,11 +12,12 @@
   # does the worked verification policy under examples/policy/, with the
   # carry modes and the restacker's cap case by case under
   # examples/policy/carry/, and the hardware approval requirement case by
-  # case under examples/policy/approval/. The web visibility declarations
-  # are vetted too: the worked ones under examples/policy/web/, the ones
-  # the schema must refuse, and the-valley's own under policy/web/. The
-  # other host declarations, and the deriver's and the smoke policies, are
-  # other checks' fixtures, and cue-vet is given none of them.
+  # case under examples/policy/approval/. The read policies are vetted
+  # too: the worked ones under examples/policy/read/, among them the one a
+  # new project starts from, the ones the schema must refuse, and the-valley's
+  # own under policy/read/. The other host declarations, and the deriver's
+  # and the smoke policies, are other checks' fixtures, and cue-vet is given
+  # none of them.
   cue-vet = pkgs.runCommand "valley-cue-vet" {
     nativeBuildInputs = [ pkgs.cue ];
     schema = ../../schema/valley.cue;
@@ -36,9 +37,9 @@
       ../../examples/policy/carry
       ../../examples/policy/approval
     ];
-    webSchema = ../../schema/web.cue;
-    webPolicies = ../../examples/policy/web;
-    ownWeb = ../../policy/web;
+    readSchema = ../../schema/read.cue;
+    readPolicies = ../../examples/policy/read;
+    ownRead = ../../policy/read;
   } (builtins.readFile ./cue-vet.sh);
 
   # The attestation statement schema (dcr-0de694f). A statement the

@@ -206,39 +206,43 @@ command project: checks: c: {runner: "command", command: "a@b"}
 refined-pattern policy: classes: c: paths: "a@b": true
 EOF
 
-# The web visibility declarations (schema/web.cue): the worked instance and
-# project declarations, and the-valley's own, which must say public or the
-# publisher keeps it private.
-cue vet -c "$webSchema" "$webPolicies"/instance/*.cue
-[ "$(cue export -e instance.projects.app.visibility "$webSchema" "$webPolicies"/instance/*.cue)" \
-  = '"public"' ]
-[ "$(cue export -e instance.projects.site.visibility "$webSchema" "$webPolicies"/instance/*.cue)" \
-  = '"private"' ]
-cue vet -c "$webSchema" "$webPolicies"/project/*.cue
-[ "$(cue export -e project.visibility "$webSchema" "$ownWeb"/*.cue)" = '"public"' ]
+# The read policies (schema/read.cue): the worked project's; the one a new
+# project starts from, which names the operator alone; and the-valley's
+# own, which lets anyone and the operator read it.
+cue vet -c "$readSchema" "$readPolicies"/project/*.cue
+cue vet -c "$readSchema" "$readPolicies"/new-project/*.cue
+[ "$(cue export -e readers.operator "$readSchema" "$readPolicies"/new-project/*.cue)" = true ]
+[ "$(cue export -e 'len(readers)' "$readSchema" "$readPolicies"/new-project/*.cue)" = 1 ]
+[ "$(cue export -e project "$readSchema" "$ownRead"/*.cue)" = '"the-valley"' ]
+[ "$(cue export -e readers.anyone "$readSchema" "$ownRead"/*.cue)" = true ]
+[ "$(cue export -e readers.operator "$readSchema" "$ownRead"/*.cue)" = true ]
 
-# The declarations the schema must reject, and the field each rejection
-# must name. A refused declaration keeps its project private, so a schema
-# that stopped refusing one would make public what nobody declared.
+# The policies the schema must reject, and the field each rejection must
+# name. A refused policy consents to nothing, so a schema that stopped
+# refusing one would let read whom no project named.
 while read -r fixture names; do
-  if cue vet -c "$webSchema" "$webPolicies/rejected/$fixture.cue" > "$fixture.err" 2>&1; then
-    echo "cue-vet: expected web/rejected/$fixture.cue to be rejected" >&2
+  if cue vet -c "$readSchema" "$readPolicies/rejected/$fixture.cue" > "$fixture.err" 2>&1; then
+    echo "cue-vet: expected read/rejected/$fixture.cue to be rejected" >&2
     exit 1
   fi
   grep -qF -- "$names" "$fixture.err" || {
-    echo "cue-vet: web/rejected/$fixture.cue was rejected without naming $names" >&2
+    echo "cue-vet: read/rejected/$fixture.cue was rejected without naming $names" >&2
     cat "$fixture.err" >&2
     exit 1
   }
 done <<'EOF'
-top-level-visibility visibility: conflicting values "INVALID: unknown top-level field
-unknown-visibility project.visibility
-unknown-project-field project.shares: field not allowed
-unsafe-project-name instance.projects."../app": field not allowed
-instance-list instance.public: field not allowed
+top-level-reader reader: conflicting values "INVALID: unknown top-level field
+no-readers readers: field is required but not present
+no-identity identity: field is required but not present
+short-identity identity: invalid value "9da6809f"
+unsafe-project-name project: invalid value "../app"
+unsafe-reader-name readers."../operator": field not allowed
+reader-declined readers.anyone: conflicting values true and false
+redeclared-principal readers."two words": field not allowed
+web-declaration project: cannot use
 EOF
-[ "$(find "$webPolicies/rejected" -name '*.cue' | wc -l)" = 5 ] || {
-  echo "cue-vet: web/rejected/ holds a case the list above does not name" >&2
+[ "$(find "$readPolicies/rejected" -name '*.cue' | wc -l)" = 9 ] || {
+  echo "cue-vet: read/rejected/ holds a case the list above does not name" >&2
   exit 1
 }
 touch "$out"

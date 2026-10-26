@@ -96,6 +96,7 @@ let
     "--state ${lib.escapeShellArg (toString cfg.stateDir)}"
     "--max-bundles ${cfg.maxBundles}"
     "--max-storage ${cfg.maxStorage}"
+    "--registry-dir ${lib.escapeShellArg host.identity.directory}"
   ];
 
   size = lib.types.strMatching "[1-9][0-9]*[KMGT]?";
@@ -104,9 +105,12 @@ in
   options.services.valley.webPublisher = {
     enable = lib.mkEnableOption ''
       the valley web publisher: a timer that uploads this host's public
-      projects, as signed exports, to a web receiver. The manifest names
-      {option}`networking.hostName` as the instance, and is signed under
-      `<hostName>/web-export`
+      projects, as signed exports, to a web receiver. A project is public
+      when its own policy/read lets anyone read it, and a read grant to
+      anyone in the identity registry, read from the instance repository's
+      main in {option}`services.valley.identity.directory`, covers it at
+      the destination. The manifest names {option}`networking.hostName` as
+      the instance, and is signed under `<hostName>/web-export`
     '';
 
     destination = lib.mkOption {
@@ -114,7 +118,9 @@ in
       example = "example.org";
       description = ''
         The receiver's name, which every manifest is signed for. The
-        receiver admits only manifests that name it.
+        receiver admits only manifests that name it. It is also the
+        destination of the registry's edge read boundary whose read grants
+        decide what anyone may read there.
       '';
     };
 

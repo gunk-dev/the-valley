@@ -17,13 +17,19 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"the-valley/readaccess"
 	"the-valley/webui/export"
 )
 
 // readAttempts is how many times a pass reads the valley before it gives
 // up on inputs that keep changing under it.
 const readAttempts = 3
+
+// cueTimeout is how long a cue run may take. A run past it fails the pass:
+// how long cue takes depends on the host as much as on what it reads.
+var cueTimeout = time.Minute
 
 // The bounds on what a pass holds of a program's output. A program that
 // prints more than its bound to stdout fails, and what it prints to stderr
@@ -49,7 +55,7 @@ type reading struct {
 // in between makes the two disagree; export.Build says so with
 // ErrInconsistent, and collect reads everything again.
 func (p *publisher) collect(ctx context.Context) (*reading, error) {
-	if err := checkSchema(ctx, p.cfg.schema); err != nil {
+	if err := p.access.CheckSchemas(ctx); err != nil {
 		return nil, err
 	}
 	inst, err := p.fetchInstance(ctx)
@@ -99,24 +105,21 @@ type (
 )
 
 // read is one read of the valley, with the instance as fetchInstance read
-// it. A project is private when the instance does not allow it, or when its
-// own declaration is missing, invalid or private. Any other failure to read
-// a project the instance allows ends the pass: an export without it would
-// take it off the web.
+// it. A project is public when anyone may read it at the destination, by
+// the read grants in the instance's registry and the project's own
+// policy/read. It is private when no grant to anyone names it, and when its
+// policy/read is missing, invalid, or does not let anyone read it. Any
+// other failure to read a project a grant names ends the pass: an export
+// without it would take it off the web.
 func (p *publisher) read(ctx context.Context, inst instanceRead) (*reading, error) {
-	allowed := map[string]bool{}
-	decl, err := readDeclaration(ctx, p.origin, inst.tip, p.cfg.schema)
-	var bad *invalidDeclaration
+	grants, err := p.access.Grants(ctx, p.origin, inst.tip, p.cfg.registryDir, p.cfg.destination, p.now())
+	var bad *readaccess.InvalidError
 	switch {
-	case errors.Is(err, errNoDeclaration):
+	case errors.Is(err, readaccess.ErrMissing):
 	case errors.As(err, &bad):
-		p.warn("the instance's policy/web at %s is not a valid declaration, so every project is private: %v", short(inst.tip), err)
+		p.warn("the instance's identity registry at %s is not valid, so every project is private: %v", short(inst.tip), err)
 	case err != nil:
-		return nil, fmt.Errorf("could not read the instance's policy/web at %s: %w", short(inst.tip), err)
-	case decl.Instance != nil:
-		for name, d := range decl.Instance.Projects {
-			allowed[name] = d.Visibility == string(export.Public)
-		}
+		return nil, fmt.Errorf("could not read the instance's identity registry at %s: %w", short(inst.tip), err)
 	}
 
 	planJSON, err := p.valley(ctx, p.pointer, "plan", "--all", "--json")
@@ -167,8 +170,8 @@ func (p *publisher) read(ctx context.Context, inst instanceRead) (*reading, erro
 	for _, proj := range plan.Projects {
 		name := proj.Project
 		public := false
-		if allowed[name] {
-			if public, err = p.projectVisibility(ctx, name, repos[name], in.SourceTips, r.mirrors); err != nil {
+		if grants.Selects(readaccess.Anyone, name) {
+			if public, err = p.readableByAnyone(ctx, name, repos[name], grants, in.SourceTips, r.mirrors); err != nil {
 				return nil, err
 			}
 		}
@@ -203,14 +206,14 @@ func listNames(list []string) string {
 	return strings.Join(list, ", ")
 }
 
-// projectVisibility decides whether a project the instance allows is
-// public: its own policy/web on main says public. For a public project it
-// records main's tip and the mirror it was fetched into. A project with no
-// main, or whose declaration is missing, invalid or private, is private,
-// and an invalid declaration is said. A project that cannot be read is an
-// error.
-func (p *publisher) projectVisibility(ctx context.Context, name string, repo pendingRepo,
-	tips, mirrors map[string]string) (bool, error) {
+// readableByAnyone decides whether a project a read grant to anyone names
+// is public: its own policy/read on main lets anyone read it, under that
+// grant. For a public project it records main's tip and the mirror it was
+// fetched into. A project with no main, or whose policy/read is missing,
+// invalid or does not let anyone read it, is private, and an invalid
+// policy is said. A project that cannot be read is an error.
+func (p *publisher) readableByAnyone(ctx context.Context, name string, repo pendingRepo,
+	grants readaccess.Grants, tips, mirrors map[string]string) (bool, error) {
 	if !export.ValidName(name) {
 		p.warn("%q is not a project name, so it is private", name)
 		return false, nil
@@ -228,17 +231,17 @@ func (p *publisher) projectVisibility(ctx context.Context, name string, repo pen
 	if err != nil {
 		return false, fmt.Errorf("%s: could not read main: %w", name, err)
 	}
-	decl, err := readDeclaration(ctx, mirror, tip, p.cfg.schema)
-	var bad *invalidDeclaration
+	consent, err := p.access.Consent(ctx, mirror, tip, name)
+	var bad *readaccess.InvalidError
 	switch {
-	case errors.Is(err, errNoDeclaration):
+	case errors.Is(err, readaccess.ErrMissing):
 		return false, nil
 	case errors.As(err, &bad):
-		p.warn("%s: its policy/web at %s is not a valid declaration, so it is private: %v", name, short(tip), err)
+		p.warn("%s: its policy/read at %s is not valid, so it is private: %v", name, short(tip), err)
 		return false, nil
 	case err != nil:
-		return false, fmt.Errorf("%s: could not read its policy/web at %s: %w", name, short(tip), err)
-	case decl.Project == nil || decl.Project.Visibility != string(export.Public):
+		return false, fmt.Errorf("%s: could not read its policy/read at %s: %w", name, short(tip), err)
+	case !grants.May(readaccess.Anyone, consent):
 		return false, nil
 	}
 	tips[name], mirrors[name] = tip, mirror

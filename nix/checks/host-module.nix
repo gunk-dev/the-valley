@@ -612,7 +612,7 @@ let
       "-/var/lib/valley-integrator"
     ])
     || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --principals /nix/store/" command)
-    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G" command)
+    || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-dir identity" command)
     || service.MemoryMax or null != "1G"
     || service.MemorySwapMax or null != "0"
     || unit.restartIfChanged != false
@@ -704,7 +704,7 @@ in
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then
-      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, the destination, the display mapping and the bounds on its bundles and storage"
+      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, the destination, the display mapping, the bounds on its bundles and storage, and the identity registry's directory"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

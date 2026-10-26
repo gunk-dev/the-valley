@@ -8,6 +8,12 @@ grep -q '"genesis": "operator"' registry.json
 # under two different names, and that is what the compiler renders from.
 grep -q '"signs": "workstation/attestations"' registry.json
 grep -q '"signs": "operator"' registry.json
+# The read grants: an edge read boundary at example.org, which the
+# operator reads every project at and anyone reads app at, by its identity.
+[ "$(cue export -e boundaries.web.destination "$schema" "$registry"/*.cue)" = '"example.org"' ]
+[ "$(cue export -e principals.operator.grants.read.projects "$schema" "$registry"/*.cue)" = '"all"' ]
+[ "$(cue export -e anyone.grants.read.projects.app "$schema" "$registry"/*.cue)" \
+  = '"9da6809f038df92138c131cd16bed76d"' ]
 
 # The registries the schema must reject, and the words each rejection must
 # name. The floor's properties are here — mandatory expiry where a raw key

@@ -55,12 +55,16 @@
   } (builtins.readFile ./attest-schema.sh);
 
   # The identity registry schema (dcr-b87f6e8). The worked registry vets,
-  # and the ten registries the schema must refuse are refused. Four of those
+  # and the registries the schema must refuse are refused. Four of those
   # are the substrate's floor over every instance registry — mandatory
   # expiry where a raw key is held, an external principal carrying one, no
   # external principal governing the registry, a genesis entry that governs
   # it — and a floor that stopped being enforced would be silent, so each is
-  # held to naming its field.
+  # held to naming its field. So are the read grants' rules: anyone holds
+  # read grants alone, no key, and no entry under principals, and is never
+  # genesis; a read grant names its projects, by name and identity, and no
+  # other grant names any; an edge read boundary names its destination, and
+  # no other boundary names one.
   identity-schema = pkgs.runCommand "valley-identity-schema" {
     nativeBuildInputs = [ pkgs.cue ];
     schema = ../../schema/identity.cue;

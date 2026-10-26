@@ -15,19 +15,28 @@ import (
 // The registry as the schema exports it (schema/identity.cue), every field
 // of it. The export is read with exactjson, which refuses a key that no
 // json tag here spells exactly. The derived fields the schema uses to hold
-// the floor — genesisGovernance, externalGovernance — and a principal's
-// external identity are checked by `cue vet` and read by nobody here, so
-// they are taken as raw JSON.
+// the floor — genesisGovernance, externalGovernance, readScopes — and a
+// principal's external identity are checked by `cue vet` and read by nobody
+// here, so they are taken as raw JSON.
+//
+// The fields that carry read access are taken as raw JSON too, because no
+// artifact is rendered from them: an edge read boundary's destination, the
+// projects a grant at one names, and anyone, the reader with no
+// credential, who holds read grants alone. The web publisher reads them
+// through readaccess/.
 type registry struct {
 	Boundaries         map[string]boundary  `json:"boundaries"`
 	Principals         map[string]principal `json:"principals"`
 	Genesis            string               `json:"genesis"`
+	Anyone             json.RawMessage      `json:"anyone"`
 	GenesisGovernance  json.RawMessage      `json:"genesisGovernance"`
 	ExternalGovernance json.RawMessage      `json:"externalGovernance"`
+	ReadScopes         json.RawMessage      `json:"readScopes"`
 }
 
 type boundary struct {
-	Kind string `json:"kind"`
+	Kind        string          `json:"kind"`
+	Destination json.RawMessage `json:"destination"`
 }
 
 type principal struct {
@@ -47,7 +56,8 @@ type key struct {
 }
 
 type grant struct {
-	Boundary string `json:"boundary"`
+	Boundary string          `json:"boundary"`
+	Projects json.RawMessage `json:"projects"`
 }
 
 const (

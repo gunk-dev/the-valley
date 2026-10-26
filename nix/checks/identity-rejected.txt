@@ -15,3 +15,12 @@ top-level-typo	unknown top-level field
 attested-key-bound-to-host	principals.root.keys.0.bound
 attestation-not-pem	principals.root.keys.0.attestation.slot
 attestation-with-root	principals.holder.keys.0.attestation.root
+anyone-pushes	readScopes."anyone.push"
+anyone-holds-keys	anyone.keys: field not allowed
+anyone-as-principal	principals.anyone
+genesis-is-anyone	genesis: invalid value "anyone"
+read-grant-without-projects	readScopes."root.read"
+push-grant-with-projects	readScopes."root.push"
+edge-read-without-destination	readScopes.web
+read-scope-unsafe-project	principals.root.grants.read.projects
+push-boundary-with-destination	readScopes.push

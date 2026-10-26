@@ -9,14 +9,16 @@
 // boundaries the instance runs, and what a grant is called are instance
 // content.
 //
-// One tool reads this file: the compiler (identity/), which renders a
-// registry into the artifacts the enforcement boundaries check — the
-// known-signers file the integrator and `attest verify` read, the git
-// user's authorized_keys, the grants the pre-receive hook checks, and the
-// two approval signers files.
-// Expiry is enforced there rather than here, because a document has no
-// clock: the compiler omits an expired entry, so access ends at the first
-// convergence after expiry.
+// Two tools read this file. The compiler (identity/) renders a registry
+// into the artifacts the enforcement boundaries check — the known-signers
+// file the integrator and `attest verify` read, the git user's
+// authorized_keys, the grants the pre-receive hook checks, and the two
+// approval signers files. The read-access reader (readaccess/) takes the
+// read grants out of it for the web publisher, which checks them at the
+// edge read boundary.
+// Expiry is enforced by both rather than here, because a document has no
+// clock: each omits an expired entry, so access ends at the first
+// compilation or publication after expiry.
 //
 // Like the host, event and policy schemas, this file is deliberately not
 // Nix. A registry names principals, keys and boundaries; it never names
@@ -26,6 +28,8 @@
 //   Validate a registry against this schema:
 //     cue vet -c schema/identity.cue examples/identity/registry/*.cue
 package identity
+
+import "strings"
 
 // A principal is a named actor the instance grants something to.
 #Principal: {
@@ -123,14 +127,36 @@ package identity
 	// fails vet.
 	boundary: #Name
 
-	// A grant carries its boundary and nothing else. The decision names a
-	// grant's scope as its stream list; the boundaries that exist today are
-	// compiled host-wide, and push cannot be anything else, because
-	// per-project access is not honestly enforceable over a shared git user
-	// (dcr-0f5d9b1). A stream list here would be a scope nothing checks. It
-	// arrives with the first boundary that checks one — the bus's
-	// per-subject authorization (bd-d853d9c), or the approve boundary once
-	// its compiled grants name a project.
+	// The projects a read grant covers. A grant at a boundary of kind
+	// "edge-read" names them, and a grant at any other boundary does not:
+	// the edge read boundary is the one boundary that checks a project
+	// scope. Every other boundary is compiled host-wide, and push cannot be
+	// anything else, because per-project access is not honestly enforceable
+	// over a shared git user (dcr-0f5d9b1). A scope there would be a scope
+	// nothing checks. readScopes below holds each grant to this.
+	projects?: #Scope
+}
+
+// The projects a read grant covers: "all" for every project, or each
+// project's name with the publication identity its own policy/read declares
+// (schema/read.cue). A project whose policy declares another identity is not
+// covered, so a new project that reuses a name does not inherit the old
+// one's grants. An empty set covers no project. Neither form lets anyone
+// read a project whose own policy/read does not name them.
+#Scope: "all" | close({[#ProjectName]: #Identity})
+
+// A project's name and publication identity, as schema/read.cue holds them.
+#ProjectName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$" & strings.MaxRunes(64)
+#Identity:    =~"^[0-9a-f]{32}$"
+
+// The reserved principal for a reader who presents no credential. It is a
+// variant of its own, never an entry under principals: it holds no key, no
+// credential and no external identity, and it does not expire. It holds
+// read grants alone, so it never pushes, approves, restacks or governs the
+// registry, and it is never the genesis entry. A key sshd admits without a
+// principal tag pushes as no principal, and is not anyone.
+#Anyone: {
+	grants: [#Name]: #Grant
 }
 
 // An enforcement boundary: the point in the running system that refuses an
@@ -169,7 +195,23 @@ package identity
 	// grants file as "restack <principal>". The grant opens nothing else:
 	// no other record transition, and no integration request. It rides on
 	// push too.
-	kind: "git-push" | "registry" | "approve" | "request" | "restack"
+	//
+	// "edge-read" — the edge read boundary: the web publisher on a host
+	// serving the instance's repositories (webui/cmd/valley-web-publish),
+	// and the web server at one destination, which serves what the
+	// publisher sends it. A grant here is a read grant. It lets its holder
+	// read the projects its scope covers, wherever a project's own
+	// policy/read names the holder too (schema/read.cue). The publisher
+	// sends the destination a project only when both consents let anyone
+	// read it, and the server there authenticates no reader, so a read
+	// grant to a named principal opens nothing at the edge.
+	kind: "git-push" | "registry" | "approve" | "request" | "restack" | "edge-read"
+
+	// The destination an edge read boundary serves: the name the publisher
+	// is given as --destination and signs every manifest for. An edge read
+	// boundary names one, and no other boundary does; readScopes below holds
+	// each boundary to this.
+	destination?: #Name
 }
 
 // An identity the registry cites rather than mints.
@@ -206,14 +248,20 @@ package identity
 boundaries: [#Name]: #Boundary
 boundaries: {
 	for _, p in principals for _, g in p.grants {(g.boundary): _}
+	if anyone != _|_ for _, g in anyone.grants {(g.boundary): _}
 }
 
-// The entries.
+// The entries. anyone is reserved for the variant below, so an entry under
+// that name fails vet naming principals.anyone.
 principals: [#Name]: #Principal
+principals: anyone?: "INVALID: anyone is reserved for the reader with no credential; its grants go under the top-level anyone"
+
+// The read grants of a reader who presents no credential (#Anyone).
+anyone?: #Anyone
 
 // The genesis entry: created at instance birth, the anchor later boundaries
 // verify against, and the one structural requirement of a registry.
-genesis: #Name
+genesis: #Name & !="anyone"
 
 // Derived: the genesis entry's grants that govern the registry's own
 // stream. A registry whose genesis governs nothing fails vet with an error
@@ -239,6 +287,41 @@ externalGovernance: {
 	}
 }
 
+// Derived, and empty in every valid registry: the boundaries and grants
+// whose read scope does not fit. An edge read boundary names its
+// destination, and no other boundary names one. A grant at an edge read
+// boundary names the projects it covers, and no other grant names any.
+// anyone holds grants at edge read boundaries alone. Each boundary or grant
+// that breaks a rule lands here as a sentinel string against a `bool` and
+// fails vet naming it.
+readScopes: [string]: bool
+readScopes: {
+	for bn, b in boundaries {
+		if b.kind == "edge-read" && b.destination == _|_ {
+			"\(bn)": "INVALID: an edge-read boundary names its destination"
+		}
+		if b.kind != "edge-read" && b.destination != _|_ {
+			"\(bn)": "INVALID: only an edge-read boundary names a destination"
+		}
+	}
+	for pn, p in principals for gn, g in p.grants {
+		if boundaries[g.boundary].kind == "edge-read" && g.projects == _|_ {
+			"\(pn).\(gn)": "INVALID: a grant at an edge-read boundary names the projects it covers"
+		}
+		if boundaries[g.boundary].kind != "edge-read" && g.projects != _|_ {
+			"\(pn).\(gn)": "INVALID: only a grant at an edge-read boundary names projects"
+		}
+	}
+	if anyone != _|_ for gn, g in anyone.grants {
+		if boundaries[g.boundary].kind != "edge-read" {
+			"anyone.\(gn)": "INVALID: anyone holds read grants alone, at edge-read boundaries"
+		}
+		if boundaries[g.boundary].kind == "edge-read" && g.projects == _|_ {
+			"anyone.\(gn)": "INVALID: a grant at an edge-read boundary names the projects it covers"
+		}
+	}
+}
+
 // A file's top level cannot be closed (embedding a definition would open it
 // instead), so reject stray top-level fields explicitly: anything but the
 // registry's own fields conflicts with this sentinel and fails vet with an
@@ -246,7 +329,9 @@ externalGovernance: {
 [
 	!="boundaries" &
 	!="principals" &
+	!="anyone" &
 	!="genesis" &
 	!="genesisGovernance" &
-	!="externalGovernance",
-]: "INVALID: unknown top-level field; only \"boundaries\", \"principals\" and \"genesis\" are allowed"
+	!="externalGovernance" &
+	!="readScopes",
+]: "INVALID: unknown top-level field; only \"boundaries\", \"principals\", \"anyone\" and \"genesis\" are allowed"

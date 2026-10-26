@@ -23,6 +23,24 @@ boundaries: {
 	// integration request. A key it does not find among the holders cannot
 	// file one.
 	"valley-host-request": kind: "request"
+
+	// The web edge at example.org: the publisher sends it what the read
+	// grants here, and each project's own policy/read, let anyone read. A
+	// read grant compiles into no artifact; the publisher reads it from
+	// this document.
+	"web": {
+		kind:        "edge-read"
+		destination: "example.org"
+	}
+}
+
+// The reader with no credential may read app at the edge, by the
+// publication identity app's policy/read declares. app is public there
+// because its own policy/read names anyone too. site is not named, so it is
+// public nowhere, whatever its policy says.
+anyone: grants: read: {
+	boundary: "web"
+	projects: app: "9da6809f038df92138c131cd16bed76d"
 }
 
 genesis: "operator"
@@ -33,7 +51,9 @@ principals: {
 	// under that machine's attestations name, the plain key on
 	// valley-host signs under the operator's own name, and the two that
 	// sign nothing push and never attest. The operator files integration
-	// requests, so the entry holds request beside push.
+	// requests, so the entry holds request beside push. The operator reads
+	// every project at the edge whose own policy/read names the operator,
+	// as any reader would.
 	"operator": {
 		kind: "human"
 		keys: [
@@ -70,6 +90,10 @@ principals: {
 			push: boundary:    "valley-host-push"
 			request: boundary: "valley-host-request"
 			govern: boundary:  "registry"
+			read: {
+				boundary: "web"
+				projects: "all"
+			}
 		}
 	}
 

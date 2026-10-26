@@ -7,15 +7,19 @@
   <table class="listing">
     <tbody>
       {{- range .Commits}}
-      <tr><td class="name"><a href="{{.URL}}">{{.Short}}</a></td><td>{{.Subject}}</td><td class="kind">{{.Author}}</td><td class="kind">{{.Date}}</td></tr>
+      <tr><td class="name"><a href="{{.URL}}">{{.Short}}</a></td><td>{{.Subject}}{{with .Parents}}<p class="notice">{{.}}</p>{{end}}</td><td class="kind">{{.Author}}</td><td class="kind">{{.Date}}</td></tr>
       {{- end}}
     </tbody>
   </table>
   {{- if .Partial}}
   <p class="notice">This page ends early: its commits are larger than a page reads.</p>
   {{- end}}
-  {{- if .Wide}}
-  <p class="notice">The older history runs along more lines at once than a page links. Each commit's history starts from its tree.</p>
+  {{- if .Crowded}}
+  <p class="notice">This page ends early, before a merge that would leave more lines of history than a page links.</p>
+  {{- end}}
+  {{- with .Others}}
+  <p class="notice">The older history runs along {{$.Lines}} lines at once, more than the Older link follows. Each link below follows one of the others.</p>
+  <p class="mono">{{range .}}<a href="{{.URL}}">{{.Text}}</a> {{end}}</p>
   {{- end}}
 </div>
 <nav class="pager" aria-label="Pages of history">{{with .Newest}}<a href="{{.}}">Newest</a>{{end}}{{with .Older}}<a href="{{.}}">Older</a>{{end}}</nav>

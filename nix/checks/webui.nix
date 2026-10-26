@@ -47,8 +47,11 @@
   # past MaxRead listed in part, and a 5 MiB commit message ending its
   # page of history early; the directories along a path sharing one
   # MaxRead; the older links of history showing every commit once through
-  # a merge whose lines run across pages, and none past MaxFrontier
-  # lines; a source request's git slot held for a bound of its own from
+  # a merge whose lines run across pages, and every link of a page past
+  # MaxFrontier lines, or one ended before a merge past MaxLeftToShow,
+  # reaching every commit; a merge whose parents pass a record of git log
+  # shown, first on a page and further down, with its first MaxParents
+  # followed; a source request's git slot held for a bound of its own from
   # admission, through a slow export read and its git, answering 503 and
   # giving back its slot, and given back before it renders; a SHA-256
   # project served by full commit IDs alone; a file of MaxFile newlines shown to MaxLines;

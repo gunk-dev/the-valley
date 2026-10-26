@@ -2466,15 +2466,25 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     older commits after it.
   - A log page lists commits as `git log --date-order` does: never a commit before any of its
     children. Its Older link is the same history with `?from=` naming the commits the older page
-    starts from. Those are the parents of the commits the page shows, and the commits it started
-    from, less the commits it shows. Following the Older links from a commit's first page shows
-    every commit of its history once, across merges too. Each page asks git for 50 commits, however
-    old the page is.
+    starts from. Those are the commits the page leaves to show: the parents of the commits it shows,
+    and the commits it started from, less the commits it shows. While no page leaves more than 64,
+    following the Older links from a commit's first page shows every commit of its history once,
+    across merges too. Each page asks git for 50 commits, however old the page is.
   - A `from` is one value: 1 to 64 full commit IDs (`server.MaxFrontier`), separated by commas, in
     ascending order and none twice. Each must be a commit that `<commit>` reaches. Anything else
     answers `404`. A page past the first links the history's first page as "Newest".
-  - A page whose older page would start from more than 64 commits has no Older link and says so.
-    Each commit it lists links its tree, whose history link starts that commit's own history.
+  - A page that leaves more than 64 commits to show starts its Older link from the first 64 in
+    ascending order. Below its commits it lists each of the rest by its short ID. Each links the
+    same history with `?from=` naming that commit alone. The page says how many lines of history
+    continue. So the links from a page reach every older commit along the parents a page follows.
+    Two of the pages they lead to may show the same commit.
+  - A page leaves at most 192 commits to show (`server.MaxLeftToShow`), so it lists at most 128
+    links besides Older. It ends early, before a merge that would leave more, and says so. It always
+    shows its first commit, which leaves at most 63 commits it started from and 128 parents.
+  - A page follows the first 128 parents of a commit (`server.MaxParents`). A merge with more is
+    shown, with a note that older pages follow its first 128. The page leaves none of its other
+    parents to show, so the older pages may miss commits that only those parents reach. However many
+    parents a merge has, its page never fails for it.
 - **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
   `git` commands, and rendering the page. A request that runs out of time answers `503` with
   `Retry-After: 5`. A source request holds its `git` slot for at most 5 seconds, from when it takes

@@ -143,9 +143,17 @@ const (
 	// LogPage is the number of commits on one page of a log.
 	LogPage = 50
 	// MaxFrontier is the most commits a link to an older page of a log
-	// names: the commits that page starts from. A page whose older page
-	// would start from more links none.
+	// names: the commits that page starts from.
 	MaxFrontier = 64
+	// MaxLeftToShow is the most commits a page of a log leaves to show.
+	// Its Older link starts from MaxFrontier of them, and each of the
+	// rest has a link of its own. A page ends before a merge that would
+	// leave more.
+	MaxLeftToShow = 192
+	// MaxParents is the most parents of one commit that a page of a log
+	// follows: the first MaxParents, in the commit's order. A page marks
+	// a merge that has more, and leaves none of its others to show.
+	MaxParents = 128
 	// MaxGit is the most source requests that run git at once.
 	MaxGit = 8
 	// MaxWaiting is the most source requests that wait for one of the

@@ -773,32 +773,55 @@ func TestResolveSharesOneBudget(t *testing.T) {
 // merge is an octopus when n is more than two. It returns the merge and a
 // bundle of it.
 func (h *harness) lines(n, length int) (tip, bundle string) {
+	var commits []commit
+	for i := range length {
+		for l := range n {
+			c := commit{message: fmt.Sprintf("line %d, commit %d\n", l, i), parents: []int{0}}
+			if i > 0 {
+				c.parents = []int{(i-1)*n + l + 1}
+			}
+			commits = append(commits, c)
+		}
+	}
+	merge := commit{message: fmt.Sprintf("merge %d lines\n", n)}
+	for l := range n {
+		merge.parents = append(merge.parents, (length-1)*n+l+1)
+	}
+	return h.history(append(commits, merge)...)
+}
+
+// commit is one commit history writes. Its parents are the numbers of
+// commits written before it, counted from 1, or 0 for main's tip.
+type commit struct {
+	message string
+	parents []int
+}
+
+// history writes commits onto the fixture's app main, in order, and
+// moves main to the last. Each commit is dated a second after the one
+// before it. It returns the last commit and a bundle of it.
+func (h *harness) history(commits ...commit) (tip, bundle string) {
 	t := h.t
 	t.Helper()
 	repo := h.f.Repos["app"]
 	base := git(t, repo, nil, "rev-parse", export.MainRef)
 	var b bytes.Buffer
-	commit := func(ref string, mark, at int, message string) {
-		who := fmt.Sprintf("Example Author <author@example.org> %d +0000", 1791190800+at)
-		fmt.Fprintf(&b, "commit %s\nmark :%d\nauthor %s\ncommitter %s\ndata %d\n%s\n", ref, mark, who, who, len(message), message)
-	}
-	for i := range length {
-		for l := range n {
-			commit(fmt.Sprintf("refs/heads/line-%d", l), 1+i*n+l, i*n+l, fmt.Sprintf("line %d, commit %d\n", l, i))
-			if i == 0 {
-				fmt.Fprintf(&b, "from %s\n", base)
+	for i, c := range commits {
+		who := fmt.Sprintf("Example Author <author@example.org> %d +0000", 1791190800+i)
+		fmt.Fprintf(&b, "commit refs/heads/main\nmark :%d\nauthor %s\ncommitter %s\ndata %d\n%s\n", i+1, who, who, len(c.message), c.message)
+		for j, p := range c.parents {
+			parent := base
+			if p > 0 {
+				parent = fmt.Sprintf(":%d", p)
+			}
+			if j == 0 {
+				fmt.Fprintf(&b, "from %s\n", parent)
+			} else {
+				fmt.Fprintf(&b, "merge %s\n", parent)
 			}
 		}
 	}
-	commit("refs/heads/main", 1+length*n, length*n, fmt.Sprintf("merge %d lines\n", n))
-	fmt.Fprintf(&b, "from :%d\n", 1+(length-1)*n)
-	for l := 1; l < n; l++ {
-		fmt.Fprintf(&b, "merge :%d\n", 1+(length-1)*n+l)
-	}
 	git(t, repo, b.Bytes(), "fast-import", "--quiet")
-	for l := range n {
-		git(t, repo, nil, "update-ref", "-d", fmt.Sprintf("refs/heads/line-%d", l))
-	}
 	tip = git(t, repo, nil, "rev-parse", export.MainRef)
 	bundle = filepath.Join(t.TempDir(), "app.bundle")
 	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
@@ -807,6 +830,34 @@ func (h *harness) lines(n, length int) (tip, bundle string) {
 
 // logged is the commits a page of history lists, in order.
 var logged = regexp.MustCompile(`<td class="name"><a href="/app/source/tree/([0-9a-f]+)/">`)
+
+// continued is the links a page of history has to older pages: its Older
+// link, and a link for each other line it leaves to show.
+var continued = regexp.MustCompile(`href="(/app/source/log/[0-9a-f]+\?from=[0-9a-f,]+)"`)
+
+// reach follows every link to older pages from the page at target, and
+// from each page it reaches, and counts how many of those pages show each
+// commit. It fails once it has read more than most pages.
+func (h *harness) reach(target string, most int) map[string]int {
+	h.t.Helper()
+	seen, read := map[string]int{}, map[string]bool{target: true}
+	for next := []string{target}; len(next) > 0; next = next[1:] {
+		if len(read) > most {
+			h.t.Fatalf("the links from %s reach more than %d pages", target, most)
+		}
+		page := h.page(next[0])
+		for _, m := range logged.FindAllStringSubmatch(page, -1) {
+			seen[m[1]]++
+		}
+		for _, m := range continued.FindAllStringSubmatch(page, -1) {
+			if !read[m[1]] {
+				read[m[1]] = true
+				next = append(next, m[1])
+			}
+		}
+	}
+	return seen
+}
 
 // A page of history links the older page as the commits it leaves to
 // show next, so the history of a merge whose lines run past a page is
@@ -872,19 +923,145 @@ func TestHistoryAcrossMerges(t *testing.T) {
 	}
 }
 
-// A page whose older page would start from more than MaxFrontier commits
-// links no older page, and says so: here a merge of more lines than that,
-// each still to show once the first page ends.
-func TestWideHistoryLinksNoOlderPage(t *testing.T) {
+// A page that leaves more than MaxFrontier commits to show starts its
+// Older link from MaxFrontier of them, links the history from each of the
+// rest, and says how many lines continue: here a merge of 65 lines, each
+// still to show once the first page ends. Following those links from the
+// tip reaches every commit main reaches.
+func TestWideHistoryStaysReachable(t *testing.T) {
 	h := newHarness(t)
 	tip, bundle := h.lines(MaxFrontier+1, 2)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
-	page := h.page("/app/source/log/" + tip)
+	at := "/app/source/log/" + tip
+	page := h.page(at)
 	if n := len(logged.FindAllString(page, -1)); n != LogPage {
 		t.Errorf("the page shows %d commits", n)
 	}
-	if strings.Contains(page, ">Older<") || !strings.Contains(page, "The older history runs along more lines at once than a page links.") {
-		t.Error("a page whose older page would start from more than MaxFrontier commits does not say so")
+	m := regexp.MustCompile(`href="` + at + `\?from=([0-9a-f,]+)">Older`).FindStringSubmatch(page)
+	if m == nil || len(strings.Split(m[1], ",")) != MaxFrontier {
+		t.Errorf("the page's Older link does not start from MaxFrontier commits: %q", m)
+	}
+	if n := len(continued.FindAllString(page, -1)); n != 2 {
+		t.Errorf("the page links %d older pages, not the Older one and one more", n)
+	}
+	if !strings.Contains(page, "The older history runs along 65 lines at once, more than the Older link follows. Each link below follows one of the others.") {
+		t.Error("the page does not say how many lines continue")
+	}
+
+	seen := h.reach(at, 20)
+	for _, id := range strings.Fields(git(t, h.f.Repos["app"], nil, "rev-list", tip)) {
+		if seen[id] == 0 {
+			t.Errorf("no link from the tip's history reaches %s", id)
+		}
+	}
+}
+
+// A page ends before a merge that would leave more than MaxLeftToShow
+// commits to show, and says so. Here the tip merges another merge and 99
+// lines, and the other merge, shown next, merges 100 lines more: 199
+// left to show. Following the links from the tip still reaches every
+// commit main reaches.
+func TestCrowdedHistoryEndsEarly(t *testing.T) {
+	h := newHarness(t)
+	var commits []commit
+	inner := commit{message: "merge 100 lines\n"}
+	outer := commit{message: "merge a merge and 99 lines\n", parents: []int{200}}
+	for l := range 199 {
+		commits = append(commits, commit{message: fmt.Sprintf("line %d\n", l), parents: []int{0}})
+		if l < 100 {
+			inner.parents = append(inner.parents, l+1)
+		} else {
+			outer.parents = append(outer.parents, l+1)
+		}
+	}
+	tip, bundle := h.history(append(commits, inner, outer)...)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	at := "/app/source/log/" + tip
+	page := h.page(at)
+	if shown := logged.FindAllStringSubmatch(page, -1); len(shown) != 1 || shown[0][1] != tip {
+		t.Errorf("the page shows %d commits, not the tip alone", len(shown))
+	}
+	if !strings.Contains(page, "This page ends early, before a merge that would leave more lines of history than a page links.") {
+		t.Error("the page does not say it ends early")
+	}
+	if n := len(continued.FindAllString(page, -1)); n != 1+100-MaxFrontier {
+		t.Errorf("the page links %d older pages, not one for each of the 100 lines past MaxFrontier and the Older one", n)
+	}
+
+	seen := h.reach(at, 200)
+	for _, id := range strings.Fields(git(t, h.f.Repos["app"], nil, "rev-list", tip)) {
+		if seen[id] == 0 {
+			t.Errorf("no link from the tip's history reaches %s", id)
+		}
+	}
+}
+
+// A merge whose line of parents is longer than a record of git log keeps
+// is shown, as the first commit of a page and further down. Its subject is
+// shown, with a note that older pages follow its first MaxParents
+// parents. Each of those is shown or linked, and none of the others is
+// linked.
+func TestMergeOfManyParents(t *testing.T) {
+	h := newHarness(t)
+	const lines = 420
+	var commits []commit
+	merge := commit{message: "merge 420 lines\n"}
+	for l := range lines {
+		commits = append(commits, commit{message: fmt.Sprintf("line %d\n", l), parents: []int{0}})
+		merge.parents = append(merge.parents, l+1)
+	}
+	commits = append(commits, merge)
+	for i := range LogPage {
+		commits = append(commits, commit{message: fmt.Sprintf("after the merge, commit %d\n", i), parents: []int{len(commits)}})
+	}
+	tip, bundle := h.history(commits...)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	repo := h.f.Repos["app"]
+	w := git(t, repo, nil, "rev-parse", fmt.Sprintf("%s~%d", tip, LogPage))
+	parents := strings.Fields(git(t, repo, nil, "log", "-1", "--format=%P", w))
+	if len(parents) != lines || len(w)+1+len(parents)*(len(w)+1) <= maxLogRecord {
+		t.Fatalf("the merge's ID and %d parents fit in one record of git log", len(parents))
+	}
+
+	at := "/app/source/log/" + tip
+	older := at + "?from=" + w
+	if !strings.Contains(h.page(at), `href="`+older+`">Older`) {
+		t.Fatal("the tip's page does not end before the merge")
+	}
+	note := fmt.Sprintf("merge 420 lines<p class=\"notice\">This merge has more than %d parents. Older pages follow its first %d.</p>", MaxParents, MaxParents)
+	child := git(t, repo, nil, "rev-parse", fmt.Sprintf("%s~%d", tip, LogPage-1))
+	// Where each page shows the merge: first on the tip page's older
+	// page and on the merge's own history, second on its child's.
+	for target, want := range map[string]int{older: 0, "/app/source/log/" + w: 0, "/app/source/log/" + child: 1} {
+		page := h.page(target)
+		shown := map[string]bool{}
+		var order []string
+		for _, m := range logged.FindAllStringSubmatch(page, -1) {
+			shown[m[1]] = true
+			order = append(order, m[1])
+		}
+		if len(order) != LogPage || order[want] != w {
+			t.Errorf("GET %s does not show the merge as commit %d of %d", target, want+1, LogPage)
+			continue
+		}
+		if strings.Count(page, note) != 1 {
+			t.Errorf("GET %s does not show the merge's subject and its note once", target)
+		}
+		linked := map[string]bool{}
+		for _, m := range continued.FindAllStringSubmatch(page, -1) {
+			_, from, _ := strings.Cut(m[1], "?from=")
+			for _, id := range strings.Split(from, ",") {
+				linked[id] = true
+			}
+		}
+		for i, id := range parents {
+			switch {
+			case i < MaxParents && !shown[id] && !linked[id]:
+				t.Errorf("GET %s neither shows nor links the merge's parent %d", target, i+1)
+			case i >= MaxParents && linked[id]:
+				t.Errorf("GET %s links the merge's parent %d", target, i+1)
+			}
+		}
 	}
 }
 

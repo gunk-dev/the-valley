@@ -2782,13 +2782,25 @@ What a request asks of git is bounded too. The directories along a path are list
 because `git ls-tree --long` looks up the size of every blob it lists. They share one budget of 4
 MiB of output, so a deep path through large directories reads no more than one large directory does.
 A page of history lists commits as `git log --date-order` does, never a commit before any of its
-children (`webui/server/source.go`). Its Older link names the commits the older page starts from:
-the parents of the commits it shows, and the commits it started from, less the commits it shows.
-Since no page shows a commit before its children, those commits reach every commit no page before
-showed, and none that one did. So the Older links show each commit of the history once, across
-merges too, and each page asks git for 50 commits however old it is. A page whose older page would
-start from more than 64 commits links none, and says so. Each commit it lists links its tree, whose
-history link starts that commit's own history.
+children (`webui/server/source.go`). It leaves to show the parents of the commits it shows, and the
+commits it started from, less the commits it shows. Since no page shows a commit before its
+children, those commits reach every commit no page before showed, and none that one did. Older pages
+start from them, and each page asks git for 50 commits however old it is.
+
+A link to an older page names at most 64 commits to start from. The Older link starts from the first
+64 the page leaves to show, and each of the rest gets a link of its own. While no page leaves more
+than 64, the Older links alone show each commit of the history once, across merges too. Past that,
+the other links still reach every older commit along the parents a page follows, though two pages
+may show the same one. A page leaves at most 192, so it has at most 128 other links, and it ends
+early before a merge that would leave more. Its first commit always fits: it leaves at most the
+other 63 commits the page started from and 128 parents.
+
+A page follows the first 128 parents of a commit. git prints a commit's parents on one line, and
+that line has no bound: a merge of 400 lines takes 16 KiB. So `git log` gives each commit as two
+records, first its ID and parents, then its date, author and subject. The server keeps 16 KiB of
+each, which holds an ID and 128 parents in either object format. A merge with more parents is shown
+with a note, and the page leaves none of the others to show. However many parents a merge has, its
+page never fails for them.
 
 The receiver writes a commit-graph into each repository when it accepts or carries it
 (`webui/export/bundle.go`), and never into a generation already activated. So a generation activated
@@ -2809,7 +2821,11 @@ Checked by `webui-server-unit`:
   serve a git that never finishes, an export read slowly, and a page that renders slowly.
 - `TestResolveSharesOneBudget` serves a path through two large directories.
 - `TestHistoryAcrossMerges` follows the Older links through a merge whose two lines run across
-  pages, and finds every commit once. `TestWideHistoryLinksNoOlderPage` serves a merge of 65 lines.
+  pages, and finds every commit once. `TestWideHistoryStaysReachable` follows every link from a
+  merge of 65 lines, and reaches every commit. `TestCrowdedHistoryEndsEarly` serves a merge whose
+  next commit would leave 199 commits to show, and reaches every commit too.
+- `TestMergeOfManyParents` serves a merge of 420 lines, whose ID and parents pass 16 KiB, first on a
+  page and second on another.
 - `TestSHA256CommitIDs` serves a SHA-256 project.
 
 Also by `webui-unit`, whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both

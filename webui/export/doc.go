@@ -87,6 +87,7 @@
 // Store is the receiver's state directory: its generations, the active
 // symlink, the high-water mark and the staging area. Open resolves the
 // active generation once per request and holds it until released, and
-// Activate makes a staged upload the active generation. The server and
-// the receiver both use them.
+// Activate makes a staged upload the active generation. The receiver
+// opens the state directory with OpenStore, and the server with
+// OpenReadOnly, which needs only read access to it.
 package export

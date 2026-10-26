@@ -193,14 +193,21 @@ func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
 	if !ValidObjectID(commit) {
 		return false, nil
 	}
-	out, err := gitInput(ctx, repo, []byte(commit+"\n"), "cat-file", "--batch-check=%(objecttype)")
+	// --git-dir, as Git does, so git neither looks above repo nor holds
+	// a repository another user owns to safe.directory.
+	var out []byte
+	err := run(command(ctx, "", "--git-dir="+repo, "cat-file", "--batch-check=%(objecttype)"), "cat-file",
+		[]byte(commit+"\n"), maxOutput, func(r io.Reader) (err error) {
+			out, err = io.ReadAll(r)
+			return err
+		})
 	if err != nil {
 		return false, err
 	}
 	if strings.TrimSpace(string(out)) != "commit" {
 		return false, nil
 	}
-	cmd := command(ctx, repo, "merge-base", "--is-ancestor", commit, tip)
+	cmd := command(ctx, "", "--git-dir="+repo, "merge-base", "--is-ancestor", commit, tip)
 	stderr := &head{max: maxStderr}
 	cmd.Stderr = stderr
 	err = cmd.Run()
@@ -233,7 +240,8 @@ const (
 // git prints, which may be at most limit bytes. It runs git the way this
 // package runs every git: replacement refs off, none of the caller's GIT_
 // variables, and no system or global configuration. --git-dir names the
-// repository, so git never reads a repository it finds above repo. When
+// repository, so git never reads a repository it finds above repo, and
+// reads one another user owns without holding it to safe.directory. When
 // git prints more than limit bytes, Git stops it and fails with
 // ErrOutputLimit. A server reads a generation's repositories with it, and
 // gives it object IDs it has checked, never a name a reader typed.

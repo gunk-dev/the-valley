@@ -43,11 +43,20 @@ var ErrNoExport = errors.New("no export has been activated")
 // An old generation is deleted only once no reader holds it.
 //
 // The locks are flock(2) locks, so readers and activations in different
-// processes on one host are held to the same rule as goroutines are.
+// processes on one host are held to the same rule as goroutines are. A
+// reader needs only read access to the state directory: the receiver opens
+// it with OpenStore, and a server with OpenReadOnly, which writes nothing.
 type Store struct {
 	dir    string
 	report func(error)
+	// readOnly is set by OpenReadOnly. Such a store refuses Stage and
+	// Activate.
+	readOnly bool
 }
+
+// errReadOnly is the error of Stage and Activate on a store OpenReadOnly
+// opened.
+var errReadOnly = errors.New("the state directory is open read-only")
 
 // Generation is one activated export: its sequence and its directory.
 type Generation struct {
@@ -134,6 +143,29 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 		s.report(err)
 	}
 	return s, nil
+}
+
+// OpenReadOnly opens the state directory at dir for reading alone, as a
+// server does. It writes nothing: it creates no directory, takes no lock
+// but a reader's shared one on the generation it opens, and neither
+// recovers an interrupted activation nor sweeps, which the receiver's
+// OpenStore does. So a server may run as a user that can only read the
+// receiver's state directory. Until the receiver finishes an interrupted
+// activation, a reader is served the generation active points at. dir
+// must be a directory already.
+func OpenReadOnly(dir string) (*Store, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", abs)
+	}
+	return &Store{dir: abs, report: func(error) {}, readOnly: true}, nil
 }
 
 // Dir is the state directory.
@@ -241,6 +273,9 @@ func (s *Store) Open() (Generation, func(), error) {
 // is refused as replayed, and one older than another staged upload as
 // superseded.
 func (s *Store) Stage(m *Manifest) (Staging, error) {
+	if s.readOnly {
+		return Staging{}, errReadOnly
+	}
 	unlock, err := s.lock()
 	if err != nil {
 		return Staging{}, err
@@ -356,6 +391,9 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 // as replayed. A crash between 6 and 7 is finished by the next OpenStore,
 // which swaps active to the generation high-water names.
 func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
+	if s.readOnly {
+		return Generation{}, errReadOnly
+	}
 	unlock, err := s.lock()
 	if err != nil {
 		return Generation{}, err

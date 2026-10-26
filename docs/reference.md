@@ -2317,9 +2317,9 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 ```
 
 - **Flags:** Both flags are required.
-  - `--state DIR` names the receiver's state directory. `valley-web` opens it with
-    `export.OpenStore`, which creates the directory layout if it is missing and finishes any
-    interrupted activation.
+  - `--state DIR` names the receiver's state directory, which must exist. `valley-web` only reads
+    it, so it can run as a user with read access alone (see
+    [Reading the state directory](./architecture.md#reading-the-state-directory)).
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
   logs runtime errors on `stderr`. On `SIGINT` or `SIGTERM`, it stops accepting new requests and

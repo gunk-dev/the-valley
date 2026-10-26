@@ -4,10 +4,11 @@
 //
 //	valley-web --state DIR --listen ADDR
 //
-// It opens the state directory with export.OpenStore, which creates its
-// layout and finishes an activation a crash interrupted, and serves it
-// with package server until it is sent SIGINT or SIGTERM. It logs to
-// standard error, and prints the address it listens on once it does.
+// It opens the state directory with export.OpenReadOnly, which writes
+// nothing to it, so it may run as a user that can only read the
+// receiver's state directory. It serves it with package server until it
+// is sent SIGINT or SIGTERM. It logs to standard error, and prints the
+// address it listens on once it does.
 package main
 
 import (
@@ -34,8 +35,8 @@ Serve the active export of a web export receiver's state directory to
 anonymous readers: the plan page, each knot, and a source browser over
 each public project's main.
 
-  --state DIR    the receiver's state directory; it is created when it
-                 does not exist
+  --state DIR    the receiver's state directory, which must exist;
+                 valley-web only reads it, and writes nothing there
   --listen ADDR  the TCP address to listen on, such as 127.0.0.1:8080;
                  port 0 picks a free port
 
@@ -84,7 +85,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	}
 
 	logger := log.New(stderr, "valley-web: ", log.LstdFlags)
-	store, err := export.OpenStore(*state, func(err error) { logger.Print(err) })
+	store, err := export.OpenReadOnly(*state)
 	if err != nil {
 		return err
 	}

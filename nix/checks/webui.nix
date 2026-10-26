@@ -57,6 +57,7 @@
   # generation, and, asking for twice MaxBuffered, holding no more of the
   # heap than it, with a page it has no room for answering 503; and
   # valley-web run as a process of its own, serving and stopping on
-  # SIGTERM. go vet runs after them.
+  # SIGTERM, and serving every page from a state directory that reads as
+  # another user's, with nothing in it writable. go vet runs after them.
   webui-server-unit = packages.valley-web.unit;
 }

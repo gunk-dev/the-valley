@@ -41,7 +41,9 @@ func StageBody(dir string, want Body, limit int64, req *http.Request) (string, e
 		return "", err
 	}
 
-	f, err := os.CreateTemp(dir, ".partial-")
+	// Readable by others, as git's files are, so a server running as
+	// another user can read export.json once it is activated.
+	f, err := os.OpenFile(filepath.Join(dir, ".partial-"+random()), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return "", err
 	}

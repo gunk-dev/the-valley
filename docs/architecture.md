@@ -2702,6 +2702,32 @@ change to the name or meaning of any field is a new version.
 Without `--all`, a graph that cannot be read prints no document. The message goes to stderr and the
 exit status is 1.
 
+## The web server
+
+`valley-web` serves a receiver's state directory to anonymous readers: the plan, each knot, and a
+source browser over each public project's `main` (`webui/server/`, `webui/cmd/valley-web/`). Nothing
+deploys it yet. Its flags, routes and limits are in the
+[reference](./reference.md#web-server-valley-web).
+
+### Reading the state directory
+
+The server only reads the receiver's state directory. It opens it with `export.OpenReadOnly`, which
+creates nothing and takes no lock but the shared `flock(2)` a request holds on the generation it
+opens (`webui/export/store.go`). It neither finishes an interrupted activation nor sweeps old
+generations. The receiver does both when it opens the directory with `export.OpenStore`, and until
+then the server serves the generation `active` names.
+
+So the server can run as a user who can only read the receiver's files. The receiver writes them
+readable by others: it creates each staged body, `export.json` among them, with mode `0644`
+(`webui/export/body.go`), and git's files follow the receiver's umask. Every git command the server
+runs names its repository with `--git-dir` (`webui/export/bundle.go`). With `--git-dir`, git reads a
+repository another user owns without holding it to `safe.directory`, which the server's isolated git
+configuration cannot set.
+
+Checked by `webui-server-unit`, whose `TestServesAReadOnlyStateDirectory` runs `valley-web` over a
+state directory that reads as another user's: nothing in it is writable, and git takes its
+repositories to be another user's.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors

@@ -16,21 +16,25 @@
 //     origin it is, once for the whole pass, refuse a main that carries
 //     policy/valley, and read the read grants at --destination from the
 //     identity registry at the --registry-ref it fetched;
-//  4. run valley plan --all --json and valley pending --all --json in the
+//  4. prepare the valley CLI's clone of each project a read grant to
+//     anyone names, and of no other, so the CLI reads no other project;
+//  5. run valley plan --all --json and valley pending --all --json in the
 //     pointer repository, whose main names the instance repository at
 //     policy/valley, so they discover the projects and the signers through
 //     the instance repository's own publications and never read its main;
-//     and hold both listings to the project list it fetched;
-//  5. for each project a read grant to anyone names, fetch main into a
+//     and hold both listings to the project list it fetched. A project no
+//     grant names has no clone, so both list it as one they could not
+//     read, and the pass keeps it private;
+//  6. for each project a read grant to anyone names, fetch main into a
 //     mirror under the cache and read the project's own policy/read there;
-//  6. run valley knot show --project P <id> --json for every knot of every
+//  7. run valley knot show --project P <id> --json for every knot of every
 //     public project, in the publisher's repository, and build the export
 //     with export.Build, reading again when the inputs were read at
 //     different graph tips; then hold the state and the caches to
 //     --max-storage again;
-//  7. bundle each public project's main, writing each bundle only into
+//  8. bundle each public project's main, writing each bundle only into
 //     what --max-bundles and --max-storage leave;
-//  8. upload it, unless the receiver acknowledged the same content digest
+//  9. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago, or write it to --out instead.
 //
 // A project is public when anyone may read it: its own policy/read names
@@ -39,7 +43,8 @@
 // both. A policy or registry that is missing, or that its schema refuses,
 // consents to nothing, so the project is private. A project a grant names
 // that cannot be read fails the pass, which then sends nothing: an export
-// without it would take it off the web.
+// without it would take it off the web. A project no grant names is
+// private whether or not it can be read.
 package main
 
 import (

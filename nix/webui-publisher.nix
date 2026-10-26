@@ -187,8 +187,8 @@ in
       default = "16G";
       description = ''
         The most the state and cache directories may hold. The cache holds
-        a clone of every project the host serves, and a mirror and a bundle
-        of each public one. A pass checks it before it fetches and once it
+        a clone and a mirror of each project a read grant to anyone names,
+        and a bundle of each public one. A pass checks it before it fetches and once it
         has read the valley, and writes a bundle only into what it leaves.
         A pass past it sends nothing (`--max-storage`).
       '';

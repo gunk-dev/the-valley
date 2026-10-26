@@ -221,7 +221,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
 				return nil
 			},
-			says: "invalid project name",
+			says: "valley plan --all lists _pointer, and the instance repository publishes app, not a name, site, valley",
 		},
 		{
 			name: "the instance publishes no project list",
@@ -255,6 +255,24 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			mustSay(t, c.name, v.fails(rv, more...), c.says)
 		})
 	}
+
+	// The grants are read before any project is: the CLI's clones are
+	// made for the projects a grant to anyone names, and the CLI can make
+	// no other. So a project no grant names is never read, and one that
+	// cannot be read fails no pass.
+	t.Run("a project no grant names that cannot be read is private", func(t *testing.T) {
+		v := newValley(t)
+		v.grant(`{app: "` + identities["app"] + `"}`)
+		if err := os.Rename(filepath.Join(v.srv, "site.git"), filepath.Join(v.srv, "site.moved")); err != nil {
+			t.Fatal(err)
+		}
+		stdout, _ := v.publish("--out", filepath.Join(t.TempDir(), "export"))
+		mustSay(t, "site cannot be read, and no grant names it", stdout, "public: app; private: site, valley")
+		clones, err := filepath.Glob(filepath.Join(v.root, "cache", "valley", "repos", "*-site"))
+		if err != nil || len(clones) != 0 {
+			t.Errorf("the CLI has a clone of site, which no grant names: %v %v", clones, err)
+		}
+	})
 
 	t.Run("a project with no main is private", func(t *testing.T) {
 		v := newValley(t)
@@ -442,9 +460,11 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 		}
 	}
 
+	// The CLI has a clone of each project a grant to anyone names: app
+	// and site.
 	cliRepos := filepath.Join(cache, "valley", "repos")
 	entries, err := os.ReadDir(cliRepos)
-	if err != nil || len(entries) != 3 {
+	if err != nil || len(entries) != 2 {
 		t.Fatalf("CLI caches: %v, %v", entries, err)
 	}
 	for _, entry := range entries {
@@ -881,8 +901,9 @@ func TestUnstagedCLICachesCannotGrowStorage(t *testing.T) {
 			if peak > budget {
 				t.Fatalf("storage reached %d bytes, budget %d", peak, budget)
 			}
+			// app and site, the projects a grant to anyone names.
 			entries, err := os.ReadDir(repos)
-			if err != nil || len(entries) != 3 {
+			if err != nil || len(entries) != 2 {
 				t.Fatalf("unstaged caches: %v, %v", entries, err)
 			}
 			for _, entry := range entries {

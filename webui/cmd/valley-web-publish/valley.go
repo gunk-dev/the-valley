@@ -51,9 +51,13 @@ type reading struct {
 
 // collect reads the valley and builds the export. It fetches the instance
 // repository once, and every read of the pass reads the instance at that
-// fetch. Each knot's detail is read after the plan, so a write to the graph
-// in between makes the two disagree; export.Build says so with
-// ErrInconsistent, and collect reads everything again.
+// fetch. It reads the read grants first, at the registry commit it fetched,
+// and prepares the CLI's clones of the projects a grant to anyone names
+// alone: the CLI can make no other clone, so it reads no other project,
+// and one that cannot be read fails no pass. Each knot's detail is read
+// after the plan, so a write to the graph in between makes the two
+// disagree; export.Build says so with ErrInconsistent, and collect reads
+// everything again.
 func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	if err := p.access.CheckSchemas(ctx); err != nil {
 		return nil, err
@@ -62,7 +66,17 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := p.prepareCLICaches(ctx, inst.projects); err != nil {
+	grants, err := p.readGrants(ctx, inst)
+	if err != nil {
+		return nil, err
+	}
+	var selected []string
+	for _, name := range inst.projects {
+		if grants.Selects(readaccess.Anyone, name) {
+			selected = append(selected, name)
+		}
+	}
+	if err := p.prepareCLICaches(ctx, selected); err != nil {
 		return nil, err
 	}
 	if err := p.preparePointer(ctx); err != nil {
@@ -70,7 +84,7 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	}
 	for attempt := 1; attempt <= readAttempts; attempt++ {
 		var r *reading
-		r, err = p.read(ctx, inst)
+		r, err = p.read(ctx, inst, grants)
 		if err == nil {
 			return r, nil
 		}
@@ -128,17 +142,13 @@ func (p *publisher) readGrants(ctx context.Context, inst instanceRead) (readacce
 }
 
 // read is one read of the valley, with the instance as fetchInstance read
-// it. A project is public when anyone may read it at the destination, by
-// the read grants in the instance's registry and the project's own
-// policy/read. It is private when no grant to anyone names it, and when its
-// policy/read is missing, invalid, or does not let anyone read it. Any
-// other failure to read a project a grant names ends the pass: an export
-// without it would take it off the web.
-func (p *publisher) read(ctx context.Context, inst instanceRead) (*reading, error) {
-	grants, err := p.readGrants(ctx, inst)
-	if err != nil {
-		return nil, err
-	}
+// it and the grants readGrants read. A project is public when anyone may
+// read it at the destination, by the read grants in the instance's
+// registry and the project's own policy/read. It is private when no grant
+// to anyone names it, and when its policy/read is missing, invalid, or
+// does not let anyone read it. Any other failure to read a project a grant
+// names ends the pass: an export without it would take it off the web.
+func (p *publisher) read(ctx context.Context, inst instanceRead, grants readaccess.Grants) (*reading, error) {
 	planJSON, err := p.valley(ctx, p.pointer, "plan", "--all", "--json")
 	if err != nil {
 		return nil, err

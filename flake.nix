@@ -137,6 +137,7 @@
               sigverify
               valley-web
               valley-web-publish
+              valley-read-coverage
               ;
             default = packages.valley;
           }

@@ -482,6 +482,58 @@ rec {
     meta.mainProgram = "valley-web-publish";
   };
 
+  # Read access (readaccess/): the two consents a principal needs to read a
+  # project, read out of git commits with cue under schema/read.cue and
+  # schema/identity.cue, and the evaluator that intersects them. The web
+  # publisher reads through it, and its command is the coverage report,
+  # which valley-read-coverage below wraps. Its tests read real commits with
+  # real git and the real cue under both schemas, and go vet runs after
+  # them. Go, standard library only, so no module is fetched.
+  readaccess = goModule {
+    pname = "valley-readaccess";
+    dir = ../readaccess;
+    tests = {
+      reads = [
+        ../schema/read.cue
+        ../schema/identity.cue
+      ];
+      nativeCheckInputs = [
+        pkgs.git
+        pkgs.cue
+      ];
+      # A test that cannot find a tool it needs fails rather than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+      '';
+      postCheck = ''
+        go vet ./...
+      '';
+    };
+    meta.mainProgram = "valley-read-coverage";
+  };
+
+  # The coverage report: which projects a principal cannot read at a
+  # destination, and which consent each lacks. It runs this flake's git and
+  # cue, and both schemas travel with it.
+  valley-read-coverage =
+    pkgs.runCommand "valley-read-coverage"
+      {
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        meta.mainProgram = "valley-read-coverage";
+      }
+      ''
+        mkdir -p $out/bin
+        makeWrapper ${lib.getExe readaccess} $out/bin/valley-read-coverage \
+          --prefix PATH : ${
+            lib.makeBinPath [
+              pkgs.git
+              pkgs.cue
+            ]
+          } \
+          --set-default VALLEY_READ_SCHEMA ${../schema/read.cue} \
+          --set-default VALLEY_IDENTITY_SCHEMA ${../schema/identity.cue}
+      '';
+
   # The web UI's server (webui/server/) and its command, valley-web
   # (webui/cmd/valley-web/), which serves the active export of a receiver's
   # state directory to anonymous readers. It reads the export and the state

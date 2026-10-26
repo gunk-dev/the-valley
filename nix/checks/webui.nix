@@ -29,6 +29,17 @@
   # swap failures, reported apart from the commit. go vet runs after them.
   webui-unit = packages.webui.unit;
 
+  # Read access, which the publisher reads its consents through: both
+  # consents read out of real commits under the real schemas, an explicit
+  # empty reader set and an empty scope letting no one read, anyone's
+  # restrictions, no principal name special, a policy for another project
+  # and a grant for another identity covering nothing, other destinations'
+  # grants and expired principals' left out, policy/web never read, tree
+  # entries with a directory part or named twice refused before anything
+  # is copied out, redeclared definitions widening nothing, and the
+  # coverage report over a real valley. go vet runs after them.
+  readaccess-unit = packages.readaccess.unit;
+
   # The server and valley-web over the shared fixture, uploaded to a real
   # store, and real git. The plan page's reading order, its free to start
   # legend, its one card of ready changes, and the export's age, marked

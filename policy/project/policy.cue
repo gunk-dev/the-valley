@@ -48,6 +48,7 @@ project: {
 		"sigverify-e2e",
 		"webui-unit",
 		"webui-server-unit",
+		"readaccess-unit",
 		"rebase-unit",
 		"valley-go-unit",
 		"valley-cli",
@@ -241,6 +242,18 @@ project: {
 		requires: "webui-server-unit": true
 	}
 
+	// Read access: the two consents a reader needs, the evaluator that
+	// intersects them, and the coverage report. readaccess-unit reads both
+	// schemas, so a change to either requires it, and the web publisher
+	// reads its consents through the module, so webui-unit runs too.
+	classes: readaccess: {
+		paths: "readaccess/**":       true
+		paths: "schema/read.cue":     true
+		paths: "schema/identity.cue": true
+		requires: "readaccess-unit":  true
+		requires: "webui-unit":       true
+	}
+
 	// The valley CLI: the script, its Go verbs (status/), the rebase engine
 	// they rebase and read landings with (rebase/), and its completions.
 	// valley-ready drives ready, withdraw, rebase and the verbs that take a
@@ -430,7 +443,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"webui.nix": ["webui-unit", "webui-server-unit"]
+		"webui.nix": ["webui-unit", "webui-server-unit", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

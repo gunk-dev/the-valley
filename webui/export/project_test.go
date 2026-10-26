@@ -5,11 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"the-valley/webui/export"
 	"the-valley/webui/export/exporttest"
@@ -403,4 +406,119 @@ func (r *cancelDecodeReader) Read(p []byte) (int, error) {
 		r.cancel()
 	}
 	return n, err
+}
+
+// The final input read arms cancellation. The string scanner must observe
+// it while decoding bytes already in its buffer, without another source read.
+func TestDecodeContextFinalStringChunk(t *testing.T) {
+	for _, key := range []bool{false, true} {
+		t.Run(fmt.Sprint(key), func(t *testing.T) {
+			base, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &finalStringContext{Context: base, cancel: cancel}
+			value := strings.Repeat(`\u0061`, 1<<17)
+			data := `{"schema":"valley-web-export/v1","collected":"` + value + `"}`
+			if key {
+				data = `{"` + value + `":null}`
+			}
+			r := &finalStringReader{Reader: strings.NewReader(data), ctx: ctx}
+			started := time.Now()
+			got, err := export.DecodeContext(ctx, r)
+			if got != nil || !errors.Is(err, context.Canceled) {
+				t.Fatalf("DecodeContext = %v, %v", got, err)
+			}
+			if !ctx.inString {
+				t.Fatal("cancellation was not observed inside string decoding")
+			}
+			if r.extraRead {
+				t.Fatal("decoder requested more input after the final chunk")
+			}
+			if time.Since(started) > 2*time.Second {
+				t.Fatal("string decoding did not stop promptly")
+			}
+		})
+	}
+}
+
+type finalStringContext struct {
+	context.Context
+	cancel   context.CancelFunc
+	armed    bool
+	checks   int
+	inString bool
+}
+
+func (c *finalStringContext) Err() error {
+	if c.armed {
+		c.checks++
+		if c.checks == 3 {
+			var pcs [16]uintptr
+			n := runtime.Callers(2, pcs[:])
+			frames := runtime.CallersFrames(pcs[:n])
+			for {
+				f, more := frames.Next()
+				if strings.HasSuffix(f.Function, ".(*stringInput).readString") {
+					c.inString = true
+				}
+				if !more {
+					break
+				}
+			}
+			c.cancel()
+		}
+	}
+	return c.Context.Err()
+}
+
+type finalStringReader struct {
+	*strings.Reader
+	ctx       *finalStringContext
+	extraRead bool
+}
+
+func (r *finalStringReader) Read(p []byte) (int, error) {
+	if r.ctx.armed {
+		r.extraRead = true
+	}
+	n, err := r.Reader.Read(p)
+	if r.Len() == 0 {
+		r.ctx.armed = true
+	}
+	return n, err
+}
+
+// String decoding matches encoding/json for escapes, invalid UTF-8 and
+// surrogate pairs, including sequences split across input chunks.
+func TestDecodeStringValues(t *testing.T) {
+	values := []string{
+		`"plain"`, `"\"\\\/\b\f\n\r\t"`, `"\uD834\uDD1E"`,
+		`"\uD834x"`, `"\uDD1E"`, `"\uD834\u0061"`, `"\uD834\uD834\uDD1E"`,
+		"\"\xff\"", `"é界𝄞"`,
+	}
+	prefixes := []string{""}
+	for offset := 0; offset < 12; offset++ {
+		prefixes = append(prefixes, strings.Repeat("a", 4096-len(`{"schema":"valley-web-export/v1","collected":"`)-offset))
+	}
+	for _, prefix := range prefixes {
+		for _, value := range values {
+			data := []byte(`{"schema":"valley-web-export/v1","collected":"` + prefix + value[1:] + `}`)
+			var want export.Export
+			if err := json.Unmarshal(data, &want); err != nil {
+				t.Fatal(err)
+			}
+			got, err := export.DecodeContext(context.Background(), bytes.NewReader(data))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(got, &want) {
+				t.Errorf("string %q differs from encoding/json", value)
+			}
+		}
+	}
+	for _, value := range []string{`"\x"`, `"\uZZZZ"`, `"\u123"`, `"unterminated`, "\"\n\"", `"\uD834\uZZZZ"`} {
+		data := []byte(`{"schema":"valley-web-export/v1","collected":` + value + `}`)
+		if _, err := export.Decode(data); err == nil {
+			t.Errorf("accepted invalid string %q", value)
+		}
+	}
 }

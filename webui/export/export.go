@@ -218,8 +218,7 @@ func Decode(data []byte) (*Export, error) {
 
 // DecodeContext reads and validates an export while ctx remains active.
 func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
-	dec := json.NewDecoder(decodeReader{ctx, r})
-	dec.UseNumber()
+	dec := newTokenDecoder(ctx, r)
 	var e Export
 	if err := decodeValue(ctx, dec, reflect.ValueOf(&e).Elem()); err != nil {
 		return nil, fmt.Errorf("export.json: %w", err)

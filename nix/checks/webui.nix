@@ -36,8 +36,10 @@
   # and a grant for another identity covering nothing, other destinations'
   # grants and expired principals' left out, policy/web never read, tree
   # entries with a directory part or named twice refused before anything
-  # is copied out, redeclared definitions widening nothing, and the
-  # coverage report over a real valley. go vet runs after them.
+  # is copied out, a directory named twice on the way to a document
+  # refused, redeclared definitions widening nothing, a field spelled in
+  # another case than the schema's refused, and the coverage report over a
+  # real valley, with the registry read at its ref. go vet runs after them.
   readaccess-unit = packages.readaccess.unit;
 
   # The server and valley-web over the shared fixture, uploaded to a real

@@ -522,3 +522,15 @@ func TestDecodeStringValues(t *testing.T) {
 		}
 	}
 }
+
+// More must not consume and hide a string error before a closing delimiter.
+func TestDecodeRetainsStringError(t *testing.T) {
+	for _, data := range []string{
+		`{"schema":"valley-web-export/v1","projects":["\x]}`,
+		`{"schema":"valley-web-export/v1","\x}`,
+	} {
+		if _, err := export.Decode([]byte(data)); err == nil {
+			t.Errorf("accepted malformed document %q", data)
+		}
+	}
+}

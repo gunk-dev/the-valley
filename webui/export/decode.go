@@ -163,9 +163,20 @@ type stringInput struct {
 	r       *bufio.Reader
 	values  []string
 	pending bool
+	err     error
 }
 
-func (s *stringInput) Read(p []byte) (int, error) {
+func (s *stringInput) Read(p []byte) (n int, err error) {
+	// More can inspect input without reporting its error. Keep that error
+	// for the next token read so malformed strings cannot disappear.
+	if s.err != nil {
+		return 0, s.err
+	}
+	defer func() {
+		if err != nil {
+			s.err = err
+		}
+	}()
 	if len(p) == 0 {
 		return 0, nil
 	}

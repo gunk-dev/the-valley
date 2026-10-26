@@ -13,7 +13,9 @@
   # the manifest's grammar and its agreement with export.json; the
   # streaming body check; bundle acceptance against real git, refusing
   # wrong tips, prerequisites, extra refs, corrupt objects and a header
-  # past its bound, and serving no commit main does not reach; git's
+  # past its bound, writing a commit-graph git verifies, and serving no
+  # commit main does not reach, nor one named in the other object
+  # format's length; git's
   # output read within its limit, with git stopped past it or when its
   # reader stops early; and the receiver's state directory. For the state directory: readers holding
   # a generation through activations, every file of a generation synced
@@ -37,7 +39,11 @@
   # knot text rendered inert, and large and binary files not shown; a
   # reference into the hidden project naming nothing of it; a directory
   # past MaxRead listed in part, and a 5 MiB commit message ending its
-  # page of history early; a file of MaxFile newlines shown to MaxLines;
+  # page of history early; the directories along a path sharing one
+  # MaxRead; history skipping at most MaxSkip commits, and linking the
+  # rest from its last commit; a source request's git stopped at a bound
+  # of its own, answering 503 and giving back its slot; a SHA-256
+  # project served by full commit IDs alone; a file of MaxFile newlines shown to MaxLines;
   # a chain of knots near the graph's limit shown to MaxPlanDepth, with
   # the plan's structure built once; the policy on every response,
   # admitting the page's inline stylesheet and script by their hashes; a

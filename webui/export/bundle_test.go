@@ -81,7 +81,8 @@ func (s source) bundle(t *testing.T, args ...string) string {
 }
 
 // A full bundle of main at the declared tip is accepted into a fresh bare
-// repository holding main alone.
+// repository holding main alone, with a commit-graph of main's history
+// that git verifies.
 func TestAcceptBundle(t *testing.T) {
 	ctx := context.Background()
 	for _, format := range []string{"sha1", "sha256"} {
@@ -97,8 +98,18 @@ func TestAcceptBundle(t *testing.T) {
 			if got := git(t, repo, nil, "rev-parse", "--show-object-format"); got != format {
 				t.Errorf("the repository is %s", got)
 			}
+			hasCommitGraph(t, repo)
 		})
 	}
+}
+
+// hasCommitGraph checks that repo has a commit-graph git verifies.
+func hasCommitGraph(t *testing.T, repo string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(repo, "objects", "info", "commit-graph")); err != nil {
+		t.Errorf("the repository has no commit-graph: %v", err)
+	}
+	git(t, repo, nil, "commit-graph", "verify")
 }
 
 // A bundle and a repository named relative to the working directory are
@@ -247,6 +258,9 @@ func unreachableBundle(t *testing.T, s source) string {
 	objects := git(t, s.repo, nil, "rev-list", "--objects", "main", "side")
 	pack := packObjects(t, s.repo, objects)
 	header := "# v2 git bundle\n" + s.tip + " refs/heads/main\n\n"
+	if len(s.tip) == 64 {
+		header = "# v3 git bundle\n@object-format=sha256\n" + s.tip + " refs/heads/main\n\n"
+	}
 	path := filepath.Join(t.TempDir(), "unreachable.bundle")
 	if err := os.WriteFile(path, append([]byte(header), pack...), 0o644); err != nil {
 		t.Fatal(err)
@@ -266,41 +280,63 @@ func packObjects(t *testing.T, repo, objects string) []byte {
 	return out
 }
 
-// Reachable admits only commits main's tip reaches. A bundle can carry
-// other objects; they are in the repository and never reachable.
+// Reachable admits only commits main's tip reaches, each named by its
+// full ID in the repository's object format. A bundle can carry other
+// objects; they are in the repository and never reachable. In a SHA-256
+// repository, the first 40 hex digits of a commit are refused, though git
+// would read them as an abbreviation of it.
 func TestReachable(t *testing.T) {
 	ctx := context.Background()
-	s := newSource(t, "sha1")
-	repo := filepath.Join(t.TempDir(), "app.git")
-	if err := export.AcceptBundle(ctx, unreachableBundle(t, s), repo, s.tip); err != nil {
-		t.Fatal(err)
-	}
-	if got := git(t, repo, nil, "cat-file", "-t", s.side); got != "commit" {
-		t.Fatalf("the unreachable commit is not in the repository: %q", got)
-	}
-	tree := git(t, repo, nil, "rev-parse", s.tip+"^{tree}")
-	for _, c := range []struct {
-		name, commit string
-		want         bool
-	}{
-		{"the tip", s.tip, true},
-		{"its parent", s.first, true},
-		{"a commit in the bundle that main does not reach", s.side, false},
-		{"a tree", tree, false},
-		{"an object the repository does not hold", strings.Repeat("1", 40), false},
-		{"an abbreviated ID", s.tip[:12], false},
-		{"a revision expression", s.tip + "~1", false},
-		{"an option", "--all", false},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			got, err := export.Reachable(ctx, repo, s.tip, c.commit)
-			if err != nil || got != c.want {
-				t.Errorf("Reachable gave %v, %v; want %v", got, err, c.want)
+	for _, format := range []string{"sha1", "sha256"} {
+		t.Run(format, func(t *testing.T) {
+			s := newSource(t, format)
+			repo := filepath.Join(t.TempDir(), "app.git")
+			if err := export.AcceptBundle(ctx, unreachableBundle(t, s), repo, s.tip); err != nil {
+				t.Fatal(err)
+			}
+			if got := git(t, repo, nil, "cat-file", "-t", s.side); got != "commit" {
+				t.Fatalf("the unreachable commit is not in the repository: %q", got)
+			}
+			tree := git(t, repo, nil, "rev-parse", s.tip+"^{tree}")
+			cases := []struct {
+				name, commit string
+				want         bool
+			}{
+				{"the tip", s.tip, true},
+				{"its parent", s.first, true},
+				{"a commit in the bundle that main does not reach", s.side, false},
+				{"a tree", tree, false},
+				{"an object the repository does not hold", strings.Repeat("1", len(s.tip)), false},
+				{"an abbreviated ID", s.tip[:12], false},
+				{"a revision expression", s.tip + "~1", false},
+				{"an option", "--all", false},
+			}
+			if format == "sha256" {
+				if got := git(t, repo, nil, "rev-parse", "--verify", s.tip[:40]+"^{commit}"); got != s.tip {
+					t.Fatalf("git does not read the tip's first 40 hex digits as the tip: %q", got)
+				}
+				cases = append(cases, struct {
+					name, commit string
+					want         bool
+				}{"the tip's first 40 hex digits", s.tip[:40], false})
+			} else {
+				cases = append(cases, struct {
+					name, commit string
+					want         bool
+				}{"64 hex digits", s.tip + strings.Repeat("0", 24), false})
+			}
+			for _, c := range cases {
+				t.Run(c.name, func(t *testing.T) {
+					got, err := export.Reachable(ctx, repo, s.tip, c.commit)
+					if err != nil || got != c.want {
+						t.Errorf("Reachable gave %v, %v; want %v", got, err, c.want)
+					}
+				})
+			}
+			if _, err := export.Reachable(ctx, repo, "main", s.tip); err == nil {
+				t.Error("Reachable took a tip that is no object ID")
 			}
 		})
-	}
-	if _, err := export.Reachable(ctx, repo, "main", s.tip); err == nil {
-		t.Error("Reachable took a tip that is no object ID")
 	}
 }
 
@@ -320,6 +356,7 @@ func TestCarryRepo(t *testing.T) {
 	if refs := git(t, carried, nil, "for-each-ref", "--format=%(refname) %(objectname)"); refs != "refs/heads/main "+s.tip {
 		t.Errorf("the carried repository holds %q", refs)
 	}
+	hasCommitGraph(t, carried)
 	wrong := filepath.Join(t.TempDir(), "wrong.git")
 	if err := export.CarryRepo(ctx, held, wrong, s.first); err == nil {
 		t.Error("CarryRepo carried a repository at another tip")

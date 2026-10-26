@@ -2028,6 +2028,7 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
      `refs/heads/main:refs/heads/main`, `--no-tags`, `transfer.fsckObjects=true`, and
      `core.fsync=all`.
   4. Verify that the repository holds `refs/heads/main` at `source_tip` and no other ref.
+  5. Write the repository's commit-graph with `git commit-graph write --reachable`.
 
   A bundle that fails any of these checks is refused as `bad-bundle`. Failing to open the bundle
   file, to initialize the repository, or to list its refs is an operational error, not a refusal of
@@ -2035,7 +2036,8 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
 
 - **Reachability (`export.Reachable`):** A git bundle can contain objects that `refs/heads/main`
   does not reach. When serving a repository, browsing serves a commit only when `export.Reachable`
-  confirms that it is a commit reachable from `source_tip`.
+  confirms that it is a commit reachable from `source_tip`, named by a full object ID as long as
+  `source_tip`.
 - **Commit outcome:** A commit has succeeded once `Store.Activate` has written the upload's sequence
   to `high-water` and swapped the `active` symlink to the new generation. The receiver then replies
   `200` with `valley-web-committed/v1`. A later failure while syncing the swap to disk or deleting
@@ -2408,20 +2410,22 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 - **Source browser:** The server reads each generation's repositories by running `git` subprocesses
   through `export.Git` and `export.GitStream`. It passes `git` only verified object IDs, never text
   from the request.
-  - A source route serves `<commit>` only when it is a full object ID and `export.Reachable` finds
-    it reachable from the project's `source_tip`. Anything else answers `404`, including an
-    unreachable commit, a tree or blob ID, an abbreviated ID, or a ref name such as `main`.
+  - A source route serves `<commit>` only when it is a full object ID as long as the project's
+    `source_tip`, and `export.Reachable` finds it reachable from the `source_tip`. Anything else
+    answers `404`, including an unreachable commit, a tree or blob ID, an abbreviated ID, a ref name
+    such as `main`, and the first 40 hex digits of a SHA-256 commit.
   - The server resolves `<path>` from the commit's root tree one segment at a time with
-    `git ls-tree` on tree object IDs. A path answers `404` if it is deeper than 64 segments
-    (`server.MaxDepth`) or if any segment is empty, `.`, `..`, or contains `/` or NUL.
+    `git ls-tree` on tree object IDs, without `--long`. A path answers `404` if it is deeper than 64
+    segments (`server.MaxDepth`) or if any segment is empty, `.`, `..`, or contains `/` or NUL.
   - Every source link names the project, a full commit ID, and a path.
   - The server streams `git` output through `export.GitStream` and reads at most 4 MiB of a
     directory listing or history page (`server.MaxRead`). Once `git` prints more than 4 MiB, the
     server stops `git` and waits for it to exit.
   - A directory page lists at most 1,000 entries (`server.MaxEntries`), directories first. If a
     directory's `git ls-tree` output exceeds 4 MiB, the page lists only the entries from the first 4
-    MiB and notes that the listing is partial. A path through an entry past the first 4 MiB of its
-    directory's listing answers `404`. Below the listing, the page shows the directory's README:
+    MiB and notes that the listing is partial. The directories along a path share one 4 MiB of
+    `git ls-tree` output, read up to the entry each segment names. A path whose entries are past
+    those 4 MiB answers `404`. Below the listing, the page shows the directory's README:
     `README.md`, `README`, or `README.txt` in that order, or else the first file named `readme` in
     any case with any extension.
   - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`. It
@@ -2436,9 +2440,14 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     exceed 4 MiB of `git log` output, the page ends at the commit cut off by the 4 MiB bound,
     showing as much of that commit as was read. The page notes that it ends early and links to the
     older commits after it.
+  - A log page skips at most 10,000 commits (`server.MaxSkip`), and a larger `skip` answers `404`. A
+    page whose older commits are past that bound links them as the log of its last commit with
+    `?skip=1`.
 - **Time:** Every request has 15 seconds from when it arrives. That limit covers waiting, running
   `git` commands, and rendering the page. A request that runs out of time answers `503` with
-  `Retry-After: 5`.
+  `Retry-After: 5`. A source request's `git` commands have 5 seconds in all, from when it holds its
+  `git` slot. A source request whose `git` runs past them answers `503` with `Retry-After: 5`, and
+  the server logs it.
 - **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
   check runs before the request opens a generation.
   - A tree, file, or log request runs `git`. At most 8 such requests run at once (`server.MaxGit`),

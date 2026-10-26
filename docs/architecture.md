@@ -2757,6 +2757,32 @@ Checked by `webui-server-unit`, whose `TestSlowReadersShareTheBudget` fills the 
 of large pages that never read, sized so that without the reserve they would hold all 64 MiB. The
 plan, a knot and a directory still render meanwhile.
 
+### A source request's git work
+
+A tree, file or log request runs git, and at most 8 such requests run at once. So the server bounds
+each request's git work on its own, well within the request's 15 seconds. Its git commands have 5
+seconds in all, and git is stopped past them (`webui/server/source.go`). The request then answers
+`503` and gives back its git slot.
+
+What a request asks of git is bounded too. The directories along a path are listed without sizes,
+because `git ls-tree --long` looks up the size of every blob it lists. They share one budget of 4
+MiB of output, so a deep path through large directories reads no more than one large directory does.
+A page of history skips at most 10,000 commits. The page at that bound links the older commits as
+the history of its last commit, so all of the history stays reachable by links. Every repository has
+a commit-graph, which the receiver writes when it accepts the repository (`webui/export/bundle.go`).
+With it, `git merge-base`, which checks that a commit is reachable, and `git log` walk the history
+without parsing each commit.
+
+A commit is named by its full ID in the project's object format alone. git reads 40 hex digits in a
+SHA-256 repository as an abbreviation, and 64 hex digits in a SHA-1 repository as the commit their
+first 40 name. So `export.Reachable` refuses an ID whose length differs from the source tip's, and
+each page has one address.
+
+Checked by `webui-server-unit`, whose `TestResolveSharesOneBudget`, `TestLogSkipIsBounded`,
+`TestSourceGitHasItsOwnBound` and `TestSHA256CommitIDs` serve a path through two large directories,
+history past 10,000 commits, a git that never finishes, and a SHA-256 project. Also by `webui-unit`,
+whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both object formats.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors

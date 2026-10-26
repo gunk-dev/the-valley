@@ -134,6 +134,10 @@ const (
 	MaxPlanDepth = 32
 	// LogPage is the number of commits on one page of a log.
 	LogPage = 50
+	// MaxSkip is the most commits a page of a log skips, which git walks
+	// before the page. The page whose older page would skip more links
+	// it as the log that ends at its last commit, less that commit.
+	MaxSkip = 10_000
 	// MaxGit is the most source requests that run git at once.
 	MaxGit = 8
 	// MaxWaiting is the most source requests that wait for one of the
@@ -144,6 +148,10 @@ const (
 	// a git slot or for its generation's export to be read, its git
 	// commands and its rendering.
 	requestTimeout = 15 * time.Second
+	// gitTimeout bounds a source request's git commands, all of them
+	// together, from when it holds its git slot. A source request whose
+	// git runs past it answers 503.
+	gitTimeout = 5 * time.Second
 	// MaxLoads is the most loads that run at once, each in a worker of
 	// its own that reads one generation's export.
 	MaxLoads = 2
@@ -185,9 +193,10 @@ type Server struct {
 	store *export.Store
 	now   func() time.Time
 	log   func(error)
-	// timeout is requestTimeout, and maxResponse is MaxResponse. A test
-	// shortens either.
+	// timeout is requestTimeout, gitTime is gitTimeout, and maxResponse
+	// is MaxResponse. A test shortens any of them.
 	timeout     time.Duration
+	gitTime     time.Duration
 	maxResponse int
 	// slots holds a token for each source request running git, and
 	// waiting one for each source request waiting for a slot.
@@ -223,7 +232,8 @@ type Server struct {
 
 // New is a Server over c's store.
 func New(c Config) *Server {
-	s := &Server{store: c.Store, now: c.Now, log: c.Log, timeout: requestTimeout, maxResponse: MaxResponse,
+	s := &Server{store: c.Store, now: c.Now, log: c.Log,
+		timeout: requestTimeout, gitTime: gitTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
 		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
 		budget: make(chan struct{}, MaxBuffered/pieceSize), large: make(chan struct{}, MaxLarge/pieceSize),
@@ -272,9 +282,12 @@ type request struct {
 	s *Server
 	w http.ResponseWriter
 	r *http.Request
-	// ctx is the context the request waits and runs git under. It ends
-	// at the request's deadline, or when its reader goes away.
+	// ctx is the context the request waits and renders under. It ends
+	// at the request's deadline, or when its reader goes away. git is
+	// the context a source request runs git under, which ends gitTime
+	// after its view starts, or with ctx.
 	ctx context.Context
+	git context.Context
 	g   export.Generation
 	e   *export.Export
 	idx *index
@@ -700,13 +713,16 @@ func (q *request) notFound() {
 // fail logs err and answers with the one 500 page, which says nothing of
 // the failure. A reader that went away is answered with nothing: git
 // killed for it fails, and that is no failure of the server's. A request
-// that ran out of time answers 503.
+// that ran out of time, or whose git did, answers 503.
 func (q *request) fail(err error) {
 	if q.r.Context().Err() != nil {
 		return
 	}
+	if q.ctx.Err() == nil && q.git != nil && q.git.Err() != nil {
+		err = fmt.Errorf("the request's git ran past %v: %w", q.s.gitTime, err)
+	}
 	q.s.log(err)
-	if q.ctx.Err() != nil {
+	if q.ctx.Err() != nil || q.git != nil && q.git.Err() != nil {
 		q.busy()
 		return
 	}

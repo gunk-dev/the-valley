@@ -86,7 +86,10 @@ func (q *request) source(project string, rest []string) {
 		q.notFound()
 		return
 	}
-	if err := view(q.ctx); err != nil {
+	ctx, cancel := context.WithTimeout(q.ctx, q.s.gitTime)
+	defer cancel()
+	q.git = ctx
+	if err := view(ctx); err != nil {
 		q.fail(err)
 	}
 }
@@ -174,9 +177,10 @@ func (rs *records) next() (rec []byte, cut bool, err error) {
 	return rs.buf, true, nil
 }
 
-// entry is one entry of a tree, as git ls-tree --long gives it. Size is
-// -1 for an entry that is not a blob. Cut is set when the entry's name is
-// longer than a page keeps, and Name is then its start alone.
+// entry is one entry of a tree, as git ls-tree gives it. Size is -1 for
+// an entry that is not a blob, and for a blob read without --long. Cut is
+// set when the entry's name is longer than a page keeps, and Name is then
+// its start alone.
 type entry struct {
 	Mode string
 	Type string
@@ -187,12 +191,21 @@ type entry struct {
 }
 
 // readTree calls each with the entries of tree, in git's order, until
-// each returns false. It reads at most MaxRead bytes of git ls-tree's
+// each returns false. It reads at most limit bytes of git ls-tree's
 // output: complete is false when the listing is longer and was cut there.
-func readTree(ctx context.Context, repo, tree string, each func(entry) bool) (complete bool, err error) {
+// read is how many bytes it read. long gives each blob's size, which git
+// looks up for every blob listed, so only a page that shows sizes asks.
+func readTree(ctx context.Context, repo, tree string, limit int64, long bool,
+	each func(entry) bool) (complete bool, read int64, err error) {
 	complete = true
-	err = export.GitStream(ctx, repo, MaxRead, func(r io.Reader) error {
-		recs := newRecords(r, 0, maxEntryRecord)
+	args := []string{"ls-tree", "-z", tree}
+	if long {
+		args = []string{"ls-tree", "-z", "--long", tree}
+	}
+	err = export.GitStream(ctx, repo, limit, func(r io.Reader) error {
+		counted := &counter{r: r}
+		defer func() { read = counted.n }()
+		recs := newRecords(counted, 0, maxEntryRecord)
 		for {
 			rec, cut, err := recs.next()
 			switch {
@@ -204,7 +217,7 @@ func readTree(ctx context.Context, repo, tree string, each func(entry) bool) (co
 			case err != nil:
 				return err
 			}
-			e, err := parseEntry(rec, cut)
+			e, err := parseEntry(rec, cut, long)
 			if err != nil {
 				return err
 			}
@@ -212,18 +225,36 @@ func readTree(ctx context.Context, repo, tree string, each func(entry) bool) (co
 				return nil
 			}
 		}
-	}, "ls-tree", "-z", "--long", tree)
-	return complete, err
+	}, args...)
+	return complete, read, err
 }
 
-func parseEntry(rec []byte, cut bool) (entry, error) {
+// counter reads r, and counts the bytes it read.
+type counter struct {
+	r io.Reader
+	n int64
+}
+
+func (c *counter) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// parseEntry is one record of git ls-tree: mode, type, object ID, and,
+// when long, size, then a tab and the name.
+func parseEntry(rec []byte, cut, long bool) (entry, error) {
 	meta, name, ok := bytes.Cut(rec, []byte{'\t'})
 	f := strings.Fields(string(meta))
-	if !ok || len(f) != 4 || !export.ValidObjectID(f[2]) {
+	fields := 3
+	if long {
+		fields = 4
+	}
+	if !ok || len(f) != fields || !export.ValidObjectID(f[2]) {
 		return entry{}, fmt.Errorf("git ls-tree gave %q", rec)
 	}
 	e := entry{Mode: f[0], Type: f[1], OID: f[2], Size: -1, Name: string(name), Cut: cut}
-	if f[3] != "-" {
+	if long && f[3] != "-" {
 		n, err := strconv.ParseInt(f[3], 10, 64)
 		if err != nil || n < 0 {
 			return entry{}, fmt.Errorf("git ls-tree gave %q", rec)
@@ -234,26 +265,40 @@ func parseEntry(rec []byte, cut bool) (entry, error) {
 }
 
 // resolve walks path down from the tree root, one tree entry at a time,
-// and gives the entry it ends at. ok is false when a segment names no
-// entry, or a segment other than the last names something that is not a
-// tree. Each directory is read only until the segment's entry, and no
-// further than readTree reads, so an entry past MaxRead is not found.
+// and gives the entry it ends at, with its size when it is a blob. ok is
+// false when a segment names no entry, or a segment other than the last
+// names something that is not a tree. Each directory is read only until
+// the segment's entry, without sizes, and all of them together no further
+// than MaxRead bytes of git's output. So an entry past MaxRead along the
+// path is not found, however the path's directories share it.
 func resolve(ctx context.Context, repo, root string, path []string) (e entry, ok bool, err error) {
 	e = entry{Mode: "040000", Type: "tree", OID: root, Size: -1}
+	left := int64(MaxRead)
 	for _, name := range path {
 		if e.Type != "tree" {
 			return entry{}, false, nil
 		}
 		found := false
-		_, err := readTree(ctx, repo, e.OID, func(c entry) bool {
+		_, read, err := readTree(ctx, repo, e.OID, left, false, func(c entry) bool {
 			if !c.Cut && c.Name == name {
 				e, found = c, true
 			}
 			return !found
 		})
-		if err != nil || !found {
+		if left -= read; err != nil || !found {
 			return entry{}, false, err
 		}
+	}
+	if e.Type == "blob" {
+		out, err := export.Git(ctx, repo, maxLine, "cat-file", "-s", e.OID)
+		if err != nil {
+			return entry{}, false, err
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(string(out)), 10, 64)
+		if err != nil || n < 0 {
+			return entry{}, false, fmt.Errorf("git cat-file -s %s gave %q", e.OID, out)
+		}
+		e.Size = n
 	}
 	return e, true, nil
 }
@@ -334,7 +379,7 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 	var dirs, others []entry
 	read, rank := 0, -1
 	var rm entry
-	complete, err := readTree(ctx, repo, e.OID, func(c entry) bool {
+	complete, _, err := readTree(ctx, repo, e.OID, MaxRead, true, func(c entry) bool {
 		read++
 		switch {
 		case c.Type == "tree" && len(dirs) < MaxEntries:
@@ -567,6 +612,7 @@ type logPage struct {
 }
 
 type logEntry struct {
+	Commit  string
 	Short   string
 	URL     string
 	Subject string
@@ -578,7 +624,7 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 	skip := 0
 	if s := q.r.URL.Query().Get("skip"); s != "" {
 		n, err := strconv.Atoi(s)
-		if err != nil || n < 0 || n > 1_000_000 || strconv.Itoa(n) != s {
+		if err != nil || n < 0 || n > MaxSkip || strconv.Itoa(n) != s {
 			q.notFound()
 			return nil
 		}
@@ -618,12 +664,21 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 	if err != nil {
 		return err
 	}
+	// The older page skips the commits shown. Past MaxSkip, it is the
+	// history that ends at the last commit shown, less that commit.
+	older := 0
 	switch {
 	case len(page.Commits) > LogPage:
 		page.Commits = page.Commits[:LogPage]
-		page.Older = logURL(p.Name, commit) + "?skip=" + strconv.Itoa(skip+LogPage)
+		older = LogPage
 	case page.Partial && len(page.Commits) > 0:
-		page.Older = logURL(p.Name, commit) + "?skip=" + strconv.Itoa(skip+len(page.Commits))
+		older = len(page.Commits)
+	}
+	if older > 0 {
+		page.Older = logURL(p.Name, commit) + "?skip=" + strconv.Itoa(skip+older)
+		if skip+older > MaxSkip {
+			page.Older = logURL(p.Name, page.Commits[older-1].Commit) + "?skip=1"
+		}
 	}
 	if skip > 0 {
 		page.Newer = logURL(p.Name, commit)
@@ -646,7 +701,7 @@ func logEntryOf(project, rec string) (e logEntry, ok bool) {
 	for len(f) < 4 {
 		f = append(f, "")
 	}
-	return logEntry{Short: f[0][:12], URL: treeURL(project, f[0], nil), Date: stampOf(f[1]),
+	return logEntry{Commit: f[0], Short: f[0][:12], URL: treeURL(project, f[0], nil), Date: stampOf(f[1]),
 		Author: clip(oneLine(f[2]), maxLogText), Subject: clip(oneLine(f[3]), maxLogText)}, true
 }
 

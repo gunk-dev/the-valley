@@ -686,6 +686,160 @@ func TestOversizedTreeAndHistory(t *testing.T) {
 	}
 }
 
+// The directories along a path share one budget of MaxRead bytes of git
+// ls-tree's output. Each of big/ and big/zz/ lists about 3 MB before
+// the entry the path names next, within MaxRead alone, so the directory
+// big/zz/ is served. A path through both, to big/zz/zz/f, passes the
+// budget and answers 404. The directory's own listing has a budget of
+// its own.
+func TestResolveSharesOneBudget(t *testing.T) {
+	h := newHarness(t)
+	name := func(i int) string { return fmt.Sprintf("%05d-%s", i, strings.Repeat("n", 240)) }
+	var files []file
+	for i := range 10_000 {
+		files = append(files, file{"100644", "big/" + name(i), "x\n"}, file{"100644", "big/zz/" + name(i), "x\n"})
+	}
+	files = append(files, file{"100644", "big/zz/zz/f", "the file\n"})
+	if each := 6 + 1 + 4 + 1 + 40 + 1 + 246 + 1; 10_000*each > MaxRead || 2*10_000*each <= MaxRead {
+		t.Fatalf("the listings take %d bytes each, not between half MaxRead and MaxRead", 10_000*each)
+	}
+	tip, bundle := h.commitMain("app: two large directories, one in the other\n", files...)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	h.page("/app/source/tree/" + tip + "/big/zz/")
+	h.page("/app/source/blob/" + tip + "/big/zz/" + name(0))
+	for _, target := range []string{"/app/source/tree/" + tip + "/big/zz/zz/", "/app/source/blob/" + tip + "/big/zz/zz/f"} {
+		if w := h.get(target); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s, through %d bytes of listings, answered %d", target, 2*10_000*300, w.Code)
+		}
+	}
+}
+
+// A page of history skips at most MaxSkip commits. The page at MaxSkip
+// links the commits older than it as the history that ends at its last
+// commit, less that commit, and that page is served.
+func TestLogSkipIsBounded(t *testing.T) {
+	h := newHarness(t)
+	repo := h.f.Repos["app"]
+	var b bytes.Buffer
+	who := "Example Author <author@example.org> 1791190800 +0000"
+	n := MaxSkip + LogPage + 10
+	for i := range n {
+		fmt.Fprintf(&b, "commit refs/heads/main\nauthor %s\ncommitter %s\n", who, who)
+		msg := fmt.Sprintf("commit %d\n", i)
+		fmt.Fprintf(&b, "data %d\n%s\n", len(msg), msg)
+		if i == 0 {
+			fmt.Fprintf(&b, "from %s\n", git(t, repo, nil, "rev-parse", export.MainRef))
+		}
+	}
+	git(t, repo, b.Bytes(), "fast-import", "--quiet")
+	tip := git(t, repo, nil, "rev-parse", export.MainRef)
+	bundle := filepath.Join(t.TempDir(), "app.bundle")
+	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	at := "/app/source/log/" + tip
+	if page := h.page(at + fmt.Sprintf("?skip=%d", MaxSkip-LogPage)); !strings.Contains(page, fmt.Sprintf(`href="%s?skip=%d"`, at, MaxSkip)) {
+		t.Errorf("the page before MaxSkip does not link the page at it")
+	}
+	page := h.page(at + fmt.Sprintf("?skip=%d", MaxSkip))
+	// The page at MaxSkip shows commits n-1-MaxSkip down to
+	// n-MaxSkip-LogPage, the last of them, counting from the oldest new
+	// commit as 0.
+	last := git(t, repo, nil, "rev-parse", fmt.Sprintf("%s~%d", tip, MaxSkip+LogPage-1))
+	older := "/app/source/log/" + last + "?skip=1"
+	if !strings.Contains(page, `href="`+older+`"`) {
+		t.Errorf("the page at MaxSkip does not link its older commits as the history of %s", last)
+	}
+	page = h.page(older)
+	if !strings.Contains(page, fmt.Sprintf("commit %d<", n-MaxSkip-LogPage-1)) || !strings.Contains(page, "app: the first README") {
+		t.Errorf("the history past MaxSkip is not served:\n%s", page)
+	}
+	if strings.Contains(page, fmt.Sprintf("commit %d<", n-MaxSkip-LogPage)) {
+		t.Error("the history past MaxSkip shows the commit it starts after")
+	}
+	if w := h.get(at + fmt.Sprintf("?skip=%d", MaxSkip+1)); w.Code != http.StatusNotFound {
+		t.Errorf("a page skipping past MaxSkip answered %d", w.Code)
+	}
+}
+
+// A source request's git commands have a bound of their own, far within
+// the request's time: a git that does not finish is stopped once it
+// passes, and the request answers 503 and gives back its git slot. The
+// failure is logged.
+func TestSourceGitHasItsOwnBound(t *testing.T) {
+	h := newHarness(t)
+	real, err := exec.LookPath(export.GitProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	slow := filepath.Join(t.TempDir(), "git")
+	script := "#!/bin/sh\nfor a; do [ \"$a\" = ls-tree ] && exec sleep 60; done\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(slow, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	program := export.GitProgram
+	export.GitProgram = slow
+	t.Cleanup(func() { export.GitProgram = program })
+	var logged []error
+	var mu sync.Mutex
+	h.srv.log = func(err error) { mu.Lock(); logged = append(logged, err); mu.Unlock() }
+	h.srv.gitTime = 300 * time.Millisecond
+
+	start := time.Now()
+	w := h.get("/app/source/tree/" + h.tip() + "/")
+	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
+		t.Errorf("a source request whose git does not finish answered %d after %v", w.Code, took)
+	}
+	if len(h.srv.slots) != 0 {
+		t.Errorf("the request holds %d git slots once it answered", len(h.srv.slots))
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request's git ran past 300ms") {
+		t.Errorf("the server logged %v", logged)
+	}
+	if w := h.get("/app/knots/oc-a000002"); w.Code != http.StatusOK {
+		t.Errorf("a knot answered %d", w.Code)
+	}
+}
+
+// A SHA-256 project's commits are served by their 64 hex digits alone.
+// The first 40 of them, which git would read as an abbreviation, answer
+// 404 on every source route, so each page has one address.
+func TestSHA256CommitIDs(t *testing.T) {
+	h := newHarness(t)
+	repo := filepath.Join(t.TempDir(), "app.git")
+	git(t, repo, nil, "init", "--quiet", "--bare", "--template=", "--initial-branch=main", "--object-format=sha256")
+	readme := "# app\n\nA SHA-256 repository.\n"
+	who := "Example Author <author@example.org> 1791190800 +0000"
+	stream := fmt.Sprintf("commit refs/heads/main\nauthor %s\ncommitter %s\ndata 7\nsha256\n\nM 100644 inline README.md\ndata %d\n%s\n",
+		who, who, len(readme), readme)
+	git(t, repo, []byte(stream), "fast-import", "--quiet")
+	tip := git(t, repo, nil, "rev-parse", export.MainRef)
+	if len(tip) != 64 {
+		t.Fatalf("the tip is %q", tip)
+	}
+	bundle := filepath.Join(t.TempDir(), "app.bundle")
+	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	for _, route := range []string{"/app/source/tree/%s/", "/app/source/blob/%s/README.md", "/app/source/log/%s"} {
+		if page := h.page(fmt.Sprintf(route, tip)); !strings.Contains(page, tip[:12]) {
+			t.Errorf("%s does not name the commit", fmt.Sprintf(route, tip))
+		}
+		if w := h.get(fmt.Sprintf(route, tip[:40])); w.Code != http.StatusNotFound {
+			t.Errorf("%s answered %d", fmt.Sprintf(route, tip[:40]), w.Code)
+		}
+	}
+	if w := h.get("/app/source/"); w.Header().Get("Location") != "/app/source/tree/"+tip+"/" {
+		t.Errorf("/app/source/ redirects to %q", w.Header().Get("Location"))
+	}
+}
+
 // A file of exactly MaxFile bytes of newlines is shown to MaxLines lines,
 // and its page says where it stops. A README longer than a page shows is
 // shown in part.

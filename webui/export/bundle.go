@@ -35,7 +35,9 @@ const maxBundleHeader = 64 << 10
 //     refs/heads/main:refs/heads/main, no tags, and
 //     transfer.fsckObjects=true, so every object is checked as it is
 //     indexed;
-//  4. the repository then holds refs/heads/main at tip, and no other ref.
+//  4. the repository then holds refs/heads/main at tip, and no other ref;
+//  5. git writes the repository's commit-graph, so a reader walks main's
+//     history, as merge-base and log do, without parsing each commit.
 //
 // A refused bundle leaves no repository behind. Every refusal is an
 // *Error with CodeBadBundle.
@@ -148,8 +150,8 @@ func checkBundleHeader(path, tip string) (format string, err error) {
 }
 
 // fetchMain makes repo a fresh bare repository holding refs/heads/main at
-// tip, fetched from source, and nothing else. It removes repo again on
-// any failure.
+// tip, fetched from source, and nothing else but main's commit-graph. It
+// removes repo again on any failure.
 func fetchMain(ctx context.Context, source, repo, tip, format string) (err error) {
 	if !ValidObjectID(tip) {
 		return refuse(CodeBadBundle, "%q is not an object ID", tip)
@@ -178,19 +180,22 @@ func fetchMain(ctx context.Context, source, repo, tip, format string) (err error
 	if got, want := strings.TrimSuffix(string(refs), "\n"), tip+" "+MainRef; got != want {
 		return refuse(CodeBadBundle, "the fetched repository holds %q, not %q", got, want)
 	}
-	return nil
+	_, err = git(ctx, repo, "-c", "core.fsync=all", "commit-graph", "write", "--reachable", "--no-progress")
+	return err
 }
 
 // Reachable reports whether commit is a commit that tip reaches in repo.
 // Browsing serves a commit only when it is: a bundle can carry objects
 // main does not reach, and those are never shown. An argument that is not
 // an object ID, an object repo does not hold, and an object that is not a
-// commit are all unreachable.
+// commit are all unreachable. So is an object ID of another length than
+// tip's: git reads 40 hex digits in a SHA-256 repository as an
+// abbreviation, and a commit is named by its full ID alone.
 func Reachable(ctx context.Context, repo, tip, commit string) (bool, error) {
 	if !ValidObjectID(tip) {
 		return false, fmt.Errorf("%q is not an object ID", tip)
 	}
-	if !ValidObjectID(commit) {
+	if !ValidObjectID(commit) || len(commit) != len(tip) {
 		return false, nil
 	}
 	// --git-dir, as Git does, so git neither looks above repo nor holds

@@ -471,11 +471,7 @@ func (idx *index) row(project string, k *export.Knot) row {
 		r.Chips = append(r.Chips, chip{"", "claimed by " + k.Claim.By})
 	}
 	if k.State == "blocked" {
-		if len(k.WaitingOn) > 0 {
-			r.Chips = append(r.Chips, chip{"blocked", "waits on " + idx.waitsOn(k.WaitingOn)})
-		} else {
-			r.Chips = append(r.Chips, chip{"blocked", "waits on " + unpublishedKnot})
-		}
+		r.Chips = append(r.Chips, chip{"blocked", "waits on " + idx.waitsOn(k.WaitingOn, k.WaitingOnHidden)})
 	}
 	if k.Progress != nil && k.Progress.Of > 0 {
 		r.Chips = append(r.Chips, chip{"quiet", strconv.Itoa(k.Progress.Done) + "/" + strconv.Itoa(k.Progress.Of)})

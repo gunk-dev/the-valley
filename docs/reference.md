@@ -1909,7 +1909,10 @@ compact JSON ending with a newline.
   written. The corresponding entry in `edges` has `"state": "hidden"` and `null` for `why`,
   `status`, and `title`. The reference is removed from `waiting_on`, `cleared_by_ending`,
   `dangling`, and `unresolved`, because those lists reflect the hidden knot's status. The referring
-  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it.
+  knot's `state` and `ready` are unchanged, so a blocker in a hidden project still blocks it. A knot
+  that waits on one or more hidden knots carries `"waiting_on_hidden": true`, which says neither
+  which nor how many. Every other knot omits the field, so an export in which no knot waits on a
+  hidden knot holds none, and `export.Decode` reads an export without it.
 - **Refusals (`export.Build`):** `export.Build` fails rather than build a partial export. It fails
   when a public project is missing or has an `error` in the plan or the pending listing, or when a
   knot in a public project is missing its detail, appears twice, or has no `body`. It fails with
@@ -2401,8 +2404,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   - A `target` that names only an unpublished project is shown as "an unpublished project".
   - A `changes` link `valley:<project>/<change ID>` into an unpublished project is shown as "a
     change in an unpublished project".
-  - A tree row's "waits on" chip lists any unpublished blockers once, as "a knot in an unpublished
-    project".
+  - A tree row's "waits on" chip names the published knots in the knot's `waiting_on`. When the knot
+    also waits on knots of unpublished projects (`waiting_on_hidden`), the chip ends with "a knot in
+    an unpublished project", once, whatever their number. A blocked knot with no published blocker
+    shows that phrase alone.
 
   A `blocked_by` entry that names a missing knot in a public project still shows its reference text.
   It is marked "not found in its graph" when its edge is `dangling`, and "not found" otherwise.

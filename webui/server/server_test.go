@@ -219,7 +219,7 @@ func TestPlanPage(t *testing.T) {
 		"in progress, unclaimed",
 		"Readers browse the app&#39;s plan", "1 of 5 done",
 		"Unfiled", "Render Markdown in a later slice",
-		"waits on oc-a000002",
+		`<span class="chip blocked">waits on oc-a000002, a knot in an unpublished project</span>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the plan page does not show %q", want)
@@ -258,6 +258,55 @@ func TestPlanPage(t *testing.T) {
 	page = h.page("/")
 	if !strings.Contains(page, `Collected 2026-10-25 12:00 UTC, 6 minutes ago <span class="chip stale">stale</span>`) {
 		t.Error("an export six minutes old is not marked stale")
+	}
+}
+
+// A blocked knot's chip names the published knots it waits on, and says
+// once that it also waits on unpublished work, naming nothing of it:
+// oc-a000003 waits on oc-a000002 and on a knot of the hidden site, which
+// the export leaves out of waiting_on and marks with waiting_on_hidden.
+// A knot waiting on unpublished work alone says only that. An export
+// without the field, as v1 exports before it, is read, and its chip
+// names what waiting_on holds.
+func TestWaitsOnChip(t *testing.T) {
+	h := newHarness(t)
+	chip := func(text string) string { return `<span class="chip blocked">waits on ` + text + `</span>` }
+	cases := []struct {
+		name   string
+		change func(*export.Knot)
+		want   string
+	}{
+		{"a published and an unpublished blocker", func(*export.Knot) {}, "oc-a000002, a knot in an unpublished project"},
+		{"two published blockers and an unpublished one", func(k *export.Knot) { k.WaitingOn = append(k.WaitingOn, "oc-a000006") },
+			"oc-a000002, oc-a000006, a knot in an unpublished project"},
+		{"an unpublished blocker alone", func(k *export.Knot) { k.WaitingOn = []string{} }, "a knot in an unpublished project"},
+		{"an export without waiting_on_hidden", func(k *export.Knot) { k.WaitingOnHidden = false }, "oc-a000002"},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h.publish(exporttest.SignedAt.Add(time.Duration(i+1)*time.Minute), nil, func(e *export.Export) {
+				for j := range e.Projects[0].Knots {
+					if k := &e.Projects[0].Knots[j]; k.ID == "oc-a000003" {
+						if !k.WaitingOnHidden {
+							t.Fatal("the fixture's oc-a000003 does not carry waiting_on_hidden")
+						}
+						c.change(k)
+					}
+				}
+			})
+			page := h.page("/")
+			if !strings.Contains(page, chip(c.want)) {
+				t.Errorf("the plan page does not show %q:\n%s", chip(c.want), section(t, page, `id="ms-h"`, "</body>"))
+			}
+			if n := strings.Count(page, `<span class="chip blocked">`); n != 1 {
+				t.Errorf("the plan page shows %d blocked chips", n)
+			}
+			for _, unwanted := range unpublishedText {
+				if strings.Contains(page, unwanted) {
+					t.Errorf("the plan page holds %q", unwanted)
+				}
+			}
+		})
 	}
 }
 

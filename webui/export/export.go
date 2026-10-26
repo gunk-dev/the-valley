@@ -78,9 +78,14 @@ type Knot struct {
 
 	// State is valley-plan/v1's: ready, in-progress, blocked, active,
 	// done or abandoned.
-	State           string    `json:"state"`
-	Ready           bool      `json:"ready"`
-	WaitingOn       []string  `json:"waiting_on"`
+	State     string   `json:"state"`
+	Ready     bool     `json:"ready"`
+	WaitingOn []string `json:"waiting_on"`
+	// WaitingOnHidden is set when the knot also waits on one or more
+	// knots of projects the export does not hold, which WaitingOn leaves
+	// out. It says neither which nor how many. An export with no such
+	// knot omits it everywhere, as v1 exports before it did.
+	WaitingOnHidden bool      `json:"waiting_on_hidden,omitempty"`
 	ClearedByEnding []string  `json:"cleared_by_ending"`
 	Dangling        []string  `json:"dangling"`
 	Unresolved      []string  `json:"unresolved"`

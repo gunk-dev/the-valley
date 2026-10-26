@@ -7,7 +7,8 @@
 }:
 {
   # The projection over the shared fixture, which holds every disclosure
-  # rule: what reaches export.json, hidden projects' edges, the display
+  # rule: what reaches export.json, hidden projects' edges, a knot that
+  # waits on a hidden knot marked with waiting_on_hidden alone, the display
   # mapping. The content digest; strict reading of export.json, with
   # nothing after its document; each of VerifyManifest's steps, in order;
   # the manifest's grammar and its agreement with export.json; the
@@ -30,7 +31,9 @@
   # legend, its one card of ready changes, and the export's age, marked
   # stale after five minutes; a knot's body and comments, with the edited
   # one marked; a hidden project answering every route exactly as a
-  # missing one, though its repository is in the generation; projects
+  # missing one, though its repository is in the generation; a blocked
+  # knot's chip naming its published blockers and, once, unpublished
+  # work; projects
   # named source, knots and web-export served on every route, and their
   # roots redirected to their trees, while the server's own paths under
   # /-/ are never a project's; a commit

@@ -55,7 +55,8 @@ func knotOf(t *testing.T, e *export.Export, id string) export.Knot {
 
 // A reference to the hidden project's knot keeps only the reference. It
 // still holds its knot up: a knot it blocks stays blocked, and is never
-// shown as free to start.
+// shown as free to start. A knot that waits on it says so with
+// waiting_on_hidden alone, and no other knot carries the field.
 func TestBuildHidesForeignEdges(t *testing.T) {
 	f := exporttest.New(t)
 	k := knotOf(t, f.Export, "oc-a000003")
@@ -68,6 +69,17 @@ func TestBuildHidesForeignEdges(t *testing.T) {
 	}
 	if slices.Contains(k.WaitingOn, "site:oc-b000001") || !slices.Contains(k.WaitingOn, "oc-a000002") {
 		t.Errorf("waiting_on is %v; it keeps the local blocker and drops the hidden one", k.WaitingOn)
+	}
+	if !k.WaitingOnHidden {
+		t.Error("waiting_on_hidden is not set on the knot that waits on a hidden knot")
+	}
+	for _, other := range f.Export.Projects[0].Knots {
+		if other.ID != k.ID && other.WaitingOnHidden {
+			t.Errorf("%s carries waiting_on_hidden, and waits on no hidden knot", other.ID)
+		}
+	}
+	if n := strings.Count(string(f.ExportJSON), `"waiting_on_hidden"`); n != 1 {
+		t.Errorf("export.json holds waiting_on_hidden %d times, not once", n)
 	}
 	if k.State != "blocked" || k.Ready {
 		t.Errorf("the knot is %s, ready %v; it stays blocked", k.State, k.Ready)
@@ -100,6 +112,9 @@ func TestBuildKeepsEdgesBetweenExportedProjects(t *testing.T) {
 	}
 	if !slices.Contains(knotOf(t, e, "oc-a000003").WaitingOn, "site:oc-b000001") {
 		t.Error("waiting_on dropped an exported project's blocker")
+	}
+	if knotOf(t, e, "oc-a000003").WaitingOnHidden {
+		t.Error("waiting_on_hidden is set for a blocker in an exported project")
 	}
 }
 
@@ -332,6 +347,9 @@ func TestDigest(t *testing.T) {
 		"a source tip": func(e *export.Export) { e.Projects[0].SourceTip = strings.Repeat("a", 40) },
 		"a claim's at": func(e *export.Export) { e.Projects[0].Knots[1].Claim.At = "2026-10-25T11:00:00Z" },
 		"a comment":    func(e *export.Export) { e.Projects[0].Knots[1].Comments[0].Body += "." },
+		"waiting on a hidden knot": func(e *export.Export) {
+			e.Projects[0].Knots[0].WaitingOnHidden = !e.Projects[0].Knots[0].WaitingOnHidden
+		},
 	}
 	for name, change := range differs {
 		e := reread()

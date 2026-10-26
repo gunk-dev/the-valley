@@ -2783,6 +2783,20 @@ Checked by `webui-server-unit`, whose `TestResolveSharesOneBudget`, `TestLogSkip
 history past 10,000 commits, a git that never finishes, and a SHA-256 project. Also by `webui-unit`,
 whose `TestAcceptBundle` and `TestReachable` check the commit-graph and both object formats.
 
+### Unpublished blockers
+
+The export holds a knot's references into projects it does not export only where they say nothing of
+the referred knot's status (`webui/export/project.go`). It drops them from `waiting_on`, which lists
+the blockers still open. A knot blocked by an unpublished knot keeps its `blocked` state, but its
+`waiting_on` then names only the published knots it waits on. So the export marks such a knot with
+`waiting_on_hidden`, which says that it also waits on unpublished work and nothing more: not which
+knots, and not how many. The plan page's chip for the knot ends with "a knot in an unpublished
+project" (`webui/server/knot.go`).
+
+Checked by `webui-unit`, whose `TestBuildHidesForeignEdges` finds the field on the fixture's one
+knot that waits on a hidden knot, and by `webui-server-unit`, whose `TestWaitsOnChip` shows that
+knot's chip naming its published blocker and the unpublished one.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors

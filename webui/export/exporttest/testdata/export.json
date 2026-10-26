@@ -115,6 +115,7 @@
           "waiting_on": [
             "oc-a000002"
           ],
+          "waiting_on_hidden": true,
           "cleared_by_ending": [],
           "dangling": [],
           "unresolved": [],

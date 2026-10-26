@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -284,6 +285,7 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 	// A reference to another project's knot is hidden when that project
 	// is not exported. Each list of the view a hidden reference appears in
 	// says something of the knot's status, so it is dropped from them all.
+	// A knot that waits on a hidden knot says only that it does.
 	hidden := func(ref string) bool {
 		project, _, qualified := strings.Cut(ref, ":")
 		return qualified && !exported[project]
@@ -313,10 +315,11 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 			Owner: shown(k.Owner), BlockedBy: nonNil(k.BlockedBy), Changes: nonNil(k.Changes),
 			Target: k.Target, GraduatedInto: k.GraduatedInto,
 			State: k.State, Ready: k.Ready,
-			WaitingOn: drop(k.WaitingOn, hidden), ClearedByEnding: drop(k.ClearedByEnding, hidden),
-			Dangling: drop(k.Dangling, hidden), Unresolved: drop(k.Unresolved, hidden),
-			Children: nonNil(k.Children), Blocks: nonNil(k.Blocks), Progress: k.Progress,
-			Edges: []Edge{}, Body: *d.Knot.Body, Comments: []Comment{}, CommentCount: k.CommentCount,
+			WaitingOn: drop(k.WaitingOn, hidden), WaitingOnHidden: slices.ContainsFunc(k.WaitingOn, hidden),
+			ClearedByEnding: drop(k.ClearedByEnding, hidden), Dangling: drop(k.Dangling, hidden),
+			Unresolved: drop(k.Unresolved, hidden), Children: nonNil(k.Children), Blocks: nonNil(k.Blocks),
+			Progress: k.Progress, Edges: []Edge{}, Body: *d.Knot.Body, Comments: []Comment{},
+			CommentCount: k.CommentCount,
 		}
 		if k.Claim != nil {
 			c := *k.Claim

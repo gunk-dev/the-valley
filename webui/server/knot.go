@@ -209,24 +209,29 @@ func (idx *index) change(link string) string {
 	return link
 }
 
-// waitsOn is the knots a blocked knot waits on, as a tree row names them.
-// The knots of projects the export does not hold as public are named once,
-// as unpublished.
-func (idx *index) waitsOn(refs []string) string {
+// waitsOn is the knots a blocked knot waits on, as a tree row names them:
+// refs, and, when hidden is set, the knots of unpublished projects the
+// export left out of refs. Those, and any of refs into a project the
+// export does not hold as public, are named once, as unpublished, after
+// the others. A blocked knot that waits on nothing refs names waits on
+// something unpublished, so it is named so too, as it is from an export
+// that does not carry waiting_on_hidden.
+func (idx *index) waitsOn(refs []string, hidden bool) string {
 	var out []string
-	hidden := false
+	named := false
 	for _, ref := range refs {
 		idx.checkBuild()
 		if other, _, ok := strings.Cut(ref, ":"); ok {
 			if _, public := idx.project(other); !public {
-				if !hidden {
-					out = append(out, unpublishedKnot)
-				}
 				hidden = true
 				continue
 			}
 		}
 		out = append(out, ref)
+		named = true
+	}
+	if hidden || !named {
+		out = append(out, unpublishedKnot)
 	}
 	return strings.Join(out, ", ")
 }

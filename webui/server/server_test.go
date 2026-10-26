@@ -81,7 +81,8 @@ func (h *harness) page(target string) string {
 func (h *harness) tip() string { return h.f.Export.Projects[0].SourceTip }
 
 // publish activates a new generation, signed at: the fixture's export
-// changed by change, with the bundles given in place of the fixture's.
+// changed by change, with the bundles given, by project, in place of the
+// fixture's.
 func (h *harness) publish(at time.Time, bundles map[string]string, change func(*export.Export)) export.Generation {
 	t := h.t
 	t.Helper()
@@ -95,11 +96,10 @@ func (h *harness) publish(at time.Time, bundles map[string]string, change func(*
 		t.Fatal(err)
 	}
 	paths := map[string]string{}
-	for name, path := range h.f.Bundles {
-		paths[name] = path
-	}
-	for name, path := range bundles {
-		paths[name] = path
+	for _, p := range e.Projects {
+		if paths[p.Name] = bundles[p.Name]; paths[p.Name] == "" {
+			paths[p.Name] = h.f.Bundles[p.Name]
+		}
 	}
 	bodies := map[string]export.Body{}
 	for name, path := range paths {
@@ -354,6 +354,8 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 	siteTip := git(t, h.f.Repos["site"], nil, "rev-parse", export.MainRef)
 	notFound := h.get("/app/knots/oc-fffffff")
 	for _, route := range []string{
+		"/%s",
+		"/%s/",
 		"/%s/knots/oc-b000001",
 		"/%s/source",
 		"/%s/source/",
@@ -373,6 +375,46 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 		if !bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) || !bytes.Equal(hidden.Body.Bytes(), notFound.Body.Bytes()) {
 			t.Errorf("%s answered with another page hidden than missing", route)
 		}
+	}
+}
+
+// A project's name may be any word the server's routes use: source,
+// knots, or web-export, the receiver's first segment. Each such project
+// is served on every route, and /<project>/ redirects to its tree. The
+// server's own paths, under /-/, are never a project's.
+func TestProjectNamesBesideTheServersPaths(t *testing.T) {
+	for _, name := range []string{"source", "knots", "web-export"} {
+		t.Run(name, func(t *testing.T) {
+			h := newHarness(t)
+			h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{name: h.f.Bundles["app"]},
+				func(e *export.Export) { e.Projects[0].Name = name })
+			tip := h.tip()
+			tree := "/" + name + "/source/tree/" + tip + "/"
+			if plan := h.page("/"); !strings.Contains(plan, `href="/`+name+`/knots/oc-a000002"`) {
+				t.Errorf("the plan page does not link %s's knots", name)
+			}
+			for _, target := range []string{
+				"/" + name + "/knots/oc-a000002",
+				tree,
+				"/" + name + "/source/blob/" + tip + "/docs/guide.md",
+				"/" + name + "/source/log/" + tip,
+			} {
+				h.page(target)
+			}
+			for _, target := range []string{"/" + name + "/", "/" + name, "/" + name + "/source/"} {
+				if w := h.get(target); w.Code != http.StatusFound || w.Header().Get("Location") != tree {
+					t.Errorf("GET %s answered %d to %q, not a redirect to %s", target, w.Code, w.Header().Get("Location"), tree)
+				}
+			}
+			for _, target := range []string{
+				"/-", "/-/", "/-/" + name + "/", "/-/knots/oc-a000002", "/-/source/tree/" + tip + "/",
+				"/-/" + name + "/source/tree/" + tip + "/", "/app/", "/site/", "/site",
+			} {
+				if w := h.get(target); w.Code != http.StatusNotFound {
+					t.Errorf("GET %s answered %d, not 404", target, w.Code)
+				}
+			}
+		})
 	}
 }
 

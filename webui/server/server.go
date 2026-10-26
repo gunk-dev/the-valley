@@ -50,11 +50,18 @@
 // The server answers GET and HEAD alone:
 //
 //	/                                       the plan page
+//	/<project>/                             a redirect to the tree at main's tip
 //	/<project>/knots/<id>                   one knot, with its body and comments
 //	/<project>/source/                      a redirect to the tree at main's tip
 //	/<project>/source/tree/<commit>/<path>  a directory and its README
 //	/<project>/source/blob/<commit>/<path>  a file
 //	/<project>/source/log/<commit>          the history that ends at a commit
+//	/-/...                                  the server's own paths
+//
+// Every path but / and those under /-/ starts with a project's name. No
+// project name starts with "-", so no project's path is ever one of the
+// server's own, whatever paths the server adds there. It serves no page
+// under /-/, and answers each path there with the one 404.
 //
 // Every source link names its project, a full commit ID and a path. A
 // commit is served only when export.Reachable finds it reachable from the
@@ -323,9 +330,10 @@ func (q *request) serve() {
 }
 
 // runsGit reports whether a path is a source route that reads a
-// repository: a tree, a file or a log.
+// repository: a tree, a file or a log of something that may be a project.
 func runsGit(parts []string) bool {
-	return len(parts) >= 3 && parts[1] == "source" && (parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
+	return len(parts) >= 3 && export.ValidName(parts[0]) && parts[1] == "source" &&
+		(parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
 }
 
 // admit takes a git slot for a source request. When every slot is taken,
@@ -608,6 +616,10 @@ func (q *request) route(parts []string, ok bool) {
 		q.notFound()
 	case len(parts) == 1 && parts[0] == "":
 		q.plan()
+	case parts[0] == own:
+		q.notFound()
+	case len(parts) == 1, len(parts) == 2 && parts[1] == "":
+		q.home(parts[0])
 	case len(parts) == 3 && parts[1] == "knots":
 		q.knot(parts[0], parts[2])
 	case len(parts) >= 2 && parts[1] == "source":
@@ -615,6 +627,21 @@ func (q *request) route(parts []string, ok bool) {
 	default:
 		q.notFound()
 	}
+}
+
+// own is the first segment of the server's own paths, /-/. No project's
+// name can be it, or start with it.
+const own = "-"
+
+// home answers /<project>/, and /<project>, with a redirect to the
+// project's page: the tree at its published tip, with its README.
+func (q *request) home(project string) {
+	p, ok := q.project(project)
+	if !ok {
+		q.notFound()
+		return
+	}
+	q.redirect(treeURL(p.Name, p.SourceTip, nil))
 }
 
 func segments(escaped string) ([]string, bool) {

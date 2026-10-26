@@ -2728,6 +2728,18 @@ Checked by `webui-server-unit`, whose `TestServesAReadOnlyStateDirectory` runs `
 state directory that reads as another user's: nothing in it is writable, and git takes its
 repositories to be another user's.
 
+### Paths
+
+A project's name is the first segment of every path that shows it: `/app/knots/<id>`,
+`/app/source/…`. So the server's own paths share one space with every name a project may take. The
+server keeps them under the prefix `/-/`, because no project name can start with `-`
+(`webui/server/server.go`). A path the server adds under `/-/` never shadows a project, and no
+project shadows it, whatever the projects are named. The plan page, `/`, is the one path outside
+both.
+
+Checked by `webui-server-unit`, whose `TestProjectNamesBesideTheServersPaths` serves projects named
+`source`, `knots` and `web-export` on every route, and answers `404` under `/-/`.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors

@@ -28,7 +28,10 @@
   # legend, its one card of ready changes, and the export's age, marked
   # stale after five minutes; a knot's body and comments, with the edited
   # one marked; a hidden project answering every route exactly as a
-  # missing one, though its repository is in the generation; a commit
+  # missing one, though its repository is in the generation; projects
+  # named source, knots and web-export served on every route, and their
+  # roots redirected to their trees, while the server's own paths under
+  # /-/ are never a project's; a commit
   # main's tip does not reach, and every other object ID or name, refused
   # with the one 404; hostile README, file, file name, commit subject and
   # knot text rendered inert, and large and binary files not shown; a

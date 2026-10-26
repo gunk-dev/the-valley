@@ -707,7 +707,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--instance <name>`: The instance the manifest names. The export key signs under
       `<name>/web-export`.
     - `--destination <name>`: The receiver the manifest is for. It is also the destination of the
-      edge read boundary whose read grants decide what anyone may read there.
+      `edge-read` boundary whose read grants decide what `anyone` may read there.
     - `--receiver <url>`: The receiver's base URL, `http` or `https`, with no user, query, or
       fragment. The upload's paths are appended to it.
     - `--out <dir>`: Write the export to `<dir>` instead of uploading it. `<dir>` must not exist or
@@ -720,12 +720,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `$VALLEY_READ_SCHEMA`).
     - `--identity-schema <file>`: The identity registry schema, `schema/identity.cue` (default
       `$VALLEY_IDENTITY_SCHEMA`).
-    - `--registry-ref <ref>`: The ref of the instance repository whose tip carries the identity
-      registry, a full ref name (default `refs/heads/main`). The pass reads `<ref>` by that exact
-      name, once, and reads the registry at the commit it held. An instance repository with no
-      `<ref>` holds no registry, so every project is private. That holds even when the repository
-      has a ref that `git rev-parse` would take the name for, such as
-      `refs/heads/refs/heads/registry` for `refs/heads/registry`.
+    - `--registry-ref <ref>`: The full ref name in the instance repository whose tip carries the
+      identity registry (default `refs/heads/main`). The pass resolves `<ref>` once by that exact
+      name with `git show-ref` and reads the registry from the commit it points to. An instance
+      repository without `<ref>` has no registry, so every project is private, even if a branch with
+      a suffixed name such as `refs/heads/refs/heads/registry` exists.
     - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
@@ -739,11 +738,13 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     `1` when the pass failed, and `2` for invalid flags. A pass that fails sends and writes nothing.
 - **`valley-read-coverage`**
   ([`readaccess/cmd/valley-read-coverage/main.go`](../readaccess/cmd/valley-read-coverage/main.go)):
-  Lists the projects a principal cannot read at a destination, and which of the two consents each
-  lacks (see [Read policy](#read-policy-schemareadcue)). It reads the registry at the instance
-  repository's `--registry-ref` and each project's `policy/read` at its `main`, and changes nothing.
-  It is wrapped with this flake's `git` and `cue`, with `VALLEY_READ_SCHEMA` and
-  `VALLEY_IDENTITY_SCHEMA` set to the two schemas.
+  Evaluates the two read-access consents for `<principal>` at `<destination>` and lists each project
+  that lacks either consent (see [Read policy](#read-policy-schemareadcue)). It reads the registry
+  at the instance repository's `--registry-ref` and each project's `policy/read` at its `main`, and
+  modifies nothing. Named-principal grants are evaluated here even though `valley-web-publish`
+  exports only projects authorized for `anyone` and `valley-web` serves anonymously. It is wrapped
+  with this flake's `git` and `cue`, with `VALLEY_READ_SCHEMA` and `VALLEY_IDENTITY_SCHEMA` set to
+  the two schemas.
 
   ```sh
   valley-read-coverage --instance-repo /srv/git/valley.git --destination example.org --reader operator
@@ -757,20 +758,20 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
 
   - `valley-read-coverage --instance-repo <dir> --destination <name> --reader <principal> [--registry-ref <ref>] [--registry-dir <dir>] [--read-schema <file>] [--identity-schema <file>]`
     - `--instance-repo <dir>`: An absolute local path to the instance repository. Its
-      `refs/the-valley/projects` lists the projects. Each project's repository is beside it, named
+      `refs/the-valley/projects` lists the projects. Each project's repository sits beside it, named
       `<project>.git` when `<dir>` ends in `.git`, and `<project>` otherwise.
-    - `--reader <principal>`: The principal, or `anyone` for a reader with no credential.
-    - `--registry-ref`, `--registry-dir`, `--read-schema`, `--identity-schema`: As for
-      `valley-web-publish`. Give the same `--registry-ref` the host gives the identity compiler, so
-      the report reads the grants the publisher reads.
-  - Prints one line for each project the principal cannot read: `no project consent` when the
-    project has no `main`, no valid `policy/read`, or one that does not name the principal, and
-    `no instance grant` when no read grant of the principal at the destination covers the project
-    with the identity its policy declares. A project with no valid policy has no identity, so a
-    grant then counts when it covers every project or names the project. The last line says how many
-    projects the principal may read.
-  - Exits `0` when it read every project, whether or not any lacks a consent, `1` when it could not
-    read one, and `2` for invalid flags.
+    - `--reader <principal>`: The principal to check, or `anyone` for a reader with no credential.
+    - `--registry-ref`, `--registry-dir`, `--read-schema`, `--identity-schema`: Same as for
+      `valley-web-publish`. Pass the same `--registry-ref` that the host configures for the identity
+      compiler so the report reads the same registry ref as the publisher.
+  - Prints one line for each project where `<principal>` lacks a consent: `no project consent` when
+    the project has no `main`, no valid `policy/read`, or a `policy/read` that does not name
+    `<principal>`, and `no instance grant` when no read grant for `<principal>` at `<destination>`
+    covers the project with the identity its policy declares. If a project has no valid policy, it
+    has no identity, so a grant counts when it covers `"all"` or names the project. The final line
+    prints `<principal> may read <readable> of <total> projects at <destination>`.
+  - Exits `0` when it read every project (whether or not any project lacks a consent), `1` when a
+    repository or schema could not be read, and `2` for invalid flags.
 
 ---
 
@@ -982,10 +983,10 @@ services.valley.webPublisher = {
 | `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                    |
 
 The module also passes `services.valley.identity.ref` as `--registry-ref` and
-`services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry where
-the identity compiler does: in that directory, at that ref of the instance repository. With the
-publisher on, the host module requires the instance repository's `protection` to cover that ref, as
-it does with the compiler on (`implemented`, `nix/valley-host.nix`).
+`services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry from
+the same directory and ref in the instance repository as the identity compiler. When the publisher
+is enabled, the host module requires the instance repository's `protection` to cover that ref, just
+as it does when the identity compiler is enabled (`implemented`, `nix/valley-host.nix`).
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
@@ -1917,9 +1918,9 @@ compact JSON ending with a newline.
 
 - **What is exported:** Visibility is set per project. A project is exported only when its
   visibility is `public`, the only visibility value in v1. Projects omitted from the visibility map
-  are not exported. The publisher puts a project in the map when anyone may read it at the
-  destination (see [Read policy](#read-policy-schemareadcue)). Every knot and every comment of an
-  exported project is included.
+  are not exported. The publisher includes a project in the map when both consents authorize
+  `anyone` to read it at the destination (see [Read policy](#read-policy-schemareadcue)). Every knot
+  and every comment of an exported project is included.
 - **Top-level fields:** `schema` (`"valley-web-export/v1"`), `collected` (`string`, the plan's
   `now`), and `projects` (sorted by project name).
 - **`projects[]` fields:**
@@ -2183,45 +2184,52 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   at step 3 fails the pass, because it names another instance. Two instances can serve projects of
   the same name, and the pass reads only the one given.
 
-- **Visibility:** A project is public when anyone may read it at the destination: its own
-  `policy/read` names `anyone`, and a read grant to `anyone` at an edge read boundary for
+- **Visibility:** A project is public when `anyone` may read it at the destination: its own
+  `policy/read` names `anyone`, and a read grant to `anyone` at an `edge-read` boundary for
   `--destination` covers the project with the identity its policy declares. Every other project is
-  private: one no grant to `anyone` covers, one with no `main`, one with no `policy/read`, one whose
-  policy `schema/read.cue` refuses or that names another project, and one whose policy does not name
-  `anyone`. A refused policy is said on `stderr`. A missing or refused registry makes every project
-  private, and the pass uploads an export with no project. Grants to named principals, the
-  operator's among them, publish nothing: the edge serves anyone alone.
-- **Read failures:** A failure to read is not a private project. The pass fails, and sends and
-  writes nothing, when the instance repository or its project list cannot be fetched, when a listing
-  names other projects than the instance publishes, as the CLI's listing of its own repository alone
-  does when discovery fails, or when either schema does not load. It fails the same way for a
-  project a grant to `anyone` names when the pending listing could not read it or gives no URL for
-  it, when its `main` cannot be fetched, or when git or `cue` cannot be run over its policy. A `cue`
-  run that does not finish fails the pass, over the registry or a project's policy: one that cannot
-  be started, is killed, exits with any status but 1, or runs longer than a minute. `export.Build`
-  refuses a public project that the plan could not read. An export without such a project would take
-  it off the web.
-- **Reading a policy or the registry:** The pass reads them through
-  [`readaccess`](../readaccess/read.go). It reads the `*.cue` files directly in the directory of the
-  commit, `policy/read/` or `--registry-dir`, as regular files only, with `git ls-tree` and
-  `git cat-file`, never a checkout. A directory with an entry whose name has a directory part, is
-  `.` or `..`, or appears twice is refused before any file is copied out. The pass copies the files
-  into a scratch directory with no `cue.mod`, so `cue` resolves no import beyond its standard
-  library, and runs `cue export --out json` with the schema and the files. `CUE_*` variables are
-  removed from `cue`'s environment. A document is refused when `cue` exits with status 1, which is
-  how `cue` reports an error in what it was given. The exported JSON is then held to the schema's
-  fields, names and identities again, so a document that declares a schema definition again widens
-  nothing. A policy with more than 32 files, a file over 64 KiB or more than 1 MiB of exported JSON
-  is refused too, and so is a registry with more than 64 files, a file over 1 MiB or more than 8 MiB
-  of exported JSON. Before it reads either, the pass runs `cue vet -c=false` over each schema alone,
-  and fails when that fails.
-- **Output bounds:** The pass holds at most 64 MiB of what a `valley` command prints, 4 MiB of what
-  a `git` command prints, and what `cue` may export for a policy or the registry. A command that
-  prints more fails the pass, except `cue`, whose document is then refused. What a command prints on
-  `stderr` is kept to its first 64 KiB.
-- **Consistent reads:** `export.Build` fails with `export.ErrInconsistent` when a knot's detail was
-  read at another graph tip than the plan. The pass then reads the valley again, from step 4 with
-  the instance step 3 fetched, up to three reads in all, and fails when every read was inconsistent.
+  private: one that no grant to `anyone` covers, one with no `main`, one with no `policy/read`, one
+  whose policy `schema/read.cue` rejects or that names another project, and one whose policy omits
+  `anyone`. An invalid policy or registry is reported on `stderr`. A missing or invalid registry
+  makes every project private, so the pass builds an empty export. Grants to named principals,
+  including the operator, publish nothing, and `valley-web` serves all requests anonymously.
+- **Read failures:** A failure to read aborts the pass before it writes or sends anything. The pass
+  fails if either schema fails to load, if the instance repository or its project list cannot be
+  fetched, or if `valley plan` or `valley pending` lists a different set of projects than
+  `refs/the-valley/projects` (which happens when project discovery falls back to the pointer
+  repository alone). For any project selected by a read grant to `anyone`, the pass also fails if
+  the pending listing reports a read error or gives no URL, if `main` cannot be fetched, or if `git`
+  or `cue` fails to run on its `policy/read`. When reading the registry or a project policy, any
+  `cue` failure other than exit status 1 — failing to start, crashing, being killed, or exceeding
+  the 1-minute timeout — aborts the pass. `export.Build` also fails if the plan listing could not
+  read a public project, so a transient read error never drops a public project from the export.
+- **Reading a policy or the registry:** Before reading any document, the pass runs
+  `cue vet -c=false` on each schema file alone and fails if either schema does not load. It then
+  reads documents through [`readaccess`](../readaccess/read.go). It walks the path in the commit
+  (`policy/read/` or `--registry-dir`) with `git ls-tree` and reads each regular `*.cue` file with
+  `git cat-file`, without a checkout. If a directory entry's name contains a slash, is `.` or `..`,
+  or appears twice, the document is invalid and no files are copied. Otherwise, the reader writes
+  the files into a temporary directory with no `cue.mod` (so `cue` resolves only standard-library
+  imports), strips `CUE_*` environment variables, and runs `cue export --out json` with the schema
+  and the files. A document is invalid if `cue` exits with status 1. After `cue export` succeeds,
+  the Go reader validates the exported JSON against the expected struct fields (matching
+  case-sensitively and rejecting duplicate keys) so a document that redeclares a schema definition
+  cannot add extra fields where the reader decodes structs. For `policy/read`, the reader rechecks
+  every field, the project name, the publication identity, and every reader name. For the registry,
+  it rechecks `boundaries`, `principals` metadata and `grants`, `anyone`, `genesis`, and each
+  `edge-read` grant's `projects` scope, while leaving subtrees that read grants do not use (`keys`,
+  `external`, `genesisGovernance`, `externalGovernance`, `readScopes`, and `projects` on
+  non-`edge-read` grants) as raw JSON validated by `cue`. A policy is also invalid if it has more
+  than 32 files, a file over 64 KiB, or more than 1 MiB of exported JSON; a registry is invalid if
+  it has more than 64 files, a file over 1 MiB, or more than 8 MiB of exported JSON.
+- **Output bounds:** The pass caps stdout at 64 MiB for `valley` commands, 4 MiB for `git` commands
+  and `cue vet`, 1 MiB for `cue export` on a read policy, and 8 MiB for `cue export` on the
+  registry. Exceeding a cap aborts the pass, with two exceptions in `readaccess`: `git ls-tree`
+  output over 4 MiB or `cue export` output over the document's limit marks that policy or registry
+  document invalid instead. Stderr from any command is truncated to its first 64 KiB.
+- **Consistent reads:** `export.Build` returns `export.ErrInconsistent` when a knot's detail was
+  read at a different graph tip than the plan. When that happens, the pass retries from step 5,
+  reusing the instance commit and project list fetched in step 3 and the read grants read in step 4,
+  for up to three attempts in total. If all three attempts are inconsistent, the pass fails.
 - **Bundles:** Each public project's bundle is what `git bundle create - refs/heads/main` prints in
   its mirror. The pass writes it to a temporary file, and keeps it as
   `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A bundle is made once
@@ -2243,13 +2251,14 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
     storage again before installing the replacement and removes partial replacements on failure.
   - The pointer repository is built in memory and staged within the same storage budget. Collection
     reserves room for the CLI’s ref metadata before each command and checks storage afterward.
-  - Before collection, the publisher reads the read grants, stages a CLI cache for each project a
-    read grant to `anyone` names, and removes every other CLI cache. During each CLI command, the
-    cache parent is read-only. Existing caches remain usable, but discovery and foreign knot
-    references cannot create unstaged caches. So the CLI lists a project no grant names as one it
-    could not read, and never reads that project's repository. Such a project is private, and one
-    that cannot be read fails no pass. The next pass restores write access before staging, including
-    after an interrupted command.
+  - Before collection, the publisher reads the read grants, stages a CLI cache for each project
+    selected by a read grant to `anyone`, and removes all other CLI caches. During each CLI command,
+    the cache parent directory is made read-only (`0500`). Existing caches remain usable, while
+    project discovery and foreign knot references cannot create unstaged caches. The CLI therefore
+    reports unselected projects as unreadable without touching their repositories, and the publisher
+    treats them as private; an unreadable repository for an unselected project never fails a pass.
+    The next pass restores write permissions on the cache parent before staging, including after an
+    interrupted run.
 
   A pass that fails on a bound sends and writes nothing.
 
@@ -2699,10 +2708,12 @@ compose under their own packaged copy. A tool with an older schema refuses a pol
 ### Read policy (`schema/read.cue`)
 
 [`schema/read.cue`](../schema/read.cue) (`package read`) defines a project's consent to read access,
-which the project keeps in `policy/read/*.cue` on its `main`. Read access takes two consents: this
-policy, and a read grant in the instance's identity registry
-([Identity registry](#identity-registry-schemaidentitycue)). A principal may read a project only
-where both say so.
+stored in `policy/read/*.cue` on the project's `main`. `readaccess` evaluates two consents: this
+policy and a read grant in the instance's identity registry
+([Identity registry](#identity-registry-schemaidentitycue)). A principal is authorized in
+`readaccess` only when both consents match. Today, `valley-web-publish` exports only projects
+authorized for `anyone`, `valley-web` serves all requests anonymously, and grants to named
+principals publish nothing.
 
 ```cue
 // policy/read/read.cue in app
@@ -2734,30 +2745,38 @@ cue vet -c schema/read.cue policy/read/*.cue
 | `readers`        | `close({[#Principal]: true})`      | Required. The set of principals the project lets read it, by the principal-name rule. `{}` lets no one read. A key that is not a principal name is refused. |
 | Top-level fields | `project`, `identity`, `readers`   | Any other top-level field conflicts with a sentinel string and fails vet, naming the field.                                                                 |
 
-- **Two consents:** A principal may read a project when the project's `readers` names it, and a read
-  grant of the principal at an edge read boundary covers the project. A grant covers a project when
-  its `projects` is `"all"`, or names the project with the identity its `policy/read` declares. A
-  policy or registry that is missing, or that its schema refuses, consents to nothing.
-- **`anyone`:** `anyone` is the reader who presents no credential. A project is public at a
-  destination when both consents let `anyone` read it there.
-- **No principal is special:** The operator reads a project as any named reader does: the project's
-  `readers` names the operator, and a grant covers the project. The policy a new project starts
-  from, [`examples/policy/read/new-project/read.cue`](../examples/policy/read/new-project/read.cue),
-  names the operator alone. Copying it is a `deployment choice`. `valley-read-coverage` lists the
-  projects a principal lacks either consent for (see the host helpers in the
+- **Two consents:** `readaccess` authorizes a principal for a project at a destination when the
+  project's `readers` names that principal and a read grant for that principal at an `edge-read`
+  boundary for that destination covers the project. A grant covers a project when its `projects` is
+  `"all"`, or when it maps the project's name to the `identity` declared in the project's
+  `policy/read`. Only authorization for `anyone` causes `valley-web-publish` to export a project;
+  named grants publish nothing, and `valley-web` serves anonymously. A missing or invalid policy or
+  registry consents to nothing.
+- **`anyone`:** `anyone` represents a reader who presents no credential. A project is public at a
+  destination when both consents authorize `anyone` there.
+- **Named principals and the operator:** The schema and `readaccess` evaluate every named principal
+  the same way, including the operator: the project's `readers` must name the principal and an
+  instance grant must cover the project. Named grants publish nothing today, and `valley-web`
+  authenticates no reader (`not built`). The starter policy for a new project,
+  [`examples/policy/read/new-project/read.cue`](../examples/policy/read/new-project/read.cue), names
+  only `operator`; copying it is a `deployment choice`. `valley-read-coverage` reports which
+  projects lack either consent for a given principal (see the host helpers in the
   [CLI reference](#cli-reference)).
-- **Identity:** A grant that names a project names its identity too. A new project that reuses a
-  name, with an identity of its own, is not covered by what the instance granted the old one. A
-  policy read from another project than the one it names is refused.
-- **Redeclared definitions:** A policy may declare a definition of the schema's again, and `cue`
-  unifies the two. That can reopen a closed definition. `readers` is closed by `close`, which no
-  declaration reopens, and the reader in `readaccess` holds the exported JSON to the schema's fields
-  and names again.
+- **Identity:** A grant that names a specific project binds both its name and its `identity`. If a
+  new project reuses an old project's name with a new identity, grants for the old identity do not
+  cover it. A policy whose `project` field does not match the repository it was read from is
+  invalid.
+- **Redeclared definitions:** In CUE, a policy file can redeclare a schema definition, and
+  unification can reopen a closed struct. `readers` is closed with `close()`, which a redeclaration
+  cannot reopen, and the Go reader in `readaccess` rechecks the exported JSON's fields, project
+  name, identity, and reader names.
 - **Beside the verification policy:** `policy/read/` sits beside `policy/instance/` and
   `policy/project/`. Those two directories are verification-policy layers, whose top level
   `schema/verification.cue` closes to its own fields.
-- **the-valley's own:** [`policy/read/read.cue`](../policy/read/read.cue) lets `anyone` and the
-  operator read the-valley (`deployment choice`).
+- **the-valley's own:** [`policy/read/read.cue`](../policy/read/read.cue) declares this repository's
+  project consent for `anyone` and `operator` (`deployment choice`). Publishing or authorizing read
+  at an edge still requires a matching `edge-read` grant in the hosting instance's identity
+  registry.
 
 ### Attestation statement (`schema/attestation.cue`)
 
@@ -2797,10 +2816,10 @@ cue vet -c schema/identity.cue examples/identity/registry/*.cue
 
 | Definition / field                 | Type / default                                | Rules                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | :--------------------------------- | :-------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `boundaries.<name>` (`#Boundary`)  | `[#Name]: #Boundary`                          | Enforcement boundaries run by the instance (`#Name`: `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"`). Every boundary has `kind: "git-push" \| "registry" \| "approve" \| "request" \| "restack" \| "edge-read"`. A boundary of kind `edge-read` names its `destination: #Name`, and no other boundary names one (`readScopes`). Every `boundary` referenced by a grant must exist in `boundaries`.                                                                                                                                                                                                                                                                                                                                                                                              |
-| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`                         | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [#Key, ...#Key]`, `grants: [#Name]: #Grant` (`{ boundary: #Name, projects?: #Scope }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`. No principal is named `anyone`.                                                                                                                                                                                                                                                                                                                                                                    |
-| `#Scope`                           | `"all" \| close({[#ProjectName]: #Identity})` | The projects a read grant covers: every project, or each project's name with the publication identity its `policy/read` declares ([Read policy](#read-policy-schemareadcue)). `{}` covers no project. A grant at an `edge-read` boundary names `projects`, and no other grant does (`readScopes`).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `anyone` (`#Anyone`)               | `{ grants: [#Name]: #Grant }`                 | Optional. The read grants of the reader who presents no credential. `anyone` holds no key, no external identity and no expiry, holds grants at `edge-read` boundaries alone (`readScopes`), and is never `genesis`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| `boundaries.<name>` (`#Boundary`)  | `[#Name]: #Boundary`                          | Enforcement boundaries run by the instance (`#Name`: `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"`). Every boundary has `kind: "git-push" \| "registry" \| "approve" \| "request" \| "restack" \| "edge-read"`. A boundary of kind `edge-read` requires `destination: #Name`, and boundaries of other kinds forbid it (`readScopes`). Every `boundary` referenced by a grant must exist in `boundaries`.                                                                                                                                                                                                                                                                                                                                                                                       |
+| `principals.<name>` (`#Principal`) | `[#Name]: #Principal`                         | Named principals: `kind: "human" \| "machine" \| "service"`, `keys: [#Key, ...#Key]`, `grants: [#Name]: #Grant` (`{ boundary: #Name, projects?: #Scope }`), `external: #External \| *null` (`{ kind: "domain" \| "did", handle: =~"^[^\\s]+$" }`), and `expires?: =~"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"`. `expires` is **required** whenever `kind != "human"` or `external != null`. Principal names cannot be `anyone`.                                                                                                                                                                                                                                                                                                                                                                |
+| `#Scope`                           | `"all" \| close({[#ProjectName]: #Identity})` | The projects a read grant covers: `"all"` for every project, or a map from project name to the publication identity declared in that project's `policy/read` ([Read policy](#read-policy-schemareadcue)). `{}` covers no projects. Every grant at an `edge-read` boundary requires `projects`, and grants at other boundaries forbid it (`readScopes`).                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| `anyone` (`#Anyone`)               | `{ grants: [#Name]: #Grant }`                 | Optional. The read grants for a reader who presents no credential. `anyone` has no keys, no external identity, and no expiry, can hold grants only at `edge-read` boundaries (`readScopes`), and cannot be `genesis`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `#Key`                             | `class: "ssh-ed25519"`                        | `bound: "hardware" \| "host"`, `public: =~"^ssh-ed25519 [A-Za-z0-9+/]+={0,2}( [^\\n]*)?$"`, and optional `signs?: =~"^[^\\s+]+$"` (when set, `identity compile` emits a verifier key in `known-signers`), and optional `attestation?: #Attestation`. A key with an `attestation` must be `bound: "hardware"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `#Attestation`                     | `slot`, `f9`                                  | A YubiKey PIV attestation of the key: `slot`, the certificate the YubiKey wrote for the PIV slot holding the key, and `f9`, the YubiKey's own attestation certificate, which signed it. Each is one PEM certificate and nothing else (`#Certificate`). `identity compile` checks what they say; see [Approval signers files](#approval-signers-files).                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `genesis` and governance checks    | `genesis: #Name & !="anyone"`                 | `genesis` must be a key in `principals` that holds at least one grant at a boundary with `kind == "registry"` (`genesisGovernance: [_, ...]`), and no principal with `external != null` may hold a `registry` boundary grant (`externalGovernance`). At compile time, `identity compile` omits principals with `expires <= now` and fails if no unexpired principal holds a `registry` grant, if two principals holding `git-push` grants share a public key, if a `git-push` key conflicts with a host-declared `authorizedKeys` tag, if a key that approves is also listed under another principal, if an `attestation` does not verify, or if the export holds a key that does not spell a schema field exactly (such as `Grants` beside `grants`) or a key twice in one object. |

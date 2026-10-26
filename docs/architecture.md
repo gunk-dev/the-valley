@@ -29,10 +29,12 @@ The parts are:
 - the `valley` command line tool (`bin/valley`);
 - `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
   changes before approval (`status/worker.go`);
-- `valley-web-publish`, `valley-web` and the web export, which project the projects anyone may read
-  into a signed export, upload it, and serve the plan, knots and `main` source over HTTP (`webui/`).
-  The publisher runs on a timer where a host enables it, and nothing deploys the server yet;
-- read access, which reads and evaluates who may read a project (`readaccess/`);
+- `valley-web-publish`, `valley-web` and the web export (`webui/`). The publisher builds a signed
+  export of the projects `anyone` may read and has an HTTP upload client, and a host can run it on a
+  timer. `webui/export` stages and activates exports in a state directory, and `valley-web` serves
+  an activated state directory's plan, knots and `main` source over HTTP (`GET` and `HEAD`). The
+  receiver's HTTP upload handlers and a host service for `valley-web` are not built yet;
+- read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
 - `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
   which nothing deploys yet (`restack/`);
 - the review record and its history, which nothing writes or admits yet (`review/`);
@@ -1464,11 +1466,12 @@ boundaries.
   attestation that the compiler verifies (`identity/attestation.go`).
 - A grant names a boundary. A boundary has a kind: `git-push`, `registry`, `approve`, `restack` or
   `edge-read`. The kind `approve` is also accepted as `request`. A registry using either name
-  compiles the same files. A grant at an `edge-read` boundary is a read grant, which names the
-  projects it covers. The compiler writes read grants into no file, and the web publisher reads them
-  (see [Read access](#read-access)).
-- `anyone`, the reader who presents no credential, is an entry of its own beside the principals. It
-  holds read grants alone, and no key.
+  compiles the same files. A grant at an `edge-read` boundary is a read grant and names the projects
+  it covers. The identity compiler ignores read grants when writing its output files; the web
+  publisher and `valley-read-coverage` read them directly from the registry (see
+  [Read access](#read-access)).
+- `anyone`, the reader who presents no credential, has its own top-level entry beside `principals`.
+  It holds only read grants and has no keys.
 - A machine, service or external principal must declare `expires`. From that day on, a successful
   compile leaves the principal out of every file. A compile that is refused keeps the previous
   files, expired entries included. Keys the host declares statically are outside the registry and do
@@ -2720,86 +2723,108 @@ exit status is 1.
 
 ## Read access
 
-Read access is a grant to a principal, and it takes two consents (`readaccess/`, `schema/read.cue`,
-`schema/identity.cue`). A principal may read a project only where both say so.
+`readaccess/` evaluates whether a principal is authorized to read a project at a destination
+(`readaccess/`, `schema/read.cue`, `schema/identity.cue`). Authorization requires two consents, one
+from the project and one from the instance. Both consents must match (`implemented`). Today, only
+grants to `anyone` affect what is published: `valley-web-publish` exports only projects authorized
+for `anyone`, `valley-web` serves all requests anonymously, and grants to named principals publish
+nothing (`webui/cmd/valley-web-publish/valley.go`, `webui/server/server.go`).
 
-- **The project's consent** is `policy/read/*.cue` on the project's `main`. It names the project,
-  the project's publication identity, and the set of principals the project lets read it. An empty
-  set lets no one read.
-- **The instance's consent** is a read grant in the identity registry: a grant at a boundary of kind
-  `edge-read`. The boundary names one destination, the web server a publisher sends to. The grant
-  names the projects it covers: `"all"`, or each project's name with the identity its `policy/read`
-  declares.
+- **The project's consent** lives in `policy/read/*.cue` on the project's `main`. It declares the
+  project's name, its 32-character hex publication identity, and the set of principals in `readers`.
+  An empty `readers` set authorizes no one.
+- **The instance's consent** is a read grant in the identity registry at a boundary of kind
+  `edge-read`. The boundary names one `destination`, the web server that receives the export. The
+  grant's `projects` field names what it covers: `"all"` for every project, or a map from project
+  name to the publication identity declared in that project's `policy/read`.
 
-**`anyone`** is the reader who presents no credential. The registry holds its grants in an entry of
-its own, `anyone`, with no key, no external identity and no expiry. `anyone` holds grants at
-`edge-read` boundaries alone, is never the genesis entry, and no principal is named `anyone`. A
-project is public at a destination when both consents let `anyone` read it there. A key sshd admits
-without a principal tag pushes as no principal, and is not `anyone`.
+**`anyone`** represents a reader who presents no credential. The registry stores `anyone` in its own
+top-level entry with no keys, no external identity, and no expiry. `anyone` can hold grants only at
+`edge-read` boundaries, cannot be the `genesis` entry, and cannot be a principal name under
+`principals`. A project is public at a destination when both consents authorize `anyone` there. An
+SSH key admitted without a principal tag pushes with an empty principal name
+(`VALLEY_PRINCIPAL=""`), whereas `anyone` applies only to unauthenticated edge reads.
 
-Each project has one reader set. A grant covers a whole project. Nothing grants read of a ref, a
-knot or a file alone. Membership, push access and approval give no read access.
+Each project has a single reader set. A read grant covers a whole project; there are no grants for
+individual refs, knots, or files. Instance membership, push access, approval grants, and restack
+grants confer no read access.
 
-No principal is special. The operator reads a project as any named reader does: the project's
-`policy/read` names the operator, and an instance grant covers the project. An instance can give the
-operator a grant of every project, `projects: "all"`, and each project names the operator in its own
-policy (**deployment choice**). The policy a new project starts from,
-`examples/policy/read/new-project/read.cue`, names the operator alone. `valley-read-coverage` lists
-the projects a principal lacks either consent for, says which, and changes nothing
-(`readaccess/cmd/valley-read-coverage/`).
+The schema and evaluator treat every named principal the same, including the operator
+(`implemented`). For `readaccess/` and `valley-read-coverage` to count a project as authorized for
+the operator, the project's `policy/read` must name the operator and an instance grant must cover
+the project. An instance can grant the operator `projects: "all"` while each project names the
+operator in its own `policy/read` (**deployment choice**). The starter policy for a new project,
+`examples/policy/read/new-project/read.cue`, names only `operator`. `valley-read-coverage` reports
+which projects lack either consent for a given principal without modifying anything
+(`readaccess/cmd/valley-read-coverage/`). Because named grants publish nothing and `valley-web`
+serves anonymously, a named principal at the edge can read only what `anyone` may read.
 
-A grant that names a project binds it by name and identity. A project whose policy declares another
-identity is not covered, so a new project that reuses a name does not inherit what the instance
-granted the old one. A grant of every project still needs each project's own consent. A policy that
-names another project than the one it is read from consents to nothing.
+A grant for a specific project binds both the project's name and its publication identity. If a new
+project reuses an old project's name with a different identity, the old grant does not cover it. A
+grant with `projects: "all"` covers any identity, and still requires each project's own consent. A
+`policy/read` whose `project` field does not match the repository it was read from is invalid and
+consents to nothing.
 
 ### Reading the two consents
 
-`readaccess.Reader` reads both consents out of git commits (`readaccess/read.go`): a project's
-`policy/read` at its `main`, and the registry at the instance repository's registry ref, the
-`services.valley.identity.ref` the identity compiler reads it at (default `refs/heads/main`). The
-publisher and `valley-read-coverage` resolve the registry ref with `readaccess.ResolveRef`, which
-reads that one ref by its exact name with `git show-ref`, and they read the commit it held from then
-on. The reader lists the directory with `git ls-tree` and reads each `*.cue` regular file with
-`git cat-file`, never a checkout. A directory with an entry whose name has a directory part, is `.`
-or `..`, or appears twice is invalid, and nothing of it is copied out. Otherwise the reader copies
-the files into a scratch directory with no `cue.mod` and exports them with `cue` under the schema.
+`readaccess.Reader` reads both consents from git commits (`readaccess/read.go`). It reads a
+project's `policy/read` from `refs/heads/main`, and it reads the registry from the instance
+repository's registry ref (`services.valley.identity.ref`, default `refs/heads/main`). Both
+`valley-web-publish` and `valley-read-coverage` resolve the registry ref once with
+`readaccess.ResolveRef`, which runs `git show-ref` on that exact full ref name, and then peel the
+resulting object ID to a commit and read from that commit. To read a directory, the reader walks the
+tree with `git ls-tree` and reads each regular `*.cue` file with `git cat-file`, without checking
+out a worktree. If a directory entry's name contains a slash, is `.` or `..`, or appears more than
+once, the document is invalid and no files are copied. Otherwise, the reader writes the files into a
+temporary directory with no `cue.mod` and runs `cue export --out json` with the schema.
 
-A document may declare a definition of its schema again, and `cue` unifies the two, which can reopen
-a closed definition to fields the schema does not allow. So the reader holds the exported JSON to
-the schema's own fields, and checks every name and identity again. `readers` is closed with `close`,
-which no declaration reopens.
+In CUE, a document can redeclare a schema definition, and unification can reopen a closed struct to
+extra fields. In `schema/read.cue`, `readers` is closed with `close()`, which a redeclaration cannot
+reopen. After `cue export` succeeds, the Go reader validates the exported JSON again. For
+`policy/read`, it checks every field name, the project name, the publication identity, and every
+reader name. For the registry, it checks the fields, names, and scopes that read grants depend on
+(`boundaries`, `principals` metadata and `grants`, `anyone`, and `genesis`), while leaving subtrees
+unused by read access (`keys`, `external`, `genesisGovernance`, `externalGovernance`, `readScopes`,
+and `projects` on non-`edge-read` grants) to `cue`'s validation (`readaccess/read.go`).
 
-A document that is missing, past its bounds, or refused by its schema consents to nothing. A failure
-to run git or `cue` is an error, which the caller reports and does not act on. A principal whose
-expiry has arrived holds no read grant, as the identity compiler omits it from every file. Only the
-grants at boundaries naming the destination count.
+A document that is missing, exceeds its size bounds, or fails schema or Go validation consents to
+nothing. If `git` or `cue` fails to execute, crashes, or times out, the reader returns an execution
+error so the caller aborts rather than treating the failure as a withdrawn consent. A principal
+whose `expires` date has arrived receives no read grants, matching the identity compiler. Only
+grants at `edge-read` boundaries for the target destination are collected.
 
-`Grants.May` is the evaluator: the project's consent names the principal, and a grant of the
-principal covers the project with the consent's identity. `Grants.Readers` lists a project's
-effective readers (`readaccess/access.go`).
+`Grants.May` reports whether a project's `Consent` names a principal and the principal's `Grants`
+cover the project and its identity. `Grants.Readers` returns the sorted list of principals for whom
+both consents match (`readaccess/access.go`).
 
 ### What reaches the edge
 
-The web publisher sends a destination only the projects `anyone` may read there
-(`webui/cmd/valley-web-publish/valley.go`). It reads the registry's grants at `--destination` first.
-It then reads `policy/read` only for the projects a grant to `anyone` names, or for every project
-when a grant to `anyone` covers every project. It exports a project when its policy names `anyone`
-and the grant covers its identity. Read grants to named principals, the operator's among them,
-publish nothing, and `valley-web` serves every reader anonymously.
+`valley-web-publish` includes in an export only the projects that `anyone` may read at
+`--destination` (`webui/cmd/valley-web-publish/valley.go`). It reads the registry's grants for
+`--destination` first. It then reads `policy/read` only for the projects selected by a grant to
+`anyone` (either named in the grant or covered by `projects: "all"`). It exports a project when the
+project's policy names `anyone` and a grant to `anyone` covers the project's identity. Read grants
+to named principals, including the operator, publish nothing, and `valley-web` serves every reader
+anonymously.
 
-For each exported project, the edge receives its reader view: every knot and comment of its plan
-graph, its ready changes, and `main` with its history (see
-[Web export](./reference.md#web-export-the-valleyweb-exportv1)). A missing or invalid registry makes
-every project private, and the pass uploads an export with no project. A missing or invalid project
-policy keeps that project private. A failure to read keeps the pass from sending anything.
+For each exported project, the export and its git bundle carry the project's reader view: every knot
+and comment in its plan graph, its ready changes, and `main` with its commit history (see
+[Web export](./reference.md#web-export-the-valleyweb-exportv1)). `valley-web-publish` can write an
+export to `--out` or upload it over HTTP to a receiver URL, and `export.Store.Activate` stages and
+activates exports in a state directory (`webui/export/store.go`). `valley-web` serves only `GET` and
+`HEAD` from a state directory (`webui/server/server.go`); the receiver's HTTP upload handlers are
+not built yet, and publisher tests use an `httptest` receiver
+(`webui/cmd/valley-web-publish/publish_test.go`). A missing or invalid registry makes every project
+private, so the pass builds an empty export. A missing or invalid `policy/read` makes that project
+private. A failure to read the instance repository, the schemas, or any project selected by a grant
+to `anyone` aborts the pass before it writes or uploads anything.
 
-Checked by `readaccess-unit`, whose tests read both consents out of real commits under the real
-schemas (`readaccess/read_test.go`, and `TestCoverage` for the report), by `webui-unit`
+Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
+(`readaccess/read_test.go`, including `TestCoverage` for `valley-read-coverage`), by `webui-unit`
 (`TestVisibilityNeedsBothConsents` and `TestPrivateSentinelsNeverLeave`), by `cue-vet` and
-`identity-schema`, which hold both schemas to their rejected examples, and by `identity-e2e`, which
-compiles the worked registry, read grants and `anyone` included, into its golden files. What is not
-built yet is listed under [Not deployed or not wired yet](#not-deployed-or-not-wired-yet).
+`identity-schema`, which test both schemas against rejected examples, and by `identity-e2e`, which
+compiles the example registry containing read grants and `anyone` against golden files. Unbuilt
+pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wired-yet).
 
 ## The web server
 
@@ -3028,23 +3053,23 @@ supplies the host configuration, the project declaration and the secrets (**depl
 
 ## Not deployed or not wired yet
 
-| What                                        | State                                                                                                                            |
-| ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                          |
-| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                         |
-| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                         |
-| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                 |
-| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                               |
-| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed.                               |
-| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                             |
-| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                           |
-| The web server and export                   | `valley-web` serves an export (`webui/`). The receiver's upload handlers and a server service are not built.                     |
-| Named readers at the edge                   | `readaccess/` evaluates read grants to named principals. No export, credential or session serves one.                            |
-| Withdrawal apart from content               | A withdrawal reaches the edge with the next export, after every project reads. No access statement or restriction travels alone. |
-| Clones from the edge                        | `valley-web` serves no clone route.                                                                                              |
-| Read grants over ssh                        | sshd lets every admitted key fetch every repository. Read grants govern the edge alone.                                          |
-| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                               |
-| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                         |
-| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                 |
-| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                    |
-| Bus authentication                          | The bus listens on localhost with no authentication.                                                                             |
+| What                                        | State                                                                                                                                                                                                                                                                    |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                  |
+| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                 |
+| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                                 |
+| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                         |
+| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                       |
+| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed.                                                                                                                                                                       |
+| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                     |
+| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                   |
+| The web server and export                   | `valley-web-publish` builds and uploads exports, `export.Store` stages and activates them, and `valley-web` serves an activated state directory over `GET` and `HEAD` (`webui/`). The receiver's HTTP upload handlers and a host service for `valley-web` are not built. |
+| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                |
+| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                       |
+| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                  |
+| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                        |
+| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                       |
+| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                                 |
+| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                         |
+| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                            |
+| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                     |

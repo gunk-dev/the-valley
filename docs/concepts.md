@@ -232,12 +232,16 @@ integration requests, or knots. A **grant** is a capability assigned to a princi
   validation, CLI display, and the read-only planner `valley-restacker once --report-only` are
   implemented; the restacker's write pass and host service are **not built**.)
 
-A **read grant** lets a principal read a project at an edge, the web server a valley host publishes
-to. Read access takes two consents. The project's own `policy/read` names the principal as a reader,
-and the instance's registry grants the principal read of that project, or of every project.
-**`anyone`** is the reader who presents no credential, and a project is **public** where both
-consents let `anyone` read it. `anyone` is not the anonymous pusher above: it holds read grants
-alone, and no key. The operator reads a project the same way as any other named reader (see
+A **read grant** is the instance's consent for a principal to read a project at an edge, the web
+server a valley host publishes to. Evaluating read access takes two consents (`implemented`). The
+project's own `policy/read` names the principal as a reader, and the instance's registry grants the
+principal read access to that project, or to all projects, at the edge. **`anyone`** is the reader
+who presents no credential. It has its own entry in the registry with only read grants and no SSH
+key, whereas an untagged SSH key in `authorizedKeys` pushes as an anonymous pusher. A project is
+**public** at an edge when both consents authorize `anyone` to read it there. The consent evaluator
+treats the operator the same as any other named principal (`implemented`). However, the web
+publisher exports only what `anyone` may read, and `valley-web` serves all readers anonymously;
+named grants publish nothing, and serving named readers at the edge is **not built** (see
 [Read access](./architecture.md#read-access)).
 
 _How Nix and CUE realize this:_ To manage principals and grants as reviewed changes in the instance
@@ -248,13 +252,14 @@ NixOS (`services.valley.authorizedKeys`, `services.valley.grants`,
 `services.valley.integrator.knownSignersFile`; compiled `authorized_keys` and `grants` supplement
 any static `authorizedKeys` and `grants`, while compiled `known-signers` replaces
 `services.valley.integrator.knownSignersFile`, which must be unset when both `identity.enable` and
-`integrator.enable` are true). In `identity/*.cue`, a boundary has one of four kinds
+`integrator.enable` are true). In `identity/*.cue`, a boundary has one of five kinds
 ([`schema/identity.cue`](../schema/identity.cue)): `git-push` authorizes SSH pushes (compiled into
 `authorized_keys`), `approve` (also accepted as `request`) and `restack` authorize integration
-requests and restack updates (compiled into `grants`), and `registry` is checked by the identity
-compiler, which rejects compiling a registry with no unexpired principal holding a `registry` grant
-(`governanceOrphaned`) — neither `valleyhook` nor the integrator enforces `registry` grants on
-pushes or landings.
+requests and restack updates (compiled into `grants`), `edge-read` names a web destination for read
+grants (read by `valley-web-publish` and `valley-read-coverage`), and `registry` is checked by the
+identity compiler, which rejects compiling a registry with no unexpired principal holding a
+`registry` grant (`governanceOrphaned`) — neither `valleyhook` nor the integrator enforces
+`registry` grants on pushes or landings.
 
 Follow [Running a valley host](./guide.md#running-a-valley-host) to configure a deployment, or
 [CUE configuration schemas](./reference.md#cue-configuration-schemas) for the host and identity

@@ -722,9 +722,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `$VALLEY_IDENTITY_SCHEMA`).
     - `--registry-ref <ref>`: The full ref name in the instance repository whose tip carries the
       identity registry (default `refs/heads/main`). The pass resolves `<ref>` once by that exact
-      name with `git show-ref` and reads the registry from the commit it points to. An instance
-      repository without `<ref>` has no registry, so every project is private, even if a branch with
-      a suffixed name such as `refs/heads/refs/heads/registry` exists.
+      name with `git show-ref` and reads the registry from the commit it points to. When `<ref>` is
+      not `refs/heads/main`, an instance repository without it has no registry, so every project is
+      private, even if a branch with a suffixed name such as `refs/heads/refs/heads/registry`
+      exists. An instance repository without `refs/heads/main` is not an instance repository, so the
+      pass aborts instead of building an empty export.
     - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
@@ -2192,9 +2194,10 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   `anyone`. An invalid policy or registry is reported on `stderr`. A missing or invalid registry
   makes every project private, so the pass builds an empty export. Grants to named principals,
   including the operator, publish nothing, and `valley-web` serves all requests anonymously.
-- **Read failures:** A failure to read aborts the pass before it writes or sends anything. The pass
-  fails if either schema fails to load, if the instance repository or its project list cannot be
-  fetched, or if `valley plan` or `valley pending` lists a different set of projects than
+- **Read failures:** A failure to read aborts the pass. The pass then writes no output export and
+  uploads nothing, though it may already have written the caches it reads through. The pass fails if
+  either schema fails to load, if the instance repository or its project list cannot be fetched, or
+  if `valley plan` or `valley pending` lists a different set of projects than
   `refs/the-valley/projects` (which happens when project discovery falls back to the pointer
   repository alone). For any project selected by a read grant to `anyone`, the pass also fails if
   the pending listing reports a read error or gives no URL, if `main` cannot be fetched, or if `git`
@@ -2211,21 +2214,31 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   the files into a temporary directory with no `cue.mod` (so `cue` resolves only standard-library
   imports), strips `CUE_*` environment variables, and runs `cue export --out json` with the schema
   and the files. A document is invalid if `cue` exits with status 1. After `cue export` succeeds,
-  the Go reader validates the exported JSON against the expected struct fields (matching
-  case-sensitively and rejecting duplicate keys) so a document that redeclares a schema definition
-  cannot add extra fields where the reader decodes structs. For `policy/read`, the reader rechecks
-  every field, the project name, the publication identity, and every reader name. For the registry,
-  it rechecks `boundaries`, `principals` metadata and `grants`, `anyone`, `genesis`, and each
-  `edge-read` grant's `projects` scope, while leaving subtrees that read grants do not use (`keys`,
-  `external`, `genesisGovernance`, `externalGovernance`, `readScopes`, and `projects` on
-  non-`edge-read` grants) as raw JSON validated by `cue`. A policy is also invalid if it has more
+  the Go reader decodes the exported JSON with [`exactjson`](../exactjson/exactjson.go). The decode
+  refuses a key that is not a field of the struct it is read into, spelled exactly, a key that
+  appears twice in one object, and a value of the wrong JSON type. So a document that redeclares a
+  schema definition cannot add a field, such as `Grants` beside `grants`, that the reader would take
+  for the schema's. The registry's `keys`, `external`, `genesisGovernance`, `externalGovernance` and
+  `readScopes` are kept as raw JSON, checked only for a key repeated in one object. The reader then
+  checks again the values it acts on. For `policy/read`, it checks the project name against the
+  repository, the publication identity, and every reader name. For the registry, it checks every
+  principal name and `expires` date. For each grant of an unexpired principal and of `anyone`, it
+  checks that the boundary is declared, that `anyone`'s grants are at `edge-read` boundaries, and
+  that a grant at another boundary names no `projects`. At an `edge-read` boundary, it checks the
+  boundary's `destination` and the grant's project names and identities. The Go reader does not
+  check boundary names, grant names, other boundary kinds, principal kinds, keys, or what `genesis`
+  must be: those rest on `cue` and `schema/identity.cue`. A policy is also invalid if it has more
   than 32 files, a file over 64 KiB, or more than 1 MiB of exported JSON; a registry is invalid if
   it has more than 64 files, a file over 1 MiB, or more than 8 MiB of exported JSON.
-- **Output bounds:** The pass caps stdout at 64 MiB for `valley` commands, 4 MiB for `git` commands
-  and `cue vet`, 1 MiB for `cue export` on a read policy, and 8 MiB for `cue export` on the
-  registry. Exceeding a cap aborts the pass, with two exceptions in `readaccess`: `git ls-tree`
-  output over 4 MiB or `cue export` output over the document's limit marks that policy or registry
-  document invalid instead. Stderr from any command is truncated to its first 64 KiB.
+- **Output bounds:** The pass holds at most 64 MiB of what a `valley` command prints on stdout, and
+  4 MiB of the `git` output it captures. A command that prints more aborts the pass. A git bundle is
+  not captured output: `git bundle create` writes into a file that may grow only into the room
+  `--max-bundles` and `--max-storage` leave, and a larger bundle makes the pass send nothing.
+  `readaccess` holds `cue vet` to 4 MiB of stdout, `cue export` to 1 MiB for a read policy and 8 MiB
+  for the registry, and its own `git` commands to 4 MiB. `git ls-tree` output or `cue export` output
+  past its bound makes that policy or registry invalid instead of aborting the pass. The pass keeps
+  the first 64 KiB of what `git` and `cue` print on stderr, for its messages. What a `valley`
+  command prints on stderr passes through to the pass's own stderr.
 - **Consistent reads:** `export.Build` returns `export.ErrInconsistent` when a knot's detail was
   read at a different graph tip than the plan. When that happens, the pass retries from step 5,
   reusing the instance commit and project list fetched in step 3 and the read grants read in step 4,
@@ -2768,8 +2781,9 @@ cue vet -c schema/read.cue policy/read/*.cue
   invalid.
 - **Redeclared definitions:** In CUE, a policy file can redeclare a schema definition, and
   unification can reopen a closed struct. `readers` is closed with `close()`, which a redeclaration
-  cannot reopen, and the Go reader in `readaccess` rechecks the exported JSON's fields, project
-  name, identity, and reader names.
+  cannot reopen. The Go reader in `readaccess` decodes the exported JSON with `exactjson`, which
+  refuses a key that is not one of the schema's fields spelled exactly, and then checks the project
+  name, identity, and reader names again.
 - **Beside the verification policy:** `policy/read/` sits beside `policy/instance/` and
   `policy/project/`. Those two directories are verification-policy layers, whose top level
   `schema/verification.cue` closes to its own fields.

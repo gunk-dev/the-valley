@@ -244,9 +244,12 @@ that pass are omitted from the export and bundles it builds. For each exported p
 and bundle hold the project's reader view in plaintext: every knot and comment in its plan graph,
 its ready changes, and `main` with its history. Once an export is sent to an edge, that edge is the
 security boundary for what it holds: its administrators, and any process with access to its storage,
-can read all of it, and content from an earlier export remains there until a newer export replaces
-it. A read grant at an `edge-read` boundary is consent to send a project's reader view to the
-destination that boundary names.
+can read all of it. Activating a newer export changes which generation the edge serves. It does not
+guarantee that an older generation is deleted: the edge's store keeps a generation that a reader
+still holds, or whose deletion failed, until a later sweep removes it (`implemented`,
+`webui/export/store.go`). So withdrawing a project from what the edge serves is not deleting it from
+the edge's storage. A read grant at an `edge-read` boundary is consent to send a project's reader
+view to the destination that boundary names.
 
 **A grant is bound to a project.** A grant that names a specific project binds both its name and its
 publication identity, so a new project that reuses an old project's name with a new identity is not
@@ -259,15 +262,18 @@ resolve the registry ref with `git show-ref`, which checks that exact full ref n
 `readaccess/read.go`). `git rev-parse` is not used to resolve ref names, because when a ref such as
 `refs/heads/registry` is missing it falls back to `refs/heads/refs/heads/registry`, a branch any
 pusher can create. Instead, `git show-ref` resolves the ref name to an object ID, `git rev-parse`
-peels that object ID to a commit, and all subsequent reads use that commit ID. An instance
-repository without the configured registry ref has no registry, so every project is private. The
-host module rejects a `services.valley.identity.ref` that is not a full ref name (`implemented`,
-`nix/valley-host.nix`).
+peels that object ID to a commit, and all subsequent reads use that commit ID. When the configured
+registry ref is not `refs/heads/main`, an instance repository without it has no registry, so every
+project is private. An instance repository without `refs/heads/main` is not an instance repository,
+so the publisher aborts the pass instead of building an empty export (`implemented`,
+`webui/cmd/valley-web-publish/valley.go`). The host module rejects a `services.valley.identity.ref`
+that is not a full ref name (`implemented`, `nix/valley-host.nix`).
 
 **SSH fetches ignore read grants.** Read grants govern only web exports. On the valley host, every
 SSH key admitted for the git user can fetch every repository (`valleyhook/shell.go`). The git user's
-shell gates pushes and leaves fetching open. An admitted key without a principal tag runs with an
-empty principal name; `anyone` applies only to unauthenticated edge reads.
+shell gates pushes and leaves fetching open. An admitted key without a principal tag runs as no
+principal: its session leaves `VALLEY_PRINCIPAL` unset. It is not `anyone`, which applies only to
+unauthenticated edge reads.
 
 **Withdrawal.** When either consent for `anyone` is withdrawn, the next publisher pass omits the
 project from the export it builds. `valley-web-publish` includes the HTTP upload client and
@@ -279,8 +285,12 @@ the instance repository and every project selected by a read grant to `anyone`; 
 cannot be read, the pass sends nothing, so a withdrawal waits until they can be read. Projects not
 selected by a grant to `anyone` are not read and do not block publication or withdrawal
 (`implemented`, `webui/cmd/valley-web-publish/read_test.go`). There is no serving expiry: while the
-valley host cannot reach the edge, the edge keeps serving what it has, and a withdrawal made in that
-time takes effect when the host reaches the edge again. Unbuilt parts of read access are listed in
+valley host cannot reach the edge, the edge keeps serving what it has. Reaching the edge again does
+not by itself complete a withdrawal. A withdrawal takes effect at the edge only when the edge
+activates an export that reflects it. The receiver that accepts an upload over HTTP and activates it
+is **not built**. An upload can still fail after the host reaches the edge again. The pass then
+fails, and the withdrawal waits for a later pass whose export the edge activates
+(`webui/cmd/valley-web-publish/upload.go`). Unbuilt parts of read access are listed in
 [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
 
 Checks: `readaccess-unit` reads both consents from real commits under the real schemas, including

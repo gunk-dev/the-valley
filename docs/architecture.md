@@ -1043,10 +1043,11 @@ as `main`, and the hook enforces that deployment choice (`implemented`). The hoo
 worker from filing integration requests or updating another principal's change records.
 `integrator.signerProjects` restricts which projects count the worker's signed notes; it does not
 restrict which repositories the key can push to. An untagged key in `services.valley.authorizedKeys`
-has no principal name (`VALLEY_PRINCIPAL=""`), so the hook allows it to push only attestation refs
-and topic branches. A registry key can push to topic branches, its own change records, and the plan
-graph, which a worker does not need. A permission that limits a key to attestation pushes is **not
-built** (knot oc-6da5273). It must exist before a worker runs on more than one host.
+has no principal name, because its session leaves `VALLEY_PRINCIPAL` unset. So the hook allows it to
+push only attestation refs and topic branches. A registry key can push to topic branches, its own
+change records, and the plan graph, which a worker does not need. A permission that limits a key to
+attestation pushes is **not built** (knot oc-6da5273). It must exist before a worker runs on more
+than one host.
 
 The worker's builds are capped at one check build at a time, 4 CPUs, and 8 GiB of memory
 (**deployment choice**). `valley-builds.slice` enforces the 4-CPU and 8-GiB limits across the Nix
@@ -2742,8 +2743,8 @@ nothing (`webui/cmd/valley-web-publish/valley.go`, `webui/server/server.go`).
 top-level entry with no keys, no external identity, and no expiry. `anyone` can hold grants only at
 `edge-read` boundaries, cannot be the `genesis` entry, and cannot be a principal name under
 `principals`. A project is public at a destination when both consents authorize `anyone` there. An
-SSH key admitted without a principal tag pushes with an empty principal name
-(`VALLEY_PRINCIPAL=""`), whereas `anyone` applies only to unauthenticated edge reads.
+SSH key admitted without a principal tag pushes as no principal: its session leaves
+`VALLEY_PRINCIPAL` unset. It is not `anyone`, which applies only to unauthenticated edge reads.
 
 Each project has a single reader set. A read grant covers a whole project; there are no grants for
 individual refs, knots, or files. Instance membership, push access, approval grants, and restack
@@ -2780,12 +2781,27 @@ temporary directory with no `cue.mod` and runs `cue export --out json` with the 
 
 In CUE, a document can redeclare a schema definition, and unification can reopen a closed struct to
 extra fields. In `schema/read.cue`, `readers` is closed with `close()`, which a redeclaration cannot
-reopen. After `cue export` succeeds, the Go reader validates the exported JSON again. For
-`policy/read`, it checks every field name, the project name, the publication identity, and every
-reader name. For the registry, it checks the fields, names, and scopes that read grants depend on
-(`boundaries`, `principals` metadata and `grants`, `anyone`, and `genesis`), while leaving subtrees
-unused by read access (`keys`, `external`, `genesisGovernance`, `externalGovernance`, `readScopes`,
-and `projects` on non-`edge-read` grants) to `cue`'s validation (`readaccess/read.go`).
+reopen. After `cue export` succeeds, the Go reader checks the exported JSON in two separate ways
+(`readaccess/read.go`).
+
+First, it checks the shape. It decodes the JSON with `exactjson`, which refuses a key that is not a
+field of the Go struct it is read into, spelled exactly, and a key that appears twice in one object.
+The decode also refuses a value of the wrong JSON type. So a registry that reopens `#Anyone` cannot
+hold `Grants` beside an empty `grants` and have the reader take it for `grants`. The parts of the
+registry that read grants do not use are kept as raw JSON, and are checked only for a key repeated
+in one object: `keys`, `external`, `genesisGovernance`, `externalGovernance` and `readScopes`.
+
+Second, it checks again the values it acts on. For `policy/read`, it checks that the project name
+matches the repository the policy was read from, the publication identity, and every reader name.
+For the registry, it checks every principal name and every `expires` date. Then, for each grant of
+an unexpired principal and of `anyone`, it checks that the grant's boundary is declared, that
+`anyone` holds grants at `edge-read` boundaries alone, and that a grant at any other boundary names
+no `projects`. For a grant at an `edge-read` boundary, it checks the boundary's `destination` and
+every project name and identity in the grant's scope.
+
+The Go reader does not check boundary names, grant names, boundary kinds other than `edge-read`,
+principal kinds, keys, or what `genesis` must be. Those rest on `cue export` under
+`schema/identity.cue`, which refuses a registry that breaks them.
 
 A document that is missing, exceeds its size bounds, or fails schema or Go validation consents to
 nothing. If `git` or `cue` fails to execute, crashes, or times out, the reader returns an execution
@@ -2810,18 +2826,20 @@ anonymously.
 For each exported project, the export and its git bundle carry the project's reader view: every knot
 and comment in its plan graph, its ready changes, and `main` with its commit history (see
 [Web export](./reference.md#web-export-the-valleyweb-exportv1)). `valley-web-publish` can write an
-export to `--out` or upload it over HTTP to a receiver URL, and `export.Store.Activate` stages and
-activates exports in a state directory (`webui/export/store.go`). `valley-web` serves only `GET` and
-`HEAD` from a state directory (`webui/server/server.go`); the receiver's HTTP upload handlers are
-not built yet, and publisher tests use an `httptest` receiver
-(`webui/cmd/valley-web-publish/publish_test.go`). A missing or invalid registry makes every project
-private, so the pass builds an empty export. A missing or invalid `policy/read` makes that project
-private. A failure to read the instance repository, the schemas, or any project selected by a grant
-to `anyone` aborts the pass before it writes or uploads anything.
+export to `--out` or upload it over HTTP to a receiver URL. In a state directory, `export.Store`
+stages an upload with `Store.Stage` and activates the staged export with `Store.Activate`
+(`webui/export/store.go`). `valley-web` serves only `GET` and `HEAD` from a state directory
+(`webui/server/server.go`); the receiver's HTTP upload handlers are not built yet, and publisher
+tests use an `httptest` receiver (`webui/cmd/valley-web-publish/publish_test.go`). A missing or
+invalid registry makes every project private, so the pass builds an empty export. A missing or
+invalid `policy/read` makes that project private. A failure to read the instance repository, the
+schemas, or any project selected by a grant to `anyone` aborts the pass. The pass then writes no
+output export and uploads nothing, though it may already have written the caches it reads through.
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
-(`readaccess/read_test.go`, including `TestCoverage` for `valley-read-coverage`), by `webui-unit`
-(`TestVisibilityNeedsBothConsents` and `TestPrivateSentinelsNeverLeave`), by `cue-vet` and
+(`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
+for `valley-read-coverage`), by `webui-unit` (`TestVisibilityNeedsBothConsents`,
+`TestAGrantSpelledAnotherWayIsRefused` and `TestPrivateSentinelsNeverLeave`), by `cue-vet` and
 `identity-schema`, which test both schemas against rejected examples, and by `identity-e2e`, which
 compiles the example registry containing read grants and `anyone` against golden files. Unbuilt
 pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wired-yet).

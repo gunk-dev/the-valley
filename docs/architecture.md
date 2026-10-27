@@ -3066,6 +3066,31 @@ for `valley-read-coverage`), by `web-unit` (`TestVisibilityNeedsBothConsents`,
 compiles the example registry containing read grants and `anyone` against golden files. Unbuilt
 pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wired-yet).
 
+### One pass, one instance
+
+A publisher's pass reads one instance: the one `--instance-repo` names
+(`web/cmd/valley-web-publish/valley.go`). It fetches the instance repository's `main` once, at the
+start of the pass, and no command of the pass reads it again (see the pass's steps in
+[Web export publisher](./reference.md#web-export-publisher)).
+
+- The pointer repository is a bare repository whose `origin` is itself. Its `main` holds one file,
+  `policy/valley`, which names `--instance-repo`. The CLI finds the instance at `policy/valley` on
+  its repository's `origin` `main`, and follows it no further. So `valley plan` and `valley pending`
+  read the projects and signers that `--instance-repo` publishes.
+- `valley knot show --project` finds a project beside its repository's `origin`, the instance
+  repository, and reads no `policy/valley`.
+
+So a `policy/valley` that lands on the instance repository's `main` during a pass is never followed,
+even when it is gone again before the pass ends. A `main` that carries `policy/valley` when the pass
+fetches it fails the pass, because it names another instance. Two instances can serve projects of
+the same name, and the pass reads only the one given.
+
+The plan and each knot's detail are read by separate commands, so a knot can change between them.
+`export.Build` returns `export.ErrInconsistent` when a knot's detail was read at a different graph
+tip than the plan. The pass then reads the plan and the knots again, reusing the instance commit,
+the project list and the read grants it already has, for up to three attempts in total. If all three
+are inconsistent, the pass fails.
+
 ## The web server
 
 `valley-web` serves a receiver's state directory over HTTP to anonymous readers: the plan page, each
@@ -3531,12 +3556,22 @@ Checked by:
   (`TestStoreHoldsActivationToMaxStorage`), and end-to-end publication from `valley-web-publish` to
   the real receiver and `valley-web` including wrong-token refusal and grant withdrawal
   (`TestPublishesToTheRealReceiver`).
-- `module-eval`, which checks the users, file modes, credentials, and memory caps rendered by both
-  NixOS modules; `web-publisher-e2e`, which checks in a NixOS VM that the token reaches the
-  publisher unit as a credential while the source file stays readable only by root; and `web-image`,
-  which unpacks the container image and checks its programs, users, volume, and default user.
-  Because neither `module-eval` nor `web-image` runs the units or containers, runtime enforcement of
-  the memory caps and sandbox on the edge is unchecked.
+- `module-eval`, which checks the users, file modes, credentials, memory caps and the publisher's
+  address filter rendered by both NixOS modules, and refuses a publisher with no allowed address;
+  `web-publisher-e2e`, which checks in a NixOS VM that the token reaches the publisher unit as a
+  credential while the source file stays readable only by root, and that the unit reaches a listener
+  at its allowed address but none at an unrelated IPv4 or IPv6 address that root reaches; and
+  `web-image`, which unpacks the container image and checks its programs, users, volume, and default
+  user.
+- `web-push-e2e`, which runs the push path over the shipped packages: `valley-web-publish`,
+  `valley-web-receive` and `valley-web` as `nix/packages.nix` builds and wraps them, the valley CLI,
+  and real git, in the build sandbox as one user. A pass publishes two projects that `valley-web`
+  serves at their group URLs, with an alias and a former name redirecting with `308`. A pass with a
+  wrong token fails as unauthenticated while the edge keeps serving. Withdrawing a grant takes a
+  project off the edge, and both servers restart onto the same content. With the receiver stopped,
+  `valley-web` keeps serving, and a withdrawal reaches the edge on the first pass after the receiver
+  is back. Because neither `module-eval` nor `web-image` runs the units or containers, runtime
+  enforcement of the memory caps and sandbox on the edge is unchecked.
 
 ## The life of a change
 

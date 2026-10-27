@@ -758,8 +758,25 @@ services.valley.webPublisher = {
   destination = "example.org";
   receiver = "https://example.org";
   receiverTokenFile = "/run/keys/valley-web-receiver-token";
+  allowedAddresses = [ "192.0.2.10" ];
 };
 ```
+
+A pass may connect only to the addresses `allowedAddresses` lists. List every address of the
+receiver. A resolver's address does not go on the list. The publisher looks the receiver's name up
+through the C library, which on NixOS asks nscd, and nscd resolves it outside the unit. This needs
+nscd, which NixOS runs by default (`services.nscd.enable`). Without nscd, also list the address of
+the resolver in `/etc/resolv.conf`.
+
+The list allows addresses, not host names or ports, and a pass fails once the receiver moves to an
+address the list leaves out. The publisher ignores `HTTP_PROXY` and `HTTPS_PROXY`, so a proxy cannot
+stand in for the receiver.
+
+Before each pass, the unit checks that this filter is in force, and the pass does not start
+otherwise. The check sends a datagram to `198.51.100.1`, which the filter must deny. So the list
+must not cover that address, and the host needs a route to it, such as a default route. When the
+check refuses, `journalctl -u valley-web-publish` shows a line from
+`valley-web-publish-egress-check` that names the problem.
 
 Run the publisher once to generate the export signing key and read its verifier line:
 

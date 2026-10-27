@@ -1026,17 +1026,18 @@ services.valley.webPublisher = {
 };
 ```
 
-| NixOS option (`services.valley.webPublisher.*`) | Default                         | Meaning                                                                                                                                                               |
-| :---------------------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enable`                                        | `false`                         | Runs `valley-web-publish` on a timer. Needs `services.valley.integrator.instanceProject`, the instance repository the publisher reads.                                |
-| `destination`                                   | (required)                      | The receiver's name, which every manifest is signed for.                                                                                                              |
-| `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                                     |
-| `receiverTokenFile`                             | (required)                      | Runtime path (outside the Nix store) to the file holding the receiver's bearer token. Loaded as systemd credential `receiver-token` and passed as `--receiver-token`. |
-| `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                                               |
-| `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`.                      |
-| `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.                                  |
-| `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                                      |
-| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                                         |
+| NixOS option (`services.valley.webPublisher.*`) | Default                         | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| :---------------------------------------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enable`                                        | `false`                         | Runs `valley-web-publish` on a timer. Needs `services.valley.integrator.instanceProject`, the instance repository the publisher reads.                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `destination`                                   | (required)                      | The receiver's name, which every manifest is signed for.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `receiverTokenFile`                             | (required)                      | Runtime path (outside the Nix store) to the file holding the receiver's bearer token. Loaded as systemd credential `receiver-token` and passed as `--receiver-token`.                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`.                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `allowedAddresses`                              | (required)                      | The IP addresses or prefixes a pass may connect to (`IPAddressAllow`); the unit denies every other (`IPAddressDeny=any`). List the receiver's addresses. Names resolve through the C library and nscd, outside the unit (`GODEBUG=netdns=cgo`), so no resolver is listed unless nscd is off. Before each pass, `valley-web-publish-egress-check` sends a datagram to `198.51.100.1` and starts the pass only when the filter refuses it with `EPERM`. An empty list, or one that covers `198.51.100.1`, fails a module assertion. It allows addresses, not host names or ports. |
 
 The module also passes `services.valley.identity.ref` as `--registry-ref` and
 `services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry from
@@ -2329,20 +2330,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
      `--max-storage` again;
   9. makes the bundles, each within what `--max-bundles` and `--max-storage` leave;
   10. uploads the export, or writes it to `--out`.
-- **One instance:** The pass reads the instance repository's `main` once, at step 3. No command of
-  the pass reads it again:
-  - The pointer repository is a bare repository whose `origin` is itself. Its `main` holds one file,
-    `policy/valley`, which names `--instance-repo`. The CLI finds the instance at `policy/valley` on
-    its repository's `origin` `main`, and follows it no further. So `plan` and `pending` read the
-    projects and signers that `--instance-repo` publishes.
-  - `valley knot show --project` finds a project beside its repository's `origin`, the instance
-    repository, and reads no `policy/valley`.
-
-  So a `policy/valley` that lands on the instance repository's `main` during a pass is never
-  followed, even when it is gone again before the pass ends. A `main` that carries `policy/valley`
-  at step 3 fails the pass, because it names another instance. Two instances can serve projects of
-  the same name, and the pass reads only the one given.
-
+- **One instance:** The pass reads the instance repository's `main` once, at step 3, and reads only
+  the instance `--instance-repo` names (see
+  [One pass, one instance](./architecture.md#one-pass-one-instance)).
 - **Visibility:** A project is public when `anyone` may read it at the destination and the host
   declaration places it in a group: its own `policy/read` names `anyone`, a read grant to `anyone`
   at an `edge-read` boundary for `--destination` covers the project with the identity its policy
@@ -2399,10 +2389,6 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   past its bound makes that policy or registry invalid instead of aborting the pass. The pass keeps
   the first 64 KiB of what `git` and `cue` print on stderr, for its messages. What a `valley`
   command prints on stderr passes through to the pass's own stderr.
-- **Consistent reads:** `export.Build` returns `export.ErrInconsistent` when a knot's detail was
-  read at a different graph tip than the plan. When that happens, the pass retries from step 5,
-  reusing the instance commit and project list fetched in step 3 and the read grants read in step 4,
-  for up to three attempts in total. If all three attempts are inconsistent, the pass fails.
 - **Bundles:** Each public project's bundle is what `git bundle create - refs/heads/main` prints in
   its mirror. The pass writes it to a temporary file, and keeps it as
   `$XDG_CACHE_HOME/valley-web-publish/bundles/<project>/<source-tip>.bundle`. A bundle is made once
@@ -2413,17 +2399,18 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **Size bounds:** A bundle carries the whole history of `main`, as the export requires.
   `--max-bundles` bounds the bundles of one export together. `--max-storage` bounds the state
   directory, `$XDG_CACHE_HOME/valley-web-publish`, and the CLI's `$XDG_CACHE_HOME/valley` together.
-  - Every pass checks `--max-storage` twice: before it fetches anything, and once it has read the
-    valley. The second check runs even when the pass then sends nothing for an acknowledged digest.
+  - Every pass checks `--max-storage` before it fetches anything, before it writes or replaces each
+    repository cache, around each `valley` command, and once it has read the valley. The last check
+    runs even when the pass then sends nothing for an acknowledged digest.
   - The pass writes each bundle only into the room that both bounds leave. When a bundle is larger,
     the pass stops writing at that room. It deletes what it wrote of that bundle and every bundle it
     made in the pass, and fails.
-  - The publisher’s repository caches and the CLI’s caches borrow objects from absolute local
+  - The publisher's repository caches and the CLI's caches borrow objects from absolute local
     repository paths through Git alternates. They copy no history. Before replacing each cache, the
     publisher checks that its complete metadata fits alongside the existing storage. It checks
     storage again before installing the replacement and removes partial replacements on failure.
   - The pointer repository is built in memory and staged within the same storage budget. Collection
-    reserves room for the CLI’s ref metadata before each command and checks storage afterward.
+    reserves room for the CLI's ref metadata before each command and checks storage afterward.
   - Before collection, the publisher reads the read grants, stages a CLI cache for each project
     selected by a read grant to `anyone`, and removes all other CLI caches. During each CLI command,
     the cache parent directory is made read-only (`0500`). Existing caches remain usable, while
@@ -2460,8 +2447,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   | Any other refusal                                               | Fails the pass without a retry.                                                        |
 
 - **Requests:** A body is sent with its declared size as `Content-Length` and no `Content-Encoding`.
-  The client follows no redirect. A manifest post may take 2 minutes, a body or a commit 30 minutes.
-  A reply over 1 MiB is a failure.
+  The client connects to `--receiver` directly. It uses no proxy, so `HTTP_PROXY`, `HTTPS_PROXY` and
+  `NO_PROXY` change nothing, and it follows no redirect. A manifest post may take 2 minutes, a body
+  or a commit 30 minutes. A reply over 1 MiB is a failure.
 - **`--out`:** The pass writes the upload's content to `<dir>`: `manifest` (the signed manifest),
   `export.json`, and `bundles/<project>.bundle`. It writes them in a temporary directory beside
   `<dir>` and renames it into place, so a reader never sees part of it. A pass with `--out` signs

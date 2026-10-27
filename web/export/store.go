@@ -62,6 +62,11 @@ type Store struct {
 	// past it. Activate measures the directory after it builds each
 	// repository, and refuses an upload that took it past. Set it before
 	// the store is used.
+	//
+	// The cap is best effort. One repository's build can pass it by what
+	// the estimate missed, and a file a process still holds open after it
+	// is deleted takes space that no measure counts. The hard bound is the
+	// filesystem the state directory is on.
 	MaxStorage int64
 
 	dir    string
@@ -72,6 +77,24 @@ type Store struct {
 	// turn holds a token while one of the store's goroutines holds the
 	// lock, so the others wait their turn on it.
 	turn chan struct{}
+	// writing is the writers Writer admitted.
+	writing writing
+}
+
+// writing is the writers of staged bodies that Writer admitted. Stage and
+// Activate stop them before they delete the bodies they write.
+type writing struct {
+	mu sync.Mutex
+	// open is the sequence of the upload whose bodies take writers: the
+	// one Stage staged last, until Activate removes its bodies. 0 is none.
+	open    int64
+	writers map[*writer]bool
+}
+
+type writer struct {
+	sequence int64
+	stop     context.CancelCauseFunc
+	done     chan struct{}
 }
 
 // RepoOverhead is what Stage counts for each repository an upload builds,
@@ -303,11 +326,17 @@ func (s *Store) Open() (Generation, func(), error) {
 // Stage is the staging directory for an upload whose manifest
 // VerifyManifest admitted. A manifest posted again finds its directory and
 // the bodies already staged in it. Staging a manifest discards the staging
-// directories of older ones. A manifest not newer than the high-water mark
-// is refused as replayed, one older than another staged upload as
-// superseded, and one whose upload would take the state directory past
-// MaxStorage as too-large (see checkStorage). Stage waits for the store's
-// lock until ctx is done, and stages nothing once it is.
+// directories of older ones: it stops their writers (see Writer), waits
+// until each has closed its files, and only then deletes the directories.
+// A manifest not newer than the high-water mark is refused as replayed,
+// and one older than another staged upload as superseded. One whose
+// upload would take the state directory past MaxStorage is refused as
+// too-large (see checkStorage), but first Stage sweeps the generations no
+// reader holds any more, and measures again.
+//
+// Stage waits for the store's lock, measures the state directory, and
+// waits for the writers it stops, each only until ctx is done. Once ctx is
+// done it deletes and stages nothing.
 func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	if s.readOnly {
 		return Staging{}, errReadOnly
@@ -334,7 +363,24 @@ func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 		}
 	}
 	st := Staging{Manifest: m, Dir: s.path("staging", strconv.FormatInt(m.Sequence, 10))}
-	if err := s.checkStorage(m, append(older, st.Dir)); err != nil {
+	discard := append(older, st.Dir)
+	err = s.checkStorage(ctx, m, discard)
+	if e := (*Error)(nil); errors.As(err, &e) && e.Code == CodeTooLarge && ctx.Err() == nil {
+		// A generation a reader held at the last sweep may be free now.
+		if err := s.sweep(); err != nil {
+			s.report(err)
+		}
+		err = s.checkStorage(ctx, m, discard)
+	}
+	if err != nil {
+		return Staging{}, err
+	}
+	// Past here Stage deletes and stages, which a client gone away or out
+	// of time no longer wants.
+	if err := ctx.Err(); err != nil {
+		return Staging{}, err
+	}
+	if err := s.discard(ctx, m.Sequence); err != nil {
 		return Staging{}, err
 	}
 	for _, dir := range older {
@@ -351,6 +397,72 @@ func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 		}
 	}
 	return st, nil
+}
+
+// Writer admits a writer of the staged upload st's bodies, such as a
+// request running StageBody, and returns the writer's context and done.
+// The context is done once ctx is, and once the store discards st's
+// bodies: when a newer manifest's Stage discards the upload, its cause is
+// a superseded refusal, and when Activate removes the bodies of the upload
+// it commits, a no-manifest refusal. Stage and Activate wait for done
+// before they delete anything, so a writer stops once its context is done,
+// closes and removes every file it opened, and only then calls done.
+// Writer refuses a writer of bodies already discarded with one of those
+// refusals.
+func (s *Store) Writer(ctx context.Context, st Staging) (context.Context, func(), error) {
+	seq := st.Manifest.Sequence
+	s.writing.mu.Lock()
+	defer s.writing.mu.Unlock()
+	if s.writing.open != seq {
+		return nil, nil, discarded(seq, s.writing.open)
+	}
+	wctx, stop := context.WithCancelCause(ctx)
+	w := &writer{sequence: seq, stop: stop, done: make(chan struct{})}
+	if s.writing.writers == nil {
+		s.writing.writers = map[*writer]bool{}
+	}
+	s.writing.writers[w] = true
+	done := sync.OnceFunc(func() {
+		stop(nil)
+		s.writing.mu.Lock()
+		delete(s.writing.writers, w)
+		s.writing.mu.Unlock()
+		close(w.done)
+	})
+	return wctx, done, nil
+}
+
+// discard opens the bodies of the upload with sequence open to writers, or
+// no upload's when open is 0. It stops the writers of every other upload's
+// bodies, and waits until each has called done, or until ctx is done.
+func (s *Store) discard(ctx context.Context, open int64) error {
+	s.writing.mu.Lock()
+	s.writing.open = open
+	var stopped []*writer
+	for w := range s.writing.writers {
+		if w.sequence != open {
+			w.stop(discarded(w.sequence, open))
+			stopped = append(stopped, w)
+		}
+	}
+	s.writing.mu.Unlock()
+	for _, w := range stopped {
+		select {
+		case <-w.done:
+		case <-ctx.Done():
+			return fmt.Errorf("waiting for the writers of the upload with sequence %d to stop: %w", w.sequence, ctx.Err())
+		}
+	}
+	return ctx.Err()
+}
+
+// discarded is the refusal of a writer of the upload with sequence once
+// the bodies of the upload with sequence open take writers instead.
+func discarded(sequence, open int64) error {
+	if sequence < open {
+		return refuse(CodeSuperseded, "the upload with sequence %d supersedes this one, %d", open, sequence)
+	}
+	return refuse(CodeNoManifest, "the upload with sequence %d takes no more bodies", sequence)
 }
 
 // Inventory is the reply to the staged upload's manifest: the export the
@@ -419,9 +531,10 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     Once each is in repos/, the state directory is held to MaxStorage:
 //     a repository that took it past the cap is removed, and the upload
 //     is refused as too-large;
-//  4. removes the bodies and tmp/, and checks that the staging directory
-//     holds export.json and exactly those repositories, each at its
-//     source tip;
+//  4. stops the writers of the upload's bodies, and waits until each has
+//     closed its files (see Writer); removes the bodies and tmp/; and
+//     checks that the staging directory holds export.json and exactly
+//     those repositories, each at its source tip;
 //  5. stops if ctx is done; makes repos/ and the staging directory
 //     readable by every user, syncs export.json, repos/ and the staging
 //     directory, renames the staging directory into exports/, and syncs
@@ -504,7 +617,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		if err := s.build(ctx, st, p); err != nil {
 			return Generation{}, err
 		}
-		if err := s.checkUsage(); err != nil {
+		if err := s.checkUsage(ctx); err != nil {
 			if rerr := removeAll(st.Repo(p.Name)); rerr != nil {
 				return Generation{}, errors.Join(err, rerr)
 			}
@@ -512,6 +625,9 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		}
 	}
 
+	if err := s.discard(ctx, 0); err != nil {
+		return Generation{}, err
+	}
 	for _, d := range []string{st.Bodies(), st.tmp()} {
 		if err := removeAll(d); err != nil {
 			return Generation{}, err
@@ -947,7 +1063,8 @@ func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
 }
 
 // checkStorage refuses m as too-large when its upload would take the
-// state directory past MaxStorage. It counts what the directory holds now,
+// state directory past MaxStorage, and stops measuring once ctx is done.
+// It counts what the directory holds now,
 // less the staging directories in discard, which are older uploads Stage
 // discards and m's own. To that it adds everything the upload may write:
 // every body m declares, once for each SHA-256, since the publisher may
@@ -956,7 +1073,7 @@ func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
 // counts as large as its bundle, or as the active generation's repository
 // of it at the same source tip, which Activate carries, when that is
 // larger; and RepoOverhead more.
-func (s *Store) checkStorage(m *Manifest, discard []string) error {
+func (s *Store) checkStorage(ctx context.Context, m *Manifest, discard []string) error {
 	if s.MaxStorage <= 0 {
 		return nil
 	}
@@ -964,7 +1081,7 @@ func (s *Store) checkStorage(m *Manifest, discard []string) error {
 	for _, dir := range discard {
 		skip[dir] = true
 	}
-	held, err := usage(s.dir, skip)
+	held, err := usage(ctx, s.dir, skip)
 	if err != nil {
 		return err
 	}
@@ -1003,7 +1120,7 @@ func (s *Store) checkStorage(m *Manifest, discard []string) error {
 	for _, p := range m.Projects {
 		repo := p.Bundle.Size
 		if from, ok := carried[p.Name+" "+p.SourceTip]; ok {
-			n, err := usage(from, nil)
+			n, err := usage(ctx, from, nil)
 			if err != nil {
 				return err
 			}
@@ -1019,12 +1136,12 @@ func (s *Store) checkStorage(m *Manifest, discard []string) error {
 }
 
 // checkUsage refuses as too-large once the state directory takes more
-// than MaxStorage on disk.
-func (s *Store) checkUsage() error {
+// than MaxStorage on disk. It stops measuring once ctx is done.
+func (s *Store) checkUsage(ctx context.Context) error {
 	if s.MaxStorage <= 0 {
 		return nil
 	}
-	n, err := usage(s.dir, nil)
+	n, err := usage(ctx, s.dir, nil)
 	if err != nil {
 		return err
 	}
@@ -1037,10 +1154,14 @@ func (s *Store) checkUsage() error {
 // usage is what the tree at root takes on disk. Each file and directory
 // in it counts its size or the blocks it holds, whichever is more, and a
 // symlink is not followed. An entry deleted while usage walks is not
-// counted, and neither is a path in skip, nor anything under it.
-func usage(root string, skip map[string]bool) (int64, error) {
+// counted, and neither is a path in skip, nor anything under it. usage
+// stops with ctx's error once ctx is done.
+func usage(ctx context.Context, root string, skip map[string]bool) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("measuring %s: %w", root, err)
+		}
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}

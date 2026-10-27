@@ -572,6 +572,78 @@ func TestStoreSupersedesOlderUploads(t *testing.T) {
 	wantCode(t, err, export.CodeSuperseded)
 }
 
+// Stage stops the writers of an upload it discards, with a superseded
+// refusal as the cause, and deletes the upload only once each is done. A
+// Stage whose context ends while it waits deletes and stages nothing. A
+// writer of the discarded upload is refused as superseded after. Activate
+// stops the writers of the upload it commits, with a no-manifest refusal,
+// and removes its bodies only once each is done.
+func TestStoreStopsTheWritersOfDiscardedBodies(t *testing.T) {
+	f := exporttest.New(t)
+	s := openStore(t, t.TempDir())
+	older, newer := fixtureUpload(t, f), later(t, f, time.Minute)
+	stOlder := stage(t, f, s, older)
+	wctx, done, err := s.Writer(context.Background(), stOlder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := f.Admission()
+	a.Now = newer.m.SignedAt()
+	m, err := export.VerifyManifest(bytes.NewReader(f.Sign(t, newer.m)), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := s.Stage(ctx, m); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a manifest whose context ended while the older upload's writer ran gave %v", err)
+	}
+	wantCode(t, context.Cause(wctx), export.CodeSuperseded)
+	staging := filepath.Join(s.Dir(), "staging")
+	if got := entries(t, staging); !slices.Equal(got, []string{seqName(older)}) {
+		t.Errorf("staging holds %v while the older upload's writer runs, want the older upload alone", got)
+	}
+	done()
+	stNewer := stage(t, f, s, newer)
+	if got := entries(t, staging); !slices.Equal(got, []string{seqName(newer)}) {
+		t.Errorf("staging holds %v, want the newer upload alone", got)
+	}
+	_, _, err = s.Writer(context.Background(), stOlder)
+	wantCode(t, err, export.CodeSuperseded)
+
+	inv, err := s.Inventory(stNewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range inv.Needs {
+		putNeed(t, stNewer, newer, n)
+	}
+	wctx, done, err = s.Writer(context.Background(), stNewer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		_, err := s.Activate(context.Background(), stNewer)
+		committed <- err
+	}()
+	select {
+	case <-wctx.Done():
+	case <-time.After(20 * time.Second):
+		t.Fatal("Activate did not stop the writer of the upload it commits")
+	}
+	wantCode(t, context.Cause(wctx), export.CodeNoManifest)
+	select {
+	case err := <-committed:
+		t.Fatalf("Activate finished with %v before the writer was done", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	done()
+	if err := <-committed; err != nil {
+		t.Errorf("the commit once the writer is done: %v", err)
+	}
+}
+
 // A reader keeps the generation it opened for as long as it holds it, and
 // the generation is deleted once it is released.
 func TestStoreHoldsAGenerationForItsReader(t *testing.T) {

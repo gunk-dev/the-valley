@@ -1,9 +1,11 @@
 package export
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -19,6 +21,12 @@ import (
 // temporary file while it reads, renamed to the body's SHA-256 once the
 // size and hash match. A body already staged under that name has
 // verified, and is kept as it is.
+//
+// StageBody stops reading once the request's context is done, and keeps
+// nothing. Its error then wraps the context's cause, such as the refusal
+// Store.Writer gives a writer whose upload was discarded. Ending a read
+// that waits on the client is the caller's, as by the connection's read
+// deadline. StageBody removes its temporary file before it returns.
 //
 // It returns the staged file's path. Every refusal is an *Error.
 func StageBody(dir string, want Body, limit int64, req *http.Request) (string, error) {
@@ -54,8 +62,12 @@ func StageBody(dir string, want Body, limit int64, req *http.Request) (string, e
 			os.Remove(f.Name())
 		}
 	}()
+	ctx := req.Context()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(req.Body, want.Size+1))
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(contextReader{ctx, req.Body}, want.Size+1))
+	if cause := context.Cause(ctx); cause != nil {
+		return "", fmt.Errorf("%s was not staged: %w", want.Name, cause)
+	}
 	if err != nil {
 		return "", refuse(CodeUnreadable, "%s could not be read: %v", want.Name, err)
 	}
@@ -74,10 +86,27 @@ func StageBody(dir string, want Body, limit int64, req *http.Request) (string, e
 	if err := f.Close(); err != nil {
 		return "", err
 	}
+	if cause := context.Cause(ctx); cause != nil {
+		return "", fmt.Errorf("%s was not staged: %w", want.Name, cause)
+	}
 	if err := os.Rename(f.Name(), path); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}
 	kept = true
 	return path, nil
+}
+
+// contextReader reads r until ctx is done, and then fails with ctx's
+// cause.
+type contextReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c contextReader) Read(p []byte) (int, error) {
+	if cause := context.Cause(c.ctx); cause != nil {
+		return 0, cause
+	}
+	return c.r.Read(p)
 }

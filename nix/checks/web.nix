@@ -12,10 +12,12 @@
   # rule: what reaches export.json, hidden projects' edges, a knot that
   # waits on a hidden knot marked with waiting_on_hidden alone, the field
   # gone once its one hidden blocker is done, the display mapping, each
-  # public project's group and short aliases with only public projects'
-  # groups, and group names and aliases that collide refused. The
-  # content digest; strict reading of export.json, with
-  # nothing after its document; each of VerifyManifest's steps, in order;
+  # public project's group, web name, former names and short aliases with
+  # only public projects' groups, and names that collide refused, each
+  # case for the reason it names. The content digest; strict reading of
+  # export.json, with keys spelled exactly, none twice, and nothing after
+  # its document; the names checked, and the groups validated, stopping
+  # at each cancellation check; each of VerifyManifest's steps, in order;
   # the manifest's grammar and its agreement with export.json; the
   # streaming body check; bundle acceptance against real git, refusing
   # wrong tips, prerequisites, extra refs, corrupt objects and a header
@@ -36,12 +38,14 @@
   # manifest's capacity sweep stops once its context is done, leaving the
   # rest of the trash and releasing the lock; and an activation that
   # exceeds MaxStorage is refused, with the repository whose build passed
-  # the cap removed, while repositories built before it remain. An
-  # end-to-end pass uploads to a real valley-web-receive with
-  # its bearer token, a real valley-web serves the activated export, a pass
-  # with a wrong token fails as unauthenticated while the edge keeps serving,
-  # and a pass after withdrawing anyone's grant removes the project from the
-  # edge. go vet runs after the tests.
+  # the cap removed, while repositories built before it remain. The
+  # publisher refuses a host declaration that is malformed, null where cue
+  # exports an object, or names a project by something that is not a name,
+  # before a pass. An end-to-end pass uploads to a real valley-web-receive
+  # with its bearer token, a real valley-web serves the activated export, a
+  # pass with a wrong token fails as unauthenticated while the edge keeps
+  # serving, and a pass after withdrawing anyone's grant removes the project
+  # from the edge. go vet runs after the tests.
   web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
@@ -67,9 +71,13 @@
   # naming its published blockers and, once, unpublished work; groups and
   # projects named source, knots and web-export served on every route
   # under /<group>/<project>, and their roots redirected to their trees,
-  # while the server's own paths under /-/ are never a group's; a group's
-  # alias and a project's short alias answering with a permanent redirect
-  # that keeps the path and query as sent; every 404 the one page made at
+  # while the server's own paths under /-/ are never a group's; two groups
+  # each serving a project named app; a group's alias, a project's former
+  # name and a project's short alias answering with a permanent redirect
+  # that keeps the path and query as sent, a bare "?" too, and leads a
+  # browser that resolves its dot segments to a path on the same origin;
+  # the index of groups, aliases and former names stopping at each
+  # cancellation check; every 404 the one page made at
   # start, the box of text with no site name; a commit
   # main's tip does not reach, and every other object ID or name, refused
   # with the one 404; hostile README, file, file name, commit subject and

@@ -444,8 +444,10 @@ groups: demos: name: "demos"
 projects: demo: group: "demos"
 ```
 
-The web publisher publishes only projects in a group, at `/demos/demo/…` here. A renamed group keeps
-its former name in `aliases`, so its old links redirect (see
+The web publisher publishes only projects in a group, at `/demos/demo/…` here. The second segment is
+the project's web name, which is its identifier unless it gives another in `name`. A renamed group
+keeps its former name in `aliases`, and a project renamed on the web keeps its former web name in
+`formerNames`, so their old links redirect (see
 [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
 Add the-valley as an input named `valley` to your NixOS flake, using your administrator's source

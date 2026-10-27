@@ -3117,7 +3117,9 @@ choice**.
 
 ```cue
 groups: core: {name: "tools", aliases: ["t"]}
-projects: app: {group: "core", aliases: ["app"]}
+groups: web: name: "docs"
+projects: app: {group: "core", formerNames: ["tool"], aliases: ["app"]}
+projects: "docs-app": {group: "web", name: "app"}
 ```
 
 - **A group** is declared under an identifier that never changes, here `core`. Projects name their
@@ -3125,47 +3127,76 @@ projects: app: {group: "core", aliases: ["app"]}
   of its projects' URLs. Each of its `aliases` is another first segment. A renamed group keeps its
   former name among its aliases, and its old links redirect. A group has no members or stewards yet
   (**not built**).
-- **A project's identifier** is the name it is declared under in `projects`. Its repository, its
-  plan graph, its `policy/read` and its read grants name it by that name, and its URLs do too. A
-  project's name need be unique only within its group. The host declaration keys projects by name,
-  so they are unique across the host as well.
-- **A project's short aliases** are first segments too: `/app/…` redirects to `/tools/app/…`. A
-  project with aliases must be in a group.
+- **A project's identifier** is the name it is declared under in `projects`, here `app` and
+  `docs-app`. Its repository, its plan graph, its `policy/read` and its read grants name it by that
+  name. The host declaration keys projects by identifier, so identifiers are unique across the host,
+  and an identifier never changes.
+- **A project's web name** is the second segment of its URLs. It is the project's `name`, and when
+  the declaration gives none it is the identifier. Above, `app` is `/tools/app/…` and `docs-app` is
+  `/docs/app/…`. A web name is unique within its group only, so two groups may each hold a project
+  named `app`. A project can be renamed on the web by changing its web name, and its identifier
+  stays as it was.
+- **A project's former names** are earlier web names within its group. `/tools/tool/…` redirects to
+  `/tools/app/…`. A renamed project keeps its old web name here, and its old links redirect.
+- **A project's short aliases** are first segments: `/app/…` redirects to `/tools/app/…`.
 
-Group names, group aliases and project aliases share one namespace: the first segment of a URL. Two
-of them that differ at most in ASCII case collide, and so does a name given twice. `valley-web`
-reserves the prefix `/-/` for its own paths. Every name has the project-name shape, which starts
-with an ASCII letter or digit, so no name is ever `-`, and paths under `/-/` and a group's paths
-never shadow one another, whatever groups are named. A declaration that breaks these rules is
-refused in three places (`implemented`):
+A project with a web name of its own, former names or aliases must be in a group, because they name
+URLs that only a project in a group has.
+
+Names share two namespaces. Group names, group aliases and project aliases share the first segment
+of a URL. The web names and former names of one group's projects share the second segment of that
+group's URLs, and two groups' projects never collide. In each namespace, two names that differ at
+most in ASCII case collide, and so does a name given twice. `valley-web` reserves the prefix `/-/`
+for its own paths. Every name has the project-name shape, which starts with an ASCII letter or
+digit, so no name is ever `-`, and paths under `/-/` and a group's paths never shadow one another,
+whatever groups are named. A declaration that breaks these rules is refused in three places
+(`implemented`):
 
 1. `cue vet` refuses it when the host is built (`schema/valley.cue`).
 2. `valley-web-publish` refuses it when it reads `--host`, with `export.CheckNames`, and runs no
-   pass (`web/cmd/valley-web-publish/host.go`, `web/export/groups.go`).
+   pass (`web/cmd/valley-web-publish/host.go`, `web/export/groups.go`). It also refuses a
+   declaration that is not the object `cue export` prints: a document that is not an object, a
+   missing or null `projects` or `groups`, a null project or group, and a project identifier that is
+   not a project name. Without that refusal, a malformed file could read as a host with no projects,
+   and a pass would publish an export without them.
 3. `export.Validate` refuses an export whose names collide, when the publisher encodes it and when
    the receiver or `valley-web` decodes it (`web/export/export.go`).
 
 The export carries the groups that its public projects belong to and no other, and each public
-project's group and short aliases. A group that only private projects belong to, and a private
-project's aliases, never leave the host (`web/export/project.go`). An export from before groups
-still decodes, and `valley-web` serves none of its projects, because they have no URL.
+project's group, web name, former names and short aliases. A group that only private projects belong
+to, and a private project's web name, former names and aliases, never leave the host
+(`web/export/project.go`). An export from before groups still decodes, and `valley-web` serves
+none of its projects, because they have no URL.
 
-`valley-web` answers a URL under an alias with a permanent redirect, `308`, to the same path under
-the group's name, or under `/<group>/<project>` for a project's alias. It keeps the rest of the path
-and the query as the reader sent them, without cleaning. The server knows only what the export
-holds, so a hidden project answers every URL exactly as a missing one: under its group, under a
-group that does not exist, and under the short alias the instance gave it. Every `404` is one page,
-made once when the server starts, which names nothing of the request or the export
-(`web/server/render.go`; see [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
+`valley-web` answers a URL under an alias or a former name with a permanent redirect, `308`. A
+group's alias redirects to the same path under the group's name. A project's short alias redirects
+to the same path under `/<group>/<project>`, and a former name to the same path under its project's
+web name. The redirect keeps the rest of the path and the query as the reader sent them, without
+cleaning, and keeps a `?` with nothing after it. The `Location` is always a path on the server's own
+origin, because it opens with a group's name. A browser removes the dot segments the path kept, so a
+redirect may lead to another page of the same server, which answers as it would if asked directly.
+The server knows only what the export holds, so a hidden project answers every URL exactly as a
+missing one: under its group, under a group that does not exist, under the short alias the instance
+gave it, and under its former names. Every `404` is one page, made once when the server starts,
+which names nothing of the request or the export (`web/server/render.go`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
-Checked by `cue-vet`, which holds the four refused declarations to naming the collision or the
-missing group; by `web-unit` (`TestBuildRefuses`, `TestBuildExportsThePublicProjectsGroups`,
-`TestDecodeIsStrict`, `TestDecodeTakesAnExportWithoutGroups`, `TestGroupsComeFromTheHostDeclaration`
-and `TestACollidingHostDeclarationIsRefused`); and by `web-server-unit`
-(`TestHiddenProjectAnswersLikeMissing`, `TestAliasesRedirectPermanently`,
-`TestNotFoundIsTheOnePage`, and `TestProjectNamesBesideTheServersPaths`, which serves groups and
-projects named `source`, `knots`, and `web-export` on every route and checks that paths under `/-/`
-answer `404`).
+`valley-web` reads an export, checks its names and indexes its groups, aliases and former names
+while it loads a new generation. Each of those steps checks the load's context before each name it
+reads, so a cancelled load stops before it reads another name, and gives back its generation and its
+loader slot (`web/export/groups.go`, `web/export/export.go`, `web/server/plan.go`).
+
+Checked by `cue-vet`, which holds the eight refused declarations to naming the collision or the
+missing group, and exports two groups that each hold a project named `app`; by `web-unit`
+(`TestBuildRefuses`, `TestBuildExportsThePublicProjectsGroups`, `TestDecodeIsStrict`,
+`TestDecodeHoldsGroupsToTheirProjects`, `TestDecodeTakesAnExportWithoutGroups`,
+`TestCheckNamesStopsWhenCancelled`, `TestValidatingGroupsStopsWhenCancelled`,
+`TestGroupsComeFromTheHostDeclaration` and `TestAMalformedOrCollidingHostDeclarationIsRefused`); and
+by `web-server-unit` (`TestHiddenProjectAnswersLikeMissing`, `TestAliasesRedirectPermanently`,
+`TestTwoGroupsEachHoldAnApp`, `TestRedirectsLeadWhereTheBrowserGoes`,
+`TestPlacingStopsWhenCancelled`, `TestNotFoundIsTheOnePage`, and
+`TestProjectNamesBesideTheServersPaths`, which serves groups and projects named `source`, `knots`,
+and `web-export` on every route and checks that paths under `/-/` answer `404`).
 
 ### Slow readers
 

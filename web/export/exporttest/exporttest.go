@@ -232,7 +232,7 @@ func (f *Fixture) Upload(t testing.TB, s *export.Store) export.Generation {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := s.Stage(m)
+	st, err := s.Stage(context.Background(), m)
 	if err != nil {
 		t.Fatal(err)
 	}

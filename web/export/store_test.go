@@ -70,7 +70,7 @@ func receiver() int {
 	if err != nil {
 		return fail(err)
 	}
-	st, err := s.Stage(m)
+	st, err := s.Stage(context.Background(), m)
 	if err != nil {
 		return fail(err)
 	}
@@ -193,7 +193,7 @@ func stage(t *testing.T, f *exporttest.Fixture, s *export.Store, u upload) expor
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := s.Stage(m)
+	st, err := s.Stage(context.Background(), m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -358,7 +358,7 @@ func TestStoreRefusesReplays(t *testing.T) {
 	f := exporttest.New(t)
 	s := openStore(t, t.TempDir())
 	f.Upload(t, s)
-	_, err := s.Stage(f.Manifest)
+	_, err := s.Stage(context.Background(), f.Manifest)
 	wantCode(t, err, export.CodeReplayed)
 	hw, _ := s.HighWater()
 	a := f.Admission()
@@ -566,7 +566,7 @@ func TestStoreSupersedesOlderUploads(t *testing.T) {
 	if _, err := os.Lstat(stOlder.Dir); !os.IsNotExist(err) {
 		t.Error("the older upload's staging was kept")
 	}
-	_, err := s.Stage(older.m)
+	_, err := s.Stage(context.Background(), older.m)
 	wantCode(t, err, export.CodeSuperseded)
 	_, err = s.Activate(context.Background(), stOlder)
 	wantCode(t, err, export.CodeSuperseded)
@@ -706,6 +706,65 @@ func TestStoreSerialisesActivations(t *testing.T) {
 	}
 	if ok != 1 || replayed != 1 {
 		t.Errorf("%d commits activated and %d were refused as replayed; want one of each", ok, replayed)
+	}
+}
+
+// Stage and Activate wait for the store's lock only until their context
+// is done, and then do nothing: a manifest leaves no staging directory, and
+// a commit leaves the active generation as it was. Here the test holds the
+// lock, as another process's activation would.
+func TestStoreWaitsForItsLockUntilTheContextIsDone(t *testing.T) {
+	f := exporttest.New(t)
+	dir := t.TempDir()
+	s := openStore(t, dir)
+	first, err := send(t, f, s, fixtureUpload(t, f))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := later(t, f, time.Minute)
+	st := stage(t, f, s, u)
+	inv, _ := s.Inventory(st)
+	for _, n := range inv.Needs {
+		putNeed(t, st, u, n)
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := s.Activate(ctx, st); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("a commit waiting for a held lock past its deadline gave %v", err)
+	}
+	newer := later(t, f, 2*time.Minute)
+	a := f.Admission()
+	a.HighWater, a.Now = first.Sequence, newer.m.SignedAt()
+	m, err := export.VerifyManifest(bytes.NewReader(f.Sign(t, newer.m)), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gone, stop := context.WithCancel(context.Background())
+	stop()
+	if _, err := s.Stage(gone, m); !errors.Is(err, context.Canceled) {
+		t.Errorf("a manifest whose context is done gave %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "staging", strconv.FormatInt(m.Sequence, 10))); !errors.Is(err, fs.ErrNotExist) {
+		t.Error("a manifest whose context was done was staged")
+	}
+	if seq, _ := s.Active(); seq != first.Sequence {
+		t.Errorf("active is %d, want %d still", seq, first.Sequence)
+	}
+
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Activate(context.Background(), st); err != nil {
+		t.Errorf("the commit once the lock is free: %v", err)
 	}
 }
 

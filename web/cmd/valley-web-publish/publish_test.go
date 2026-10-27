@@ -443,7 +443,7 @@ func TestOutIsAnExportTheStoreActivates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := s.Stage(m)
+	st, err := s.Stage(context.Background(), m)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -847,7 +847,7 @@ func (rv *testReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fail(err)
 			return
 		}
-		st, err := rv.store.Stage(m)
+		st, err := rv.store.Stage(r.Context(), m)
 		if err != nil {
 			fail(err)
 			return

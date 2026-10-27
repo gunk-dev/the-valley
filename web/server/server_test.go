@@ -121,7 +121,7 @@ func (h *harness) publish(at time.Time, bundles map[string]string, change func(*
 	if m, err = export.VerifyManifest(bytes.NewReader(h.f.Sign(t, m)), a); err != nil {
 		t.Fatal(err)
 	}
-	st, err := h.store.Stage(m)
+	st, err := h.store.Stage(context.Background(), m)
 	if err != nil {
 		t.Fatal(err)
 	}

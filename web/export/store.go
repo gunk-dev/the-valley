@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 // ErrNoExport is Open's error when the receiver has activated no export.
@@ -60,6 +61,9 @@ type Store struct {
 	// readOnly is set by OpenReadOnly. Such a store refuses Stage and
 	// Activate.
 	readOnly bool
+	// turn holds a token while one of the store's goroutines holds the
+	// lock, so the others wait their turn on it.
+	turn chan struct{}
 }
 
 // errReadOnly is the error of Stage and Activate on a store OpenReadOnly
@@ -133,7 +137,7 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 	if report == nil {
 		report = func(error) {}
 	}
-	s := &Store{dir: abs, report: report}
+	s := &Store{dir: abs, report: report, turn: make(chan struct{}, 1)}
 	for _, d := range []string{abs, s.path("exports"), s.path("staging"), s.path("trash")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
@@ -145,7 +149,7 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 	if err := os.Chmod(s.path("staging"), 0o700); err != nil {
 		return nil, err
 	}
-	unlock, err := s.lock()
+	unlock, err := s.lock(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +183,7 @@ func OpenReadOnly(dir string) (*Store, error) {
 	if !info.IsDir() {
 		return nil, fmt.Errorf("%s is not a directory", abs)
 	}
-	return &Store{dir: abs, report: func(error) {}, readOnly: true}, nil
+	return &Store{dir: abs, report: func(error) {}, readOnly: true, turn: make(chan struct{}, 1)}, nil
 }
 
 // Dir is the state directory.
@@ -285,12 +289,13 @@ func (s *Store) Open() (Generation, func(), error) {
 // the bodies already staged in it. Staging a manifest discards the staging
 // directories of older ones. A manifest not newer than the high-water mark
 // is refused as replayed, and one older than another staged upload as
-// superseded.
-func (s *Store) Stage(m *Manifest) (Staging, error) {
+// superseded. Stage waits for the store's lock until ctx is done, and
+// stages nothing once it is.
+func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	if s.readOnly {
 		return Staging{}, errReadOnly
 	}
-	unlock, err := s.lock()
+	unlock, err := s.lock(ctx)
 	if err != nil {
 		return Staging{}, err
 	}
@@ -373,7 +378,9 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 
 // Activate commits a staged upload: it makes it the active generation, or
 // refuses it and leaves the active one as it was. It holds the store's
-// lock throughout, so activations are serialised. In order, it:
+// lock throughout, so activations are serialised. It waits for the lock
+// until ctx is done, and the git it runs is stopped once ctx is done. In
+// order, it:
 //
 //  1. refuses the upload unless its sequence is still greater than the
 //     high-water mark and nothing newer is staged, and as incomplete,
@@ -388,9 +395,10 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //  4. removes the bodies and tmp/, and checks that the staging directory
 //     holds export.json and exactly those repositories, each at its
 //     source tip;
-//  5. makes repos/ and the staging directory readable by every user,
-//     syncs export.json, repos/ and the staging directory, renames the
-//     staging directory into exports/, and syncs both parents;
+//  5. stops if ctx is done; makes repos/ and the staging directory
+//     readable by every user, syncs export.json, repos/ and the staging
+//     directory, renames the staging directory into exports/, and syncs
+//     both parents;
 //  6. writes high-water durably, once every file and directory of the
 //     generation is on disk;
 //  7. swaps active to the new generation;
@@ -412,7 +420,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	if s.readOnly {
 		return Generation{}, errReadOnly
 	}
-	unlock, err := s.lock()
+	unlock, err := s.lock(ctx)
 	if err != nil {
 		return Generation{}, err
 	}
@@ -477,6 +485,11 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		}
 	}
 	if err := checkStaged(ctx, st); err != nil {
+		return Generation{}, err
+	}
+	// Past here the upload is made the active generation, which a client
+	// gone away or out of time no longer wants.
+	if err := ctx.Err(); err != nil {
 		return Generation{}, err
 	}
 	for _, d := range []string{filepath.Join(st.Dir, "repos"), st.Dir} {
@@ -849,17 +862,55 @@ func (s *Store) delete(dir string) error {
 	return removeAll(trash)
 }
 
-// lock takes the store's activation lock, waiting for it.
-func (s *Store) lock() (unlock func(), err error) {
+// lock takes the store's activation lock, waiting for it until ctx is
+// done, and fails once ctx is done, even when the lock is free. The
+// store's own goroutines wait their turn on s.turn. The flock(2) lock then
+// holds off other processes, and lock polls for it, since a process
+// cannot stop waiting in flock(2) when ctx is done.
+func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
+	waiting := func() error { return fmt.Errorf("waiting for the lock on %s: %w", s.dir, ctx.Err()) }
+	if ctx.Err() != nil {
+		return nil, waiting()
+	}
+	select {
+	case s.turn <- struct{}{}:
+	case <-ctx.Done():
+		return nil, waiting()
+	}
 	f, err := os.OpenFile(s.path("lock"), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
+		<-s.turn
 		return nil, err
 	}
-	if err := flock(f, syscall.LOCK_EX); err != nil {
+	for pause := time.Millisecond; ; pause = min(2*pause, 100*time.Millisecond) {
+		err := flock(f, syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			<-s.turn
+			return nil, err
+		}
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			f.Close()
+			<-s.turn
+			return nil, waiting()
+		}
+	}
+	unlock = func() {
 		f.Close()
-		return nil, err
+		<-s.turn
 	}
-	return func() { f.Close() }, nil
+	// ctx may have been done while flock(2) succeeded, and the caller
+	// does no work once it is.
+	if ctx.Err() != nil {
+		unlock()
+		return nil, waiting()
+	}
+	return unlock, nil
 }
 
 // flock takes a lock on f's open file description, which closing f

@@ -86,13 +86,18 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The deadline bounds the connection's reads and writes, and ctx the
+	// store's work: waiting for its lock, and the git a commit runs. ctx
+	// is done, too, once the client goes away.
 	timeout := map[string]time.Duration{stepManifest: manifestTimeout, stepBody: bodyTimeout, stepCommit: commitTimeout}[step]
 	deadline := time.Now().Add(timeout)
 	rc.SetReadDeadline(deadline)
 	rc.SetWriteDeadline(deadline)
+	ctx, cancel := context.WithDeadline(r.Context(), deadline)
+	defer cancel()
 	switch step {
 	case stepManifest:
-		inv, err := rv.manifest(r)
+		inv, err := rv.manifest(ctx, r)
 		if err != nil {
 			rv.fail(w, r, err)
 			return
@@ -105,8 +110,6 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(w, http.StatusNoContent, nil)
 	case stepCommit:
-		ctx, cancel := context.WithDeadline(r.Context(), deadline)
-		defer cancel()
 		g, err := rv.commit(ctx, seq)
 		if err != nil {
 			rv.fail(w, r, err)
@@ -158,8 +161,9 @@ func isSHA256(s string) bool {
 }
 
 // manifest is step 1: admit the manifest, hold its bodies to the caps,
-// stage it, and reply with the inventory.
-func (rv *receiver) manifest(r *http.Request) (export.Inventory, error) {
+// stage it, and reply with the inventory. Staging waits for the store's
+// lock, which a commit holds throughout, until ctx is done.
+func (rv *receiver) manifest(ctx context.Context, r *http.Request) (export.Inventory, error) {
 	hw, err := rv.store.HighWater()
 	if err != nil {
 		return export.Inventory{}, err
@@ -172,7 +176,7 @@ func (rv *receiver) manifest(r *http.Request) (export.Inventory, error) {
 	if err := m.CheckSizes(rv.maxBody, rv.maxUpload); err != nil {
 		return export.Inventory{}, err
 	}
-	st, err := rv.store.Stage(m)
+	st, err := rv.store.Stage(ctx, m)
 	if err != nil {
 		return export.Inventory{}, err
 	}
@@ -230,7 +234,7 @@ func (rv *receiver) body(r *http.Request, seq int64, sum string) error {
 	return err
 }
 
-// commit is step 3: activate the upload with sequence.
+// commit is step 3: activate the upload with sequence, until ctx is done.
 func (rv *receiver) commit(ctx context.Context, seq int64) (export.Generation, error) {
 	st, err := rv.upload(seq)
 	if err != nil {

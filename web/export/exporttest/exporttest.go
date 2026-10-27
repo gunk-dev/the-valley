@@ -7,8 +7,8 @@
 // Both belong to one group, whose identifier is core and whose name, which
 // its web URLs open with, is tools; t is its alias. Each project's web
 // name is its identifier, and its short alias too. app was renamed from
-// old-app, which it keeps as a former name. The export carries app's
-// names alone.
+// old-app, and site from old-site, which each keeps as a former name. The
+// export carries app's names alone.
 // app has a milestone with five children, among them a claimed knot, an
 // unclaimed knot in progress, a knot blocked by a local knot and by one of
 // site's, a bug whose body and comment hold HTML, and comments by mapped
@@ -71,7 +71,7 @@ var (
 	Groups     = []export.Group{{ID: "core", Name: "tools", Aliases: []string{"t"}}}
 	Placements = map[string]export.Placement{
 		"app":  {Group: "core", Name: "app", FormerNames: []string{"old-app"}, Aliases: []string{"app"}},
-		"site": {Group: "core", Name: "site", Aliases: []string{"site"}},
+		"site": {Group: "core", Name: "site", FormerNames: []string{"old-site"}, Aliases: []string{"site"}},
 	}
 )
 

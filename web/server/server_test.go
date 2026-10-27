@@ -394,9 +394,9 @@ func TestKnotPage(t *testing.T) {
 // A project the export does not hold as public answers every route
 // exactly as a project that does not exist, even when its repository is
 // in the generation's directory: under its group's name, under a group
-// that does not exist, and under the short alias the instance gives it,
-// which the export does not carry. Through the group's alias, both answer
-// with the same redirect.
+// that does not exist, and under the short alias and the former name the
+// instance gives it, which the export does not carry. Through the group's
+// alias, both answer with the same redirect.
 func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 	h := newHarness(t)
 	g := h.active()
@@ -421,6 +421,7 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 			{"/tools/site" + route, "/tools/nosuch" + route},
 			{"/core/site" + route, "/nosuch/site" + route},
 			{"/site" + route, "/nosuch" + route},
+			{"/tools/old-site" + route, "/tools/nosuch" + route},
 		} {
 			hidden, missing := h.get(pair[0]), h.get(pair[1])
 			if hidden.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
@@ -433,12 +434,14 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 				t.Errorf("%s answered with another page hidden than missing", pair[0])
 			}
 		}
-		hidden, missing := h.get("/t/site"+route), h.get("/t/nosuch"+route)
-		if hidden.Code != http.StatusPermanentRedirect || hidden.Header().Get("Location") != "/tools/site"+route ||
-			missing.Code != http.StatusPermanentRedirect || missing.Header().Get("Location") != "/tools/nosuch"+route ||
-			!bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) {
-			t.Errorf("/t/site%s answered %d to %q, and /t/nosuch%s %d to %q", route, hidden.Code, hidden.Header().Get("Location"),
-				route, missing.Code, missing.Header().Get("Location"))
+		for _, name := range []string{"site", "old-site"} {
+			hidden, missing := h.get("/t/"+name+route), h.get("/t/nosuch"+route)
+			if hidden.Code != http.StatusPermanentRedirect || hidden.Header().Get("Location") != "/tools/"+name+route ||
+				missing.Code != http.StatusPermanentRedirect || missing.Header().Get("Location") != "/tools/nosuch"+route ||
+				!bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) {
+				t.Errorf("/t/%s%s answered %d to %q, and /t/nosuch%s %d to %q", name, route, hidden.Code, hidden.Header().Get("Location"),
+					route, missing.Code, missing.Header().Get("Location"))
+			}
 		}
 	}
 }

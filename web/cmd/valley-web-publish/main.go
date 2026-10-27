@@ -47,8 +47,9 @@
 // the destination covers it (schema/identity.cue), and the host declaration
 // places it in a group. Package readaccess reads and evaluates the two
 // consents. The export carries each public project's group and short
-// aliases, and the groups public projects belong to. A policy or registry that is missing, or that its schema refuses,
-// consents to nothing, so the project is private. A project a grant names
+// aliases, and the groups public projects belong to. A policy or registry
+// that is missing, or that its schema refuses, consents to nothing, so the
+// project is private. A project a grant names
 // that cannot be read fails the pass, which then sends nothing: an export
 // without it would take it off the web. A project no grant names is
 // private whether or not it can be read.
@@ -86,11 +87,10 @@ upload them to the receiver at URL, or write them to DIR.
 
   --instance-repo URL  an absolute local path to the instance repository,
                        the origin of the publisher's own bare repository,
-                       which the valley
-                       CLI discovers projects and signers through; its
-                       main holds policy/instance and no policy/valley;
-                       URL holds no #, no control character, and no space
-                       at either end
+                       which the valley CLI discovers projects and
+                       signers through; its main holds policy/instance
+                       and no policy/valley; URL holds no #, no control
+                       character, and no space at either end
   --instance NAME      the instance the manifest names, and the export
                        key's signing name, NAME/web-export
   --destination NAME   the receiver the manifest is for, and the destination
@@ -101,7 +101,9 @@ upload them to the receiver at URL, or write them to DIR.
                        project's group, web name, former names, and
                        aliases; colliding names are refused, and a
                        project in no group is private
-  --receiver URL       the receiver's base URL, http or https
+  --receiver URL       the receiver's base URL, http or https; an upload
+                       connects to it directly, and ignores HTTP_PROXY,
+                       HTTPS_PROXY and every other proxy setting
   --receiver-token FILE
                        the receiver's token, which every request of an
                        upload carries in its Authorization header: one
@@ -243,7 +245,7 @@ func parseArgs(args []string) (config, error) {
 	case c.readSchema == "" || c.idSchema == "":
 		return c, errors.New("no schema: give --read-schema and --identity-schema, or set VALLEY_READ_SCHEMA and VALLEY_IDENTITY_SCHEMA")
 	case c.recheck < 0:
-		return c, errors.New("--recheck is not negative")
+		return c, errors.New("--recheck is negative; give a duration of zero or more")
 	}
 	if c.receiver != "" {
 		if err := checkReceiver(c.receiver); err != nil {

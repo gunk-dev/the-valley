@@ -391,7 +391,7 @@ func (p *publisher) sequenceAfter(ctx context.Context, highWater int64) (int64, 
 	}
 	behind := time.Duration(highWater-seq) + time.Millisecond
 	if behind > maxClockWait {
-		return 0, fmt.Errorf("the receiver has accepted sequence %d, signed at %s, and this host's clock is %s behind it; the pass waits for the clock rather than publish out of order", highWater, time.Unix(0, highWater).UTC().Format(time.RFC3339), behind.Round(time.Second))
+		return 0, fmt.Errorf("the receiver has accepted sequence %d, signed at %s, and this host's clock is %s behind it, too far to wait; the pass fails rather than publish out of order", highWater, time.Unix(0, highWater).UTC().Format(time.RFC3339), behind.Round(time.Second))
 	}
 	if err := p.sleep(ctx, behind); err != nil {
 		return 0, err
@@ -478,13 +478,12 @@ func checkReceiver(raw string) error {
 }
 
 // newClient is the HTTP client uploads are made with. It follows no
-// redirect: the receiver is the URL configured, and neither a POST nor
-// the token is ever sent elsewhere.
+// redirect and uses no proxy: it connects to the receiver configured, and
+// neither a POST nor the token is ever sent elsewhere.
 func newClient() *http.Client {
 	return &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           (&net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
 			TLSHandshakeTimeout:   30 * time.Second,
 			ResponseHeaderTimeout: commitTimeout,

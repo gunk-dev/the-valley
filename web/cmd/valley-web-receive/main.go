@@ -68,11 +68,12 @@ that valley-web serves.
                        passed to the publisher's --receiver-token
   --max-body SIZE      maximum declared byte size of a single body
                        (default 1G)
-  --max-upload SIZE    maximum total declared byte size of all bodies in
-                       one manifest (default 2G)
-  --max-storage SIZE   maximum disk space used by the state directory,
-                       including held generations, staged bodies, and
-                       built repositories (default 8G)
+  --max-upload SIZE    maximum total declared byte size of the unique
+                       bodies in one manifest, each SHA-256 counted once
+                       (default 2G)
+  --max-storage SIZE   best-effort cap on the disk space used by the state
+                       directory, including held generations, staged
+                       bodies, and built repositories (default 8G)
 
 A SIZE is a positive byte count, optionally suffixed with K, M, G, or T
 for KiB, MiB, GiB, or TiB.
@@ -220,7 +221,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	defer cancel()
 	if err := srv.Shutdown(shutdown); err != nil {
 		// Requests still running are ended: closing their connections
-		// cancels their contexts, which stops the git a commit runs.
+		// cancels their contexts, which kills the process group of the
+		// git a commit runs.
 		// Close returns without waiting for them, and a process that
 		// exited first could leave that git running.
 		srv.Close()

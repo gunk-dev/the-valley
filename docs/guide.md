@@ -811,10 +811,12 @@ receiver's user with mode `0750`. `valley-web` reads the volume through the shar
 
 Give each container its own memory limit. When a container reaches `--memory`, the kernel reclaims
 memory or kills a process inside that container alone. Setting `--memory-swap` equal to `--memory`
-disables swap for the container, matching the NixOS module's units. Keep the sum of both limits well
-within the host's physical memory so a spike in one container cannot starve the other or the host.
-The `2g` and `1g` limits above match the module's defaults for `receiverMemoryMax` and
-`webMemoryMax`; sizing them for the edge's uploads and readers is a deployment choice.
+disables swap for the container, matching the NixOS module's units. A limit keeps a spike in one
+container from taking the other's memory or the host's only when the host has room for both limits
+and for its own work. So keep the sum of both limits below the host's physical memory, with explicit
+headroom left for the host's own work. The `2g` and `1g` limits above match the module's defaults
+for `receiverMemoryMax` and `webMemoryMax`; sizing them for the edge's uploads and readers is a
+deployment choice.
 
 The receiver caps the state directory at `--max-storage` (8 GiB by default). Because `--max-storage`
 is best effort, place the state directory on a fixed-size filesystem or under a disk quota slightly

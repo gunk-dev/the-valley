@@ -3270,12 +3270,13 @@ three ways:
   `valley-web` continues serving within its own limits.
 - **Separate users.** `valley-web` handles requests from anonymous readers. Its user has read-only
   access to the state directory and no access to the receiver token, so a fault in `valley-web`
-  cannot alter served content or expose the token.
-- **Separate memory.** Each process has its own memory limit, which covers both the Go process and
-  the `git` commands it spawns. On NixOS, the receiver module sets `MemoryMax` with no swap on each
-  service unit. In containers, each container's memory and swap limits are a **deployment choice**;
-  the guide's example commands set both. Without per-process memory limits, a memory spike in the
-  receiver could exhaust host memory and affect `valley-web`.
+  cannot modify the stored export or expose the token.
+- **Separate memory.** Each process's memory limit is a **deployment choice**. A limit covers both
+  the Go process and the `git` commands it spawns. On NixOS, the receiver module sets `MemoryMax`
+  with no swap on each service unit, from its `receiverMemoryMax` and `webMemoryMax` options, which
+  default to `2G` and `1G`. In containers, each container's memory and swap limits are set where the
+  container is started; the guide's example commands set both. Without per-process memory limits, a
+  memory spike in the receiver could exhaust host memory and affect `valley-web`.
 
 A single process with two listeners would share one heap, one file-descriptor table, and one Unix
 user between public reads and uploads, allowing load or a fault on one side to affect the other.
@@ -3317,20 +3318,23 @@ usage (`web/cmd/valley-web-receive/main.go`, `web/cmd/valley-web-receive/receive
   per-step time limit bounds connection reads and writes as well as store operations: 1 minute for a
   manifest, 30 minutes for a body, and 30 minutes for a commit. If that limit expires or the client
   disconnects while a manifest request is waiting for the store lock, measuring the state directory,
-  or waiting for an older upload's body writers to stop, `Store.Stage` stops without deleting or
-  staging anything. Likewise, if the limit expires or the client disconnects while a commit request
-  waits for the lock or builds repositories, `Store.Activate` stops any running `git` subprocess and
-  activates nothing.
+  sweeping it, or waiting for an older upload's body writers to stop, `Store.Stage` stops and
+  releases the lock. It checks the context before each directory it deletes or creates, and each
+  deletion stops part way once the context is done, leaving the rest in the trash for the next
+  sweep. Likewise, if the limit expires or the client disconnects while a commit request waits for
+  the lock or builds repositories, `Store.Activate` kills the process group of any running `git`,
+  with every process that `git` started, and activates nothing. Each `git` runs in a process group
+  of its own (`web/export/bundle.go`).
 - **Connections.** At most 32 connections are open at once; additional connections wait in the
   listen queue. The server closes a connection that sends no complete request headers within 10
   seconds, and closes an idle connection after 1 minute. Every request — including `OPTIONS *` —
   reaches the receiver's own handler, which refuses unauthenticated requests and closes their
   connections before reading any request body. On shutdown, the receiver closes its listener first,
   which immediately unblocks any wait for a free connection slot. It gives in-flight requests up to
-  10 seconds to finish, then closes their connections to cancel their contexts and stop any commit's
-  `git` subprocess. It waits up to 5 seconds more for those requests and their `git` subprocesses to
-  exit before terminating, so a stop takes at most 15 seconds regardless of how many connections are
-  open.
+  10 seconds to finish, then closes their connections to cancel their contexts, which kills the
+  process group of any commit's `git`. It waits up to 5 seconds more for those requests and their
+  `git` subprocesses to exit before terminating, so a stop takes at most 15 seconds regardless of
+  how many connections are open.
 - **Bodies.** At step 1, `Manifest.CheckSizes` refuses a manifest as `too-large` when any declared
   body exceeds `--max-body` or when the unique declared bodies together exceed `--max-upload`. At
   step 2, `export.StageBody` checks `--max-body` again and reads at most one byte past the declared
@@ -3423,12 +3427,19 @@ Checked by:
     accepts the newer manifest's upload of the same body.
   - `TestAReleasedGenerationMakesRoomForAnUpload` checks that a manifest is refused for space while
     a reader holds a large old generation and is accepted once the reader releases it.
-  - `TestStopsOnSIGTERM` and `TestAStopWaitsForTheGitACommitRuns` check that `SIGTERM` stops the
-    receiver within 15 seconds when all connections are held and waits for a stalled commit's `git`
-    subprocess to exit before the receiver exits.
+  - `TestStopsOnSIGTERM` checks that `SIGTERM` stops the receiver when all connections are held. It
+    allows the 10-second stop and 5-second drain timeouts plus 5 seconds of tolerance, 20 seconds in
+    all, and waits up to 25 seconds for the receiver to exit.
+  - `TestACommitWhoseClientGoesAwayStopsItsGit` and `TestAStopWaitsForTheGitACommitRuns` run a `git`
+    that stalls in `commit-graph` as a shell with a forked child that holds `git`'s output open.
+    They check that a client disconnecting during a commit, and a `SIGTERM` during one, each kill
+    both the shell and its child. After the disconnect, the bundle stays staged and the commit made
+    again activates the upload. After the `SIGTERM`, the receiver exits only once the commit has
+    ended.
 - `web-unit`, which tests `Store.Stage` and `Store.Activate` lock cancellation
-  (`TestStoreWaitsForItsLockUntilTheContextIsDone`), stopping active body writers on discard and
-  commit (`TestStoreStopsTheWritersOfDiscardedBodies`), post-build storage enforcement
+  (`TestStoreWaitsForItsLockUntilTheContextIsDone`), a capacity sweep that stops once its context is
+  done (`TestStoreSweepStopsWithItsContext`), stopping active body writers on discard and commit
+  (`TestStoreStopsTheWritersOfDiscardedBodies`), post-build storage enforcement
   (`TestStoreHoldsActivationToMaxStorage`), and end-to-end publication from `valley-web-publish` to
   the real receiver and `valley-web` including wrong-token refusal and grant withdrawal
   (`TestPublishesToTheRealReceiver`).

@@ -2476,11 +2476,16 @@ valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
   each activated sequence, and any error passed to `export.OpenStore`'s report callback. It never
   logs the token, and an unreadable or invalid token file or verifier file is reported without its
   contents. On `SIGINT` or `SIGTERM`, the receiver stops accepting new connections, gives in-flight
-  requests 10 seconds to finish, then closes their connections (stopping any running commit's `git`
-  subprocess) and waits up to 5 seconds more for those requests and their `git` subprocesses to
-  exit. Stopping a commit mid-run leaves the active export unchanged. The receiver exits `0` after a
-  clean stop, `1` on a runtime failure, and `2` on invalid flags. `--help` prints usage on `stderr`
-  and exits `0`.
+  requests 10 seconds to finish, then closes their connections, which kills the process group of any
+  running commit's `git`. It waits up to 5 seconds more for those requests and their `git`
+  subprocesses to exit. A commit stopped while it waits for the store lock, builds or checks
+  repositories, or waits for body writers leaves the active export unchanged. Once a commit passes
+  its last check of the request's context, after every repository is built and checked, it does not
+  stop: it moves the generation into `exports/`, writes `high-water`, and swaps `active`. A receiver
+  that exits during those steps leaves what a crash leaves: the next start activates the generation
+  if `high-water` names it, and discards it otherwise. The receiver exits `0` after a clean stop,
+  `1` on a runtime failure, and `2` on invalid flags. `--help` prints usage on `stderr` and exits
+  `0`.
 - **Routes:** The receiver checks the bearer token first on every request. Authenticated requests
   use three routes:
 
@@ -2523,8 +2528,9 @@ time limit expires or its client disconnects. Any internal failure that is not a
   a new manifest.
 
 - **The container image:** The `valley-web-image` package is a container image built with
-  `dockerTools.buildLayeredImage`. It holds `valley-web` and `valley-web-receive` at `/bin` along
-  with the `git` binary both run.
+  `dockerTools.buildLayeredImage`. It holds `valley-web` and `valley-web-receive` at `/bin`, and the
+  `git` both run. Each program runs `git` at the Nix store path it was built with, which the image
+  holds. The image puts no `git` at `/bin/git`.
 
   | Path or setting        | Value                                                              |
   | :--------------------- | :----------------------------------------------------------------- |

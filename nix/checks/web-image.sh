@@ -36,6 +36,8 @@ grep -qx 'valley-web-receive:x:990:990:valley-web-receive:/var/empty:/bin/false'
 grep -qx 'valley-web:x:991:990:valley-web:/var/empty:/bin/false' "$(inside /etc/passwd)" ||
   fail "/etc/passwd does not name valley-web's user"
 grep -qx 'valley-web:x:990:' "$(inside /etc/group)" || fail "/etc/group does not name the valley-web group"
+# Each program runs git at the store path it was built with, not at
+# /bin/git, so the image must hold that store path.
 for program in valley-web valley-web-receive; do
   link=$(readlink "root/bin/$program") || fail "/bin/$program is missing"
   [ -x "root$link" ] || fail "/bin/$program points at $link, which the image does not hold"

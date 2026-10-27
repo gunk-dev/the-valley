@@ -175,18 +175,18 @@ a push while that record does not match the running configuration (`nix/valley-h
 
 ## Threat model
 
-| Threat                              | Response                                                                                                                                                                                                                                                |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                                                    |
-| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                                            |
-| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.                             |
-| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                                             |
-| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                                     |
-| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                                      |
-| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                                                 |
-| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)).                      |
-| A stranger reaching the receiver    | The receiver refuses the request as `unauthenticated` before reading any other part of it, without taking a request slot. A connection flood can still delay uploads while `valley-web` keeps serving (see [The edge's receiver](#the-edges-receiver)). |
-| A stolen receiver token             | The holder can spend the receiver's capacity up to its caps. Serving a new export still requires a manifest signed by the export key (see [The edge's receiver](#the-edges-receiver)).                                                                  |
+| Threat                              | Response                                                                                                                                                                                                                                            |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                                                |
+| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                                        |
+| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.                         |
+| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                                         |
+| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                                 |
+| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                                  |
+| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                                             |
+| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)).                  |
+| A stranger reaching the receiver    | The receiver refuses the request as `unauthenticated` before reading the request body, without taking a request slot. A connection flood can still delay uploads while `valley-web` keeps serving (see [The edge's receiver](#the-edges-receiver)). |
+| A stolen receiver token             | The holder can spend the receiver's capacity up to its caps. Serving a new export still requires a manifest signed by the export key (see [The edge's receiver](#the-edges-receiver)).                                                              |
 
 ## Refs are read by their exact names
 
@@ -390,8 +390,8 @@ holder of the publisher's export key can authorize content for the edge to serve
 grants upload access alone.
 
 **The token decides who may use the receiver.** Every request must carry the bearer token in its
-`Authorization` header. The receiver checks the header before reading any other part of the request
-and refuses an unauthenticated request as `unauthenticated` (`implemented`,
+`Authorization` header. The receiver checks the header before reading the request body and refuses
+an unauthenticated request as `unauthenticated` (`implemented`,
 `web/cmd/valley-web-receive/receive.go`). A stranger who reaches the receiver cannot trigger
 manifest verification, stream a body into staging, or start a commit. A holder of the token without
 the export key can spend the receiver's staging and request capacity up to its caps, while what the

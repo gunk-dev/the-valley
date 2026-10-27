@@ -768,6 +768,34 @@ func TestStoreWaitsForItsLockUntilTheContextIsDone(t *testing.T) {
 	}
 }
 
+// Activate measures the state directory after it builds each repository.
+// An upload that took the directory past MaxStorage is refused as
+// too-large, the repository it built is removed, and the active generation
+// stays as it was. Once the cap allows it, the same upload activates.
+func TestStoreHoldsActivationToMaxStorage(t *testing.T) {
+	f := exporttest.New(t)
+	s := openStore(t, t.TempDir())
+	u := fixtureUpload(t, f)
+	st := stage(t, f, s, u)
+	inv, _ := s.Inventory(st)
+	for _, n := range inv.Needs {
+		putNeed(t, st, u, n)
+	}
+	s.MaxStorage = 1
+	_, err := s.Activate(context.Background(), st)
+	wantCode(t, err, export.CodeTooLarge)
+	if repos, _ := os.ReadDir(filepath.Join(st.Dir, "repos")); len(repos) != 0 {
+		t.Errorf("the refused upload kept %d repositories", len(repos))
+	}
+	if _, err := s.Active(); !errors.Is(err, export.ErrNoExport) {
+		t.Errorf("a refused upload left active at %v", err)
+	}
+	s.MaxStorage = 0
+	if _, err := s.Activate(context.Background(), st); err != nil {
+		t.Errorf("the upload with no cap: %v", err)
+	}
+}
+
 // A crash between writing high-water and swapping active is finished by
 // the next OpenStore, which swaps active to the generation high-water
 // names.

@@ -56,6 +56,14 @@ var ErrNoExport = errors.New("no export has been activated")
 // exports/: the receiver opens it with OpenStore, and a server with
 // OpenReadOnly, which writes nothing.
 type Store struct {
+	// MaxStorage is the most bytes the state directory may take on disk,
+	// as usage counts them, or 0 for no cap. Stage refuses a manifest
+	// whose upload, by checkStorage's estimate, would take the directory
+	// past it. Activate measures the directory after it builds each
+	// repository, and refuses an upload that took it past. Set it before
+	// the store is used.
+	MaxStorage int64
+
 	dir    string
 	report func(error)
 	// readOnly is set by OpenReadOnly. Such a store refuses Stage and
@@ -65,6 +73,14 @@ type Store struct {
 	// lock, so the others wait their turn on it.
 	turn chan struct{}
 }
+
+// RepoOverhead is what Stage counts for each repository an upload builds,
+// beyond the bundle it is fetched from or the repository it is carried
+// from: git's own files, the index of each pack, the commit-graph, and
+// the blocks small objects take when git keeps them loose. It is an
+// estimate. A repository of many objects takes more, and Activate's
+// measure after each build catches that.
+const RepoOverhead = 1 << 20
 
 // errReadOnly is the error of Stage and Activate on a store OpenReadOnly
 // opened.
@@ -288,9 +304,10 @@ func (s *Store) Open() (Generation, func(), error) {
 // VerifyManifest admitted. A manifest posted again finds its directory and
 // the bodies already staged in it. Staging a manifest discards the staging
 // directories of older ones. A manifest not newer than the high-water mark
-// is refused as replayed, and one older than another staged upload as
-// superseded. Stage waits for the store's lock until ctx is done, and
-// stages nothing once it is.
+// is refused as replayed, one older than another staged upload as
+// superseded, and one whose upload would take the state directory past
+// MaxStorage as too-large (see checkStorage). Stage waits for the store's
+// lock until ctx is done, and stages nothing once it is.
 func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	if s.readOnly {
 		return Staging{}, errReadOnly
@@ -307,17 +324,24 @@ func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	if err != nil {
 		return Staging{}, err
 	}
+	var older []string
 	for _, seq := range staged {
 		if seq > m.Sequence {
 			return Staging{}, refuse(CodeSuperseded, "the upload with sequence %d supersedes this one, %d", seq, m.Sequence)
 		}
 		if seq < m.Sequence {
-			if err := removeAll(s.path("staging", strconv.FormatInt(seq, 10))); err != nil {
-				return Staging{}, err
-			}
+			older = append(older, s.path("staging", strconv.FormatInt(seq, 10)))
 		}
 	}
 	st := Staging{Manifest: m, Dir: s.path("staging", strconv.FormatInt(m.Sequence, 10))}
+	if err := s.checkStorage(m, append(older, st.Dir)); err != nil {
+		return Staging{}, err
+	}
+	for _, dir := range older {
+		if err := removeAll(dir); err != nil {
+			return Staging{}, err
+		}
+	}
 	for _, d := range []string{st.Dir, st.Bodies(), filepath.Join(st.Dir, "repos")} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return Staging{}, err
@@ -391,7 +415,10 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     bundle through AcceptBundle, or the active generation's repository
 //     at the same source tip through CarryRepo. A repository is built
 //     under tmp/, made readable by every user, every file and directory
-//     of it is synced to disk, and only then is it renamed into repos/;
+//     of it is synced to disk, and only then is it renamed into repos/.
+//     Once each is in repos/, the state directory is held to MaxStorage:
+//     a repository that took it past the cap is removed, and the upload
+//     is refused as too-large;
 //  4. removes the bodies and tmp/, and checks that the staging directory
 //     holds export.json and exactly those repositories, each at its
 //     source tip;
@@ -475,6 +502,12 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 			continue
 		}
 		if err := s.build(ctx, st, p); err != nil {
+			return Generation{}, err
+		}
+		if err := s.checkUsage(); err != nil {
+			if rerr := removeAll(st.Repo(p.Name)); rerr != nil {
+				return Generation{}, errors.Join(err, rerr)
+			}
 			return Generation{}, err
 		}
 	}
@@ -911,6 +944,130 @@ func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
 		return nil, waiting()
 	}
 	return unlock, nil
+}
+
+// checkStorage refuses m as too-large when its upload would take the
+// state directory past MaxStorage. It counts what the directory holds now,
+// less the staging directories in discard, which are older uploads Stage
+// discards and m's own. To that it adds everything the upload may write:
+// every body m declares, once for each SHA-256, since the publisher may
+// send any of them; and a repository for every project, each counted
+// apart, even when two projects name one bundle. A project's repository
+// counts as large as its bundle, or as the active generation's repository
+// of it at the same source tip, which Activate carries, when that is
+// larger; and RepoOverhead more.
+func (s *Store) checkStorage(m *Manifest, discard []string) error {
+	if s.MaxStorage <= 0 {
+		return nil
+	}
+	skip := map[string]bool{}
+	for _, dir := range discard {
+		skip[dir] = true
+	}
+	held, err := usage(s.dir, skip)
+	if err != nil {
+		return err
+	}
+	carried := map[string]string{}
+	g, release, err := s.Open()
+	defer release()
+	switch {
+	case errors.Is(err, ErrNoExport):
+	case err != nil:
+		return err
+	default:
+		e, err := g.Export()
+		if err != nil {
+			return err
+		}
+		for _, p := range e.Projects {
+			carried[p.Name+" "+p.SourceTip], _ = g.Repo(p.Name)
+		}
+	}
+	total, fits := held, true
+	add := func(n int64) {
+		// Compared before it is added, so the sum never overflows.
+		if !fits || n > s.MaxStorage-total {
+			fits = false
+			return
+		}
+		total += n
+	}
+	counted := map[string]bool{}
+	for _, b := range m.Bodies() {
+		if !counted[b.SHA256] {
+			counted[b.SHA256] = true
+			add(b.Size)
+		}
+	}
+	for _, p := range m.Projects {
+		repo := p.Bundle.Size
+		if from, ok := carried[p.Name+" "+p.SourceTip]; ok {
+			n, err := usage(from, nil)
+			if err != nil {
+				return err
+			}
+			repo = max(repo, n)
+		}
+		add(repo)
+		add(RepoOverhead)
+	}
+	if !fits {
+		return refuse(CodeTooLarge, "the state directory takes %d bytes on disk, and the upload with sequence %d would take it past this receiver's cap of %d", held, m.Sequence, s.MaxStorage)
+	}
+	return nil
+}
+
+// checkUsage refuses as too-large once the state directory takes more
+// than MaxStorage on disk.
+func (s *Store) checkUsage() error {
+	if s.MaxStorage <= 0 {
+		return nil
+	}
+	n, err := usage(s.dir, nil)
+	if err != nil {
+		return err
+	}
+	if n > s.MaxStorage {
+		return refuse(CodeTooLarge, "the state directory takes %d bytes on disk, past this receiver's cap of %d", n, s.MaxStorage)
+	}
+	return nil
+}
+
+// usage is what the tree at root takes on disk. Each file and directory
+// in it counts its size or the blocks it holds, whichever is more, and a
+// symlink is not followed. An entry deleted while usage walks is not
+// counted, and neither is a path in skip, nor anything under it.
+func usage(root string, skip map[string]bool) (int64, error) {
+	var total int64
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if skip[path] {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		info, err := d.Info()
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		n := info.Size()
+		if st, ok := info.Sys().(*syscall.Stat_t); ok {
+			n = max(n, st.Blocks*512)
+		}
+		total += n
+		return nil
+	})
+	return total, err
 }
 
 // flock takes a lock on f's open file description, which closing f

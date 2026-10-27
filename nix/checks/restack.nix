@@ -79,7 +79,16 @@ in
   # fixture host's rendered hook, the restack append is pushed through it
   # as the restacker principal: the hook takes the active title and
   # refuses a forged one, and takes a report from the restacker and not
-  # from the change's owner.
+  # from the change's owner. Through the same hook, write passes run as
+  # once runs them: after a landing, a two-owner stack is restacked once,
+  # each layer on the new one below it, while a conflict beside it moves
+  # nothing, is reported, and is not tried again; a request holds its
+  # family until its outcome is a current stale; a journal left after
+  # any of its steps is finished with one version per change; an owner's
+  # push to a restacked branch stops that version, reported partial; a
+  # request between the phases pauses the versions and keeps the journal
+  # open until it is released; the project's cap holds; and run converges
+  # on a change readied after the landing, and ends when stopped.
   restack-unit = packages.restack-unwrapped.unit.overrideAttrs {
     inherit initScript;
     passAsFile = [ "initScript" ];
@@ -131,6 +140,15 @@ in
   # name, and releases the rejected change's family on the real outcome,
   # noting the reject. A signer projects file that does not read stops
   # the pass.
+  #
+  # Then write passes through the transport, as the restacker principal,
+  # after the real landing: a change bob readied on the seed and the
+  # rejected change are each restacked once, onto main's tip, under their
+  # owners, with reports that say complete, and the rejected change's
+  # request still names its old head. The answer to the first record push
+  # is dropped, so origin takes it and the pass hears nothing; the pass's
+  # next read finds the version, and it is added once. A second pass
+  # pushes nothing.
   restack-e2e = pkgs.runCommand "valley-restack-e2e" {
     nativeBuildInputs = [
       pkgs.git

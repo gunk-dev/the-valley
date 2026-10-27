@@ -258,11 +258,6 @@ says "$a" 'cannot be determined'
 valley-restacker once --report-only --repo "$origin" --state "$w/state" --principal restacker \
   --instance "$smokePolicy/instance" > "$w/out" 2> "$w/err" || fail 'the summary failed'
 grep -qE '^[k-z]+: hold$' "$w/out" || fail 'the summary holds no family'
-# And without --report-only, nothing runs.
-if valley-restacker once --repo "$origin" --state "$w/state" --principal restacker \
-  --instance "$smokePolicy/instance" > "$w/out" 2> "$w/err"; then
-  fail 'once ran without --report-only'
-fi
 
 # ----------------------------------------------------------------------
 # A cap larger than any int. The schema admits it, so it composes, and the
@@ -637,5 +632,46 @@ esac
 grep -q 'ran past its --timeout of 15s: the plan was not written' "$w/err" \
   || fail "the pass did not end at its timeout while writing: $(cat "$w/err")"
 pass > "$w/out" 2> "$w/err" || fail "the next pass did not take the lock: $(cat "$w/err")"
+
+# ----------------------------------------------------------------------
+# Write passes through the transport, as the restacker principal, on the
+# repository the real integrator lands in. bob's change, readied on the
+# seed, and lies, which its current reject releases, are each restacked
+# after the real landing, with no bus: each branch is rebased onto main's
+# tip, each record gains one version the restacker uploaded under its
+# owner, and each report says complete. lies's request still names its
+# old head. The answer to the first record push is dropped: origin takes
+# it and the client hears nothing, so the pass's next read finds the
+# version on origin, and adds it once. A second pass pushes nothing.
+seed="$(git -C "$served" rev-list --max-parents=0 main)"
+bobs="$(change bob bobs "$seed")"
+lies_was="$(at "$served" refs/heads/lies)"
+write_pass() {
+  valley-restacker once --json --repo "$(url restacker "$served")" --state "$w/served-state" \
+    --principal restacker --instance "$w/floor" --known-signers "$signers" --integrator-name "$integrator_name" \
+    > "$w/plan.json" 2> "$w/err" || fail "the write pass failed: $(cat "$w/err")"
+}
+arm receive drop refs/the-valley/changes/
+write_pass
+disarm
+main_tip="$(at "$served" refs/heads/main)"
+for pair in "$lies:lies:alice" "$bobs:bobs:bob"; do
+  IFS=: read -r id branch owner <<< "$pair"
+  head="$(at "$served" "refs/heads/$branch")"
+  [ "$(git -C "$served" rev-parse "$head^")" = "$main_tip" ] || fail "$branch was not rebased onto main's tip"
+  record="$(git -C "$served" cat-file blob "refs/the-valley/changes/main/$id:record.json")"
+  jq -e --arg h "git-sha1:$head" --arg o "$owner" '.seq == 2 and .active == 2 and (.versions | length) == 2
+      and .versions[1].head == $h and .versions[1].uploader == "restacker" and .owner == $o' <<< "$record" > /dev/null \
+    || fail "$branch's record is not restacked once: $record"
+  git -C "$served" cat-file blob "refs/the-valley/restack/main/$id:report.json" | jq -e '.result == "complete"' > /dev/null \
+    || fail "$branch's report does not say complete"
+done
+jq -e '[.actions[] | select(.write == "version")] | length == 2 and any(.[]; .result == "unknown")' "$w/plan.json" > /dev/null \
+  || fail "the dropped answer was not a push of unknown result: $(jq -c .actions "$w/plan.json")"
+[ "$(at "$served" "refs/the-valley/integration-requests/main/c-$lies")" = "$lies_was" ] || fail "lies's request was moved"
+before="$(git -C "$served" for-each-ref --format='%(refname) %(objectname)')"
+write_pass
+jq -e '.actions == []' "$w/plan.json" > /dev/null || fail "a second write pass pushed: $(jq -c .actions "$w/plan.json")"
+[ "$(git -C "$served" for-each-ref --format='%(refname) %(objectname)')" = "$before" ] || fail 'a second write pass moved a ref'
 
 touch "$out"

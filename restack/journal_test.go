@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -558,13 +559,19 @@ func reportOnly(t *testing.T, c config, more ...string) []string {
 // the process's environment as it was, since a pass controls its own.
 func fakePolicy(t *testing.T) (schema, floor string) {
 	t.Helper()
+	return fakePolicyCap(t, 64)
+}
+
+// fakePolicyCap is fakePolicy with the cap given.
+func fakePolicyCap(t *testing.T, cap int) (schema, floor string) {
+	t.Helper()
 	keepEnvironment(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cue := "#!/bin/sh\necho '{\"checks\": {}, \"restack\": {\"maxAutomaticVersions\": 64}}'\n"
+	cue := fmt.Sprintf("#!/bin/sh\necho '{\"checks\": {}, \"restack\": {\"maxAutomaticVersions\": %d}}'\n", cap)
 	if err := os.WriteFile(filepath.Join(bin, "cue"), []byte(cue), 0o755); err != nil {
 		t.Fatal(err)
 	}

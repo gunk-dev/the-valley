@@ -38,6 +38,8 @@ type Plan struct {
 	Operation string       `json:"operation"`            // the name the pass's writes are built under
 	Recovery  *Recovery    `json:"recovery"`             // what recovery decided of the journal in the state directory; null for none
 	Families  []FamilyPlan `json:"families"`
+	Actions   []Action     `json:"actions"` // each write a write pass pushed; none in --report-only
+	Pending   *Recovery    `json:"pending"` // what recovery last decided of a journal the pass leaves open; null for none
 
 	families []*rebase.Family // each family as captured, as Families
 }

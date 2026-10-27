@@ -25,6 +25,9 @@ import (
 //
 // A report that says the same as the change's current report on origin,
 // apart from the operation that wrote it, is not built again (sameReport).
+// A family whose every change has a current report that says conflict is
+// not rebased again: nothing that report observed has moved, so the rebase
+// would conflict as it did (reportedConflict).
 //
 // Building pushes nothing. What it built names its operation, the
 // attempt's local name, which every report it built carries.
@@ -101,6 +104,16 @@ func build(ctx context.Context, g rebase.Git, s *rebase.Snapshot, p *Plan, b bin
 		if fp.Action != restack && fp.Action != hold {
 			continue
 		}
+		if fp.Action == restack && reportedConflict(s, p.families[i]) {
+			fp.Notes = append(fp.Notes, "its current reports say conflict, and nothing they observed has moved, so it is not rebased again")
+			fp.Writes = &Writes{Result: change.RestackConflict, Branches: []BranchWrite{}, Versions: []VersionWrite{}, Reports: []ReportWrite{}}
+			for _, l := range p.families[i].Layers {
+				if l.ID != "" {
+					fp.Writes.Reports = append(fp.Writes.Reports, ReportWrite{ID: l.ID, Result: change.RestackConflict, Omitted: []string{}, Unchanged: true})
+				}
+			}
+			continue
+		}
 		jf, w, err := out.family(ctx, g, s, p.families[i], *fp, b.Principal, op)
 		if err != nil {
 			out.releasePrepared(ctx, g)
@@ -112,6 +125,24 @@ func build(ctx context.Context, g rebase.Git, s *rebase.Snapshot, p *Plan, b bin
 		}
 	}
 	return out, nil
+}
+
+// reportedConflict reports whether every recorded change in the family has
+// a report on origin that says conflict and is current: main, each record,
+// each branch and each blocking request are where that report saw them.
+func reportedConflict(s *rebase.Snapshot, f *rebase.Family) bool {
+	recorded := false
+	for _, l := range f.Layers {
+		if l.ID == "" {
+			continue
+		}
+		r, found := s.Report(l.ID)
+		if !found || !r.Current || r.Report.Result != change.RestackConflict {
+			return false
+		}
+		recorded = true
+	}
+	return recorded
 }
 
 // family builds one family's writes.

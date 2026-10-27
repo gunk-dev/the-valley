@@ -746,15 +746,17 @@ rec {
     };
   };
 
-  # The restacker (restack/): `valley-restacker once --report-only` reads
-  # one snapshot of origin through the rebase engine (../rebase), says
-  # which families it would restack and which it would hold, and builds the
-  # writes a pass would push, pushing none. It reads the cap on its
+  # The restacker (restack/): `valley-restacker run` reconciles on an
+  # interval, and `once` is one pass. A pass reads origin through the
+  # rebase engine (../rebase), plans which families to restack and which
+  # to hold, keeps the writes in its journal, and pushes them;
+  # `once --report-only` pushes none. It reads the cap on its
   # automatic versions through the composed-policy reader it shares with
   # the integrator (../composed), and a signer projects file through the
   # note module (../note). Its unit tests cover request association,
   # outcome currency, capacity and report bounds, and, against real git,
-  # the journal of writes and recovery's decisions, its environment, its
+  # the journal of writes, recovery's decisions and publishing through the
+  # rendered hook, its environment, its
   # scratch repository's identity, its state directory's lock and binding,
   # and the deadline on what it runs. go vet runs after them. Go, standard
   # library only, so no module is fetched.

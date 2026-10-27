@@ -2,14 +2,29 @@
 // them, as its own principal, so their evidence stays fresh without their
 // owners rebasing and approving again by hand.
 //
+// `valley-restacker run` reconciles at its start and then every
+// --interval, 15 seconds by default, until it is stopped. Each
+// reconciliation is one write pass. `valley-restacker once` is one write
+// pass on its own.
+//
+// A write pass first finishes the journal of an earlier operation, if the
+// state directory holds one (publish.go). It then reads one snapshot of
+// origin, plans every family, builds the writes it would make for each
+// family it would restack or hold (build.go), keeps them in the journal,
+// and makes them the way recovery would after a crash: the branch push,
+// then the versions, then the reports, reading origin again between each
+// (recover.go). While a journal holds a family whose branches moved and
+// whose versions are not all added or stopped for good, a pass starts no
+// new operation.
+//
 // `valley-restacker once --report-only` reads one snapshot of origin and
 // says which families it would restack, which it would hold and why, and
 // what capacity allows. For each family it would restack or hold, it
 // builds every write a pass would make, in its scratch repository, and
 // shows them: the one branch push, each change's next version and each
-// recorded change's report (build.go). It decides the journal of an
-// earlier operation, if the state directory holds one, as recovery would
-// (recover.go). It pushes nothing, and writes no journal.
+// recorded change's report. It decides the journal of an earlier
+// operation, if the state directory holds one, as recovery would. It
+// pushes nothing, and writes no journal.
 //
 // It talks to origin only over git, as a client, from a scratch repository
 // under its state directory. Hooks and external filters are off there:
@@ -23,13 +38,14 @@
 // as an identity variable or as configuration.
 //
 // A pass holds a lock on its state directory from start to end, so a
-// second pass on the same directory fails while one runs. The directory
-// belongs to one repository, target and principal, the first a pass used
-// it for, and a pass for any other is refused. Every git, cue and attest a
-// pass runs is killed, with what it started, once the pass's --timeout
-// passes. A pass whose output nobody reads ends then too, and lets go of
-// the lock. A message of its own that nobody reads, such as the error it
-// ends with, is given up on after a few seconds.
+// second pass on the same directory fails while one runs; run holds it
+// for as long as it runs. The directory belongs to one repository, target
+// and principal, the first a pass used it for, and a pass for any other
+// is refused. Every git, cue and attest a pass runs is killed, with what
+// it started, once the pass's --timeout passes. A pass whose output
+// nobody reads ends then too, and lets go of the lock. A message of its
+// own that nobody reads, such as the error it ends with, is given up on
+// after a few seconds.
 package main
 
 import (
@@ -57,8 +73,20 @@ import (
 
 const usage = `valley-restacker: rebase ready changes onto main when main moves.
 
-usage: valley-restacker once --report-only [flags]
+usage: valley-restacker run [--interval DURATION] [flags]
+       valley-restacker once [--report-only] [flags]
 
+  run   reconcile at once and then every --interval until stopped: each
+        reconciliation is one write pass. A pass that fails is said on
+        stderr, and the next waits twice as long as the one before, up to
+        5 minutes, until a pass succeeds
+  once  one write pass: finish the journal of an earlier operation, if the
+        state directory holds one; then plan every family, keep the writes
+        for each family to restack or hold in the journal, and push them:
+        the branch push, then each change's next version, then each
+        change's report, reading origin again before each. While the
+        journal holds a family whose branches moved and whose versions are
+        not all added or stopped for good, the pass starts no new operation
   once --report-only
         read one snapshot of origin and print what a pass would do: each
         family, restack or hold with the reason, its capacity, the
@@ -80,6 +108,8 @@ flags:
                         principal)
   --commit-email EMAIL  the email it commits under
                         (default: restacker@the-valley.invalid)
+  --interval DURATION   run: how long to wait after one pass before the next
+                        (default 15s)
   --timeout DURATION    the longest a pass may run, writing its output
                         included; what it runs is killed then (default 10m)
   --known-signers FILE  verifier keys, for landings proved by integrator evidence
@@ -96,7 +126,7 @@ flags:
   --instance DIR        a materialized floor, for a host that serves none
   --project-policy DIR  the project layer, in the target tip (policy/project)
   --schema FILE         the verification schema (VALLEY_VERIFICATION_SCHEMA)
-  --json                print the plan as JSON
+  --json                print each pass as JSON
 `
 
 func main() {
@@ -105,11 +135,16 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
-	case "once":
+	case "once", "run":
 		// An interrupt or a stop ends the pass as its timeout does: what it
-		// runs is killed, and the lock on its state is let go.
+		// runs is killed, and the lock on its state is let go. It ends run
+		// between passes too.
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		err := once(ctx, os.Args[2:], os.Stdout, os.Stderr)
+		command := once
+		if os.Args[1] == "run" {
+			command = loop
+		}
+		err := command(ctx, os.Args[2:], os.Stdout, os.Stderr)
 		stop()
 		if err != nil {
 			say(os.Stderr, fmt.Sprintf("valley-restacker: %v\n", err))
@@ -141,7 +176,7 @@ func say(w io.Writer, message string) {
 type config struct {
 	repo, target, state, principal string
 	commitName, commitEmail        string
-	timeout                        time.Duration
+	timeout, interval              time.Duration
 	verify                         rebase.Verifier
 	floor                          composed.Floor
 	instanceRepo, projectPolicy    string
@@ -154,15 +189,21 @@ type config struct {
 // address names no mailbox, as the integrator's does not.
 const defaultEmail = "restacker@the-valley.invalid"
 
-func once(ctx context.Context, args []string, out, errOut io.Writer) error {
-	// What the pass runs inherits no git variable that points git
-	// elsewhere or gives it configuration (passes).
-	controlEnvironment()
-	fs := flag.NewFlagSet("valley-restacker once", flag.ContinueOnError)
+// maxBackoff is the longest run waits after a pass that failed.
+const maxBackoff = 5 * time.Minute
+
+// parse reads a command's flags into a configuration. --report-only is
+// once's, and --interval is run's.
+func parse(name string, args []string, errOut io.Writer) (c config, reportOnly bool, err error) {
+	fs := flag.NewFlagSet("valley-restacker "+name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Usage = func() { say(errOut, usage) }
-	var c config
-	reportOnly := fs.Bool("report-only", false, "")
+	var only *bool
+	if name == "once" {
+		only = fs.Bool("report-only", false, "")
+	} else {
+		fs.DurationVar(&c.interval, "interval", 15*time.Second, "")
+	}
 	fs.StringVar(&c.repo, "repo", "", "")
 	fs.StringVar(&c.target, "target", rebase.Target, "")
 	fs.StringVar(&c.state, "state", "", "")
@@ -182,42 +223,45 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 	fs.StringVar(&c.schema, "schema", os.Getenv("VALLEY_VERIFICATION_SCHEMA"), "")
 	fs.BoolVar(&c.json, "json", false, "")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return c, false, err
+	}
+	if only != nil {
+		reportOnly = *only
 	}
 	switch {
 	case fs.NArg() > 0:
-		return fmt.Errorf("unexpected argument %q", fs.Arg(0))
-	case !*reportOnly:
-		return errors.New("once needs --report-only: this restacker plans and does not yet push")
+		return c, false, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	case c.target != rebase.Target:
-		return fmt.Errorf("--target %s: a change may name only %s as its target", c.target, rebase.Target)
+		return c, false, fmt.Errorf("--target %s: a change may name only %s as its target", c.target, rebase.Target)
+	case name == "run" && c.interval <= 0:
+		return c, false, fmt.Errorf("--interval %v: run waits some time between passes", c.interval)
 	}
 	for _, f := range []struct{ flag, value string }{
 		{"--repo", c.repo}, {"--state", c.state}, {"--principal", c.principal}, {"--schema", c.schema},
 	} {
 		if f.value == "" {
-			return fmt.Errorf("%s is required", f.flag)
+			return c, false, fmt.Errorf("%s is required", f.flag)
 		}
 	}
 	if !change.ValidPrincipal(c.principal) {
-		return fmt.Errorf("--principal %q is not a principal", c.principal)
+		return c, false, fmt.Errorf("--principal %q is not a principal", c.principal)
 	}
 	if c.commitName == "" {
 		c.commitName = c.principal
 	}
 	if err := checkIdentity(c.commitName, c.commitEmail); err != nil {
-		return err
+		return c, false, err
 	}
 	if c.timeout <= 0 {
-		return fmt.Errorf("--timeout %v: a pass needs some time to run", c.timeout)
+		return c, false, fmt.Errorf("--timeout %v: a pass needs some time to run", c.timeout)
 	}
 	// The floor comes from the instance repository's tip, or from a
 	// directory on disk, and never from both, as for the integrator.
 	if (c.instanceRepo == "") == (c.floor.Path == "") {
-		return errors.New("exactly one of --instance-repo and --instance is required: the floor is read from the instance repository's tip, or from a materialized directory")
+		return c, false, errors.New("exactly one of --instance-repo and --instance is required: the floor is read from the instance repository's tip, or from a materialized directory")
 	}
 	if c.instanceRepo != "" && !strings.HasPrefix(c.floor.Ref, "refs/") {
-		return fmt.Errorf("--instance-ref %s is not a full ref name; name it whole, as refs/heads/main", c.floor.Ref)
+		return c, false, fmt.Errorf("--instance-ref %s is not a full ref name; name it whole, as refs/heads/main", c.floor.Ref)
 	}
 	if c.verify.Attest == "" {
 		c.verify.Attest, _ = exec.LookPath("attest")
@@ -225,49 +269,131 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 	if *signerProjects != "" {
 		data, err := os.ReadFile(*signerProjects)
 		if err != nil {
-			return fmt.Errorf("--signer-projects: %w", err)
+			return c, false, fmt.Errorf("--signer-projects: %w", err)
 		}
 		if c.verify.SignerProjects, err = note.ParseSignerProjects(data); err != nil {
-			return fmt.Errorf("--signer-projects %s does not read: %w", *signerProjects, err)
+			return c, false, fmt.Errorf("--signer-projects %s does not read: %w", *signerProjects, err)
 		}
 	}
-	var err error
 	if c.cue, err = exec.LookPath("cue"); err != nil {
-		return errors.New("cue is not on the path; the restacker composes the policy with it")
+		return c, false, errors.New("cue is not on the path; the restacker composes the policy with it")
+	}
+	return c, reportOnly, nil
+}
+
+// once is one pass, a write pass unless --report-only says otherwise.
+func once(ctx context.Context, args []string, out, errOut io.Writer) error {
+	// What the pass runs inherits no git variable that points git
+	// elsewhere or gives it configuration (passes).
+	controlEnvironment()
+	c, reportOnly, err := parse("once", args, errOut)
+	if err != nil {
+		return err
 	}
 	release, err := lockState(c.state)
 	if err != nil {
 		return err
 	}
 	defer release()
-	if err := bindState(c.state, binding{Repository: c.repo, Target: c.target, Principal: c.principal}); err != nil {
+	if err := bindState(c.state, c.binding()); err != nil {
 		return err
 	}
+	_, err = pass(ctx, c, reportOnly, out, errOut, false)
+	return err
+}
+
+// loop is run: a write pass at once, and another every interval after
+// the last one ended, until ctx is done. It holds the lock on its state
+// for as long as it runs. A pass that fails is said, and the wait before
+// the next doubles, up to maxBackoff, until a pass succeeds. A pass that
+// pushed nothing and leaves no journal open prints nothing.
+func loop(ctx context.Context, args []string, out, errOut io.Writer) error {
+	controlEnvironment()
+	c, _, err := parse("run", args, errOut)
+	if err != nil {
+		return err
+	}
+	release, err := lockState(c.state)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := bindState(c.state, c.binding()); err != nil {
+		return err
+	}
+	failures := 0
+	for {
+		_, err := pass(ctx, c, false, out, errOut, true)
+		if ctx.Err() != nil {
+			return nil
+		}
+		wait := c.interval
+		if err != nil {
+			failures++
+			wait = backoff(c.interval, failures)
+			say(errOut, fmt.Sprintf("valley-restacker: the pass failed, and the next starts in %v: %v\n", wait, err))
+		} else {
+			failures = 0
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(wait):
+		}
+	}
+}
+
+// backoff is how long run waits after the given number of passes in a row
+// have failed: twice as long for each, from the interval, up to
+// maxBackoff.
+func backoff(interval time.Duration, failures int) time.Duration {
+	wait := interval
+	for i := 0; i < failures && wait < maxBackoff; i++ {
+		wait *= 2
+	}
+	return min(wait, maxBackoff)
+}
+
+// pass runs one pass under its timeout and prints it: the plan and what
+// it pushed, or, when quiet, only what it pushed and a journal it leaves
+// open.
+func pass(ctx context.Context, c config, reportOnly bool, out, errOut io.Writer, quiet bool) (*Plan, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 	g, err := scratchRepo(ctx, c)
 	if err != nil {
-		return timedOut(ctx, c, err)
+		return nil, timedOut(ctx, c, err)
 	}
 	g.Stderr = errOut
-	p, err := planOnce(ctx, g, c)
-	if err != nil {
-		return timedOut(ctx, c, err)
+	var p *Plan
+	if reportOnly {
+		p, err = planOnce(ctx, g, c)
+	} else {
+		p, err = writeOnce(ctx, g, c)
 	}
-	var plan bytes.Buffer
-	if c.json {
-		enc := json.NewEncoder(&plan)
+	if err != nil {
+		return p, timedOut(ctx, c, err)
+	}
+	if quiet && len(p.Actions) == 0 && p.Pending == nil {
+		return p, nil
+	}
+	var text bytes.Buffer
+	switch {
+	case c.json:
+		enc := json.NewEncoder(&text)
 		enc.SetIndent("", "  ")
 		if err := enc.Encode(p); err != nil {
-			return err
+			return p, err
 		}
-	} else {
-		printPlan(&plan, p)
+	case quiet:
+		printPublished(&text, p)
+	default:
+		printPlan(&text, p)
 	}
-	if err := writeOut(ctx, out, plan.Bytes()); err != nil {
-		return timedOut(ctx, c, err)
+	if err := writeOut(ctx, out, text.Bytes()); err != nil {
+		return p, timedOut(ctx, c, err)
 	}
-	return nil
+	return p, nil
 }
 
 // writeOut writes data to out, and gives up once ctx is done. A reader
@@ -543,18 +669,7 @@ func policyCap(ctx context.Context, g rebase.Git, c config, tip string) (int, er
 // the writes a pass would make. It pushes nothing, writes no journal, and
 // lets go of what it prepared.
 func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
-	s, err := rebase.ReadSnapshot(ctx, g, c.verify)
-	if err != nil {
-		return nil, err
-	}
-	if s.Tip == "" {
-		return nil, fmt.Errorf("origin has no %s", rebase.Target)
-	}
-	cap, err := policyCap(ctx, g, c, s.Tip)
-	if err != nil {
-		return nil, err
-	}
-	p, err := plan(ctx, g, c, s, cap)
+	s, p, err := planned(ctx, g, c)
 	if err != nil {
 		return nil, err
 	}
@@ -567,14 +682,100 @@ func planOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 	return p, nil
 }
 
+// planned reads one snapshot and the cap at its tip, and plans it.
+func planned(ctx context.Context, g rebase.Git, c config) (*rebase.Snapshot, *Plan, error) {
+	s, err := rebase.ReadSnapshot(ctx, g, c.verify)
+	if err != nil {
+		return nil, nil, err
+	}
+	if s.Tip == "" {
+		return nil, nil, fmt.Errorf("origin has no %s", rebase.Target)
+	}
+	cap, err := policyCap(ctx, g, c, s.Tip)
+	if err != nil {
+		return nil, nil, err
+	}
+	p, err := plan(ctx, g, c, s, cap)
+	if err != nil {
+		return nil, nil, err
+	}
+	return s, p, nil
+}
+
+// writeOnce is a write pass. It settles the journal of an earlier
+// operation first, if the state directory holds one, and ends there while
+// that journal is open. It then plans, builds the pass's writes, keeps
+// them in the journal and settles it (publish.go). A journal that does not
+// read, or is another's, stops the pass: the pass would otherwise write
+// its own in its place, and lose what that one names.
+func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
+	path := filepath.Join(c.state, journalFile)
+	j, err := loadJournal(c.state, c.binding())
+	if err != nil {
+		return nil, fmt.Errorf("%w. A write pass starts nothing while it is there: repair origin by hand, and move the journal aside", err)
+	}
+	actions := []Action{}
+	var found *Recovery
+	if j != nil {
+		st, err := settle(ctx, g, c, j)
+		if err != nil {
+			return nil, err
+		}
+		actions, found = st.actions, st.last
+		found.Journal = path
+		if !st.closed {
+			return &Plan{
+				Target: rebase.Target, Tip: j.Tip, Evidence: j.Evidence, Operation: j.Operation,
+				Recovery: found, Pending: found, Actions: actions, Families: []FamilyPlan{},
+			}, nil
+		}
+	}
+	s, p, err := planned(ctx, g, c)
+	if err != nil {
+		return nil, err
+	}
+	p.Recovery, p.Actions = found, actions
+	out, err := build(ctx, g, s, p, c.binding(), p.Operation)
+	if err != nil {
+		return nil, err
+	}
+	defer out.releasePrepared(ctx, g)
+	if len(out.journal.Families) == 0 {
+		return p, nil
+	}
+	if err := keep(ctx, g, c.state, out.journal); err != nil {
+		return nil, err
+	}
+	// The journal keeps every object its writes push reachable now.
+	out.releasePrepared(ctx, g)
+	st, err := settle(ctx, g, c, out.journal)
+	p.Actions = append(p.Actions, st.actions...)
+	if err != nil {
+		return nil, err
+	}
+	if !st.closed {
+		p.Pending = st.last
+		p.Pending.Journal = path
+	}
+	return p, nil
+}
+
 // binding is what a pass's state directory and journal belong to.
 func (c config) binding() binding {
 	return binding{Repository: c.repo, Target: c.target, Principal: c.principal}
 }
 
-// plan decides the journal in the state directory, if there is one, and
-// plans every family in the snapshot, with the cap given.
-func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap int) (*Plan, error) {
+// requestsOf is every integration request the snapshot lists, in name
+// order, and the evidence fingerprint of every attestation ref. The refs
+// are a map, read in no fixed order, so the requests are put in name
+// order before anything judges them: their reasons and notes, and the
+// reports that carry them, are then the same for the same snapshot.
+//
+// The snapshot lists request heads and does not fetch them. They are
+// fetched here, before any ancestry is read, all at once and then one by
+// one when that fails, so one head origin cannot serve leaves the others
+// readable.
+func requestsOf(ctx context.Context, g rebase.Git, s *rebase.Snapshot) ([]Request, string) {
 	var attestations []string
 	var requests []Request
 	for ref, oid := range s.Refs {
@@ -585,19 +786,7 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 			requests = append(requests, Request{Name: strings.TrimPrefix(ref, rebase.RequestPrefix), Head: oid})
 		}
 	}
-	// The refs are a map, read in no fixed order. The requests are put in
-	// name order before anything judges them, so their reasons and notes,
-	// and the reports that carry them, are the same for the same snapshot.
 	sort.Slice(requests, func(i, j int) bool { return requests[i].Name < requests[j].Name })
-	p := &Plan{
-		Target: rebase.Target, Tip: s.Tip, Evidence: change.EvidenceFingerprint(attestations), Cap: cap,
-		Operation: newOperation(time.Now()),
-	}
-
-	// The snapshot lists request heads and does not fetch them. They are
-	// fetched here, before any ancestry is read, all at once and then one
-	// by one when that fails, so one head origin cannot serve leaves the
-	// others readable.
 	var heads []string
 	for _, r := range requests {
 		heads = append(heads, r.Head)
@@ -606,6 +795,17 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 		for _, h := range heads {
 			_ = rebase.Fetch(ctx, g, h)
 		}
+	}
+	return requests, change.EvidenceFingerprint(attestations)
+}
+
+// plan decides the journal in the state directory, if there is one, and
+// plans every family in the snapshot, with the cap given.
+func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap int) (*Plan, error) {
+	requests, evidence := requestsOf(ctx, g, s)
+	p := &Plan{
+		Target: rebase.Target, Tip: s.Tip, Evidence: evidence, Cap: cap,
+		Operation: newOperation(time.Now()), Actions: []Action{},
 	}
 	in := incoming(ctx, g, s.Tip)
 
@@ -747,6 +947,39 @@ func printPlan(w io.Writer, p *Plan) {
 			printWrites(w, f.Writes)
 		}
 	}
+	printPublished(w, p)
+}
+
+// printPublished prints what a write pass pushed, and the journal it
+// leaves open, if it leaves one.
+func printPublished(w io.Writer, p *Plan) {
+	for _, a := range p.Actions {
+		what := a.Write
+		if a.ID != "" {
+			what += " " + a.ID
+		}
+		fmt.Fprintf(w, "operation %s, family %d: %s: %s", a.Operation, a.Family, what, a.Result)
+		if a.Commit != "" {
+			fmt.Fprintf(w, " %s", short(a.Commit))
+		}
+		if a.Why != "" {
+			fmt.Fprintf(w, ": %s", a.Why)
+		}
+		fmt.Fprintln(w)
+	}
+	if r := p.Pending; r != nil {
+		fmt.Fprintf(w, "the journal of operation %s stays open, so this pass starts no new operation:\n", r.Operation)
+		for _, d := range r.Decisions {
+			if d.settled() {
+				continue
+			}
+			what := d.Write
+			if d.ID != "" {
+				what += " " + d.ID
+			}
+			fmt.Fprintf(w, "  family %d %s: %s: %s\n", d.Family, what, d.Action, d.Why)
+		}
+	}
 }
 
 // printWrites prints what a pass would push for a family.
@@ -787,7 +1020,7 @@ func printRecovery(w io.Writer, r *Recovery) {
 	if !r.Settled {
 		state = "not settled"
 	}
-	fmt.Fprintf(w, "recovery: %s, operation %s, %s; nothing is pushed in --report-only\n", r.Journal, r.Operation, state)
+	fmt.Fprintf(w, "recovery: %s, operation %s, %s\n", r.Journal, r.Operation, state)
 	for _, d := range r.Decisions {
 		what := d.Write
 		if d.ID != "" {

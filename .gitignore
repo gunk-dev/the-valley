@@ -20,3 +20,7 @@
 /valleyhook/valleyhook
 /valleyhook/*.test
 /web/**/*.test
+
+# The links nix build leaves in the working directory without --no-link.
+/result
+/result-*

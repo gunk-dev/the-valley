@@ -27,12 +27,15 @@
   # before high-water names it, a repository a crash interrupted built
   # again, recovery checking a generation before it activates it and
   # keeping one whose check git did not finish, and injected sweep and
-  # swap failures, reported apart from the commit. The publisher's pass
-  # uploading to the real receiver with its token, the real valley-web
-  # serving what it activated, a pass with another token refused as
-  # unauthenticated while the edge keeps serving, and a pass after
-  # anyone's grant is withdrawn taking the project off the edge. go vet
-  # runs after them.
+  # swap failures, reported apart from the commit; a stage and a commit
+  # waiting for a lock another holds only until their context is done,
+  # staging and activating nothing then; and a commit that took the state
+  # directory past MaxStorage refused, its repository removed. The
+  # publisher's pass uploading to the real receiver with its token, the
+  # real valley-web serving what it activated, a pass with another token
+  # refused as unauthenticated while the edge keeps serving, and a pass
+  # after anyone's grant is withdrawn taking the project off the edge. go
+  # vet runs after them.
   web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
@@ -114,17 +117,27 @@
   # manifest than the one staged superseded, with its bodies, and a commit
   # of a sequence never staged refused as no-manifest. Bodies with a hash
   # mismatch, a size mismatch with and without a length, a
-  # Content-Encoding, or an undeclared hash refused; a body cut off half
-  # way leaving nothing in staging, its commit refused as incomplete with
-  # the active export as it was, and the body sent whole then activating.
-  # A body past --max-body and bodies past --max-upload refused as
-  # too-large before anything is staged, and an upload at both caps
-  # accepted. Every request slot held by a stalled upload, the next
-  # request answered 503 and one without the token still unauthenticated,
-  # while valley-web serves every page; the receiver taking uploads again
-  # once the stalled ones go away. A clean stop on SIGTERM, and a usage
-  # error, a token file it cannot use and verifiers it cannot read refused
-  # without printing the token. go vet runs after them.
+  # Content-Encoding, or an undeclared hash refused; a body sent while
+  # another request stages it answered 503; a body cut off half way
+  # leaving nothing in staging, its commit refused as incomplete with the
+  # active export as it was, and the body sent whole then activating. A
+  # body past --max-body and bodies past --max-upload refused as too-large
+  # before anything is staged, and an upload at both caps accepted; a
+  # manifest naming one bundle for eight projects refused under
+  # --max-storage, and uploads within it accepted. Every request slot held
+  # by a stalled manifest, the next request answered 503 and one without
+  # the token still unauthenticated, while valley-web serves every page;
+  # the receiver taking uploads again once the stalled ones go away; then
+  # every connection held by unfinished headers, valley-web serving, and a
+  # body sent behind them answered once the header timeout closes them.
+  # OPTIONS * with a withheld body on every connection answered at once,
+  # and an upload going through. A manifest waiting for the store's lock,
+  # held as a commit holds it, staging nothing once its client goes away.
+  # A stop on SIGTERM within its timeout with every connection held, and a
+  # usage error, a token file it cannot use and verifiers it cannot read
+  # refused without printing the token. Every request and dial is bounded,
+  # and every program the tests start dies with the test process. go vet
+  # runs after them.
   web-receiver-unit = packages.valley-web-receive.unit;
 
   # The edge's container image, unpacked as a container runtime would:

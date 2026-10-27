@@ -411,17 +411,22 @@ token can be read there.
 
 **`valley-web` cannot change what the edge serves.** It opens the state directory read-only and
 writes nothing (`implemented`, `web/export/store.go`). On NixOS its unit has the state directory
-read-only and nothing writable (`implemented`, `nix/web-receiver.nix`). A fault in `valley-web`,
-which parses requests from anyone, reaches neither the staging area nor the token.
+read-only (`implemented`, `nix/web-receiver.nix`). What its unit can write is temporary: the `/tmp`
+and `/var/tmp` that `PrivateTmp` gives the unit, which no other unit sees and which systemd removes
+when the unit stops, and the host's `/dev/shm`, which `PrivateDevices` keeps writable
+(`implemented`, `nix/web-receiver.nix`). None of them is the state directory, and the receiver reads
+none of them. A fault in `valley-web`, which parses requests from anyone, reaches neither the
+staging area nor the token.
 
 Checks: `web-receiver-unit` refuses requests with no token, another token, the token in another
-scheme or the token twice, before anything is staged (`TestAnUnauthenticatedRequestIsRefused`), and
-refuses stale, early, foreign-key and foreign-destination manifests
-(`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`) checks that
-a pass with another token is refused and that the edge keeps serving what it has. `module-eval`
-checks the credentials and users both modules render, and refuses a token file in the Nix store.
-`web-publisher-e2e` checks in a NixOS machine that the publisher's unit reads the token as a
-credential while the token's own file stays root's.
+scheme or the token twice, before anything is staged (`TestAnUnauthenticatedRequestIsRefused`),
+answers `OPTIONS *` with a withheld body at once on every connection, without reading the body
+(`TestOptionsStarHoldsNoConnection`), and refuses stale, early, foreign-key and foreign-destination
+manifests (`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`)
+checks that a pass with another token is refused and that the edge keeps serving what it has.
+`module-eval` checks the credentials and users both modules render, and refuses a token file in the
+Nix store. `web-publisher-e2e` checks in a NixOS machine that the publisher's unit reads the token
+as a credential while the token's own file stays root's.
 
 ## Secrets
 

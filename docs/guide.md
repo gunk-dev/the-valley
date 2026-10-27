@@ -790,6 +790,7 @@ sudo install -m 0400 -o 990 -g 990 /run/keys/valley-web-receiver-token /etc/vall
 echo 'valley-host/web-export+1a2b3c4d+AQ...' | sudo install -m 0444 -o 990 /dev/stdin /etc/valley-web/verifiers
 
 docker run -d --name valley-web-receive --user valley-web-receive \
+  --memory 2g --memory-swap 2g \
   -v valley-web:/var/lib/valley-web -v /etc/valley-web:/etc/valley-web:ro \
   -p 192.0.2.10:8081:8081 valley-web:<tag> \
   valley-web-receive --state /var/lib/valley-web --listen :8081 \
@@ -797,6 +798,7 @@ docker run -d --name valley-web-receive --user valley-web-receive \
   --verifiers /etc/valley-web/verifiers --token-file /etc/valley-web/token
 
 docker run -d --name valley-web --user valley-web \
+  --memory 1g --memory-swap 1g \
   -v valley-web:/var/lib/valley-web:ro \
   -p 127.0.0.1:8080:8080 valley-web:<tag> \
   valley-web --state /var/lib/valley-web --listen :8080
@@ -804,6 +806,13 @@ docker run -d --name valley-web --user valley-web \
 
 A new volume takes the owner and mode of the image's `/var/lib/valley-web`: the receiver's user,
 mode `0750`. `valley-web` reads it through the group the two users share.
+
+Each container gets a memory limit of its own, so a spike in one leaves the other and the host
+alone. `--memory` is the limit, and `--memory-swap` set to the same value gives the container no
+swap, as the NixOS module's units have none. The sizes above are the module's defaults for
+`receiverMemoryMax` and `webMemoryMax`. They are a deployment choice: size them to the edge's
+uploads and readers. The receiver also holds the state directory to `--max-storage`, 8 GiB by
+default, so give the volume at least that much room.
 
 The token travels in every upload request. Reach the receiver over HTTPS, through a reverse proxy
 that terminates TLS, or over a private network. On the next pass, the publisher prints

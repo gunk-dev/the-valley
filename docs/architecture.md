@@ -3269,9 +3269,11 @@ The project runs them apart, rather than as one process with two listeners, for 
 - **Separate users.** `valley-web` parses requests from anyone. Its user cannot write the state
   directory, so a fault in `valley-web` cannot change what the edge serves. The receiver's user
   holds the token, and `valley-web`'s user does not.
-- **Separate memory.** The operating system holds each process to its own memory cap: a systemd
-  unit's `MemoryMax`, or a container's memory limit. The `git` a commit runs counts against the
-  receiver's cap alone.
+- **Separate memory.** Each process can be held to a memory cap of its own, which the `git` it runs
+  counts against. On NixOS, the module gives each unit its own `MemoryMax`, with no swap. In
+  containers, the cap is the memory and swap limit each container is run with, which is a
+  **deployment choice**; the guide's commands set one for each. Without a cap, a spike in the
+  receiver's memory presses on the whole host, `valley-web` with it.
 
 One process would share one heap, one set of file descriptors and one user between public reads and
 uploads, so a flood or a fault in either would reach the other.
@@ -3299,22 +3301,45 @@ publisher's HTTP client follows no redirect, so the token goes to the configured
 
 ### Bounds
 
-The receiver bounds its requests, its bodies and its staging area
-(`web/cmd/valley-web-receive/main.go`, `web/cmd/valley-web-receive/receive.go`):
+The receiver bounds its requests, its connections, its bodies, its staging area and its disk
+(`web/cmd/valley-web-receive/main.go`, `web/cmd/valley-web-receive/receive.go`,
+`web/export/store.go`):
 
 - **Requests.** At most 4 authenticated requests run at once. The next one is answered `503`, with
-  `Retry-After` and no refusal, and the publisher retries it after a pause. At most 32 connections
-  are open at once, and a further connection waits in the listen queue. A request without the token
-  takes no request slot. Each step has a time limit from when its headers arrive: 1 minute for a
-  manifest, 30 minutes for a body, and 30 minutes for a commit, whose `git` is stopped at the limit.
+  `Retry-After` and no refusal, and the publisher retries it after a pause. A request without the
+  token takes no request slot. Each step has a time limit from when its headers arrive: 1 minute for
+  a manifest, 30 minutes for a body, and 30 minutes for a commit. The limit bounds the request's
+  reads and writes, and the store's work too. A manifest or a commit waits for the store's lock only
+  until its limit, or until its client goes away, and then stages or activates nothing. A commit's
+  `git` is stopped at the limit.
+- **Connections.** At most 32 connections are open at once, and a further connection waits in the
+  listen queue. A connection that sends no complete headers is closed after 10 seconds, and an idle
+  one after 1 minute. Every request reaches the receiver's own handler, `OPTIONS *` among them, so a
+  request without the token is answered and its connection closed before any of its body is read.
+  Stopping closes the listener first, which ends a wait for a free connection, so a stop takes at
+  most its 10 seconds however many connections are open.
 - **Bodies.** The receiver refuses a manifest as `too-large` at step 1 when it declares a body
   larger than `--max-body`, or bodies larger than `--max-upload` together (`Manifest.CheckSizes`).
   `export.StageBody` checks the body cap again at step 2, and reads at most one byte past the
   declared size.
 - **Staging.** `Store.Stage` discards every older upload when it stages a manifest, so one upload is
-  staged at a time. Staging holds that upload's bodies, at most `--max-upload` bytes, and a partial
-  file for each body being sent, at most 4 at once. Staging is private to the receiver's user until
-  activation (see [Reading the state directory](#reading-the-state-directory)).
+  staged at a time. Staging holds that upload's bodies and a partial file for each body being sent.
+  A body sent while another request is staging it is answered `503`, so each body has one partial
+  file at most. Staging is private to the receiver's user until activation (see
+  [Reading the state directory](#reading-the-state-directory)).
+- **Storage.** `--max-upload` counts each body once, but activation writes more than the bodies: a
+  repository for every project, even when several projects name one bundle, and a new generation
+  beside the ones still held. So the receiver holds the whole state directory to `--max-storage`
+  (`Store.MaxStorage`), as the disk space its files take. At step 1, `Store.Stage` refuses a
+  manifest as `too-large` when the directory would pass the cap. It adds to what the directory holds
+  now every body the manifest declares, once each, and a repository for every project, as large as
+  its bundle or as the repository it is carried from, with 1 MiB more for git's own files. That is
+  an estimate: a repository of many small objects takes more for its pack index and commit-graph. So
+  `Store.Activate` measures the directory again after it builds each repository. An upload that took
+  the directory past the cap is refused as `too-large`, and the repository is removed. One
+  repository's build can pass the cap by what the estimate missed before that check catches it. A
+  hard bound on the disk is a filesystem quota or a filesystem of its own for the state directory,
+  which is a **deployment choice**.
 
 The receiver keeps the newest staged upload in memory. After a restart, it refuses a body or a
 commit for an upload staged before the restart as `no-manifest`, and the publisher signs a new
@@ -3327,9 +3352,12 @@ On NixOS, `services.valley.webReceiver` runs two units, `valley-web-receive` and
 group `valley-web`. The receiver's unit owns the state directory, `/var/lib/valley-web` by default,
 with mode `0750`, so `valley-web` reads it through the group. The receiver's unit reads the token
 file as a systemd credential, from a path outside the Nix store. `valley-web`'s unit has the state
-directory read-only, and nothing writable. Neither unit requires the other. `valley-web` starts
-after the receiver, and keeps serving while the receiver restarts. Each unit has its own
-`MemoryMax`, with no swap.
+directory read-only. The only paths either unit can write, besides the receiver's state directory,
+are temporary ones: the `/tmp` and `/var/tmp` that `PrivateTmp` gives each unit, which no other unit
+sees and which systemd removes when the unit stops, and the host's `/dev/shm`, which
+`PrivateDevices` keeps writable. Neither unit requires the other. `valley-web` starts after the
+receiver, and keeps serving while the receiver restarts. Each unit has its own `MemoryMax`, with no
+swap.
 
 On a host that does not run NixOS, the `valley-web-image` package is a container image built with
 Nix (`nix/packages.nix`). It holds `valley-web`, `valley-web-receive` and the `git` both run. Its
@@ -3339,22 +3367,36 @@ user with mode `0750`. The image runs as `valley-web` unless it is told otherwis
 program by itself. An edge runs two containers of it over one volume: the receiver as
 `valley-web-receive` with the volume writable, and `valley-web` as `valley-web` with the volume
 read-only (see [Run the web edge](./guide.md#run-the-web-edge)). How an edge runs the containers,
-where they listen, and how the token reaches them are **deployment choices**.
+where they listen, how the token reaches them, and the memory and swap limit of each are
+**deployment choices**.
 
 Checked by `web-receiver-unit`, which runs the receiver as a process of its own over the shared
 fixture and real git: each step of an upload, with the real `valley-web` serving the result
 (`TestAnUploadActivatesAndValleyWebServesIt`); requests without the token refused before anything is
 staged (`TestAnUnauthenticatedRequestIsRefused`); stale, early and foreign manifests refused
-(`TestAManifestIsAdmittedOnlyWhenFresh`); bodies refused unless they verify, and a body cut off half
-way leaving the active export as it was (`TestABodyIsKeptOnlyWhenItVerifies`); uploads over the caps
-refused (`TestAnOversizedUploadIsRefused`); and every request slot held by stalled uploads while
-`valley-web` serves every page (`TestASaturatedUploadLeavesValleyWebServing`). Checked by `web-unit`
-(`TestPublishesToTheRealReceiver`), which runs the real publisher against the real receiver and
-`valley-web`, a pass with another token, and a pass after a grant is withdrawn. Checked by
-`module-eval`, which holds both modules' rendered units to the users, modes, credentials and caps
-above; by `web-publisher-e2e`, which checks in a NixOS machine that the token reaches the
-publisher's unit as a credential while the token's own file stays root's; and by `web-image`, which
-unpacks the image and checks its programs, its users, its volume and its default user.
+(`TestAManifestIsAdmittedOnlyWhenFresh`); bodies refused unless they verify, a body sent twice at
+once answered `503`, and a body cut off half way leaving the active export as it was
+(`TestABodyIsKeptOnlyWhenItVerifies`); uploads over the caps refused
+(`TestAnOversizedUploadIsRefused`); a manifest naming one bundle for eight projects refused under
+`--max-storage`, and uploads within it accepted (`TestAnUploadPastTheStorageCapIsRefused`); every
+request slot held by stalled manifests, and then every connection held by unfinished headers, while
+`valley-web` serves every page, with a body sent behind those connections answered once the header
+timeout closes them (`TestASaturatedUploadLeavesValleyWebServing`); `OPTIONS *` with a withheld body
+on every connection answered at once, with an upload going through
+(`TestOptionsStarHoldsNoConnection`); a manifest waiting for the store's lock staging nothing once
+its client goes away (`TestAManifestStopsWaitingWhenItsClientGoesAway`); and a stop on `SIGTERM`
+within its 10 seconds with every connection held (`TestStopsOnSIGTERM`). Checked by `web-unit`,
+which holds `Store.Stage` and `Store.Activate` to their context while another holder has the lock
+(`TestStoreWaitsForItsLockUntilTheContextIsDone`) and `Store.Activate` to the measured cap
+(`TestStoreHoldsActivationToMaxStorage`), and which runs the real publisher against the real
+receiver and `valley-web`, a pass with another token, and a pass after a grant is withdrawn
+(`TestPublishesToTheRealReceiver`). Checked by `module-eval`, which holds both modules' rendered
+units to the users, modes, credentials and caps above; by `web-publisher-e2e`, which checks in a
+NixOS machine that the token reaches the publisher's unit as a credential while the token's own file
+stays root's; and by `web-image`, which unpacks the image and checks its programs, its users, its
+volume and its default user. `module-eval` checks the settings each unit is given, and `web-image`
+what the image holds. Neither runs the units or the containers, so no check shows the memory caps or
+the sandbox enforced at run time.
 
 ## The life of a change
 

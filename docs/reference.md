@@ -1092,7 +1092,7 @@ services.valley.webReceiver = {
 | `listen`                                       | (required)              | The receiver's TCP address, which the publisher reaches.                                                                                      |
 | `webListen`                                    | (required)              | `valley-web`'s TCP address, which readers or a reverse proxy reach.                                                                           |
 | `stateDir`                                     | `"/var/lib/valley-web"` | The state directory, under `/var/lib`.                                                                                                        |
-| `maxBody`, `maxUpload`                         | `"1G"`, `"2G"`          | Passed as `--max-body` and `--max-upload`.                                                                                                    |
+| `maxBody`, `maxUpload`, `maxStorage`           | `"1G"`, `"2G"`, `"8G"`  | Passed as `--max-body`, `--max-upload` and `--max-storage`.                                                                                   |
 | `receiverMemoryMax`, `webMemoryMax`            | `"2G"`, `"1G"`          | Each unit's `MemoryMax`, with `MemorySwapMax=0`.                                                                                              |
 
 - **The units:** `valley-web-receive.service` runs as the system user `valley-web-receive`, and
@@ -1102,11 +1102,14 @@ services.valley.webReceiver = {
 - **The state directory:** The receiver's unit owns it (`StateDirectory`), with mode `0750` and
   group `valley-web`, so `valley-web` reads it through the group. `valley-web`'s unit lists it in
   `ReadOnlyPaths`.
-- **The sandbox:** Both units run with `ProtectSystem=strict`, `NoNewPrivileges`, no capabilities,
-  `@system-service` system calls, and `UMask=0077`. Nothing is writable for `valley-web`. For the
-  receiver, only the state directory is writable.
+- **The sandbox:** Both units run with `ProtectSystem=strict`, `PrivateTmp`, `PrivateDevices`,
+  `NoNewPrivileges`, no capabilities, `@system-service` system calls, and `UMask=0077`. Each unit
+  can write its own `/tmp` and `/var/tmp`, which `PrivateTmp` gives it and systemd removes when it
+  stops, and the host's `/dev/shm`, which `PrivateDevices` keeps. Besides those, nothing is writable
+  for `valley-web`, and only the state directory for the receiver.
 
-`module-eval` holds both units to the users, modes, credentials, ordering and caps above.
+`module-eval` holds both units to the users, modes, credentials, ordering and caps above. It checks
+the settings each unit is given, and does not run the units.
 
 ---
 
@@ -2454,6 +2457,10 @@ valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
   - `--max-body SIZE` (default `1G`): The most bytes one body may declare.
   - `--max-upload SIZE` (default `2G`): The most bytes the bodies of one manifest may declare
     together.
+  - `--max-storage SIZE` (default `8G`): The most bytes the state directory may take on disk, with
+    every generation it holds, the staged upload's bodies, and a repository for each project of the
+    upload. A manifest whose upload would pass it is refused as `too-large` at step 1, and a commit
+    whose repositories passed it at step 3 (see [Bounds](./architecture.md#bounds)).
 
   A `SIZE` is a number of bytes, or a number with `K`, `M`, `G` or `T` for KiB, MiB, GiB or TiB.
 
@@ -2490,10 +2497,12 @@ have an empty body.
 | A commit request, from its headers        | 30 minutes   |
 | An idle connection                        | 1 minute     |
 
-An authenticated request past 4 at once answers `503` with `Retry-After: 5` and an empty body. A
-connection past 32 waits in the listen queue. A request without the token takes no request slot. A
-failure that is not a refusal answers `500` with an empty body. The publisher retries both, as
-failures in transit.
+An authenticated request past 4 at once answers `503` with `Retry-After: 5` and an empty body. So
+does a body while another request is staging the same body. A connection past 32 waits in the listen
+queue. A request without the token takes no request slot. `OPTIONS *` is answered as any other
+request is, `401` without the token and `404` with it. A manifest or a commit that waits for the
+store's lock stops waiting at its time limit, or when its client goes away. A failure that is not a
+refusal answers `500` with an empty body. The publisher retries both, as failures in transit.
 
 - **The staged upload:** The receiver keeps the newest upload a manifest staged in memory. A body or
   commit for a newer sequence is refused as `no-manifest`, and one for an older sequence as

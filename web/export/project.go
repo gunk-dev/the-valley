@@ -1,6 +1,7 @@
 package export
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,10 +41,10 @@ type Inputs struct {
 	SourceTips map[string]string
 	// Principals is the display mapping principal names pass through.
 	Principals Principals
-	// Groups are the instance's groups, and Placements each project's
-	// group and short aliases, as the instance declares them. Every
-	// public project has a group. The export carries the groups of its
-	// public projects alone.
+	// Groups are the instance's groups, in identifier order, and
+	// Placements where the instance places each project on the web, by
+	// project, as the instance declares them. Every public project has a
+	// group. The export carries the groups of its public projects alone.
 	Groups     []Group
 	Placements map[string]Placement
 }
@@ -201,7 +202,7 @@ func Build(in Inputs) (*Export, error) {
 	if err := in.Principals.check(); err != nil {
 		return nil, err
 	}
-	if err := CheckNames(in.Groups, in.Placements); err != nil {
+	if err := CheckNames(context.Background(), in.Groups, Sorted(in.Placements)); err != nil {
 		return nil, err
 	}
 	var plan planDoc
@@ -293,7 +294,8 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 		return Project{}, fmt.Errorf("public project %s belongs to no group, so it has no web URL", name)
 	}
 	out := Project{
-		Name: name, Visibility: Public, Group: placed.Group, Aliases: placed.Aliases,
+		Name: name, Visibility: Public,
+		Group: placed.Group, WebName: placed.Name, FormerNames: placed.FormerNames, Aliases: placed.Aliases,
 		GraphTip: p.Tip, SourceTip: tip,
 		Roots: nonNil(p.Roots), Knots: []Knot{}, OpenResiduals: []Residuals{}, Changes: []Change{},
 	}
@@ -394,25 +396,25 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 }
 
 // exportedGroups are the groups the exported projects belong to, in
-// identifier order: a group no public project belongs to is not exported.
+// identifier order, as groups are: a group no public project belongs to
+// is not exported.
 func exportedGroups(projects []Project, groups []Group) ([]Group, error) {
-	byID := map[string]Group{}
-	for _, g := range groups {
-		byID[g.ID] = g
+	used := map[string]bool{}
+	for _, p := range projects {
+		used[p.Group] = true
 	}
 	var out []Group
-	seen := map[string]bool{}
-	for _, p := range projects {
-		g, ok := byID[p.Group]
-		if !ok {
-			return nil, fmt.Errorf("public project %s belongs to the group %q, which is not declared", p.Name, p.Group)
-		}
-		if !seen[g.ID] {
-			seen[g.ID] = true
+	for _, g := range groups {
+		if used[g.ID] {
 			out = append(out, g)
+			delete(used, g.ID)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	for _, p := range projects {
+		if used[p.Group] {
+			return nil, fmt.Errorf("public project %s belongs to the group %q, which is not declared", p.Name, p.Group)
+		}
+	}
 	return out, nil
 }
 

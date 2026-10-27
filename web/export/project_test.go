@@ -298,23 +298,45 @@ func TestBuildRefuses(t *testing.T) {
 			in.Groups = append(in.Groups, export.Group{ID: "web", Name: "Tools"})
 		}, `the name of group core and the name of group web are both "Tools", ignoring case`},
 		{"a private project's alias that is a group's alias", func(in *export.Inputs) {
-			in.Placements["site"] = export.Placement{Group: "core", Aliases: []string{"T"}}
+			in.Placements["site"] = export.Placement{Group: "core", Name: "site", Aliases: []string{"T"}}
 		}, `alias 0 of group core and alias 0 of project site are both "T"`},
 		{"a group's alias that is its name", func(in *export.Inputs) {
 			in.Groups = []export.Group{{ID: "core", Name: "tools", Aliases: []string{"tools"}}}
 		}, "the name of group core and alias 0 of group core"},
 		{"a project's alias given twice", func(in *export.Inputs) {
-			in.Placements["app"] = export.Placement{Group: "core", Aliases: []string{"app", "app"}}
+			in.Placements["app"] = export.Placement{Group: "core", Name: "app", Aliases: []string{"app", "app"}}
 		}, "alias 0 of project app and alias 1 of project app"},
 		{"a project in a group that is not declared", func(in *export.Inputs) {
-			in.Placements["site"] = export.Placement{Group: "web"}
+			in.Placements["site"] = export.Placement{Group: "web", Name: "site"}
 		}, `site belongs to the group "web", which is not declared`},
 		{"aliases without a group", func(in *export.Inputs) {
 			in.Placements["site"] = export.Placement{Aliases: []string{"s"}}
-		}, "site has aliases and no group"},
+		}, "site has a web name, former names or aliases and no group"},
+		{"former names without a group", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{FormerNames: []string{"s"}}
+		}, "site has a web name, former names or aliases and no group"},
 		{"a group's name that is not a name", func(in *export.Inputs) {
 			in.Groups = []export.Group{{ID: "core", Name: "-"}}
 		}, `the name of group core is "-", which is not a name`},
+		{"groups out of order", func(in *export.Inputs) {
+			in.Groups = []export.Group{{ID: "web", Name: "docs"}, in.Groups[0]}
+			in.Placements["site"] = export.Placement{Group: "web", Name: "site"}
+		}, "the group core is listed out of order or twice"},
+		{"a project in a group with no web name", func(in *export.Inputs) {
+			in.Placements["app"] = export.Placement{Group: "core"}
+		}, `the web name of project app is "", which is not a name`},
+		{"two web names in one group that differ in case", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{Group: "core", Name: "App"}
+		}, `the web name of project app and the web name of project site are both "App", ignoring case, and one second segment of a web URL under the group core names one project`},
+		{"a former name that is another project's web name", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{Group: "core", Name: "site", FormerNames: []string{"app"}}
+		}, `the web name of project app and former name 0 of project site are both "app"`},
+		{"a former name that is the project's own web name", func(in *export.Inputs) {
+			in.Placements["app"] = export.Placement{Group: "core", Name: "app", FormerNames: []string{"APP"}}
+		}, `the web name of project app and former name 0 of project app are both "APP"`},
+		{"a project's identifier that is not a name", func(in *export.Inputs) {
+			in.Placements["../app"] = export.Placement{}
+		}, `a project's identifier is "../app", which is not a name`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -360,8 +382,8 @@ func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
 	in := f.Inputs
 	in.Groups = append(slices.Clone(in.Groups), export.Group{ID: "web", Name: "docs", Aliases: []string{"d"}})
 	in.Placements = map[string]export.Placement{
-		"app":  {Group: "core", Aliases: []string{"app"}},
-		"site": {Group: "web", Aliases: []string{"site-short"}},
+		"app":  {Group: "core", Name: "main", FormerNames: []string{"app"}, Aliases: []string{"app"}},
+		"site": {Group: "web", Name: "pages", FormerNames: []string{"site-old"}, Aliases: []string{"site-short"}},
 	}
 	e, err := export.Build(in)
 	if err != nil {
@@ -370,14 +392,14 @@ func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
 	if want := exporttest.Groups; !reflect.DeepEqual(e.Groups, want) {
 		t.Errorf("the export's groups are %v, want %v", e.Groups, want)
 	}
-	if p := e.Projects[0]; p.Group != "core" || !slices.Equal(p.Aliases, []string{"app"}) {
-		t.Errorf("app is exported in group %q with aliases %v", p.Group, p.Aliases)
+	if p := e.Projects[0]; p.Group != "core" || p.WebName != "main" || !slices.Equal(p.FormerNames, []string{"app"}) || !slices.Equal(p.Aliases, []string{"app"}) {
+		t.Errorf("app is exported in group %q as %q, with former names %v and aliases %v", p.Group, p.WebName, p.FormerNames, p.Aliases)
 	}
 	data, err := e.Encode()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, private := range []string{`"web"`, `"docs"`, `"d"`, `"site-short"`} {
+	for _, private := range []string{`"web"`, `"docs"`, `"d"`, `"pages"`, `"site-old"`, `"site-short"`} {
 		if bytes.Contains(data, []byte(private)) {
 			t.Errorf("export.json holds %s, which only site is named by:\n%s", private, data)
 		}
@@ -385,29 +407,100 @@ func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
 }
 
 // export.json is read strictly: a field the schema does not name, or a
-// project name that is not safe as a file name, fails it.
+// project name that is not safe as a file name, fails it. Each case is
+// refused for the reason it names.
 func TestDecodeIsStrict(t *testing.T) {
 	f := exporttest.New(t)
 	if _, err := export.Decode(f.ExportJSON); err != nil {
 		t.Fatal(err)
 	}
-	for name, data := range map[string][]byte{
-		"an unknown field":  bytes.Replace(f.ExportJSON, []byte(`"collected"`), []byte(`"extra":1,"collected"`), 1),
-		"an unsafe name":    bytes.Replace(f.ExportJSON, []byte(`"project":"app"`), []byte(`"project":"../app"`), 1),
-		"a second document": append(append([]byte{}, f.ExportJSON...), f.ExportJSON...),
-		"another schema":    bytes.Replace(f.ExportJSON, []byte(export.Schema), []byte("valley-web-export/v0"), 1),
-		"a group out of order": bytes.Replace(f.ExportJSON, []byte(`"groups":[`),
-			[]byte(`"groups":[{"group":"zz","name":"zz"},`), 1),
-		"a group no project belongs to": bytes.Replace(f.ExportJSON, []byte(`"aliases":["t"]}`),
-			[]byte(`"aliases":["t"]},{"group":"web","name":"docs"}`), 1),
-		"a project in a group it does not list": bytes.Replace(f.ExportJSON, []byte(`"group":"core","aliases":["app"]`),
-			[]byte(`"group":"web","aliases":["app"]`), 1),
-		"a project alias that is a group's alias": bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+	for _, c := range []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"an unknown field", bytes.Replace(f.ExportJSON, []byte(`"collected"`), []byte(`"extra":1,"collected"`), 1),
+			`unknown field "extra"`},
+		{"an unsafe name", bytes.Replace(f.ExportJSON, []byte(`"project":"app"`), []byte(`"project":"../app"`), 1),
+			`names a project "../app", which is not a project name`},
+		{"a second document", append(append([]byte{}, f.ExportJSON...), f.ExportJSON...),
+			"holds more than its one document"},
+		{"another schema", bytes.Replace(f.ExportJSON, []byte(export.Schema), []byte("valley-web-export/v0"), 1),
+			`has schema "valley-web-export/v0"`},
+		{"a project alias that is a group's alias", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
 			[]byte(`"aliases":["T"]`), 1),
-		"a group name that is reserved": bytes.Replace(f.ExportJSON, []byte(`"name":"tools"`), []byte(`"name":"-"`), 1),
+			`alias 0 of group core and alias 0 of project app are both "T"`},
+		{"a group name that is reserved", bytes.Replace(f.ExportJSON, []byte(`"name":"tools"`), []byte(`"name":"-"`), 1),
+			`the name of group core is "-", which is not a name`},
+		{"a former name that is the project's web name", bytes.Replace(f.ExportJSON, []byte(`"former_names":["old-app"]`),
+			[]byte(`"former_names":["App"]`), 1),
+			`the web name of project app and former name 0 of project app are both "App"`},
 	} {
-		if _, err := export.Decode(data); err == nil {
-			t.Errorf("Decode took %s", name)
+		if _, err := export.Decode(c.data); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Decode of %s gave %v, want an error saying %q", c.name, err, c.want)
+		}
+	}
+}
+
+// An export's groups are each some project's, in identifier order, and
+// each group a project names is listed. Every case keeps every listed
+// group some project's but the one that tests it, so each is refused for
+// the reason it names alone, and a check that went missing would let its
+// case through.
+func TestDecodeHoldsGroupsToTheirProjects(t *testing.T) {
+	f := exporttest.New(t)
+	// two is the fixture's export with site public too, as a copy of
+	// app: groups lists core and web, app is in core, and site in web.
+	two := func(change func(e *export.Export)) []byte {
+		t.Helper()
+		e, err := export.Decode(f.ExportJSON)
+		if err != nil {
+			t.Fatal(err)
+		}
+		site := e.Projects[0]
+		site.Name, site.Group, site.WebName, site.FormerNames, site.Aliases = "site", "web", "app", nil, nil
+		e.Projects = append(e.Projects, site)
+		e.Groups = append(e.Groups, export.Group{ID: "web", Name: "docs"})
+		change(e)
+		data, err := json.Marshal(e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	if e, err := export.Decode(two(func(*export.Export) {})); err != nil {
+		t.Fatalf("an export with app and site each named app in its own group is refused: %v", err)
+	} else if e.Projects[0].WebName != "app" || e.Projects[1].WebName != "app" {
+		t.Fatalf("the two projects decode as %q and %q", e.Projects[0].WebName, e.Projects[1].WebName)
+	}
+	for _, c := range []struct {
+		name   string
+		change func(e *export.Export)
+		want   string
+	}{
+		{"groups out of order", func(e *export.Export) {
+			e.Groups[0], e.Groups[1] = e.Groups[1], e.Groups[0]
+		}, "export.json: the group core is listed out of order or twice"},
+		{"a group listed twice", func(e *export.Export) {
+			e.Groups[1] = e.Groups[0]
+			e.Projects[1].Group = "core"
+			e.Projects[1].WebName = "site"
+		}, "export.json: the group core is listed out of order or twice"},
+		{"a group no project belongs to", func(e *export.Export) {
+			e.Projects[1].Group = "core"
+			e.Projects[1].WebName = "site"
+		}, "export.json lists group web, which none of its projects belongs to"},
+		{"a project in a group it does not list", func(e *export.Export) {
+			e.Groups = e.Groups[:1]
+			e.Projects[1].Group = "web"
+		}, `export.json: the project site belongs to the group "web", which is not declared`},
+		{"two projects of one web name in one group", func(e *export.Export) {
+			e.Groups = e.Groups[:1]
+			e.Projects[1].Group = "core"
+		}, `export.json: the web name of project app and the web name of project site are both "app"`},
+	} {
+		if _, err := export.Decode(two(c.change)); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("Decode of %s gave %v, want an error saying %q", c.name, err, c.want)
 		}
 	}
 }
@@ -417,7 +510,7 @@ func TestDecodeIsStrict(t *testing.T) {
 func TestDecodeTakesAnExportWithoutGroups(t *testing.T) {
 	f := exporttest.New(t)
 	data := bytes.Replace(f.ExportJSON, []byte(`"groups":[{"group":"core","name":"tools","aliases":["t"]}],`), nil, 1)
-	data = bytes.Replace(data, []byte(`"group":"core","aliases":["app"],`), nil, 1)
+	data = bytes.Replace(data, []byte(`"group":"core","name":"app","former_names":["old-app"],"aliases":["app"],`), nil, 1)
 	if bytes.Contains(data, []byte(`"group"`)) {
 		t.Fatalf("the fixture's export no longer reads as the test expects:\n%s", data)
 	}
@@ -425,8 +518,8 @@ func TestDecodeTakesAnExportWithoutGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(e.Groups) != 0 || e.Projects[0].Group != "" || e.Projects[0].Aliases != nil {
-		t.Errorf("an export without groups decodes with %v, and app in %q with %v", e.Groups, e.Projects[0].Group, e.Projects[0].Aliases)
+	if p := e.Projects[0]; len(e.Groups) != 0 || p.Group != "" || p.WebName != "" || p.FormerNames != nil || p.Aliases != nil {
+		t.Errorf("an export without groups decodes with %v, and app in %q as %q with %v and %v", e.Groups, p.Group, p.WebName, p.FormerNames, p.Aliases)
 	}
 }
 

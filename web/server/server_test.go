@@ -456,7 +456,7 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 			h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{name: h.f.Bundles["app"]},
 				func(e *export.Export) {
 					e.Groups[0].Name = name
-					e.Projects[0].Name = name
+					e.Projects[0].Name, e.Projects[0].WebName = name, name
 				})
 			tip := h.tip()
 			base := "/" + name + "/" + name
@@ -492,21 +492,27 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 }
 
 // An alias answers with a permanent redirect to the same path under what
-// it stands for: a group's alias to the group's name, and a project's
-// short alias to /<group>/<project>. The rest of the path and the query
-// are kept as they were sent, escapes and dot segments too, and the
-// redirect leads to the page. A group's identifier, a name in another
-// case, and a group with no project named answer 404.
+// it stands for: a group's alias to the group's name, a project's former
+// name to its web name in its group, and a project's short alias to
+// /<group>/<project>. The rest of the path and the query are kept as they
+// were sent, escapes and dot segments too, and the redirect
+// leads to the page. A group's identifier, a name in another case, and a
+// group with no project named answer 404.
 func TestAliasesRedirectPermanently(t *testing.T) {
 	h := newHarness(t)
 	tip := h.tip()
 	for from, to := range map[string]string{
-		"/t":                      "/tools",
-		"/t/":                     "/tools/",
-		"/t/app/knots/oc-a000002": "/tools/app/knots/oc-a000002",
-		"/app":                    "/tools/app",
-		"/app/":                   "/tools/app/",
-		"/app/knots/oc-a000002":   "/tools/app/knots/oc-a000002",
+		"/t":                               "/tools",
+		"/t/":                              "/tools/",
+		"/t/app/knots/oc-a000002":          "/tools/app/knots/oc-a000002",
+		"/t/old-app/knots/oc-a000002":      "/tools/old-app/knots/oc-a000002",
+		"/tools/old-app":                   "/tools/app",
+		"/tools/old-app/":                  "/tools/app/",
+		"/tools/old-app/knots/oc-a000002":  "/tools/app/knots/oc-a000002",
+		"/tools/old-app/source/log/" + tip: "/tools/app/source/log/" + tip,
+		"/app":                             "/tools/app",
+		"/app/":                            "/tools/app/",
+		"/app/knots/oc-a000002":            "/tools/app/knots/oc-a000002",
 		"/app/source/log/" + tip + "?from=" + tip:        "/tools/app/source/log/" + tip + "?from=" + tip,
 		"/app/source/blob/" + tip + "/docs%2Fguide.md":   "/tools/app/source/blob/" + tip + "/docs%2Fguide.md",
 		"/app/source/blob/" + tip + "/docs/../README.md": "/tools/app/source/blob/" + tip + "/docs/../README.md",
@@ -529,7 +535,45 @@ func TestAliasesRedirectPermanently(t *testing.T) {
 			t.Errorf("/app/ leads to %d %q, not to app's tree", next.Code, next.Header().Get("Location"))
 		}
 	}
-	for _, target := range []string{"/tools", "/tools/", "/core/app/", "/Tools/app/", "/T/app/", "/App/", "/tools/App/"} {
+	for _, target := range []string{"/tools", "/tools/", "/core/app/", "/Tools/app/", "/T/app/", "/App/", "/tools/App/",
+		"/tools/Old-app/", "/old-app/", "/core/old-app/"} {
+		if w := h.get(target); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s answered %d, not 404", target, w.Code)
+		}
+	}
+}
+
+// A project's web name is its own within its group, and need not be its
+// identifier. Two projects that are each app on the web, in two groups,
+// are served apart, each under its group's name, while the plan page
+// links each. A project's identifier is no web name of its own.
+func TestTwoGroupsEachHoldAnApp(t *testing.T) {
+	h := newHarness(t)
+	h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{"site": h.f.Bundles["app"]}, func(e *export.Export) {
+		site := e.Projects[0]
+		site.Name, site.Group, site.WebName, site.FormerNames, site.Aliases = "site", "web", "app", nil, nil
+		site.Knots = slices.Clone(site.Knots)
+		for i := range site.Knots {
+			site.Knots[i].Title = "Site: " + site.Knots[i].Title
+		}
+		e.Projects = append(e.Projects, site)
+		e.Groups = append(e.Groups, export.Group{ID: "web", Name: "docs"})
+	})
+	tip := h.tip()
+	if page := h.page("/tools/app/knots/oc-a000002"); !strings.Contains(page, "The plan page lists milestones") || strings.Contains(page, "Site: ") {
+		t.Errorf("/tools/app is not app:\n%s", page)
+	}
+	if page := h.page("/docs/app/knots/oc-a000002"); !strings.Contains(page, "Site: The plan page lists milestones") {
+		t.Errorf("/docs/app is not site:\n%s", page)
+	}
+	h.page("/docs/app/source/tree/" + tip + "/")
+	plan := h.page("/")
+	for _, link := range []string{`href="/tools/app/knots/oc-a000002"`, `href="/docs/app/knots/oc-a000002"`} {
+		if !strings.Contains(plan, link) {
+			t.Errorf("the plan page does not hold %s", link)
+		}
+	}
+	for _, target := range []string{"/docs/site/", "/docs/site/knots/oc-a000002", "/tools/site/"} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d, not 404", target, w.Code)
 		}
@@ -2445,13 +2489,15 @@ func TestStalledLoadReleasesGeneration(t *testing.T) {
 	}
 }
 
-// cancelInPhase cancels a real context on the third cancellation check
-// inside a named processing function. It makes cancellation during CPU
-// work deterministic without replacing decoding or graph traversal.
+// cancelInPhase cancels a real context on the cancellation check numbered
+// at, or the third when at is 0, inside a named processing function. It
+// makes cancellation during CPU work deterministic without replacing
+// decoding or graph traversal. With a nil cancel it counts alone.
 type cancelInPhase struct {
 	context.Context
 	cancel context.CancelFunc
 	phase  string
+	at     int
 	checks int
 }
 
@@ -2463,7 +2509,11 @@ func (c *cancelInPhase) Err() error {
 		frame, more := frames.Next()
 		if strings.HasSuffix(frame.Function, c.phase) {
 			c.checks++
-			if c.checks == 3 {
+			at := c.at
+			if at == 0 {
+				at = 3
+			}
+			if c.checks == at && c.cancel != nil {
 				c.cancel()
 			}
 			break
@@ -2476,7 +2526,8 @@ func (c *cancelInPhase) Err() error {
 }
 
 func TestProcessingCancellationReleasesGeneration(t *testing.T) {
-	for _, phase := range []string{".decodeValue", ".(*Export).ValidateContext", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
+	for _, phase := range []string{".decodeValue", ".(*Export).ValidateContext", ".CheckNames", ".(*Export).checkGroups",
+		".(*index).place", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
 		t.Run(phase, func(t *testing.T) {
 			h := newHarness(t)
 			old := h.active()
@@ -2510,5 +2561,40 @@ func TestProcessingCancellationReleasesGeneration(t *testing.T) {
 				t.Fatal("loader slot is not reusable")
 			}
 		})
+	}
+}
+
+// Indexing where each public project's pages are, and where each alias
+// and former name redirects to, stops when the load is cancelled, inside
+// each of its loops: over the groups and their aliases, and over the
+// projects and their former names and aliases. It checks before each name
+// it indexes, so a long list of names keeps no cancelled load at work.
+func TestPlacingStopsWhenCancelled(t *testing.T) {
+	f := exporttest.New(t)
+	e, err := export.Decode(f.ExportJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Groups[0].Aliases = []string{"t", "u", "v"}
+	app := &e.Projects[0]
+	app.FormerNames, app.Aliases = []string{"old-app", "older-app", "oldest-app"}, []string{"app", "a", "b"}
+	if err := e.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	count := &cancelInPhase{Context: context.Background(), phase: ".(*index).place"}
+	if _, err := newIndex(count, e); err != nil {
+		t.Fatal(err)
+	}
+	if names := 3 + 3 + 3; count.checks < names {
+		t.Errorf("placing indexed %d names and checked the context %d times", names, count.checks)
+	}
+	for at := 1; at <= count.checks; at++ {
+		base, cancel := context.WithCancel(context.Background())
+		ctx := &cancelInPhase{Context: base, cancel: cancel, phase: ".(*index).place", at: at}
+		idx, err := newIndex(ctx, e)
+		cancel()
+		if idx != nil || !errors.Is(err, context.Canceled) || ctx.checks != at {
+			t.Errorf("cancelled at check %d of %d, newIndex returned %v after %d checks", at, count.checks, err, ctx.checks)
+		}
 	}
 }

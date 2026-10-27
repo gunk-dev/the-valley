@@ -18,8 +18,9 @@ import "strings"
 	// filesystem- and URL-safe because they become on-disk directory
 	// names ("<name>.git") and clone paths. A project's name is its
 	// identifier: its repository, its plan graph, its policy/read and its
-	// read grants all name it by it.
-	projects: [#ProjectName]: #Project
+	// read grants all name it by it. Its web name, name, is the
+	// identifier unless the declaration gives another.
+	projects: [ID=#ProjectName]: #Project & {name: *ID | #ProjectName}
 
 	// groups maps each group's identifier to its declaration. The
 	// identifier never changes, and the projects of the group name it.
@@ -71,15 +72,34 @@ import "strings"
 	grants: [#GrantName]: #RefGrant
 
 	// The identifier of the group the project belongs to, which groups
-	// declares. A project's web URLs open with its group's name:
-	// /<group>/<project>/…. Optional: a project in no group has no web
-	// URL, so the web publisher publishes nothing of it.
+	// declares. A project's web URLs open with its group's name and its
+	// own web name: /<group>/<name>/…. Optional: a project in no group has
+	// no web URL, so the web publisher publishes nothing of it.
 	group?: #GroupID
+
+	// The project's web name: the second segment of its web URLs. It is
+	// the project's identifier unless the declaration gives another, and
+	// it may change while the identifier does not. A web name is unique
+	// within its group, ignoring case, and two groups may each hold a
+	// project named app. A project in a group has a #WebName, and a
+	// project in no group has no web name but its identifier.
+	name: #ProjectName
+	if group != _|_ {
+		name: #WebName
+	}
+
+	// The project's former web names within its group. A web URL under
+	// one, /<group>/<former>/…, answers with a permanent redirect to the
+	// same path under /<group>/<name>/…, so a project that is renamed
+	// keeps its former name here and its links keep working. They share
+	// the group's names with its projects' web names. Empty by default. A
+	// project with former names belongs to a group.
+	formerNames: [...#WebName] | *[]
 
 	// The project's short aliases. Each is a first segment of a web URL:
 	// /<alias>/… answers with a permanent redirect to the same path under
-	// /<group>/<project>/…. Empty by default. A project with aliases
-	// belongs to a group.
+	// /<group>/<name>/…. Empty by default. A project with aliases belongs
+	// to a group.
 	aliases: [...#WebName] | *[]
 }
 
@@ -104,7 +124,8 @@ import "strings"
 }
 
 // #WebName is a name a web URL holds as one segment: a group's name or
-// alias, or a project's alias. It has the project-name shape and at most
+// alias, or a project's web name, former name or alias. It has the
+// project-name shape and at most
 // 64 characters, so it never starts with "-", and the web server's own
 // paths, under /-/, are never a name's.
 #WebName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$" & strings.MaxRunes(64)
@@ -244,17 +265,41 @@ projects: #Host.projects
 // Mirrors #Host.groups.
 groups: #Host.groups
 
-// Every group a project names is declared, and a project with aliases is
-// in a group. A project that breaks either lands in _groupless as a
-// sentinel string against a `bool`, and fails vet naming the project.
+// Every group a project names is declared, and a project with a web name
+// of its own, former names or aliases is in a group. A project that
+// breaks one of these lands in _groupless as a sentinel string against a
+// `bool`, and fails vet naming the project.
 _groupless: [string]: bool
 _groupless: {
 	for n, p in projects {
 		if p.group != _|_ if groups[p.group] == _|_ {
 			"\(n)": "INVALID: the project's group is not declared under groups"
 		}
+		if p.group == _|_ if p.name != n {
+			"\(n)": "INVALID: a project with a web name belongs to a group"
+		}
+		if p.group == _|_ if len(p.formerNames) > 0 {
+			"\(n)": "INVALID: a project with former names belongs to a group"
+		}
 		if p.group == _|_ if len(p.aliases) > 0 {
 			"\(n)": "INVALID: a project with aliases belongs to a group"
+		}
+	}
+}
+
+// The web names and former names of a group's projects share one
+// namespace: the second segment of the group's web URLs. Two of them that
+// differ at most in case collide, and so does a name given twice. Each
+// claim lands in _secondSegments under its group's identifier and its
+// lowercased name, with who makes it, and two claims of one name in one
+// group conflict and fail vet naming both. Projects in different groups
+// never collide.
+_secondSegments: [string]: [string]: string
+_secondSegments: {
+	for n, p in projects if p.group != _|_ {
+		(p.group): (strings.ToLower(p.name)): "the web name of project \(n)"
+		for i, f in p.formerNames {
+			(p.group): (strings.ToLower(f)): "former name \(i) of project \(n)"
 		}
 	}
 }

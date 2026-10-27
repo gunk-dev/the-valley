@@ -23,13 +23,16 @@ type index struct {
 	// public are the public projects' names, in the export's order: those
 	// that have a web URL, which a project in no group does not.
 	public []string
-	// bases are each public project's URL, /<group name>/<project>,
-	// escaped, by project name. groups are the public projects by group
-	// name and then by project name. aliases are where each alias's URLs
-	// redirect to: a group's alias to /<group name>, and a project's
-	// short alias to its base.
+	// bases are each public project's URL, /<group name>/<web name>,
+	// escaped, by the project's identifier. groups are the public
+	// projects by group name and then by web name. formers are where the
+	// URLs under a public project's former names redirect to, its base,
+	// by group name and then by former name. aliases are where each
+	// alias's URLs redirect to: a group's alias to /<group name>, and a
+	// project's short alias to its base.
 	bases   map[string]string
 	groups  map[string]map[string]*export.Project
+	formers map[string]map[string]string
 	aliases map[string]string
 	// plan is the plan page, but for what is in flight, whose ages are
 	// read at each request. Requests share it and do not change it.
@@ -58,33 +61,15 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 		}
 	}()
 	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{},
-		bases: map[string]string{}, groups: map[string]map[string]*export.Project{}, aliases: map[string]string{}}
+		bases: map[string]string{}, groups: map[string]map[string]*export.Project{},
+		formers: map[string]map[string]string{}, aliases: map[string]string{}}
 	idx.checkBuild()
 	defer func() { idx.building = nil }()
-	groups := map[string]export.Group{}
-	for _, g := range e.Groups {
-		groups[g.ID] = g
-		for _, alias := range g.Aliases {
-			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
-		}
-	}
+	idx.place(e)
 	for i := range e.Projects {
 		idx.checkBuild()
 		p := &e.Projects[i]
 		idx.projects[p.Name] = p
-		g, grouped := groups[p.Group]
-		if p.Visibility == export.Public && grouped {
-			idx.public = append(idx.public, p.Name)
-			base := "/" + url.PathEscape(g.Name) + "/" + url.PathEscape(p.Name)
-			idx.bases[p.Name] = base
-			if idx.groups[g.Name] == nil {
-				idx.groups[g.Name] = map[string]*export.Project{}
-			}
-			idx.groups[g.Name][p.Name] = p
-			for _, alias := range p.Aliases {
-				idx.aliases[alias] = base
-			}
-		}
 		byID := map[string]*export.Knot{}
 		for j := range p.Knots {
 			idx.checkBuild()
@@ -95,6 +80,46 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 	idx.plan = idx.planPage()
 	idx.checkBuild()
 	return idx, nil
+}
+
+// place indexes where each public project's pages are, and where each
+// alias and former name redirects to. A project in no group has no pages.
+// It checks for cancellation before each group, project and name, so the
+// work between two checks is bounded by a name's length.
+func (idx *index) place(e *export.Export) {
+	groups := map[string]export.Group{}
+	for _, g := range e.Groups {
+		idx.checkBuild()
+		groups[g.ID] = g
+		for _, alias := range g.Aliases {
+			idx.checkBuild()
+			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
+		}
+	}
+	for i := range e.Projects {
+		idx.checkBuild()
+		p := &e.Projects[i]
+		g, grouped := groups[p.Group]
+		if p.Visibility != export.Public || !grouped {
+			continue
+		}
+		idx.public = append(idx.public, p.Name)
+		base := "/" + url.PathEscape(g.Name) + "/" + url.PathEscape(p.WebName)
+		idx.bases[p.Name] = base
+		if idx.groups[g.Name] == nil {
+			idx.groups[g.Name] = map[string]*export.Project{}
+			idx.formers[g.Name] = map[string]string{}
+		}
+		idx.groups[g.Name][p.WebName] = p
+		for _, former := range p.FormerNames {
+			idx.checkBuild()
+			idx.formers[g.Name][former] = base
+		}
+		for _, alias := range p.Aliases {
+			idx.checkBuild()
+			idx.aliases[alias] = base
+		}
+	}
 }
 
 // knotURL is a knot's page, under its project's base.

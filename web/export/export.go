@@ -44,12 +44,16 @@ type Export struct {
 type Project struct {
 	Name       string     `json:"project"`
 	Visibility Visibility `json:"visibility"`
-	// Group is the identifier of the project's group, and Aliases are its
-	// short aliases. A project with no group, as in a v1 export from
-	// before groups, has no web URL, and a server serves it as one the
-	// export does not hold.
-	Group   string   `json:"group,omitempty"`
-	Aliases []string `json:"aliases,omitempty"`
+	// Group is the identifier of the project's group. WebName is its name
+	// within the group, the second segment of its web URLs, which Name,
+	// its identifier, need not be. FormerNames are its former web names
+	// within the group, and Aliases its short aliases. A project with no
+	// group, as in a v1 export from before groups, has no web URL, and a
+	// server serves it as one the export does not hold.
+	Group       string   `json:"group,omitempty"`
+	WebName     string   `json:"name,omitempty"`
+	FormerNames []string `json:"former_names,omitempty"`
+	Aliases     []string `json:"aliases,omitempty"`
 	// GraphTip is "" for a project with no plan graph.
 	GraphTip  string `json:"graph_tip"`
 	SourceTip string `json:"source_tip"`
@@ -253,10 +257,10 @@ func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
 // Validate holds an export to what a server may route by and show without
 // further checks: its schema, project names that are safe as file names,
 // one entry per project in name order, object IDs for tips, and knot IDs
-// that are unique within their project. Its groups are in identifier
-// order, each one some project's, and its groups and projects' aliases
-// pass CheckNames. Text fields are valid UTF-8 with no control character
-// other than a newline or a tab.
+// that are unique within their project. Its groups and the places of its
+// projects pass CheckNames, and each group is some project's. Text fields
+// are valid UTF-8 with no control character other than a newline or a
+// tab.
 func (e *Export) Validate() error {
 	return e.ValidateContext(context.Background())
 }
@@ -268,9 +272,6 @@ func (e *Export) ValidateContext(ctx context.Context) error {
 	}
 	if e.Schema != Schema {
 		return fmt.Errorf("export.json has schema %q, not %q", e.Schema, Schema)
-	}
-	if err := e.checkGroups(); err != nil {
-		return err
 	}
 	for i, p := range e.Projects {
 		if err := ctx.Err(); err != nil {
@@ -335,31 +336,38 @@ func (e *Export) ValidateContext(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return e.checkGroups(ctx)
 }
 
-// checkGroups holds the export's groups and placements to CheckNames, its
-// groups to identifier order, and each group to having a project, so an
-// export names no group that only private projects belong to.
-func (e *Export) checkGroups() error {
-	placed := map[string]Placement{}
+// checkGroups holds the export's groups and the places of its projects,
+// which are in project order already, to CheckNames, and each group to
+// having a project, so an export names no group that only private projects
+// belong to. It checks ctx before each project and each group.
+func (e *Export) checkGroups(ctx context.Context) error {
+	var placed []Placed
 	named := map[string]bool{}
 	for _, p := range e.Projects {
-		if p.Group != "" || len(p.Aliases) > 0 {
-			placed[p.Name] = Placement{Group: p.Group, Aliases: p.Aliases}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if p.Group != "" || p.WebName != "" || len(p.FormerNames) > 0 || len(p.Aliases) > 0 {
+			placed = append(placed, Placed{p.Name, Placement{Group: p.Group, Name: p.WebName, FormerNames: p.FormerNames, Aliases: p.Aliases}})
 			named[p.Group] = true
 		}
 	}
-	for i, g := range e.Groups {
-		if i > 0 && e.Groups[i-1].ID >= g.ID {
-			return fmt.Errorf("export.json lists group %s out of order or twice", g.ID)
+	if err := CheckNames(ctx, e.Groups, placed); err != nil {
+		if stopped := ctx.Err(); stopped != nil {
+			return stopped
+		}
+		return fmt.Errorf("export.json: %w", err)
+	}
+	for _, g := range e.Groups {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 		if !named[g.ID] {
 			return fmt.Errorf("export.json lists group %s, which none of its projects belongs to", g.ID)
 		}
-	}
-	if err := CheckNames(e.Groups, placed); err != nil {
-		return fmt.Errorf("export.json: %w", err)
 	}
 	return nil
 }

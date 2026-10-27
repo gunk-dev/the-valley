@@ -60,7 +60,7 @@
 // # Routes
 //
 // The server answers GET and HEAD alone. A project's pages are under its
-// group's name and its own:
+// group's name and its own web name, which need not be its identifier:
 //
 //	/                                                 the plan page
 //	/<group>/<project>/                               a redirect to the tree at main's tip
@@ -70,19 +70,21 @@
 //	/<group>/<project>/source/blob/<commit>/<path>    a file
 //	/<group>/<project>/source/log/<commit>            the history that ends at a commit
 //	/<group>/<project>/source/log/<commit>?from=…     an older page of that history
+//	/<group>/<former name>/…                          a permanent redirect
 //	/<alias>/…                                        a permanent redirect
 //	/-/...                                            the server's own paths
 //
-// A group's alias redirects to the same path under the group's name, and
-// a project's short alias to the same path under /<group>/<project>. The
+// A group's alias redirects to the same path under the group's name, a
+// project's former name to the same path under its web name, and a
+// project's short alias to the same path under /<group>/<project>. The
 // redirect keeps the rest of the path and the query as they were sent.
 //
 // Every path but / and those under /-/ starts with a group's name or an
 // alias. No name starts with "-", so no group's path is ever one of the
 // server's own, whatever paths the server adds there. It serves no page
-// under /-/, and answers each path there with the one 404. A project's
-// name is unique within its group, and package export refuses an export
-// whose group names and aliases collide.
+// under /-/, and answers each path there with the one 404. Package export
+// refuses an export whose group names and aliases collide, or whose
+// projects' web names and former names collide within a group.
 //
 // Every source link names its group and project, a full commit ID and a
 // path. A commit is served only when export.Reachable finds it reachable
@@ -701,18 +703,20 @@ func (q *request) route(parts []string, ok bool) {
 		q.notFound()
 	default:
 		if to, ok := q.idx.aliases[parts[0]]; ok {
-			q.moved(to)
+			q.moved(to, 1)
 			return
 		}
-		var p *export.Project
 		if len(parts) >= 2 {
-			p = q.idx.groups[parts[0]][parts[1]]
+			if p := q.idx.groups[parts[0]][parts[1]]; p != nil {
+				q.projectRoute(p.Name, parts[2:])
+				return
+			}
+			if to, ok := q.idx.formers[parts[0]][parts[1]]; ok {
+				q.moved(to, 2)
+				return
+			}
 		}
-		if p == nil {
-			q.notFound()
-			return
-		}
-		q.projectRoute(p.Name, parts[2:])
+		q.notFound()
 	}
 }
 
@@ -731,14 +735,15 @@ func (q *request) projectRoute(project string, rest []string) {
 	}
 }
 
-// moved answers a path under an alias with a permanent redirect to the
-// same path under to, the escaped URL the alias stands for. The rest of
-// the path after the alias, and the query, are kept as they were sent.
-func (q *request) moved(to string) {
-	esc := strings.TrimPrefix(q.r.URL.EscapedPath(), "/")
+// moved answers a path under an alias or a former name with a permanent
+// redirect to the same path under to, the escaped URL the path's first n
+// segments stand for. The rest of the path after them, and the query,
+// are kept as they were sent.
+func (q *request) moved(to string, n int) {
+	esc := strings.Split(strings.TrimPrefix(q.r.URL.EscapedPath(), "/"), "/")
 	rest := ""
-	if i := strings.IndexByte(esc, '/'); i >= 0 {
-		rest = esc[i:]
+	if len(esc) > n {
+		rest = "/" + strings.Join(esc[n:], "/")
 	}
 	if q.r.URL.RawQuery != "" {
 		rest += "?" + q.r.URL.RawQuery

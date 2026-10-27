@@ -9,9 +9,21 @@ grep -q 'restic-sftp' example.json
 [ "$(cue export -e 'groups.valley.name' "$schema" "$example")" = '"valley"' ]
 
 # A declaration without groups exports none, and its projects no group,
-# and no aliases.
+# no former names and no aliases, and their identifiers as their web names.
 [ "$(cue export -e groups "$schema" "$hosts/no-backup.cue")" = '{}' ]
 [ "$(cue export -e 'projects."the-valley".aliases' "$schema" "$hosts/no-backup.cue")" = '[]' ]
+[ "$(cue export -e 'projects."the-valley".formerNames' "$schema" "$hosts/no-backup.cue")" = '[]' ]
+[ "$(cue export -e 'projects."the-valley".name' "$schema" "$hosts/no-backup.cue")" = '"the-valley"' ]
+
+# Two groups may each hold a project of one web name: web names are unique
+# within a group, and identifiers across the host. A project that gives no
+# web name has its identifier, and a former name is exported as declared.
+groups=("$schema" "$hosts/groups.cue")
+cue vet -c "${groups[@]}"
+[ "$(cue export -e 'projects."core-app".name' "${groups[@]}")" = '"app"' ]
+[ "$(cue export -e 'projects."web-app".name' "${groups[@]}")" = '"app"' ]
+[ "$(cue export -e 'projects.site.name' "${groups[@]}")" = '"site"' ]
+[ "$(cue export -e 'projects."core-app".formerNames[0]' "${groups[@]}")" = '"tool"' ]
 
 # A declaration with no optional field set must stay valid —
 # consumers written before backup or protection existed keep

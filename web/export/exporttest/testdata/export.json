@@ -15,6 +15,10 @@
       "project": "app",
       "visibility": "public",
       "group": "core",
+      "name": "app",
+      "former_names": [
+        "old-app"
+      ],
       "aliases": [
         "app"
       ],

@@ -7,9 +7,12 @@
 {
   # A host declaration: the pilot's own, with a group and an alias, the
   # compatibility case, the protection block the installer renders a hook
-  # from, and the sixteen declarations the schema must refuse, among them
-  # group names that collide, a project alias that is a group's name, an
-  # undeclared group and aliases without a group. The event payloads live here too —
+  # from, two groups that each hold a project named app, and the twenty
+  # declarations the schema must refuse, among them group names that
+  # collide, a project alias that is a group's name, two web names in one
+  # group that collide, a former name that is another project's web name,
+  # an undeclared group, and a web name, former names or aliases without a
+  # group. The event payloads live here too —
   # the publisher hook's vocabulary is a schema like any other — and so
   # does the worked verification policy under examples/policy/, with the
   # carry modes and the restacker's cap case by case under
@@ -27,6 +30,7 @@
     hosts = partOf ../../examples/hosts [
       ../../examples/hosts/no-backup.cue
       ../../examples/hosts/protected.cue
+      ../../examples/hosts/groups.cue
       ../../examples/hosts/rejected
     ];
     eventSchema = ../../schema/events.cue;

@@ -695,10 +695,12 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 	}
 }
 
-// The export carries each public project's group and short aliases, as
-// the host declaration places it, and the groups the public projects
-// belong to. A project in no group has no web URL, so it is private, and
-// the pass says why, though anyone may read it.
+// The export carries each public project's group, web name, former names
+// and short aliases, as the host declaration places it, and the groups
+// the public projects belong to. A project's web name is its identifier
+// unless the declaration gives another, and two groups may each hold a
+// project of one web name. A project in no group has no web URL, so it is
+// private, and the pass says why, though anyone may read it.
 func TestGroupsComeFromTheHostDeclaration(t *testing.T) {
 	v := newValley(t)
 	v.declare("site", policy("site", "anyone"))
@@ -707,9 +709,20 @@ func TestGroupsComeFromTheHostDeclaration(t *testing.T) {
 		t.Errorf("the export's groups are %v, want %v", e.Groups, want)
 	}
 	for _, p := range e.Projects {
-		if want := map[string][]string{"app": {"app"}, "site": nil}[p.Name]; p.Group != "core" || !slices.Equal(p.Aliases, want) {
-			t.Errorf("%s is exported in group %q with aliases %v", p.Name, p.Group, p.Aliases)
+		if want := map[string][]string{"app": {"app"}, "site": nil}[p.Name]; p.Group != "core" || p.WebName != p.Name || !slices.Equal(p.Aliases, want) {
+			t.Errorf("%s is exported in group %q as %q with aliases %v", p.Name, p.Group, p.WebName, p.Aliases)
 		}
+	}
+
+	v.declareHost(`groups: core: {name: "tools", aliases: ["t"]}
+groups: web: name: "docs"
+projects: app: {group: "core", formerNames: ["tool"], aliases: ["app"]}
+projects: site: {group: "web", name: "app"}`)
+	_, _, e = v.out()
+	if app, site := e.Projects[0], e.Projects[1]; app.Group != "core" || app.WebName != "app" || !slices.Equal(app.FormerNames, []string{"tool"}) ||
+		site.Group != "web" || site.WebName != "app" || site.FormerNames != nil {
+		t.Errorf("with site named app in its own group, app is in %q as %q, formerly %v, and site in %q as %q, formerly %v",
+			app.Group, app.WebName, app.FormerNames, site.Group, site.WebName, site.FormerNames)
 	}
 
 	v.declareHost(`groups: core: {name: "tools", aliases: ["t"]}
@@ -742,25 +755,43 @@ projects: site: {}`)
 }
 
 // A host declaration whose names collide, that names a group it does not
-// declare, or that spells a field otherwise than schema/valley.cue does,
-// is refused when it is read, and no pass runs: nothing is written or
-// sent. A pass without --host is a usage error.
+// declare, that names a project by something that is not a name, or that
+// spells a field otherwise than schema/valley.cue does, is refused when
+// it is read, and no pass runs: nothing is written or sent. A pass
+// without --host is a usage error.
 func TestACollidingHostDeclarationIsRefused(t *testing.T) {
 	v := newValley(t)
 	project := func(fields string) string {
 		return `{"git": {"enable": true}, "mirrors": [], "grants": {}` + fields + `}`
 	}
 	for what, c := range map[string]struct{ host, says string }{
-		"group names that differ in case": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": []`) + `},
+		"group names that differ in case": {`{"projects": {"app": ` + project(`, "group": "core", "name": "app", "aliases": []`) + `},
 			"groups": {"core": {"name": "tools", "aliases": []}, "web": {"name": "Tools", "aliases": []}}}`,
 			`the name of group core and the name of group web are both "Tools", ignoring case`},
-		"a project alias that is a group's alias": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": ["T"]`) + `},
+		"a project alias that is a group's alias": {`{"projects": {"app": ` + project(`, "group": "core", "name": "app", "aliases": ["T"]`) + `},
 			"groups": {"core": {"name": "tools", "aliases": ["t"]}}}`,
 			`alias 0 of group core and alias 0 of project app are both "T"`},
-		"a group it does not declare": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": []`) + `}, "groups": {}}`,
+		"a group it does not declare": {`{"projects": {"app": ` + project(`, "group": "core", "name": "app", "aliases": []`) + `}, "groups": {}}`,
 			`the project app belongs to the group "core", which is not declared`},
 		"a field spelled in another case": {`{"projects": {"app": ` + project(`, "Group": "core", "aliases": []`) + `}, "groups": {}}`,
 			"is not a host declaration as cue exports it"},
+		"a project's identifier that is a path": {`{"projects": {"../app": ` + project(``) + `}, "groups": {}}`,
+			`a project's identifier is "../app", which is not a name`},
+		"an empty identifier": {`{"projects": {"": ` + project(``) + `}, "groups": {}}`,
+			`a project's identifier is "", which is not a name`},
+		"an identifier that opens with a dash": {`{"projects": {"-app": ` + project(``) + `}, "groups": {}}`,
+			`a project's identifier is "-app", which is not a name`},
+		"a web name and no group": {`{"projects": {"app": ` + project(`, "name": "other"`) + `}, "groups": {}}`,
+			`the project app is in no group, and its web name is "other"`},
+		"a project in a group with no web name": {`{"projects": {"app": ` + project(`, "group": "core"`) + `},
+			"groups": {"core": {"name": "tools", "aliases": []}}}`,
+			`the web name of project app is "", which is not a name`},
+		"web names in one group that differ in case": {`{"projects": {"app": ` + project(`, "group": "core", "name": "app"`) + `,
+			"site": ` + project(`, "group": "core", "name": "APP"`) + `}, "groups": {"core": {"name": "tools", "aliases": []}}}`,
+			`the web name of project app and the web name of project site are both "APP", ignoring case`},
+		"a former name that is another project's web name": {`{"projects": {"app": ` + project(`, "group": "core", "name": "app"`) + `,
+			"site": ` + project(`, "group": "core", "name": "site", "formerNames": ["app"]`) + `}, "groups": {"core": {"name": "tools", "aliases": []}}}`,
+			`the web name of project app and former name 0 of project site are both "app"`},
 	} {
 		v.write(v.host, c.host)
 		out := filepath.Join(t.TempDir(), "export")

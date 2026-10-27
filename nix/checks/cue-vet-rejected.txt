@@ -18,3 +18,7 @@ group-names-differ-in-case	_firstSegments.tools: conflicting values
 project-alias-is-a-group-name	_firstSegments.tools: conflicting values
 undeclared-group	_groupless.app: conflicting values "INVALID: the project's group is not declared under groups"
 aliases-without-group	_groupless.app: conflicting values "INVALID: a project with aliases belongs to a group"
+project-names-differ-in-case	_secondSegments.core.app: conflicting values
+former-name-is-a-web-name	_secondSegments.core.app: conflicting values
+former-names-without-group	_groupless.app: conflicting values "INVALID: a project with former names belongs to a group"
+web-name-without-group	_groupless.app: conflicting values "INVALID: a project with a web name belongs to a group"

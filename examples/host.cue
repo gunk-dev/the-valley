@@ -18,8 +18,9 @@ projects: {
 		mirrors: ["git@mirror.example.org:the-valley.git"]
 
 		// Its group, by the group's identifier, so its web URLs open
-		// /valley/the-valley/…. Its short alias makes /the-valley/…
-		// redirect there.
+		// /valley/the-valley/…: the group's name, then the project's web
+		// name, which is its identifier because it gives no other. Its
+		// short alias makes /the-valley/… redirect there.
 		group: "valley"
 		aliases: ["the-valley"]
 	}

@@ -406,9 +406,10 @@ func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
 	}
 }
 
-// export.json is read strictly: a field the schema does not name, or a
-// project name that is not safe as a file name, fails it. Each case is
-// refused for the reason it names.
+// export.json is read strictly: a key that is not a field's name spelled
+// exactly, in any case or Unicode case-fold variant, a key twice in one
+// object, or a project name that is not safe as a file name, fails it.
+// Each case is refused for the reason it names.
 func TestDecodeIsStrict(t *testing.T) {
 	f := exporttest.New(t)
 	if _, err := export.Decode(f.ExportJSON); err != nil {
@@ -420,13 +421,25 @@ func TestDecodeIsStrict(t *testing.T) {
 		want string
 	}{
 		{"an unknown field", bytes.Replace(f.ExportJSON, []byte(`"collected"`), []byte(`"extra":1,"collected"`), 1),
-			`unknown field "extra"`},
+			`holds the key "extra", which is none of its fields`},
 		{"an unsafe name", bytes.Replace(f.ExportJSON, []byte(`"project":"app"`), []byte(`"project":"../app"`), 1),
 			`names a project "../app", which is not a project name`},
 		{"a second document", append(append([]byte{}, f.ExportJSON...), f.ExportJSON...),
 			"holds more than its one document"},
 		{"another schema", bytes.Replace(f.ExportJSON, []byte(export.Schema), []byte("valley-web-export/v0"), 1),
 			`has schema "valley-web-export/v0"`},
+		{"a field spelled in another case beside it", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"aliases":["app"],"Aliases":["other"]`), 1),
+			`projects[0] holds the key "Aliases", which is its field "aliases" spelled another way`},
+		{"a field spelled with a Unicode case-fold variant", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"alia`+"ſ"+`es":["other"]`), 1),
+			`projects[0] holds the key "alia` + "ſ" + `es", which is its field "aliases" spelled another way`},
+		{"a field given twice", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"aliases":["app"],"aliases":["other"]`), 1),
+			`projects[0] holds the key "aliases" twice`},
+		{"a field given twice, once escaped", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"aliases":["app"],"\u0061liases":["other"]`), 1),
+			`projects[0] holds the key "aliases" twice`},
 		{"a project alias that is a group's alias", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
 			[]byte(`"aliases":["T"]`), 1),
 			`alias 0 of group core and alias 0 of project app are both "T"`},

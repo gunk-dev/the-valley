@@ -70,15 +70,13 @@ func decodeValue(ctx context.Context, dec *tokenDecoder, v reflect.Value) error 
 			if !ok {
 				return fmt.Errorf("expected an object field")
 			}
+			// exactjson.Check has passed the document, so a key names
+			// its field exactly.
 			field := -1
 			for i := 0; i < v.NumField(); i++ {
-				tag := strings.Split(v.Type().Field(i).Tag.Get("json"), ",")[0]
-				if tag == name {
+				if tag, _, _ := strings.Cut(v.Type().Field(i).Tag.Get("json"), ","); tag == name {
 					field = i
 					break
-				}
-				if strings.EqualFold(tag, name) {
-					field = i
 				}
 			}
 			if field < 0 {

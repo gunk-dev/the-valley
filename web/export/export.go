@@ -11,6 +11,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"the-valley/exactjson"
 	"the-valley/knot"
 )
 
@@ -228,7 +229,8 @@ func (e *Export) Encode() ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-// Decode reads export.json strictly: a field the schema does not name,
+// Decode reads export.json strictly: a key that is not the name of a
+// field the schema names, spelled exactly, a key twice in one object,
 // anything but white space after the document, or an export Validate
 // refuses, fails the read.
 func Decode(data []byte) (*Export, error) {
@@ -236,10 +238,17 @@ func Decode(data []byte) (*Export, error) {
 }
 
 // DecodeContext reads and validates an export while ctx remains active.
+// It reads the document twice, as exactjson.Decode does: first through
+// exactjson.Check, which refuses a key not spelled exactly as a field's
+// name and a key twice in one object, and then into the export. Both
+// reads check ctx between tokens and within long strings.
 func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
-	dec := newTokenDecoder(ctx, r)
-	var e Export
-	if err := decodeValue(ctx, dec, reflect.ValueOf(&e).Elem()); err != nil {
+	var data bytes.Buffer
+	dec := newTokenDecoder(ctx, io.TeeReader(r, &data))
+	if err := exactjson.Check(dec, reflect.TypeFor[Export]()); err != nil {
+		if stopped := ctx.Err(); stopped != nil {
+			return nil, stopped
+		}
 		return nil, fmt.Errorf("export.json: %w", err)
 	}
 	if _, err := dec.Token(); err != io.EOF {
@@ -247,6 +256,10 @@ func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
 			return nil, ctx.Err()
 		}
 		return nil, errors.New("export.json holds more than its one document")
+	}
+	var e Export
+	if err := decodeValue(ctx, newTokenDecoder(ctx, &data), reflect.ValueOf(&e).Elem()); err != nil {
+		return nil, fmt.Errorf("export.json: %w", err)
 	}
 	if err := e.ValidateContext(ctx); err != nil {
 		return nil, err

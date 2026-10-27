@@ -433,7 +433,8 @@ rec {
   # the receiver's state directory. It reads names and IDs by the plan
   # graph's rules (../knot), the manifest with the note module (../note),
   # and who may read a project through ../readaccess, which reads with
-  # ../exactjson, as the publisher reads the host declaration. The program
+  # ../exactjson, as the publisher reads the host declaration and package
+  # export reads export.json. The program
   # built from it is the publisher, cmd/valley-web-publish, which
   # valley-web-publish below wraps. The server and its command are built by
   # valley-web below, and the receiver by valley-web-receive. The export's
@@ -554,10 +555,11 @@ rec {
   # state directory to anonymous readers. It reads the export and the
   # state directory with package export, so its source is the web
   # module, less the fixture's expected export, which only web's tests
-  # read. Of ../readaccess, which the publisher reads through and the
-  # server does not, and of ../exactjson, which readaccess reads with, it
-  # reads the go.mod alone, which go reads to resolve the module. The git it reads repositories with is fixed at build time,
-  # the way valleyhook's is. Its tests run the real program over the shared
+  # read. Package export reads export.json with ../exactjson, so its
+  # source holds that module too. Of ../readaccess, which the publisher
+  # reads through and the server does not, it reads the go.mod alone,
+  # which go reads to resolve the module. The git it reads repositories
+  # with is fixed at build time, the way valleyhook's is. Its tests run the real program over the shared
   # fixture and real git, and go vet runs after them. Go, standard library
   # only, so no module is fetched.
   valley-web = goModule {
@@ -567,7 +569,7 @@ rec {
       ../knot
       ../note
       ../readaccess/go.mod
-      ../exactjson/go.mod
+      ../exactjson
     ];
     excluded = [
       ../web/export/exporttest/testdata
@@ -594,7 +596,8 @@ rec {
   # which takes the publisher's uploads into a state directory that
   # valley-web serves. Its source is the web module less the publisher,
   # the server and its command, which it does not build, and the fixture's
-  # expected export; of ../readaccess and ../exactjson it reads the go.mod
+  # expected export. Package export reads export.json with ../exactjson, so
+  # its source holds that module too; of ../readaccess it reads the go.mod
   # alone, as valley-web does. The git it accepts bundles with is fixed at
   # build time. Its tests run the real program over the shared fixture and
   # real git, with the real valley-web serving its state directory, and go
@@ -606,7 +609,7 @@ rec {
       ../knot
       ../note
       ../readaccess/go.mod
-      ../exactjson/go.mod
+      ../exactjson
     ];
     excluded = [
       ../web/export/exporttest/testdata

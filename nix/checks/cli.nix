@@ -291,8 +291,10 @@ in
   # filter blocks, each over real repositories and real pushes. A restack
   # append kept and restored still reads the branch
   # before its push, and is refused once the owner has moved it; a kept
-  # write that is malformed does not restore. valley-ready and
-  # integrator-e2e drive it through valley rebase.
+  # write that is malformed does not restore. A snapshot whose fetch fails
+  # because main was rewritten after the listing reads origin again, and
+  # gives up after three listings. valley-ready and integrator-e2e drive
+  # it through valley rebase.
   rebase-unit = packages.rebase.unit;
 
   # The Go verbs' tests (status/), in valley-go's unit build: the

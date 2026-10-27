@@ -122,15 +122,36 @@ type Snapshot struct {
 	unverified bool
 }
 
+// snapshotTries is how many times ReadSnapshot lists origin and fetches
+// what the listing names before it gives up.
+const snapshotTries = 3
+
 // ReadSnapshot lists origin once and fetches every object the snapshot
 // reads: main, every branch tip, every record commit, every outcome record
 // and every restack report. A record commit has its version heads as
 // parents, so they come with it.
+//
+// A ref can move between the listing and the fetch. Origin may then no
+// longer hold the object the listing named, as when main was rewritten and
+// its old tip pruned, and the fetch fails. The read is then made again
+// from a new listing, up to snapshotTries times in all, and a fetch that
+// still fails is the snapshot's error.
 func ReadSnapshot(ctx context.Context, g Git, v Verifier) (*Snapshot, error) {
-	o, err := ListOrigin(ctx, g, InventoryPatterns...)
-	if err != nil {
-		return nil, err
+	for try := 1; ; try++ {
+		o, err := ListOrigin(ctx, g, InventoryPatterns...)
+		if err != nil {
+			return nil, err
+		}
+		s, err := fetchSnapshot(ctx, g, o, v)
+		if err == nil || try == snapshotTries || ctx.Err() != nil {
+			return s, err
+		}
 	}
+}
+
+// fetchSnapshot fetches every object a snapshot of the listing reads, and
+// reads every record it names.
+func fetchSnapshot(ctx context.Context, g Git, o Origin, v Verifier) (*Snapshot, error) {
 	var want []string
 	for ref, oid := range o.Refs {
 		if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, OutcomePrefix) || strings.HasPrefix(ref, RestackPrefix) {

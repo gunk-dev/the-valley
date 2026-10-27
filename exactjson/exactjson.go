@@ -58,7 +58,7 @@ func Decode(data []byte, v any) error {
 	// into an int64 or a json.Number is not refused for overflowing a
 	// float64.
 	dec.UseNumber()
-	if err := check(dec, t, ""); err != nil {
+	if err := Check(dec, t); err != nil {
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
@@ -69,9 +69,28 @@ func Decode(data []byte, v any) error {
 	return dec.Decode(v)
 }
 
+// Tokens is a stream of JSON tokens, as a *json.Decoder reads them.
+type Tokens interface {
+	Token() (json.Token, error)
+	More() bool
+}
+
+// Check reads one JSON value from tokens, and holds every object in it to
+// t, the type the value is decoded into, by the rules Decode holds a
+// document to: a key of an object read into a struct is the name a json
+// tag of that struct gives, spelled exactly, and no key appears twice in
+// one object. It reads nothing after the value.
+//
+// Check is for a caller that decodes with a token reader of its own, such
+// as one that stops when a context is cancelled. Such a caller checks the
+// value with Check first, and decodes it only when Check passes it. A
+// token reader that reads numbers as json.Number keeps a number that
+// overflows a float64 from failing the check.
+func Check(tokens Tokens, t reflect.Type) error { return check(tokens, t, "") }
+
 // check reads one value from dec, found at path ("" for the document),
 // and holds every object in it to t, the type the value is decoded into.
-func check(dec *json.Decoder, t reflect.Type, path string) error {
+func check(dec Tokens, t reflect.Type, path string) error {
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}

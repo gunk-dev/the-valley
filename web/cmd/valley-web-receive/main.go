@@ -91,7 +91,9 @@ const (
 )
 
 // How long a request may take, from when its headers have been read. A
-// commit fetches and checks every bundle it was sent.
+// commit fetches and checks every bundle it was sent. A stop gives the
+// requests in flight stopTimeout to finish, and then ends them and waits
+// drainTimeout more for them, and the git they run, to stop.
 const (
 	headerTimeout   = 10 * time.Second
 	shortTimeout    = 10 * time.Second
@@ -100,6 +102,7 @@ const (
 	commitTimeout   = 30 * time.Minute
 	idleTimeout     = time.Minute
 	stopTimeout     = 10 * time.Second
+	drainTimeout    = 5 * time.Second
 )
 
 func main() {
@@ -121,8 +124,10 @@ func main() {
 type usageError struct{ error }
 
 // run receives until ctx is done, then shuts the server down, letting
-// requests in flight finish for a few seconds. A commit stopped part way
-// leaves the active export as it was, as a crash does.
+// requests in flight finish for a few seconds. It then ends the requests
+// still running, and waits a few seconds more for them and the git they
+// run to stop. A commit stopped part way leaves the active export as it
+// was, as a crash does.
 func run(ctx context.Context, args []string, stderr io.Writer) error {
 	flags := flag.NewFlagSet("valley-web-receive", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -216,7 +221,14 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	if err := srv.Shutdown(shutdown); err != nil {
 		// Requests still running are ended: closing their connections
 		// cancels their contexts, which stops the git a commit runs.
+		// Close returns without waiting for them, and a process that
+		// exited first could leave that git running.
 		srv.Close()
+		drained, cancel := context.WithTimeout(context.Background(), drainTimeout)
+		defer cancel()
+		if !rv.drain(drained) {
+			logger.Printf("requests were still running %v after they were ended", drainTimeout)
+		}
 	}
 	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
 		return err

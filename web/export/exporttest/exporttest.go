@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -317,13 +318,17 @@ func fastImport(commits []commit) []byte {
 }
 
 // git runs git as the export package does: in dir unless it is "", with no
-// GIT_ variable of the caller's and no system or global configuration.
+// GIT_ variable of the caller's and no system or global configuration. git
+// runs in a process group of its own, which is killed once git exits,
+// with anything git left running. Where the kernel can, it kills git when
+// the test process dies first, as on a timeout or an external kill.
 func git(t testing.TB, dir string, stdin []byte, args ...string) []byte {
 	t.Helper()
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)
 	}
 	cmd := exec.Command(export.GitProgram, args...)
+	cmd.SysProcAttr = processGroup()
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "GIT_") {
 			cmd.Env = append(cmd.Env, kv)
@@ -336,6 +341,9 @@ func git(t testing.TB, dir string, stdin []byte, args ...string) []byte {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	if cmd.Process != nil {
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	if err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, stderr.String())
 	}

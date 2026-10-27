@@ -26,12 +26,16 @@ import (
 )
 
 // The tests run the receiver as a process of its own: the test binary is
-// valley-web-receive when VALLEY_WEB_RECEIVE_TEST_MAIN is set. Uploads are
+// valley-web-receive when VALLEY_WEB_RECEIVE_TEST_MAIN is set, and it runs
+// the git VALLEY_WEB_RECEIVE_TEST_GIT names, when that is set. Uploads are
 // the shared fixture's export, under manifests signed now with the
 // fixture's key, and they are accepted with real git. valley-web is the
 // real program, which VALLEY_WEB names.
 func TestMain(m *testing.M) {
 	if os.Getenv("VALLEY_WEB_RECEIVE_TEST_MAIN") == "1" {
+		if git := os.Getenv("VALLEY_WEB_RECEIVE_TEST_GIT"); git != "" {
+			export.GitProgram = git
+		}
 		main()
 		os.Exit(0)
 	}
@@ -87,8 +91,8 @@ func files(t *testing.T) (tokenFile, verifiers string) {
 
 // command is a program the tests run. It runs in a process group of its
 // own, which start kills when the test ends, with every git it started.
-// The kernel kills it when the test process dies first, as on a timeout
-// or an external kill, so a test run leaves no receiver behind.
+// The kernel kills the program when the test process dies first, as on a
+// timeout or an external kill, so a test run leaves no receiver behind.
 func command(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
@@ -106,11 +110,22 @@ func receiveCmd(args ...string) *exec.Cmd {
 // given after the ones every receiver here needs.
 func newEdge(t *testing.T, f *exporttest.Fixture, more ...string) *edge {
 	t.Helper()
+	return newEdgeWithGit(t, f, "", more...)
+}
+
+// newEdgeWithGit starts a receiver that runs git, or the default git when
+// git is "".
+func newEdgeWithGit(t *testing.T, f *exporttest.Fixture, git string, more ...string) *edge {
+	t.Helper()
 	tokenFile, verifiers := files(t)
 	state := filepath.Join(t.TempDir(), "state")
-	p := start(t, receiveCmd(append([]string{"--state", state, "--listen", "127.0.0.1:0",
+	cmd := receiveCmd(append([]string{"--state", state, "--listen", "127.0.0.1:0",
 		"--instance", exporttest.Instance, "--destination", exporttest.Destination,
-		"--verifiers", verifiers, "--token-file", tokenFile}, more...)...), "valley-web-receive")
+		"--verifiers", verifiers, "--token-file", tokenFile}, more...)...)
+	if git != "" {
+		cmd.Env = append(cmd.Env, "VALLEY_WEB_RECEIVE_TEST_GIT="+git)
+	}
+	p := start(t, cmd, "valley-web-receive")
 	return &edge{t: t, f: f, state: state, proc: p, addr: p.addr}
 }
 
@@ -151,8 +166,9 @@ func (l *stderrLog) String() string {
 }
 
 // start runs cmd and waits for it to say where it listens. The cleanup is
-// registered as soon as cmd starts: it kills cmd's process group unless
-// cmd has exited, and logs what cmd wrote when the test failed.
+// registered as soon as cmd starts: it kills cmd's process group, even
+// once cmd has exited, since a git cmd started may outlive it. It logs
+// what cmd wrote when the test failed.
 func start(t *testing.T, cmd *exec.Cmd, name string) *proc {
 	t.Helper()
 	p := &proc{cmd: cmd, log: &stderrLog{first: make(chan string, 1)}, done: make(chan struct{})}
@@ -166,12 +182,8 @@ func start(t *testing.T, cmd *exec.Cmd, name string) *proc {
 		close(p.done)
 	}()
 	t.Cleanup(func() {
-		select {
-		case <-p.done:
-		default:
-			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			<-p.done
-		}
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-p.done
 		if t.Failed() {
 			t.Logf("%s wrote:\n%s", name, p.log)
 		}
@@ -878,6 +890,109 @@ func TestAnUploadPastTheStorageCapIsRefused(t *testing.T) {
 	e.upload()
 }
 
+// openPartials are the partial body files the receiver holds open, as
+// /proc names them. A file deleted while it is open keeps its name there.
+func (e *edge) openPartials() []string {
+	e.t.Helper()
+	fds, err := filepath.Glob(fmt.Sprintf("/proc/%d/fd/*", e.proc.cmd.Process.Pid))
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	var open []string
+	for _, fd := range fds {
+		if target, err := os.Readlink(fd); err == nil && strings.Contains(target, "/.partial-") {
+			open = append(open, target)
+		}
+	}
+	return open
+}
+
+// A newer manifest stops the older upload's body requests before it
+// deletes the older upload. Each is answered as superseded, and once the
+// newer manifest is answered the receiver holds no partial file of the
+// older upload open, where the disk it takes would be counted by nothing.
+// The newer upload's request for the same body is then accepted, not
+// answered 503 as a body another request is staging.
+func TestANewerManifestStopsTheOlderUploadsBodies(t *testing.T) {
+	e := newEdge(t, exporttest.New(t))
+	older, om := e.manifest(time.Now().Add(-time.Minute).UnixNano(), exporttest.Key(), exporttest.Destination)
+	e.post(older)
+	file := body(t, om, export.ExportFile)
+	stalled := e.stall(http.MethodPut, export.BodyPath(om.Sequence, file.SHA256), e.f.ExportJSON)
+	if stalled == nil {
+		t.Fatal("the receiver answered a stalled body at once")
+	}
+	waitFor(t, "the receiver to open the stalled body's partial file", func(context.Context) bool {
+		return len(e.openPartials()) == 1
+	})
+
+	newer, nm := e.signedNow()
+	e.post(newer)
+	if open := e.openPartials(); len(open) != 0 {
+		t.Errorf("once the newer manifest was answered, the receiver holds %q open", open)
+	}
+	stalled.SetReadDeadline(time.Now().Add(requestTimeout))
+	res, err := http.ReadResponse(bufio.NewReader(stalled), nil)
+	if err != nil {
+		t.Fatalf("the older upload's stalled body was not answered: %v", err)
+	}
+	reply, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	refused(t, "the older upload's stalled body", res.StatusCode, reply, export.CodeSuperseded)
+	if staged := e.staged(); len(staged) != 1 || staged[0] != strconv.FormatInt(nm.Sequence, 10) {
+		t.Errorf("staging holds %v, want the newer upload alone", staged)
+	}
+	status, reply, _ := e.request(http.MethodPut, export.BodyPath(nm.Sequence, file.SHA256), e.f.ExportJSON, nil)
+	if status != http.StatusNoContent {
+		t.Errorf("the newer upload's export.json was answered %d %s, want 204", status, reply)
+	}
+	for _, n := range e.post(newer).Needs {
+		e.put(nm, n.Name)
+	}
+	e.commit(nm)
+}
+
+// A generation a reader holds is kept past the activation that replaces
+// it, and counts against --max-storage. While a reader holds a large one,
+// a manifest whose upload would pass the cap is refused as too-large. Once
+// the reader lets it go, the next manifest finds the room: the receiver
+// deletes the generation before it refuses anything for space.
+func TestAReleasedGenerationMakesRoomForAnUpload(t *testing.T) {
+	e := newEdge(t, exporttest.New(t), "--max-storage", "6M")
+	first := e.upload()
+	reader, err := export.OpenReadOnly(e.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, release, err := reader.Open()
+	defer release()
+	if err != nil || g.Sequence != first.Sequence {
+		t.Fatalf("the reader opened %v, %v; want the first generation", g, err)
+	}
+	second := e.upload()
+	// A sparse file makes the held generation large: the cap counts a
+	// file at its size, whatever blocks it takes.
+	pad, err := os.Create(filepath.Join(g.Dir, "padding"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := errors.Join(pad.Truncate(8<<20), pad.Close()); err != nil {
+		t.Fatal(err)
+	}
+
+	signed, _ := e.signedNow()
+	status, reply, _ := e.request(http.MethodPost, export.ManifestPath, signed, nil)
+	refused(t, "a manifest while a reader holds a large generation", status, reply, export.CodeTooLarge)
+	if hw := e.highWater(); hw != second.Sequence {
+		t.Errorf("high-water is %d, want %d", hw, second.Sequence)
+	}
+	release()
+	third := e.upload()
+	if gens, _ := filepath.Glob(filepath.Join(e.state, "exports", "*")); len(gens) != 1 || filepath.Base(gens[0]) != strconv.FormatInt(third.Sequence, 10) {
+		t.Errorf("the state directory holds the generations %v, want the third alone", gens)
+	}
+}
+
 // waitFor polls done until it reports true, and fails the test unless it
 // does within waitTimeout. done is given a context that ends then, which
 // bounds whatever request it makes.
@@ -897,10 +1012,10 @@ func waitFor(t *testing.T, what string, done func(ctx context.Context) bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// The receiver stops on SIGTERM within its stop timeout, even with every
-// connection it takes held: four by manifests stalled part way, which
-// hold every request slot, and the rest by idle connections. A further
-// connection waits in the listen queue.
+// The receiver stops on SIGTERM within its stop and drain timeouts, even
+// with every connection it takes held: four by manifests stalled part
+// way, which hold every request slot, and the rest by idle connections. A
+// further connection waits in the listen queue.
 func TestStopsOnSIGTERM(t *testing.T) {
 	e := newEdge(t, exporttest.New(t))
 	for range maxConns - maxRequests {
@@ -915,14 +1030,70 @@ func TestStopsOnSIGTERM(t *testing.T) {
 	}
 	select {
 	case <-e.proc.done:
-	case <-time.After(stopTimeout + 10*time.Second):
-		t.Fatalf("valley-web-receive did not stop within %v of SIGTERM", stopTimeout+10*time.Second)
+	case <-time.After(stopTimeout + drainTimeout + 10*time.Second):
+		t.Fatalf("valley-web-receive did not stop within %v of SIGTERM", stopTimeout+drainTimeout+10*time.Second)
 	}
 	if e.proc.err != nil {
 		t.Errorf("valley-web-receive stopped with %v", e.proc.err)
 	}
-	if took := time.Since(began); took > stopTimeout+5*time.Second {
-		t.Errorf("valley-web-receive took %v to stop, past its stop timeout of %v", took, stopTimeout)
+	if took := time.Since(began); took > stopTimeout+drainTimeout+5*time.Second {
+		t.Errorf("valley-web-receive took %v to stop, past its stop and drain timeouts of %v and %v", took, stopTimeout, drainTimeout)
+	}
+}
+
+// A stop that ends a commit waits for the commit's git to stop before the
+// receiver exits, so no git outlives it. Here git stalls in commit-graph,
+// once it has fetched the bundle.
+func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
+	real, err := exec.LookPath(export.GitProgram)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if real, err = filepath.Abs(real); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	pidFile, git := filepath.Join(dir, "pid"), filepath.Join(dir, "git")
+	script := "#!/bin/sh\nfor a; do [ \"$a\" = commit-graph ] && { echo $$ > '" + pidFile + "'; exec sleep 600; }; done\nexec '" + real + "' \"$@\"\n"
+	if err := os.WriteFile(git, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	e := newEdgeWithGit(t, exporttest.New(t), git)
+	signed, m := e.signedNow()
+	for _, n := range e.post(signed).Needs {
+		e.put(m, n.Name)
+	}
+	committed := make(chan error, 1)
+	go func() {
+		_, _, _, err := e.do(context.Background(), http.MethodPost, export.CommitPath(m.Sequence), nil, nil)
+		committed <- err
+	}()
+	var pid int
+	waitFor(t, "the commit's git to stall", func(context.Context) bool {
+		data, err := os.ReadFile(pidFile)
+		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
+		return err == nil && pid > 0
+	})
+
+	if err := e.proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-e.proc.done:
+	case <-time.After(stopTimeout + drainTimeout + 10*time.Second):
+		t.Fatalf("valley-web-receive did not stop within %v of SIGTERM", stopTimeout+drainTimeout+10*time.Second)
+	}
+	if e.proc.err != nil {
+		t.Errorf("valley-web-receive stopped with %v", e.proc.err)
+	}
+	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+		t.Errorf("the commit's git, process %d, outlived the receiver: %v", pid, err)
+	}
+	if err := <-committed; err == nil {
+		t.Error("the commit was answered, though the receiver stopped during it")
+	}
+	if hw := e.highWater(); hw != 0 {
+		t.Errorf("high-water is %d after a commit the stop ended, want 0", hw)
 	}
 }
 

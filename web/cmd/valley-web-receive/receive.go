@@ -37,14 +37,18 @@ type receiver struct {
 	// first since the receiver started. Store.Stage discards every older
 	// upload, so no other is worth a body or a commit.
 	staged *export.Staging
-	// receiving holds the SHA-256 of each body a request is staging. A
-	// second request for the same body is answered 503 while the first
+	// receiving holds the path each body a request is staging goes to,
+	// which names the body's upload and its SHA-256. A second request for
+	// the same body of the same upload is answered 503 while the first
 	// runs, so staging holds one partial file of each body, as the
-	// store's storage cap counts it.
+	// store's storage cap counts it. A newer upload's request for the
+	// same body is not held up: staging the newer manifest stops the
+	// older upload's requests first.
 	receiving map[string]bool
 }
 
-// errBusy is body's error when another request is staging the same body.
+// errBusy is body's error when another request is staging the same body
+// of the same upload.
 var errBusy = errors.New("another request is staging this body")
 
 // The kinds of request the upload makes.
@@ -109,7 +113,7 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(w, http.StatusOK, inv)
 	case stepBody:
-		err := rv.body(r, seq, sum)
+		err := rv.body(ctx, rc, r, seq, sum)
 		if errors.Is(err, errBusy) {
 			busy(w, rc)
 			return
@@ -214,8 +218,10 @@ func (rv *receiver) upload(seq int64) (export.Staging, error) {
 	return *rv.staged, nil
 }
 
-// body is step 2 for the body with SHA-256 sum.
-func (rv *receiver) body(r *http.Request, seq int64, sum string) error {
+// body is step 2 for the body with SHA-256 sum. It stages the body until
+// ctx is done, or until the store discards the upload's bodies (see
+// export.Store.Writer), and then ends the read that waits on the client.
+func (rv *receiver) body(ctx context.Context, rc *http.ResponseController, r *http.Request, seq int64, sum string) error {
 	st, err := rv.upload(seq)
 	if err != nil {
 		return err
@@ -231,22 +237,40 @@ func (rv *receiver) body(r *http.Request, seq int64, sum string) error {
 		return &export.Error{Code: export.CodeNotDeclared,
 			Message: fmt.Sprintf("the manifest with sequence %d declares no body with SHA-256 %s", seq, sum)}
 	}
+	path := st.Body(*want)
 	rv.mu.Lock()
-	if rv.receiving[sum] {
+	if rv.receiving[path] {
 		rv.mu.Unlock()
 		return errBusy
 	}
 	if rv.receiving == nil {
 		rv.receiving = map[string]bool{}
 	}
-	rv.receiving[sum] = true
+	rv.receiving[path] = true
 	rv.mu.Unlock()
 	defer func() {
 		rv.mu.Lock()
-		delete(rv.receiving, sum)
+		delete(rv.receiving, path)
 		rv.mu.Unlock()
 	}()
-	_, err = export.StageBody(st.Bodies(), *want, rv.maxBody, r)
+	wctx, done, err := rv.store.Writer(ctx, st)
+	if err != nil {
+		return err
+	}
+	defer done()
+	// A read deadline set once the handler has returned would end the
+	// connection's next request, so the handler waits for one being set.
+	interrupted := make(chan struct{})
+	stop := context.AfterFunc(wctx, func() {
+		rc.SetReadDeadline(time.Now())
+		close(interrupted)
+	})
+	defer func() {
+		if !stop() {
+			<-interrupted
+		}
+	}()
+	_, err = export.StageBody(st.Bodies(), *want, rv.maxBody, r.WithContext(wctx))
 	if errors.Is(err, fs.ErrNotExist) {
 		// The upload's staging directory is gone: a newer manifest
 		// discarded it, or a commit activated it.
@@ -279,6 +303,21 @@ func (rv *receiver) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	rv.log.Printf("%s %s from %s: %v", r.Method, r.URL.Path, r.RemoteAddr, err)
 	reply(w, http.StatusInternalServerError, nil)
+}
+
+// drain takes every request slot, so it waits until each request that
+// holds one has finished, with the git it runs, or until ctx is done. It
+// reports whether it took them all. A request that comes after takes no
+// slot, and is answered 503.
+func (rv *receiver) drain(ctx context.Context) bool {
+	for range cap(rv.slots) {
+		select {
+		case rv.slots <- struct{}{}:
+		case <-ctx.Done():
+			return false
+		}
+	}
+	return true
 }
 
 // busy answers 503 with Retry-After and no refusal, which the publisher

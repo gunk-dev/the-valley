@@ -296,7 +296,7 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 		if want, _, err := bound(fullReport(f.Operation, f.Tip, p.ID, happened, published), happened.Digest()); err != nil {
 			says = err.Error()
 		} else if !sameReport(want, p.Report) {
-			says = "it no longer says what did happen"
+			says = "it no longer matches what happened"
 		}
 		switch {
 		case at == p.Commit || at != "" && at != p.Old && rd.reaches(p.Commit, at):
@@ -308,13 +308,13 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 		case found && sameReport(current.Report, p.Report):
 			d.Action, d.Why = writeDone, "origin's report already says the same"
 		case at != p.Old:
-			stopped(&d, true, "origin's report moved to %s since this one was built on %s; a report of what did happen is built in its place", short(at), orNone(p.Old))
+			stopped(&d, true, "origin's report moved to %s since this one was built on %s; a report of what happened is built in its place", short(at), orNone(p.Old))
 		case !rd.have(p.Commit):
-			stopped(&d, true, "the scratch repository no longer holds the report commit %s; a report of what did happen is built in its place", short(p.Commit))
+			stopped(&d, true, "the scratch repository no longer holds the report commit %s; a report of what happened is built in its place", short(p.Commit))
 		case says != "":
-			stopped(&d, true, "%s; a report of what did happen is built in its place", says)
+			stopped(&d, true, "%s; a report of what happened is built in its place", says)
 		default:
-			d.Action, d.Why = writeFinish, "origin's report is still the one it was built on, and this one says what did happen"
+			d.Action, d.Why = writeFinish, "origin's report is still the one it was built on, and this one matches what happened"
 		}
 		out = append(out, d)
 	}

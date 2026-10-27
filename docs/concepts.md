@@ -228,9 +228,9 @@ integration requests, or knots. A **grant** is a capability assigned to a princi
   a deployment may give it to the human operator alone).
 - **`restack`** — allows a principal to push restack reports
   (`refs/the-valley/restack/<target>/<id>`) and add a single restacked version to another owner's
-  `ready` change while keeping its active branch and title. The restacker, `valley-restacker`, holds
-  it and runs on a host as `services.valley.restacker` (`implemented`; which host runs it is a
-  **deployment choice**).
+  `ready` change while keeping its active branch and title. The restacker (`valley-restacker`) holds
+  this grant and runs on a host under `services.valley.restacker` (`implemented`; enabling it and
+  enrolling its principal are a **deployment choice**).
 
 A **read grant** is the instance's consent for a principal to read a project at an edge, the web
 server a valley host publishes to. Evaluating read access takes two consents (`implemented`). The

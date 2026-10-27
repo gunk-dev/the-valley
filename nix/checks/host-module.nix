@@ -589,14 +589,14 @@ let
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
-  # The restacker. Off, it renders nothing: integratorHost has the floor
-  # it would read and never enables it. On, each project listed gets a
-  # controller, valley-restacker run, as its own account outside the git
-  # group, so the repositories on disk are not its to read or write. It
-  # reaches them only through this host's sshd, as its principal, with the
-  # key systemd hands it as a credential, checking the host's own key. Its
-  # state is a directory of its own, the only path it may write, and it
-  # reads the floor from the instance repository over the same ssh.
+  # The restacker. When disabled, it renders no units or user account on
+  # integratorHost. When enabled, each configured project gets a
+  # valley-restacker@<project>.service running valley-restacker run as the
+  # valley-restacker user in its own group, with no access to the bare
+  # repositories on disk. It connects through localhost sshd as its
+  # principal using the key passed via LoadCredential, verifies the host's
+  # own SSH key, writes only to its 0700 state directory, and reads the
+  # floor from the instance repository over the same SSH connection.
   restackerRenderedWithoutEnable =
     integratorHost.config.systemd.services ? "valley-restacker@"
     || integratorHost.config.systemd.targets ? valley-restackers

@@ -1,13 +1,13 @@
-# The restacker as a host runs it: one NixOS machine running the module
-# with services.valley.restacker on for one project. The operator's two
-# deployment steps are taken here as a deployment takes them: the
-# restacker's key is declared under its principal with the restack grant,
-# and its private key is provisioned outside the store, readable by root
-# alone. The controller then restacks a ready change after main moves,
-# pushing over this host's sshd as its own principal, and its Unix user
-# holds nothing else: no git group, no repository on disk, no integrator
-# key. Over ssh its key can push restack versions and reports, and still
-# cannot push main, file a request, delete a record or write an outcome.
+# End-to-end VM test of the restacker host service: one NixOS machine
+# running the module with services.valley.restacker enabled for one
+# project. The test performs the two deployment steps a host requires: it
+# declares the restacker's public key under its principal with the restack
+# grant, and it provisions the private key outside the store as root-only.
+# The service then restacks a ready change after main moves, pushing over
+# the host's sshd as its own principal. Its Unix user has no git group, no
+# repository on disk, and no integrator key. Over SSH its key can push
+# restack versions and reports, and the hook refuses pushes to main,
+# integration requests, record deletions, and outcomes.
 {
   pkgs,
   lib,

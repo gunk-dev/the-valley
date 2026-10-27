@@ -80,26 +80,24 @@ usage: valley-restacker run [--interval DURATION] [flags]
        valley-restacker once [--report-only] [flags]
 
   run   reconcile at once and then every --interval until stopped: each
-        reconciliation is one write pass. A pass that fails is said on
-        stderr, and the next waits twice as long as the one before, up to
+        reconciliation is one write pass. When a pass fails, write the
+        error to stderr and double the wait before the next pass, up to
         5 minutes, until a pass succeeds
-  once  one write pass: finish the journal of earlier operations, if the
-        state directory holds one; then plan every family, add the writes
-        for each family to restack or hold to the journal, and push them:
-        the branch push, then each change's next version, then each
-        change's report, reading origin again before each. A family the
-        journal still holds, such as one a request has paused, stays
-        there, and each family that shares a change or a branch with it
-        waits. So do two families that share a change or a branch with
-        each other
+  once  one write pass: settle any open journal in the state directory,
+        then plan every family, append the writes for each family to
+        restack or hold to the journal, and push them in order: the
+        branch push, each change's next version, and each change's
+        report, reading origin again before each push. Any family still
+        in the journal stays there, and any family that shares a change
+        or branch with it, or with another family in the same pass, waits
   once --report-only
         read one snapshot of origin and print what a pass would do: each
         family, restack or hold with the reason, its capacity, the
         integration requests it considered, and the writes a pass would
-        make for it, built in the scratch repository and not pushed: the
+        make for it, built in the scratch repository without pushing: the
         branch push, each change's next version, and each change's
         report. If the state directory holds a journal, print what
-        recovery decides of each write it names.
+        recovery decides for each write it names.
         Pushes nothing, and writes no journal.
 
 flags:
@@ -718,7 +716,7 @@ func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 	path := filepath.Join(c.state, journalFile)
 	j, err := loadJournal(c.state, c.binding())
 	if err != nil {
-		return nil, fmt.Errorf("%w. A write pass starts nothing while it is there: repair origin by hand, and move the journal aside", err)
+		return nil, fmt.Errorf("%w. A write pass refuses to run while this journal is in place: check origin by hand and move the journal file aside", err)
 	}
 	actions := []Action{}
 	var found *Recovery
@@ -892,7 +890,7 @@ func overlapping(p *Plan) {
 			for _, key := range layerKeys(l.ID, l.Branch) {
 				for _, h := range whose[key] {
 					if h.family != i && why == "" {
-						why = fmt.Sprintf("%s shares the %s with %s, in another family, so neither family is built while both name it", l.Name, key, h.name)
+						why = fmt.Sprintf("%s shares the %s with %s in another family, so both families wait while both name it", l.Name, key, h.name)
 					}
 				}
 			}
@@ -1060,7 +1058,7 @@ func printPublished(w io.Writer, p *Plan) {
 		fmt.Fprintln(w)
 	}
 	if r := p.Pending; r != nil {
-		fmt.Fprintln(w, "the journal stays open, and each family that shares a change or a branch with a family it holds waits:")
+		fmt.Fprintln(w, "the journal stays open; any family that shares a change or branch with an open family waits:")
 		for _, d := range r.Decisions {
 			if d.settled() {
 				continue

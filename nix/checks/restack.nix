@@ -66,16 +66,16 @@ in
   # untouched; recovery decides each write against origin as a test makes
   # the pushes, author movement, withdrawal, unreadying, a deleted record,
   # a moved or rewritten main and a request each stop what they must; a
-  # lost, foreign or malformed journal is never decided, nor one whose
-  # accepted writes the family does not have; and once --report-only
-  # decides a journal of pending writes and pushes none of them. A family
-  # of 65 changes whose top version was not added keeps a partial
-  # replacement for each change, each with its own layer alone. A
-  # conflict on more than 100 paths keeps them all in the journal, and a
-  # write pass that reports it leaves them all in the file
-  # its report names, which outlives the journal. No inherited git
-  # variable, nor the user's attributes file, reaches a pass, and a
-  # process whose stderr nobody reads still ends. Its
+  # lost, foreign or malformed journal is never decided, nor one that
+  # records accepted writes the family does not have; and once
+  # --report-only decides a journal of pending writes and pushes none of
+  # them. A family of 65 changes whose top version was not added keeps a
+  # partial replacement for each change, listing only that change's own
+  # layer. A conflict on more than 100 paths keeps them all in the journal,
+  # and a write pass that reports it writes the full observation to the
+  # state-directory file named by the report, which outlives the journal.
+  # No inherited git variable, nor the user's attributes file, reaches a
+  # pass, and a process whose stderr nobody reads still ends. Its
   # scratch repository commits as its flags say with no identity in the
   # environment, and with an author and a committer the environment
   # injects as git configuration, a pass locks its state directory, the
@@ -86,22 +86,22 @@ in
   # refuses a forged one, and takes a report from the restacker and not
   # from the change's owner. Through the same hook, write passes run as
   # once runs them: after a landing, a two-owner stack is restacked once,
-  # each layer on the new one below it, while a conflict beside it moves
-  # nothing, is reported, and is not tried again; a request holds its
-  # family until its outcome is a current stale; a journal left after
-  # any of its steps is finished with one version per change; an owner's
-  # push to a restacked branch stops that version, reported partial, and
-  # that partial report stays in the journal while origin refuses it, and
-  # is pushed once when origin takes it and its answer is lost, and is
-  # still pushed after the author rewrites or deletes every branch the
-  # family moved; a report origin keeps refusing holds only its own
-  # family in the journal, so a family restacked beside it is let go of
-  # and restacked again after the next landing; two ready changes that
-  # name one branch both wait while a change beside them is restacked; a
-  # request between the phases pauses the versions and keeps the journal open
-  # until it is released, while a change readied beside the paused family
-  # is restacked; the project's cap holds; and run converges on a change
-  # readied after the landing, and ends when stopped.
+  # each layer onto the new layer below it, while a conflict beside it
+  # moves nothing, is reported, and is skipped on the next pass; a request
+  # holds its family until its outcome is a current stale; an interrupted
+  # journal finishes with one version per change; an owner's push to a
+  # restacked branch stops that version and produces a partial replacement
+  # report; a refused partial report stays in the journal until pushed, is
+  # pushed once when its reply is lost, and is still pushed after the
+  # author rewrites or deletes every branch the family moved; a report
+  # that origin keeps refusing holds only its own family in the journal,
+  # while a family restacked beside it is retired and restacked again
+  # after the next landing; two ready changes that name the same branch
+  # both wait while a change beside them is restacked; a request filed
+  # between phases pauses the versions and keeps the family open until
+  # released, while an unrelated change readied beside it is restacked;
+  # the project's cap holds a change at its limit; and run converges on a
+  # change readied after the landing and exits when stopped.
   restack-unit = packages.restack-unwrapped.unit.overrideAttrs {
     inherit initScript;
     passAsFile = [ "initScript" ];
@@ -154,14 +154,13 @@ in
   # noting the reject. A signer projects file that does not read stops
   # the pass.
   #
-  # Then write passes through the transport, as the restacker principal,
-  # after the real landing: a change bob readied on the seed and the
-  # rejected change are each restacked once, onto main's tip, under their
-  # owners, with reports that say complete, and the rejected change's
-  # request still names its old head. The answer to the first record push
-  # is dropped, so origin takes it and the pass hears nothing; the pass's
-  # next read finds the version, and it is added once. A second pass
-  # pushes nothing.
+  # Finally, write passes run over the SSH transport as the restacker
+  # principal after the real landing: a change readied on the seed and the
+  # rejected change are each restacked once onto main's tip under their
+  # owners, with complete reports, while the rejected change's request
+  # still points at its old head. The reply to the first record push is
+  # dropped after origin accepts it, and the next read sees the version on
+  # origin so it is added only once. A second write pass pushes nothing.
   restack-e2e = pkgs.runCommand "valley-restack-e2e" {
     nativeBuildInputs = [
       pkgs.git

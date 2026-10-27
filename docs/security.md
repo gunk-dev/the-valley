@@ -117,13 +117,13 @@ version with its approved version from git objects, and never trusts a report's 
 the architecture's
 [Review against the approved version](./architecture.md#review-against-the-approved-version)).
 
-On a host, the restacker runs as the Unix user `valley-restacker`, whose group is its own
-(`nix/valley-host.nix`). That user cannot read or write the served repositories on disk, so it
-reaches them only through sshd, as its principal, and every write it makes passes the hook. It holds
-no integrator key, no worker key and no signing name, so it cannot sign evidence or a landing. Its
-own private key is provisioned outside the Nix store, and systemd hands it to the controller as a
-credential. Registering the principal, granting it `restack`, and provisioning the key are the
-operator's (**deployment choice**). Check: `restack-host-e2e`.
+On a host, the restacker runs as the Unix user `valley-restacker` in its own group
+`valley-restacker` (`nix/valley-host.nix`). That user has no filesystem access to the served
+repositories. It connects to them only over local SSH as its principal, so every write it makes goes
+through the hook. It holds no integrator key, no worker key, and no signing name, so it cannot sign
+evidence or a landing. Its own private key is provisioned outside the Nix store and passed to the
+service by systemd as a credential (`LoadCredential`). Enrolling the principal, granting it
+`restack`, and provisioning the private key are a **deployment choice**. Check: `restack-host-e2e`.
 
 Readiness is different. A change record's state is the author's workflow signal, and the integrator
 enforces it as closely as refs allow. It does not enforce it atomically. A record written between

@@ -5,6 +5,7 @@
 //	valley-web-receive --state DIR --listen ADDR --instance NAME
 //	                   --destination NAME --verifiers FILE --token-file FILE
 //	                   [--max-body SIZE] [--max-upload SIZE]
+//	                   [--max-storage SIZE]
 //
 // It opens the state directory with export.OpenStore, which creates its
 // layout and finishes an activation a crash interrupted, and it is the
@@ -46,6 +47,7 @@ import (
 const usage = `usage: valley-web-receive --state DIR --listen ADDR --instance NAME
                           --destination NAME --verifiers FILE --token-file FILE
                           [--max-body SIZE] [--max-upload SIZE]
+                          [--max-storage SIZE]
 
 Receive the web publisher's uploads into a state directory, which
 valley-web serves.
@@ -67,6 +69,10 @@ valley-web serves.
   --max-body SIZE      the most bytes one body may declare (default 1G)
   --max-upload SIZE    the most bytes the bodies of one manifest may
                        declare together (default 2G)
+  --max-storage SIZE   the most bytes the state directory may take on
+                       disk, with every generation it holds, the staged
+                       upload's bodies and each repository built from
+                       them (default 8G)
 
 A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
 GiB or TiB.
@@ -126,9 +132,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	destination := flags.String("destination", "", "")
 	verifiers := flags.String("verifiers", "", "")
 	tokenFile := flags.String("token-file", "", "")
-	maxBody, maxUpload := byteSize(1<<30), byteSize(2<<30)
+	maxBody, maxUpload, maxStorage := byteSize(1<<30), byteSize(2<<30), byteSize(8<<30)
 	flags.Var(&maxBody, "max-body", "")
 	flags.Var(&maxUpload, "max-upload", "")
+	flags.Var(&maxStorage, "max-storage", "")
 	if err := flags.Parse(args); errors.Is(err, flag.ErrHelp) {
 		fmt.Fprint(stderr, usage)
 		return nil
@@ -175,6 +182,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	store.MaxStorage = int64(maxStorage)
 	ln, err := net.Listen("tcp", *listen)
 	if err != nil {
 		return err

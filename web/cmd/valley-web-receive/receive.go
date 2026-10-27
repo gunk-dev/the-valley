@@ -37,7 +37,15 @@ type receiver struct {
 	// first since the receiver started. Store.Stage discards every older
 	// upload, so no other is worth a body or a commit.
 	staged *export.Staging
+	// receiving holds the SHA-256 of each body a request is staging. A
+	// second request for the same body is answered 503 while the first
+	// runs, so staging holds one partial file of each body, as the
+	// store's storage cap counts it.
+	receiving map[string]bool
 }
+
+// errBusy is body's error when another request is staging the same body.
+var errBusy = errors.New("another request is staging this body")
 
 // The kinds of request the upload makes.
 const (
@@ -79,10 +87,7 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case rv.slots <- struct{}{}:
 		defer func() { <-rv.slots }()
 	default:
-		rc.SetReadDeadline(time.Now())
-		w.Header().Set("Connection", "close")
-		w.Header().Set("Retry-After", "5")
-		reply(w, http.StatusServiceUnavailable, nil)
+		busy(w, rc)
 		return
 	}
 
@@ -104,7 +109,12 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(w, http.StatusOK, inv)
 	case stepBody:
-		if err := rv.body(r, seq, sum); err != nil {
+		err := rv.body(r, seq, sum)
+		if errors.Is(err, errBusy) {
+			busy(w, rc)
+			return
+		}
+		if err != nil {
 			rv.fail(w, r, err)
 			return
 		}
@@ -221,6 +231,21 @@ func (rv *receiver) body(r *http.Request, seq int64, sum string) error {
 		return &export.Error{Code: export.CodeNotDeclared,
 			Message: fmt.Sprintf("the manifest with sequence %d declares no body with SHA-256 %s", seq, sum)}
 	}
+	rv.mu.Lock()
+	if rv.receiving[sum] {
+		rv.mu.Unlock()
+		return errBusy
+	}
+	if rv.receiving == nil {
+		rv.receiving = map[string]bool{}
+	}
+	rv.receiving[sum] = true
+	rv.mu.Unlock()
+	defer func() {
+		rv.mu.Lock()
+		delete(rv.receiving, sum)
+		rv.mu.Unlock()
+	}()
 	_, err = export.StageBody(st.Bodies(), *want, rv.maxBody, r)
 	if errors.Is(err, fs.ErrNotExist) {
 		// The upload's staging directory is gone: a newer manifest
@@ -254,6 +279,16 @@ func (rv *receiver) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	rv.log.Printf("%s %s from %s: %v", r.Method, r.URL.Path, r.RemoteAddr, err)
 	reply(w, http.StatusInternalServerError, nil)
+}
+
+// busy answers 503 with Retry-After and no refusal, which the publisher
+// retries after a pause, and closes the connection without reading the
+// body.
+func busy(w http.ResponseWriter, rc *http.ResponseController) {
+	rc.SetReadDeadline(time.Now())
+	w.Header().Set("Connection", "close")
+	w.Header().Set("Retry-After", "5")
+	reply(w, http.StatusServiceUnavailable, nil)
 }
 
 // reply writes the status, and doc as JSON when it is not nil.

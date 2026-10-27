@@ -374,11 +374,20 @@ func (e *edge) post(signed []byte) export.Inventory {
 }
 
 // put sends one body the manifest declares, and fails the test unless it
-// is accepted.
+// is accepted. A 503 is retried, as the publisher retries it: a request
+// that staged the body may not have given it up yet.
 func (e *edge) put(m *export.Manifest, name string) {
 	e.t.Helper()
 	b := body(e.t, m, name)
-	status, reply, _ := e.request(http.MethodPut, export.BodyPath(m.Sequence, b.SHA256), e.f.BodyBytes(e.t, name), nil)
+	var status int
+	var reply []byte
+	for range 50 {
+		status, reply, _ = e.request(http.MethodPut, export.BodyPath(m.Sequence, b.SHA256), e.f.BodyBytes(e.t, name), nil)
+		if status != http.StatusServiceUnavailable {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if status != http.StatusNoContent {
 		e.t.Fatalf("body %s was answered %d %s", name, status, reply)
 	}
@@ -643,6 +652,18 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 	res.Body.Close()
 	refused(t, "a body one byte long, sent with no length", res.StatusCode, reply, export.CodeSizeMismatch)
 
+	// Sent while another request is staging it: staging holds one partial
+	// file of each body.
+	stalled := e.stall(http.MethodPut, path, e.f.ExportJSON)
+	if stalled == nil {
+		t.Fatal("the receiver answered a stalled body at once")
+	}
+	status, reply, header := e.request(http.MethodPut, path, e.f.ExportJSON, nil)
+	if status != http.StatusServiceUnavailable || header.Get("Retry-After") == "" {
+		t.Errorf("a body sent while another request stages it was answered %d %s, want 503 with Retry-After", status, reply)
+	}
+	stalled.Close()
+
 	// Cut off half way.
 	c := e.dial()
 	fmt.Fprintf(c, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n", path, e.addr, export.Authorization(token), file.Size)
@@ -782,6 +803,79 @@ func TestOptionsStarHoldsNoConnection(t *testing.T) {
 			t.Errorf("the receiver kept the connection of OPTIONS * open")
 		}
 	}
+}
+
+// A manifest waits for the store's lock, which a commit holds throughout,
+// and stages nothing once its client goes away. Here the test holds the
+// lock, as a commit does.
+func TestAManifestStopsWaitingWhenItsClientGoesAway(t *testing.T) {
+	e := newEdge(t, exporttest.New(t))
+	e.upload()
+	lock, err := os.OpenFile(filepath.Join(e.state, "lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	signed, _ := e.signedNow()
+	c := e.dial()
+	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n%s",
+		export.ManifestPath, e.addr, export.Authorization(token), len(signed), signed)
+	if answered(c, time.Second) {
+		t.Fatal("the manifest was answered while the store's lock was held")
+	}
+	c.Close()
+	waitFor(t, "the receiver to give the manifest up", func(context.Context) bool {
+		return e.logged(export.ManifestPath, "waiting for the lock", "context canceled")
+	})
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if staged := e.staged(); len(staged) != 0 {
+		t.Errorf("a manifest whose client went away left %v staged", staged)
+	}
+	e.upload()
+}
+
+// A manifest whose upload would take the state directory past
+// --max-storage is refused as too-large, and nothing is staged. The cap
+// counts a repository for every project, so a manifest that names one
+// bundle for many projects, which --max-upload counts once, is held to it
+// too. An upload within the cap is accepted.
+func TestAnUploadPastTheStorageCapIsRefused(t *testing.T) {
+	e := newEdge(t, exporttest.New(t), "--max-storage", "4M")
+	x := *e.f.Export
+	x.Projects = append([]export.Project{}, x.Projects...)
+	bundles := map[string]export.Body{}
+	for _, p := range e.f.Manifest.Projects {
+		bundles[p.Name] = p.Bundle
+	}
+	for i := range 6 {
+		p := x.Projects[0]
+		p.Name = fmt.Sprintf("%s-%d", p.Name, i)
+		x.Projects = append(x.Projects, p)
+		bundles[p.Name] = bundles[x.Projects[0].Name]
+	}
+	m, err := export.NewManifest(exporttest.Instance, exporttest.Destination, time.Now().UnixNano(), &x, e.f.ExportJSON, bundles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CheckSizes(1<<30, 2<<30); err != nil {
+		t.Fatalf("the manifest is not within --max-upload: %v", err)
+	}
+	signed, err := m.Sign(exporttest.SignerName, exporttest.Key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, reply, _ := e.request(http.MethodPost, export.ManifestPath, signed, nil)
+	refused(t, "a manifest naming one bundle for eight projects", status, reply, export.CodeTooLarge)
+	if staged := e.staged(); len(staged) != 0 {
+		t.Errorf("the refused manifest left %v staged", staged)
+	}
+	e.upload()
+	e.upload()
 }
 
 // waitFor polls done until it reports true, and fails the test unless it

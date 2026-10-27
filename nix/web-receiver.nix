@@ -43,6 +43,7 @@ let
     "--token-file %d/token"
     "--max-body ${cfg.maxBody}"
     "--max-upload ${cfg.maxUpload}"
+    "--max-storage ${cfg.maxStorage}"
   ];
 
   webCommand = lib.concatStringsSep " " [
@@ -53,7 +54,11 @@ let
 
   # What both units are held to. ProtectSystem=strict leaves the whole
   # filesystem read-only but the receiver's state directory, which systemd
-  # exempts for the unit that names it.
+  # exempts for the unit that names it, and the temporary paths below.
+  # PrivateTmp gives each unit a /tmp and a /var/tmp of its own, writable,
+  # which no other unit sees and systemd removes when the unit stops.
+  # PrivateDevices gives each unit a /dev of its own, read-only, but binds
+  # the host's /dev/shm into it, which stays writable.
   confinement = {
     ProtectSystem = "strict";
     ProtectHome = true;
@@ -179,6 +184,16 @@ in
       description = ''
         The most bytes the bodies of one manifest may declare together
         (`--max-upload`).
+      '';
+    };
+
+    maxStorage = lib.mkOption {
+      type = size;
+      default = "8G";
+      description = ''
+        The most bytes the state directory may take on disk: every
+        generation it holds, the staged upload's bodies, and a repository
+        for each project of the upload (`--max-storage`).
       '';
     };
 

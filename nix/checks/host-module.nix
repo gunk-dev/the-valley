@@ -814,7 +814,7 @@ let
     || receive.serviceConfig.LoadCredential or [ ] != [ "token:/run/keys/valley-web-receiver-token" ]
     || receive.serviceConfig.MemoryMax or null != "2G"
     || !(lib.hasInfix "/bin/valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 --instance valley-host --destination example.org --verifiers /nix/store/" receive.serviceConfig.ExecStart)
-    || !(lib.hasSuffix "-valley-web-verifiers --token-file %d/token --max-body 1G --max-upload 2G" receive.serviceConfig.ExecStart)
+    || !(lib.hasSuffix "-valley-web-verifiers --token-file %d/token --max-body 1G --max-upload 2G --max-storage 8G" receive.serviceConfig.ExecStart)
     || web.serviceConfig.User or null != "valley-web"
     || web.serviceConfig.Group or null != "valley-web"
     || web.serviceConfig ? StateDirectory

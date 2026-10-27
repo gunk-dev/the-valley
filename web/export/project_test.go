@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
 	"runtime"
 	"slices"
@@ -290,11 +291,37 @@ func TestBuildRefuses(t *testing.T) {
 				in.Details[i] = bytes.Replace(d, []byte(`"body": "`), []byte(`"body": "\u0007`), 1)
 			}
 		}, "control character"},
+		{"a public project in no group", func(in *export.Inputs) {
+			in.Placements["app"] = export.Placement{}
+		}, "public project app belongs to no group"},
+		{"group names that differ in case", func(in *export.Inputs) {
+			in.Groups = append(in.Groups, export.Group{ID: "web", Name: "Tools"})
+		}, `the name of group core and the name of group web are both "Tools", ignoring case`},
+		{"a private project's alias that is a group's alias", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{Group: "core", Aliases: []string{"T"}}
+		}, `alias 0 of group core and alias 0 of project site are both "T"`},
+		{"a group's alias that is its name", func(in *export.Inputs) {
+			in.Groups = []export.Group{{ID: "core", Name: "tools", Aliases: []string{"tools"}}}
+		}, "the name of group core and alias 0 of group core"},
+		{"a project's alias given twice", func(in *export.Inputs) {
+			in.Placements["app"] = export.Placement{Group: "core", Aliases: []string{"app", "app"}}
+		}, "alias 0 of project app and alias 1 of project app"},
+		{"a project in a group that is not declared", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{Group: "web"}
+		}, `site belongs to the group "web", which is not declared`},
+		{"aliases without a group", func(in *export.Inputs) {
+			in.Placements["site"] = export.Placement{Aliases: []string{"s"}}
+		}, "site has aliases and no group"},
+		{"a group's name that is not a name", func(in *export.Inputs) {
+			in.Groups = []export.Group{{ID: "core", Name: "-"}}
+		}, `the name of group core is "-", which is not a name`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			in := f.Inputs
 			in.Details = slices.Clone(in.Details)
+			in.Groups = slices.Clone(in.Groups)
+			in.Placements = maps.Clone(in.Placements)
 			c.change(&in)
 			_, err := export.Build(in)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
@@ -310,7 +337,8 @@ func TestBuildRefuses(t *testing.T) {
 	}
 }
 
-// With no public project, the export is empty and valid.
+// With no public project, the export is empty and valid, and names no
+// group.
 func TestBuildExportsNothingWhenNothingIsPublic(t *testing.T) {
 	f := exporttest.New(t)
 	in := f.Inputs
@@ -319,8 +347,40 @@ func TestBuildExportsNothingWhenNothingIsPublic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(e.Projects) != 0 {
-		t.Errorf("exported %v", e.Projects)
+	if len(e.Projects) != 0 || len(e.Groups) != 0 {
+		t.Errorf("exported %v and %v", e.Groups, e.Projects)
+	}
+}
+
+// The export carries each public project's group and short aliases, and
+// the groups public projects belong to. A group that only private
+// projects belong to is not exported, nor are a private project's aliases.
+func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
+	f := exporttest.New(t)
+	in := f.Inputs
+	in.Groups = append(slices.Clone(in.Groups), export.Group{ID: "web", Name: "docs", Aliases: []string{"d"}})
+	in.Placements = map[string]export.Placement{
+		"app":  {Group: "core", Aliases: []string{"app"}},
+		"site": {Group: "web", Aliases: []string{"site-short"}},
+	}
+	e, err := export.Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := exporttest.Groups; !reflect.DeepEqual(e.Groups, want) {
+		t.Errorf("the export's groups are %v, want %v", e.Groups, want)
+	}
+	if p := e.Projects[0]; p.Group != "core" || !slices.Equal(p.Aliases, []string{"app"}) {
+		t.Errorf("app is exported in group %q with aliases %v", p.Group, p.Aliases)
+	}
+	data, err := e.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{`"web"`, `"docs"`, `"d"`, `"site-short"`} {
+		if bytes.Contains(data, []byte(private)) {
+			t.Errorf("export.json holds %s, which only site is named by:\n%s", private, data)
+		}
 	}
 }
 
@@ -336,10 +396,37 @@ func TestDecodeIsStrict(t *testing.T) {
 		"an unsafe name":    bytes.Replace(f.ExportJSON, []byte(`"project":"app"`), []byte(`"project":"../app"`), 1),
 		"a second document": append(append([]byte{}, f.ExportJSON...), f.ExportJSON...),
 		"another schema":    bytes.Replace(f.ExportJSON, []byte(export.Schema), []byte("valley-web-export/v0"), 1),
+		"a group out of order": bytes.Replace(f.ExportJSON, []byte(`"groups":[`),
+			[]byte(`"groups":[{"group":"zz","name":"zz"},`), 1),
+		"a group no project belongs to": bytes.Replace(f.ExportJSON, []byte(`"aliases":["t"]}`),
+			[]byte(`"aliases":["t"]},{"group":"web","name":"docs"}`), 1),
+		"a project in a group it does not list": bytes.Replace(f.ExportJSON, []byte(`"group":"core","aliases":["app"]`),
+			[]byte(`"group":"web","aliases":["app"]`), 1),
+		"a project alias that is a group's alias": bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"aliases":["T"]`), 1),
+		"a group name that is reserved": bytes.Replace(f.ExportJSON, []byte(`"name":"tools"`), []byte(`"name":"-"`), 1),
 	} {
 		if _, err := export.Decode(data); err == nil {
 			t.Errorf("Decode took %s", name)
 		}
+	}
+}
+
+// A v1 export from before groups decodes: it has no groups, and its
+// projects no group and no aliases.
+func TestDecodeTakesAnExportWithoutGroups(t *testing.T) {
+	f := exporttest.New(t)
+	data := bytes.Replace(f.ExportJSON, []byte(`"groups":[{"group":"core","name":"tools","aliases":["t"]}],`), nil, 1)
+	data = bytes.Replace(data, []byte(`"group":"core","aliases":["app"],`), nil, 1)
+	if bytes.Contains(data, []byte(`"group"`)) {
+		t.Fatalf("the fixture's export no longer reads as the test expects:\n%s", data)
+	}
+	e, err := export.Decode(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(e.Groups) != 0 || e.Projects[0].Group != "" || e.Projects[0].Aliases != nil {
+		t.Errorf("an export without groups decodes with %v, and app in %q with %v", e.Groups, e.Projects[0].Group, e.Projects[0].Aliases)
 	}
 }
 

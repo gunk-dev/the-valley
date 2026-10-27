@@ -5,6 +5,10 @@
 // defines. The receiver never connects to the host; its replies are all the
 // publisher hears from it.
 //
+// Before a pass, it reads the host declaration (--host): the groups, and
+// each project's group and short aliases. A declaration whose names
+// collide is refused, and no pass runs.
+//
 // A pass, in order:
 //
 //  1. take the lock in the state directory, so two passes never overlap;
@@ -17,7 +21,8 @@
 //     policy/valley, and read the read grants at --destination from the
 //     identity registry at the --registry-ref it fetched;
 //  4. prepare the valley CLI's clone of each project a read grant to
-//     anyone names, and of no other, so the CLI reads no other project;
+//     anyone names and that is in a group, and of no other, so the CLI
+//     reads no other project;
 //  5. run valley plan --all --json and valley pending --all --json in the
 //     pointer repository, whose main names the instance repository at
 //     policy/valley, so they discover the projects and the signers through
@@ -25,8 +30,8 @@
 //     and hold both listings to the project list it fetched. A project no
 //     grant names has no clone, so both list it as one they could not
 //     read, and the pass keeps it private;
-//  6. for each project a read grant to anyone names, fetch main into a
-//     mirror under the cache and read the project's own policy/read there;
+//  6. for each of those projects, fetch main into a mirror under the
+//     cache and read the project's own policy/read there;
 //  7. run valley knot show --project P <id> --json for every knot of every
 //     public project, in the publisher's repository, and build the export
 //     with export.Build, reading again when the inputs were read at
@@ -37,10 +42,12 @@
 //  9. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago, or write it to --out instead.
 //
-// A project is public when anyone may read it: its own policy/read names
-// anyone (schema/read.cue), and a read grant to anyone at the destination
-// covers it (schema/identity.cue). Package readaccess reads and evaluates
-// both. A policy or registry that is missing, or that its schema refuses,
+// A project is public when anyone may read it and it has a web URL: its
+// own policy/read names anyone (schema/read.cue), a read grant to anyone at
+// the destination covers it (schema/identity.cue), and the host declaration
+// places it in a group. Package readaccess reads and evaluates the two
+// consents. The export carries each public project's group and short
+// aliases, and the groups public projects belong to. A policy or registry that is missing, or that its schema refuses,
 // consents to nothing, so the project is private. A project a grant names
 // that cannot be read fails the pass, which then sends nothing: an export
 // without it would take it off the web. A project no grant names is
@@ -67,7 +74,7 @@ import (
 )
 
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME
-                          (--receiver URL --receiver-token FILE | --out DIR)
+                          --host FILE (--receiver URL --receiver-token FILE | --out DIR)
                           [--principals FILE]
                           [--state DIR] [--read-schema FILE]
                           [--identity-schema FILE] [--registry-ref REF]
@@ -89,6 +96,12 @@ upload them to the receiver at URL, or write them to DIR.
   --destination NAME   the receiver the manifest is for, and the destination
                        of the edge read boundary whose read grants decide
                        what anyone may read there
+  --host FILE          the host declaration, as cue export prints it under
+                       schema/valley.cue: the groups, and each project's
+                       group and short aliases, which its web URLs are
+                       made of; a declaration whose group names and
+                       aliases collide is refused, and a project in no
+                       group is private
   --receiver URL       the receiver's base URL, http or https
   --receiver-token FILE
                        the receiver's token, which every request of an
@@ -166,6 +179,7 @@ type config struct {
 	instanceRepo string
 	instance     string
 	destination  string
+	host         string
 	receiver     string
 	token        string
 	out          string
@@ -187,6 +201,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.instanceRepo, "instance-repo", "", "")
 	fs.StringVar(&c.instance, "instance", "", "")
 	fs.StringVar(&c.destination, "destination", "", "")
+	fs.StringVar(&c.host, "host", "", "")
 	fs.StringVar(&c.receiver, "receiver", "", "")
 	fs.StringVar(&c.token, "receiver-token", "", "")
 	fs.StringVar(&c.out, "out", "", "")
@@ -218,6 +233,8 @@ func parseArgs(args []string) (config, error) {
 		return c, fmt.Errorf("--instance %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.instance)
 	case !export.ValidName(c.destination):
 		return c, fmt.Errorf("--destination %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.destination)
+	case c.host == "":
+		return c, errors.New("--host is required")
 	case (c.receiver == "") == (c.out == ""):
 		return c, errors.New("give exactly one of --receiver and --out")
 	case (c.receiver == "") != (c.token == ""):
@@ -288,6 +305,7 @@ type publisher struct {
 	pointer        string
 
 	principals export.Principals
+	places     webPlaces
 	signer     string
 	key        ed25519.PrivateKey
 	// token is the receiver's token, or "" with --out.
@@ -317,6 +335,10 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 	if err != nil {
 		return nil, err
 	}
+	places, err := readHost(cfg.host)
+	if err != nil {
+		return nil, err
+	}
 	var token string
 	if cfg.token != "" {
 		if token, err = export.ReadToken(cfg.token); err != nil {
@@ -328,6 +350,7 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 		cfg: cfg, stdout: stdout, stderr: stderr,
 		cache: cache, origin: filepath.Join(cache, "origin.git"), pointer: filepath.Join(cache, "_pointer.git"),
 		principals: principals,
+		places:     places,
 		token:      token,
 		signer:     cfg.instance + "/web-export",
 		access:     readaccess.Reader{ReadSchema: cfg.readSchema, IdentitySchema: cfg.idSchema, CueTimeout: cueTimeout},

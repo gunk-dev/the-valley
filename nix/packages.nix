@@ -433,8 +433,8 @@ rec {
   # the receiver's state directory. It reads names and IDs by the plan
   # graph's rules (../knot), the manifest with the note module (../note),
   # and who may read a project through ../readaccess, which reads with
-  # ../exactjson. The program built
-  # from it is the publisher, cmd/valley-web-publish, which
+  # ../exactjson, as the publisher reads the host declaration. The program
+  # built from it is the publisher, cmd/valley-web-publish, which
   # valley-web-publish below wraps. The server and its command are built by
   # valley-web below, and the receiver by valley-web-receive. The export's
   # tests accept bundles and build the shared fixture's repositories with
@@ -445,10 +445,11 @@ rec {
   # upload to a receiver over a real store, and to the real receiver, whose
   # state directory the real valley-web serves. One lands a change as the
   # integrator does, with a transfer statement attest signs under a key
-  # ssh-keygen makes, which the CLI verifies with attest. go vet runs after
-  # them. The fixture's expected export
-  # (export/exporttest/testdata/) is read by the tests alone. Go, standard
-  # library only, so no module is fetched.
+  # ssh-keygen makes, which the CLI verifies with attest. Each test's host
+  # declaration is exported by cue under schema/valley.cue, as the module
+  # exports the host's. go vet runs after them. The fixture's expected
+  # export (export/exporttest/testdata/) is read by the tests alone. Go,
+  # standard library only, so no module is fetched.
   web = goModule {
     pname = "valley-web-module";
     dir = ../web;
@@ -470,6 +471,7 @@ rec {
         ../bin/valley
         ../schema/read.cue
         ../schema/identity.cue
+        ../schema/valley.cue
       ];
       nativeCheckInputs = [
         pkgs.git

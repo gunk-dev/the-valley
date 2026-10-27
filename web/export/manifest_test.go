@@ -286,7 +286,7 @@ func TestCheckExport(t *testing.T) {
 	// A valid export.json that names the right hash but not the manifest's
 	// projects is caught by the agreement, not the hash.
 	other := *f.Export
-	other.Projects = nil
+	other.Groups, other.Projects = nil, nil
 	data, err := other.Encode()
 	if err != nil {
 		t.Fatal(err)

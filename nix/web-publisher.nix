@@ -27,7 +27,9 @@ let
 
   # The repositories this host serves, read from its declaration the way
   # the host module reads them. The derivation is the host module's own,
-  # with the same name, schema and declaration, so it is built once.
+  # with the same name, schema and declaration, so it is built once. The
+  # publisher reads the same export with --host, for the groups and each
+  # project's group and short aliases, which its web URLs are made of.
   schema = ../schema/valley.cue;
   configJSON =
     pkgs.runCommand "valley-config.json"
@@ -93,6 +95,7 @@ let
     "--instance-repo ${lib.escapeShellArg instanceRepo}"
     "--instance ${lib.escapeShellArg config.networking.hostName}"
     "--destination ${lib.escapeShellArg cfg.destination}"
+    "--host ${configJSON}"
     "--receiver ${lib.escapeShellArg cfg.receiver}"
     # %d is the unit's credentials directory.
     "--receiver-token %d/receiver-token"
@@ -111,8 +114,10 @@ in
     enable = lib.mkEnableOption ''
       the valley web publisher: a timer that uploads this host's public
       projects, as signed exports, to a web receiver. A project is public
-      when its own policy/read lets anyone read it, and a read grant to
-      anyone in the identity registry covers it at the destination. The
+      when its own policy/read lets anyone read it, a read grant to
+      anyone in the identity registry covers it at the destination, and
+      the host declaration places it in a group, which its web URLs open
+      with. The
       registry is read where the identity compiler reads it: in
       {option}`services.valley.identity.directory` at the instance
       repository's {option}`services.valley.identity.ref`. The host module

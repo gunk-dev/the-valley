@@ -1,10 +1,23 @@
 {
   "schema": "valley-web-export/v1",
   "collected": "2026-10-25T12:00:00Z",
+  "groups": [
+    {
+      "group": "core",
+      "name": "tools",
+      "aliases": [
+        "t"
+      ]
+    }
+  ],
   "projects": [
     {
       "project": "app",
       "visibility": "public",
+      "group": "core",
+      "aliases": [
+        "app"
+      ],
       "graph_tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
       "source_tip": "ff4ea8a16ee7db8ebda8169da1ce9d6cc2a2ede1",
       "roots": [

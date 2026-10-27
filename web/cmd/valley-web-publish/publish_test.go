@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,6 +72,8 @@ type testValley struct {
 	schemas    string
 	state      string
 	principals string
+	// host is the host declaration, as cue exports it.
+	host string
 	// siteTitle is the title of site's one knot, which no export of a
 	// private site may hold.
 	siteTitle string
@@ -107,7 +110,8 @@ func newValley(t *testing.T) *testValley {
 	root := t.TempDir()
 	v := &testValley{t: t, root: root, srv: filepath.Join(root, "srv"), work: map[string]string{},
 		schemas: filepath.Join(repoRoot, "schema"), state: filepath.Join(root, "state"),
-		principals: filepath.Join(root, "principals.json"), knots: map[string]string{}}
+		principals: filepath.Join(root, "principals.json"), host: filepath.Join(root, "host.json"),
+		knots: map[string]string{}}
 
 	bin := filepath.Join(root, "bin")
 	if err := os.MkdirAll(bin, 0o755); err != nil {
@@ -129,6 +133,7 @@ func newValley(t *testing.T) *testValley {
 	t.Setenv("VALLEY_READ_SCHEMA", "")
 	t.Setenv("VALLEY_IDENTITY_SCHEMA", "")
 	v.write(v.principals, `{"operator": "operator"}`)
+	v.declareHost(hostGroups)
 
 	for _, name := range []string{"valley", "app", "site"} {
 		v.run("", "git", "init", "--quiet", "--bare", filepath.Join(v.srv, name+".git"))
@@ -227,6 +232,24 @@ func (v *testValley) newKnot(from, kind, title string, args ...string) string {
 	return doc.Knot.ID
 }
 
+// hostGroups is the host declaration every test valley starts with: app
+// and site in one group, whose identifier is core and whose name is tools,
+// with the alias t, and app with the short alias app. The instance
+// repository is in no group.
+const hostGroups = `groups: core: {name: "tools", aliases: ["t"]}
+projects: app: {group: "core", aliases: ["app"]}
+projects: site: group: "core"
+projects: valley: {}`
+
+// declareHost writes the host declaration, as cue exports the body under
+// schema/valley.cue, where the publisher reads it with --host.
+func (v *testValley) declareHost(body string) {
+	v.t.Helper()
+	source := filepath.Join(v.root, "host.cue")
+	v.write(source, "package valley\n\n"+body+"\n")
+	v.write(v.host, v.run(v.root, "cue", "export", "--out", "json", filepath.Join(v.schemas, "valley.cue"), source))
+}
+
 // declare writes a project's policy/read and pushes it to main. An empty
 // body removes it.
 func (v *testValley) declare(project, body string) {
@@ -305,7 +328,7 @@ func (v *testValley) args(more ...string) []string {
 	return append([]string{
 		"--instance-repo", filepath.Join(v.srv, "valley.git"),
 		"--instance", instanceName, "--destination", destination,
-		"--state", v.state, "--principals", v.principals,
+		"--host", v.host, "--state", v.state, "--principals", v.principals,
 		"--read-schema", filepath.Join(v.schemas, "read.cue"),
 		"--identity-schema", filepath.Join(v.schemas, "identity.cue"),
 	}, more...)
@@ -669,6 +692,97 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 		if code := run(context.Background(), v.args("--out", t.TempDir(), "--registry-ref", ref), &stdout, &stderr); code != 2 {
 			t.Errorf("--registry-ref %q: the pass exited %d, want 2", ref, code)
 		}
+	}
+}
+
+// The export carries each public project's group and short aliases, as
+// the host declaration places it, and the groups the public projects
+// belong to. A project in no group has no web URL, so it is private, and
+// the pass says why, though anyone may read it.
+func TestGroupsComeFromTheHostDeclaration(t *testing.T) {
+	v := newValley(t)
+	v.declare("site", policy("site", "anyone"))
+	_, _, e := v.out()
+	if want := []export.Group{{ID: "core", Name: "tools", Aliases: []string{"t"}}}; !reflect.DeepEqual(e.Groups, want) {
+		t.Errorf("the export's groups are %v, want %v", e.Groups, want)
+	}
+	for _, p := range e.Projects {
+		if want := map[string][]string{"app": {"app"}, "site": nil}[p.Name]; p.Group != "core" || !slices.Equal(p.Aliases, want) {
+			t.Errorf("%s is exported in group %q with aliases %v", p.Name, p.Group, p.Aliases)
+		}
+	}
+
+	v.declareHost(`groups: core: {name: "tools", aliases: ["t"]}
+groups: web: name: "docs"
+projects: app: {group: "core", aliases: ["app"]}
+projects: site: {group: "web", aliases: ["site"]}`)
+	_, _, e = v.out()
+	if got := []string{e.Groups[0].ID, e.Groups[len(e.Groups)-1].ID}; len(e.Groups) != 2 || got[1] != "web" ||
+		e.Projects[1].Group != "web" || !slices.Equal(e.Projects[1].Aliases, []string{"site"}) {
+		t.Errorf("with site in its own group, the export's groups are %v, and site is in %q with %v", e.Groups, e.Projects[1].Group, e.Projects[1].Aliases)
+	}
+
+	v.declareHost(`groups: core: {name: "tools", aliases: ["t"]}
+groups: web: name: "docs"
+projects: app: {group: "core", aliases: ["app"]}
+projects: site: {}`)
+	dir := filepath.Join(t.TempDir(), "export")
+	stdout, stderr := v.publish("--out", dir)
+	mustSay(t, "site in no group", stdout, "public: app; private: site, valley")
+	mustSay(t, "site in no group", stderr, "site: a read grant to anyone names it, and it is in no group, so it has no web URL and is private")
+	data, err := os.ReadFile(filepath.Join(dir, export.ExportFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{v.siteTitle, `"docs"`, `"web"`} {
+		if bytes.Contains(data, []byte(private)) {
+			t.Errorf("with site in no group, export.json holds %s", private)
+		}
+	}
+}
+
+// A host declaration whose names collide, that names a group it does not
+// declare, or that spells a field otherwise than schema/valley.cue does,
+// is refused when it is read, and no pass runs: nothing is written or
+// sent. A pass without --host is a usage error.
+func TestACollidingHostDeclarationIsRefused(t *testing.T) {
+	v := newValley(t)
+	project := func(fields string) string {
+		return `{"git": {"enable": true}, "mirrors": [], "grants": {}` + fields + `}`
+	}
+	for what, c := range map[string]struct{ host, says string }{
+		"group names that differ in case": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": []`) + `},
+			"groups": {"core": {"name": "tools", "aliases": []}, "web": {"name": "Tools", "aliases": []}}}`,
+			`the name of group core and the name of group web are both "Tools", ignoring case`},
+		"a project alias that is a group's alias": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": ["T"]`) + `},
+			"groups": {"core": {"name": "tools", "aliases": ["t"]}}}`,
+			`alias 0 of group core and alias 0 of project app are both "T"`},
+		"a group it does not declare": {`{"projects": {"app": ` + project(`, "group": "core", "aliases": []`) + `}, "groups": {}}`,
+			`the project app belongs to the group "core", which is not declared`},
+		"a field spelled in another case": {`{"projects": {"app": ` + project(`, "Group": "core", "aliases": []`) + `}, "groups": {}}`,
+			"is not a host declaration as cue exports it"},
+	} {
+		v.write(v.host, c.host)
+		out := filepath.Join(t.TempDir(), "export")
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), v.args("--out", out), &stdout, &stderr); code != 1 {
+			t.Errorf("%s: the pass exited %d, want 1:\n%s", what, code, stderr.String())
+		}
+		mustSay(t, what, stderr.String(), c.says)
+		if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s: the refused pass wrote %s", what, out)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	args := v.args("--out", t.TempDir())
+	for i := range args {
+		if args[i] == "--host" {
+			args = append(args[:i:i], args[i+2:]...)
+			break
+		}
+	}
+	if code := run(context.Background(), args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "--host is required") {
+		t.Errorf("a pass without --host exited %d:\n%s", code, stderr.String())
 	}
 }
 

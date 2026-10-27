@@ -762,7 +762,8 @@ let
       "-/run/agenix/valley-git-ssh-key"
       "-/var/lib/valley-integrator"
     ])
-    || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --receiver-token %d/receiver-token --principals /nix/store/" command)
+    || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --host /nix/store/" command)
+    || !(lib.hasInfix "-valley-config.json --receiver https://example.org --receiver-token %d/receiver-token --principals /nix/store/" command)
     || service.LoadCredential or [ ] != [ "receiver-token:/run/keys/valley-web-receiver-token" ]
     || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-ref refs/heads/main --registry-dir identity" command)
     || service.MemoryMax or null != "1G"

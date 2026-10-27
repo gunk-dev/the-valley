@@ -40,6 +40,12 @@ type Inputs struct {
 	SourceTips map[string]string
 	// Principals is the display mapping principal names pass through.
 	Principals Principals
+	// Groups are the instance's groups, and Placements each project's
+	// group and short aliases, as the instance declares them. Every
+	// public project has a group. The export carries the groups of its
+	// public projects alone.
+	Groups     []Group
+	Placements map[string]Placement
 }
 
 // Principals maps a principal's name to what an export shows in its place,
@@ -195,6 +201,9 @@ func Build(in Inputs) (*Export, error) {
 	if err := in.Principals.check(); err != nil {
 		return nil, err
 	}
+	if err := CheckNames(in.Groups, in.Placements); err != nil {
+		return nil, err
+	}
 	var plan planDoc
 	if err := decodeInput("the plan", in.Plan, planSchema, &plan, &plan.Schema); err != nil {
 		return nil, err
@@ -261,6 +270,11 @@ func Build(in Inputs) (*Export, error) {
 		}
 		e.Projects = append(e.Projects, out)
 	}
+	groups, err := exportedGroups(e.Projects, in.Groups)
+	if err != nil {
+		return nil, err
+	}
+	e.Groups = groups
 	if err := e.Validate(); err != nil {
 		return nil, err
 	}
@@ -274,8 +288,13 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 	if !ValidObjectID(tip) {
 		return Project{}, fmt.Errorf("public project %s has no source tip, or one that is not an object ID", name)
 	}
+	placed := in.Placements[name]
+	if placed.Group == "" {
+		return Project{}, fmt.Errorf("public project %s belongs to no group, so it has no web URL", name)
+	}
 	out := Project{
-		Name: name, Visibility: Public, GraphTip: p.Tip, SourceTip: tip,
+		Name: name, Visibility: Public, Group: placed.Group, Aliases: placed.Aliases,
+		GraphTip: p.Tip, SourceTip: tip,
 		Roots: nonNil(p.Roots), Knots: []Knot{}, OpenResiduals: []Residuals{}, Changes: []Change{},
 	}
 	for _, g := range p.OpenResiduals {
@@ -371,6 +390,29 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 			Includes: drop(c.Includes, func(id string) bool { return !listed[id] }), Knots: nonNilRefs(c.Knots),
 		})
 	}
+	return out, nil
+}
+
+// exportedGroups are the groups the exported projects belong to, in
+// identifier order: a group no public project belongs to is not exported.
+func exportedGroups(projects []Project, groups []Group) ([]Group, error) {
+	byID := map[string]Group{}
+	for _, g := range groups {
+		byID[g.ID] = g
+	}
+	var out []Group
+	seen := map[string]bool{}
+	for _, p := range projects {
+		g, ok := byID[p.Group]
+		if !ok {
+			return nil, fmt.Errorf("public project %s belongs to the group %q, which is not declared", p.Name, p.Group)
+		}
+		if !seen[g.ID] {
+			seen[g.ID] = true
+			out = append(out, g)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out, nil
 }
 

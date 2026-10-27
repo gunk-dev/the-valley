@@ -72,8 +72,10 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	}
 	var selected []string
 	for _, name := range inst.projects {
-		if grants.Selects(readaccess.Anyone, name) {
+		if p.selects(grants, name) {
 			selected = append(selected, name)
+		} else if grants.Selects(readaccess.Anyone, name) {
+			p.warn("%s: a read grant to anyone names it, and it is in no group, so it has no web URL and is private", name)
 		}
 	}
 	if err := p.prepareCLICaches(ctx, selected); err != nil {
@@ -193,11 +195,12 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 		Plan: planJSON, Pending: pendingJSON,
 		Visibility: map[string]export.Visibility{}, SourceTips: map[string]string{},
 		Principals: p.principals,
+		Groups:     p.places.groups, Placements: p.places.placements,
 	}
 	for _, proj := range plan.Projects {
 		name := proj.Project
 		public := false
-		if grants.Selects(readaccess.Anyone, name) {
+		if p.selects(grants, name) {
 			if public, err = p.readableByAnyone(ctx, name, repos[name], grants, in.SourceTips, r.mirrors); err != nil {
 				return nil, err
 			}
@@ -223,6 +226,13 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 		return nil, err
 	}
 	return r, nil
+}
+
+// selects reports whether a pass reads the project: a read grant to anyone
+// could cover it, and the host declaration places it in a group, so it
+// has a web URL. A pass reads no other project's policy/read.
+func (p *publisher) selects(grants readaccess.Grants, name string) bool {
+	return grants.Selects(readaccess.Anyone, name) && p.places.placements[name].Group != ""
 }
 
 // listNames is a list of projects for a message.

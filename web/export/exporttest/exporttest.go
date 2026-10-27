@@ -4,6 +4,9 @@
 // server's tests all build it, so they test against the same bytes.
 //
 // The synthetic valley has two projects. app is public; site is hidden.
+// Both belong to one group, whose identifier is core and whose name, which
+// its web URLs open with, is tools; t is its alias. Each project's short
+// alias is its own name, and the export carries app's alone.
 // app has a milestone with five children, among them a claimed knot, an
 // unclaimed knot in progress, a knot blocked by a local knot and by one of
 // site's, a bug whose body and comment hold HTML, and comments by mapped
@@ -60,6 +63,14 @@ var (
 
 	// Visibility exports app alone.
 	Visibility = map[string]export.Visibility{"app": export.Public}
+
+	// Groups are the instance's one group, and Placements both projects'
+	// places in it.
+	Groups     = []export.Group{{ID: "core", Name: "tools", Aliases: []string{"t"}}}
+	Placements = map[string]export.Placement{
+		"app":  {Group: "core", Aliases: []string{"app"}},
+		"site": {Group: "core", Aliases: []string{"site"}},
+	}
 )
 
 // Key is the fixture's export key. It is derived from a fixed seed, so its
@@ -109,6 +120,8 @@ func New(t testing.TB) *Fixture {
 		Visibility: Visibility,
 		SourceTips: map[string]string{},
 		Principals: Principals,
+		Groups:     Groups,
+		Placements: Placements,
 	}
 	details, err := fs.Glob(valley, "valley/details/*/*.json")
 	if err != nil {

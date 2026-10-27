@@ -46,6 +46,11 @@
       # the host module, whose repositories it reads.
       nixosModules.web-publisher = ./nix/web-publisher.nix;
 
+      # The web export receiver and valley-web on a NixOS edge host
+      # (services.valley.webReceiver): two units over one state directory,
+      # the receiver writing it and valley-web reading it.
+      nixosModules.web-receiver = ./nix/web-receiver.nix;
+
       # The valley CLI's self-update on a user timer, for a home-manager
       # user whose valley follows a branch of the-valley
       # (programs.valley.selfUpdate).
@@ -137,6 +142,7 @@
               sigverify
               valley-web
               valley-web-receive
+              valley-web-image
               valley-web-publish
               valley-read-coverage
               ;

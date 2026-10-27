@@ -1,5 +1,6 @@
 # What the NixOS module renders from a declaration, and what it must refuse.
-# The web publisher's module, which sits beside it, is held here too.
+# The web publisher's module, which sits beside it, is held here too, and
+# so is the web receiver's module, which an edge host runs.
 # The refusals are eval-time: a host that must not evaluate is caught by a
 # throw here, since there is nothing to build once it has. What a host does
 # render is pinned by module-eval.sh over the rendered scripts.
@@ -107,6 +108,57 @@ let
     ];
   };
 
+  # The web receiver's module (nix/web-receiver.nix) on an edge host,
+  # which runs no valley host. Its programs are stand-ins too.
+  # webReceiverOffHost imports the module and leaves it off.
+  edgeStub =
+    name:
+    pkgs.writeShellScriptBin name ''
+      echo "${name}: a stand-in the module checks render hosts over, which runs nothing" >&2
+      exit 1
+    '';
+  webReceiverOffHost = lib.nixosSystem {
+    inherit pkgs;
+    modules = [
+      self.nixosModules.web-receiver
+      {
+        fileSystems."/" = {
+          device = "/dev/disk/by-label/nixos";
+          fsType = "ext4";
+        };
+        boot.loader.grub.enable = false;
+        system.stateVersion = "25.11";
+        services.valley.webReceiver = {
+          receiverPackage = edgeStub "valley-web-receive";
+          webPackage = edgeStub "valley-web";
+        };
+      }
+    ];
+  };
+  webReceiverHost = webReceiverOffHost.extendModules {
+    modules = [
+      {
+        services.valley.webReceiver = {
+          enable = true;
+          instance = "valley-host";
+          destination = "example.org";
+          verifiers = [ "valley-host/web-export+1a2b3c4d+AQ" ];
+          tokenFile = "/run/keys/valley-web-receiver-token";
+          listen = "192.0.2.10:8081";
+          webListen = "127.0.0.1:8080";
+        };
+      }
+    ];
+  };
+  # The receiver with its token in the Nix store, and with no verifier.
+  storeTokenWebReceiverHost = webReceiverHost.extendModules {
+    modules = [
+      { services.valley.webReceiver.tokenFile = lib.mkForce "${pkgs.writeText "token" "x"}"; }
+    ];
+  };
+  noVerifierWebReceiverHost = webReceiverHost.extendModules {
+    modules = [ { services.valley.webReceiver.verifiers = lib.mkForce [ ]; } ];
+  };
   # The publisher with its token in the Nix store.
   storeTokenWebPublisherHost = webPublisherHost.extendModules {
     modules = [
@@ -129,6 +181,8 @@ let
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
     ++ webPublisherOffHost.config.assertions
+    ++ webReceiverHost.config.assertions
+    ++ webReceiverOffHost.config.assertions
   );
 
   missingSecretAssertions = builtins.filter (a: !a.assertion) noSecretsHost.config.assertions;
@@ -236,6 +290,16 @@ let
       host = storeTokenWebPublisherHost;
       says = "services.valley.webPublisher.receiverTokenFile is in the Nix store";
       why = "the publisher's receiver token is in the Nix store";
+    }
+    {
+      host = storeTokenWebReceiverHost;
+      says = "services.valley.webReceiver.tokenFile is in the Nix store";
+      why = "the receiver's token is in the Nix store";
+    }
+    {
+      host = noVerifierWebReceiverHost;
+      says = "services.valley.webReceiver.verifiers names no verifier line";
+      why = "the receiver pins no verifier";
     }
     {
       host = noInstanceWebPublisherHost;
@@ -708,6 +772,58 @@ let
     || timer.timerConfig.OnActiveSec or null != "5min"
     || timer.timerConfig.OnUnitInactiveSec or null != "5min"
     || !(builtins.elem "timers.target" timer.wantedBy);
+
+  # The web receiver (nix/web-receiver.nix). Off, it renders nothing. On,
+  # the receiver and valley-web are two units, each started at boot and
+  # restarted when it fails, neither requiring the other. The receiver runs
+  # as valley-web-receive in the valley-web group, owns the state directory
+  # at mode 0750, and is given the instance, the destination, the pinned
+  # verifiers from the store, its token as a credential from a file outside
+  # the store, and the caps on bodies. valley-web runs as valley-web in the
+  # same group, after the receiver, with the state directory read-only and
+  # nothing writable, and is given the state directory and its own
+  # listener. Each has its own memory cap with no swap.
+  webReceiverRenderedWithoutEnable =
+    webReceiverOffHost.config.systemd.services ? valley-web-receive
+    || webReceiverOffHost.config.systemd.services ? valley-web
+    || webReceiverOffHost.config.users.users ? valley-web-receive;
+
+  webReceiverMisrendered =
+    let
+      cfg = webReceiverHost.config;
+      receive = cfg.systemd.services.valley-web-receive;
+      web = cfg.systemd.services.valley-web;
+      confined =
+        unit:
+        unit.serviceConfig.ProtectSystem or null == "strict"
+        && unit.serviceConfig.NoNewPrivileges or null == true
+        && unit.serviceConfig.CapabilityBoundingSet or null == ""
+        && unit.serviceConfig.MemorySwapMax or null == "0"
+        && unit.serviceConfig.Restart or null == "on-failure"
+        && builtins.elem "multi-user.target" unit.wantedBy
+        && unit.requires == [ ]
+        && unit.bindsTo == [ ];
+    in
+    !(confined receive && confined web)
+    || cfg.users.users.valley-web-receive.group != "valley-web"
+    || cfg.users.users.valley-web.group != "valley-web"
+    || receive.serviceConfig.User or null != "valley-web-receive"
+    || receive.serviceConfig.Group or null != "valley-web"
+    || receive.serviceConfig.StateDirectory or null != "valley-web"
+    || receive.serviceConfig.StateDirectoryMode or null != "0750"
+    || receive.serviceConfig.LoadCredential or [ ] != [ "token:/run/keys/valley-web-receiver-token" ]
+    || receive.serviceConfig.MemoryMax or null != "2G"
+    || !(lib.hasInfix "/bin/valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 --instance valley-host --destination example.org --verifiers /nix/store/" receive.serviceConfig.ExecStart)
+    || !(lib.hasSuffix "-valley-web-verifiers --token-file %d/token --max-body 1G --max-upload 2G" receive.serviceConfig.ExecStart)
+    || web.serviceConfig.User or null != "valley-web"
+    || web.serviceConfig.Group or null != "valley-web"
+    || web.serviceConfig ? StateDirectory
+    || web.serviceConfig ? ReadWritePaths
+    || web.serviceConfig ? LoadCredential
+    || web.serviceConfig.ReadOnlyPaths or [ ] != [ "-/var/lib/valley-web" ]
+    || web.serviceConfig.MemoryMax or null != "1G"
+    || !(builtins.elem "valley-web-receive.service" web.after)
+    || !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080" web.serviceConfig.ExecStart);
 in
 {
   module-eval =
@@ -797,6 +913,10 @@ in
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then
       throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, its token as a credential, the destination, the display mapping, the bounds on its bundles and storage, and the identity registry's directory"
+    else if webReceiverRenderedWithoutEnable then
+      throw "valley module-eval: web receiver machinery rendered for a host that imports its module and never enabled it"
+    else if webReceiverMisrendered then
+      throw "valley module-eval: the web receiver and valley-web must be two confined units started at boot, restarted on failure and requiring nothing of each other, as two users of the valley-web group, the receiver owning the state directory at 0750 with its token as a credential, its pinned verifiers, its caps and its own memory cap, and valley-web after it with the state directory read-only, no credential and a memory cap of its own"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

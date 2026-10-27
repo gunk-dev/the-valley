@@ -629,6 +629,54 @@ rec {
     meta.mainProgram = "valley-web-receive";
   };
 
+  # The edge's container image, for a web server that does not run NixOS:
+  # valley-web and valley-web-receive, and the git both run, in one image.
+  # The two run as two containers of it over one state directory, as two
+  # users of one group: the receiver as valley-web-receive, which writes
+  # the directory, and valley-web as valley-web, which reads it. The image
+  # names both users in its /etc/passwd, and holds the state directory,
+  # owned by the receiver and readable by the group alone, so a volume
+  # mounted there starts with that owner and mode. It runs as valley-web
+  # unless it is told otherwise, and starts no program of its own: each
+  # container names its command.
+  edgeUsers = {
+    receiver = {
+      name = "valley-web-receive";
+      uid = 990;
+    };
+    web = {
+      name = "valley-web";
+      uid = 991;
+    };
+    gid = 990;
+  };
+  valley-web-image = pkgs.dockerTools.buildLayeredImage {
+    name = "valley-web";
+    contents = [
+      valley-web
+      valley-web-receive
+      (pkgs.dockerTools.fakeNss.override {
+        extraPasswdLines = with edgeUsers; [
+          "${receiver.name}:x:${toString receiver.uid}:${toString gid}:valley-web-receive:/var/empty:/bin/false"
+          "${edgeUsers.web.name}:x:${toString edgeUsers.web.uid}:${toString gid}:valley-web:/var/empty:/bin/false"
+        ];
+        extraGroupLines = [ "valley-web:x:${toString edgeUsers.gid}:" ];
+      })
+    ];
+    fakeRootCommands = ''
+      mkdir -p var/lib/valley-web tmp
+      chown ${toString edgeUsers.receiver.uid}:${toString edgeUsers.gid} var/lib/valley-web
+      chmod 0750 var/lib/valley-web
+      chmod 1777 tmp
+    '';
+    config = {
+      User = edgeUsers.web.name;
+      WorkingDirectory = "/";
+      Env = [ "PATH=/bin" ];
+      Volumes."/var/lib/valley-web" = { };
+    };
+  };
+
   # The web publisher: one pass of valley-web-publish, which reads a valley
   # host's public projects through the CLI's JSON commands and uploads them
   # to a web receiver. It runs this flake's git, cue and CLI, and the two

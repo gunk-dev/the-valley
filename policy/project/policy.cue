@@ -79,6 +79,7 @@ project: {
 		"worker-e2e",
 		"restack-host-e2e",
 		"web-publisher-e2e",
+		"web-image",
 	]
 	for n in ownChecks {
 		checks: (n): {
@@ -451,7 +452,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"web.nix": ["web-unit", "web-server-unit", "web-receiver-unit", "readaccess-unit"]
+		"web.nix": ["web-unit", "web-server-unit", "web-receiver-unit", "web-image", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

@@ -2,6 +2,7 @@
 # and the server share, the server, and the receiver. Their tests run
 # here, in the packages' unit builds (nix/packages.nix).
 {
+  pkgs,
   packages,
   ...
 }:
@@ -125,4 +126,16 @@
   # error, a token file it cannot use and verifiers it cannot read refused
   # without printing the token. go vet runs after them.
   web-receiver-unit = packages.valley-web-receive.unit;
+
+  # The edge's container image, unpacked as a container runtime would:
+  # valley-web and valley-web-receive at /bin, each pointing at a program
+  # the image holds, with the git each runs held too; both users and their
+  # group in /etc/passwd and /etc/group; /var/lib/valley-web the image's
+  # one volume, owned by the receiver's user and group with mode 0750; and
+  # the image running as valley-web unless told otherwise, starting no
+  # program of its own.
+  web-image = pkgs.runCommand "valley-web-image" {
+    nativeBuildInputs = [ pkgs.jq ];
+    image = packages.valley-web-image;
+  } (builtins.readFile ./web-image.sh);
 }

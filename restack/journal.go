@@ -40,8 +40,11 @@ import (
 //	}
 //
 // Each family carries the operation that built it, and main's tip and the
-// evidence fingerprint that operation captured, since a family stays in
-// the journal while it is open (publish.go) and is let go of on its own. A
+// evidence fingerprint that operation captured, since a journal can hold
+// families of several operations: a family stays in the journal while it
+// is open (publish.go), and a later pass adds the families it builds. No
+// two families share a change or a branch, since the planner has a family
+// that would wait (waits). A
 // family has a branch push and versions only when its operation would
 // restack it. A replacement is a report of what did happen to a family
 // whose branches moved, built when origin's report says otherwise
@@ -120,12 +123,35 @@ func (j *Journal) check(b binding) error {
 		return fmt.Errorf("it belongs to %s on %s as %s, and this pass is for %s on %s as %s",
 			j.Target, j.Repository, j.Principal, b.Target, b.Repository, b.Principal)
 	}
+	whose := map[string]int{} // the family each change and branch is in
 	for i, f := range j.Families {
 		if err := f.check(j.Target); err != nil {
 			return fmt.Errorf("its family %d: %w", i, err)
 		}
+		for _, l := range f.Observed.Layers {
+			for _, key := range layerKeys(l.ID, l.Branch) {
+				if k, found := whose[key]; found && k != i {
+					return fmt.Errorf("its families %d and %d share the %s", k, i, key)
+				}
+				whose[key] = i
+			}
+		}
 	}
 	return nil
+}
+
+// layerKeys names what a layer is, for telling whether two families
+// share it: "change <ID>" for a change, and "branch <name>" for the
+// branch it is on.
+func layerKeys(id, branch string) []string {
+	var keys []string
+	if id != "" {
+		keys = append(keys, "change "+id)
+	}
+	if branch != "" {
+		keys = append(keys, "branch "+branch)
+	}
+	return keys
 }
 
 func (f *JournalFamily) check(target string) error {

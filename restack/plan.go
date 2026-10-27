@@ -27,6 +27,7 @@ const (
 	hold    = "hold"    // a layer, a request or a limit stops it; Reasons say which
 	current = "current" // the family already descends from main's tip
 	leave   = "leave"   // no layer is a ready change, so the restacker has no business with it
+	wait    = "wait"    // it shares a change or a branch with a family the journal still holds
 )
 
 // Plan is what one pass would do, from one snapshot of origin.

@@ -382,9 +382,9 @@ func (f *fixture) parentOf(commit string) string {
 
 // A request filed between a family's branch push and its versions pauses
 // the versions: the pass reports partial, adds none, and keeps the
-// journal open, so it starts no new operation. Once the request's outcome
-// is a current stale, the next pass adds the version, reports complete,
-// and lets go of the journal.
+// journal open, and the family waits in the plan. Once the request's
+// outcome is a current stale, the next pass adds the version, reports
+// complete, and lets go of the journal.
 func TestARequestBetweenPhasesPausesTheVersions(t *testing.T) {
 	f := hooked(t)
 	old := f.readyAs(idA, "alice", "a", "main", "A's title")
@@ -414,10 +414,63 @@ func TestARequestBetweenPhasesPausesTheVersions(t *testing.T) {
 	if p = r.pass(64); len(p.Actions) != 0 || p.Pending == nil {
 		t.Errorf("a pass with the request still open pushed %+v", p.Actions)
 	}
+	if len(p.Families) != 1 || p.Families[0].Action != wait || p.Families[0].Writes != nil {
+		t.Errorf("the paused family does not wait: %+v", p.Families)
+	}
 
 	f.judge("zz-old", old, "stale")
 	p = r.pass(64)
 	if p.Pending != nil {
+		t.Errorf("the journal is still open: %+v", p.Pending)
+	}
+	f.restackedTo(idA, "alice", "A's title", "a", fam.Branches.Updates[0].New)
+	r.settledState()
+}
+
+// A family a request has paused stays in the journal without holding up
+// work it shares nothing with. With a's versions paused, a change readied
+// beside it, off the main a was on, is restacked in the next pass, while
+// a's family waits and stays in the journal alone. Once the request is
+// released, the pass after adds a's version and lets go of the journal.
+func TestAPausedFamilyDoesNotHoldAnotherChange(t *testing.T) {
+	f := hooked(t)
+	base := f.at("refs/heads/main")
+	old := f.readyAs(idA, "alice", "a", "main", "A's title")
+	f.moveMain()
+	t.Setenv("VALLEY_PRINCIPAL", "restacker")
+	r := newRestacker(t, f)
+	fam := of(t, r.journal(), idA)
+	if push, _ := fam.Branches.Push(context.Background(), r.g); push != rebase.Pushed {
+		t.Fatal("the branches were not pushed")
+	}
+	if err := f.pushAs("requester", old+":"+rebase.RequestPrefix+"zz-old"); err != nil {
+		t.Fatal(err)
+	}
+	record := f.at(change.Ref(rebase.Target, idA))
+	if p := r.pass(64); p.Pending == nil {
+		t.Fatal("the pass let go of the paused family")
+	}
+
+	f.readyAs(idE, "bob", "e", base, "E's title")
+	p := r.pass(64)
+	f.restackedTo(idE, "bob", "E's title", "e", f.at("refs/heads/e"))
+	if f.at(change.Ref(rebase.Target, idA)) != record || p.Pending == nil {
+		t.Fatalf("the paused version was added, or the journal let go: %+v", p.Pending)
+	}
+	actions := map[string]string{}
+	for _, fp := range p.Families {
+		actions[fp.Layers[0].ID] = fp.Action
+	}
+	if actions[idA] != wait || actions[idE] != restack {
+		t.Errorf("the pass planned a as %q and e as %q", actions[idA], actions[idE])
+	}
+	j, err := loadJournal(r.c.state, r.c.binding())
+	if err != nil || j == nil || len(j.Families) != 1 || j.Families[0].Observed.Layers[0].ID != idA {
+		t.Fatalf("the journal does not hold a's family alone: %+v, %v", j, err)
+	}
+
+	f.judge("zz-old", old, "stale")
+	if p = r.pass(64); p.Pending != nil {
 		t.Errorf("the journal is still open: %+v", p.Pending)
 	}
 	f.restackedTo(idA, "alice", "A's title", "a", fam.Branches.Updates[0].New)

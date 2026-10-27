@@ -613,8 +613,9 @@ func keepEnvironment(t *testing.T) {
 // refused, and nothing in it is decided: a version that is null, a family
 // that would restack with one change's version left out and its reports
 // kept, a report that says a version was published other than as the
-// family adds it, and a report whose result is not the family's. Planning
-// with any of them is an error of recovery, never a crash.
+// family adds it, a report whose result is not the family's, and two
+// families that share a change. Planning with any of them is an error of
+// recovery, never a crash.
 func TestAJournalWhoseWritesDisagreeIsRefused(t *testing.T) {
 	f := newFixture(t, "")
 	f.readyAs(idB, "bob", "b", "main", "B's title")
@@ -654,6 +655,9 @@ func TestAJournalWhoseWritesDisagreeIsRefused(t *testing.T) {
 		}},
 		{"a report of another result", "says blocked, and the family's result is conflict", func(j *Journal) {
 			family(j, idE).Observed.Result = change.RestackConflict
+		}},
+		{"two families on one change", "share the change " + idE, func(j *Journal) {
+			j.Families = append(j.Families, *family(j, idE))
 		}},
 	} {
 		var j Journal

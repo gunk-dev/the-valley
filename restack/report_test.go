@@ -271,6 +271,11 @@ func TestAnUnchangedReportIsNotBuiltAgain(t *testing.T) {
 	if w := of(t, j, idE).Reports[0].Pending.Push(context.Background(), r.g); w.Push != rebase.Pushed {
 		t.Fatalf("e's report: %+v", w)
 	}
+	// The pass that pushed it lets go of its journal, which would
+	// otherwise have the family wait.
+	if err := forget(context.Background(), r.g, r.c.state); err != nil {
+		t.Fatal(err)
+	}
 
 	p, s := r.plan()
 	out, err := build(context.Background(), r.g, s, p, r.c.binding(), newOperation(time.Now().Add(time.Hour)))

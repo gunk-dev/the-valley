@@ -7,23 +7,24 @@
 // reconciliation is one write pass. `valley-restacker once` is one write
 // pass on its own.
 //
-// A write pass first finishes the journal of an earlier operation, if the
+// A write pass first finishes the journal of earlier operations, if the
 // state directory holds one (publish.go). It then reads one snapshot of
 // origin, plans every family, builds the writes it would make for each
-// family it would restack or hold (build.go), keeps them in the journal,
+// family it would restack or hold (build.go), adds them to the journal,
 // and makes them the way recovery would after a crash: the branch push,
 // then the versions, then the reports, reading origin again between each
-// (recover.go). While a journal holds a family whose branches moved and
-// whose versions are not all added or stopped for good, a pass starts no
-// new operation.
+// (recover.go). A family the journal still holds, such as one whose
+// versions a request has paused, stays there, and each family that
+// shares a change or a branch with it waits: the pass builds nothing for
+// it. Every other family is planned as usual.
 //
 // `valley-restacker once --report-only` reads one snapshot of origin and
 // says which families it would restack, which it would hold and why, and
 // what capacity allows. For each family it would restack or hold, it
 // builds every write a pass would make, in its scratch repository, and
 // shows them: the one branch push, each change's next version and each
-// recorded change's report. It decides the journal of an earlier
-// operation, if the state directory holds one, as recovery would. It
+// recorded change's report. It decides the journal of earlier
+// operations, if the state directory holds one, as recovery would. It
 // pushes nothing, and writes no journal.
 //
 // It talks to origin only over git, as a client, from a scratch repository
@@ -80,21 +81,22 @@ usage: valley-restacker run [--interval DURATION] [flags]
         reconciliation is one write pass. A pass that fails is said on
         stderr, and the next waits twice as long as the one before, up to
         5 minutes, until a pass succeeds
-  once  one write pass: finish the journal of an earlier operation, if the
-        state directory holds one; then plan every family, keep the writes
-        for each family to restack or hold in the journal, and push them:
+  once  one write pass: finish the journal of earlier operations, if the
+        state directory holds one; then plan every family, add the writes
+        for each family to restack or hold to the journal, and push them:
         the branch push, then each change's next version, then each
-        change's report, reading origin again before each. While the
-        journal holds a family whose branches moved and whose versions are
-        not all added or stopped for good, the pass starts no new operation
+        change's report, reading origin again before each. A family the
+        journal still holds, such as one a request has paused, stays
+        there, and each family that shares a change or a branch with it
+        waits
   once --report-only
         read one snapshot of origin and print what a pass would do: each
         family, restack or hold with the reason, its capacity, the
         integration requests it considered, and the writes a pass would
         make for it, built in the scratch repository and not pushed: the
         branch push, each change's next version, and each change's
-        report. If the state directory holds a journal of an earlier
-        operation, print what recovery decides of each write it names.
+        report. If the state directory holds a journal, print what
+        recovery decides of each write it names.
         Pushes nothing, and writes no journal.
 
 flags:
@@ -702,10 +704,11 @@ func planned(ctx context.Context, g rebase.Git, c config) (*rebase.Snapshot, *Pl
 	return s, p, nil
 }
 
-// writeOnce is a write pass. It settles the journal of an earlier
-// operation first, if the state directory holds one, and ends there while
-// that journal is open. It then plans, builds the pass's writes, keeps
-// them in the journal and settles it (publish.go). A journal that does not
+// writeOnce is a write pass. It settles the journal of earlier
+// operations first, if the state directory holds one. It then plans, with
+// each family that shares a change or a branch with a family the journal
+// still holds waiting for it, builds the pass's writes, adds them to the
+// journal, keeps it, and settles it (publish.go). A journal that does not
 // read, or is another's, stops the pass: the pass would otherwise write
 // its own in its place, and lose what that one names.
 func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
@@ -723,10 +726,11 @@ func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 		}
 		actions, found = st.actions, st.last
 		found.Journal = path
-		if !st.closed {
-			return &Plan{Target: rebase.Target, Recovery: found, Pending: found, Actions: actions, Families: []FamilyPlan{}}, nil
+		if st.closed {
+			j = nil
 		}
 	}
+	// The planner reads the journal settle left in the state directory.
 	s, p, err := planned(ctx, g, c)
 	if err != nil {
 		return nil, err
@@ -738,7 +742,13 @@ func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 	}
 	defer out.releasePrepared(ctx, g)
 	if len(out.journal.Families) == 0 {
+		if j != nil {
+			p.Pending = found
+		}
 		return p, nil
+	}
+	if j != nil {
+		out.journal.Families = append(j.Families, out.journal.Families...)
 	}
 	if err := keep(ctx, g, c.state, out.journal); err != nil {
 		return nil, err
@@ -818,6 +828,7 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 		})
 		p.Recovery.Journal = filepath.Join(c.state, journalFile)
 	}
+	journaled := journaledLayers(j)
 
 	seen := map[string]bool{}
 	for _, n := range s.Changes {
@@ -833,10 +844,45 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 				seen[l.ID] = true
 			}
 		}
-		p.Families = append(p.Families, judge(f, s, c.principal, p, requests, in))
+		fp := judge(f, s, c.principal, p, requests, in)
+		if why := waits(f, journaled); why != "" {
+			fp.Action, fp.Reasons = wait, []string{why}
+		}
+		p.Families = append(p.Families, fp)
 		p.families = append(p.families, f)
 	}
 	return p, nil
+}
+
+// journaledLayers is the operation of each family the journal holds, by
+// each of the family's changes and branches (layerKeys).
+func journaledLayers(j *Journal) map[string]string {
+	held := map[string]string{}
+	if j == nil {
+		return held
+	}
+	for _, f := range j.Families {
+		for _, l := range f.Observed.Layers {
+			for _, key := range layerKeys(l.ID, l.Branch) {
+				held[key] = f.Operation
+			}
+		}
+	}
+	return held
+}
+
+// waits says why a family waits for a family the journal holds: it
+// shares a change or a branch with it, and writes built for it would race
+// that family's. "" is a family that shares neither.
+func waits(f *rebase.Family, journaled map[string]string) string {
+	for _, l := range f.Layers {
+		for _, key := range layerKeys(l.ID, l.Branch) {
+			if op, found := journaled[key]; found {
+				return fmt.Sprintf("%s is in a family of operation %s, which the journal still holds, so this family waits for it", l.Name, op)
+			}
+		}
+	}
+	return ""
 }
 
 // judge decides what a pass would do with one family. It judges requests
@@ -965,7 +1011,7 @@ func printPublished(w io.Writer, p *Plan) {
 		fmt.Fprintln(w)
 	}
 	if r := p.Pending; r != nil {
-		fmt.Fprintln(w, "the journal stays open, so this pass starts no new operation:")
+		fmt.Fprintln(w, "the journal stays open, and each family that shares a change or a branch with a family it holds waits:")
 		for _, d := range r.Decisions {
 			if d.settled() {
 				continue

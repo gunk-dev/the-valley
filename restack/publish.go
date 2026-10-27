@@ -37,9 +37,11 @@ import (
 // while a write of it is still to finish, or while origin took its branch
 // push and a version of it is neither added nor stopped for good, as a
 // version paused by a request that might still land is. An open family
-// stays in the journal, and while it does the pass starts no new
-// operation. A family whose branch push stopped, and so moved nothing, is
-// left for the next plan. Once no family is left, the journal goes too.
+// stays in the journal, and the planner has each family that shares a
+// change or a branch with it wait (waits). A later pass adds the families
+// it builds to the same journal. A family whose branch push stopped, and
+// so moved nothing, is left for the next plan. Once no family is left,
+// the journal goes too.
 
 // maxSteps bounds how many times one pass reads origin and pushes what is
 // still to finish. A family takes three: its branches, its versions and its

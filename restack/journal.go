@@ -422,11 +422,12 @@ func (j *Journal) retained() map[string]string {
 	return refs
 }
 
-// keep makes the journal durable before any of its writes is pushed: it
-// keeps every object the writes would push reachable in the scratch
-// repository, under refs/valley-restack/<operation>/<object>, and then
-// writes the journal to the state directory, synced, in place of any
-// before it. Only then does it let go of each object the journal no
+// keep makes the journal durable before any of its writes is pushed. It
+// archives the observation of each family whose reports leave something
+// out of it, and keeps every object the writes would push reachable in
+// the scratch repository, under refs/valley-restack/<operation>/<object>.
+// It then writes the journal to the state directory, synced, in place of
+// any before it. Only then does it let go of each object the journal no
 // longer names. A journal that would not read back as written is refused
 // before anything is kept, since a later pass would refuse it in turn.
 func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
@@ -439,6 +440,16 @@ func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 	}
 	if err := strictly(data, &Journal{}); err != nil {
 		return fmt.Errorf("the journal cannot be kept, since it would not read back as written: %w", err)
+	}
+	for _, f := range j.Families {
+		for _, r := range f.Reports {
+			if len(r.Omitted) > 0 {
+				if err := archive(dir, f.Observed); err != nil {
+					return fmt.Errorf("the journal cannot be kept, since the observation its reports are cut from cannot be archived: %w", err)
+				}
+				break
+			}
+		}
 	}
 	refs := j.retained()
 	var names []string
@@ -457,6 +468,29 @@ func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 		return err
 	}
 	return letGo(ctx, g, refs)
+}
+
+// observationsDir is where the state directory keeps the whole
+// observation a report was cut from, when the report leaves something out
+// of it.
+const observationsDir = "observations"
+
+// archive keeps the whole observation in the state directory as
+// observations/<digest>.json, where <digest> is the observation's digest.
+// The file holds the observation as the digest is taken of it, so its
+// SHA-256 begins with that digest. A report that leaves something out
+// names the file. The file outlives the journal: nothing the restacker
+// does removes it.
+func archive(dir string, o Observation) error {
+	data, err := json.Marshal(o)
+	if err != nil {
+		return err
+	}
+	at := filepath.Join(dir, observationsDir)
+	if err := os.MkdirAll(at, 0o700); err != nil {
+		return err
+	}
+	return writeDurably(at, o.Digest()+".json", data)
 }
 
 // letGo lets go of every object the scratch repository keeps for the

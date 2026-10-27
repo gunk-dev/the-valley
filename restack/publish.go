@@ -275,10 +275,12 @@ func whatHappened(f JournalFamily, version func(id string) Decision) (Observatio
 // replace builds, for each family whose branches moved, a report of what
 // did happen for each of its changes whose report on origin says
 // otherwise, in place of any replacement of that change the family held.
-// It keeps the journal with them before any is pushed, and reports
-// whether it built any. A change origin no longer records gets none,
-// since the hook takes no report about it, and so does a change no report
-// of which fits, as when the family's writes were built.
+// It archives the observation a replacement is cut from when the
+// replacement leaves something out of it, and keeps the journal with them
+// before any is pushed. It reports whether it built any. A change origin
+// no longer records gets none, since the hook takes no report about it,
+// and so does a change no report of which fits, as when the family's
+// writes were built.
 func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recovery, s *rebase.Snapshot) (bool, error) {
 	by := decisionsOf(r)
 	built := false
@@ -299,6 +301,11 @@ func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recover
 			}
 			if current, found := s.Report(l.ID); found && sameReport(current.Report, rep) {
 				continue
+			}
+			if len(omitted) > 0 {
+				if err := archive(c.state, o); err != nil {
+					return built, err
+				}
 			}
 			p, err := rebase.BuildReport(ctx, g, rep, rebase.ReportMessage(l.Name, rep), s.Refs[rebase.RestackPrefix+l.ID])
 			if err != nil {

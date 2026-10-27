@@ -16,7 +16,9 @@ import (
 
 // A family's reports are cut from one observation of it: everything the
 // attempt read and what came of it, in full. The journal keeps the
-// observation whole. Each recorded change in the family gets a report of
+// observation whole. When a report leaves part of it out, the state
+// directory also keeps it in a file of its own, which outlives the
+// journal (archive). Each recorded change in the family gets a report of
 // its own, in the format change/report.go defines, about every recorded
 // change in the family, bottom first. A plain branch is no report layer.
 //
@@ -34,9 +36,10 @@ import (
 //   - its refusal, with each run of control characters made one space,
 //     cut to fit.
 //
-// Its refusal then ends by saying what it leaves out, and naming the
-// digest of the whole observation the journal keeps. Two fallbacks that
-// show the same are told apart by that digest. If the report is still more
+// Its refusal then ends by saying what it leaves out, and naming the file
+// that keeps the whole observation in the restacker's state directory,
+// observations/<digest>.json, by the observation's digest. Two fallbacks
+// that show the same are told apart by that digest. If the report is still more
 // than 64 KiB, it sheds its conflict paths, then its blocking requests,
 // then every layer but the change's own and the failing one.
 
@@ -287,8 +290,8 @@ func refusalWith(refusal string, omitted []string, digest string) *string {
 	}
 	note := ""
 	if len(omitted) > 0 {
-		note = fmt.Sprintf("This report leaves out %s; the restacker's journal keeps the whole observation, digest %s.",
-			strings.Join(omitted, ", "), digest)
+		note = fmt.Sprintf("This report leaves out %s; the restacker keeps the whole observation in its state directory, as %s/%s.json.",
+			strings.Join(omitted, ", "), observationsDir, digest)
 	}
 	if room := change.MaxRefusal - len(note) - len(" "); len(refusal) > room {
 		refusal = shorten(refusal, room)

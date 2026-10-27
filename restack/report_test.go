@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -58,7 +62,8 @@ func oversized() Observation {
 // fallback that the format takes: the change's own layer and the failing
 // one, the conflict paths and requests that fit, up to the format's
 // count, and a refusal cut to fit, free of control characters, ending
-// with what it leaves out and the digest of the whole observation.
+// with what it leaves out and the file that keeps the whole observation,
+// named by its digest.
 func TestAReportFallsBackWithinEveryBound(t *testing.T) {
 	o := oversized()
 	self := id(3)
@@ -82,7 +87,7 @@ func TestAReportFallsBackWithinEveryBound(t *testing.T) {
 	if len(r.Requests) != 64 || r.Requests[0].Ref != rebase.RequestPrefix+"request-00" {
 		t.Errorf("the fallback keeps %d requests, first %+v", len(r.Requests), r.Requests[0])
 	}
-	if r.Refusal == nil || len(*r.Refusal) > change.MaxRefusal || !strings.Contains(*r.Refusal, "digest "+o.Digest()) ||
+	if r.Refusal == nil || len(*r.Refusal) > change.MaxRefusal || !strings.Contains(*r.Refusal, "observations/"+o.Digest()+".json") ||
 		!strings.HasPrefix(*r.Refusal, "the layer conflicts with main the layer") {
 		t.Errorf("the fallback's refusal is %q", *r.Refusal)
 	}
@@ -149,11 +154,11 @@ func TestReportsAreTheSameByWhatTheySay(t *testing.T) {
 	}
 }
 
-// A conflict over more paths than a report holds keeps them all in the
-// journal, and its report, which the format takes, names what fits and
-// says what it leaves out.
-func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
-	f := newFixture(t, "")
+// conflictOnManyPaths readies a change that conflicts with main on 122
+// paths, more than a report holds, two of them with control characters
+// in their names. It returns the paths.
+func (f *fixture) conflictOnManyPaths() []string {
+	f.t.Helper()
 	f.git("checkout", "--quiet", "-b", "a", "main")
 	names := []string{"line\nbreak.txt", "bell\x07.txt"}
 	for i := 0; i < 120; i++ {
@@ -163,10 +168,10 @@ func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
 		for _, n := range names {
 			path := filepath.Join(f.work, n)
 			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				t.Fatal(err)
+				f.t.Fatal(err)
 			}
 			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-				t.Fatal(err)
+				f.t.Fatal(err)
 			}
 		}
 		f.git("add", "-A")
@@ -183,7 +188,15 @@ func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
 	write("main\n")
 	f.git("commit", "--quiet", "-m", "main has its own")
 	f.git("push", "--quiet", "origin", "main")
+	return names
+}
 
+// A conflict over more paths than a report holds keeps them all in the
+// journal, and its report, which the format takes, names what fits and
+// says what it leaves out.
+func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
+	f := newFixture(t, "")
+	names := f.conflictOnManyPaths()
 	r := newRestacker(t, f)
 	j := r.journal()
 	a := of(t, j, idA)
@@ -198,6 +211,53 @@ func TestAConflictKeepsEveryPathInTheJournal(t *testing.T) {
 	if !strings.Contains(*rep.Pending.Report.Refusal, a.Observed.Digest()) {
 		t.Errorf("the report's refusal names no digest: %q", *rep.Pending.Report.Refusal)
 	}
+}
+
+// A report that leaves part of its observation out names the file that
+// keeps the whole of it, and that file outlives the journal. A write pass
+// reports a conflict on 122 paths and lets go of its journal. The file
+// the report names is in the state directory, holds every path, and
+// reads as the observation whose digest names it. A second pass does not
+// rebase the conflict again, and the file is still there.
+func TestATruncatedReportNamesTheObservationItLeavesOut(t *testing.T) {
+	f := newFixture(t, "")
+	names := f.conflictOnManyPaths()
+	r := newRestacker(t, f)
+	r.pass(64)
+	r.settledState()
+	rep := f.reportOf(idA)
+	if rep == nil || rep.Result != change.RestackConflict || rep.Refusal == nil {
+		t.Fatalf("a's report is %+v", rep)
+	}
+	m := regexp.MustCompile(`as (observations/([0-9a-f]{16})\.json)\.$`).FindStringSubmatch(*rep.Refusal)
+	if m == nil {
+		t.Fatalf("the report names no file of the whole observation: %q", *rep.Refusal)
+	}
+	check := func() {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(r.c.state, m[1]))
+		if err != nil {
+			t.Fatalf("the observation the report names is not kept: %v", err)
+		}
+		var o Observation
+		if err := json.Unmarshal(data, &o); err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(data)
+		kept := append([]string{}, o.Conflicts...)
+		sort.Strings(kept)
+		sort.Strings(names)
+		if o.Digest() != m[2] || !strings.HasPrefix(hex.EncodeToString(sum[:]), m[2]) || !reflect.DeepEqual(kept, names) {
+			t.Errorf("%s holds %d conflict paths, digest %s", m[1], len(o.Conflicts), o.Digest())
+		}
+	}
+	check()
+
+	before := f.refs()
+	if p := r.pass(64); len(p.Actions) != 0 || f.refs() != before {
+		t.Errorf("a second pass pushed %+v", p.Actions)
+	}
+	check()
 }
 
 // A conflict on a file whose name is not UTF-8 keeps the name in the

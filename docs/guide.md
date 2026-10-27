@@ -807,12 +807,20 @@ docker run -d --name valley-web --user valley-web \
 A new volume takes the owner and mode of the image's `/var/lib/valley-web`: the receiver's user,
 mode `0750`. `valley-web` reads it through the group the two users share.
 
-Each container gets a memory limit of its own, so a spike in one leaves the other and the host
-alone. `--memory` is the limit, and `--memory-swap` set to the same value gives the container no
-swap, as the NixOS module's units have none. The sizes above are the module's defaults for
-`receiverMemoryMax` and `webMemoryMax`. They are a deployment choice: size them to the edge's
-uploads and readers. The receiver also holds the state directory to `--max-storage`, 8 GiB by
-default, so give the volume at least that much room.
+Each container gets a memory limit of its own. A container that reaches its limit is held to it: the
+kernel reclaims memory, or kills a process, in that container alone. That keeps a spike in one
+container from taking the other's memory or the host's only when the host has room for both limits
+and its own work, so keep the two limits well within the host's memory. `--memory` is the limit, and
+`--memory-swap` set to the same value gives the container no swap, as the NixOS module's units have
+none. The sizes above are the module's defaults for `receiverMemoryMax` and `webMemoryMax`. They are
+a deployment choice: size them to the edge's uploads and readers.
+
+The receiver holds the state directory to `--max-storage`, 8 GiB by default. That cap is best
+effort, and the hard bound on the disk is the filesystem the state directory lives on (see
+[Bounds](./architecture.md#bounds)). So put the state directory on a filesystem of fixed size, or
+under a quota, a little larger than `--max-storage`. For the containers, that is the filesystem the
+volume lives on. On NixOS, mount such a filesystem at the receiver's state directory,
+`/var/lib/valley-web` by default.
 
 The token travels in every upload request. Reach the receiver over HTTPS, through a reverse proxy
 that terminates TLS, or over a private network. On the next pass, the publisher prints

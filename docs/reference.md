@@ -2460,7 +2460,8 @@ valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
   - `--max-storage SIZE` (default `8G`): The most bytes the state directory may take on disk, with
     every generation it holds, the staged upload's bodies, and a repository for each project of the
     upload. A manifest whose upload would pass it is refused as `too-large` at step 1, and a commit
-    whose repositories passed it at step 3 (see [Bounds](./architecture.md#bounds)).
+    whose repositories passed it at step 3. The cap is best effort. The hard bound is the filesystem
+    the state directory lives on (see [Bounds](./architecture.md#bounds)).
 
   A `SIZE` is a number of bytes, or a number with `K`, `M`, `G` or `T` for KiB, MiB, GiB or TiB.
 
@@ -2469,9 +2470,10 @@ valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
   address, each activation's sequence, and what `export.Store` reports. It never logs the token, and
   an unreadable token file or verifier file is reported without its contents. On `SIGINT` or
   `SIGTERM` it stops taking connections and gives requests in flight 10 seconds to finish, then
-  closes them, which stops a commit's `git`. A commit stopped this way leaves the active export as
-  it was. It exits `0` after a stop, `1` on a runtime failure, and `2` on invalid flags. `--help`
-  prints usage on `stderr` and exits `0`.
+  closes them, which stops a commit's `git`. It waits up to 5 seconds more for those requests and
+  their `git` to stop, and then exits. A commit stopped this way leaves the active export as it was.
+  It exits `0` after a stop, `1` on a runtime failure, and `2` on invalid flags. `--help` prints
+  usage on `stderr` and exits `0`.
 - **Routes:** The receiver checks the token first, on every request. With the token, it answers the
   three steps of the upload:
 
@@ -2498,17 +2500,20 @@ have an empty body.
 | An idle connection                        | 1 minute     |
 
 An authenticated request past 4 at once answers `503` with `Retry-After: 5` and an empty body. So
-does a body while another request is staging the same body. A connection past 32 waits in the listen
-queue. A request without the token takes no request slot. `OPTIONS *` is answered as any other
-request is, `401` without the token and `404` with it. A manifest or a commit that waits for the
-store's lock stops waiting at its time limit, or when its client goes away. A failure that is not a
-refusal answers `500` with an empty body. The publisher retries both, as failures in transit.
+does a body while another request is staging the same body of the same upload. A connection past 32
+waits in the listen queue. A request without the token takes no request slot. `OPTIONS *` is
+answered as any other request is, `401` without the token and `404` with it. A manifest or a commit
+that waits for the store's lock stops waiting at its time limit, or when its client goes away. A
+failure that is not a refusal answers `500` with an empty body. The publisher retries both, as
+failures in transit.
 
 - **The staged upload:** The receiver keeps the newest upload a manifest staged in memory. A body or
   commit for a newer sequence is refused as `no-manifest`, and one for an older sequence as
-  `superseded`. A body for an upload that a commit activated, or that a newer manifest discarded, is
-  refused as `no-manifest`. After a restart, the receiver holds no staged upload until the next
-  manifest, and the publisher signs one.
+  `superseded`. A body request still running when a newer manifest discards its upload is stopped
+  and refused as `superseded`. One still running when a commit removes its upload's bodies is
+  stopped and refused as `no-manifest`, and so is a body for an upload that a commit activated.
+  After a restart, the receiver holds no staged upload until the next manifest, and the publisher
+  signs one.
 
 - **The container image:** The `valley-web-image` package is a container image built with
   `dockerTools.buildLayeredImage`. It holds `valley-web` and `valley-web-receive` at `/bin`, and the
@@ -2558,8 +2563,10 @@ The receiver keeps every accepted export as an immutable generation in one state
      syncs every file and directory to disk, and renames the repository to `repos/<project>.git`. If
      `AcceptBundle` fails, the staged bundle is removed from `bodies/` so `Inventory` lists it as
      needed again. A build interrupted by a crash stays in `tmp/` and is rebuilt on the next commit.
-  4. Remove `bodies/` and `tmp/`, and verify that the staging directory holds only `export.json` and
-     `repos/`, with each project's repository holding `refs/heads/main` at its `source_tip`.
+  4. Stop the upload's body requests (`Store.Writer`), and wait until each has closed and removed
+     its partial file. Remove `bodies/` and `tmp/`, and verify that the staging directory holds only
+     `export.json` and `repos/`, with each project's repository holding `refs/heads/main` at its
+     `source_tip`.
   5. Set the mode of `repos/` and the staging directory to `0755`. Sync `export.json`, `repos/`, and
      the staging directory, rename `<staging>/<sequence>` to `exports/<sequence>`, and sync
      `exports/` and `staging/`.

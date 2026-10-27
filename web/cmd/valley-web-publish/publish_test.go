@@ -755,11 +755,13 @@ projects: site: {}`)
 }
 
 // A host declaration whose names collide, that names a group it does not
-// declare, that names a project by something that is not a name, or that
-// spells a field otherwise than schema/valley.cue does, is refused when
-// it is read, and no pass runs: nothing is written or sent. A pass
-// without --host is a usage error.
-func TestACollidingHostDeclarationIsRefused(t *testing.T) {
+// declare, that spells a field otherwise than schema/valley.cue does, or
+// that is not the object cue exports, is refused when it is read, and no
+// pass runs: nothing is written or sent. A null where cue exports an
+// object is refused, as is a project's identifier that is not a name, so
+// a malformed declaration never makes a pass that publishes no project.
+// A pass without --host is a usage error.
+func TestAMalformedOrCollidingHostDeclarationIsRefused(t *testing.T) {
 	v := newValley(t)
 	project := func(fields string) string {
 		return `{"git": {"enable": true}, "mirrors": [], "grants": {}` + fields + `}`
@@ -775,6 +777,18 @@ func TestACollidingHostDeclarationIsRefused(t *testing.T) {
 			`the project app belongs to the group "core", which is not declared`},
 		"a field spelled in another case": {`{"projects": {"app": ` + project(`, "Group": "core", "aliases": []`) + `}, "groups": {}}`,
 			"is not a host declaration as cue exports it"},
+		"a field given twice": {`{"projects": {"app": ` + project(`, "group": "core", "group": "web"`) + `}, "groups": {}}`,
+			`projects["app"] holds the key "group" twice`},
+		"a null declaration":    {"null", "is not a host declaration as cue exports it: the document is not a JSON object"},
+		"a declaration of null": {" \n null \n", "the document is not a JSON object"},
+		"an array":              {"[]", "the document is not a JSON object"},
+		"a string":              {`"projects"`, "the document is not a JSON object"},
+		"null projects":         {`{"projects": null, "groups": {}}`, "it has no projects or no groups, or one of them is null"},
+		"no projects":           {`{"groups": {}}`, "it has no projects or no groups, or one of them is null"},
+		"null groups":           {`{"projects": {"app": ` + project(``) + `}, "groups": null}`, "it has no projects or no groups"},
+		"no groups":             {`{"projects": {"app": ` + project(``) + `}}`, "it has no projects or no groups"},
+		"a null project":        {`{"projects": {"app": null}, "groups": {}}`, `the project "app" is null`},
+		"a null group":          {`{"projects": {}, "groups": {"core": null}}`, `the group "core" is null`},
 		"a project's identifier that is a path": {`{"projects": {"../app": ` + project(``) + `}, "groups": {}}`,
 			`a project's identifier is "../app", which is not a name`},
 		"an empty identifier": {`{"projects": {"": ` + project(``) + `}, "groups": {}}`,

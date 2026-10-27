@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -17,10 +19,13 @@ import (
 // group, web name, former names and short aliases. The other fields are
 // taken as raw JSON, and exactjson holds every key to the schema's
 // spelling, so a Group beside a group is refused rather than read as it.
+// cue exports projects and groups always, and each declaration as an
+// object. Pointers tell an object from a null or a missing field, which
+// the publisher refuses.
 type hostDoc struct {
-	Projects map[string]hostProject `json:"projects"`
-	Groups   map[string]hostGroup   `json:"groups"`
-	Backup   json.RawMessage        `json:"backup"`
+	Projects *map[string]*hostProject `json:"projects"`
+	Groups   *map[string]*hostGroup   `json:"groups"`
+	Backup   json.RawMessage          `json:"backup"`
 }
 
 type hostProject struct {
@@ -47,10 +52,13 @@ type webPlaces struct {
 }
 
 // readHost reads the host declaration at path and holds its groups and
-// projects to export.CheckNames. A declaration whose project's
-// identifier is not a name, whose names collide, or that names a group it
-// does not declare, is refused, and no pass runs: a project whose URL is
-// in doubt is not published.
+// projects to export.CheckNames. A declaration that is not an object
+// with projects and groups, or whose project or group is not an object,
+// is refused, as is one whose project's identifier is not a name, whose
+// names collide, or that names a group it does not declare. No pass runs
+// then: a pass over a declaration it cannot read would publish an export
+// without the projects it lost, and a project whose URL is in doubt is
+// not published.
 func readHost(path string) (webPlaces, error) {
 	var w webPlaces
 	data, err := os.ReadFile(path)
@@ -60,13 +68,23 @@ func readHost(path string) (webPlaces, error) {
 	refuse := func(err error) (webPlaces, error) {
 		return webPlaces{}, fmt.Errorf("--host %s is not a host declaration as cue exports it: %w", path, err)
 	}
+	// encoding/json reads a null into a struct as nothing at all, so the
+	// document opens an object, or it is refused.
+	if !bytes.HasPrefix(bytes.TrimLeft(data, " \t\r\n"), []byte("{")) {
+		return refuse(errors.New("the document is not a JSON object"))
+	}
 	var doc hostDoc
 	if err := exactjson.Decode(data, &doc); err != nil {
 		return refuse(err)
 	}
+	if doc.Projects == nil || doc.Groups == nil {
+		return refuse(errors.New("it has no projects or no groups, or one of them is null"))
+	}
 	w.placements = map[string]export.Placement{}
-	for name, p := range doc.Projects {
+	for name, p := range *doc.Projects {
 		switch {
+		case p == nil:
+			return refuse(fmt.Errorf("the project %q is null", name))
 		case p.Group == "" && p.Name != "" && p.Name != name:
 			return refuse(fmt.Errorf("the project %s is in no group, and its web name is %q", name, p.Name))
 		case p.Group == "":
@@ -77,7 +95,10 @@ func readHost(path string) (webPlaces, error) {
 			w.placements[name] = export.Placement{Group: p.Group, Name: p.Name, FormerNames: p.FormerNames, Aliases: p.Aliases}
 		}
 	}
-	for id, g := range doc.Groups {
+	for id, g := range *doc.Groups {
+		if g == nil {
+			return refuse(fmt.Errorf("the group %q is null", id))
+		}
 		w.groups = append(w.groups, export.Group{ID: id, Name: g.Name, Aliases: g.Aliases})
 	}
 	slices.SortFunc(w.groups, func(a, b export.Group) int { return strings.Compare(a.ID, b.ID) })

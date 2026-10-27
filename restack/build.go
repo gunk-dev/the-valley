@@ -148,7 +148,8 @@ func reportedConflict(s *rebase.Snapshot, f *rebase.Family) bool {
 // family builds one family's writes.
 func (out *built) family(ctx context.Context, g rebase.Git, s *rebase.Snapshot, f *rebase.Family, fp FamilyPlan, principal, op string) (*JournalFamily, *Writes, error) {
 	o := observe(f, fp)
-	jf := &JournalFamily{Versions: []*rebase.PendingVersion{}, Reports: []JournalReport{}, Replacements: []JournalReport{}}
+	jf := &JournalFamily{Versions: []*rebase.PendingVersion{}, Reports: []JournalReport{}, Replacements: []JournalReport{},
+		Accepted: Accepted{Versions: []string{}}}
 	published := map[string]*change.RestackPublished{}
 	switch fp.Action {
 	case hold:

@@ -20,6 +20,12 @@ import (
 //     push it either, and terminal when it is also a local failure whose
 //     diagnostics the journal keeps.
 //
+// A write a read of origin showed it took, the branch push or a version,
+// is kept in the journal as accepted (confirm), and is done from then on,
+// whatever becomes of the branch or the record after. An author who
+// rewrites or deletes a restacked branch therefore does not unmake what
+// the family published, nor the report of it.
+//
 // A branch push origin did not take is finished only while nothing it was
 // prepared from has moved: main is at the tip it was rebased onto, every
 // branch at the tip its lease names, and every record at the record
@@ -163,6 +169,8 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 		switch {
 		case len(moved) > 0:
 			d.Action, d.Why = writeDone, "origin took the branch push: "+strings.Join(moved, ", ")+" at the prepared heads, or past them"
+		case f.Accepted.Branches:
+			d.Action, d.Why = writeDone, "origin took the branch push, as an earlier read showed; its branches have moved since"
 		case len(other) > 0:
 			stopped(&d, true, "the branches were not pushed, and %s since the family was prepared", strings.Join(other, "; "))
 		case len(missing) > 0:
@@ -193,6 +201,8 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 		switch {
 		case at == v.Commit || at != "" && at != v.Old && rd.reaches(v.Commit, at):
 			d.Action, d.Why = writeDone, fmt.Sprintf("origin's record of %s holds v%d", v.Handle, v.Version)
+		case f.Accepted.has(v.ID):
+			d.Action, d.Why = writeDone, fmt.Sprintf("origin added v%d to %s, as an earlier read showed; its record has moved since", v.Version, v.Handle)
 		case at == "":
 			stopped(&d, true, "origin no longer holds a record of %s, so v%d cannot be added", v.Handle, v.Version)
 			d.Terminal = true
@@ -271,10 +281,10 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 	}
 
 	// Each replacement, against what did happen as the versions are
-	// decided now.
-	var happened Observation
-	var published map[string]*change.RestackPublished
-	if branches.Action == writeDone {
+	// decided now. The journal holds a replacement only once the branch
+	// push is accepted, and so done.
+	happened, published := Observation{}, map[string]*change.RestackPublished{}
+	if len(f.Replacements) > 0 {
 		happened, published = whatHappened(f, func(id string) Decision { return versions[id] })
 	}
 	for _, r := range f.Replacements {
@@ -283,12 +293,10 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 		at := rd.s.Refs[p.Ref]
 		current, found := rd.s.Report(p.ID)
 		says := ""
-		if branches.Action == writeDone {
-			if want, _, err := bound(fullReport(f.Operation, f.Tip, p.ID, happened, published), happened.Digest()); err != nil {
-				says = err.Error()
-			} else if !sameReport(want, p.Report) {
-				says = "it no longer says what did happen"
-			}
+		if want, _, err := bound(fullReport(f.Operation, f.Tip, p.ID, happened, published), happened.Digest()); err != nil {
+			says = err.Error()
+		} else if !sameReport(want, p.Report) {
+			says = "it no longer says what did happen"
 		}
 		switch {
 		case at == p.Commit || at != "" && at != p.Old && rd.reaches(p.Commit, at):
@@ -303,8 +311,6 @@ func (rd reading) family(i int, f JournalFamily) []Decision {
 			stopped(&d, true, "origin's report moved to %s since this one was built on %s; a report of what did happen is built in its place", short(at), orNone(p.Old))
 		case !rd.have(p.Commit):
 			stopped(&d, true, "the scratch repository no longer holds the report commit %s; a report of what did happen is built in its place", short(p.Commit))
-		case branches.Action != writeDone:
-			stopped(&d, true, "origin no longer shows the family's branch push: %s", branches.Why)
 		case says != "":
 			stopped(&d, true, "%s; a report of what did happen is built in its place", says)
 		default:

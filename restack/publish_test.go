@@ -517,7 +517,7 @@ func TestAReportOfWhatHappenedOutlivesAFailedPush(t *testing.T) {
 				if strings.Join(pushes, " ") != "unknown" {
 					t.Errorf("b's report of what happened was pushed as %v, where once, its answer lost, is expected", pushes)
 				}
-				if !partialOf(f, idB) {
+				if !partialOf(f, idB, "its author moved it") {
 					t.Error("no report of b on origin says partial")
 				}
 				r.settledState()
@@ -543,7 +543,7 @@ func TestAReportOfWhatHappenedOutlivesAFailedPush(t *testing.T) {
 
 			lift()
 			r.pass(64)
-			if !partialOf(f, idB) {
+			if !partialOf(f, idB, "its author moved it") {
 				t.Error("no report of b on origin says partial once origin takes it")
 			}
 			r.settledState()
@@ -551,15 +551,60 @@ func TestAReportOfWhatHappenedOutlivesAFailedPush(t *testing.T) {
 	}
 }
 
+// What origin took of a family's writes stays in the journal, so an
+// author who rewrites or deletes every branch the family moved does not
+// unmake the report of it. Here an owner moves a restacked branch, so the
+// family's reports say partial, and origin refuses the push of one of
+// them. Every branch the family moved is then rewritten, or deleted, and
+// once origin takes the push, the next pass pushes that report, saying
+// what became of the branch.
+func TestAReportOfWhatHappenedOutlivesTheBranchesItReports(t *testing.T) {
+	for author, why := range map[string]string{"rewrites": "its author moved it", "deletes": "origin no longer has b"} {
+		t.Run(author, func(t *testing.T) {
+			f := hooked(t)
+			f.readyAs(idA, "alice", "a", "main", "A's title")
+			f.readyAs(idB, "bob", "b", "a", "B's title")
+			f.moveMain()
+			t.Setenv("VALLEY_PRINCIPAL", "restacker")
+			r := newRestacker(t, f)
+			fam := of(t, r.journal(), idA)
+			if push, _ := fam.Branches.Push(context.Background(), r.g); push != rebase.Pushed {
+				t.Fatal("the branches were not pushed")
+			}
+			f.ownerPushes("b")
+			lift := f.refuseOnOrigin(rebase.RestackPrefix + idB)
+			if p := r.pass(64); p.Pending == nil || f.reportOf(idB) != nil {
+				t.Fatalf("the pass let go of the journal, or origin holds a report of b it refused: %+v", p.Pending)
+			}
+
+			for _, branch := range []string{"a", "b"} {
+				if author == "deletes" {
+					f.git("push", "--quiet", "origin", "--delete", branch)
+					continue
+				}
+				f.git("checkout", "--quiet", "-B", branch, "main")
+				f.commit("the author's rewrite of "+branch, branch+"-rewrite.txt")
+				f.git("push", "--quiet", "--force", "origin", branch)
+			}
+			lift()
+			r.pass(64)
+			if !partialOf(f, idB, why) {
+				t.Errorf("no report of b on origin says partial, since %s, once origin takes it", why)
+			}
+			r.settledState()
+		})
+	}
+}
+
 // partialOf reports whether the change's latest report on origin, or one
-// before it, says partial: a's version added, the change's own not, since
-// its author moved it. A later plan in the same pass may report on the
+// before it, says partial: a's version added, the change's own not, for
+// the reason given. A later plan in the same pass may report on the
 // change again.
-func partialOf(f *fixture, id string) bool {
+func partialOf(f *fixture, id, why string) bool {
 	f.t.Helper()
 	for commit := f.at(rebase.RestackPrefix + id); commit != ""; commit = f.parentOf(commit) {
 		rep := f.reportAt(commit)
-		if rep.Result != change.RestackPartial || rep.Refusal == nil || !strings.Contains(*rep.Refusal, "its author moved it") {
+		if rep.Result != change.RestackPartial || rep.Refusal == nil || !strings.Contains(*rep.Refusal, why) {
 			continue
 		}
 		for _, l := range rep.Layers {

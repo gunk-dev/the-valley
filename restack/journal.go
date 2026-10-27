@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -35,7 +36,9 @@ import (
 //	     "versions": [ each version, as rebase.PendingVersion keeps it, lower layers first ],
 //	     "reports": [ {"pending": { as rebase.PendingReport keeps it },
 //	                   "omitted": [ what the report leaves out of the observation ]} ],
-//	     "replacements": [ each report of what did happen, in the form of a report ]}
+//	     "replacements": [ each report of what did happen, in the form of a report ],
+//	     "accepted": {"branches": <whether origin took the branch push>,
+//	                  "versions": [ the change ID of each version origin added, lower layers first ]}}
 //	  ]
 //	}
 //
@@ -48,7 +51,9 @@ import (
 // family has a branch push and versions only when its operation would
 // restack it. A replacement is a report of what did happen to a family
 // whose branches moved, built when origin's report says otherwise
-// (publish.go).
+// (publish.go). What a read of origin showed it took of a family's writes,
+// its branch push and each version it added, is kept as accepted
+// (confirm), so no later movement of a branch or a record unmakes it.
 // Each version is leased on the record commit the capture read, and each
 // report and replacement on the report origin held. Every write names the
 // object it would push by its full ID, and every one of those objects is
@@ -64,8 +69,11 @@ import (
 // that would restack adds exactly one version of each of its changes.
 // Each report gives the family's result, and says published exactly what
 // the family's versions add: nothing, for a family that adds none. Each
-// replacement says complete or partial, says each change was published at
+// replacement is kept only once origin is known to have taken the branch
+// push. It says complete or partial, says each change was published at
 // its prepared head, and names a version only as the family adds it. A
+// family accepts a version only as it adds it, and only once its branch
+// push is accepted. A
 // journal that would not read back as written is never kept (keep). A
 // journal that is missing is never inferred: what origin shows of a write
 // no journal names is left for the planner, which holds a change whose
@@ -100,6 +108,23 @@ type JournalFamily struct {
 	Versions     []*rebase.PendingVersion `json:"versions"`
 	Reports      []JournalReport          `json:"reports"`
 	Replacements []JournalReport          `json:"replacements"` // reports of what did happen, at most one a change
+	Accepted     Accepted                 `json:"accepted"`
+}
+
+// Accepted is what a read of origin showed it took of a family's writes:
+// its branch push, and the version of each change it added. Once the
+// journal keeps it, recovery decides those writes done whatever becomes
+// of the branches and records after, so an author who rewrites or deletes
+// a restacked branch does not unmake the obligation to report what was
+// published (confirm).
+type Accepted struct {
+	Branches bool     `json:"branches"`
+	Versions []string `json:"versions"` // change IDs, lower layers first
+}
+
+// has reports whether origin is known to have added the change's version.
+func (a Accepted) has(id string) bool {
+	return slices.Contains(a.Versions, id)
 }
 
 // JournalReport is one change's report, and what it leaves out of the
@@ -245,6 +270,21 @@ func (f *JournalFamily) check(target string) error {
 	if f.Branches != nil && len(written) != len(layers) {
 		return fmt.Errorf("it would restack %d changes and adds a version to %d of them, where each change gets exactly one", len(layers), len(written))
 	}
+	if f.Accepted.Branches && f.Branches == nil {
+		return errors.New("origin took a branch push it does not have")
+	}
+	last = -1
+	for _, id := range f.Accepted.Versions {
+		switch {
+		case !f.Accepted.Branches:
+			return fmt.Errorf("origin added its version of %s, and is not known to have taken its branch push", id)
+		case written[id] == nil:
+			return fmt.Errorf("origin added a version of %s, which the family does not add", id)
+		case order[id] <= last:
+			return errors.New("its accepted versions are not lower layers first, once each")
+		}
+		last = order[id]
+	}
 	reported := map[string]bool{}
 	for _, r := range f.Reports {
 		p := r.Pending
@@ -271,8 +311,8 @@ func (f *JournalFamily) check(target string) error {
 		switch {
 		case p == nil:
 			return errors.New("it holds an empty replacement")
-		case f.Branches == nil:
-			return fmt.Errorf("it replaces the report on %s, and moved no branch", p.ID)
+		case !f.Accepted.Branches:
+			return fmt.Errorf("it replaces the report on %s, and origin is not known to have taken its branch push", p.ID)
 		case layers[p.ID].ID == "":
 			return fmt.Errorf("it replaces a report on %s, which is none of its changes", p.ID)
 		case replaced[p.ID]:

@@ -613,9 +613,11 @@ func keepEnvironment(t *testing.T) {
 // refused, and nothing in it is decided: a version that is null, a family
 // that would restack with one change's version left out and its reports
 // kept, a report that says a version was published other than as the
-// family adds it, a report whose result is not the family's, and two
-// families that share a change. Planning with any of them is an error of
-// recovery, never a crash.
+// family adds it, a report whose result is not the family's, two
+// families that share a change, a branch push accepted that the family
+// does not have, a version accepted before its branch push or twice, and
+// a replacement kept before the branch push is accepted. Planning with
+// any of them is an error of recovery, never a crash.
 func TestAJournalWhoseWritesDisagreeIsRefused(t *testing.T) {
 	f := newFixture(t, "")
 	f.readyAs(idB, "bob", "b", "main", "B's title")
@@ -658,6 +660,19 @@ func TestAJournalWhoseWritesDisagreeIsRefused(t *testing.T) {
 		}},
 		{"two families on one change", "share the change " + idE, func(j *Journal) {
 			j.Families = append(j.Families, *family(j, idE))
+		}},
+		{"a branch push accepted that the family does not have", "origin took a branch push it does not have", func(j *Journal) {
+			family(j, idE).Accepted.Branches = true
+		}},
+		{"a version accepted before the branch push", "is not known to have taken its branch push", func(j *Journal) {
+			family(j, idB).Accepted.Versions = []string{idB}
+		}},
+		{"a version accepted twice", "not lower layers first, once each", func(j *Journal) {
+			family(j, idB).Accepted = Accepted{Branches: true, Versions: []string{idB, idB}}
+		}},
+		{"a replacement before the branch push is accepted", "is not known to have taken its branch push", func(j *Journal) {
+			bc := family(j, idB)
+			bc.Replacements = append(bc.Replacements, bc.Reports[0])
 		}},
 	} {
 		var j Journal

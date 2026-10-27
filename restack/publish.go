@@ -32,6 +32,12 @@ import (
 // is lost leaves it there for the next read to decide. A replacement that
 // would say what origin's current report says is not built.
 //
+// What a read shows origin took of a family's writes, its branch push and
+// each version, the journal keeps as accepted before anything more is
+// pushed or built (confirm). Recovery decides those writes done from then
+// on, so a replacement still to push stays in the journal even when an
+// author rewrites or deletes every branch the family moved.
+//
 // Once a read finds nothing left to push and no replacement to build, the
 // pass lets go of each family that is not open (retire). A family is open
 // while a write of it is still to finish, or while origin took its branch
@@ -80,6 +86,11 @@ func settle(ctx context.Context, g rebase.Git, c config, j *Journal) (*settled, 
 			return out, err
 		}
 		out.last = decide(j, rd)
+		if confirm(j, out.last) {
+			if err := keep(ctx, g, c.state, j); err != nil {
+				return out, err
+			}
+		}
 		if pushed(ctx, g, j, out.last, &out.actions) {
 			continue
 		}
@@ -102,6 +113,38 @@ func settle(ctx context.Context, g rebase.Git, c config, j *Journal) (*settled, 
 		return out, nil
 	}
 	return out, nil
+}
+
+// confirm adds to each family's accepted writes what recovery decided
+// origin took at its last read: the branch push, and each version, once
+// the branch push is accepted. It reports whether it added anything,
+// which the journal is then kept with before anything more is pushed or
+// built.
+func confirm(j *Journal, r *Recovery) bool {
+	by := decisionsOf(r)
+	added := false
+	for i := range j.Families {
+		f, ds := &j.Families[i], by[i]
+		if f.Branches == nil {
+			continue
+		}
+		if !f.Accepted.Branches && ds["branches "].Action == writeDone {
+			f.Accepted.Branches, added = true, true
+		}
+		if !f.Accepted.Branches {
+			continue
+		}
+		versions := []string{}
+		for _, v := range f.Versions {
+			if f.Accepted.has(v.ID) || ds["version "+v.ID].Action == writeDone {
+				versions = append(versions, v.ID)
+			}
+		}
+		if len(versions) != len(f.Accepted.Versions) {
+			f.Accepted.Versions, added = versions, true
+		}
+	}
+	return added
 }
 
 // readOrigin reads one snapshot of origin, and what recovery reads it

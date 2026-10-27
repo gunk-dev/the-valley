@@ -3,8 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -37,6 +40,27 @@ func TestMain(m *testing.M) {
 
 const token = "receiver-test-token-0123456789abcdef"
 
+// How long a test waits for a request, a dial, or anything it polls for.
+// Every wait here is bounded, so a receiver that stops answering fails the
+// test rather than hanging it.
+const (
+	requestTimeout = 30 * time.Second
+	dialTimeout    = 5 * time.Second
+	waitTimeout    = 20 * time.Second
+)
+
+// client makes every request the tests make, each within requestTimeout,
+// on a connection of its own that it closes after the reply. A connection
+// kept for the next request would hold one of the receiver's, which the
+// tests that fill them count on being free.
+var client = &http.Client{
+	Timeout: requestTimeout,
+	Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext:       (&net.Dialer{Timeout: dialTimeout}).DialContext,
+	},
+}
+
 // edge is a receiver running over a state directory, and the fixture it
 // is sent.
 type edge struct {
@@ -44,7 +68,7 @@ type edge struct {
 	f     *exporttest.Fixture
 	state string
 	addr  string
-	cmd   *exec.Cmd
+	proc  *proc
 }
 
 // files writes the token file and the verifier file a receiver is given.
@@ -61,8 +85,19 @@ func files(t *testing.T) (tokenFile, verifiers string) {
 	return tokenFile, verifiers
 }
 
+// command is a program the tests run. It runs in a process group of its
+// own, which start kills when the test ends, with every git it started.
+// The kernel kills it when the test process dies first, as on a timeout
+// or an external kill, so a test run leaves no receiver behind.
+func command(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
+
 func receiveCmd(args ...string) *exec.Cmd {
-	cmd := exec.Command(os.Args[0], args...)
+	cmd := command(os.Args[0], args...)
 	cmd.Env = append(os.Environ(), "VALLEY_WEB_RECEIVE_TEST_MAIN=1")
 	return cmd
 }
@@ -73,41 +108,103 @@ func newEdge(t *testing.T, f *exporttest.Fixture, more ...string) *edge {
 	t.Helper()
 	tokenFile, verifiers := files(t)
 	state := filepath.Join(t.TempDir(), "state")
-	cmd := receiveCmd(append([]string{"--state", state, "--listen", "127.0.0.1:0",
+	p := start(t, receiveCmd(append([]string{"--state", state, "--listen", "127.0.0.1:0",
 		"--instance", exporttest.Instance, "--destination", exporttest.Destination,
-		"--verifiers", verifiers, "--token-file", tokenFile}, more...)...)
-	return &edge{t: t, f: f, state: state, cmd: cmd, addr: start(t, cmd, "valley-web-receive")}
+		"--verifiers", verifiers, "--token-file", tokenFile}, more...)...), "valley-web-receive")
+	return &edge{t: t, f: f, state: state, proc: p, addr: p.addr}
 }
 
-// start runs cmd and waits for it to say where it listens.
-func start(t *testing.T, cmd *exec.Cmd, name string) string {
-	t.Helper()
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		t.Fatal(err)
+// proc is a program start runs: where it listens, what it writes to
+// stderr, and how it exits.
+type proc struct {
+	cmd  *exec.Cmd
+	addr string
+	log  *stderrLog
+	// done is closed once the program has exited, and err is then how.
+	done chan struct{}
+	err  error
+}
+
+// stderrLog keeps what a program writes to stderr, and hands on its first
+// line.
+type stderrLog struct {
+	mu    sync.Mutex
+	buf   bytes.Buffer
+	first chan string
+}
+
+func (l *stderrLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.buf.Write(p)
+	if line, _, ok := strings.Cut(l.buf.String(), "\n"); ok && l.first != nil {
+		l.first <- line
+		l.first = nil
 	}
+	return len(p), nil
+}
+
+func (l *stderrLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+// start runs cmd and waits for it to say where it listens. The cleanup is
+// registered as soon as cmd starts: it kills cmd's process group unless
+// cmd has exited, and logs what cmd wrote when the test failed.
+func start(t *testing.T, cmd *exec.Cmd, name string) *proc {
+	t.Helper()
+	p := &proc{cmd: cmd, log: &stderrLog{first: make(chan string, 1)}, done: make(chan struct{})}
+	first := p.log.first
+	cmd.Stderr = p.log
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
-	lines := make(chan string, 1)
 	go func() {
-		r := bufio.NewReader(stderr)
-		line, _ := r.ReadString('\n')
-		lines <- line
-		io.Copy(io.Discard, r)
+		p.err = cmd.Wait()
+		close(p.done)
 	}()
+	t.Cleanup(func() {
+		select {
+		case <-p.done:
+		default:
+			syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			<-p.done
+		}
+		if t.Failed() {
+			t.Logf("%s wrote:\n%s", name, p.log)
+		}
+	})
 	select {
-	case line := <-lines:
-		addr, ok := strings.CutPrefix(strings.TrimSpace(line), name+": listening on ")
+	case line := <-first:
+		addr, ok := strings.CutPrefix(line, name+": listening on ")
 		if !ok {
 			t.Fatalf("%s printed %q", name, line)
 		}
-		return addr
-	case <-time.After(30 * time.Second):
+		p.addr = addr
+		return p
+	case <-p.done:
+		t.Fatalf("%s exited with %v before it listened", name, p.err)
+	case <-time.After(waitTimeout):
 		t.Fatalf("%s did not say where it listens", name)
 	}
-	return ""
+	return nil
+}
+
+// logged reports whether the receiver has logged a line that holds every
+// one of parts.
+func (e *edge) logged(parts ...string) bool {
+	for _, line := range strings.Split(e.proc.log.String(), "\n") {
+		all := true
+		for _, part := range parts {
+			all = all && strings.Contains(line, part)
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // manifest is the fixture's export under a manifest with sequence, signed
@@ -134,28 +231,125 @@ func (e *edge) signedNow() ([]byte, *export.Manifest) {
 	return e.manifest(time.Now().UnixNano(), exporttest.Key(), exporttest.Destination)
 }
 
-// request makes one request with the token, and returns the status and the
-// reply.
-func (e *edge) request(method, path string, body []byte, header http.Header) (int, []byte, http.Header) {
-	e.t.Helper()
-	req, err := http.NewRequest(method, "http://"+e.addr+path, bytes.NewReader(body))
+// do makes one request with the token within ctx, and returns the status,
+// the reply and its header.
+func (e *edge) do(ctx context.Context, method, path string, body []byte, header http.Header) (int, []byte, http.Header, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+e.addr+path, bytes.NewReader(body))
 	if err != nil {
-		e.t.Fatal(err)
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Authorization", export.Authorization(token))
 	for k, v := range header {
 		req.Header[k] = v
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
-		e.t.Fatal(err)
+		return 0, nil, nil, err
 	}
 	defer res.Body.Close()
 	reply, err := io.ReadAll(res.Body)
+	return res.StatusCode, reply, res.Header, err
+}
+
+// request makes one request with the token, and returns the status and the
+// reply. A request not answered within requestTimeout fails the test.
+func (e *edge) request(method, path string, body []byte, header http.Header) (int, []byte, http.Header) {
+	e.t.Helper()
+	status, reply, h, err := e.do(context.Background(), method, path, body, header)
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	return res.StatusCode, reply, res.Header
+	return status, reply, h
+}
+
+// dial opens a connection to the receiver, which the test closes when it
+// ends if nothing has before.
+func (e *edge) dial() net.Conn {
+	e.t.Helper()
+	c, err := net.DialTimeout("tcp", e.addr, dialTimeout)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	e.t.Cleanup(func() { c.Close() })
+	return c
+}
+
+// idle makes one request with the token on a connection of its own, a
+// commit of an upload never staged, which the receiver refuses and keeps
+// the connection open after. It returns the connection, which then holds
+// one of the receiver's connections until it is closed or the receiver's
+// idle timeout.
+func (e *edge) idle() net.Conn {
+	e.t.Helper()
+	for range 100 {
+		c := e.dial()
+		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: 0\r\n\r\n",
+			export.CommitPath(1), e.addr, export.Authorization(token))
+		c.SetReadDeadline(time.Now().Add(requestTimeout))
+		res, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			e.t.Fatal(err)
+		}
+		io.Copy(io.Discard, res.Body)
+		res.Body.Close()
+		c.SetReadDeadline(time.Time{})
+		switch {
+		case res.StatusCode == http.StatusServiceUnavailable:
+			// A request just answered had not yet given its slot back.
+			c.Close()
+			time.Sleep(20 * time.Millisecond)
+		case res.Close:
+			e.t.Fatalf("the receiver closed the connection after a %d", res.StatusCode)
+		default:
+			return c
+		}
+	}
+	e.t.Fatal("the receiver never had a request slot free")
+	return nil
+}
+
+// stall sends the headers of a request with content, and one byte of it,
+// on a connection of its own. The request then holds one of the
+// receiver's request slots while the receiver waits for the rest. stall
+// returns nil when the receiver answered at once: it had no slot free, or
+// it refused the request.
+func (e *edge) stall(method, path string, content []byte) net.Conn {
+	e.t.Helper()
+	c := e.dial()
+	fmt.Fprintf(c, "%s %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n",
+		method, path, e.addr, export.Authorization(token), len(content))
+	c.Write(content[:1])
+	if answered(c, 200*time.Millisecond) {
+		c.Close()
+		return nil
+	}
+	return c
+}
+
+// stallAll holds every request slot with a stalled manifest, signed.
+func (e *edge) stallAll(signed []byte) []net.Conn {
+	e.t.Helper()
+	var stalled []net.Conn
+	for range 100 {
+		if c := e.stall(http.MethodPost, export.ManifestPath, signed); c != nil {
+			stalled = append(stalled, c)
+		}
+		if len(stalled) == maxRequests {
+			return stalled
+		}
+	}
+	e.t.Fatalf("only %d of %d stalled manifests held a request slot", len(stalled), maxRequests)
+	return nil
+}
+
+// answered reports whether anything arrives on c within d, or c is closed.
+// It reads nothing when nothing arrives.
+func answered(c net.Conn, d time.Duration) bool {
+	c.SetReadDeadline(time.Now().Add(d))
+	defer c.SetReadDeadline(time.Time{})
+	_, err := c.Read(make([]byte, 1))
+	var ne net.Error
+	return !(errors.As(err, &ne) && ne.Timeout())
 }
 
 // refused checks that a reply is the refusal with code, and returns it.
@@ -261,7 +455,7 @@ func (e *edge) valleyWeb() string {
 		}
 		e.t.Skip("VALLEY_WEB names no valley-web; the nix check provides one")
 	}
-	return start(e.t, exec.Command(bin, "--state", e.state, "--listen", "127.0.0.1:0"), "valley-web")
+	return start(e.t, command(bin, "--state", e.state, "--listen", "127.0.0.1:0"), "valley-web").addr
 }
 
 // serves checks that valley-web at addr answers every page of the
@@ -276,7 +470,7 @@ func (e *edge) serves(addr string) {
 		"/app/source/log/" + tip:        http.StatusOK,
 		"/site/source/":                 http.StatusNotFound,
 	} {
-		res, err := http.Get("http://" + addr + target)
+		res, err := client.Get("http://" + addr + target)
 		if err != nil {
 			e.t.Fatal(err)
 		}
@@ -345,7 +539,7 @@ func TestAnUnauthenticatedRequestIsRefused(t *testing.T) {
 			t.Fatal(err)
 		}
 		req.Header["Authorization"] = auth
-		res, err := http.DefaultClient.Do(req)
+		res, err := client.Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -441,7 +635,7 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", export.Authorization(token))
-	res, err := http.DefaultClient.Do(req)
+	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,10 +644,7 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 	refused(t, "a body one byte long, sent with no length", res.StatusCode, reply, export.CodeSizeMismatch)
 
 	// Cut off half way.
-	c, err := net.Dial("tcp", e.addr)
-	if err != nil {
-		t.Fatal(err)
-	}
+	c := e.dial()
 	fmt.Fprintf(c, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n", path, e.addr, export.Authorization(token), file.Size)
 	c.Write(e.f.ExportJSON[:file.Size/2])
 	c.Close()
@@ -468,7 +659,7 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 	}
 	// The receiver removes what it read of the cut-off body once it sees
 	// the connection close.
-	waitFor(t, "no body left in staging", func() bool {
+	waitFor(t, "no body left in staging", func(context.Context) bool {
 		partial, _ := filepath.Glob(filepath.Join(e.state, "staging", "*", "bodies", "*"))
 		return len(partial) == 0
 	})
@@ -506,7 +697,7 @@ func TestAnOversizedUploadIsRefused(t *testing.T) {
 // A saturated receiver answers 503 to a request past its slots, and
 // valley-web, a process of its own over the same state directory, keeps
 // serving every page. A request without the token is still refused as
-// unauthenticated, taking no slot. Once the stalled uploads go away, the
+// unauthenticated, taking no slot. Once the stalled requests go away, the
 // receiver takes uploads again.
 func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 	e := newEdge(t, exporttest.New(t))
@@ -514,37 +705,14 @@ func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 	web := e.valleyWeb()
 	signed, m := e.signedNow()
 	e.post(signed)
-	file := body(t, m, export.ExportFile)
 	probe := export.BodyPath(m.Sequence, strings.Repeat("0", 64))
 
-	// Each stalled upload sends its headers and one byte of its body, and
-	// holds a slot while the receiver waits for the rest. One answered at
-	// once found no slot free, and another takes its place.
-	var stalled []net.Conn
-	for len(stalled) < maxRequests {
-		c, err := net.Dial("tcp", e.addr)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fmt.Fprintf(c, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n",
-			export.BodyPath(m.Sequence, file.SHA256), e.addr, export.Authorization(token), file.Size)
-		c.Write(e.f.ExportJSON[:1])
-		c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-		if _, err := c.Read(make([]byte, 1)); err == nil {
-			c.Close()
-			continue
-		}
-		stalled = append(stalled, c)
+	stalled := e.stallAll(signed)
+	status, _, header := e.request(http.MethodPut, probe, []byte("x"), nil)
+	if status != http.StatusServiceUnavailable || header.Get("Retry-After") == "" {
+		t.Errorf("a request past every slot was answered %d, want 503 with Retry-After", status)
 	}
-	waitFor(t, "the receiver to answer 503", func() bool {
-		status, _, header := e.request(http.MethodPut, probe, []byte("x"), nil)
-		return status == http.StatusServiceUnavailable && header.Get("Retry-After") != ""
-	})
-	req, err := http.NewRequest(http.MethodPost, "http://"+e.addr+export.ManifestPath, bytes.NewReader(signed))
-	if err != nil {
-		t.Fatal(err)
-	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := client.Post("http://"+e.addr+export.ManifestPath, "", bytes.NewReader(signed))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -556,20 +724,30 @@ func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 	for _, c := range stalled {
 		c.Close()
 	}
-	waitFor(t, "the receiver to take requests again", func() bool {
-		status, _, _ := e.request(http.MethodPut, probe, []byte("x"), nil)
-		return status == http.StatusNotFound
+	waitFor(t, "the receiver to take requests again", func(ctx context.Context) bool {
+		status, _, _, err := e.do(ctx, http.MethodPut, probe, []byte("x"), nil)
+		return err == nil && status == http.StatusNotFound
 	})
+
 	e.put(m, export.ExportFile)
 	e.commit(m)
 	e.serves(web)
 }
 
-func waitFor(t *testing.T, what string, done func() bool) {
+// waitFor polls done until it reports true, and fails the test unless it
+// does within waitTimeout. done is given a context that ends then, which
+// bounds whatever request it makes.
+func waitFor(t *testing.T, what string, done func(ctx context.Context) bool) {
 	t.Helper()
-	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		if done() {
+	ctx, cancel := context.WithTimeout(context.Background(), waitTimeout)
+	defer cancel()
+	for ctx.Err() == nil {
+		if done(ctx) {
 			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(20 * time.Millisecond):
 		}
 	}
 	t.Fatalf("timed out waiting for %s", what)
@@ -578,11 +756,16 @@ func waitFor(t *testing.T, what string, done func() bool) {
 // The receiver stops cleanly on SIGTERM.
 func TestStopsOnSIGTERM(t *testing.T) {
 	e := newEdge(t, exporttest.New(t))
-	if err := e.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := e.proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	if err := e.cmd.Wait(); err != nil {
-		t.Errorf("valley-web-receive stopped with %v", err)
+	select {
+	case <-e.proc.done:
+	case <-time.After(stopTimeout + 10*time.Second):
+		t.Fatalf("valley-web-receive did not stop within %v of SIGTERM", stopTimeout+10*time.Second)
+	}
+	if e.proc.err != nil {
+		t.Errorf("valley-web-receive stopped with %v", e.proc.err)
 	}
 }
 

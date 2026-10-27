@@ -50,6 +50,9 @@
 #                    receiver state directory), the valley-web server, the
 #                    valley-web-receive receiver, the edge container image,
 #                    and the two read-access consents and coverage report
+#   web-push-e2e.nix web-push-e2e — the push path end to end over the
+#                    shipped publisher, receiver, valley-web and CLI,
+#                    with real git
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, rebase-unit,
 #                    valley-go-unit, valley-status, valley-ready,
@@ -158,6 +161,7 @@ import ./checks/host-module.nix args
 // import ./checks/identity.nix args
 // import ./checks/sigverify.nix args
 // import ./checks/web.nix args
+// import ./checks/web-push-e2e.nix args
 // import ./checks/cli.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args

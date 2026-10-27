@@ -80,6 +80,7 @@ project: {
 		"restack-host-e2e",
 		"web-publisher-e2e",
 		"web-image",
+		"web-push-e2e",
 	]
 	for n in ownChecks {
 		checks: (n): {
@@ -240,7 +241,8 @@ project: {
 	// The web UI's module: the export contract, its shared fixture, the
 	// publisher, the server, and the receiver. The publisher's tests also
 	// read each project's policy/read and the instance's registry under the
-	// read and identity schemas. Changes require all three checks.
+	// read and identity schemas. web-push-e2e runs the three programs as
+	// they ship. Changes require all four checks.
 	classes: web: {
 		paths: "web/**":               true
 		paths: "schema/read.cue":      true
@@ -248,6 +250,7 @@ project: {
 		requires: "web-unit":          true
 		requires: "web-server-unit":   true
 		requires: "web-receiver-unit": true
+		requires: "web-push-e2e":      true
 	}
 
 	// Read access: the two consents a reader needs, the evaluator that
@@ -270,7 +273,8 @@ project: {
 	// status/testdata/plan/, and valley-self-update drives --version and
 	// self-update. derive-unit holds the script's deriver to the Go one.
 	// The web publisher reads the valley through plan, pending and knot
-	// show, and its tests in web-unit run the CLI itself.
+	// show, and its tests in web-unit run the CLI itself, as web-push-e2e
+	// runs the CLI's package.
 	classes: cli: {
 		paths: "bin/valley":            true
 		paths: "status/**":             true
@@ -289,6 +293,17 @@ project: {
 		requires: "policy-deriver":     true
 		requires: "derive-unit":        true
 		requires: "web-unit":           true
+		requires: "web-push-e2e":       true
+	}
+
+	// The push path as it ships: web-push-e2e runs the publisher, the
+	// receiver, valley-web and the CLI as nix/packages.nix builds and wraps
+	// them, and exports its host declaration under schema/valley.cue. The
+	// web and cli classes require it for the code it runs.
+	classes: "web-push": {
+		paths: "nix/packages.nix":  true
+		paths: "schema/valley.cue": true
+		requires: "web-push-e2e":   true
 	}
 
 	// Self-update: its module (selfupdate/), the policy the package ships

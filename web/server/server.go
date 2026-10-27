@@ -738,14 +738,14 @@ func (q *request) projectRoute(project string, rest []string) {
 // moved answers a path under an alias or a former name with a permanent
 // redirect to the same path under to, the escaped URL the path's first n
 // segments stand for. The rest of the path after them, and the query,
-// are kept as they were sent.
+// are kept as they were sent, even a query that is a bare "?".
 func (q *request) moved(to string, n int) {
 	esc := strings.Split(strings.TrimPrefix(q.r.URL.EscapedPath(), "/"), "/")
 	rest := ""
 	if len(esc) > n {
 		rest = "/" + strings.Join(esc[n:], "/")
 	}
-	if q.r.URL.RawQuery != "" {
+	if q.r.URL.RawQuery != "" || q.r.URL.ForceQuery {
 		rest += "?" + q.r.URL.RawQuery
 	}
 	q.location, q.permanent = to+rest, true

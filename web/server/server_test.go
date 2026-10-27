@@ -495,7 +495,7 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 // it stands for: a group's alias to the group's name, a project's former
 // name to its web name in its group, and a project's short alias to
 // /<group>/<project>. The rest of the path and the query are kept as they
-// were sent, escapes and dot segments too, and the redirect
+// were sent, escapes, dot segments and a bare "?" too, and the redirect
 // leads to the page. A group's identifier, a name in another case, and a
 // group with no project named answer 404.
 func TestAliasesRedirectPermanently(t *testing.T) {
@@ -514,6 +514,8 @@ func TestAliasesRedirectPermanently(t *testing.T) {
 		"/app/":                            "/tools/app/",
 		"/app/knots/oc-a000002":            "/tools/app/knots/oc-a000002",
 		"/app/source/log/" + tip + "?from=" + tip:        "/tools/app/source/log/" + tip + "?from=" + tip,
+		"/app/source/log/" + tip + "?":                   "/tools/app/source/log/" + tip + "?",
+		"/tools/old-app/knots/oc-a000002?":               "/tools/app/knots/oc-a000002?",
 		"/app/source/blob/" + tip + "/docs%2Fguide.md":   "/tools/app/source/blob/" + tip + "/docs%2Fguide.md",
 		"/app/source/blob/" + tip + "/docs/../README.md": "/tools/app/source/blob/" + tip + "/docs/../README.md",
 		"/t/app/source/tree/" + tip + "/docs/":           "/tools/app/source/tree/" + tip + "/docs/",
@@ -578,6 +580,88 @@ func TestTwoGroupsEachHoldAnApp(t *testing.T) {
 			t.Errorf("GET %s answered %d, not 404", target, w.Code)
 		}
 	}
+}
+
+// A browser resolves a redirect's Location against the URL it asked for,
+// and removes the dot segments the server kept, "%2e" spelled ones too.
+// Every Location is a path on the server's own origin, whatever dot
+// segments, escaped slashes or empty segments the path held. Where the
+// browser goes answers as it does when asked for directly: a page of the
+// project, or the one 404.
+func TestRedirectsLeadWhereTheBrowserGoes(t *testing.T) {
+	h := newHarness(t)
+	tip := h.tip()
+	for from, c := range map[string]struct {
+		to   string
+		code int
+	}{
+		"/app/source/blob/" + tip + "/docs/../README.md":         {"/tools/app/source/blob/" + tip + "/README.md", http.StatusOK},
+		"/tools/old-app/source/blob/" + tip + "/docs/./guide.md": {"/tools/app/source/blob/" + tip + "/docs/guide.md", http.StatusOK},
+		"/t/app/source/blob/" + tip + "/docs/%2e%2E/README.md":   {"/tools/app/source/blob/" + tip + "/README.md", http.StatusOK},
+		"/app/../site/":             {"/tools/site/", http.StatusNotFound},
+		"/app/../../../-/":          {"/-/", http.StatusNotFound},
+		"/t/../../..//example.net/": {"//example.net/", http.StatusNotFound},
+		"/t/..%2F..%2Fx":            {"/tools/..%2F..%2Fx", http.StatusNotFound},
+		"/app/.%2E/x":               {"/tools/x", http.StatusNotFound},
+		"/tools/old-app/..":         {"/tools/", http.StatusNotFound},
+		"/tools/old-app/.%2e?":      {"/tools/?", http.StatusNotFound},
+	} {
+		w := h.get(from)
+		if w.Code != http.StatusPermanentRedirect {
+			t.Errorf("GET %s answered %d, not a permanent redirect", from, w.Code)
+			continue
+		}
+		next := browserResolves(t, w.Header().Get("Location"))
+		if next != c.to {
+			t.Errorf("GET %s leads a browser to %s, not to %s", from, next, c.to)
+			continue
+		}
+		if got := h.get(next); got.Code != c.code {
+			t.Errorf("GET %s leads to %s, which answers %d, not %d", from, next, got.Code, c.code)
+		}
+	}
+}
+
+// browserResolves is the path and query a browser asks the same origin
+// for when a redirect's Location is location. location must be a path on
+// that origin: one "/", then a character a browser reads as neither "/"
+// nor "\", so no browser reads a host in it. The browser removes its dot
+// segments by the WHATWG URL standard's path parsing, which reads "%2e"
+// as a dot, ignoring case, and keeps empty segments.
+func browserResolves(t *testing.T, location string) string {
+	t.Helper()
+	if len(location) < 2 || location[0] != '/' || location[1] == '/' || location[1] == '\\' {
+		t.Fatalf("the Location %q is not a path on the server's origin", location)
+	}
+	path, query, queried := strings.Cut(location, "?")
+	if strings.ContainsAny(path, "\\#") {
+		t.Fatalf("the Location %q holds a character a browser reads apart from a path's", location)
+	}
+	segments := strings.Split(path[1:], "/")
+	var out []string
+	for i, segment := range segments {
+		last := i == len(segments)-1
+		switch strings.ToLower(segment) {
+		case "..", ".%2e", "%2e.", "%2e%2e":
+			if len(out) > 0 {
+				out = out[:len(out)-1]
+			}
+			if last {
+				out = append(out, "")
+			}
+		case ".", "%2e":
+			if last {
+				out = append(out, "")
+			}
+		default:
+			out = append(out, segment)
+		}
+	}
+	resolved := "/" + strings.Join(out, "/")
+	if queried {
+		resolved += "?" + query
+	}
+	return resolved
 }
 
 // Every 404 is the one page, made once: the box of text, whose last line
@@ -1758,6 +1842,18 @@ func TestSourceAdmission(t *testing.T) {
 	if w := h.get(target); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
 		t.Errorf("a source request past MaxWaiting answered %d, Retry-After %q", w.Code, w.Header().Get("Retry-After"))
 	}
+	// A path through a group's alias or a project's former name that has
+	// a source route's shape is admitted as one before the export is read,
+	// so it answers 503 too. A project's short alias makes no such shape,
+	// and redirects still.
+	for _, alias := range []string{"/t/app/source/tree/" + h.tip() + "/", "/tools/old-app/source/tree/" + h.tip() + "/"} {
+		if w := h.get(alias); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
+			t.Errorf("GET %s past MaxWaiting answered %d, Retry-After %q", alias, w.Code, w.Header().Get("Retry-After"))
+		}
+	}
+	if w := h.get("/app/source/tree/" + h.tip() + "/"); w.Code != http.StatusPermanentRedirect {
+		t.Errorf("a project's short alias answered %d while the server is saturated", w.Code)
+	}
 	h.page("/") // a page that runs no git is served still
 
 	tip, bundle := h.commitMain("app: a commit while the server is saturated\n", file{"100644", "saturated.txt", "saturated\n"})
@@ -1770,6 +1866,14 @@ func TestSourceAdmission(t *testing.T) {
 		if w := <-served; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/tools/app/source/tree/"+tip+"/") {
 			t.Errorf("a waiting request answered %d, not from the new generation", w.Code)
 		}
+	}
+	// Once a slot is free, the alias's path redirects, and gives the slot
+	// back.
+	if w := h.get("/t/app/source/tree/" + tip + "/"); w.Code != http.StatusPermanentRedirect {
+		t.Errorf("a group's alias answered %d once the server had a slot free", w.Code)
+	}
+	if len(h.srv.slots) != 0 {
+		t.Errorf("a redirect kept %d git slots", len(h.srv.slots))
 	}
 
 	// A request that waits past its time answers 503. Those that held

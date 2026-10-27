@@ -326,6 +326,17 @@ still holds, or whose deletion failed, until a later sweep removes it (`implemen
 the edge's storage. A read grant at an `edge-read` boundary is consent to send a project's reader
 view to the destination that boundary names.
 
+**A group places a project; it grants nothing.** A project reaches the edge only when the host
+declaration also places it in a group, because a project in no group has no web URL. Being in a
+group is not a third consent: it can keep a project off the edge, never put one there. The export
+carries only the groups of public projects, and only public projects' short aliases, so a group's or
+an alias's name says nothing of a private project (`implemented`, `web/export/project.go`). The
+server knows only what the export holds. A hidden project's URL, under its group, under another
+group or under the alias the instance gave it, answers with the same `404` page as a missing one,
+byte for byte (`implemented`, `web/server/server.go`). A group's alias redirects whatever follows
+it, so a URL through the alias redirects alike for a hidden and a missing project, and the target
+then answers `404`.
+
 **A grant is bound to a project.** A grant that names a specific project binds both its name and its
 publication identity, so a new project that reuses an old project's name with a new identity is not
 covered by the old grant. A policy is valid only for the project repository it is read from. A

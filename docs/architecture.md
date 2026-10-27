@@ -3037,12 +3037,14 @@ both consents match (`readaccess/access.go`).
 ### What reaches the edge
 
 `valley-web-publish` includes in an export only the projects that `anyone` may read at
-`--destination` (`web/cmd/valley-web-publish/valley.go`). It reads the registry's grants for
-`--destination` first. It then reads `policy/read` only for the projects selected by a grant to
-`anyone` (either named in the grant or covered by `projects: "all"`). It exports a project when the
-project's policy names `anyone` and a grant to `anyone` covers the project's identity. Read grants
-to named principals, including the operator, publish nothing, and `valley-web` serves every reader
-anonymously.
+`--destination` and that have a web URL (`web/cmd/valley-web-publish/valley.go`). It reads the
+registry's grants for `--destination` first. It then reads `policy/read` only for the projects
+selected by a grant to `anyone` (either named in the grant or covered by `projects: "all"`) that the
+host declaration places in a group. It exports a project when the project's policy names `anyone`
+and a grant to `anyone` covers the project's identity. A project in no group has no web URL, so it
+stays private, and the pass says so when a grant to `anyone` names it (see
+[Groups and web URLs](#groups-and-web-urls)). Read grants to named principals, including the
+operator, publish nothing, and `valley-web` serves every reader anonymously.
 
 For each exported project, the export and its git bundle carry the project's reader view: every knot
 and comment in its plan graph, its ready changes, and `main` with its commit history (see
@@ -3067,9 +3069,9 @@ pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wir
 ## The web server
 
 `valley-web` serves a receiver's state directory over HTTP to anonymous readers: the plan page, each
-knot page, and a source browser for each public project's `main` branch (`web/server/`,
-`web/cmd/valley-web/`). It runs alongside the receiver as a separate process (see
-[The receiver](#the-receiver)). Its flags, routes, and limits are in
+knot page, and a source browser for each public project's `main` branch, all under the project's
+group (`web/server/`, `web/cmd/valley-web/`). It runs alongside the receiver as a separate process
+(see [The receiver](#the-receiver)). Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
@@ -3099,17 +3101,71 @@ Checked by `web-unit` (`TestStoreModes`), which checks the staging and generatio
 state directory written under umask `0077` with read-only permissions and repositories that `git`
 treats as owned by another user.
 
-### Paths
+### Groups and web URLs
 
-Every project route starts with the project's name, such as `/app/knots/<id>` or `/app/source/…`,
-and `/` serves the plan page. To keep server routes separate from project names, `valley-web`
-reserves the prefix `/-/` for its own paths (`web/server/server.go`; see
-[Web server (`valley-web`)](./reference.md#web-server-valley-web)). Because a valid project name
-must start with an ASCII letter or digit, paths under `/-/` and project routes never shadow one
-another, regardless of what projects are named.
+Projects belong to groups, and every project page's URL names the group first:
+`/<group>/<project>/…`, such as `/tools/app/knots/<id>`. `/` serves the plan page. URLs end up in
+links, commits and knots, so a rename must become a redirect rather than a broken link
+(`implemented`, `web/server/server.go`).
 
-Checked by `web-server-unit` (`TestProjectNamesBesideTheServersPaths`), which serves projects named
-`source`, `knots`, and `web-export` on every route and checks that paths under `/-/` answer `404`.
+The instance declares its groups, and places each project in one, in the host declaration,
+`schema/valley.cue`. It is where the instance's other per-project declarations live: each project's
+git store, mirrors, protection and push grants. The NixOS modules vet and export it when the host is
+built, and the web publisher's module passes that export to `valley-web-publish` as `--host`
+(`nix/web-publisher.nix`). Which groups exist, and where each project sits, is a **deployment
+choice**.
+
+```cue
+groups: core: {name: "tools", aliases: ["t"]}
+projects: app: {group: "core", aliases: ["app"]}
+```
+
+- **A group** is declared under an identifier that never changes, here `core`. Projects name their
+  group by that identifier, and no URL shows it. The group's `name`, `tools`, is the first segment
+  of its projects' URLs. Each of its `aliases` is another first segment. A renamed group keeps its
+  former name among its aliases, and its old links redirect. A group has no members or stewards yet
+  (**not built**).
+- **A project's identifier** is the name it is declared under in `projects`. Its repository, its
+  plan graph, its `policy/read` and its read grants name it by that name, and its URLs do too. A
+  project's name need be unique only within its group. The host declaration keys projects by name,
+  so they are unique across the host as well.
+- **A project's short aliases** are first segments too: `/app/…` redirects to `/tools/app/…`. A
+  project with aliases must be in a group.
+
+Group names, group aliases and project aliases share one namespace: the first segment of a URL. Two
+of them that differ at most in ASCII case collide, and so does a name given twice. `valley-web`
+reserves the prefix `/-/` for its own paths. Every name has the project-name shape, which starts
+with an ASCII letter or digit, so no name is ever `-`, and paths under `/-/` and a group's paths
+never shadow one another, whatever groups are named. A declaration that breaks these rules is
+refused in three places (`implemented`):
+
+1. `cue vet` refuses it when the host is built (`schema/valley.cue`).
+2. `valley-web-publish` refuses it when it reads `--host`, with `export.CheckNames`, and runs no
+   pass (`web/cmd/valley-web-publish/host.go`, `web/export/groups.go`).
+3. `export.Validate` refuses an export whose names collide, when the publisher encodes it and when
+   the receiver or `valley-web` decodes it (`web/export/export.go`).
+
+The export carries the groups that its public projects belong to and no other, and each public
+project's group and short aliases. A group that only private projects belong to, and a private
+project's aliases, never leave the host (`web/export/project.go`). An export from before groups
+still decodes, and `valley-web` serves none of its projects, because they have no URL.
+
+`valley-web` answers a URL under an alias with a permanent redirect, `308`, to the same path under
+the group's name, or under `/<group>/<project>` for a project's alias. It keeps the rest of the path
+and the query as the reader sent them, without cleaning. The server knows only what the export
+holds, so a hidden project answers every URL exactly as a missing one: under its group, under a
+group that does not exist, and under the short alias the instance gave it. Every `404` is one page,
+made once when the server starts, which names nothing of the request or the export
+(`web/server/render.go`; see [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
+
+Checked by `cue-vet`, which holds the four refused declarations to naming the collision or the
+missing group; by `web-unit` (`TestBuildRefuses`, `TestBuildExportsThePublicProjectsGroups`,
+`TestDecodeIsStrict`, `TestDecodeTakesAnExportWithoutGroups`, `TestGroupsComeFromTheHostDeclaration`
+and `TestACollidingHostDeclarationIsRefused`); and by `web-server-unit`
+(`TestHiddenProjectAnswersLikeMissing`, `TestAliasesRedirectPermanently`,
+`TestNotFoundIsTheOnePage`, and `TestProjectNamesBesideTheServersPaths`, which serves groups and
+projects named `source`, `knots`, and `web-export` on every route and checks that paths under `/-/`
+answer `404`).
 
 ### Slow readers
 

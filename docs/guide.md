@@ -435,6 +435,19 @@ Both projects seal `main` against SSH pushes. The integrator writes locally on t
 [`examples/hosts/protected.cue`](../examples/hosts/protected.cue) exercises four protection modes
 for tests; it is not a production recipe.
 
+A project that will be published on the web belongs to a group, whose name opens the project's web
+URLs. Declare the group under an identifier that never changes, and name that identifier in the
+project:
+
+```cue
+groups: demos: name: "demos"
+projects: demo: group: "demos"
+```
+
+The web publisher publishes only projects in a group, at `/demos/demo/…` here. A renamed group keeps
+its former name in `aliases`, so its old links redirect (see
+[Groups and web URLs](./architecture.md#groups-and-web-urls)).
+
 Add the-valley as an input named `valley` to your NixOS flake, using your administrator's source
 URL. Import `valley.nixosModules.valley-host` in the host's modules. In a module that receives that
 input, start with:

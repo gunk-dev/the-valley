@@ -409,10 +409,12 @@ only manifests that open under a verifier line it pins. Pinning that verifier li
 (`implemented`, `nix/web-publisher.nix`).
 
 **The pass runs confined.** On NixOS, the publisher's unit runs as a dynamic user in the `git` group
-(`implemented`, `nix/web-publisher.nix`). The host repositories are mounted read-only, and only the
-unit's state and cache directories are writable. The `git` user's SSH identity and the host's
-signing, mirror, and backup keys are mounted inaccessible. The unit's `safe.directory` list names
-only the repositories the host declares.
+(`implemented`, `nix/web-publisher.nix`). The host repositories are mounted read-only, and the host
+filesystem is read-only except for the unit's state and cache directories and its private temporary
+directories. The `git` user's SSH identity and the host's signing, mirror, and backup keys are
+mounted inaccessible. The unit's `safe.directory` list names only the repositories the host
+declares. The unit can still read the host's other repositories through the filesystem. The full
+filesystem sandbox is **not built**.
 
 **The pass connects only to allowed IP addresses.** The unit denies all IP traffic
 (`IPAddressDeny=any`) and allows only the addresses in
@@ -452,9 +454,10 @@ filesystem confinement, and credentials, and verifies that evaluation fails when
 is empty or covers `198.51.100.1`. `web-publisher-e2e` boots a NixOS VM and runs the rendered unit
 with a probe script in place of the publisher. Inside the unit, the egress check passes; run by root
 outside the unit, the same check fails because root's datagram reaches `198.51.100.1`. The probe
-verifies that the unit can read only the declared repositories, writes to no repository, and reads
-no host key or raw token file. It also verifies that the unit can connect to a listener on its
-allowed address while connections to disallowed IPv4 and IPv6 listeners fail, and that the C library
+verifies that Git accepts a declared repository and refuses an undeclared repository as dubiously
+owned. It verifies that repository writes fail and that the git SSH key, backup SSH key, and raw
+token file cannot be read. It also verifies that the unit can connect to a listener on its allowed
+address while connections to disallowed IPv4 and IPv6 listeners fail, and that the C library
 resolves a name served by a DNS server on a disallowed address while direct UDP packets from the
 unit to that DNS server fail with `EPERM`.
 

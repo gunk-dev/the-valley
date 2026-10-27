@@ -182,9 +182,13 @@ a push while that record does not match the running configuration (`nix/valley-h
 
 Each program listed below reads a ref by its exact name (`implemented`). `git rev-parse`, and every
 git command given a ref name, does not stop at the name it is given. For a missing ref, git tries
-other names in turn, among them `refs/tags/<name>` and `refs/heads/<name>`. Any pusher can make a
-branch named `refs/heads/registry`, which git stores as `refs/heads/refs/heads/registry`. A program
-that asked git for a missing `refs/heads/registry` would read that branch.
+other names in turn, among them `refs/tags/<name>` and `refs/heads/<name>`. A branch named
+`refs/heads/registry` is stored as `refs/heads/refs/heads/registry`. A program that asked git for a
+missing `refs/heads/registry` would read that branch.
+
+The valley host's hook refuses to create or update a ref named like another ref (`implemented`,
+`valleyhook/policy.go`). A host repository can hold one made before the hook refused them, and a
+repository the hook does not guard, such as a local clone, can hold one at any time.
 
 So each of these programs reads a ref once, by its exact name, and from then on reads the object the
 ref held. It reads a local ref with `git show-ref`, and a remote one from the `git ls-remote` line
@@ -222,8 +226,9 @@ ref name, such as `main`.
 writes a branch named `<ref>` instead, and with both present git refuses the push as ambiguous.
 `valley approve` reads origin before it pushes. While origin holds a ref whose name ends in the
 request ref's or an evidence ref's name, approve pushes nothing and names that ref (`implemented`).
-The host's hook does not refuse a branch named like a protected ref, and the other programs that
-push do not check for one (**not built**).
+On the valley host, the hook refuses such a push rather than writing it, because the ref it would
+write is named like another ref (`implemented`, `valleyhook/policy.go`). The other programs that
+push do not check origin for such a ref before they push (**not built**).
 
 Checks: `identity-e2e` compiles with `refs/heads/registry` missing and a forged registry at
 `refs/heads/refs/heads/registry`, and the compilation fails with the files unchanged.
@@ -233,7 +238,7 @@ program ignores it. `integrator-unit` deletes an evidence ref after the integrat
 `valley-request` approves with a branch on origin named like the request, with a tag named like the
 remote-tracking ref of `main` or of a branch that origin lacks, and with an owning valley whose
 `main` is missing. It also runs the check worker with a tag named like the worker's own evidence
-ref.
+ref. `protect-e2e` and `valleyhook-unit` check the hook's refusal.
 
 ## Trust roots
 

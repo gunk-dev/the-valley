@@ -71,7 +71,9 @@ import (
 // the family's versions add: nothing, for a family that adds none. Each
 // replacement is kept only once origin is known to have taken the branch
 // push. It says complete or partial, says each change was published at
-// its prepared head, and names a version only as the family adds it. A
+// its prepared head, and names a version only as the family adds it. It
+// says partial when a change it names has no version, or when it leaves
+// out a change, as a fallback may. A
 // family accepts a version only as it adds it, and only once its branch
 // push is accepted. A
 // journal that would not read back as written is never kept (keep). A
@@ -337,11 +339,16 @@ func (f *JournalFamily) ours(r *change.RestackReport, target string) bool {
 // checkHappened refuses a replacement that says other than what could
 // have happened to a family whose branches moved: each of its layers is
 // one of the family's changes, published at the head prepared for its
-// branch, with a version only as the family adds it. It says complete
-// when it names every change's version, and partial otherwise.
+// branch, with a version only as the family adds it. Whether it is
+// complete is a matter of the whole family, which a fallback names only
+// part of (bound). It says complete only when each change it names has
+// its version. It says partial when a change it names has none, or when
+// it leaves out a change, which may be the one whose version was not
+// added.
 func checkHappened(r *change.RestackReport, layers map[string]ObservedLayer, written map[string]*rebase.PendingVersion, news map[string]string) error {
-	all := true
+	all, named := true, map[string]bool{}
 	for _, l := range r.Layers {
+		named[l.ChangeID] = true
 		v, p := written[l.ChangeID], l.Published
 		switch {
 		case layers[l.ChangeID].ID == "":
@@ -357,8 +364,8 @@ func checkHappened(r *change.RestackReport, layers map[string]ObservedLayer, wri
 	switch {
 	case r.Result == change.RestackComplete && !all:
 		return errors.New("says complete, and names a change with no version")
-	case r.Result == change.RestackPartial && all:
-		return errors.New("says partial, and names every change's version")
+	case r.Result == change.RestackPartial && all && len(named) == len(layers):
+		return errors.New("says partial, and names every change of the family with its version")
 	case r.Result != change.RestackComplete && r.Result != change.RestackPartial:
 		return fmt.Errorf("says %s, where complete or partial is expected", r.Result)
 	}

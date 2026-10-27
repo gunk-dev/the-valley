@@ -724,3 +724,100 @@ func TestAJournalThatWouldNotReadBackIsNotKept(t *testing.T) {
 		t.Errorf("objects were kept for a journal that was not:\n%s", left)
 	}
 }
+
+// A family of more than 64 changes whose top version was not added gets a
+// replacement for each change, saying partial, and each keeps only its
+// own layer. A change whose version was added is then named with its
+// version alone, and the change whose version was not is among the
+// layers its replacement leaves out. The journal takes every such
+// replacement, and refuses one that says partial while naming every
+// change of the family with its version.
+func TestATruncatedPartialReportIsKept(t *testing.T) {
+	const n = 65
+	oid := func(kind, i int) string { return fmt.Sprintf("%02x%038x", kind, i) }
+	tip := oid(9, 0)
+	f := JournalFamily{
+		Operation: "op-1", Tip: tip, Evidence: strings.Repeat("0", 16),
+		Observed: Observation{Action: restack, Result: change.RestackComplete, Requests: []RequestPlan{}, Reasons: []string{},
+			Notes: []string{}, Conflicts: []string{}},
+		Branches: &rebase.PendingBranches{Tip: tip}, Versions: []*rebase.PendingVersion{}, Reports: []JournalReport{},
+		Replacements: []JournalReport{}, Accepted: Accepted{Branches: true, Versions: []string{}},
+	}
+	for i := 0; i < n; i++ {
+		branch := fmt.Sprintf("stack/%02d", i)
+		l := ObservedLayer{Name: id(i)[:8], ID: id(i), Branch: branch, BranchTip: oid(1, i), Record: oid(2, i), Version: 1, Head: oid(1, i), State: "ready"}
+		if i > 0 {
+			l.Below = id(i - 1)[:8]
+		}
+		f.Observed.Layers = append(f.Observed.Layers, l)
+		f.Branches.Updates = append(f.Branches.Updates, rebase.BranchUpdate{Branch: branch, Old: oid(1, i), New: oid(3, i)})
+		f.Versions = append(f.Versions, restackVersion(t, id(i), branch, oid(1, i), oid(2, i), oid(4, i), oid(3, i)))
+		if i < n-1 {
+			f.Accepted.Versions = append(f.Accepted.Versions, id(i))
+		}
+	}
+	o, published := whatHappened(f, func(change string) Decision {
+		if change == id(n-1) {
+			return Decision{Action: writeStop, Final: true, Why: "its author moved it"}
+		}
+		return Decision{Action: writeDone}
+	})
+	for i, l := range o.Layers {
+		rep, omitted, err := bound(fullReport(f.Operation, f.Tip, l.ID, o, published), o.Digest())
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Replacements = append(f.Replacements, JournalReport{
+			Pending: &rebase.PendingReport{ID: l.ID, Ref: rebase.RestackPrefix + l.ID, Commit: oid(5, i), Report: rep},
+			Omitted: omitted,
+		})
+	}
+	own := f.Replacements[0].Pending.Report
+	if own.Result != change.RestackPartial || len(own.Layers) != 1 || own.Layers[0].Published == nil || own.Layers[0].Published.Version == nil {
+		t.Fatalf("the first change's replacement is not partial with its own version alone: %+v", own)
+	}
+	j := &Journal{Schema: journalSchema, Repository: "origin", Target: rebase.Target, Principal: "restacker", Families: []JournalFamily{f}}
+	b := binding{Repository: j.Repository, Target: j.Target, Principal: j.Principal}
+	if err := j.check(b); err != nil {
+		t.Fatalf("the journal refuses the truncated replacements: %v", err)
+	}
+
+	// The same family of two changes, both versions added: a replacement
+	// that names both with their versions and says partial is refused.
+	small := f
+	small.Observed.Layers = f.Observed.Layers[:2]
+	small.Branches = &rebase.PendingBranches{Tip: tip, Updates: f.Branches.Updates[:2]}
+	small.Versions = f.Versions[:2]
+	small.Accepted = Accepted{Branches: true, Versions: []string{id(0), id(1)}}
+	whole := fullReport(f.Operation, f.Tip, id(0), small.Observed, published)
+	whole.Result = change.RestackPartial
+	small.Replacements = []JournalReport{{Pending: &rebase.PendingReport{ID: id(0), Ref: rebase.RestackPrefix + id(0), Commit: oid(5, 0), Report: whole}, Omitted: []string{}}}
+	j.Families = []JournalFamily{small}
+	if err := j.check(b); err == nil || !strings.Contains(err.Error(), "says partial, and names every change of the family with its version") {
+		t.Errorf("a replacement that says partial while naming every version is taken: %v", err)
+	}
+}
+
+// restackVersion is a restack's version 2 of the change, as the journal
+// keeps it: leased on the record commit old, whose version 1 is at head,
+// and adding the record commit commit, at the prepared head next.
+func restackVersion(t *testing.T, id, branch, head, old, commit, next string) *rebase.PendingVersion {
+	t.Helper()
+	rec, err := json.Marshal(&change.Record{
+		Schema: change.Schema, ChangeID: id, Target: rebase.Target, Owner: "alice", State: change.Ready, Seq: 2, Active: 2,
+		Versions: []change.Version{
+			{N: 1, Head: change.HeadPrefix + head, Title: "a title", Branch: branch, Uploader: "alice"},
+			{N: 2, Head: change.HeadPrefix + next, Title: "a title", Branch: branch, Uploader: "restacker"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	form := fmt.Sprintf(`{"schema":"valley-pending-version/v1","mode":"restack","change_id":%q,"handle":%q,"ref":%q,"old":%q,"commit":%q,"version":2,"head":%q,"branch":%q,"record":%s}`,
+		id, id[:8], change.Ref(rebase.Target, id), old, commit, next, branch, rec)
+	var v rebase.PendingVersion
+	if err := json.Unmarshal([]byte(form), &v); err != nil {
+		t.Fatal(err)
+	}
+	return &v
+}

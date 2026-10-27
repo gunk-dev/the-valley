@@ -13,7 +13,7 @@
   ...
 }:
 let
-  declaration = pkgs.writeText "valley-webui-publisher-e2e.cue" ''
+  declaration = pkgs.writeText "valley-web-publisher-e2e.cue" ''
     package valley
 
     projects: {
@@ -89,8 +89,8 @@ let
   };
 in
 {
-  webui-publisher-e2e = pkgs.testers.runNixOSTest {
-    name = "valley-webui-publisher-e2e";
+  web-publisher-e2e = pkgs.testers.runNixOSTest {
+    name = "valley-web-publisher-e2e";
     nodes.host = {
       imports = [
         self.nixosModules.default

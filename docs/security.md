@@ -232,7 +232,7 @@ push do not check origin for such a ref before they push (**not built**).
 
 Checks: `identity-e2e` compiles with `refs/heads/registry` missing and a forged registry at
 `refs/heads/refs/heads/registry`, and the compilation fails with the files unchanged.
-`integrator-unit`, `restack-unit`, `webui-unit`, `readaccess-unit`, `valley-ready` and
+`integrator-unit`, `restack-unit`, `web-unit`, `readaccess-unit`, `valley-ready` and
 `valley-request` each make the ref git would read in place of a missing one, and show that the
 program ignores it. `integrator-unit` deletes an evidence ref after the integrator lists it.
 `valley-request` approves with a branch on origin named like the request, with a tag named like the
@@ -359,13 +359,13 @@ withdrawal waits for a later pass whose export the edge activates
 [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
 
 Checks: `readaccess-unit` reads both consents from real commits under the real schemas, including
-policies that redeclare a schema definition and trees with malformed entry names. `webui-unit`
+policies that redeclare a schema definition and trees with malformed entry names. `web-unit`
 verifies that the publisher requires both consents (`TestVisibilityNeedsBothConsents`) and that no
-private sentinel appears in any export or bundle (`TestPrivateSentinelsNeverLeave`). Both
-`webui-unit` (`TestTheRegistryIsReadAtItsRef`) and `readaccess-unit` (`TestRegistryRef`) verify that
-every project stays private when the registry ref is missing even if
-`refs/heads/refs/heads/registry` grants `anyone` read. `module-eval` rejects a short registry ref.
-`cue-vet` and `identity-schema` test both schemas against their rejected examples.
+private sentinel appears in any export or bundle (`TestPrivateSentinelsNeverLeave`). Both `web-unit`
+(`TestTheRegistryIsReadAtItsRef`) and `readaccess-unit` (`TestRegistryRef`) verify that every
+project stays private when the registry ref is missing even if `refs/heads/refs/heads/registry`
+grants `anyone` read. `module-eval` rejects a short registry ref. `cue-vet` and `identity-schema`
+test both schemas against their rejected examples.
 
 ## Secrets
 

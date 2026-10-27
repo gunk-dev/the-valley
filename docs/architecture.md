@@ -2844,7 +2844,7 @@ and uploads nothing, though it may already have written the caches it reads thro
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
 (`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
-for `valley-read-coverage`), by `webui-unit` (`TestVisibilityNeedsBothConsents`,
+for `valley-read-coverage`), by `web-unit` (`TestVisibilityNeedsBothConsents`,
 `TestAGrantSpelledAnotherWayIsRefused` and `TestPrivateSentinelsNeverLeave`), by `cue-vet` and
 `identity-schema`, which test both schemas against rejected examples, and by `identity-e2e`, which
 compiles the example registry containing read grants and `anyone` against golden files. Unbuilt
@@ -2879,10 +2879,10 @@ Every `git` command that `valley-web` runs names the repository with `--git-dir`
 (`web/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
 user without checking `safe.directory`, which the server's isolated `git` configuration cannot set.
 
-Checked by `webui-unit` (`TestStoreModes`), which checks the staging and generation modes under
-umask `0077`, and by `webui-server-unit` (`TestServesAReadOnlyStateDirectory`), which runs
-`valley-web` on a state directory written under umask `0077` with read-only permissions and
-repositories that `git` treats as owned by another user.
+Checked by `web-unit` (`TestStoreModes`), which checks the staging and generation modes under umask
+`0077`, and by `web-server-unit` (`TestServesAReadOnlyStateDirectory`), which runs `valley-web` on a
+state directory written under umask `0077` with read-only permissions and repositories that `git`
+treats as owned by another user.
 
 ### Paths
 
@@ -2893,9 +2893,8 @@ reserves the prefix `/-/` for its own paths (`web/server/server.go`; see
 must start with an ASCII letter or digit, paths under `/-/` and project routes never shadow one
 another, regardless of what projects are named.
 
-Checked by `webui-server-unit` (`TestProjectNamesBesideTheServersPaths`), which serves projects
-named `source`, `knots`, and `web-export` on every route and checks that paths under `/-/` answer
-`404`.
+Checked by `web-server-unit` (`TestProjectNamesBesideTheServersPaths`), which serves projects named
+`source`, `knots`, and `web-export` on every route and checks that paths under `/-/` answer `404`.
 
 ### Slow readers
 
@@ -2916,7 +2915,7 @@ all of its pieces — including the first 256 KiB — count against the 48 MiB l
 well. Slow readers of large pages can therefore hold at most 48 MiB at once, leaving at least 16 MiB
 for small pages.
 
-Checked by `webui-server-unit` (`TestSlowReadersShareTheBudget`), which opens stalled connections
+Checked by `web-server-unit` (`TestSlowReadersShareTheBudget`), which opens stalled connections
 requesting more than 64 MiB in total across three large page sizes: one 64 KiB piece past 256 KiB, 1
 MiB, and 4 MiB. Counting a large response's first 256 KiB against the 48 MiB cap prevents 64 stalled
 1 MiB responses from consuming all 64 MiB. The stalled readers hold at most 48 MiB, and requests for
@@ -2992,7 +2991,7 @@ seconds that the request holds its `git` slot.
 prefix, and in a SHA-1 repository it treats 64 hex digits as the commit named by their first 40 hex
 digits. Requiring the exact length of `source_tip` gives each page a single address.
 
-Checked by `webui-server-unit`:
+Checked by `web-server-unit`:
 
 - `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad`, and `TestRenderingHoldsNoGitSlot`
   test a `git` command that never finishes, a slow export read, and a slow page render.
@@ -3005,8 +3004,8 @@ Checked by `webui-server-unit`:
   the first commit on a page and as the second.
 - `TestSHA256CommitIDs` serves a SHA-256 project.
 
-Also checked by `webui-unit` (`TestAcceptBundle` and `TestReachable`), which test the commit-graph
-and both object formats.
+Also checked by `web-unit` (`TestAcceptBundle` and `TestReachable`), which test the commit-graph and
+both object formats.
 
 ### Unpublished blockers
 
@@ -3025,9 +3024,9 @@ reference. When a knot names a single hidden blocker, a reader of `export.json` 
 and absent once the hidden knot has a terminal status, even when a public blocker keeps the knot
 `blocked`. The export permits this inference.
 
-Checked by `webui-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set
-on the fixture's knot with a hidden blocker, and `TestWaitingOnHiddenFollowsAHiddenBlocker` checks
-that the field is omitted once that hidden blocker is done. Also checked by `webui-server-unit`
+Checked by `web-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set on
+the fixture's knot with a hidden blocker, and `TestWaitingOnHiddenFollowsAHiddenBlocker` checks that
+the field is omitted once that hidden blocker is done. Also checked by `web-server-unit`
 (`TestWaitsOnChip`), which checks that the plan page's chip lists both the public blocker and the
 unpublished one.
 

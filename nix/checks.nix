@@ -43,7 +43,7 @@
 #   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
-#   web.nix          webui-unit, webui-server-unit, readaccess-unit — the
+#   web.nix          web-unit, web-server-unit, readaccess-unit — the
 #                    web UI's export contract: the projection, the
 #                    manifest, the upload's checks and the receiver's
 #                    state; the server and valley-web; over the shared
@@ -67,8 +67,8 @@
 #                    NixOS machine: the worker's key, its enrollment and
 #                    its evidence on origin, and the slice's caps on its
 #                    builds and on builds that are not its own
-#   webui-publisher-e2e.nix
-#                    webui-publisher-e2e — the web publisher's sandbox in
+#   web-publisher-e2e.nix
+#                    web-publisher-e2e — the web publisher's sandbox in
 #                    a NixOS machine: the unit the module renders, with a
 #                    probe in place of the publisher
 #
@@ -156,4 +156,10 @@ import ./checks/host-module.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args
 // import ./checks/worker-e2e.nix args
-// import ./checks/webui-publisher-e2e.nix args
+// import ./checks/web-publisher-e2e.nix args
+# The web checks' old names, as the same derivations, until this change is on main.
+// {
+  webui-unit = self.checks.${system}.web-unit;
+  webui-server-unit = self.checks.${system}.web-server-unit;
+  webui-publisher-e2e = self.checks.${system}.web-publisher-e2e;
+}

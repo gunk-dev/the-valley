@@ -27,7 +27,7 @@
   # again, recovery checking a generation before it activates it and
   # keeping one whose check git did not finish, and injected sweep and
   # swap failures, reported apart from the commit. go vet runs after them.
-  webui-unit = packages.web.unit;
+  web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
   # consents read out of real commits under the real schemas, an explicit
@@ -95,5 +95,5 @@
   # stopping on SIGTERM, and serving every page from a state directory
   # the receiver wrote under umask 0077 and that reads as another
   # user's, with nothing in it writable. go vet runs after them.
-  webui-server-unit = packages.valley-web.unit;
+  web-server-unit = packages.valley-web.unit;
 }

@@ -1010,11 +1010,10 @@ as it does when the identity compiler is enabled (`implemented`, `nix/valley-hos
   service. `ProtectSystem=strict` leaves the filesystem read-only except the state and cache
   directories, and the repositories are listed in `ReadOnlyPaths`. `InaccessiblePaths` holds the git
   user's `<dataDir>/.ssh`, `/var/lib/valley-integrator`, the integrator's signing key file, the
-  worker's state directory when the worker runs, and the backup's secret files.
-  `webui-publisher-e2e` runs the unit in a NixOS machine, with a probe in place of the publisher,
-  under a system configuration with `safe.directory=*`. The probe reads a served repository, and
-  cannot read an undeclared one, write a repository, or read the git user's ssh key or the backup's
-  key.
+  worker's state directory when the worker runs, and the backup's secret files. `web-publisher-e2e`
+  runs the unit in a NixOS machine, with a probe in place of the publisher, under a system
+  configuration with `safe.directory=*`. The probe reads a served repository, and cannot read an
+  undeclared one, write a repository, or read the git user's ssh key or the backup's key.
 
 ---
 

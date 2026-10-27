@@ -46,8 +46,8 @@ project: {
 		"signers-e2e",
 		"sigverify-unit",
 		"sigverify-e2e",
-		"webui-unit",
-		"webui-server-unit",
+		"web-unit",
+		"web-server-unit",
 		"readaccess-unit",
 		"rebase-unit",
 		"valley-go-unit",
@@ -76,7 +76,7 @@ project: {
 		"ssh-e2e",
 		"publish-e2e",
 		"worker-e2e",
-		"webui-publisher-e2e",
+		"web-publisher-e2e",
 	]
 	for n in ownChecks {
 		checks: (n): {
@@ -86,13 +86,13 @@ project: {
 	}
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
-	// publish-e2e, worker-e2e and webui-publisher-e2e boot NixOS machines.
+	// publish-e2e, worker-e2e and web-publisher-e2e boot NixOS machines.
 	// Every other check here takes seconds once its packages are built.
-	checks: "integrator-e2e": cost:      "slow"
-	checks: "ssh-e2e": cost:             "slow"
-	checks: "publish-e2e": cost:         "slow"
-	checks: "worker-e2e": cost:          "slow"
-	checks: "webui-publisher-e2e": cost: "slow"
+	checks: "integrator-e2e": cost:    "slow"
+	checks: "ssh-e2e": cost:           "slow"
+	checks: "publish-e2e": cost:       "slow"
+	checks: "worker-e2e": cost:        "slow"
+	checks: "web-publisher-e2e": cost: "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
 	// A path in two classes requires both sets. A Go module's unit check is
@@ -135,18 +135,18 @@ project: {
 	// valley-plan drive the verbs that use it, and knots-e2e pushes
 	// through the hook. The web export reads names and knot IDs by its
 	// rules, and the web server reads a claim's age by them, so
-	// webui-unit and webui-server-unit are here too.
+	// web-unit and web-server-unit are here too.
 	classes: knot: {
-		paths: "knot/**":              true
-		requires: "knot-unit":         true
-		requires: "knot-agree":        true
-		requires: "valley-go-unit":    true
-		requires: "valley-knot":       true
-		requires: "valley-plan":       true
-		requires: "valleyhook-unit":   true
-		requires: "knots-e2e":         true
-		requires: "webui-unit":        true
-		requires: "webui-server-unit": true
+		paths: "knot/**":            true
+		requires: "knot-unit":       true
+		requires: "knot-agree":      true
+		requires: "valley-go-unit":  true
+		requires: "valley-knot":     true
+		requires: "valley-plan":     true
+		requires: "valleyhook-unit": true
+		requires: "knots-e2e":       true
+		requires: "web-unit":        true
+		requires: "web-server-unit": true
 	}
 
 	// valley-delta-v1, which the CLI's Go verbs compare a version with its
@@ -186,15 +186,15 @@ project: {
 	// web export's manifest is a note, which the web server builds with,
 	// so a change to it requires their tests as well as its own.
 	classes: note: {
-		paths: "note/**":              true
-		requires: "note-unit":         true
-		requires: "valleyhook-unit":   true
-		requires: "protect-e2e":       true
-		requires: "attest-unit":       true
-		requires: "attest-e2e":        true
-		requires: "identity-unit":     true
-		requires: "webui-unit":        true
-		requires: "webui-server-unit": true
+		paths: "note/**":            true
+		requires: "note-unit":       true
+		requires: "valleyhook-unit": true
+		requires: "protect-e2e":     true
+		requires: "attest-unit":     true
+		requires: "attest-e2e":      true
+		requires: "identity-unit":   true
+		requires: "web-unit":        true
+		requires: "web-server-unit": true
 	}
 
 	// The attestation helper, and the conformance vectors under
@@ -237,23 +237,23 @@ project: {
 	// project's policy/read and the instance's registry under the read and
 	// identity schemas. Changes require both checks.
 	classes: web: {
-		paths: "web/**":               true
-		paths: "schema/read.cue":      true
-		paths: "schema/identity.cue":  true
-		requires: "webui-unit":        true
-		requires: "webui-server-unit": true
+		paths: "web/**":              true
+		paths: "schema/read.cue":     true
+		paths: "schema/identity.cue": true
+		requires: "web-unit":         true
+		requires: "web-server-unit":  true
 	}
 
 	// Read access: the two consents a reader needs, the evaluator that
 	// intersects them, and the coverage report. readaccess-unit reads both
 	// schemas, so a change to either requires it, and the web publisher
-	// reads its consents through the module, so webui-unit runs too.
+	// reads its consents through the module, so web-unit runs too.
 	classes: readaccess: {
 		paths: "readaccess/**":       true
 		paths: "schema/read.cue":     true
 		paths: "schema/identity.cue": true
 		requires: "readaccess-unit":  true
-		requires: "webui-unit":       true
+		requires: "web-unit":         true
 	}
 
 	// The valley CLI: the script, its Go verbs (status/), the rebase engine
@@ -264,7 +264,7 @@ project: {
 	// status/testdata/plan/, and valley-self-update drives --version and
 	// self-update. derive-unit holds the script's deriver to the Go one.
 	// The web publisher reads the valley through plan, pending and knot
-	// show, and its tests in webui-unit run the CLI itself.
+	// show, and its tests in web-unit run the CLI itself.
 	classes: cli: {
 		paths: "bin/valley":            true
 		paths: "status/**":             true
@@ -282,7 +282,7 @@ project: {
 		requires: "valley-self-update": true
 		requires: "policy-deriver":     true
 		requires: "derive-unit":        true
-		requires: "webui-unit":         true
+		requires: "web-unit":           true
 	}
 
 	// Self-update: its module (selfupdate/), the policy the package ships
@@ -334,11 +334,11 @@ project: {
 	}
 
 	// The web publisher's module, which runs the publisher on a timer in a
-	// sandbox of its own. webui-publisher-e2e runs the unit it renders in a
+	// sandbox of its own. web-publisher-e2e runs the unit it renders in a
 	// NixOS machine. module-eval, in the nix class, holds what it renders.
 	classes: "web-publisher": {
-		paths: "nix/web-publisher.nix":  true
-		requires: "webui-publisher-e2e": true
+		paths: "nix/web-publisher.nix": true
+		requires: "web-publisher-e2e":  true
 	}
 
 	// The verification policy: this layer, the pointer to the owning
@@ -445,7 +445,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"web.nix": ["webui-unit", "webui-server-unit", "readaccess-unit"]
+		"web.nix": ["web-unit", "web-server-unit", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

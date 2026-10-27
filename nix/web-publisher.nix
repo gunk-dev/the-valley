@@ -13,7 +13,9 @@
 # write the repositories, and the files that hold the host's mirror,
 # backup and signing keys are made inaccessible to it. The receiver's
 # token is a file outside the Nix store, which systemd reads and hands to
-# the unit as a credential.
+# the unit as a credential. The unit may connect to the addresses
+# allowedAddresses lists and to no other, and it checks before each pass
+# that this filter is in force.
 {
   config,
   pkgs,
@@ -108,6 +110,71 @@ let
   ];
 
   size = lib.types.strMatching "[1-9][0-9]*[KMGT]?";
+
+  # The address the unit's check sends to before each pass, which the
+  # filter must deny: 198.51.100.1, in TEST-NET-2 (RFC 5737), which no
+  # receiver uses. The port is discard's.
+  canary = {
+    address = "198.51.100.1";
+    port = "9";
+  };
+
+  # The check: a UDP datagram to the canary, sent from inside the unit's
+  # cgroup. The filter makes the send fail at once with EPERM, and the pass
+  # starts only then. A datagram sent means the filter is not attached:
+  # systemd ignores IPAddressDeny, with only a warning, where the kernel or
+  # the manager lacks cgroup BPF support. Any other error, such as no route,
+  # proves nothing. A TCP connect would not do: the filter drops its SYN,
+  # and connect waits as it would for an address that never answers.
+  egressCheck = pkgs.writeShellApplication {
+    name = "valley-web-publish-egress-check";
+    runtimeInputs = [
+      pkgs.bash
+      pkgs.coreutils
+    ];
+    text = ''
+      export LC_ALL=C
+      addr=$1 port=$2
+      refuse() {
+        echo "valley-web-publish-egress-check: $*; the pass does not start" >&2
+        exit 1
+      }
+      status=0
+      # shellcheck disable=SC2016
+      out=$(timeout 5 bash -c 'printf canary > "/dev/udp/$1/$2"' check "$addr" "$port" 2>&1) || status=$?
+      case $status:$out in
+        0:*)
+          refuse "a datagram to $addr port $port was sent, though the unit's IP address filter must deny it: the filter is not in force, as when systemd lacks cgroup BPF support, or allowedAddresses covers $addr"
+          ;;
+        124:*)
+          refuse "a datagram to $addr port $port was neither sent nor refused within 5 seconds: the unit's IP address filter is not proven in force"
+          ;;
+        *"write error: Operation not permitted"*)
+          echo "valley-web-publish-egress-check: the unit's IP address filter refused a datagram to $addr port $port (EPERM), so it is in force"
+          ;;
+        *"Network is unreachable"* | *"No route to host"*)
+          refuse "a datagram to $addr port $port had no route, so it never reached the unit's IP address filter, which is not proven in force; the host needs a route to $addr, such as a default route ($out)"
+          ;;
+        *)
+          refuse "a datagram to $addr port $port failed, but not with the EPERM of the unit's IP address filter, which is not proven in force ($out)"
+          ;;
+      esac
+    '';
+  };
+
+  # An IPv4 address as a number, and whether an entry of allowedAddresses
+  # covers the canary: the address itself, or a prefix that holds it. An
+  # IPv6 entry covers no IPv4 address in the filter.
+  ipv4 = a: lib.foldl' (n: octet: n * 256 + lib.toInt octet) 0 (lib.splitString "." a);
+  coversCanary =
+    entry:
+    let
+      m = builtins.match "((0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3})(/([0-9]+))?" entry;
+      length = if lib.elemAt m 5 == null then 32 else lib.toInt (lib.elemAt m 5);
+      mask = 4294967296 - lib.foldl' (n: _: n * 2) 1 (lib.range 1 (32 - length));
+    in
+    m != null
+    && builtins.bitAnd (ipv4 (lib.head m)) mask == builtins.bitAnd (ipv4 canary.address) mask;
 in
 {
   options.services.valley.webPublisher = {
@@ -142,6 +209,45 @@ in
       example = "https://example.org";
       description = ''
         The receiver's base URL. The upload's paths are appended to it.
+      '';
+    };
+
+    allowedAddresses = lib.mkOption {
+      type = lib.types.listOf (lib.types.strMatching "[0-9a-fA-F.:]+(/[0-9]+)?");
+      default = [ ];
+      example = [
+        "192.0.2.10"
+        "2001:db8::10"
+      ];
+      description = ''
+        The IP addresses a pass may connect to, each an address or a
+        prefix: the receiver's addresses. The unit allows these
+        (`IPAddressAllow`) and denies every other (`IPAddressDeny=any`),
+        loopback included. The repositories are local paths and the
+        valley commands a pass runs use no network, so a pass needs
+        nothing else.
+
+        The filter is in force because the unit checks it before each
+        pass (`ExecStartPre`) and refuses to start the pass otherwise.
+        The check sends a UDP datagram to ${canary.address}, which the
+        filter must deny, and passes only when the send fails with EPERM.
+        systemd ignores the filter, with only a warning, where cgroup BPF
+        support is missing, and then no pass starts. The list may not
+        cover ${canary.address}, and the host needs a route to it, such as a
+        default route.
+
+        Names need no resolver's address here. The unit sets
+        `GODEBUG=netdns=cgo`, so the publisher, built with cgo, looks
+        names up through the C library. On NixOS the C library asks nscd
+        ({option}`services.nscd.enable`, on by default) over a Unix
+        socket, and nscd queries DNS outside the unit. Without nscd, the
+        lookup runs inside the unit, and the filter denies the resolver
+        in /etc/resolv.conf unless its address is listed.
+
+        The list allows addresses and nothing else: any port at a listed
+        address is reachable, and the receiver's host name is not checked
+        against it. When the receiver's addresses change, a pass fails
+        until this list follows them.
       '';
     };
 
@@ -233,6 +339,14 @@ in
         message = "services.valley.webPublisher needs services.valley: it reads the repositories that host serves.";
       }
       {
+        assertion = cfg.allowedAddresses != [ ];
+        message = "services.valley.webPublisher.allowedAddresses is empty: list the receiver's IP addresses. A pass may connect to no address the list leaves out.";
+      }
+      {
+        assertion = !(lib.any coversCanary cfg.allowedAddresses);
+        message = "services.valley.webPublisher.allowedAddresses covers ${canary.address}, which the unit sends a datagram to before each pass to check that its filter is in force. The filter must deny it: remove the address or prefix that covers it.";
+      }
+      {
         assertion = !(lib.hasPrefix builtins.storeDir cfg.receiverTokenFile);
         message = "services.valley.webPublisher.receiverTokenFile is in the Nix store, which every user can read; give a path outside it.";
       }
@@ -255,12 +369,18 @@ in
       wants = [ "network-online.target" ];
       restartIfChanged = false;
       unitConfig.RequiresMountsFor = toString host.dataDir;
+      # Go's own resolver would query /etc/resolv.conf's nameserver from
+      # inside the unit, where the filter denies it. The C library's asks
+      # nscd over a Unix socket, which resolves outside the unit.
       environment = safeDirectories // {
         HOME = toString cfg.stateDir;
         XDG_CACHE_HOME = cacheDir;
+        GODEBUG = "netdns=cgo";
       };
       serviceConfig = {
         Type = "oneshot";
+        # Run in the unit's cgroup, under its filter, before each pass.
+        ExecStartPre = "${lib.getExe egressCheck} ${canary.address} ${canary.port}";
         ExecStart = command;
         # A pass that hangs is ended, and the timer starts the next. One
         # that outgrows its memory is ended too.
@@ -294,6 +414,9 @@ in
         ProtectKernelTunables = true;
         ProtectControlGroups = true;
         ProtectProc = "invisible";
+        # A pass connects to the receiver and to nothing else.
+        IPAddressDeny = "any";
+        IPAddressAllow = cfg.allowedAddresses;
         RestrictAddressFamilies = [
           "AF_INET"
           "AF_INET6"

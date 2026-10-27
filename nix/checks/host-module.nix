@@ -77,6 +77,10 @@ let
           destination = "example.org";
           receiver = "https://example.org";
           receiverTokenFile = "/run/keys/valley-web-receiver-token";
+          allowedAddresses = [
+            "192.0.2.10"
+            "2001:db8::10"
+          ];
           principals = {
             operator = "operator";
             alice = "agent";
@@ -158,6 +162,14 @@ let
   };
   noVerifierWebReceiverHost = webReceiverHost.extendModules {
     modules = [ { services.valley.webReceiver.verifiers = lib.mkForce [ ]; } ];
+  };
+  # The publisher allowed to connect to no address.
+  noAddressWebPublisherHost = webPublisherHost.extendModules {
+    modules = [ { services.valley.webPublisher.allowedAddresses = lib.mkForce [ ]; } ];
+  };
+  # The publisher allowed the canary its unit's check must be denied.
+  canaryWebPublisherHost = webPublisherHost.extendModules {
+    modules = [ { services.valley.webPublisher.allowedAddresses = [ "198.51.100.0/24" ]; } ];
   };
   # The publisher with its token in the Nix store.
   storeTokenWebPublisherHost = webPublisherHost.extendModules {
@@ -290,6 +302,16 @@ let
       host = storeTokenWebPublisherHost;
       says = "services.valley.webPublisher.receiverTokenFile is in the Nix store";
       why = "the publisher's receiver token is in the Nix store";
+    }
+    {
+      host = noAddressWebPublisherHost;
+      says = "services.valley.webPublisher.allowedAddresses is empty: list the receiver's IP addresses";
+      why = "a publisher with no allowed address would either reach nothing or, allowed everything, reach any host";
+    }
+    {
+      host = canaryWebPublisherHost;
+      says = "services.valley.webPublisher.allowedAddresses covers 198.51.100.1";
+      why = "the check before each pass could not prove the filter in force if the filter allowed its canary";
     }
     {
       host = storeTokenWebReceiverHost;
@@ -713,9 +735,11 @@ let
   # safe.directory entry that resets the system's and the user's, then an
   # exact entry for each repository the host serves and no wildcard, the
   # repositories read-only, nothing writable but its state and cache, and
-  # the mirror, backup and signing keys out of reach. Its memory is capped
-  # with no swap. It reads the instance repository the controllers read,
-  # names the host as the instance, and is given the receiver, the
+  # the mirror, backup and signing keys out of reach. It may connect to the
+  # addresses it is allowed and to no other, and checks before each pass that
+  # this filter is in force. Its Go lookups use the C library. Its memory is
+  # capped with no swap. It reads the instance repository the controllers
+  # read, names the host as the instance, and is given the receiver, the
   # destination, the display mapping and the bounds on its bundles and its
   # storage.
   webPublisherRenderedWithoutEnable =
@@ -766,6 +790,18 @@ let
     || !(lib.hasInfix "-valley-config.json --receiver https://example.org --receiver-token %d/receiver-token --principals /nix/store/" command)
     || service.LoadCredential or [ ] != [ "receiver-token:/run/keys/valley-web-receiver-token" ]
     || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-ref refs/heads/main --registry-dir identity" command)
+    || !(lib.hasSuffix "/bin/valley-web-publish-egress-check 198.51.100.1 9" (service.ExecStartPre or ""))
+    || env.GODEBUG or null != "netdns=cgo"
+    || service.IPAddressDeny or null != "any"
+    || service.IPAddressAllow or null != [
+      "192.0.2.10"
+      "2001:db8::10"
+    ]
+    || service.RestrictAddressFamilies or null != [
+      "AF_INET"
+      "AF_INET6"
+      "AF_UNIX"
+    ]
     || service.MemoryMax or null != "1G"
     || service.MemorySwapMax or null != "0"
     || unit.restartIfChanged != false

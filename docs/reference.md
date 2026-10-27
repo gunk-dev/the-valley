@@ -2980,6 +2980,11 @@ hold a project of one web name. Each refusal lands in a hidden field, `_grouples
 or `_secondSegments`, and the error names it (see
 [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
+A former name redirects only while `formerNames` declares it. Removing it frees the name for reuse:
+another project of the group may take it as its web name or as a former name, and the old URLs
+`/<group name>/<former>/…` then address that project. While no project takes it, those URLs answer
+`404`.
+
 ### Verification policy (`schema/verification.cue`)
 
 [`schema/verification.cue`](../schema/verification.cue) (`package verification`) defines `#Policy`

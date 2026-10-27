@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"testing"
 
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // git runs git for a test, with none of the caller's GIT_ variables and no

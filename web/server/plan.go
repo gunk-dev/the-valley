@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"the-valley/knot"
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // index is an export's projects and knots by name, and its plan page's

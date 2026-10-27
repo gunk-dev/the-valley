@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // Nothing the anonymous reader may not see reaches export.json: not the

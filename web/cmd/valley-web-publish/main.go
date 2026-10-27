@@ -63,7 +63,7 @@ import (
 	"time"
 
 	"the-valley/readaccess"
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME

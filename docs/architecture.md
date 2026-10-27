@@ -29,10 +29,10 @@ The parts are:
 - the `valley` command line tool (`bin/valley`);
 - `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
   changes before approval (`status/worker.go`);
-- `valley-web-publish`, `valley-web` and the web export (`webui/`). The publisher builds a signed
+- `valley-web-publish`, `valley-web` and the web export (`web/`). The publisher builds a signed
   export of the projects `anyone` may read and has an HTTP upload client, and a host can run it on a
-  timer. `webui/export` stages and activates exports in a state directory, and `valley-web` serves
-  an activated state directory's plan, knots and `main` source over HTTP (`GET` and `HEAD`). The
+  timer. `web/export` stages and activates exports in a state directory, and `valley-web` serves an
+  activated state directory's plan, knots and `main` source over HTTP (`GET` and `HEAD`). The
   receiver's HTTP upload handlers and a host service for `valley-web` are not built yet;
 - read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
 - `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
@@ -2735,7 +2735,7 @@ exit status is 1.
 from the project and one from the instance. Both consents must match (`implemented`). Today, only
 grants to `anyone` affect what is published: `valley-web-publish` exports only projects authorized
 for `anyone`, `valley-web` serves all requests anonymously, and grants to named principals publish
-nothing (`webui/cmd/valley-web-publish/valley.go`, `webui/server/server.go`).
+nothing (`web/cmd/valley-web-publish/valley.go`, `web/server/server.go`).
 
 - **The project's consent** lives in `policy/read/*.cue` on the project's `main`. It declares the
   project's name, its 32-character hex publication identity, and the set of principals in `readers`.
@@ -2822,7 +2822,7 @@ both consents match (`readaccess/access.go`).
 ### What reaches the edge
 
 `valley-web-publish` includes in an export only the projects that `anyone` may read at
-`--destination` (`webui/cmd/valley-web-publish/valley.go`). It reads the registry's grants for
+`--destination` (`web/cmd/valley-web-publish/valley.go`). It reads the registry's grants for
 `--destination` first. It then reads `policy/read` only for the projects selected by a grant to
 `anyone` (either named in the grant or covered by `projects: "all"`). It exports a project when the
 project's policy names `anyone` and a grant to `anyone` covers the project's identity. Read grants
@@ -2834,13 +2834,13 @@ and comment in its plan graph, its ready changes, and `main` with its commit his
 [Web export](./reference.md#web-export-the-valleyweb-exportv1)). `valley-web-publish` can write an
 export to `--out` or upload it over HTTP to a receiver URL. In a state directory, `export.Store`
 stages an upload with `Store.Stage` and activates the staged export with `Store.Activate`
-(`webui/export/store.go`). `valley-web` serves only `GET` and `HEAD` from a state directory
-(`webui/server/server.go`); the receiver's HTTP upload handlers are not built yet, and publisher
-tests use an `httptest` receiver (`webui/cmd/valley-web-publish/publish_test.go`). A missing or
-invalid registry makes every project private, so the pass builds an empty export. A missing or
-invalid `policy/read` makes that project private. A failure to read the instance repository, the
-schemas, or any project selected by a grant to `anyone` aborts the pass. The pass then writes no
-output export and uploads nothing, though it may already have written the caches it reads through.
+(`web/export/store.go`). `valley-web` serves only `GET` and `HEAD` from a state directory
+(`web/server/server.go`); the receiver's HTTP upload handlers are not built yet, and publisher tests
+use an `httptest` receiver (`web/cmd/valley-web-publish/publish_test.go`). A missing or invalid
+registry makes every project private, so the pass builds an empty export. A missing or invalid
+`policy/read` makes that project private. A failure to read the instance repository, the schemas, or
+any project selected by a grant to `anyone` aborts the pass. The pass then writes no output export
+and uploads nothing, though it may already have written the caches it reads through.
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
 (`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
@@ -2853,15 +2853,15 @@ pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wir
 ## The web server
 
 `valley-web` serves a receiver's state directory over HTTP to anonymous readers: the plan page, each
-knot page, and a source browser for each public project's `main` branch (`webui/server/`,
-`webui/cmd/valley-web/`). Nothing deploys it yet. Its flags, routes, and limits are in
+knot page, and a source browser for each public project's `main` branch (`web/server/`,
+`web/cmd/valley-web/`). Nothing deploys it yet. Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
 
 `valley-web` only reads the receiver's state directory. It opens the directory with
 `export.OpenReadOnly`, which creates no files and takes only the shared `flock(2)` lock that each
-request holds on the generation it opens (`webui/export/store.go`). Recovering an interrupted
+request holds on the generation it opens (`web/export/store.go`). Recovering an interrupted
 activation and sweeping old generations are left to the receiver when it opens the directory with
 `export.OpenStore`. Until the receiver finishes an interrupted activation, `valley-web` continues to
 serve the generation that `active` points to.
@@ -2869,14 +2869,14 @@ serve the generation that `active` points to.
 Because `valley-web` writes nothing to the state directory, it can run as a separate Unix user with
 read-only access. The receiver keeps each staged upload private to its own user until activation,
 and explicitly sets world-readable modes on `exports/` and on every directory and file of an
-activated generation regardless of its umask (`webui/export/store.go`; see
+activated generation regardless of its umask (`web/export/store.go`; see
 [Web export receiver state](./reference.md#web-export-receiver-state) for the file modes). The mode
 of the state directory itself is a **deployment choice**. The receiver creates the directory if it
 does not exist and leaves its mode unchanged, and the deployment grants the server's user read and
 search access to it, for example through its group.
 
 Every `git` command that `valley-web` runs names the repository with `--git-dir`
-(`webui/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
+(`web/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
 user without checking `safe.directory`, which the server's isolated `git` configuration cannot set.
 
 Checked by `webui-unit` (`TestStoreModes`), which checks the staging and generation modes under
@@ -2888,7 +2888,7 @@ repositories that `git` treats as owned by another user.
 
 Every project route starts with the project's name, such as `/app/knots/<id>` or `/app/source/…`,
 and `/` serves the plan page. To keep server routes separate from project names, `valley-web`
-reserves the prefix `/-/` for its own paths (`webui/server/server.go`; see
+reserves the prefix `/-/` for its own paths (`web/server/server.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web)). Because a valid project name
 must start with an ASCII letter or digit, paths under `/-/` and project routes never shadow one
 another, regardless of what projects are named.
@@ -2901,7 +2901,7 @@ named `source`, `knots`, and `web-export` on every route and checks that paths u
 
 `valley-web` renders each response in full before writing it to the connection. Rendered responses
 draw their memory in 64 KiB pieces from a shared 64 MiB budget (`server.MaxBuffered`) and hold those
-pieces until the write finishes or the 60-second write timeout expires (`webui/server/render.go`).
+pieces until the write finishes or the 60-second write timeout expires (`web/server/render.go`).
 Without a cap on large responses, a few clients that stop reading large knot, directory, or file
 pages could hold the entire 64 MiB budget until the write timeout, causing every other request to
 answer `503`. Behind a reverse proxy, every request arrives from the proxy's address. A per-address
@@ -2927,12 +2927,12 @@ the plan page, a knot page, and a directory page still succeed.
 At most 8 source requests (tree, file, or log) may run `git` at once (`server.MaxGit`). To keep a
 slow `git` command or export load from holding a slot for the full 15-second request timeout, a
 source request may hold its `git` slot for at most 5 seconds from when it takes the slot
-(`webui/server/server.go`). That 5-second limit covers both waiting for the generation's export to
-be read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
+(`web/server/server.go`). That 5-second limit covers both waiting for the generation's export to be
+read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
 `git`, releases the slot, and answers `503`. When `git` finishes in time, the request releases its
-`git` slot before rendering HTML, so page rendering holds no `git` slot (`webui/server/render.go`).
+`git` slot before rendering HTML, so page rendering holds no `git` slot (`web/server/render.go`).
 
-Each source route also bounds the work it asks `git` to do (`webui/server/source.go`; see
+Each source route also bounds the work it asks `git` to do (`web/server/source.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web) for the limits). When resolving a
 path through intermediate directories, the server runs `git ls-tree` without `--long`, because
 `--long` looks up the blob size of every entry in each directory. All directories along the path
@@ -2980,7 +2980,7 @@ later parent may appear on the same page, and the page retains that commit's par
 Commits reached only through later parents may be omitted from older pages.
 
 When the receiver accepts a bundle or carries a repository into a new generation, it writes a
-commit-graph into the repository (`webui/export/bundle.go`). Already-activated generations are left
+commit-graph into the repository (`web/export/bundle.go`). Already-activated generations are left
 untouched, so a generation activated without commit-graphs has none until the next activation
 carries its repositories again. With a commit-graph, `git merge-base` checks commit reachability
 without parsing each commit, and `git log --date-order` walks the history faster. Without a
@@ -2988,7 +2988,7 @@ commit-graph, `git log --date-order` walks the commit history before printing a 
 seconds that the request holds its `git` slot.
 
 `export.Reachable` requires every commit ID to match the length of the project's `source_tip`
-(`webui/export/bundle.go`). In a SHA-256 repository, `git` treats 40 hex digits as an abbreviated
+(`web/export/bundle.go`). In a SHA-256 repository, `git` treats 40 hex digits as an abbreviated
 prefix, and in a SHA-1 repository it treats 64 hex digits as the commit named by their first 40 hex
 digits. Requiring the exact length of `source_tip` gives each page a single address.
 
@@ -3013,10 +3013,10 @@ and both object formats.
 A knot's `waiting_on` lists each `blocked_by` reference that remains a blocker. A reference remains
 a blocker while it names an open knot, a missing knot, or a knot in a graph that could not be read
 (`knot/derive.go`). In `export.json`, the export removes every reference into an unpublished project
-from `waiting_on` (`webui/export/project.go`). The knot's `state` is unchanged. When the export
+from `waiting_on` (`web/export/project.go`). The knot's `state` is unchanged. When the export
 removes at least one reference from a knot's `waiting_on`, it sets `"waiting_on_hidden": true` on
 the knot. The plan page's "waits on" chip then includes "a knot in an unpublished project" alongside
-any public blockers (`webui/server/knot.go`; see
+any public blockers (`web/server/knot.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
 In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
@@ -3077,23 +3077,23 @@ supplies the host configuration, the project declaration and the secrets (**depl
 
 ## Not deployed or not wired yet
 
-| What                                        | State                                                                                                                                                                                                                                                                    |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                  |
-| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                 |
-| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                                 |
-| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                         |
-| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                       |
-| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed.                                                                                                                                                                       |
-| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                     |
-| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                   |
-| The web server and export                   | `valley-web-publish` builds and uploads exports, `export.Store` stages and activates them, and `valley-web` serves an activated state directory over `GET` and `HEAD` (`webui/`). The receiver's HTTP upload handlers and a host service for `valley-web` are not built. |
-| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                |
-| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                       |
-| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                  |
-| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                        |
-| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                       |
-| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                                 |
-| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                         |
-| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                            |
-| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                     |
+| What                                        | State                                                                                                                                                                                                                                                                  |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                |
+| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                               |
+| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                               |
+| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                       |
+| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                     |
+| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed.                                                                                                                                                                     |
+| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                   |
+| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                 |
+| The web server and export                   | `valley-web-publish` builds and uploads exports, `export.Store` stages and activates them, and `valley-web` serves an activated state directory over `GET` and `HEAD` (`web/`). The receiver's HTTP upload handlers and a host service for `valley-web` are not built. |
+| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                              |
+| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                     |
+| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                |
+| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                      |
+| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                     |
+| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                               |
+| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                       |
+| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                          |
+| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                   |

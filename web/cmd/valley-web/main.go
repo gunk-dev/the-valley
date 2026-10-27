@@ -25,8 +25,8 @@ import (
 	"syscall"
 	"time"
 
-	"the-valley/webui/export"
-	"the-valley/webui/server"
+	"the-valley/web/export"
+	"the-valley/web/server"
 )
 
 const usage = `usage: valley-web --state DIR --listen ADDR

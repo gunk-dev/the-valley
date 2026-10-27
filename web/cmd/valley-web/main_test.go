@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // The test binary is valley-web when VALLEY_WEB_TEST_MAIN is set, so the

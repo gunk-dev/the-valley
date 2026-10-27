@@ -427,7 +427,7 @@ rec {
     dir = ../exactjson;
   };
 
-  # The web UI (webui/). Package export is the contract between the
+  # The web UI (web/). Package export is the contract between the
   # publisher on a valley host and the web server it pushes to: the public
   # export and the projection onto it, the signed manifest, the upload and
   # the receiver's state directory. It reads names and IDs by the plan
@@ -447,9 +447,9 @@ rec {
   # go vet runs after them. The fixture's expected export
   # (export/exporttest/testdata/) is read by the tests alone. Go, standard
   # library only, so no module is fetched.
-  webui = goModule {
-    pname = "valley-webui";
-    dir = ../webui;
+  web = goModule {
+    pname = "valley-web-module";
+    dir = ../web;
     modules = [
       ../knot
       ../note
@@ -457,13 +457,13 @@ rec {
       ../exactjson
     ];
     excluded = [
-      ../webui/server
-      ../webui/cmd/valley-web
+      ../web/server
+      ../web/cmd/valley-web
     ];
     preBuild = readsGoMod;
     tests = {
       reads = [
-        ../webui/export/exporttest/testdata
+        ../web/export/exporttest/testdata
         ../bin/valley
         ../schema/read.cue
         ../schema/identity.cue
@@ -542,11 +542,11 @@ rec {
           --set-default VALLEY_IDENTITY_SCHEMA ${../schema/identity.cue}
       '';
 
-  # The web UI's server (webui/server/) and its command, valley-web
-  # (webui/cmd/valley-web/), which serves the active export of a receiver's
+  # The web UI's server (web/server/) and its command, valley-web
+  # (web/cmd/valley-web/), which serves the active export of a receiver's
   # state directory to anonymous readers. It reads the export and the
-  # state directory with package export, so its source is the webui
-  # module, less the fixture's expected export, which only webui's tests
+  # state directory with package export, so its source is the web
+  # module, less the fixture's expected export, which only web's tests
   # read. Of ../readaccess, which the publisher reads through and the
   # server does not, and of ../exactjson, which readaccess reads with, it
   # reads the go.mod alone, which go reads to resolve the module. The git it reads repositories with is fixed at build time,
@@ -555,7 +555,7 @@ rec {
   # only, so no module is fetched.
   valley-web = goModule {
     pname = "valley-web";
-    dir = ../webui;
+    dir = ../web;
     modules = [
       ../knot
       ../note
@@ -563,12 +563,12 @@ rec {
       ../exactjson/go.mod
     ];
     excluded = [
-      ../webui/export/exporttest/testdata
-      ../webui/cmd/valley-web-publish
+      ../web/export/exporttest/testdata
+      ../web/cmd/valley-web-publish
     ];
     subPackages = [ "cmd/valley-web" ];
     preBuild = readsGoMod;
-    ldflags = [ "-X the-valley/webui/export.GitProgram=${lib.getExe pkgs.git}" ];
+    ldflags = [ "-X the-valley/web/export.GitProgram=${lib.getExe pkgs.git}" ];
     tests = {
       subPackages = [
         "server"
@@ -595,7 +595,7 @@ rec {
       }
       ''
         mkdir -p $out/bin
-        makeWrapper ${lib.getExe webui} $out/bin/valley-web-publish \
+        makeWrapper ${lib.getExe web} $out/bin/valley-web-publish \
           --prefix PATH : ${
             lib.makeBinPath [
               pkgs.git

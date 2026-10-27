@@ -1,4 +1,4 @@
-# The web UI (webui/): the export contract the publisher and the server
+# The web UI (web/): the export contract the publisher and the server
 # share, and the server. Their tests run here, in the packages' unit
 # builds (nix/packages.nix).
 {
@@ -27,7 +27,7 @@
   # again, recovery checking a generation before it activates it and
   # keeping one whose check git did not finish, and injected sweep and
   # swap failures, reported apart from the commit. go vet runs after them.
-  webui-unit = packages.webui.unit;
+  webui-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
   # consents read out of real commits under the real schemas, an explicit

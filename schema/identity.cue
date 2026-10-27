@@ -197,7 +197,7 @@ import "strings"
 	// push too.
 	//
 	// "edge-read" — the edge read boundary: the web publisher on a host
-	// serving the instance's repositories (webui/cmd/valley-web-publish),
+	// serving the instance's repositories (web/cmd/valley-web-publish),
 	// and the web server at one destination, which serves what the
 	// publisher sends it. A grant here is a read grant. It lets its holder
 	// read the projects its scope covers, wherever a project's own

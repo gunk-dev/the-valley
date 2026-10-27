@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // How an upload is retried. A pass makes at most uploadAttempts attempts.

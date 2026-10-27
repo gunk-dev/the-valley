@@ -33,7 +33,7 @@ import (
 	"time"
 
 	"the-valley/note"
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 //go:embed valley

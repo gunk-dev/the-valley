@@ -1748,7 +1748,7 @@ in
         }
       ]
     )
-    # The web publisher (webui-publisher.nix) reads the registry at
+    # The web publisher (web-publisher.nix) reads the registry at
     # identity.ref too, when its module is imported and on.
     ++ lib.optional (cfg.identity.enable || config.services.valley.webPublisher.enable or false) {
       assertion = fullRefName cfg.identity.ref;
@@ -1758,7 +1758,7 @@ in
       let
         name = cfg.integrator.instanceProject;
         protected = gitProjects.${name}.protection.refs or [ ];
-        # The web publisher (webui-publisher.nix) reads the registry at
+        # The web publisher (web-publisher.nix) reads the registry at
         # identity.ref too, when its module is imported and on.
         publisher = config.services.valley.webPublisher.enable or false;
         read =

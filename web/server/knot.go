@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"the-valley/knot"
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // knotPage is one knot: where it sits, its fields, the knots it links,

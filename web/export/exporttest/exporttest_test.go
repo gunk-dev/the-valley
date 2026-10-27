@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 var update = flag.Bool("update", false, "rewrite testdata/export.json from the synthetic valley")

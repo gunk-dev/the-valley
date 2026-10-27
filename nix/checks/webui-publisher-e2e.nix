@@ -94,7 +94,7 @@ in
     nodes.host = {
       imports = [
         self.nixosModules.default
-        self.nixosModules.webui-publisher
+        self.nixosModules.web-publisher
       ];
       # The system configuration trusts every directory, so only the
       # entries in the unit's environment can keep a repository out.

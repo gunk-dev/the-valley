@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"the-valley/note"
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // A manifest's text reads back as the manifest it was written from.

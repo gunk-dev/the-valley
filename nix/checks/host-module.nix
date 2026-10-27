@@ -48,7 +48,7 @@ let
     integratorNamedWorkerHost
     ;
 
-  # The web publisher's module (nix/webui-publisher.nix) beside the host
+  # The web publisher's module (nix/web-publisher.nix) beside the host
   # module, over integratorHost: its instance repository is the one the
   # controllers read the floor from. The host also has a backup key the
   # publisher must not read. The publisher is a stand-in, as the host's
@@ -59,7 +59,7 @@ let
   '';
   webPublisherOffHost = stubbedHosts.integratorHost.extendModules {
     modules = [
-      self.nixosModules.webui-publisher
+      self.nixosModules.web-publisher
       { services.valley.webPublisher.package = webPublisherStub; }
     ];
   };
@@ -575,7 +575,7 @@ let
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
-  # The web publisher (nix/webui-publisher.nix). Off, it renders nothing.
+  # The web publisher (nix/web-publisher.nix). Off, it renders nothing.
   # On, one pass is a oneshot on a five-minute timer whose first pass waits
   # five minutes after the timer starts, and which no switch starts or
   # restarts. It runs as a dynamic user in the git group, with an empty

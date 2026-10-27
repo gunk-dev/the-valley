@@ -1,4 +1,4 @@
-# The web publisher (webui/cmd/valley-web-publish): a oneshot on a timer
+# The web publisher (web/cmd/valley-web-publish): a oneshot on a timer
 # that reads this host's public projects and pushes signed exports to a web
 # receiver, which never connects back.
 #

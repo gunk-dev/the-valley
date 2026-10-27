@@ -694,9 +694,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     `--signer-projects` file names the `--integrator-name`, no landing is proved by a transfer
     statement. A file that does not read stops the pass.
 - **`valley-web-publish`**
-  ([`webui/cmd/valley-web-publish/main.go`](../webui/cmd/valley-web-publish/main.go)): One pass of
-  the web publisher (see [Web export publisher](#web-export-publisher)). It is wrapped with this
-  flake's `git`, `cue`, and `valley`, with `VALLEY_READ_SCHEMA` set to `schema/read.cue` and
+  ([`web/cmd/valley-web-publish/main.go`](../web/cmd/valley-web-publish/main.go)): One pass of the
+  web publisher (see [Web export publisher](#web-export-publisher)). It is wrapped with this flake's
+  `git`, `cue`, and `valley`, with `VALLEY_READ_SCHEMA` set to `schema/read.cue` and
   `VALLEY_IDENTITY_SCHEMA` set to `schema/identity.cue`. On a host, `services.valley.webPublisher`
   runs it on a timer (see [The web publisher's options](#the-web-publishers-options)).
   - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
@@ -959,12 +959,12 @@ services.valley = {
 
 #### The web publisher's options
 
-The web publisher's module, `nixosModules.webui-publisher`
-([`nix/webui-publisher.nix`](../nix/webui-publisher.nix)), adds `services.valley.webPublisher` to a
-host that imports the host module (`deployment choice`).
+The web publisher's module, `nixosModules.web-publisher`
+([`nix/web-publisher.nix`](../nix/web-publisher.nix)), adds `services.valley.webPublisher` to a host
+that imports the host module (`deployment choice`).
 
 ```nix
-imports = [ the-valley.nixosModules.default the-valley.nixosModules.webui-publisher ];
+imports = [ the-valley.nixosModules.default the-valley.nixosModules.web-publisher ];
 services.valley.webPublisher = {
   enable = true;
   destination = "example.org";
@@ -1884,9 +1884,9 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
 A web export is the snapshot a valley host sends to a read-only web server for public projects. It
 consists of `export.json`, one git bundle of `main` for each exported project, and a signed manifest
 that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
-the web server, and the web server never connects back to the host. Package `export` of the `webui`
-module ([`webui/export/`](../webui/export/)) implements the types, the verification checks below,
-and the receiver's state directory. `valley-web-publish` is the publisher, and the web server,
+the web server, and the web server never connects back to the host. Package `export` of the `web`
+module ([`web/export/`](../web/export/)) implements the types, the verification checks below, and
+the receiver's state directory. `valley-web-publish` is the publisher, and the web server,
 [`valley-web`](#web-server-valley-web), reads the receiver's state directory with the package. The
 receiver's HTTP handlers are `not built`.
 
@@ -2140,7 +2140,7 @@ A refused upload leaves the active export as it was.
 
 #### Web export publisher
 
-`valley-web-publish` ([`webui/cmd/valley-web-publish/`](../webui/cmd/valley-web-publish/)) builds an
+`valley-web-publish` ([`web/cmd/valley-web-publish/`](../web/cmd/valley-web-publish/)) builds an
 export of a valley host's public projects and uploads it. One run is one pass.
 
 ```sh
@@ -2418,9 +2418,9 @@ The receiver keeps every accepted export as an immutable generation in one state
 
 `valley-web` serves the active export in a receiver's state directory to anonymous readers over
 HTTP. It serves the plan page, one page per knot, and a source browser over each public project's
-`main`. Package `server` of the `webui` module ([`webui/server/`](../webui/server/)) implements the
-HTTP handler, and [`webui/cmd/valley-web/`](../webui/cmd/valley-web/) is the command. The flake
-builds it as the `valley-web` package.
+`main`. Package `server` of the `web` module ([`web/server/`](../web/server/)) implements the HTTP
+handler, and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as
+the `valley-web` package.
 
 ```sh
 valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080

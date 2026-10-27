@@ -15,7 +15,7 @@ import (
 
 // GitProgram is the git this package runs: git on PATH, unless a build
 // fixes it to an absolute path with
-// -ldflags "-X the-valley/webui/export.GitProgram=<path>".
+// -ldflags "-X the-valley/web/export.GitProgram=<path>".
 var GitProgram = "git"
 
 // MainRef is the one ref a bundle carries, and the one a generation's

@@ -19,7 +19,7 @@ import (
 	"time"
 
 	"the-valley/note"
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // The tests run the publisher against a real valley: bare repositories

@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"the-valley/note"
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // roleEnv names the part a run of the test binary plays when it is not

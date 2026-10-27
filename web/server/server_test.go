@@ -26,8 +26,8 @@ import (
 	"time"
 
 	"the-valley/knot"
-	"the-valley/webui/export"
-	"the-valley/webui/export/exporttest"
+	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // harness is a server over a real store that the fixture's export was

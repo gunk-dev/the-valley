@@ -44,7 +44,7 @@
 
       # The web publisher on a timer (services.valley.webPublisher), beside
       # the host module, whose repositories it reads.
-      nixosModules.webui-publisher = ./nix/webui-publisher.nix;
+      nixosModules.web-publisher = ./nix/web-publisher.nix;
 
       # The valley CLI's self-update on a user timer, for a home-manager
       # user whose valley follows a branch of the-valley

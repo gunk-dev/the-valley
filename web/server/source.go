@@ -16,7 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"the-valley/webui/export"
+	"the-valley/web/export"
 )
 
 // treeURL is the directory at path in commit. It ends in a slash.

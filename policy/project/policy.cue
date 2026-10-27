@@ -236,8 +236,8 @@ project: {
 	// publisher, and the server. The publisher's tests also read each
 	// project's policy/read and the instance's registry under the read and
 	// identity schemas. Changes require both checks.
-	classes: webui: {
-		paths: "webui/**":             true
+	classes: web: {
+		paths: "web/**":               true
 		paths: "schema/read.cue":      true
 		paths: "schema/identity.cue":  true
 		requires: "webui-unit":        true
@@ -336,9 +336,9 @@ project: {
 	// The web publisher's module, which runs the publisher on a timer in a
 	// sandbox of its own. webui-publisher-e2e runs the unit it renders in a
 	// NixOS machine. module-eval, in the nix class, holds what it renders.
-	classes: "webui-publisher": {
-		paths: "nix/webui-publisher.nix": true
-		requires: "webui-publisher-e2e":  true
+	classes: "web-publisher": {
+		paths: "nix/web-publisher.nix":  true
+		requires: "webui-publisher-e2e": true
 	}
 
 	// The verification policy: this layer, the pointer to the owning
@@ -445,7 +445,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"webui.nix": ["webui-unit", "webui-server-unit", "readaccess-unit"]
+		"web.nix": ["webui-unit", "webui-server-unit", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

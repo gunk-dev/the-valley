@@ -3,7 +3,7 @@
 // server share: the public export, its signed manifest, and the upload
 // between them. The publisher reads who may read a project through
 // readaccess.
-module the-valley/webui
+module the-valley/web
 
 go 1.24
 

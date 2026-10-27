@@ -326,16 +326,18 @@ still holds, or whose deletion failed, until a later sweep removes it (`implemen
 the edge's storage. A read grant at an `edge-read` boundary is consent to send a project's reader
 view to the destination that boundary names.
 
-**A group places a project; it grants nothing.** A project reaches the edge only when the host
-declaration also places it in a group, because a project in no group has no web URL. Being in a
-group is not a third consent: it can keep a project off the edge, never put one there. The export
-carries only the groups of public projects, and only public projects' web names, former names and
-short aliases, so no group, alias or name it carries says anything of a private project
-(`implemented`, `web/export/project.go`). The server knows only what the export holds. A hidden
-project's URL, under its group, under another group, under a former name or under the alias the
-instance gave it, answers with the same `404` page as a missing one, byte for byte (`implemented`,
-`web/server/server.go`). A group's alias redirects whatever follows it, so a URL through the alias
-redirects alike for a hidden and a missing project, and the target then answers `404`.
+**Groups place public projects and grant no read access.** A project reaches the edge only when
+`valley.cue` places it in a group, because a project without a group has no web URL. Placing a
+project in a group gives it a web URL once both read-access consents authorize `anyone`. Omitting
+`group` keeps a project off the web even when both consents authorize `anyone`. The export includes
+only groups that have at least one public project, along with the web names, former names, and short
+aliases of public projects (`implemented`, `web/export/project.go`). Groups, web names, former
+names, and aliases of private projects are omitted from the export. The web server reads only the
+export. Requests for a private project — whether under its group, another group, a former name, or a
+short alias — return the same `404` page byte for byte as requests for a project that does not exist
+(`implemented`, `web/server/server.go`). A group alias redirects any path under it to the group's
+`name` before checking whether the project exists, so hidden and nonexistent projects redirect
+identically and then return `404`.
 
 **A grant is bound to a project.** A grant that names a specific project binds both its name and its
 publication identity, so a new project that reuses an old project's name with a new identity is not

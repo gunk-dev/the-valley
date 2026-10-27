@@ -96,12 +96,11 @@ upload them to the receiver at URL, or write them to DIR.
   --destination NAME   the receiver the manifest is for, and the destination
                        of the edge read boundary whose read grants decide
                        what anyone may read there
-  --host FILE          the host declaration, as cue export prints it under
-                       schema/valley.cue: the groups, and each project's
-                       group and short aliases, which its web URLs are
-                       made of; a declaration whose group names and
-                       aliases collide is refused, and a project in no
-                       group is private
+  --host FILE          JSON host declaration from cue export under
+                       schema/valley.cue, defining groups and each
+                       project's group, web name, former names, and
+                       aliases; colliding names are refused, and a
+                       project in no group is private
   --receiver URL       the receiver's base URL, http or https
   --receiver-token FILE
                        the receiver's token, which every request of an

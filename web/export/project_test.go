@@ -327,7 +327,7 @@ func TestBuildRefuses(t *testing.T) {
 		}, `the web name of project app is "", which is not a name`},
 		{"two web names in one group that differ in case", func(in *export.Inputs) {
 			in.Placements["site"] = export.Placement{Group: "core", Name: "App"}
-		}, `the web name of project app and the web name of project site are both "App", ignoring case, and one second segment of a web URL under the group core names one project`},
+		}, `the web name of project app and the web name of project site are both "App", ignoring case: web names and former names must be unique in group core`},
 		{"a former name that is another project's web name", func(in *export.Inputs) {
 			in.Placements["site"] = export.Placement{Group: "core", Name: "site", FormerNames: []string{"app"}}
 		}, `the web name of project app and former name 0 of project site are both "app"`},

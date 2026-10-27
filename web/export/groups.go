@@ -91,12 +91,12 @@ func CheckNames(ctx context.Context, groups []Group, placed []Placed) error {
 		}
 		key := strings.ToLower(name)
 		if other, taken := names[key]; taken {
-			return fmt.Errorf("%s and %s are both %q, ignoring case, and %s", other, by, name, segment)
+			return fmt.Errorf("%s and %s are both %q, ignoring case: %s", other, by, name, segment)
 		}
 		names[key] = by
 		return nil
 	}
-	const firstSegment = "one first segment of a web URL names one group or project"
+	const firstSegment = "group names and aliases must be unique"
 	for i, g := range groups {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -130,13 +130,13 @@ func CheckNames(ctx context.Context, groups []Group, placed []Placed) error {
 		names, declared := second[p.Group]
 		switch {
 		case p.Group == "" && (p.Name != "" || len(p.FormerNames) > 0 || len(p.Aliases) > 0):
-			return fmt.Errorf("the project %s has a web name, former names or aliases and no group, so they have no URL", p.Project)
+			return fmt.Errorf("the project %s has a web name, former names or aliases and no group", p.Project)
 		case p.Group == "":
 			continue
 		case !declared:
 			return fmt.Errorf("the project %s belongs to the group %q, which is not declared", p.Project, p.Group)
 		}
-		segment := "one second segment of a web URL under the group " + p.Group + " names one project"
+		segment := "web names and former names must be unique in group " + p.Group
 		if err := claim(names, p.Name, "the web name of project "+p.Project, segment); err != nil {
 			return err
 		}

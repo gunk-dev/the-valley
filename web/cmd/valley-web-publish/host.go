@@ -66,27 +66,27 @@ func readHost(path string) (webPlaces, error) {
 		return w, fmt.Errorf("--host: %w", err)
 	}
 	refuse := func(err error) (webPlaces, error) {
-		return webPlaces{}, fmt.Errorf("--host %s is not a host declaration as cue exports it: %w", path, err)
+		return webPlaces{}, fmt.Errorf("--host %s: invalid host declaration: %w", path, err)
 	}
 	// encoding/json reads a null into a struct as nothing at all, so the
 	// document opens an object, or it is refused.
 	if !bytes.HasPrefix(bytes.TrimLeft(data, " \t\r\n"), []byte("{")) {
-		return refuse(errors.New("the document is not a JSON object"))
+		return refuse(errors.New("the document must be a JSON object"))
 	}
 	var doc hostDoc
 	if err := exactjson.Decode(data, &doc); err != nil {
 		return refuse(err)
 	}
 	if doc.Projects == nil || doc.Groups == nil {
-		return refuse(errors.New("it has no projects or no groups, or one of them is null"))
+		return refuse(errors.New("projects and groups are required and must be objects"))
 	}
 	w.placements = map[string]export.Placement{}
 	for name, p := range *doc.Projects {
 		switch {
 		case p == nil:
-			return refuse(fmt.Errorf("the project %q is null", name))
+			return refuse(fmt.Errorf("project %q is null", name))
 		case p.Group == "" && p.Name != "" && p.Name != name:
-			return refuse(fmt.Errorf("the project %s is in no group, and its web name is %q", name, p.Name))
+			return refuse(fmt.Errorf("project %s sets web name %q without a group", name, p.Name))
 		case p.Group == "":
 			// cue exports a project's identifier as its web name. A
 			// project in no group has none.
@@ -97,7 +97,7 @@ func readHost(path string) (webPlaces, error) {
 	}
 	for id, g := range *doc.Groups {
 		if g == nil {
-			return refuse(fmt.Errorf("the group %q is null", id))
+			return refuse(fmt.Errorf("group %q is null", id))
 		}
 		w.groups = append(w.groups, export.Group{ID: id, Name: g.Name, Aliases: g.Aliases})
 	}

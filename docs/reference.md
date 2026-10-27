@@ -745,15 +745,15 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `<name>/web-export`.
     - `--destination <name>`: The receiver the manifest is for. It is also the destination of the
       `edge-read` boundary whose read grants decide what `anyone` may read there.
-    - `--host <file>`: The host declaration, as `cue export` prints it under `schema/valley.cue`.
-      The publisher reads its groups, and each project's group, web name, former names and short
-      aliases, which the project's web URLs are made of (see
-      [Groups and web URLs](./architecture.md#groups-and-web-urls)). It reads the file with
-      `exactjson`, so a key spelled otherwise than the schema spells it, or a key given twice in one
-      object, is refused. Before any pass runs, it refuses a declaration whose names collide, that
-      names a group it does not declare, or that is not the object `cue export` prints: a document
-      that is not an object, a missing or `null` `projects` or `groups`, a `null` project or group,
-      or a project identifier that is not a project name. A project in no group is private.
+    - `--host <file>`: Path to the `cue export` JSON of the host declaration under
+      `schema/valley.cue`. The publisher reads the declared groups and each project's `group`, web
+      `name`, `formerNames`, and short `aliases` to build web URLs (see
+      [Groups and web URLs](./architecture.md#groups-and-web-urls)). It decodes the file with
+      `exactjson`, which refuses unknown keys and duplicate keys in the same object. Before any pass
+      runs, it checks that the document is a JSON object, that `projects` and `groups` are present
+      and non-`null` objects, that every project and group entry is non-`null`, and that every
+      project identifier is a valid project name. It also refuses a declaration whose names collide
+      or that names an undeclared group (`export.CheckNames`). A project in no group is private.
     - `--receiver <url>`: The receiver's base URL, `http` or `https`, with no user, query, or
       fragment. The upload's paths are appended to it.
     - `--receiver-token <file>`: Path to the file holding the receiver's bearer token, sent in every
@@ -1041,10 +1041,10 @@ services.valley.webPublisher = {
 The module also passes `services.valley.identity.ref` as `--registry-ref` and
 `services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry from
 the same directory and ref in the instance repository as the identity compiler. It passes the host
-module's export of `services.valley.config` as `--host`, so the publisher reads the groups the host
-declares. When the publisher is enabled, the host module requires the instance repository's
-`protection` to cover that ref, just as it does when the identity compiler is enabled
-(`implemented`, `nix/valley-host.nix`).
+module's JSON export of `services.valley.config` as `--host`, so the publisher reads the groups and
+project placements the host declares. When the publisher is enabled, the host module requires the
+instance repository's `protection` to cover that ref, just as it does when the identity compiler is
+enabled (`implemented`, `nix/valley-host.nix`).
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
@@ -2038,26 +2038,27 @@ compact JSON ending with a newline.
   included.
 - **Top-level fields:** `schema` (`"valley-web-export/v1"`), `collected` (`string`, the plan's
   `now`), `groups`, and `projects` (sorted by project name).
-- **`groups[]` fields:** The groups that the exported projects belong to, and no other, sorted by
-  identifier. `groups` is omitted when it is empty, as in an export from before groups.
-  - `group` (`string`): The group's identifier, a project name. No URL shows it.
-  - `name` (`string`): The group's name, the first segment of its projects' URLs.
-  - `aliases` (`array` of `string`, omitted when empty): Other first segments, which redirect to the
-    same path under `name`.
+- **`groups[]` fields:** The groups of the exported projects, sorted by identifier. Only groups with
+  at least one exported project are included. `groups` is omitted when empty.
+  - `group` (`string`): The group's identifier, which follows the project-name pattern. No URL shows
+    it.
+  - `name` (`string`): The group's web name, used as the first URL segment for its projects.
+  - `aliases` (`array` of `string`, omitted when empty): Additional first-segment names that
+    redirect to the same path under `name`.
 - **`projects[]` fields:**
   - `project` (`string`): The project's identifier (`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, at most 64
     bytes). The pattern forbids `/` and dot segments (`.` and `..`), so the name is safe to use as a
     file name.
   - `visibility` (`"public"`).
   - `group` (`string`, omitted when empty): The identifier of the project's group. A project without
-    one, as in an export from before groups, has no URL, and `valley-web` serves it as a project the
-    export does not hold.
-  - `name` (`string`, omitted when empty): The project's web name, the second segment of its URLs.
-    It is unique within its group, and need not be `project`. A project with a group has one.
+    a `group` has no URL, and `valley-web` treats it as absent from the export.
+  - `name` (`string`, omitted when empty): The project's web name, used as the second segment of its
+    URLs. It is unique within its group and may differ from `project`. Every project with a `group`
+    has a `name`.
   - `former_names` (`array` of `string`, omitted when empty): The project's former web names within
     its group, which redirect to the same path under `/<group name>/<name>`.
-  - `aliases` (`array` of `string`, omitted when empty): The project's short aliases, first segments
-    that redirect to the same path under `/<group name>/<name>`.
+  - `aliases` (`array` of `string`, omitted when empty): The project's short aliases, used as first
+    URL segments that redirect to the same path under `/<group name>/<name>`.
   - `graph_tip` (`string`): Commit object ID of `refs/the-valley/knots` where the knots were read,
     or `""` when the project has no plan graph.
   - `source_tip` (`string`): Commit object ID of `refs/heads/main` carried by the project's bundle.
@@ -2104,26 +2105,26 @@ compact JSON ending with a newline.
   knot in a public project is missing its detail, appears twice, or has no `body`. It fails with
   `export.ErrInconsistent` when a knot's detail was read at a different graph `tip` than the plan or
   its comment count disagrees with `comment_count`. On `ErrInconsistent`, the publisher reads its
-  inputs again. It fails when a public project is in no group, and when the groups and placements it
-  is given fail `export.CheckNames`.
+  inputs again. It also fails when a public project has no group, or when the groups and placements
+  fail `export.CheckNames`.
 - **Strict reading (`export.Decode`):** `export.Decode` rejects unknown JSON fields and any
-  non-whitespace token after the root JSON object. It reads with `exactjson`, so a key must be a
-  field's name spelled exactly, and a key given twice in one object is refused. A key that differs
-  from a field's name in case, Unicode case folding included, is refused as a field spelled another
-  way. An array or object where the field's type holds none is refused before anything inside it is
-  read, and so are arrays and objects nested more than 1000 deep (`exactjson.MaxDepth`). It requires
-  `schema` to be `"valley-web-export/v1"`, projects to appear once in ascending name order with
-  valid project names and `public` visibility, and knot IDs to be valid and unique within each
-  project. It requires groups to appear once in ascending identifier order, each the group of some
-  project. Every group a project names must be listed. A project with a group must have a web name,
-  and a project with a web name, former names or aliases must have a group. Every identifier, name,
-  former name and alias must be a project name. Group names, group aliases and project aliases must
-  differ from one another, and from `-`, ignoring ASCII case. The web names and former names of one
-  group's projects must differ from one another, ignoring ASCII case. An export without `groups`
-  decodes. Each project's `source_tip`, non-empty `graph_tip`, and each change's `version.head` must
-  be a 40- or 64-hex lowercase object ID. Every knot's `title`, `body`, `source`, `created_by`, and
-  `owner`, and every comment's `body`, `author`, `edited`, and `edited_by`, must be valid UTF-8 with
-  no control characters other than `\n` and `\t`.
+  non-whitespace token after the root JSON object. It decodes with `exactjson`: every key must match
+  its field name in exact case (without ASCII or Unicode case folding), and duplicate keys in one
+  object are refused. An array or object for a scalar field is refused before its contents are read,
+  and arrays or objects nested more than 1000 levels deep (`exactjson.MaxDepth`) are refused. It
+  requires `schema` to be `"valley-web-export/v1"`, projects to appear once in ascending name order
+  with valid project names and `public` visibility, and knot IDs to be valid and unique within each
+  project. Groups must appear once in ascending identifier order, and every group must be referenced
+  by at least one project. Every group a project names must appear in `groups`. A project with a
+  `group` must have a web `name`, and a project with `name`, `former_names`, or `aliases` must have
+  a `group`. Every group identifier, group name, web name, former name, and alias must follow the
+  project-name rule. Group names, group aliases, and project aliases must be distinct from one
+  another and from `-`, ignoring ASCII case. Within each group, project web names and former names
+  must be distinct from one another, ignoring ASCII case. An export without `groups` is valid when
+  no project names a group. Each project's `source_tip`, non-empty `graph_tip`, and each change's
+  `version.head` must be a 40- or 64-hex lowercase object ID. Every knot's `title`, `body`,
+  `source`, `created_by`, and `owner`, and every comment's `body`, `author`, `edited`, and
+  `edited_by`, must be valid UTF-8 with no control characters other than `\n` and `\t`.
 - **Content digest (`Export.Digest`):** `Export.Digest` is the 64-hex SHA-256 of the export's JSON
   with `collected` cleared and each claim's `age_seconds` and `stale` zeroed. Those fields change
   with the clock rather than with the valley, so two exports of the same valley state have the same
@@ -2300,9 +2301,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   --receiver-token receiver-token --principals principals.json
 ```
 
-- **Before a pass:** The publisher reads the host declaration, `--host`, and holds its groups and
-  aliases to `export.CheckNames` (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
-  A declaration it refuses ends the run with exit status `1` before the lock is taken.
+- **Before a pass:** The publisher reads `--host` and checks its groups and placements with
+  `export.CheckNames` (see [Groups and web URLs](./architecture.md#groups-and-web-urls)). If the
+  declaration fails any check, the publisher exits with status `1` before taking the lock.
 - **A pass:** In order, the pass:
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
   2. reads the export key, or makes one on the first start, and checks the state and the caches
@@ -2318,10 +2319,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
      `refs/the-valley/projects` and the signers through `refs/the-valley/signers`.
      `VALLEY_KNOWN_SIGNERS` and `VALLEY_INTEGRATOR_SIGNER` are removed from the CLI's environment.
      Each listing must name exactly the projects the fetched `refs/the-valley/projects` lists;
-  6. for each project a read grant to `anyone` names, or for every project when a grant to `anyone`
-     covers every project, and that the host declaration places in a group, fetches `main` from the
-     URL the pending listing gives into a mirror,
-     `$XDG_CACHE_HOME/valley-web-publish/repos/<project>.git`, and reads the project's own
+  6. for each project that the host declaration places in a group and that a read grant to `anyone`
+     covers (by project name or `"all"`), fetches `main` from the URL in the pending listing into a
+     mirror, `$XDG_CACHE_HOME/valley-web-publish/repos/<project>.git`, and reads the project's own
      `policy/read` at that `main`;
   7. runs `valley knot show --project <project> <id> --json` in the publisher's own bare repository,
      for every knot of every public project;
@@ -2343,16 +2343,17 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   at step 3 fails the pass, because it names another instance. Two instances can serve projects of
   the same name, and the pass reads only the one given.
 
-- **Visibility:** A project is public when `anyone` may read it at the destination and it has a web
-  URL: its own `policy/read` names `anyone`, a read grant to `anyone` at an `edge-read` boundary for
-  `--destination` covers the project with the identity its policy declares, and the host declaration
-  places it in a group. Every other project is private: one that no grant to `anyone` covers, one in
-  no group, one with no `main`, one with no `policy/read`, one whose policy `schema/read.cue`
-  rejects or that names another project, and one whose policy omits `anyone`. A project that a grant
-  to `anyone` names and that is in no group is reported on `stderr`, and its `policy/read` is not
-  read. An invalid policy or registry is reported on `stderr`. A missing or invalid registry makes
-  every project private, so the pass builds an empty export. Grants to named principals, including
-  the operator, publish nothing, and `valley-web` serves all requests anonymously.
+- **Visibility:** A project is public when `anyone` may read it at the destination and the host
+  declaration places it in a group: its own `policy/read` names `anyone`, a read grant to `anyone`
+  at an `edge-read` boundary for `--destination` covers the project with the identity its policy
+  declares, and `--host` gives it a `group`. Every other project is private: one that no grant to
+  `anyone` covers, one in no group, one with no `main`, one with no `policy/read`, one whose policy
+  `schema/read.cue` rejects or that names another project, and one whose policy omits `anyone`. When
+  a read grant to `anyone` covers a project that has no group in `--host`, the publisher warns on
+  `stderr` and skips reading its `policy/read`. An invalid policy or registry is reported on
+  `stderr`. A missing or invalid registry makes every project private, so the pass builds an empty
+  export. Grants to named principals, including the operator, publish nothing, and `valley-web`
+  serves all requests anonymously.
 - **Read failures:** A failure to read aborts the pass. The pass then writes no output export and
   uploads nothing, though it may already have written the caches it reads through. The pass fails if
   either schema fails to load, if the instance repository or its project list cannot be fetched, or
@@ -2724,17 +2725,16 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
 | `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>` |
 | `/-/…`                                                  | Reserved for the server's own routes. Every path under `/-/` answers `404`            |
 
-- **Groups:** `<group>` is the group's `name` in the export, and `<project>` the project's web name,
-  its `name` in the export, which need not be its identifier. A group's identifier is never a route,
-  and neither is a project's identifier unless it is the project's web name too. `/<group>` and
-  `/<group>/` answer `404`. Names are matched exactly, in their case. A project the export holds
-  with no group has no route.
-- **Aliases and former names:** A group's alias redirects to the same path under the group's name,
-  and a project's short alias to the same path under `/<group>/<project>`. A project's former name
-  redirects to the same path under its group and its web name. The redirect is permanent, `308`. Its
-  `Location` keeps the rest of the path after the alias or former name and the query as the reader
-  sent them, escapes, dot segments and a `?` with nothing after it included, and the server does not
-  clean it. A `308` has no body.
+- **Groups:** `<group>` is the group's `name` in the export, and `<project>` is the project's web
+  `name` in the export. Routes match the group's `name` and the project's web `name` rather than
+  their identifiers. Names are matched in exact case. `/<group>` and `/<group>/` answer `404`. A
+  project in the export without a group has no route.
+- **Aliases and former names:** A group's alias redirects to the same path under the group's `name`,
+  and a project's short alias redirects to the same path under `/<group>/<project>`. A project's
+  former name redirects to the same path under `/<group>/<project>`. Every redirect is permanent
+  (`308`) with no response body. Its `Location` header preserves the remainder of the path and the
+  raw query string as sent, including percent-escapes, dot segments, and a trailing `?` with an
+  empty query.
 - **Reserved paths:** Every path other than `/` and `/-/…` starts with a group's name or an alias.
   Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a letter or digit. A group or
   a project may be named `source`, `knots`, `web-export`, or `robots.txt` and is served on every
@@ -2874,11 +2874,11 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   check runs before the request opens a generation.
   - A tree, file, or log request needs a `git` slot. At most 8 such requests hold a `git` slot at
     once (`server.MaxGit`), and at most 16 more wait for a slot to open (`server.MaxWaiting`). The
-    server reads a request's path shape, `/<name>/<name>/source/(tree|blob|log)/…`, before it reads
-    the export, so a request through a group's alias or a project's former name with that shape
-    takes a slot too and gives it back when it redirects. When all 8 slots and 16 waiting places are
-    full, a new source request answers `503` immediately with `Retry-After: 5`, and so does such a
-    request, rather than redirecting.
+    server checks whether the request path has the shape `/<name>/<name>/source/(tree|blob|log)/…`
+    before reading the export. A request with that shape under a group alias or a project's former
+    name also takes a `git` slot and releases it when redirecting. When all 8 slots and 16 waiting
+    places are full, any request with that path shape answers `503` immediately with
+    `Retry-After: 5`.
   - A source request releases its `git` slot before rendering HTML, and every request releases its
     generation before writing the response to the client (see
     [Slow readers](./architecture.md#slow-readers)).
@@ -2902,12 +2902,12 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
     `Retry-After: 5`.
   - The "Busy" (`503`), "Page too large" (`500`) and "Not found" (`404`) pages are rendered once
     when the server starts. They show no export data and take none of the 64 MiB budget.
-- **Access:** Every route that names a project checks that the export holds the project with
-  visibility `public`, in a group. Every `404` serves the same page, byte for byte, whether the
-  project is hidden or missing, the knot or path does not exist, or the commit is not served.
-- **Not found:** The `404` page shows a box of preformatted text, in the server's own stylesheet,
-  whose last line, "Return to the source", links to `/`. It has no navigation, no export age and no
-  site name, and its title is "Not found":
+- **Access:** Every project route checks that the export lists the project with `public` visibility
+  and a `group`. Every `404` serves the same page, byte for byte, whether the project is hidden or
+  missing, the knot or path does not exist, or the commit is not served.
+- **Not found:** The `404` page is titled "Not found" and shows a box of preformatted text in the
+  server's stylesheet. Its last line, "Return to the source", links to `/`. The page omits
+  navigation, the export age, and the site name:
 
   ```text
   ╔═════════════════════════════════════╗
@@ -2964,26 +2964,26 @@ cue vet -c schema/valley.cue valley.cue
 | `projects.<name>.protection` (`#Protection`)   | optional                                       | When omitted, no refs in `<name>` are protected. When present: `refs` (`[#RefPattern, ...#RefPattern] \| *["refs/heads/main"]`, where `#RefPattern` is `=~"^refs/[^ ~^:?\\\\[]+$"`) and `writers` (`[...#PrincipalName] \| *[]`).     |
 | `projects.<name>.grants.<grant>` (`#RefGrant`) | `[#GrantName]: #RefGrant`                      | Opens ref patterns outside `refs/heads/`, `refs/replace/`, `refs/notes/`, and `refs/the-valley/` (`#GrantPattern`: `#RefPattern & !~"^refs/(heads\|replace\|notes\|the-valley)/"`) to `writers: [#PrincipalName, ...#PrincipalName]`. |
 | `projects.<name>.group`                        | optional `#GroupID`                            | The identifier of the project's group, which `groups` must declare. A project in no group has no web URL.                                                                                                                             |
-| `projects.<name>.name`                         | `#ProjectName \| *<name>`                      | The project's web name, the second segment of its web URLs, `/<group name>/<web name>/…`. It defaults to the identifier, `<name>`, and is a `#WebName` in a group. A project with a web name other than `<name>` must have a `group`. |
-| `projects.<name>.formerNames`                  | `[...#WebName] \| *[]`                         | Former web names within the group: `/<group name>/<former>/…` redirects to `/<group name>/<web name>/…`. A project with former names must have a `group`.                                                                             |
-| `projects.<name>.aliases`                      | `[...#WebName] \| *[]`                         | Short aliases: `/<alias>/…` redirects to `/<group name>/<web name>/…`. A project with aliases must have a `group`.                                                                                                                    |
-| `groups.<id>` (`#Group`)                       | `[#GroupID]: #Group`                           | The groups, keyed by an identifier that never changes. `#GroupID` and `#WebName` are `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"` with at most 64 runes.                                                                                        |
-| `groups.<id>.name`                             | `#WebName`                                     | The first segment of the group's projects' web URLs.                                                                                                                                                                                  |
-| `groups.<id>.aliases`                          | `[...#WebName] \| *[]`                         | Other first segments, which redirect to the same path under `name`.                                                                                                                                                                   |
+| `projects.<name>.name`                         | `#ProjectName \| *<name>`                      | The project's web name, used as the second segment of its web URLs (`/<group name>/<web name>/…`). It defaults to `<name>` and is constrained to `#WebName` when `group` is set. Setting `name` to another value requires `group`.    |
+| `projects.<name>.formerNames`                  | `[...#WebName] \| *[]`                         | Former web names within the group: `/<group name>/<former>/…` redirects to `/<group name>/<web name>/…`. Setting `formerNames` requires `group`.                                                                                      |
+| `projects.<name>.aliases`                      | `[...#WebName] \| *[]`                         | Short aliases: `/<alias>/…` redirects to `/<group name>/<web name>/…`. Setting `aliases` requires `group`.                                                                                                                            |
+| `groups.<id>` (`#Group`)                       | `[#GroupID]: #Group`                           | Top-level map of groups, keyed by each group's permanent identifier. `#GroupID` and `#WebName` match `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"` with at most 64 runes.                                                                        |
+| `groups.<id>.name`                             | `#WebName`                                     | The group's web name, used as the first segment of its projects' web URLs.                                                                                                                                                            |
+| `groups.<id>.aliases`                          | `[...#WebName] \| *[]`                         | Additional first-segment names that redirect to the same path under `name`.                                                                                                                                                           |
 | `backup` (`#Backup`)                           | optional                                       | Host-level backup policy: `enable` (`bool \| *true`), `target` (`"restic-sftp"`), `cadence` (`"nightly"`), `retention` (`{ daily: int & >0 \| *7, weekly: int & >0 \| *4, monthly: int & >0 \| *6 }`).                                |
 
-`cue vet` refuses a project whose `group` is not declared, and a project with a web name of its own,
-former names or aliases and no group. It refuses two group names, group aliases or project aliases
-that differ at most in ASCII case, including a group alias equal to its own name. It refuses two web
-names or former names of one group's projects that differ at most in ASCII case. Two groups may each
-hold a project of one web name. Each refusal lands in a hidden field, `_groupless`, `_firstSegments`
-or `_secondSegments`, and the error names it (see
-[Groups and web URLs](./architecture.md#groups-and-web-urls)).
+`cue vet` refuses a project whose `group` is undeclared in `groups`, or a project without a `group`
+that sets a custom `name`, `formerNames`, or `aliases`. It refuses any two group names, group
+aliases, or project aliases that match ignoring ASCII case, including a group alias that matches the
+group's own `name`. Within each group, it refuses any two project web names or former names that
+match ignoring ASCII case. Projects in different groups may share a web name. Each check evaluates a
+hidden field (`_groupless`, `_firstSegments`, or `_secondSegments`), which appears in the CUE error
+on failure (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
-A former name redirects only while `formerNames` declares it. Removing it frees the name for reuse:
-another project of the group may take it as its web name or as a former name, and the old URLs
-`/<group name>/<former>/…` then address that project. While no project takes it, those URLs answer
-`404`.
+A former name redirects only while it remains in `formerNames`. Removing it frees the name within
+that group: while no project claims it, `/<group name>/<former>/…` answers `404`, and if another
+project in the group later takes it as its `name` or in `formerNames`, those URLs resolve to that
+project.
 
 ### Verification policy (`schema/verification.cue`)
 

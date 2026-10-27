@@ -59,33 +59,43 @@
 //
 // # Routes
 //
-// The server answers GET and HEAD alone:
+// The server answers GET and HEAD alone. A project's pages are under its
+// group's name and its own:
 //
-//	/                                       the plan page
-//	/<project>/                             a redirect to the tree at main's tip
-//	/<project>/knots/<id>                   one knot, with its body and comments
-//	/<project>/source/                      a redirect to the tree at main's tip
-//	/<project>/source/tree/<commit>/<path>  a directory and its README
-//	/<project>/source/blob/<commit>/<path>  a file
-//	/<project>/source/log/<commit>          the history that ends at a commit
-//	/<project>/source/log/<commit>?from=…   an older page of that history
-//	/-/...                                  the server's own paths
+//	/                                                 the plan page
+//	/<group>/<project>/                               a redirect to the tree at main's tip
+//	/<group>/<project>/knots/<id>                     one knot, with its body and comments
+//	/<group>/<project>/source/                        a redirect to the tree at main's tip
+//	/<group>/<project>/source/tree/<commit>/<path>    a directory and its README
+//	/<group>/<project>/source/blob/<commit>/<path>    a file
+//	/<group>/<project>/source/log/<commit>            the history that ends at a commit
+//	/<group>/<project>/source/log/<commit>?from=…     an older page of that history
+//	/<alias>/…                                        a permanent redirect
+//	/-/...                                            the server's own paths
 //
-// Every path but / and those under /-/ starts with a project's name. No
-// project name starts with "-", so no project's path is ever one of the
+// A group's alias redirects to the same path under the group's name, and
+// a project's short alias to the same path under /<group>/<project>. The
+// redirect keeps the rest of the path and the query as they were sent.
+//
+// Every path but / and those under /-/ starts with a group's name or an
+// alias. No name starts with "-", so no group's path is ever one of the
 // server's own, whatever paths the server adds there. It serves no page
-// under /-/, and answers each path there with the one 404.
+// under /-/, and answers each path there with the one 404. A project's
+// name is unique within its group, and package export refuses an export
+// whose group names and aliases collide.
 //
-// Every source link names its project, a full commit ID and a path. A
-// commit is served only when export.Reachable finds it reachable from the
-// project's published source tip, and a path is resolved one tree entry
-// at a time from that commit's tree, so no other object can be named.
+// Every source link names its group and project, a full commit ID and a
+// path. A commit is served only when export.Reachable finds it reachable
+// from the project's published source tip, and a path is resolved one
+// tree entry at a time from that commit's tree, so no other object can be
+// named.
 //
 // # Access
 //
-// Every route checks that the export holds its project as public. A
-// project it does not hold answers exactly as a project that does not
-// exist: every 404 is the same page.
+// Every route checks that the export holds its project as public, in a
+// group. A project it does not hold answers exactly as a project that
+// does not exist: every 404 is the same page, made once when the server
+// starts.
 //
 // # Safety
 //
@@ -319,10 +329,11 @@ type request struct {
 	// The response: a status and a page, or a redirect. It is written
 	// once the request has given back its generation and git slot, and
 	// the page's pieces are given back to the budget once it is written.
-	status   int
-	ctype    string
-	body     *body
-	location string
+	status    int
+	ctype     string
+	body      *body
+	location  string
+	permanent bool
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -388,10 +399,13 @@ func (q *request) serve() {
 }
 
 // runsGit reports whether a path is a source route that reads a
-// repository: a tree, a file or a log of something that may be a project.
+// repository: a tree, a file or a log of something that may be a group's
+// project. It reads the path's shape alone, before the export is read, so
+// a path through a group's alias that has the shape takes a git slot too,
+// and gives it back when it redirects.
 func runsGit(parts []string) bool {
-	return len(parts) >= 3 && export.ValidName(parts[0]) && parts[1] == "source" &&
-		(parts[2] == "tree" || parts[2] == "blob" || parts[2] == "log")
+	return len(parts) >= 4 && export.ValidName(parts[0]) && export.ValidName(parts[1]) && parts[2] == "source" &&
+		(parts[3] == "tree" || parts[3] == "blob" || parts[3] == "log")
 }
 
 // giveSlot gives back the request's git slot, when it holds one.
@@ -675,7 +689,8 @@ func (c *contextReader) Read(p []byte) (int, error) {
 
 // route dispatches on the path's segments, each unescaped on its own, so
 // an escaped slash stays inside its segment. ok is false for a path whose
-// segments do not unescape.
+// segments do not unescape. The first segment is a group's name or an
+// alias, and under a group's name the second is a project's name.
 func (q *request) route(parts []string, ok bool) {
 	switch {
 	case !ok:
@@ -684,30 +699,67 @@ func (q *request) route(parts []string, ok bool) {
 		q.plan()
 	case parts[0] == own:
 		q.notFound()
-	case len(parts) == 1, len(parts) == 2 && parts[1] == "":
-		q.home(parts[0])
-	case len(parts) == 3 && parts[1] == "knots":
-		q.knot(parts[0], parts[2])
-	case len(parts) >= 2 && parts[1] == "source":
-		q.source(parts[0], parts[2:])
+	default:
+		if to, ok := q.idx.aliases[parts[0]]; ok {
+			q.moved(to)
+			return
+		}
+		var p *export.Project
+		if len(parts) >= 2 {
+			p = q.idx.groups[parts[0]][parts[1]]
+		}
+		if p == nil {
+			q.notFound()
+			return
+		}
+		q.projectRoute(p.Name, parts[2:])
+	}
+}
+
+// projectRoute dispatches on the segments of a path after its group's and
+// its project's names.
+func (q *request) projectRoute(project string, rest []string) {
+	switch {
+	case len(rest) == 0, len(rest) == 1 && rest[0] == "":
+		q.home(project)
+	case len(rest) == 2 && rest[0] == "knots":
+		q.knot(project, rest[1])
+	case len(rest) >= 1 && rest[0] == "source":
+		q.source(project, rest[1:])
 	default:
 		q.notFound()
 	}
 }
 
-// own is the first segment of the server's own paths, /-/. No project's
-// name can be it, or start with it.
+// moved answers a path under an alias with a permanent redirect to the
+// same path under to, the escaped URL the alias stands for. The rest of
+// the path after the alias, and the query, are kept as they were sent.
+func (q *request) moved(to string) {
+	esc := strings.TrimPrefix(q.r.URL.EscapedPath(), "/")
+	rest := ""
+	if i := strings.IndexByte(esc, '/'); i >= 0 {
+		rest = esc[i:]
+	}
+	if q.r.URL.RawQuery != "" {
+		rest += "?" + q.r.URL.RawQuery
+	}
+	q.location, q.permanent = to+rest, true
+}
+
+// own is the first segment of the server's own paths, /-/. No group's
+// name, and no alias, can be it, or start with it.
 const own = "-"
 
-// home answers /<project>/, and /<project>, with a redirect to the
-// project's page: the tree at its published tip, with its README.
+// home answers /<group>/<project>/, and /<group>/<project>, with a
+// redirect to the project's page: the tree at its published tip, with its
+// README.
 func (q *request) home(project string) {
 	p, ok := q.project(project)
 	if !ok {
 		q.notFound()
 		return
 	}
-	q.redirect(treeURL(p.Name, p.SourceTip, nil))
+	q.redirect(treeURL(q.idx.bases[p.Name], p.SourceTip, nil))
 }
 
 func segments(escaped string) ([]string, bool) {
@@ -727,25 +779,24 @@ func segments(escaped string) ([]string, bool) {
 }
 
 // project is the export's project called name, when the export holds it
-// as public. Every route that names a project asks here first, and a
-// project it refuses answers as one that does not exist.
+// as public, in a group. Every route that names a project asks here
+// first, and a project it refuses answers as one that does not exist.
 func (q *request) project(name string) (*export.Project, bool) { return q.idx.project(name) }
 
 func (idx *index) project(name string) (*export.Project, bool) {
 	p, ok := idx.projects[name]
-	if !ok || p.Visibility != export.Public {
+	if _, placed := idx.bases[name]; !ok || p.Visibility != export.Public || !placed {
 		return nil, false
 	}
 	return p, true
 }
 
-// notFound is the one 404 page, whatever was not found. It names nothing
-// of the request, so a hidden project, a missing one, an unreachable
-// commit and a missing path all answer alike.
+// notFound is the one 404 page, whatever was not found. It is made once,
+// when the server starts, and names nothing of the request or the export,
+// so a hidden project, a missing one, an unreachable commit and a missing
+// path all answer alike, byte for byte.
 func (q *request) notFound() {
-	q.page(http.StatusNotFound, "error", "Not found", errorPage{
-		Heading: "Not found", Text: "Nothing is published at this address.",
-	})
+	q.static(http.StatusNotFound, htmlType, notFoundPage)
 }
 
 // fail logs err and answers with the one 500 page, which says nothing of
@@ -786,9 +837,14 @@ func (q *request) redirect(url string) { q.location = url }
 
 // write writes the rendered response, or nothing for a reader that went
 // away. It returns once the response is written, or the connection
-// failed or timed out.
+// failed or timed out. A permanent redirect names its location as it was
+// made, with no cleaning, so the path it redirects to is the one the
+// reader sent under another name.
 func (q *request) write() {
 	switch {
+	case q.location != "" && q.permanent:
+		q.w.Header().Set("Location", q.location)
+		q.w.WriteHeader(http.StatusPermanentRedirect)
 	case q.location != "":
 		http.Redirect(q.w, q.r, q.location, http.StatusFound)
 	case q.status != 0:

@@ -230,7 +230,7 @@ func TestPlanPage(t *testing.T) {
 	}
 
 	// The bug nobody claims and nothing blocks is free to start.
-	if !strings.Contains(page, `<i class="k ready" role="img" aria-label="free to start" title="free to start"></i><span class="body"><a class="id" href="/app/knots/bd-a000004">`) {
+	if !strings.Contains(page, `<i class="k ready" role="img" aria-label="free to start" title="free to start"></i><span class="body"><a class="id" href="/tools/app/knots/bd-a000004">`) {
 		t.Error("bd-a000004 is not shown as free to start")
 	}
 
@@ -248,7 +248,7 @@ func TestPlanPage(t *testing.T) {
 			t.Errorf("the plan page does not show %q", want)
 		}
 	}
-	for _, unwanted := range append([]string{"/site/knots/", "/site/source/", "http://", "https://", `class="chip stale"`}, unpublishedText...) {
+	for _, unwanted := range append([]string{"/tools/site/knots/", "/tools/site/source/", "/site/knots/", "/site/source/", "http://", "https://", `class="chip stale"`}, unpublishedText...) {
 		if strings.Contains(page, unwanted) {
 			t.Errorf("the plan page holds %q", unwanted)
 		}
@@ -320,13 +320,13 @@ var unpublishedText = []string{"site:", "oc-b000001", "oc-b000002", "lands in si
 // named as missing.
 func TestKnotPage(t *testing.T) {
 	h := newHarness(t)
-	page := h.page("/app/knots/oc-a000002")
+	page := h.page("/tools/app/knots/oc-a000002")
 	for _, want := range []string{
 		"Each milestone is listed with its progress.",
 		"Start with the milestones that have open children.",
 		"Claimed; the change is ready for approval.",
 		`<span class="chip quiet">edited</span><span>2026-10-25 10:30 UTC by agent</span>`,
-		`<a href="/app/knots/oc-a000001">Readers browse the app&#39;s plan</a>`,
+		`<a href="/tools/app/knots/oc-a000001">Readers browse the app&#39;s plan</a>`,
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the knot's page does not show %q", want)
@@ -336,8 +336,8 @@ func TestKnotPage(t *testing.T) {
 		t.Errorf("%d comments are marked edited; one was edited", n)
 	}
 
-	page = h.page("/app/knots/oc-a000003")
-	if !strings.Contains(page, `<a href="/app/knots/oc-a000002">The plan page lists milestones</a>`) {
+	page = h.page("/tools/app/knots/oc-a000003")
+	if !strings.Contains(page, `<a href="/tools/app/knots/oc-a000002">The plan page lists milestones</a>`) {
 		t.Error("the local blocker is not linked")
 	}
 	for _, want := range []string{
@@ -348,16 +348,16 @@ func TestKnotPage(t *testing.T) {
 			t.Errorf("the knot's page does not show %q", want)
 		}
 	}
-	page += h.page("/app/knots/bd-a000004")
+	page += h.page("/tools/app/knots/bd-a000004")
 	if !strings.Contains(page, "<dt>Lands in</dt><dd>a knot in an unpublished project</dd>") {
 		t.Error("a target in the hidden project is not shown as unpublished")
 	}
-	for _, unwanted := range append([]string{"/site/knots/", "/site/source/"}, unpublishedText...) {
+	for _, unwanted := range append([]string{"/tools/site/knots/", "/tools/site/source/", "/site/knots/", "/site/source/"}, unpublishedText...) {
 		if strings.Contains(page, unwanted) {
 			t.Errorf("the knot's page shows %q", unwanted)
 		}
 	}
-	if w := h.get("/app/knots/oc-fffffff"); w.Code != http.StatusNotFound {
+	if w := h.get("/tools/app/knots/oc-fffffff"); w.Code != http.StatusNotFound {
 		t.Errorf("a missing knot answered %d", w.Code)
 	}
 
@@ -373,7 +373,7 @@ func TestKnotPage(t *testing.T) {
 			}
 		}
 	})
-	page = h.page("/app/knots/oc-a000003")
+	page = h.page("/tools/app/knots/oc-a000003")
 	for _, want := range []string{
 		`<span class="mono">app:oc-fffffff</span> <span class="muted">not found in its graph</span>`,
 		`<span class="mono">oc-eeeeeee</span> <span class="muted">not found</span>`,
@@ -393,7 +393,10 @@ func TestKnotPage(t *testing.T) {
 
 // A project the export does not hold as public answers every route
 // exactly as a project that does not exist, even when its repository is
-// in the generation's directory.
+// in the generation's directory: under its group's name, under a group
+// that does not exist, and under the short alias the instance gives it,
+// which the export does not carry. Through the group's alias, both answer
+// with the same redirect.
 func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 	h := newHarness(t)
 	g := h.active()
@@ -401,69 +404,175 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	siteTip := git(t, h.f.Repos["site"], nil, "rev-parse", export.MainRef)
-	notFound := h.get("/app/knots/oc-fffffff")
+	notFound := h.get("/tools/app/knots/oc-fffffff")
 	for _, route := range []string{
-		"/%s",
-		"/%s/",
-		"/%s/knots/oc-b000001",
-		"/%s/source",
-		"/%s/source/",
-		"/%s/source/tree/" + siteTip + "/",
-		"/%s/source/blob/" + siteTip + "/README.md",
-		"/%s/source/log/" + siteTip,
-		"/%s/source/tree/" + siteTip + "/no/such/path/",
-		"/%s/source/anything",
+		"",
+		"/",
+		"/knots/oc-b000001",
+		"/source",
+		"/source/",
+		"/source/tree/" + siteTip + "/",
+		"/source/blob/" + siteTip + "/README.md",
+		"/source/log/" + siteTip,
+		"/source/tree/" + siteTip + "/no/such/path/",
+		"/source/anything",
 	} {
-		hidden, missing := h.get(fmt.Sprintf(route, "site")), h.get(fmt.Sprintf(route, "nosuch"))
-		if hidden.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
-			t.Errorf("%s answered %d hidden and %d missing", route, hidden.Code, missing.Code)
+		for _, pair := range [][2]string{
+			{"/tools/site" + route, "/tools/nosuch" + route},
+			{"/core/site" + route, "/nosuch/site" + route},
+			{"/site" + route, "/nosuch" + route},
+		} {
+			hidden, missing := h.get(pair[0]), h.get(pair[1])
+			if hidden.Code != http.StatusNotFound || missing.Code != http.StatusNotFound {
+				t.Errorf("%s answered %d hidden, and %s %d missing", pair[0], hidden.Code, pair[1], missing.Code)
+			}
+			if fmt.Sprint(hidden.Header()) != fmt.Sprint(missing.Header()) {
+				t.Errorf("%s answered with other headers hidden than missing:\n%v\n%v", pair[0], hidden.Header(), missing.Header())
+			}
+			if !bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) || !bytes.Equal(hidden.Body.Bytes(), notFound.Body.Bytes()) {
+				t.Errorf("%s answered with another page hidden than missing", pair[0])
+			}
 		}
-		if fmt.Sprint(hidden.Header()) != fmt.Sprint(missing.Header()) {
-			t.Errorf("%s answered with other headers hidden than missing:\n%v\n%v", route, hidden.Header(), missing.Header())
-		}
-		if !bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) || !bytes.Equal(hidden.Body.Bytes(), notFound.Body.Bytes()) {
-			t.Errorf("%s answered with another page hidden than missing", route)
+		hidden, missing := h.get("/t/site"+route), h.get("/t/nosuch"+route)
+		if hidden.Code != http.StatusPermanentRedirect || hidden.Header().Get("Location") != "/tools/site"+route ||
+			missing.Code != http.StatusPermanentRedirect || missing.Header().Get("Location") != "/tools/nosuch"+route ||
+			!bytes.Equal(hidden.Body.Bytes(), missing.Body.Bytes()) {
+			t.Errorf("/t/site%s answered %d to %q, and /t/nosuch%s %d to %q", route, hidden.Code, hidden.Header().Get("Location"),
+				route, missing.Code, missing.Header().Get("Location"))
 		}
 	}
 }
 
-// A project's name may be any word the server's routes use: source,
-// knots, or web-export, the receiver's first segment. Each such project
-// is served on every route, and /<project>/ redirects to its tree. The
-// server's own paths, under /-/, are never a project's.
+// A group's or a project's name may be any word the server's routes use:
+// source, knots, or web-export, the receiver's first segment. A project
+// so named, in a group so named, is served on every route, and
+// /<group>/<project>/ redirects to its tree. The server's own paths, under
+// /-/, are never a group's, and a project's path without its group is no
+// route.
 func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 	for _, name := range []string{"source", "knots", "web-export"} {
 		t.Run(name, func(t *testing.T) {
 			h := newHarness(t)
 			h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{name: h.f.Bundles["app"]},
-				func(e *export.Export) { e.Projects[0].Name = name })
+				func(e *export.Export) {
+					e.Groups[0].Name = name
+					e.Projects[0].Name = name
+				})
 			tip := h.tip()
-			tree := "/" + name + "/source/tree/" + tip + "/"
-			if plan := h.page("/"); !strings.Contains(plan, `href="/`+name+`/knots/oc-a000002"`) {
+			base := "/" + name + "/" + name
+			tree := base + "/source/tree/" + tip + "/"
+			if plan := h.page("/"); !strings.Contains(plan, `href="`+base+`/knots/oc-a000002"`) {
 				t.Errorf("the plan page does not link %s's knots", name)
 			}
 			for _, target := range []string{
-				"/" + name + "/knots/oc-a000002",
+				base + "/knots/oc-a000002",
 				tree,
-				"/" + name + "/source/blob/" + tip + "/docs/guide.md",
-				"/" + name + "/source/log/" + tip,
+				base + "/source/blob/" + tip + "/docs/guide.md",
+				base + "/source/log/" + tip,
 			} {
 				h.page(target)
 			}
-			for _, target := range []string{"/" + name + "/", "/" + name, "/" + name + "/source/"} {
+			for _, target := range []string{base + "/", base, base + "/source/"} {
 				if w := h.get(target); w.Code != http.StatusFound || w.Header().Get("Location") != tree {
 					t.Errorf("GET %s answered %d to %q, not a redirect to %s", target, w.Code, w.Header().Get("Location"), tree)
 				}
 			}
 			for _, target := range []string{
 				"/-", "/-/", "/-/" + name + "/", "/-/knots/oc-a000002", "/-/source/tree/" + tip + "/",
-				"/-/" + name + "/source/tree/" + tip + "/", "/app/", "/site/", "/site",
+				"/-/" + name + "/" + name + "/source/tree/" + tip + "/", "/-" + base + "/",
+				"/" + name + "/source/tree/" + tip + "/", "/" + name + "/knots/oc-a000002",
+				"/" + name, "/" + name + "/", "/tools/app/", "/core/" + name + "/", "/site/", "/site",
 			} {
 				if w := h.get(target); w.Code != http.StatusNotFound {
 					t.Errorf("GET %s answered %d, not 404", target, w.Code)
 				}
 			}
 		})
+	}
+}
+
+// An alias answers with a permanent redirect to the same path under what
+// it stands for: a group's alias to the group's name, and a project's
+// short alias to /<group>/<project>. The rest of the path and the query
+// are kept as they were sent, escapes and dot segments too, and the
+// redirect leads to the page. A group's identifier, a name in another
+// case, and a group with no project named answer 404.
+func TestAliasesRedirectPermanently(t *testing.T) {
+	h := newHarness(t)
+	tip := h.tip()
+	for from, to := range map[string]string{
+		"/t":                      "/tools",
+		"/t/":                     "/tools/",
+		"/t/app/knots/oc-a000002": "/tools/app/knots/oc-a000002",
+		"/app":                    "/tools/app",
+		"/app/":                   "/tools/app/",
+		"/app/knots/oc-a000002":   "/tools/app/knots/oc-a000002",
+		"/app/source/log/" + tip + "?from=" + tip:        "/tools/app/source/log/" + tip + "?from=" + tip,
+		"/app/source/blob/" + tip + "/docs%2Fguide.md":   "/tools/app/source/blob/" + tip + "/docs%2Fguide.md",
+		"/app/source/blob/" + tip + "/docs/../README.md": "/tools/app/source/blob/" + tip + "/docs/../README.md",
+		"/t/app/source/tree/" + tip + "/docs/":           "/tools/app/source/tree/" + tip + "/docs/",
+		"/app//knots":                                    "/tools/app//knots",
+	} {
+		for _, method := range []string{"GET", "HEAD"} {
+			w := h.do(method, from)
+			if w.Code != http.StatusPermanentRedirect || w.Header().Get("Location") != to {
+				t.Errorf("%s %s answered %d to %q, not a permanent redirect to %s", method, from, w.Code, w.Header().Get("Location"), to)
+			}
+		}
+	}
+	for _, target := range []string{"/tools/app/knots/oc-a000002", "/tools/app/source/tree/" + tip + "/docs/"} {
+		h.page(target)
+	}
+	if w := h.get("/app/"); w.Code == http.StatusPermanentRedirect {
+		if next := h.get(w.Header().Get("Location")); next.Code != http.StatusFound ||
+			next.Header().Get("Location") != "/tools/app/source/tree/"+tip+"/" {
+			t.Errorf("/app/ leads to %d %q, not to app's tree", next.Code, next.Header().Get("Location"))
+		}
+	}
+	for _, target := range []string{"/tools", "/tools/", "/core/app/", "/Tools/app/", "/T/app/", "/App/", "/tools/App/"} {
+		if w := h.get(target); w.Code != http.StatusNotFound {
+			t.Errorf("GET %s answered %d, not 404", target, w.Code)
+		}
+	}
+}
+
+// Every 404 is the one page, made once: the box of text, whose last line
+// links to the plan, with no navigation, no export's age and no site name.
+// It stays the same byte for byte while the export changes.
+func TestNotFoundIsTheOnePage(t *testing.T) {
+	h := newHarness(t)
+	w := h.get("/tools/nosuch/")
+	if w.Code != http.StatusNotFound || w.Header().Get("Content-Type") != "text/html; charset=utf-8" {
+		t.Fatalf("a missing project answered %d, %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	page := w.Body.String()
+	box := `<pre class="lost">
+╔═════════════════════════════════════╗
+║                                     ║
+║   THE WAY THAT CAN BE FOUND         ║
+║   IS NOT THE ETERNAL WAY            ║
+║                                     ║
+║   The page you seek exists          ║
+║   only in non-existence.            ║
+║                                     ║
+║   <a href="/">Return to the source</a>              ║
+║                                     ║
+╚═════════════════════════════════════╝
+</pre>`
+	if !strings.Contains(page, box) {
+		t.Errorf("the 404 page does not hold the box:\n%s", page)
+	}
+	for _, unwanted := range []string{"<nav", "Collected", "app source", exporttest.Instance, exporttest.Destination, "tools"} {
+		if strings.Contains(page, unwanted) {
+			t.Errorf("the 404 page holds %q:\n%s", unwanted, page)
+		}
+	}
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
+	h.now = h.now.Add(time.Hour)
+	for _, target := range []string{"/nosuch", "/-/", "/tools/app/knots/oc-fffffff", "/tools/app/source/tree/" + strings.Repeat("0", 40) + "/"} {
+		if again := h.get(target); again.Code != http.StatusNotFound || again.Body.String() != page {
+			t.Errorf("GET %s answered %d with another page than the one 404", target, again.Code)
+		}
 	}
 }
 
@@ -477,10 +586,10 @@ func TestUnreachableCommitIsRefused(t *testing.T) {
 	readme := git(t, repo, nil, "rev-parse", tip+":README.md")
 	side := git(t, repo, nil, "commit-tree", tree, "-p", tip, "-m", "a commit main does not reach")
 	parent := git(t, repo, nil, "rev-parse", tip+"~2")
-	notFound := h.get("/app/knots/oc-fffffff").Body.String()
+	notFound := h.get("/tools/app/knots/oc-fffffff").Body.String()
 
 	for _, commit := range []string{side, tree, readme, tip[:12], "main", "HEAD", strings.Repeat("0", 40), tip + "~1"} {
-		for _, route := range []string{"/app/source/tree/%s/", "/app/source/blob/%s/README.md", "/app/source/log/%s"} {
+		for _, route := range []string{"/tools/app/source/tree/%s/", "/tools/app/source/blob/%s/README.md", "/tools/app/source/log/%s"} {
 			target := fmt.Sprintf(route, commit)
 			w := h.get(target)
 			if w.Code != http.StatusNotFound || w.Body.String() != notFound {
@@ -490,7 +599,7 @@ func TestUnreachableCommitIsRefused(t *testing.T) {
 	}
 
 	// A commit the tip reaches is served, as that commit had it.
-	page := h.page("/app/source/blob/" + parent + "/README.md")
+	page := h.page("/tools/app/source/blob/" + parent + "/README.md")
 	if !strings.Contains(page, "A synthetic project for the web UI&#39;s tests.") || strings.Contains(page, "readme") {
 		t.Errorf("the first README is not served as the first commit had it:\n%s", page)
 	}
@@ -503,14 +612,14 @@ func TestSourceBrowser(t *testing.T) {
 	h := newHarness(t)
 	tip := h.tip()
 
-	for _, path := range []string{"/app/source", "/app/source/"} {
+	for _, path := range []string{"/tools/app/source", "/tools/app/source/"} {
 		w := h.get(path)
-		if w.Code != http.StatusFound || w.Header().Get("Location") != "/app/source/tree/"+tip+"/" {
+		if w.Code != http.StatusFound || w.Header().Get("Location") != "/tools/app/source/tree/"+tip+"/" {
 			t.Fatalf("the project's source answered %d to %q", w.Code, w.Header().Get("Location"))
 		}
 	}
 
-	root := h.page("/app/source/tree/" + tip + "/")
+	root := h.page("/tools/app/source/tree/" + tip + "/")
 	docs, src, readme := strings.Index(root, ">docs/<"), strings.Index(root, ">src/<"), strings.Index(root, ">README.md<")
 	if docs < 0 || src < 0 || readme < 0 || readme < src || src < docs {
 		t.Errorf("the root does not list docs/ and src/ before README.md:\n%s", root)
@@ -518,21 +627,21 @@ func TestSourceBrowser(t *testing.T) {
 	if !strings.Contains(root, `<pre class="text"># app`) {
 		t.Error("the root does not show its README")
 	}
-	if dir := h.page("/app/source/tree/" + tip + "/docs/"); !strings.Contains(dir, ">guide.md<") {
+	if dir := h.page("/tools/app/source/tree/" + tip + "/docs/"); !strings.Contains(dir, ">guide.md<") {
 		t.Error("docs/ does not list guide.md")
 	}
-	file := h.page("/app/source/blob/" + tip + "/docs/guide.md")
+	file := h.page("/tools/app/source/blob/" + tip + "/docs/guide.md")
 	if !strings.Contains(file, `<tr id="L1"><td class="ln"><a href="#L1">1</a></td><td class="src"># Guide</td></tr>`) {
 		t.Errorf("the file is not shown line by line:\n%s", file)
 	}
-	log := h.page("/app/source/log/" + tip)
+	log := h.page("/tools/app/source/log/" + tip)
 	first, last := strings.Index(log, "docs: a guide, and the README names it"), strings.Index(log, "app: the first README")
 	if first < 0 || last < first {
 		t.Errorf("the log does not list main's commits newest first:\n%s", log)
 	}
 
 	links := regexp.MustCompile(`href="(/[^"]*/source/[^"]*)"`)
-	named := regexp.MustCompile(`^/app/source/(tree|blob|log)/[0-9a-f]{40}(/|$)`)
+	named := regexp.MustCompile(`^/tools/app/source/(tree|blob|log)/[0-9a-f]{40}(/|$)`)
 	for _, page := range []string{root, file, log} {
 		for _, m := range links.FindAllStringSubmatch(page, -1) {
 			if !named.MatchString(m[1]) {
@@ -542,13 +651,13 @@ func TestSourceBrowser(t *testing.T) {
 	}
 
 	for _, target := range []string{
-		"/app/source/tree/" + tip + "/README.md/",
-		"/app/source/blob/" + tip + "/docs",
-		"/app/source/blob/" + tip + "/docs/guide.md/",
-		"/app/source/blob/" + tip + "/docs/../README.md",
-		"/app/source/blob/" + tip + "/docs%2Fguide.md",
-		"/app/source/tree/" + tip + "//",
-		"/app/source/log/" + tip + "?from=" + strings.ToUpper(tip),
+		"/tools/app/source/tree/" + tip + "/README.md/",
+		"/tools/app/source/blob/" + tip + "/docs",
+		"/tools/app/source/blob/" + tip + "/docs/guide.md/",
+		"/tools/app/source/blob/" + tip + "/docs/../README.md",
+		"/tools/app/source/blob/" + tip + "/docs%2Fguide.md",
+		"/tools/app/source/tree/" + tip + "//",
+		"/tools/app/source/log/" + tip + "?from=" + strings.ToUpper(tip),
 	} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d", target, w.Code)
@@ -636,29 +745,29 @@ func TestHostileContentRendersInert(t *testing.T) {
 			}
 		}
 	}
-	at := "/app/source/tree/" + tip + "/"
+	at := "/tools/app/source/tree/" + tip + "/"
 	inert(at, h.page(at),
 		`&lt;script&gt;alert(&#34;readme&#34;)&lt;/script&gt;`,
 		`&lt;img src=x onerror=alert(3)&gt;.txt`,
-		`href="/app/source/blob/`+tip+`/%3Cimg%20src=x%20onerror=alert%283%29%3E.txt"`)
-	at = "/app/source/blob/" + tip + "/%3Cimg%20src=x%20onerror=alert%283%29%3E.txt"
+		`href="/tools/app/source/blob/`+tip+`/%3Cimg%20src=x%20onerror=alert%283%29%3E.txt"`)
+	at = "/tools/app/source/blob/" + tip + "/%3Cimg%20src=x%20onerror=alert%283%29%3E.txt"
 	inert(at, h.page(at), ">named<")
-	at = "/app/source/blob/" + tip + "/page.html"
+	at = "/tools/app/source/blob/" + tip + "/page.html"
 	inert(at, h.page(at), `&lt;html&gt;&lt;script&gt;alert(&#34;file&#34;)&lt;/script&gt;&lt;img src=x onerror=alert(2)&gt;&lt;/html&gt;`)
-	at = "/app/source/blob/" + tip + "/big.txt"
+	at = "/tools/app/source/blob/" + tip + "/big.txt"
 	page := h.page(at)
 	inert(at, page, "This file is 1.0 MiB, larger than the 1.0 MiB a page shows.")
 	if len(page) > 64<<10 {
 		t.Errorf("the large file's page is %d bytes", len(page))
 	}
-	at = "/app/source/blob/" + tip + "/binary.bin"
+	at = "/tools/app/source/blob/" + tip + "/binary.bin"
 	inert(at, h.page(at), "This file is binary, 39 bytes, and is not shown.")
-	at = "/app/source/blob/" + tip + "/link"
+	at = "/tools/app/source/blob/" + tip + "/link"
 	inert(at, h.page(at), "A symbolic link to ../../etc/passwd. It is not followed.")
-	at = "/app/source/log/" + tip
+	at = "/tools/app/source/log/" + tip
 	inert(at, h.page(at), "hostile: &lt;script&gt;alert(&#34;subject&#34;)&lt;/script&gt;")
 
-	at = "/app/knots/bd-a000004"
+	at = "/tools/app/knots/bd-a000004"
 	inert(at, h.page(at),
 		`A README holding &lt;script&gt;alert(&#34;knot&#34;)&lt;/script&gt; must show as text.`,
 		`Also &lt;img src=x onerror=alert(1)&gt; in a comment.`)
@@ -686,7 +795,7 @@ func TestOversizedTreeAndHistory(t *testing.T) {
 	tip, bundle := h.commitMain("longer: " + strings.Repeat("a subject past the bound ", (5<<20)/25) + "\n")
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
-	at := "/app/source/tree/" + tip + "/huge/"
+	at := "/tools/app/source/tree/" + tip + "/huge/"
 	page := h.page(at)
 	if !strings.Contains(page, "This directory is larger than a page reads, so only part of it is listed.") {
 		t.Error("huge/ is not marked as listed in part")
@@ -700,14 +809,14 @@ func TestOversizedTreeAndHistory(t *testing.T) {
 	if len(page) > 1<<20 {
 		t.Errorf("huge/'s page is %d bytes", len(page))
 	}
-	if w := h.get("/app/source/blob/" + tip + "/huge/" + name(0)); w.Code != http.StatusOK {
+	if w := h.get("/tools/app/source/blob/" + tip + "/huge/" + name(0)); w.Code != http.StatusOK {
 		t.Errorf("an entry read before MaxRead answered %d", w.Code)
 	}
-	if w := h.get("/app/source/blob/" + tip + "/huge/" + name(14_999)); w.Code != http.StatusNotFound {
+	if w := h.get("/tools/app/source/blob/" + tip + "/huge/" + name(14_999)); w.Code != http.StatusNotFound {
 		t.Errorf("an entry past MaxRead answered %d", w.Code)
 	}
 
-	at = "/app/source/log/" + tip
+	at = "/tools/app/source/log/" + tip
 	page = h.page(at)
 	if !strings.Contains(page, "This page ends early: its commits are larger than a page reads.") {
 		t.Error("the page of history holding a 5 MiB message does not end early")
@@ -756,9 +865,9 @@ func TestResolveSharesOneBudget(t *testing.T) {
 	tip, bundle := h.commitMain("app: two large directories, one in the other\n", files...)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
-	h.page("/app/source/tree/" + tip + "/big/zz/")
-	h.page("/app/source/blob/" + tip + "/big/zz/" + name(0))
-	for _, target := range []string{"/app/source/tree/" + tip + "/big/zz/zz/", "/app/source/blob/" + tip + "/big/zz/zz/f"} {
+	h.page("/tools/app/source/tree/" + tip + "/big/zz/")
+	h.page("/tools/app/source/blob/" + tip + "/big/zz/" + name(0))
+	for _, target := range []string{"/tools/app/source/tree/" + tip + "/big/zz/zz/", "/tools/app/source/blob/" + tip + "/big/zz/zz/f"} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s, through %d bytes of listings, answered %d", target, 2*10_000*300, w.Code)
 		}
@@ -828,11 +937,11 @@ func (h *harness) history(commits ...commit) (tip, bundle string) {
 }
 
 // logged is the commits a page of history lists, in order.
-var logged = regexp.MustCompile(`<td class="name"><a href="/app/source/tree/([0-9a-f]+)/">`)
+var logged = regexp.MustCompile(`<td class="name"><a href="/tools/app/source/tree/([0-9a-f]+)/">`)
 
 // continued is the links a page of history has to older pages: its Older
 // link, and a link for each other line it leaves to show.
-var continued = regexp.MustCompile(`href="(/app/source/log/[0-9a-f]+\?from=[0-9a-f,]+)"`)
+var continued = regexp.MustCompile(`href="(/tools/app/source/log/[0-9a-f]+\?from=[0-9a-f,]+)"`)
 
 // reach follows every link to older pages from the page at target, and
 // from each page it reaches, and counts how many of those pages show each
@@ -869,7 +978,7 @@ func TestHistoryAcrossMerges(t *testing.T) {
 	tip, bundle := h.lines(2, 60)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
-	at := "/app/source/log/" + tip
+	at := "/tools/app/source/log/" + tip
 	seen := map[string]int{}
 	merged := false
 	for target, pages := at, 0; target != ""; pages++ {
@@ -884,7 +993,7 @@ func TestHistoryAcrossMerges(t *testing.T) {
 			t.Errorf("%s does not link the newest page", target)
 		}
 		target = ""
-		if m := regexp.MustCompile(`href="(/app/source/log/[0-9a-f]+\?from=([0-9a-f,]+))">Older`).FindStringSubmatch(page); m != nil {
+		if m := regexp.MustCompile(`href="(/tools/app/source/log/[0-9a-f]+\?from=([0-9a-f,]+))">Older`).FindStringSubmatch(page); m != nil {
 			target, merged = m[1], merged || strings.Contains(m[2], ",")
 		}
 	}
@@ -912,7 +1021,7 @@ func TestHistoryAcrossMerges(t *testing.T) {
 		line[0][:12],
 		"",
 	} {
-		target := "/app/source/log/" + line[1] + "?from=" + from
+		target := "/tools/app/source/log/" + line[1] + "?from=" + from
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d", target, w.Code)
 		}
@@ -931,7 +1040,7 @@ func TestWideHistoryStaysReachable(t *testing.T) {
 	h := newHarness(t)
 	tip, bundle := h.lines(MaxFrontier+1, 2)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
-	at := "/app/source/log/" + tip
+	at := "/tools/app/source/log/" + tip
 	page := h.page(at)
 	if n := len(logged.FindAllString(page, -1)); n != LogPage {
 		t.Errorf("the page shows %d commits", n)
@@ -975,7 +1084,7 @@ func TestCrowdedHistoryEndsEarly(t *testing.T) {
 	}
 	tip, bundle := h.history(append(commits, inner, outer)...)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
-	at := "/app/source/log/" + tip
+	at := "/tools/app/source/log/" + tip
 	page := h.page(at)
 	if shown := logged.FindAllStringSubmatch(page, -1); len(shown) != 1 || shown[0][1] != tip {
 		t.Errorf("the page shows %d commits, not the tip alone", len(shown))
@@ -1022,7 +1131,7 @@ func TestMergeOfManyParents(t *testing.T) {
 		t.Fatalf("the merge's ID and %d parents fit in one record of git log", len(parents))
 	}
 
-	at := "/app/source/log/" + tip
+	at := "/tools/app/source/log/" + tip
 	older := at + "?from=" + w
 	if !strings.Contains(h.page(at), `href="`+older+`">Older`) {
 		t.Fatal("the tip's page does not end before the merge")
@@ -1031,7 +1140,7 @@ func TestMergeOfManyParents(t *testing.T) {
 	child := git(t, repo, nil, "rev-parse", fmt.Sprintf("%s~%d", tip, LogPage-1))
 	// Where each page shows the merge: first on the tip page's older
 	// page and on the merge's own history, second on its child's.
-	for target, want := range map[string]int{older: 0, "/app/source/log/" + w: 0, "/app/source/log/" + child: 1} {
+	for target, want := range map[string]int{older: 0, "/tools/app/source/log/" + w: 0, "/tools/app/source/log/" + child: 1} {
 		page := h.page(target)
 		shown := map[string]bool{}
 		var order []string
@@ -1091,7 +1200,7 @@ func TestSourceGitHasItsOwnBound(t *testing.T) {
 	h.srv.gitTime = 300 * time.Millisecond
 
 	start := time.Now()
-	w := h.get("/app/source/tree/" + h.tip() + "/")
+	w := h.get("/tools/app/source/tree/" + h.tip() + "/")
 	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
 		t.Errorf("a source request whose git does not finish answered %d after %v", w.Code, took)
 	}
@@ -1103,7 +1212,7 @@ func TestSourceGitHasItsOwnBound(t *testing.T) {
 	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request held its git slot past 300ms") {
 		t.Errorf("the server logged %v", logged)
 	}
-	if w := h.get("/app/knots/oc-a000002"); w.Code != http.StatusOK {
+	if w := h.get("/tools/app/knots/oc-a000002"); w.Code != http.StatusOK {
 		t.Errorf("a knot answered %d", w.Code)
 	}
 }
@@ -1130,7 +1239,7 @@ func TestGitSlotBoundCoversTheLoad(t *testing.T) {
 	}()
 	eventually(t, "the plan waits for the export to be read", func() bool { return len(h.srv.loaders) == 1 })
 	start := time.Now()
-	w := h.get("/app/source/tree/" + h.tip() + "/")
+	w := h.get("/tools/app/source/tree/" + h.tip() + "/")
 	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
 		t.Errorf("a source request whose export is read slowly answered %d after %v", w.Code, took)
 	}
@@ -1153,7 +1262,7 @@ func TestGitSlotBoundCoversTheLoad(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the plan was not served once its export was read")
 	}
-	h.page("/app/source/tree/" + h.tip() + "/")
+	h.page("/tools/app/source/tree/" + h.tip() + "/")
 }
 
 // A source request gives back its git slot before it renders its page, so
@@ -1176,7 +1285,7 @@ func TestRenderingHoldsNoGitSlot(t *testing.T) {
 	served := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		w := httptest.NewRecorder()
-		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/app/source/tree/"+h.tip()+"/", nil))
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/source/tree/"+h.tip()+"/", nil))
 		served <- w
 	}()
 	select {
@@ -1187,7 +1296,7 @@ func TestRenderingHoldsNoGitSlot(t *testing.T) {
 	if len(h.srv.slots) != 0 {
 		t.Errorf("a source request holds %d git slots while it renders", len(h.srv.slots))
 	}
-	h.page("/app/source/blob/" + h.tip() + "/docs/guide.md")
+	h.page("/tools/app/source/blob/" + h.tip() + "/docs/guide.md")
 	time.Sleep(2 * h.srv.gitTime)
 	close(hold)
 	select {
@@ -1220,7 +1329,7 @@ func TestSHA256CommitIDs(t *testing.T) {
 	git(t, repo, nil, "bundle", "create", "--quiet", bundle, "main")
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
-	for _, route := range []string{"/app/source/tree/%s/", "/app/source/blob/%s/README.md", "/app/source/log/%s"} {
+	for _, route := range []string{"/tools/app/source/tree/%s/", "/tools/app/source/blob/%s/README.md", "/tools/app/source/log/%s"} {
 		if page := h.page(fmt.Sprintf(route, tip)); !strings.Contains(page, tip[:12]) {
 			t.Errorf("%s does not name the commit", fmt.Sprintf(route, tip))
 		}
@@ -1228,8 +1337,8 @@ func TestSHA256CommitIDs(t *testing.T) {
 			t.Errorf("%s answered %d", fmt.Sprintf(route, tip[:40]), w.Code)
 		}
 	}
-	if w := h.get("/app/source/"); w.Header().Get("Location") != "/app/source/tree/"+tip+"/" {
-		t.Errorf("/app/source/ redirects to %q", w.Header().Get("Location"))
+	if w := h.get("/tools/app/source/"); w.Header().Get("Location") != "/tools/app/source/tree/"+tip+"/" {
+		t.Errorf("/tools/app/source/ redirects to %q", w.Header().Get("Location"))
 	}
 }
 
@@ -1245,7 +1354,7 @@ func TestLongFileIsShownInPart(t *testing.T) {
 	)
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
 
-	page := h.page("/app/source/blob/" + tip + "/newlines.txt")
+	page := h.page("/tools/app/source/blob/" + tip + "/newlines.txt")
 	last := fmt.Sprintf(`id="L%d"`, MaxLines)
 	if !strings.Contains(page, last) || strings.Contains(page, fmt.Sprintf(`id="L%d"`, MaxLines+1)) {
 		t.Errorf("the file of newlines is not shown to line %d", MaxLines)
@@ -1259,12 +1368,12 @@ func TestLongFileIsShownInPart(t *testing.T) {
 
 	// One line of MaxFile characters that each escape to four bytes is
 	// cut where MaxShown is reached.
-	page = h.page("/app/source/blob/" + tip + "/wide.txt")
+	page = h.page("/tools/app/source/blob/" + tip + "/wide.txt")
 	if !strings.Contains(page, "The page stops at line 1 of 1.") || len(page) > MaxShown+64<<10 {
 		t.Errorf("the page of one wide line is %d bytes", len(page))
 	}
 
-	page = h.page("/app/source/tree/" + tip + "/long/")
+	page = h.page("/tools/app/source/tree/" + tip + "/long/")
 	if !strings.Contains(page, "This README is longer than a page shows, and only its start is shown.") {
 		t.Error("the long README is not marked as shown in part")
 	}
@@ -1318,7 +1427,7 @@ func TestDeepPlan(t *testing.T) {
 	if want := fmt.Sprintf("%d of %d done", 0, len(chain)-1+3); !strings.Contains(page, want) {
 		t.Errorf("the chain's milestone does not count every knot under it as %q", want)
 	}
-	if !strings.Contains(page, `href="/app/knots/`+chain[MaxPlanDepth]+`"`) || strings.Contains(page, `href="/app/knots/`+chain[MaxPlanDepth+1]+`"`) {
+	if !strings.Contains(page, `href="/tools/app/knots/`+chain[MaxPlanDepth]+`"`) || strings.Contains(page, `href="/tools/app/knots/`+chain[MaxPlanDepth+1]+`"`) {
 		t.Errorf("the chain's tree is not shown to %d levels", MaxPlanDepth)
 	}
 	if n := strings.Count(page, ">more on its page<"); n != 1 {
@@ -1355,12 +1464,12 @@ func TestDeepPlan(t *testing.T) {
 	}
 
 	deepest := chain[len(chain)-1]
-	page = h.page("/app/knots/" + deepest)
+	page = h.page("/tools/app/knots/" + deepest)
 	trail := section(t, page, `<nav class="trail"`, `</nav>`)
-	if n := strings.Count(trail, `<a href="/app/knots/`); n != MaxPlanDepth || !strings.Contains(trail, "<span>…</span>") {
+	if n := strings.Count(trail, `<a href="/tools/app/knots/`); n != MaxPlanDepth || !strings.Contains(trail, "<span>…</span>") {
 		t.Errorf("the deepest knot's trail names %d parents, or does not mark those above them", n)
 	}
-	if !strings.Contains(trail, chain[len(chain)-2]) || strings.Contains(trail, `"/app/knots/`+chain[len(chain)-2-MaxPlanDepth]+`"`) {
+	if !strings.Contains(trail, chain[len(chain)-2]) || strings.Contains(trail, `"/tools/app/knots/`+chain[len(chain)-2-MaxPlanDepth]+`"`) {
 		t.Error("the trail does not name the nearest parents alone")
 	}
 }
@@ -1372,10 +1481,10 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range []struct{ method, target string }{
 		{"GET", "/"},
-		{"GET", "/app/knots/oc-a000002"},
-		{"GET", "/app/source/"},
-		{"GET", "/app/source/tree/" + h.tip() + "/"},
-		{"GET", "/app/source/blob/" + h.tip() + "/README.md"},
+		{"GET", "/tools/app/knots/oc-a000002"},
+		{"GET", "/tools/app/source/"},
+		{"GET", "/tools/app/source/tree/" + h.tip() + "/"},
+		{"GET", "/tools/app/source/blob/" + h.tip() + "/README.md"},
 		{"GET", "/no/such/page"},
 		{"POST", "/"},
 		{"HEAD", "/"},
@@ -1431,7 +1540,7 @@ func TestARequestKeepsItsGeneration(t *testing.T) {
 	served := make(chan *httptest.ResponseRecorder)
 	go func() {
 		w := httptest.NewRecorder()
-		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/app/knots/oc-a000001", nil))
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/knots/oc-a000001", nil))
 		served <- w
 	}()
 	old := <-paused
@@ -1448,7 +1557,7 @@ func TestARequestKeepsItsGeneration(t *testing.T) {
 	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "Readers browse the app&#39;s plan") || strings.Contains(body, "second plan") {
 		t.Errorf("the request did not serve the generation it opened: %d\n%s", w.Code, body)
 	}
-	if !strings.Contains(h.page("/app/knots/oc-a000001"), "Readers browse the second plan") {
+	if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "Readers browse the second plan") {
 		t.Error("the next request does not serve the new generation")
 	}
 
@@ -1511,7 +1620,7 @@ func TestExportLoadsCoalesce(t *testing.T) {
 		for range n {
 			go func() {
 				w := httptest.NewRecorder()
-				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/app/knots/oc-a000001", nil))
+				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/knots/oc-a000001", nil))
 				served <- w
 			}()
 		}
@@ -1558,7 +1667,7 @@ func TestExportLoadsCoalesce(t *testing.T) {
 	close(hold(first))
 	expect(firstServed, 10, "Readers browse the third plan")
 
-	if !strings.Contains(h.page("/app/knots/oc-a000001"), "Readers browse the third plan") {
+	if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "Readers browse the third plan") {
 		t.Error("the first generation's read displaced the third's")
 	}
 	for _, g := range []export.Generation{first, second, third} {
@@ -1584,7 +1693,7 @@ func TestSourceAdmission(t *testing.T) {
 		admitted.Add(1)
 		<-release
 	}
-	target := "/app/source/tree/" + h.tip() + "/"
+	target := "/tools/app/source/tree/" + h.tip() + "/"
 	get := func(n int) chan *httptest.ResponseRecorder {
 		served := make(chan *httptest.ResponseRecorder, n)
 		for range n {
@@ -1614,7 +1723,7 @@ func TestSourceAdmission(t *testing.T) {
 	}
 	close(release)
 	for range MaxGit + MaxWaiting {
-		if w := <-served; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/app/source/tree/"+tip+"/") {
+		if w := <-served; w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "/tools/app/source/tree/"+tip+"/") {
 			t.Errorf("a waiting request answered %d, not from the new generation", w.Code)
 		}
 	}
@@ -1697,7 +1806,7 @@ func TestSlowReadersHoldNothing(t *testing.T) {
 	}()
 
 	old := h.active()
-	target := "/app/source/blob/" + h.tip() + "/docs/guide.md"
+	target := "/tools/app/source/blob/" + h.tip() + "/docs/guide.md"
 	for range n {
 		c, err := net.Dial("tcp", ln.Addr().String())
 		if err != nil {
@@ -1797,18 +1906,18 @@ func TestPageTooLarge(t *testing.T) {
 		}
 	})
 
-	h.tooLarge("/app/knots/" + h.f.Export.Projects[0].Knots[0].ID)
-	h.page("/app/knots/oc-a000002")
+	h.tooLarge("/tools/app/knots/" + h.f.Export.Projects[0].Knots[0].ID)
+	h.page("/tools/app/knots/oc-a000002")
 
 	h.srv.maxResponse = 32 << 10
-	at := "/app/source/blob/" + tip + "/"
+	at := "/tools/app/source/blob/" + tip + "/"
 	h.tooLarge(at + "wide.txt")
 	h.page(at + "docs/guide.md")
-	at = "/app/source/tree/" + tip + "/"
+	at = "/tools/app/source/tree/" + tip + "/"
 	h.tooLarge(at + "wide/")
 	h.page(at + "docs/")
-	h.tooLarge("/app/source/log/" + tip)
-	h.page("/app/source/log/" + git(t, h.f.Repos["app"], nil, "rev-parse", tip+"~8"))
+	h.tooLarge("/tools/app/source/log/" + tip)
+	h.page("/tools/app/source/log/" + git(t, h.f.Repos["app"], nil, "rev-parse", tip+"~8"))
 	h.tooLarge("/")
 
 	if len(logged) != 5 {
@@ -1853,7 +1962,7 @@ func TestSlowReadersShareTheBudget(t *testing.T) {
 // of the number of pieces given.
 func slowReadersOfPages(t *testing.T, pieces int) {
 	h := newHarness(t)
-	target := "/app/knots/" + h.f.Export.Projects[0].Knots[0].ID
+	target := "/tools/app/knots/" + h.f.Export.Projects[0].Knots[0].ID
 	body := func(at time.Duration, text string) {
 		h.publish(exporttest.SignedAt.Add(at), nil, func(e *export.Export) { e.Projects[0].Knots[0].Body = text })
 	}
@@ -1930,7 +2039,7 @@ func slowReadersOfPages(t *testing.T, pieces int) {
 	if code, retry := get(target); code != http.StatusServiceUnavailable || retry == "" {
 		t.Errorf("a page the budget has no room for answered %d, Retry-After %q", code, retry)
 	}
-	for _, small := range []string{"/", "/app/knots/oc-a000002", "/app/source/tree/" + h.tip() + "/"} {
+	for _, small := range []string{"/", "/tools/app/knots/oc-a000002", "/tools/app/source/tree/" + h.tip() + "/"} {
 		if code, _ := get(small); code != http.StatusOK {
 			t.Errorf("the small page %s answered %d while slow readers hold MaxLarge", small, code)
 		}
@@ -2018,7 +2127,7 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	h.srv.timeout = 200 * time.Millisecond
 	third := h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
 	select {
-	case w := <-serve(httptest.NewRequest("GET", "/app/knots/oc-a000001", nil)):
+	case w := <-serve(httptest.NewRequest("GET", "/tools/app/knots/oc-a000001", nil)):
 		if w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
 			t.Errorf("a request that waited past its time for a read answered %d", w.Code)
 		}
@@ -2162,7 +2271,7 @@ func TestSlowLoadEndsWithItsRequests(t *testing.T) {
 
 	h.srv.timeout = requestTimeout
 	for range 3 {
-		if !strings.Contains(h.page("/app/knots/oc-a000001"), "Readers browse the second plan") {
+		if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "Readers browse the second plan") {
 			t.Error("a request after the stopped load is not served the new generation")
 		}
 	}
@@ -2329,7 +2438,7 @@ func TestStalledLoadReleasesGeneration(t *testing.T) {
 				t.Fatalf("generation retained: %v", err)
 			}
 			h.srv.timeout = requestTimeout
-			if !strings.Contains(h.page("/app/knots/oc-a000001"), "The second plan") {
+			if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "The second plan") {
 				t.Fatal("loader slot is not reusable")
 			}
 		})
@@ -2397,7 +2506,7 @@ func TestProcessingCancellationReleasesGeneration(t *testing.T) {
 			if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
 				t.Fatalf("generation retained: %v", err)
 			}
-			if !strings.Contains(h.page("/app/knots/oc-a000001"), "The second plan") {
+			if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "The second plan") {
 				t.Fatal("loader slot is not reusable")
 			}
 		})

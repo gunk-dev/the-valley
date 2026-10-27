@@ -12,15 +12,25 @@ import (
 	"the-valley/web/export"
 )
 
-// index is an export's projects and knots by name, and its plan page's
-// structure, built once per generation.
+// index is an export's projects and knots by name, where each public
+// project's pages are, and its plan page's structure, built once per
+// generation.
 type index struct {
 	// building is set only while the worker constructs the index.
 	building context.Context
 	projects map[string]*export.Project
 	knots    map[string]map[string]*export.Knot
-	// public are the public projects' names, in the export's order.
+	// public are the public projects' names, in the export's order: those
+	// that have a web URL, which a project in no group does not.
 	public []string
+	// bases are each public project's URL, /<group name>/<project>,
+	// escaped, by project name. groups are the public projects by group
+	// name and then by project name. aliases are where each alias's URLs
+	// redirect to: a group's alias to /<group name>, and a project's
+	// short alias to its base.
+	bases   map[string]string
+	groups  map[string]map[string]*export.Project
+	aliases map[string]string
 	// plan is the plan page, but for what is in flight, whose ages are
 	// read at each request. Requests share it and do not change it.
 	plan *planPage
@@ -47,15 +57,33 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 			}
 		}
 	}()
-	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{}}
+	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{},
+		bases: map[string]string{}, groups: map[string]map[string]*export.Project{}, aliases: map[string]string{}}
 	idx.checkBuild()
 	defer func() { idx.building = nil }()
+	groups := map[string]export.Group{}
+	for _, g := range e.Groups {
+		groups[g.ID] = g
+		for _, alias := range g.Aliases {
+			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
+		}
+	}
 	for i := range e.Projects {
 		idx.checkBuild()
 		p := &e.Projects[i]
 		idx.projects[p.Name] = p
-		if p.Visibility == export.Public {
+		g, grouped := groups[p.Group]
+		if p.Visibility == export.Public && grouped {
 			idx.public = append(idx.public, p.Name)
+			base := "/" + url.PathEscape(g.Name) + "/" + url.PathEscape(p.Name)
+			idx.bases[p.Name] = base
+			if idx.groups[g.Name] == nil {
+				idx.groups[g.Name] = map[string]*export.Project{}
+			}
+			idx.groups[g.Name][p.Name] = p
+			for _, alias := range p.Aliases {
+				idx.aliases[alias] = base
+			}
 		}
 		byID := map[string]*export.Knot{}
 		for j := range p.Knots {
@@ -69,8 +97,9 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 	return idx, nil
 }
 
-func knotURL(project, id string) string {
-	return "/" + url.PathEscape(project) + "/knots/" + url.PathEscape(id)
+// knotURL is a knot's page, under its project's base.
+func knotURL(base, id string) string {
+	return base + "/knots/" + url.PathEscape(id)
 }
 
 // knotLink is a knot as a page links to it.
@@ -82,8 +111,8 @@ type knotLink struct {
 	URL     string
 }
 
-func linkOf(project string, k *export.Knot) knotLink {
-	return knotLink{Project: project, ID: k.ID, Title: k.Title, State: k.State, URL: knotURL(project, k.ID)}
+func (idx *index) linkOf(project string, k *export.Knot) knotLink {
+	return knotLink{Project: project, ID: k.ID, Title: k.Title, State: k.State, URL: knotURL(idx.bases[project], k.ID)}
 }
 
 // The plan page, in its reading order: what waits on the reader, what is
@@ -215,7 +244,7 @@ func (q *request) inFlight(p *export.Project) []flight {
 		if !ok {
 			continue
 		}
-		f := flight{Knot: linkOf(p.Name, k), Note: "in progress, unclaimed"}
+		f := flight{Knot: q.idx.linkOf(p.Name, k), Note: "in progress, unclaimed"}
 		if c := k.Claim; c != nil {
 			f.Note = "claimed by " + c.By
 			if at, err := parseTime(c.At); err == nil {
@@ -254,7 +283,7 @@ func (idx *index) readyChanges(p *export.Project) []readyChange {
 		for _, ref := range c.Knots {
 			idx.checkBuild()
 			if k, ok := idx.knots[p.Name][ref.ID]; ok {
-				rc.Knots = append(rc.Knots, linkOf(p.Name, k))
+				rc.Knots = append(rc.Knots, idx.linkOf(p.Name, k))
 			}
 		}
 		out = append(out, rc)
@@ -328,7 +357,7 @@ func (idx *index) paths(p *export.Project) []path {
 			idx.checkBuild()
 			last = max(last, stage[id]+1)
 		}
-		pa := path{Parent: linkOf(p.Name, parent)}
+		pa := path{Parent: idx.linkOf(p.Name, parent)}
 		for _, k := range kids {
 			idx.checkBuild()
 			s := stage[k.ID]
@@ -339,7 +368,7 @@ func (idx *index) paths(p *export.Project) []path {
 				idx.checkBuild()
 				pa.Stages = append(pa.Stages, nil)
 			}
-			pa.Stages[s] = append(pa.Stages[s], linkOf(p.Name, k))
+			pa.Stages[s] = append(pa.Stages[s], idx.linkOf(p.Name, k))
 		}
 		out = append(out, pa)
 	}
@@ -383,7 +412,7 @@ func (idx *index) milestones(p *export.Project) []milestone {
 			}
 			return rank(cord[i]) < rank(cord[j])
 		})
-		link := linkOf(p.Name, k)
+		link := idx.linkOf(p.Name, k)
 		out = append(out, milestone{Knot: &link, Title: k.Title, Project: p.Name,
 			Count: strconv.Itoa(done) + " of " + strconv.Itoa(of) + " done", Cord: cord,
 			Tree: idx.tree(p.Name, k.Children, 1, shown)})
@@ -459,7 +488,7 @@ func (idx *index) tree(project string, ids []string, depth int, shown map[string
 // row is a knot's line in a tree. Filter is the state the page's filters
 // read: abandoned work is finished work, as done is.
 func (idx *index) row(project string, k *export.Knot) row {
-	r := row{knotLink: linkOf(project, k), Filter: k.State}
+	r := row{knotLink: idx.linkOf(project, k), Filter: k.State}
 	if k.State == "abandoned" {
 		r.Filter = "done"
 	}

@@ -19,23 +19,24 @@ import (
 	"the-valley/web/export"
 )
 
-// treeURL is the directory at path in commit. It ends in a slash.
-func treeURL(project, commit string, path []string) string {
-	u := "/" + url.PathEscape(project) + "/source/tree/" + commit + "/"
+// treeURL is the directory at path in commit, under the base of its
+// project, /<group>/<project>, escaped. It ends in a slash.
+func treeURL(base, commit string, path []string) string {
+	u := base + "/source/tree/" + commit + "/"
 	if len(path) > 0 {
 		u += escapePath(path) + "/"
 	}
 	return u
 }
 
-// blobURL is the file at path in commit.
-func blobURL(project, commit string, path []string) string {
-	return "/" + url.PathEscape(project) + "/source/blob/" + commit + "/" + escapePath(path)
+// blobURL is the file at path in commit, under its project's base.
+func blobURL(base, commit string, path []string) string {
+	return base + "/source/blob/" + commit + "/" + escapePath(path)
 }
 
-// logURL is the history that ends at commit.
-func logURL(project, commit string) string {
-	return "/" + url.PathEscape(project) + "/source/log/" + commit
+// logURL is the history that ends at commit, under its project's base.
+func logURL(base, commit string) string {
+	return base + "/source/log/" + commit
 }
 
 func escapePath(path []string) string {
@@ -46,7 +47,7 @@ func escapePath(path []string) string {
 	return strings.Join(parts, "/")
 }
 
-// source serves the routes under /<project>/source/. The project is
+// source serves the routes under /<group>/<project>/source/. The project is
 // checked first, so everything under a project the export does not hold
 // as public answers as a missing project does. A view runs git under the
 // request's git context, and gives back its git slot once it renders.
@@ -64,7 +65,7 @@ func (q *request) source(project string, rest []string) {
 	var view func(ctx context.Context) error
 	switch {
 	case len(rest) == 0 || len(rest) == 1 && rest[0] == "":
-		q.redirect(treeURL(p.Name, p.SourceTip, nil))
+		q.redirect(treeURL(q.idx.bases[p.Name], p.SourceTip, nil))
 		return
 	case len(rest) >= 2 && rest[0] == "tree":
 		path := rest[2:]
@@ -410,20 +411,20 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 		entries = entries[:MaxEntries]
 	}
 	page := dirPage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
-		TipURL: treeURL(p.Name, p.SourceTip, nil), LogURL: logURL(p.Name, commit),
-		Crumbs: crumbs(p.Name, commit, path), Omitted: read - len(entries), Partial: !complete}
+		TipURL: treeURL(q.idx.bases[p.Name], p.SourceTip, nil), LogURL: logURL(q.idx.bases[p.Name], commit),
+		Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path), Omitted: read - len(entries), Partial: !complete}
 	for _, c := range entries {
 		at := append(append([]string{}, path...), c.Name)
 		d := dirEntry{Name: oneLine(c.Name)}
 		switch {
 		case c.Type == "tree":
-			d.Kind, d.URL = "directory", treeURL(p.Name, commit, at)
+			d.Kind, d.URL = "directory", treeURL(q.idx.bases[p.Name], commit, at)
 		case c.Mode == modeSubmodule || c.Type == "commit":
 			d.Kind = "submodule at " + c.OID[:12]
 		case c.Mode == modeSymlink:
-			d.Kind, d.URL = "symbolic link", blobURL(p.Name, commit, at)
+			d.Kind, d.URL = "symbolic link", blobURL(q.idx.bases[p.Name], commit, at)
 		default:
-			d.Kind, d.URL, d.Size = "file", blobURL(p.Name, commit, at), size(c.Size)
+			d.Kind, d.URL, d.Size = "file", blobURL(q.idx.bases[p.Name], commit, at), size(c.Size)
 		}
 		if c.Cut {
 			d.Name += "…"
@@ -440,7 +441,7 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 		}
 		lines, _, partial := excerpt(trimEnd(text), 1)
 		at := append(append([]string{}, path...), rm.Name)
-		page.Readme = &readme{Name: oneLine(rm.Name), URL: blobURL(p.Name, commit, at),
+		page.Readme = &readme{Name: oneLine(rm.Name), URL: blobURL(q.idx.bases[p.Name], commit, at),
 			Text: strings.Join(lines, "\n"), Notice: notice, Partial: partial}
 	}
 	title := p.Name + " at " + commit[:12]
@@ -507,8 +508,8 @@ func (q *request) file(ctx context.Context, p *export.Project, repo, commit stri
 		return err
 	}
 	page := filePage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
-		TipURL: treeURL(p.Name, p.SourceTip, nil), LogURL: logURL(p.Name, commit),
-		Crumbs: crumbs(p.Name, commit, path), Name: oneLine(path[len(path)-1]),
+		TipURL: treeURL(q.idx.bases[p.Name], p.SourceTip, nil), LogURL: logURL(q.idx.bases[p.Name], commit),
+		Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path), Name: oneLine(path[len(path)-1]),
 		Size: size(e.Size), Notice: notice}
 	if notice == "" {
 		lines, total, partial := excerpt(text, rowCost)
@@ -523,10 +524,10 @@ func (q *request) file(ctx context.Context, p *export.Project, repo, commit stri
 
 // crumbs are the links from the project's root down to path. The last is
 // the page itself and has no link.
-func crumbs(project, commit string, path []string) []link {
-	out := []link{{project, treeURL(project, commit, nil)}}
+func crumbs(project, base, commit string, path []string) []link {
+	out := []link{{project, treeURL(base, commit, nil)}}
 	for i, name := range path {
-		out = append(out, link{oneLine(name), treeURL(project, commit, path[:i+1])})
+		out = append(out, link{oneLine(name), treeURL(base, commit, path[:i+1])})
 	}
 	out[len(out)-1].URL = ""
 	return out
@@ -679,7 +680,7 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 			q.missing(err)
 			return nil
 		}
-		from, page.Newest = ids, logURL(p.Name, commit)
+		from, page.Newest = ids, logURL(q.idx.bases[p.Name], commit)
 	}
 	// older is what the older page starts from. git gives no commit
 	// before its children, so no parent added is a commit shown already.
@@ -729,7 +730,7 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 					return err
 				}
 			}
-			e := logEntryOf(p.Name, id, string(meta))
+			e := logEntryOf(q.idx.bases[p.Name], id, string(meta))
 			if more {
 				e.Parents = fmt.Sprintf("This merge has more than %d parents. Older pages follow its first %d.", MaxParents, MaxParents)
 			}
@@ -751,12 +752,12 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 	ids := slices.Sorted(maps.Keys(older))
 	if len(ids) > MaxFrontier {
 		for _, id := range ids[MaxFrontier:] {
-			page.Others = append(page.Others, link{id[:12], logURL(p.Name, commit) + "?from=" + id})
+			page.Others = append(page.Others, link{id[:12], logURL(q.idx.bases[p.Name], commit) + "?from=" + id})
 		}
 		ids, page.Lines = ids[:MaxFrontier], len(ids)
 	}
 	if len(ids) > 0 {
-		page.Older = logURL(p.Name, commit) + "?from=" + strings.Join(ids, ",")
+		page.Older = logURL(q.idx.bases[p.Name], commit) + "?from=" + strings.Join(ids, ",")
 	}
 	q.page(http.StatusOK, "log", "History of "+p.Name+" at "+commit[:12], page)
 	return nil
@@ -831,12 +832,12 @@ func parentsOf(rec string, whole bool) (id string, parents []string, more, ok bo
 // logEntryOf is a commit's entry on a page: its ID, and the second record
 // git log gives for it, its author date, author and subject, each on a
 // line of its own. A record cut short is shown as far as it goes.
-func logEntryOf(project, id, rec string) logEntry {
+func logEntryOf(base, id, rec string) logEntry {
 	f := strings.SplitN(rec, "\n", 3)
 	for len(f) < 3 {
 		f = append(f, "")
 	}
-	return logEntry{Commit: id, Short: id[:12], URL: treeURL(project, id, nil), Date: stampOf(f[0]),
+	return logEntry{Commit: id, Short: id[:12], URL: treeURL(base, id, nil), Date: stampOf(f[0]),
 		Author: clip(oneLine(f[1]), maxLogText), Subject: clip(oneLine(f[2]), maxLogText)}
 }
 

@@ -66,7 +66,7 @@ func (q *request) knot(project, id string) {
 		q.notFound()
 		return
 	}
-	page := knotPage{Knot: linkOf(p.Name, k), Type: k.Type, Status: k.Status, Body: trimEnd(k.Body)}
+	page := knotPage{Knot: q.idx.linkOf(p.Name, k), Type: k.Type, Status: k.Status, Body: trimEnd(k.Body)}
 
 	// The trail runs from the milestone down to the knot's parent. It
 	// names the nearest MaxPlanDepth parents, and marks any above them.
@@ -81,7 +81,7 @@ func (q *request) knot(project, id string) {
 			break
 		}
 		seen[at] = true
-		page.Trail = append(page.Trail, linkOf(p.Name, parent))
+		page.Trail = append(page.Trail, q.idx.linkOf(p.Name, parent))
 		at = parent.Parent
 	}
 	slices.Reverse(page.Trail)
@@ -118,12 +118,12 @@ func (q *request) knot(project, id string) {
 	}
 	for _, id := range k.Blocks {
 		if b, ok := knots[id]; ok {
-			page.Blocks = append(page.Blocks, linkOf(p.Name, b))
+			page.Blocks = append(page.Blocks, q.idx.linkOf(p.Name, b))
 		}
 	}
 	for _, id := range k.Children {
 		if c, ok := knots[id]; ok {
-			page.Children = append(page.Children, linkOf(p.Name, c))
+			page.Children = append(page.Children, q.idx.linkOf(p.Name, c))
 		}
 	}
 	for _, c := range k.Comments {
@@ -155,7 +155,7 @@ func (q *request) reference(project string, k *export.Knot, ref string) referenc
 		return reference{Note: unpublishedKnot}
 	}
 	if b, ok := q.idx.knots[other][id]; ok {
-		link := linkOf(other, b)
+		link := q.idx.linkOf(other, b)
 		return reference{Ref: ref, Knot: &link}
 	}
 	for _, e := range k.Edges {
@@ -180,17 +180,17 @@ func (idx *index) named(project, ref string) (text, url string) {
 			return unpublishedKnot, ""
 		}
 		if _, ok := idx.knots[other][id]; ok {
-			return ref, knotURL(other, id)
+			return ref, knotURL(idx.bases[other], id)
 		}
 		return ref, ""
 	case knot.IsLocalID(ref):
 		if _, ok := idx.knots[project][ref]; ok {
-			return ref, knotURL(project, ref)
+			return ref, knotURL(idx.bases[project], ref)
 		}
 		return ref, ""
 	}
 	if p, ok := idx.project(ref); ok {
-		return ref, treeURL(p.Name, p.SourceTip, nil)
+		return ref, treeURL(idx.bases[p.Name], p.SourceTip, nil)
 	}
 	return unpublishedProject, ""
 }

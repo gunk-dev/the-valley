@@ -11,7 +11,9 @@
   # The projection over the shared fixture, which holds every disclosure
   # rule: what reaches export.json, hidden projects' edges, a knot that
   # waits on a hidden knot marked with waiting_on_hidden alone, the field
-  # gone once its one hidden blocker is done, the display mapping. The
+  # gone once its one hidden blocker is done, the display mapping, each
+  # public project's group and short aliases with only public projects'
+  # groups, and group names and aliases that collide refused. The
   # content digest; strict reading of export.json, with
   # nothing after its document; each of VerifyManifest's steps, in order;
   # the manifest's grammar and its agreement with export.json; the
@@ -59,13 +61,16 @@
   # store, and real git. The plan page's reading order, its free to start
   # legend, its one card of ready changes, and the export's age, marked
   # stale after five minutes; a knot's body and comments, with the edited
-  # one marked; a hidden project answering every route exactly as a
-  # missing one, though its repository is in the generation; a blocked
-  # knot's chip naming its published blockers and, once, unpublished
-  # work; projects
-  # named source, knots and web-export served on every route, and their
-  # roots redirected to their trees, while the server's own paths under
-  # /-/ are never a project's; a commit
+  # one marked; a hidden project answering every route under its group,
+  # under no group and under its short alias exactly as a missing one,
+  # though its repository is in the generation; a blocked knot's chip
+  # naming its published blockers and, once, unpublished work; groups and
+  # projects named source, knots and web-export served on every route
+  # under /<group>/<project>, and their roots redirected to their trees,
+  # while the server's own paths under /-/ are never a group's; a group's
+  # alias and a project's short alias answering with a permanent redirect
+  # that keeps the path and query as sent; every 404 the one page made at
+  # start, the box of text with no site name; a commit
   # main's tip does not reach, and every other object ID or name, refused
   # with the one 404; hostile README, file, file name, commit subject and
   # knot text rendered inert, and large and binary files not shown; a

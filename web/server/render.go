@@ -37,7 +37,7 @@ func inlineHash(s string) string {
 	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 }
 
-var pages = parsePages("plan", "knot", "tree", "blob", "log", "error")
+var pages = parsePages("plan", "knot", "tree", "blob", "log", "error", "notfound")
 
 // parsePages parses each page's template over the shared layout.
 func parsePages(names ...string) map[string]*template.Template {
@@ -92,7 +92,7 @@ func (q *request) page(status int, name, title string, content any) {
 		data.Nav = append(data.Nav, link{"Plan", "/"})
 		for _, name := range q.idx.public {
 			p := q.idx.projects[name]
-			data.Nav = append(data.Nav, link{name + " source", treeURL(name, p.SourceTip, nil)})
+			data.Nav = append(data.Nav, link{name + " source", treeURL(q.idx.bases[name], p.SourceTip, nil)})
 		}
 		data.Fresh = freshnessOf(q.e.Collected, q.now)
 	}
@@ -139,22 +139,26 @@ func (q *request) drop() {
 	}
 }
 
-// The responses made once: two pages, and the text that answers a page
-// that failed to render.
+// The responses made once: three pages, and the text that answers a page
+// that failed to render. The not-found page is the one every 404 answers
+// with. It shows the box of text the operator chose, whose last line
+// links to the plan, and it names no site, no project and nothing of the
+// request.
 var (
-	busyPage = staticPage("Busy", errorPage{
+	busyPage = staticPage("error", "Busy", errorPage{
 		Heading: "Busy", Text: "The server is serving too many pages at once. Try again in a few seconds.",
 	})
-	tooLargePage = staticPage("Page too large", errorPage{
+	tooLargePage = staticPage("error", "Page too large", errorPage{
 		Heading: "Page too large", Text: "This page is larger than the server sends.",
 	})
-	notRendered = []byte("The server could not render this page.\n")
+	notFoundPage = staticPage("notfound", "Not found", nil)
+	notRendered  = []byte("The server could not render this page.\n")
 )
 
-func staticPage(title string, content errorPage) []byte {
+func staticPage(name, title string, content any) []byte {
 	var b bytes.Buffer
 	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
-	if err := pages["error"].ExecuteTemplate(&b, "layout", data); err != nil {
+	if err := pages[name].ExecuteTemplate(&b, "layout", data); err != nil {
 		panic(err)
 	}
 	return b.Bytes()

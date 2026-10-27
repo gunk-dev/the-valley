@@ -144,6 +144,10 @@ table.code tr:target { background: var(--yours-soft); }
 .notice { color: var(--muted); font-style: italic; margin: 0; }
 .pager { display: flex; gap: 18px; font-size: 14px; }
 
+/* The one page every 404 answers with: a box of text, centred. */
+pre.lost { align-self: center; max-width: 100%; overflow-x: auto; margin: 12vh 0 0; font-family: var(--font-mono); font-size: 14px; line-height: 1.35; color: var(--ink); }
+pre.lost a { color: var(--accent); }
+
 footer { font-size: 13px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 14px; }
 @media (prefers-reduced-motion: no-preference) { details[open] > summary .twisty { transition: transform .15s; } }
 @media (max-width: 520px) { h1 { font-size: 28px; } .page { padding-inline: 16px; } ul.tree ul.tree { padding-left: 14px; } dl.facts { grid-template-columns: 1fr; gap: 0 0; } dl.facts dd { margin-bottom: 8px; } }

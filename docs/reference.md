@@ -2731,10 +2731,10 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   project in the export without a group has no route.
 - **Aliases and former names:** A group's alias redirects to the same path under the group's `name`,
   and a project's short alias redirects to the same path under `/<group>/<project>`. A project's
-  former name redirects to the same path under `/<group>/<project>`. Every redirect is permanent
-  (`308`) with no response body. Its `Location` header preserves the remainder of the path and the
-  raw query string as sent, including percent-escapes, dot segments, and a trailing `?` with an
-  empty query.
+  former name redirects to the same path under `/<group>/<project>`. These alias and former-name
+  redirects are permanent (`308`) with no response body. Its `Location` header preserves the
+  remainder of the path and the raw query string as sent, including percent-escapes, dot segments,
+  and a trailing `?` with an empty query.
 - **Reserved paths:** Every path other than `/` and `/-/…` starts with a group's name or an alias.
   Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a letter or digit. A group or
   a project may be named `source`, `knots`, `web-export`, or `robots.txt` and is served on every
@@ -2965,25 +2965,26 @@ cue vet -c schema/valley.cue valley.cue
 | `projects.<name>.grants.<grant>` (`#RefGrant`) | `[#GrantName]: #RefGrant`                      | Opens ref patterns outside `refs/heads/`, `refs/replace/`, `refs/notes/`, and `refs/the-valley/` (`#GrantPattern`: `#RefPattern & !~"^refs/(heads\|replace\|notes\|the-valley)/"`) to `writers: [#PrincipalName, ...#PrincipalName]`. |
 | `projects.<name>.group`                        | optional `#GroupID`                            | The identifier of the project's group, which `groups` must declare. A project in no group has no web URL.                                                                                                                             |
 | `projects.<name>.name`                         | `#ProjectName \| *<name>`                      | The project's web name, used as the second segment of its web URLs (`/<group name>/<web name>/…`). It defaults to `<name>` and is constrained to `#WebName` when `group` is set. Setting `name` to another value requires `group`.    |
-| `projects.<name>.formerNames`                  | `[...#WebName] \| *[]`                         | Former web names within the group: `/<group name>/<former>/…` redirects to `/<group name>/<web name>/…`. Setting `formerNames` requires `group`.                                                                                      |
-| `projects.<name>.aliases`                      | `[...#WebName] \| *[]`                         | Short aliases: `/<alias>/…` redirects to `/<group name>/<web name>/…`. Setting `aliases` requires `group`.                                                                                                                            |
+| `projects.<name>.formerNames`                  | `[...#WebName] \| *[]`                         | Former web names within the group: `/<group name>/<former>/…` redirects to `/<group name>/<web name>/…`. A nonempty `formerNames` requires `group`.                                                                                   |
+| `projects.<name>.aliases`                      | `[...#WebName] \| *[]`                         | Short aliases: `/<alias>/…` redirects to `/<group name>/<web name>/…`. A nonempty `aliases` requires `group`.                                                                                                                         |
 | `groups.<id>` (`#Group`)                       | `[#GroupID]: #Group`                           | Top-level map of groups, keyed by each group's permanent identifier. `#GroupID` and `#WebName` match `=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"` with at most 64 runes.                                                                        |
 | `groups.<id>.name`                             | `#WebName`                                     | The group's web name, used as the first segment of its projects' web URLs.                                                                                                                                                            |
 | `groups.<id>.aliases`                          | `[...#WebName] \| *[]`                         | Additional first-segment names that redirect to the same path under `name`.                                                                                                                                                           |
 | `backup` (`#Backup`)                           | optional                                       | Host-level backup policy: `enable` (`bool \| *true`), `target` (`"restic-sftp"`), `cadence` (`"nightly"`), `retention` (`{ daily: int & >0 \| *7, weekly: int & >0 \| *4, monthly: int & >0 \| *6 }`).                                |
 
 `cue vet` refuses a project whose `group` is undeclared in `groups`, or a project without a `group`
-that sets a custom `name`, `formerNames`, or `aliases`. It refuses any two group names, group
-aliases, or project aliases that match ignoring ASCII case, including a group alias that matches the
-group's own `name`. Within each group, it refuses any two project web names or former names that
-match ignoring ASCII case. Projects in different groups may share a web name. Each check evaluates a
-hidden field (`_groupless`, `_firstSegments`, or `_secondSegments`), which appears in the CUE error
-on failure (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
+that sets a custom `name`, a nonempty `formerNames`, or a nonempty `aliases`. It refuses any two
+group names, group aliases, or project aliases that match ignoring ASCII case, including a group
+alias that matches the group's own `name`. Within each group, it refuses any two project web names
+or former names that match ignoring ASCII case. Projects in different groups may share a web name.
+Each check evaluates a hidden field (`_groupless`, `_firstSegments`, or `_secondSegments`), which
+appears in the CUE error on failure (see
+[Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
 A former name redirects only while it remains in `formerNames`. Removing it frees the name within
 that group: while no project claims it, `/<group name>/<former>/…` answers `404`, and if another
-project in the group later takes it as its `name` or in `formerNames`, those URLs resolve to that
-project.
+public, exported project in the group later takes it as its `name` or in `formerNames`, those URLs
+resolve to that project.
 
 ### Verification policy (`schema/verification.cue`)
 

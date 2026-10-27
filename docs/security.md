@@ -331,13 +331,13 @@ view to the destination that boundary names.
 project in a group gives it a web URL once both read-access consents authorize `anyone`. Omitting
 `group` keeps a project off the web even when both consents authorize `anyone`. The export includes
 only groups that have at least one public project, along with the web names, former names, and short
-aliases of public projects (`implemented`, `web/export/project.go`). Groups, web names, former
-names, and aliases of private projects are omitted from the export. The web server reads only the
-export. Requests for a private project — whether under its group, another group, a former name, or a
-short alias — return the same `404` page byte for byte as requests for a project that does not exist
-(`implemented`, `web/server/server.go`). A group alias redirects any path under it to the group's
-`name` before checking whether the project exists, so hidden and nonexistent projects redirect
-identically and then return `404`.
+aliases of public projects (`implemented`, `web/export/project.go`). Groups with no public projects
+are omitted, and private projects' web names, former names, and short aliases are omitted. The web
+server reads only the export. Requests for a private project — whether under its group, another
+group, a former name, or a short alias — return the same `404` page byte for byte as requests for a
+project that does not exist (`implemented`, `web/server/server.go`). A group alias redirects any
+path under it to the group's `name` before checking whether the project exists, so hidden and
+nonexistent projects redirect identically and then return `404`.
 
 **A grant is bound to a project.** A grant that names a specific project binds both its name and its
 publication identity, so a new project that reuses an old project's name with a new identity is not

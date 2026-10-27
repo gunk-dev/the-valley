@@ -3106,7 +3106,8 @@ treats as owned by another user.
 Every project on the web belongs to a group. Project URLs begin with the group name followed by the
 project's web name: `/<group>/<project>/…`, such as `/tools/app/knots/<id>`. The root path `/`
 serves the plan page. Because URLs appear in links, commits, and knots, renaming a group or a
-project redirects old URLs to the new ones (`implemented`, `web/server/server.go`).
+project redirects old URLs only if the old name stays in the group's `aliases` or the project's
+`formerNames`. The lookup index uses only declared names (`implemented`, `web/server/plan.go`).
 
 Groups and project placements are declared in `valley.cue` alongside each project's git store,
 mirrors, ref protection, and push grants (`schema/valley.cue`). At build time, the NixOS modules
@@ -3139,8 +3140,9 @@ projects: "docs-app": {group: "web", name: "app"}
 - **Short aliases:** `aliases` on a project lists single-segment shortcuts at the root of the URL
   path. Requests to `/app/…` redirect to `/tools/app/…`.
 
-Only projects in a group have web URLs. A project that sets a custom `name`, `formerNames`, or
-`aliases` must also set `group`.
+Only projects in a group have web URLs. A project that sets a custom `name`, a nonempty
+`formerNames`, or a nonempty `aliases` must also set `group`. Explicit empty lists are valid without
+it.
 
 URL names fall into two namespaces. First-segment names — group `name` values, group `aliases`, and
 project `aliases` — share one namespace across the whole server. Second-segment names — the `name`
@@ -3182,8 +3184,8 @@ from the request or the export (`web/server/render.go`; see
 
 When loading a new generation, `valley-web` decodes `export.json`, validates its names, and builds
 the lookup index for groups, aliases, and former names. Each step checks the load context before
-processing each name, so a cancelled load stops immediately and releases its generation and loader
-slot (`web/export/groups.go`, `web/export/export.go`, `web/server/plan.go`).
+processing each name, so a cancelled load stops at the next cancellation check and releases its
+generation and loader slot (`web/export/groups.go`, `web/export/export.go`, `web/server/plan.go`).
 
 Checked by `cue-vet`, which verifies that the eight rejected host declarations report the colliding
 name or missing group and exports two groups that each contain a project named `app`; by `web-unit`

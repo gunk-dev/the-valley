@@ -699,8 +699,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     one write pass: it settles the journal in `--state`, if there is one, then plans, adds the
     pass's writes to the journal, and pushes them (see [Publishing](architecture.md#publishing)). A
     family the journal still holds stays there, and each family that shares a change or a branch
-    with it waits. A journal that does not read, or belongs to another repository, target or
-    principal, stops the pass.
+    with it waits. So do two families of one plan that share a change or a branch, as two changes
+    that name one branch do. A journal that does not read, or belongs to another repository, target
+    or principal, stops the pass.
   - `valley-restacker once --report-only --repo <url> --state <dir> --principal <name> --schema <file> [flags]`
     — plans and builds the writes of a pass, decides the journal if there is one, and pushes
     nothing.
@@ -716,7 +717,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     `journal.json` while a journal is open, and `observations/<digest>.json`, the whole observation
     of each report that leaves part of it out (see
     [What a pass builds](architecture.md#what-a-pass-builds)). Nothing the restacker does removes an
-    observation file.
+    observation file, so `observations/` gains a file for each such observation, without bound. No
+    sweep removes them (`not built`). An operator who needs the space back removes old files by
+    hand, as a one-off step, for example
+    `find <state>/observations -name '*.json' -mtime +90 -delete`. A report that names a removed
+    file then points at nothing, so the age chosen is one past which those reports do not matter.
 - **`valley-web-publish`**
   ([`web/cmd/valley-web-publish/main.go`](../web/cmd/valley-web-publish/main.go)): One pass of the
   web publisher (see [Web export publisher](#web-export-publisher)). It is wrapped with this flake's

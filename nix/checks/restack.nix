@@ -66,10 +66,13 @@ in
   # untouched; recovery decides each write against origin as a test makes
   # the pushes, author movement, withdrawal, unreadying, a deleted record,
   # a moved or rewritten main and a request each stop what they must; a
-  # lost, foreign or malformed journal is never decided; and
-  # once --report-only decides a journal of pending writes and pushes none
-  # of them. A conflict on more than 100 paths keeps them all in the
-  # journal, and a write pass that reports it leaves them all in the file
+  # lost, foreign or malformed journal is never decided, nor one whose
+  # accepted writes the family does not have; and once --report-only
+  # decides a journal of pending writes and pushes none of them. A family
+  # of 65 changes whose top version was not added keeps a partial
+  # replacement for each change, each with its own layer alone. A
+  # conflict on more than 100 paths keeps them all in the journal, and a
+  # write pass that reports it leaves them all in the file
   # its report names, which outlives the journal. No inherited git
   # variable, nor the user's attributes file, reaches a pass, and a
   # process whose stderr nobody reads still ends. Its
@@ -89,8 +92,13 @@ in
   # any of its steps is finished with one version per change; an owner's
   # push to a restacked branch stops that version, reported partial, and
   # that partial report stays in the journal while origin refuses it, and
-  # is pushed once when origin takes it and its answer is lost; a request
-  # between the phases pauses the versions and keeps the journal open
+  # is pushed once when origin takes it and its answer is lost, and is
+  # still pushed after the author rewrites or deletes every branch the
+  # family moved; a report origin keeps refusing holds only its own
+  # family in the journal, so a family restacked beside it is let go of
+  # and restacked again after the next landing; two ready changes that
+  # name one branch both wait while a change beside them is restacked; a
+  # request between the phases pauses the versions and keeps the journal open
   # until it is released, while a change readied beside the paused family
   # is restacked; the project's cap holds; and run converges on a change
   # readied after the landing, and ends when stopped.

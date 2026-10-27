@@ -719,7 +719,11 @@ one of five answers:
   its family, as does any refusal of the engine's `Family.Check`.
 - **restack**: nothing holds it.
 - **wait**: it shares a change or a branch with a family the journal still holds, and nothing is
-  built for it until that family is let go (see [Publishing](#publishing)).
+  built for it until that family is let go (see [Publishing](#publishing)). A family also waits when
+  it shares a change or a branch with another family the pass would build writes for. Two ready
+  changes that name one branch are two families when neither's head descends from the other's, and
+  the journal takes no two families that share a branch. So neither is built while both name it, the
+  reason names the other, and every other family is planned as usual.
 
 A family is also held while a related integration request might still land. A request is related by
 its name (`c-<change-id>`, or the branch-derived name of any version the change has had), by a head
@@ -793,12 +797,16 @@ fallback (`restack/report.go`):
   every layer but the two it keeps.
 
 A family over 64 recorded changes is not held for its size: each change's report keeps its own
-layer. Checked by `restack-unit` and `restack-e2e`.
+layer. When one of its versions was not added, each change's replacement says `partial` and keeps
+its own layer, and the journal takes it (see [The journal](#the-journal)). Checked by `restack-unit`
+and `restack-e2e`.
 
 The restacker writes the file a fallback names before it keeps the journal that holds the report,
 and nothing it does removes the file. So what a report leaves out, such as the paths of a conflict
 on more than 100 files, outlives the journal. The file holds the observation as its digest is taken,
-so its SHA-256 begins with the digest. Checked by `restack-unit`.
+so its SHA-256 begins with the digest. Checked by `restack-unit`. Nothing bounds how many such files
+accumulate. The reference says how an operator removes old ones by hand (see
+[Helper and host commands](reference.md#helper-and-host-commands)).
 
 A conflict is not tried again while nothing it saw has moved. A family is not rebased when every
 change in it has a current report that says `conflict`. Such a report is current only while `main`,
@@ -822,7 +830,9 @@ journal can hold families of several operations. For each family it holds:
 - the branch push, each version and each report, in the kept forms the rebase engine defines
   (`rebase/pending.go`);
 - each replacement, a report of what did happen that the pass built later (see
-  [Publishing](#publishing)).
+  [Publishing](#publishing));
+- what origin is known to have taken: whether a read found the branch push on origin, and each
+  version a read found there (see [Publishing](#publishing)).
 
 Each conflict path is kept in base64. JSON holds only UTF-8, and base64 keeps a file name that is
 not UTF-8 byte for byte. Every object those writes would push is kept reachable in the scratch
@@ -839,8 +849,14 @@ never a crash. A family's writes must agree with each other:
 - Each report gives the family's result: complete, conflict or blocked.
 - A report says a version was published exactly when the family adds that version, and then names
   that version's head, number and record commit.
-- A replacement says `complete` or `partial`, says each change was published at its prepared head,
-  and names a version only as the family adds it.
+- A replacement is kept only once origin is known to have taken the branch push. It says each change
+  was published at its prepared head, and names a version only as the family adds it.
+- A replacement says `complete` only when each change it names has its version. It says `partial`
+  when a change it names has none, or when it leaves a change out. A fallback of a family over 64
+  changes keeps only the change's own layer, so the change whose version was not added may be one it
+  leaves out.
+- Origin is known to have taken a version only once it took the branch push, and only a version the
+  family adds.
 - No two families share a change or a branch.
 
 The restacker does not keep a journal that would not read back as written. A lost journal is never
@@ -854,7 +870,8 @@ branch push, then the versions, lower layers first, then the reports and replace
 (`restack/recover.go`). Each write is `done` when origin holds it or has moved on from it, `finish`
 when it is still valid to push, or `stop` when it must not be pushed. A stop is final when no later
 pass could push it, and terminal when it is also a local failure the journal keeps the diagnostics
-of.
+of. A write the journal keeps as taken by origin is `done` from then on, whatever origin shows now
+(see [Publishing](#publishing)).
 
 | Write           | `finish` while                                                                                                                                            | `stop` (final) on                                                                                                                                             |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -895,8 +912,19 @@ the journal for the next read to decide. A replacement that would say what origi
 says is not built. A family whose branch push stopped gets no report from the journal: the next plan
 reports on it, usually in the same pass. No pass writes the `superseded` result.
 
-A pass lets go of a family once a read of origin finds nothing of the journal left to push and no
-replacement to build, and the family is not open. A family is open in two cases:
+What a read finds origin took of a family's writes stays taken. The journal keeps it before the pass
+pushes or builds anything more: whether origin took the branch push, and each version origin added.
+Recovery decides such a write `done` from then on, whatever becomes of the branch or the record. An
+author who rewrites or deletes every branch a family moved therefore does not unmake its versions,
+nor the obligation to report them. A replacement still to push stays in the journal until origin
+takes it.
+
+Each family goes at its own pace. At each read, a family with a write still to finish pushes its
+next phase, and every other family whose branches moved has its replacements built. A write origin
+keeps refusing therefore holds back only its own family. A pass lets go of a family once a read of
+origin finds nothing of that family left to push and no replacement of it to build, and the family
+is not open. It does so when a read finds nothing left in any family, and otherwise at the pass's
+eighth and last read. A family is open in two cases:
 
 - a write of it is still to finish;
 - origin took its branch push, and one of its versions is neither added nor stopped for good. A
@@ -923,6 +951,11 @@ Checked by `restack-unit`, through the rendered hook:
 - an owner's push to a restacked branch stops that change's version, reported `partial`;
 - a replacement whose push origin refuses stays in the journal until a later pass pushes it, and one
   whose answer is lost is found on origin by the next read and not pushed again;
+- a replacement whose push origin refused is still pushed after an author rewrites or deletes every
+  branch the family moved;
+- a report origin keeps refusing holds only its own family in the journal: a family restacked beside
+  it is let go of, and restacked again after the next landing;
+- two ready changes that name one branch both wait, and a change beside them is restacked;
 - a request filed between the phases pauses the versions until it is released, and the family waits;
 - a family paused by a request waits while a change readied beside it is restacked;
 - the project's cap holds a change that has used it up;

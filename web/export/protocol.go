@@ -91,8 +91,12 @@ type ErrorReply struct {
 type Code string
 
 const (
-	// CodeTooLarge: a manifest over MaxManifest bytes, or a body declared
-	// larger than the receiver's cap.
+	// CodeUnauthenticated: a request that does not carry the receiver's
+	// token.
+	CodeUnauthenticated Code = "unauthenticated"
+	// CodeTooLarge: a manifest over MaxManifest bytes, a body declared
+	// larger than the receiver's cap, or bodies whose declared sizes
+	// together pass the receiver's cap on one upload.
 	CodeTooLarge Code = "too-large"
 	// CodeEncoding: a body sent with a Content-Encoding.
 	CodeEncoding Code = "content-encoding"
@@ -138,6 +142,8 @@ const (
 // Status is the HTTP status a refusal is replied with.
 func (c Code) Status() int {
 	switch c {
+	case CodeUnauthenticated:
+		return http.StatusUnauthorized
 	case CodeTooLarge:
 		return http.StatusRequestEntityTooLarge
 	case CodeEncoding:

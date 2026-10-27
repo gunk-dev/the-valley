@@ -162,6 +162,30 @@ func (m *Manifest) Bodies() []Body {
 	return bodies
 }
 
+// CheckSizes holds the bodies the manifest declares to a receiver's caps:
+// each body at most maxBody bytes, and every body together at most
+// maxUpload. A body declared twice, under one SHA-256, is staged once and
+// counted once. A refusal is too-large.
+func (m *Manifest) CheckSizes(maxBody, maxUpload int64) error {
+	var total int64
+	counted := map[string]bool{}
+	for _, b := range m.Bodies() {
+		if b.Size > maxBody {
+			return refuse(CodeTooLarge, "%s declares %d bytes, more than this receiver's cap of %d on one body", b.Name, b.Size, maxBody)
+		}
+		if counted[b.SHA256] {
+			continue
+		}
+		counted[b.SHA256] = true
+		// Compared before it is added, so the sum never overflows.
+		if b.Size > maxUpload-total {
+			return refuse(CodeTooLarge, "the manifest declares more than this receiver's cap of %d bytes of bodies on one upload", maxUpload)
+		}
+		total += b.Size
+	}
+	return nil
+}
+
 // Project is the manifest's project called name.
 func (m *Manifest) Project(name string) (ManifestProject, bool) {
 	for _, p := range m.Projects {

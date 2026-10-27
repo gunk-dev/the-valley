@@ -31,9 +31,16 @@
 // The publisher uploads an export to the receiver in three steps, each
 // one HTTP request. Every reply is JSON.
 //
+// Every request carries the receiver's token, which ReadToken reads, in
+// its Authorization header (Authorization). The token authenticates the
+// transport; the manifest's signature still authenticates the export. The
+// receiver refuses a request without the token as unauthenticated, with
+// 401, before it reads the body or anything else of the request.
+//
 //  1. POST ManifestPath with the signed manifest as the body. The
-//     receiver admits it with VerifyManifest and stages it with
-//     Store.Stage. It replies 200 with an Inventory: the export it
+//     receiver admits it with VerifyManifest, holds the bodies it declares
+//     to the receiver's caps, and stages it with Store.Stage. It replies
+//     200 with an Inventory: the export it
 //     serves, with its sequence and content digest; per project, the
 //     source tip it holds a verified repository at; and the bodies it
 //     still needs. Posting the same manifest again is harmless and gets
@@ -55,9 +62,12 @@
 // A refusal is replied with Code.Status and an ErrorReply, whose error is
 // a Code and stable. What each step refuses:
 //
+//   - every step: unauthenticated, before anything else;
 //   - step 1: too-large, bad-signature, bad-manifest, wrong-instance,
 //     wrong-destination, replayed, out-of-window, in VerifyManifest's
-//     order; superseded when a newer manifest is staged;
+//     order; then too-large for a body over the receiver's cap, or bodies
+//     over its cap on one upload together; superseded when a newer
+//     manifest is staged;
 //   - step 2: no-manifest when nothing is staged for the sequence,
 //     superseded when a newer manifest replaced it, not-declared for a
 //     hash the manifest does not declare, too-large, content-encoding,

@@ -67,7 +67,8 @@ import (
 )
 
 const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --destination NAME
-                          (--receiver URL | --out DIR) [--principals FILE]
+                          (--receiver URL --receiver-token FILE | --out DIR)
+                          [--principals FILE]
                           [--state DIR] [--read-schema FILE]
                           [--identity-schema FILE] [--registry-ref REF]
                           [--registry-dir DIR] [--recheck DURATION]
@@ -89,6 +90,12 @@ upload them to the receiver at URL, or write them to DIR.
                        of the edge read boundary whose read grants decide
                        what anyone may read there
   --receiver URL       the receiver's base URL, http or https
+  --receiver-token FILE
+                       the receiver's token, which every request of an
+                       upload carries in its Authorization header: one
+                       line of 32 to 256 visible ASCII characters, the
+                       same file the receiver's --token-file names;
+                       required with --receiver
   --out DIR            write the export to DIR, which must not exist or be
                        empty, instead of uploading it: manifest, export.json
                        and bundles/<project>.bundle
@@ -160,6 +167,7 @@ type config struct {
 	instance     string
 	destination  string
 	receiver     string
+	token        string
 	out          string
 	principals   string
 	state        string
@@ -180,6 +188,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.instance, "instance", "", "")
 	fs.StringVar(&c.destination, "destination", "", "")
 	fs.StringVar(&c.receiver, "receiver", "", "")
+	fs.StringVar(&c.token, "receiver-token", "", "")
 	fs.StringVar(&c.out, "out", "", "")
 	fs.StringVar(&c.principals, "principals", "", "")
 	fs.StringVar(&c.state, "state", "", "")
@@ -211,6 +220,8 @@ func parseArgs(args []string) (config, error) {
 		return c, fmt.Errorf("--destination %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", c.destination)
 	case (c.receiver == "") == (c.out == ""):
 		return c, errors.New("give exactly one of --receiver and --out")
+	case (c.receiver == "") != (c.token == ""):
+		return c, errors.New("--receiver-token goes with --receiver, and --receiver needs it")
 	case !readaccess.ValidRef(c.registryRef):
 		return c, fmt.Errorf("--registry-ref %q is not a full ref name: it opens with refs/, and git check-ref-format accepts it", c.registryRef)
 	case c.readSchema == "" || c.idSchema == "":
@@ -279,6 +290,8 @@ type publisher struct {
 	principals export.Principals
 	signer     string
 	key        ed25519.PrivateKey
+	// token is the receiver's token, or "" with --out.
+	token string
 
 	// access reads the two consents to read access.
 	access readaccess.Reader
@@ -304,11 +317,18 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 	if err != nil {
 		return nil, err
 	}
+	var token string
+	if cfg.token != "" {
+		if token, err = export.ReadToken(cfg.token); err != nil {
+			return nil, fmt.Errorf("--receiver-token: %w", err)
+		}
+	}
 	cache := filepath.Join(base, "valley-web-publish")
 	return &publisher{
 		cfg: cfg, stdout: stdout, stderr: stderr,
 		cache: cache, origin: filepath.Join(cache, "origin.git"), pointer: filepath.Join(cache, "_pointer.git"),
 		principals: principals,
+		token:      token,
 		signer:     cfg.instance + "/web-export",
 		access:     readaccess.Reader{ReadSchema: cfg.readSchema, IdentitySchema: cfg.idSchema, CueTimeout: cueTimeout},
 		client:     newClient(),

@@ -322,15 +322,16 @@ func (p *publisher) sign(r *reading, bodies map[string]export.Body, sequence int
 //     receiver's high-water mark, waiting for it when it is close;
 //   - superseded and no-manifest, with a new manifest, after a pause.
 //
-// Every other refusal ends the pass: it says the manifest or a body is
-// wrong, or that the clocks disagree by more than the receiver's window,
-// and the operator has to see it. Out-of-window is the last of those.
+// Every other refusal ends the pass: it says the token, the manifest or a
+// body is wrong, or that the clocks disagree by more than the receiver's
+// window, and the operator has to see it. Out-of-window is the last of
+// those.
 func (p *publisher) upload(ctx context.Context, r *reading, digest string, ack acknowledged) error {
 	paths, bodies, err := p.bundles(ctx, r)
 	if err != nil {
 		return err
 	}
-	rc := receiver{base: strings.TrimSuffix(p.cfg.receiver, "/"), client: p.client}
+	rc := receiver{base: strings.TrimSuffix(p.cfg.receiver, "/"), token: p.token, client: p.client}
 	highWater := ack.Sequence
 	var m *export.Manifest
 	var signed []byte
@@ -455,9 +456,11 @@ func (p *publisher) send(ctx context.Context, rc receiver, m *export.Manifest, s
 	return c.Sequence, nil
 }
 
-// receiver is the receiver's upload endpoints under its base URL.
+// receiver is the receiver's upload endpoints under its base URL, and the
+// token every request to them carries.
 type receiver struct {
 	base   string
+	token  string
 	client *http.Client
 }
 
@@ -475,8 +478,8 @@ func checkReceiver(raw string) error {
 }
 
 // newClient is the HTTP client uploads are made with. It follows no
-// redirect: the receiver is the URL configured, and a POST is never
-// replayed elsewhere.
+// redirect: the receiver is the URL configured, and neither a POST nor
+// the token is ever sent elsewhere.
 func newClient() *http.Client {
 	return &http.Client{
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
@@ -542,6 +545,7 @@ func (rc receiver) do(ctx context.Context, timeout time.Duration, method, path, 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
+	req.Header.Set("Authorization", export.Authorization(rc.token))
 	resp, err := rc.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)

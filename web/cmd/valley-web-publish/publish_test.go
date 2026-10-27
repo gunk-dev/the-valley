@@ -716,12 +716,14 @@ func TestKeyIsMadeOnceAndKept(t *testing.T) {
 
 // testReceiver is a receiver over a real export.Store: the three steps
 // of the upload, each as package export defines it, with the publisher's
-// verifier pinned. It records the requests it takes, and refuse can
-// refuse one before it is handled.
+// verifier pinned and a token every request must carry. It records the
+// requests it takes, and refuse can refuse one before it is handled.
 type testReceiver struct {
 	t      *testing.T
 	v      *testValley
 	server *httptest.Server
+	// token is the receiver's token, and tokenFile the file that holds it.
+	token, tokenFile string
 
 	mu       sync.Mutex
 	store    *export.Store
@@ -734,11 +736,18 @@ type testReceiver struct {
 }
 
 func newReceiver(t *testing.T, v *testValley) *testReceiver {
-	rv := &testReceiver{t: t, v: v}
+	rv := &testReceiver{t: t, v: v, token: "test-receiver-token-0123456789abcdef",
+		tokenFile: filepath.Join(t.TempDir(), "receiver-token")}
+	v.write(rv.tokenFile, rv.token+"\n")
 	rv.replaceStore()
 	rv.server = httptest.NewServer(rv)
 	t.Cleanup(rv.server.Close)
 	return rv
+}
+
+// flags are the publisher's flags that upload to the receiver.
+func (rv *testReceiver) flags() []string {
+	return []string{"--receiver", rv.server.URL, "--receiver-token", rv.tokenFile}
 }
 
 // replaceStore gives the receiver an empty state directory, as a volume
@@ -782,6 +791,10 @@ func (rv *testReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reply(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+	if !export.Authorized(r, rv.token) {
+		fail(&export.Error{Code: export.CodeUnauthenticated, Message: "no token"})
+		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/web-export/v1/"), "/")
 	kind, seq := "", int64(0)
@@ -913,7 +926,7 @@ func TestUploadSkipsAnUnchangedDigest(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
 	upload := func(more ...string) string {
-		stdout, _ := v.publish(append([]string{"--receiver", rv.server.URL}, more...)...)
+		stdout, _ := v.publish(append(rv.flags(), more...)...)
 		return stdout
 	}
 
@@ -1048,7 +1061,7 @@ func TestUploadRetriesByTheReceiversReply(t *testing.T) {
 					pauses = append(pauses, d)
 					return nil
 				}
-			}, "--receiver", rv.server.URL)
+			}, rv.flags()...)
 			sameRequests(t, c.name, rv.taken(), c.takes...)
 			if c.fails != "" {
 				if err == nil || !strings.Contains(err.Error(), c.fails) {

@@ -11,7 +11,9 @@
 # The service runs as a dynamic user in the git group, so it can read the
 # repositories and own nothing on disk but its state and cache. It cannot
 # write the repositories, and the files that hold the host's mirror,
-# backup and signing keys are made inaccessible to it.
+# backup and signing keys are made inaccessible to it. The receiver's
+# token is a file outside the Nix store, which systemd reads and hands to
+# the unit as a credential.
 {
   config,
   pkgs,
@@ -92,6 +94,8 @@ let
     "--instance ${lib.escapeShellArg config.networking.hostName}"
     "--destination ${lib.escapeShellArg cfg.destination}"
     "--receiver ${lib.escapeShellArg cfg.receiver}"
+    # %d is the unit's credentials directory.
+    "--receiver-token %d/receiver-token"
     "--principals ${principalsFile}"
     "--state ${lib.escapeShellArg (toString cfg.stateDir)}"
     "--max-bundles ${cfg.maxBundles}"
@@ -133,6 +137,18 @@ in
       example = "https://example.org";
       description = ''
         The receiver's base URL. The upload's paths are appended to it.
+      '';
+    };
+
+    receiverTokenFile = lib.mkOption {
+      type = lib.types.strMatching "/.+";
+      example = "/run/keys/valley-web-receiver-token";
+      description = ''
+        The file that holds the receiver's token, which every request of
+        an upload carries: one line of 32 to 256 visible ASCII characters,
+        the token the receiver is given. The path is outside the Nix
+        store, and systemd reads the file as the unit's credential, so it
+        may be readable by root alone.
       '';
     };
 
@@ -212,6 +228,10 @@ in
         message = "services.valley.webPublisher needs services.valley: it reads the repositories that host serves.";
       }
       {
+        assertion = !(lib.hasPrefix builtins.storeDir cfg.receiverTokenFile);
+        message = "services.valley.webPublisher.receiverTokenFile is in the Nix store, which every user can read; give a path outside it.";
+      }
+      {
         assertion = host.integrator.instanceProject != null;
         message = "services.valley.webPublisher needs services.valley.integrator.instanceProject: the publisher discovers the projects, and the signers that verify their landings, through what the instance repository publishes.";
       }
@@ -249,6 +269,7 @@ in
         CacheDirectory = stateName;
         CacheDirectoryMode = "0700";
         WorkingDirectory = toString cfg.stateDir;
+        LoadCredential = [ "receiver-token:${cfg.receiverTokenFile}" ];
         # ProtectSystem=strict leaves the whole filesystem read-only but
         # the state and cache directories, which systemd exempts. So the
         # repositories, readable through the git group, are read-only,

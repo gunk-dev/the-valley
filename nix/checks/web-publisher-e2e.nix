@@ -5,7 +5,8 @@
 # repositories the host serves and nothing more: it writes no repository,
 # reads no key outside its state, and reads no repository the host does
 # not declare, though the system's git configuration trusts every
-# directory.
+# directory. The receiver's token reaches it as a credential, though the
+# token's own file is root's alone.
 {
   pkgs,
   lib,
@@ -52,7 +53,9 @@ let
       if git -C /srv/git/app.git update-ref refs/heads/probe refs/heads/main 2> /dev/null; then
         fail "a repository's ref was written"
       fi
-      for key in /srv/git/.ssh/id_ed25519 /run/keys/backup-ssh-key; do
+      grep -qx "edge-token-0123456789abcdef0123456789" "$CREDENTIALS_DIRECTORY/receiver-token" ||
+        fail "the receiver's token did not reach the unit as a credential"
+      for key in /srv/git/.ssh/id_ed25519 /run/keys/backup-ssh-key /run/keys/web-receiver-token; do
         if cat "$key" > /dev/null 2>&1; then
           fail "$key was read"
         fi
@@ -116,6 +119,7 @@ in
           enable = true;
           destination = "example.org";
           receiver = "http://192.0.2.1";
+          receiverTokenFile = "/run/keys/web-receiver-token";
         };
       };
       systemd.services.valley-web-publish.serviceConfig.ExecStart = lib.mkForce (lib.getExe probe);
@@ -135,6 +139,7 @@ in
           "echo secret | install -m 0640 -o git -g git /dev/stdin /srv/git/.ssh/id_ed25519",
           "install -d -m 0755 /run/keys",
           "echo secret | install -m 0644 /dev/stdin /run/keys/backup-ssh-key",
+          "echo edge-token-0123456789abcdef0123456789 | install -m 0400 /dev/stdin /run/keys/web-receiver-token",
       )
 
       host.succeed("runuser -u git -- sh -c 'tree=$(git -C /srv/git/app.git mktree < /dev/null); tip=$(echo initial | git -C /srv/git/app.git -c user.name=operator -c user.email=operator@example.org commit-tree \"$tree\"); git -C /srv/git/app.git update-ref refs/heads/main \"$tip\"'")

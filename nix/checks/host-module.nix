@@ -75,6 +75,7 @@ let
           enable = true;
           destination = "example.org";
           receiver = "https://example.org";
+          receiverTokenFile = "/run/keys/valley-web-receiver-token";
           principals = {
             operator = "operator";
             alice = "agent";
@@ -103,6 +104,13 @@ let
           instancePolicy = "/var/lib/valley-instance/policy/instance";
         };
       }
+    ];
+  };
+
+  # The publisher with its token in the Nix store.
+  storeTokenWebPublisherHost = webPublisherHost.extendModules {
+    modules = [
+      { services.valley.webPublisher.receiverTokenFile = lib.mkForce "${pkgs.writeText "token" "x"}"; }
     ];
   };
 
@@ -223,6 +231,11 @@ let
       host = shortRegistryRefWebPublisherHost;
       says = "services.valley.identity.ref is registry, which is not a full ref name";
       why = "git resolves a ref that is not a full name by trying several refs in turn, and a pusher can make one of them";
+    }
+    {
+      host = storeTokenWebPublisherHost;
+      says = "services.valley.webPublisher.receiverTokenFile is in the Nix store";
+      why = "the publisher's receiver token is in the Nix store";
     }
     {
       host = noInstanceWebPublisherHost;
@@ -685,7 +698,8 @@ let
       "-/run/agenix/valley-git-ssh-key"
       "-/var/lib/valley-integrator"
     ])
-    || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --principals /nix/store/" command)
+    || !(lib.hasInfix "/bin/valley-web-publish --instance-repo /srv/git/sealed.git --instance valley-host --destination example.org --receiver https://example.org --receiver-token %d/receiver-token --principals /nix/store/" command)
+    || service.LoadCredential or [ ] != [ "receiver-token:/run/keys/valley-web-receiver-token" ]
     || !(lib.hasInfix "-valley-web-principals.json --state /var/lib/valley-web-publish --max-bundles 1G --max-storage 16G --registry-ref refs/heads/main --registry-dir identity" command)
     || service.MemoryMax or null != "1G"
     || service.MemorySwapMax or null != "0"
@@ -782,7 +796,7 @@ in
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then
-      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, the destination, the display mapping, the bounds on its bundles and storage, and the identity registry's directory"
+      throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, its token as a credential, the destination, the display mapping, the bounds on its bundles and storage, and the identity registry's directory"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

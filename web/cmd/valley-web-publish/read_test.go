@@ -30,7 +30,7 @@ func (v *testValley) fails(rv *testReceiver, more ...string) string {
 	to := []string{"--out", out}
 	if rv != nil {
 		rv.taken()
-		to = []string{"--receiver", rv.server.URL}
+		to = rv.flags()
 	}
 	var stdout, stderr bytes.Buffer
 	if code := run(context.Background(), v.args(append(to, more...)...), &stdout, &stderr); code != 1 {
@@ -508,7 +508,7 @@ func TestABundlePastTheBudgetIsNeverWritten(t *testing.T) {
 	}
 
 	rv := newReceiver(t, v)
-	v.publish("--receiver", rv.server.URL)
+	v.publish(rv.flags()...)
 	mustSay(t, "an acknowledged digest past --max-storage", v.fails(rv, "--max-storage", strconv.FormatInt(budget, 10)),
 		fmt.Sprintf("more than --max-storage %d", budget))
 }
@@ -577,7 +577,7 @@ func TestPrivateSentinelsNeverLeave(t *testing.T) {
 	noSentinels(t, "--out's bundle of app", v.unbundled(bundles[0]))
 
 	rv := newReceiver(t, v)
-	v.publish("--receiver", rv.server.URL)
+	v.publish(rv.flags()...)
 	rv.inActive(func(g export.Generation) {
 		data, err := os.ReadFile(g.ExportPath())
 		if err != nil {
@@ -599,13 +599,13 @@ func TestAProjectMadePrivateLeavesTheReceiver(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
 	v.declare("site", policy("site", "anyone"))
-	v.publish("--receiver", rv.server.URL)
+	v.publish(rv.flags()...)
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app", "site"}) {
 		t.Fatalf("the receiver serves %v, want app and site", got)
 	}
 
 	v.declare("site", policy("site", "operator"))
-	stdout, _ := v.publish("--receiver", rv.server.URL)
+	stdout, _ := v.publish(rv.flags()...)
 	mustSay(t, "site made private", stdout, "public: app; private: site, valley")
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app"}) {
 		t.Errorf("the receiver serves %v once site is private, want app alone", got)

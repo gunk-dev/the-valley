@@ -35,7 +35,9 @@ var ErrNoExport = errors.New("no export has been activated")
 //	    export.json
 //	    tmp/<project>.git                 a repository being built
 //	    repos/<project>.git               a repository once it is accepted
-//	<state>/trash/                        generations being deleted
+//	<state>/trash/                        what is being deleted: old
+//	                                      generations, discarded uploads,
+//	                                      and repositories past the cap
 //
 // staging/ and each upload in it are the receiver's alone, mode 0700, so
 // no other user reads a body before it is verified. exports/ and every
@@ -196,7 +198,7 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 	if err := s.recover(); err != nil {
 		return nil, err
 	}
-	if err := s.sweep(); err != nil {
+	if err := s.sweep(context.Background()); err != nil {
 		s.report(err)
 	}
 	return s, nil
@@ -334,9 +336,12 @@ func (s *Store) Open() (Generation, func(), error) {
 // too-large (see checkStorage), but first Stage sweeps the generations no
 // reader holds any more, and measures again.
 //
-// Stage waits for the store's lock, measures the state directory, and
-// waits for the writers it stops, each only until ctx is done. Once ctx is
-// done it deletes and stages nothing.
+// Stage waits for the store's lock, measures the state directory, sweeps,
+// and waits for the writers it stops, each only until ctx is done. It
+// checks ctx before each directory it deletes or creates, and the sweep
+// and each deletion stop part way once ctx is done. So once ctx is done,
+// Stage releases the lock and deletes and creates nothing more. A deletion
+// it stops part way is left in the trash, for the next sweep.
 func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	if s.readOnly {
 		return Staging{}, errReadOnly
@@ -367,7 +372,7 @@ func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 	err = s.checkStorage(ctx, m, discard)
 	if e := (*Error)(nil); errors.As(err, &e) && e.Code == CodeTooLarge && ctx.Err() == nil {
 		// A generation a reader held at the last sweep may be free now.
-		if err := s.sweep(); err != nil {
+		if err := s.sweep(ctx); err != nil {
 			s.report(err)
 		}
 		err = s.checkStorage(ctx, m, discard)
@@ -384,11 +389,17 @@ func (s *Store) Stage(ctx context.Context, m *Manifest) (Staging, error) {
 		return Staging{}, err
 	}
 	for _, dir := range older {
-		if err := removeAll(dir); err != nil {
+		if err := ctx.Err(); err != nil {
+			return Staging{}, err
+		}
+		if err := s.remove(ctx, dir); err != nil {
 			return Staging{}, err
 		}
 	}
 	for _, d := range []string{st.Dir, st.Bodies(), filepath.Join(st.Dir, "repos")} {
+		if err := ctx.Err(); err != nil {
+			return Staging{}, err
+		}
 		if err := os.MkdirAll(d, 0o700); err != nil {
 			return Staging{}, err
 		}
@@ -529,8 +540,8 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     under tmp/, made readable by every user, every file and directory
 //     of it is synced to disk, and only then is it renamed into repos/.
 //     Once each is in repos/, the state directory is held to MaxStorage:
-//     a repository that took it past the cap is removed, and the upload
-//     is refused as too-large;
+//     a repository that took it past the cap is moved to the trash, and
+//     the upload is refused as too-large;
 //  4. stops the writers of the upload's bodies, and waits until each has
 //     closed its files (see Writer); removes the bodies and tmp/; and
 //     checks that the staging directory holds export.json and exactly
@@ -543,7 +554,7 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     generation is on disk;
 //  7. swaps active to the new generation;
 //  8. syncs the swap to disk, and deletes the generations no reader holds
-//     and the stale staging directories.
+//     and the stale staging directories, until ctx is done.
 //
 // The activation has succeeded once step 7 is done: the new generation
 // serves, and high-water names it, so the next OpenStore restores it
@@ -618,7 +629,9 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 			return Generation{}, err
 		}
 		if err := s.checkUsage(ctx); err != nil {
-			if rerr := removeAll(st.Repo(p.Name)); rerr != nil {
+			// Out of repos/ at once, so no part of it is taken for an
+			// accepted repository, even when ctx stops its deletion.
+			if rerr := s.remove(ctx, st.Repo(p.Name)); rerr != nil {
 				return Generation{}, errors.Join(err, rerr)
 			}
 			return Generation{}, err
@@ -629,7 +642,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		return Generation{}, err
 	}
 	for _, d := range []string{st.Bodies(), st.tmp()} {
-		if err := removeAll(d); err != nil {
+		if err := removeAll(ctx, d); err != nil {
 			return Generation{}, err
 		}
 	}
@@ -669,7 +682,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	if err := syncPath(s.dir); err != nil {
 		s.report(fmt.Errorf("the swap of active to generation %d is not on disk: %w", m.Sequence, err))
 	}
-	if err := s.sweep(); err != nil {
+	if err := s.sweep(ctx); err != nil {
 		s.report(err)
 	}
 	return Generation{Sequence: m.Sequence, Dir: dir}, nil
@@ -680,11 +693,13 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 // carry. It builds the repository under tmp/, makes it readable by every
 // user, syncs it to disk, and only then renames it into repos/, so a
 // repository in repos/ is always an accepted one, whole on disk. A build
-// a crash interrupted is left under tmp/, where the next build of the
-// project starts again.
+// a crash interrupted, or one ctx stopped, is left under tmp/, where the
+// next build of the project starts again. A bundle AcceptBundle refuses
+// is removed, so the inventory names it as needed again; a bundle whose
+// fetch ctx stopped is kept.
 func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error {
 	tmp := filepath.Join(st.tmp(), p.Name+".git")
-	if err := removeAll(tmp); err != nil {
+	if err := removeAll(ctx, tmp); err != nil {
 		return err
 	}
 	if err := os.MkdirAll(st.tmp(), 0o755); err != nil {
@@ -692,7 +707,9 @@ func (s *Store) build(ctx context.Context, st Staging, p ManifestProject) error 
 	}
 	if bundle := st.Body(p.Bundle); exists(bundle) {
 		if err := AcceptBundle(ctx, bundle, tmp, p.SourceTip); err != nil {
-			os.Remove(bundle)
+			if e := (*Error)(nil); errors.As(err, &e) && ctx.Err() == nil {
+				os.Remove(bundle)
+			}
 			return err
 		}
 	} else if err := s.carry(ctx, p, tmp); err != nil {
@@ -949,8 +966,9 @@ func (s *Store) recover() error {
 // every staging directory not newer than the high-water mark, and the
 // trash. A generation a reader holds is left for a later sweep. A
 // deletion that fails does not stop the others, and the next sweep tries
-// it again.
-func (s *Store) sweep() error {
+// it again. Once ctx is done, sweep stops, even part way through a
+// deletion, and fails with ctx's error; the next sweep finishes the work.
+func (s *Store) sweep(ctx context.Context) error {
 	active, ok, err := s.active()
 	if err != nil {
 		return fmt.Errorf("sweeping %s: %w", s.dir, err)
@@ -963,22 +981,35 @@ func (s *Store) sweep() error {
 	exports, err := os.ReadDir(s.path("exports"))
 	errs = append(errs, err)
 	for _, e := range exports {
+		if ctx.Err() != nil {
+			break
+		}
 		if n, valid := decimal(e.Name()); valid && ok && n == active {
 			continue
 		}
-		errs = append(errs, s.delete(s.path("exports", e.Name())))
+		errs = append(errs, s.delete(ctx, s.path("exports", e.Name())))
 	}
 	staging, err := os.ReadDir(s.path("staging"))
 	errs = append(errs, err)
 	for _, e := range staging {
+		if ctx.Err() != nil {
+			break
+		}
 		if n, valid := decimal(e.Name()); !valid || n <= hw {
-			errs = append(errs, removeAll(s.path("staging", e.Name())))
+			errs = append(errs, removeAll(ctx, s.path("staging", e.Name())))
 		}
 	}
 	trash, err := os.ReadDir(s.path("trash"))
 	errs = append(errs, err)
 	for _, e := range trash {
-		errs = append(errs, removeAll(s.path("trash", e.Name())))
+		if ctx.Err() != nil {
+			break
+		}
+		errs = append(errs, removeAll(ctx, s.path("trash", e.Name())))
+	}
+	// A deletion ctx stopped has said so already.
+	if err := ctx.Err(); err != nil && !errors.Is(errors.Join(errs...), err) {
+		errs = append(errs, fmt.Errorf("stopped: %w", err))
 	}
 	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("sweeping %s: %w", s.dir, err)
@@ -989,7 +1020,8 @@ func (s *Store) sweep() error {
 // delete removes the generation at dir unless a reader holds it. Holding
 // the generation's lock exclusively, it renames the generation into the
 // trash, so a reader that locks it afterwards finds it gone from its path.
-func (s *Store) delete(dir string) error {
+// It then deletes it there until ctx is done.
+func (s *Store) delete(ctx context.Context, dir string) error {
 	f, err := os.Open(dir)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -1008,7 +1040,53 @@ func (s *Store) delete(dir string) error {
 		return err
 	}
 	f.Close()
-	return removeAll(trash)
+	return removeAll(ctx, trash)
+}
+
+// remove deletes the tree at path. It renames the tree into the trash, so
+// the tree is gone from path at once and whole until then, and deletes it
+// there until ctx is done. What ctx stops is left in the trash for the
+// next sweep. A path that does not exist is no error.
+func (s *Store) remove(ctx context.Context, path string) error {
+	trash := s.path("trash", filepath.Base(path)+"-"+random())
+	if err := rename(path, trash); errors.Is(err, fs.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	return removeAll(ctx, trash)
+}
+
+// removeTree deletes the tree at path, as os.RemoveAll does, but checks
+// ctx before it deletes each entry, and stops with ctx's error once ctx is
+// done. A symlink is deleted, not followed. A path that does not exist is
+// no error.
+func removeTree(ctx context.Context, path string) error {
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("deleting %s: %w", path, err)
+	}
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		entries, err := os.ReadDir(path)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		for _, e := range entries {
+			if err := removeTree(ctx, filepath.Join(path, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // lock takes the store's activation lock, waiting for it until ctx is
@@ -1279,7 +1357,7 @@ func syncPath(path string) error {
 var (
 	syncFile  = (*os.File).Sync
 	rename    = os.Rename
-	removeAll = os.RemoveAll
+	removeAll = removeTree
 )
 
 func exists(path string) bool {

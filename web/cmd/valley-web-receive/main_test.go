@@ -89,15 +89,23 @@ func files(t *testing.T) (tokenFile, verifiers string) {
 	return tokenFile, verifiers
 }
 
-// command is a program the tests run. It runs in a process group of its
-// own, which start kills when the test ends, with every git it started.
-// The kernel kills the program when the test process dies first, as on a
-// timeout or an external kill, so a test run leaves no receiver behind.
+// command is a program the tests run. start and output run it with
+// exporttest.Start, so neither it nor any git it starts outlives the test,
+// even when the test process dies first, as on a timeout or an external
+// kill.
 func command(name string, args ...string) *exec.Cmd {
-	cmd := exec.Command(name, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
-	cmd.WaitDelay = 5 * time.Second
-	return cmd
+	return exec.Command(name, args...)
+}
+
+// output runs cmd, and returns what it wrote to stdout and stderr
+// together. A cmd that has not exited within requestTimeout fails the
+// test.
+func output(t *testing.T, cmd *exec.Cmd) ([]byte, error) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := exporttest.Run(t, cmd, requestTimeout)
+	return out.Bytes(), err
 }
 
 func receiveCmd(args ...string) *exec.Cmd {
@@ -165,16 +173,17 @@ func (l *stderrLog) String() string {
 	return l.buf.String()
 }
 
-// start runs cmd and waits for it to say where it listens. The cleanup is
-// registered as soon as cmd starts: it kills cmd's process group, even
-// once cmd has exited, since a git cmd started may outlive it. It logs
-// what cmd wrote when the test failed.
+// start runs cmd with exporttest.Start and waits for it to say where it
+// listens. The cleanup is registered as soon as cmd starts: it kills every
+// process in cmd's session, even once cmd has exited, since a git cmd
+// started may outlive it. It logs what cmd wrote when the test failed.
 func start(t *testing.T, cmd *exec.Cmd, name string) *proc {
 	t.Helper()
 	p := &proc{cmd: cmd, log: &stderrLog{first: make(chan string, 1)}, done: make(chan struct{})}
 	first := p.log.first
 	cmd.Stderr = p.log
-	if err := cmd.Start(); err != nil {
+	kill, err := exporttest.Start(t, cmd)
+	if err != nil {
 		t.Fatal(err)
 	}
 	go func() {
@@ -182,7 +191,7 @@ func start(t *testing.T, cmd *exec.Cmd, name string) *proc {
 		close(p.done)
 	}()
 	t.Cleanup(func() {
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		kill()
 		<-p.done
 		if t.Failed() {
 			t.Logf("%s wrote:\n%s", name, p.log)
@@ -1041,10 +1050,14 @@ func TestStopsOnSIGTERM(t *testing.T) {
 	}
 }
 
-// A stop that ends a commit waits for the commit's git to stop before the
-// receiver exits, so no git outlives it. Here git stalls in commit-graph,
-// once it has fetched the bundle.
-func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
+// stallingGit is a git that stalls the first time it is asked to write a
+// commit-graph, once it has fetched the bundle, and is the real git
+// otherwise. The git that stalls is a shell that starts a child and waits
+// for it. The child holds git's output open, so the receiver reads git's
+// output to its end only once the child is gone too. stalled waits for the
+// stall and returns the shell's process ID and the child's.
+func stallingGit(t *testing.T) (git string, stalled func() (shell, child int)) {
+	t.Helper()
 	real, err := exec.LookPath(export.GitProgram)
 	if err != nil {
 		t.Fatal(err)
@@ -1053,11 +1066,84 @@ func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	pidFile, git := filepath.Join(dir, "pid"), filepath.Join(dir, "git")
-	script := "#!/bin/sh\nfor a; do [ \"$a\" = commit-graph ] && { echo $$ > '" + pidFile + "'; exec sleep 600; }; done\nexec '" + real + "' \"$@\"\n"
+	pids, once, git := filepath.Join(dir, "pids"), filepath.Join(dir, "stalled"), filepath.Join(dir, "git")
+	script := `#!/bin/sh
+for a; do
+	if [ "$a" = commit-graph ] && mkdir '` + once + `' 2> /dev/null; then
+		sleep 600 &
+		echo $$ $! > '` + pids + `.tmp' && mv '` + pids + `.tmp' '` + pids + `'
+		wait
+	fi
+done
+exec '` + real + `' "$@"
+`
 	if err := os.WriteFile(git, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	return git, func() (shell, child int) {
+		t.Helper()
+		waitFor(t, "the commit's git to stall", func(context.Context) bool {
+			data, err := os.ReadFile(pids)
+			_, scanErr := fmt.Sscan(string(data), &shell, &child)
+			return err == nil && scanErr == nil
+		})
+		return shell, child
+	}
+}
+
+// running reports whether the process pid has not exited. A zombie, which
+// has exited and is not yet reaped, is not running.
+func running(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	i := bytes.LastIndexByte(data, ')')
+	state := strings.Fields(string(data[i+1:]))
+	return len(state) > 0 && state[0] != "Z" && state[0] != "X"
+}
+
+// A commit whose client goes away stops the git it runs, with every
+// process that git started, even one that holds git's output open. The
+// request then ends: it gives back the store's lock and its request slot,
+// and keeps the bundle it was sent. So the manifest posted again needs
+// nothing, and the commit made again activates the upload.
+func TestACommitWhoseClientGoesAwayStopsItsGit(t *testing.T) {
+	git, stalled := stallingGit(t)
+	e := newEdgeWithGit(t, exporttest.New(t), git)
+	signed, m := e.signedNow()
+	for _, n := range e.post(signed).Needs {
+		e.put(m, n.Name)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	committed := make(chan error, 1)
+	go func() {
+		_, _, _, err := e.do(ctx, http.MethodPost, export.CommitPath(m.Sequence), nil, nil)
+		committed <- err
+	}()
+	shell, child := stalled()
+	cancel()
+	if err := <-committed; err == nil {
+		t.Error("the commit was answered, though its client went away")
+	}
+	waitFor(t, "the commit's git and its child to be killed", func(context.Context) bool {
+		return !running(shell) && !running(child)
+	})
+	waitFor(t, "the receiver to give the commit up", func(context.Context) bool {
+		return e.logged(export.CommitPath(m.Sequence), "git commit-graph")
+	})
+	if needs := e.post(signed).Needs; len(needs) != 0 {
+		t.Errorf("once the commit was given up the upload needs %+v, want nothing", needs)
+	}
+	e.commit(m)
+}
+
+// A stop that ends a commit waits for the commit's git to stop before the
+// receiver exits, so neither git nor any process git started outlives
+// it, even one that holds git's output open.
+func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
+	git, stalled := stallingGit(t)
 	e := newEdgeWithGit(t, exporttest.New(t), git)
 	signed, m := e.signedNow()
 	for _, n := range e.post(signed).Needs {
@@ -1068,12 +1154,7 @@ func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
 		_, _, _, err := e.do(context.Background(), http.MethodPost, export.CommitPath(m.Sequence), nil, nil)
 		committed <- err
 	}()
-	var pid int
-	waitFor(t, "the commit's git to stall", func(context.Context) bool {
-		data, err := os.ReadFile(pidFile)
-		pid, _ = strconv.Atoi(strings.TrimSpace(string(data)))
-		return err == nil && pid > 0
-	})
+	shell, child := stalled()
 
 	if err := e.proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -1086,8 +1167,11 @@ func TestAStopWaitsForTheGitACommitRuns(t *testing.T) {
 	if e.proc.err != nil {
 		t.Errorf("valley-web-receive stopped with %v", e.proc.err)
 	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Errorf("the commit's git, process %d, outlived the receiver: %v", pid, err)
+	if running(shell) || running(child) {
+		t.Errorf("the commit's git, process %d, or its child, process %d, outlived the receiver", shell, child)
+	}
+	if e.logged("requests were still running") {
+		t.Error("the receiver exited before the commit it stopped had finished")
 	}
 	if err := <-committed; err == nil {
 		t.Error("the commit was answered, though the receiver stopped during it")
@@ -1112,7 +1196,7 @@ func TestUsage(t *testing.T) {
 		append(base, "--verifiers", verifiers, "--token-file", tokenFile, "--max-body", "0"),
 		append(base, "--verifiers", verifiers, "--token-file", tokenFile, "extra"),
 	} {
-		out, err := receiveCmd(args...).CombinedOutput()
+		out, err := output(t, receiveCmd(args...))
 		exit, ok := err.(*exec.ExitError)
 		if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "usage: valley-web-receive") {
 			t.Errorf("valley-web-receive %q gave %v:\n%s", args, err, out)
@@ -1126,7 +1210,7 @@ func TestUsage(t *testing.T) {
 		append(base, "--verifiers", verifiers, "--token-file", short),
 		append(base, "--verifiers", tokenFile, "--token-file", tokenFile),
 	} {
-		out, err := receiveCmd(args...).CombinedOutput()
+		out, err := output(t, receiveCmd(args...))
 		if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 			t.Errorf("valley-web-receive %q gave %v:\n%s", args, err, out)
 		}
@@ -1134,7 +1218,7 @@ func TestUsage(t *testing.T) {
 			t.Errorf("valley-web-receive %q printed the token", args)
 		}
 	}
-	out, err := receiveCmd("--help").CombinedOutput()
+	out, err := output(t, receiveCmd("--help"))
 	if err != nil || !strings.HasPrefix(string(out), "usage: valley-web-receive") {
 		t.Errorf("valley-web-receive --help gave %v:\n%s", err, out)
 	}

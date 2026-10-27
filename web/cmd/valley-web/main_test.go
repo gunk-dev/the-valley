@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"io"
 	"io/fs"
 	"net/http"
@@ -51,14 +52,25 @@ func uploaded(t *testing.T) (*exporttest.Fixture, string) {
 	return f, state
 }
 
-// start runs cmd and waits for it to say where it listens.
+// output runs cmd, and returns what it wrote to stdout and stderr
+// together. A cmd that has not exited within 30 seconds fails the test.
+func output(t *testing.T, cmd *exec.Cmd) ([]byte, error) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := exporttest.Run(t, cmd, 30*time.Second)
+	return out.Bytes(), err
+}
+
+// start runs cmd with exporttest.Start, so no process of it outlives the
+// test, and waits for it to say where it listens.
 func start(t *testing.T, cmd *exec.Cmd) (addr string) {
 	t.Helper()
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	if _, err := exporttest.Start(t, cmd); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })
@@ -123,8 +135,15 @@ func TestServesTheStateDirectory(t *testing.T) {
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Wait(); err != nil {
-		t.Errorf("valley-web stopped with %v", err)
+	stopped := make(chan error, 1)
+	go func() { stopped <- cmd.Wait() }()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Errorf("valley-web stopped with %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("valley-web did not stop within 30 seconds of SIGTERM")
 	}
 }
 
@@ -165,7 +184,7 @@ func TestServesAReadOnlyStateDirectory(t *testing.T) {
 	cmd.Env = append(cmd.Env, "VALLEY_WEB_TEST_GIT="+wrapper)
 	get(t, start(t, cmd), routes(f))
 
-	out, err := valleyWeb("--state", filepath.Join(state, "missing"), "--listen", "127.0.0.1:0").CombinedOutput()
+	out, err := output(t, valleyWeb("--state", filepath.Join(state, "missing"), "--listen", "127.0.0.1:0"))
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
 		t.Errorf("valley-web on a state directory that does not exist gave %v:\n%s", err, out)
 	}
@@ -224,13 +243,13 @@ func TestUsage(t *testing.T) {
 		{"--state", state, "--listen", "127.0.0.1:0", "extra"},
 		{"--no-such-flag"},
 	} {
-		out, err := valleyWeb(args...).CombinedOutput()
+		out, err := output(t, valleyWeb(args...))
 		exit, ok := err.(*exec.ExitError)
 		if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "usage: valley-web --state DIR --listen ADDR") {
 			t.Errorf("valley-web %q gave %v:\n%s", args, err, out)
 		}
 	}
-	out, err := valleyWeb("--help").CombinedOutput()
+	out, err := output(t, valleyWeb("--help"))
 	if err != nil || !strings.HasPrefix(string(out), "usage: valley-web") {
 		t.Errorf("valley-web --help gave %v:\n%s", err, out)
 	}

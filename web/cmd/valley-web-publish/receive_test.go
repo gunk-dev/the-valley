@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the-valley/web/export/exporttest"
 )
 
 // program is the path of a program of the web UI's that the variable env
@@ -27,14 +29,15 @@ func program(t *testing.T, env string) string {
 }
 
 // listening runs cmd, a server that prints "<name>: listening on ADDR"
-// once it listens, and returns the address.
+// once it listens, with exporttest.Start, so no process of it outlives
+// the test. It returns the address.
 func listening(t *testing.T, name string, cmd *exec.Cmd) string {
 	t.Helper()
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cmd.Start(); err != nil {
+	if _, err := exporttest.Start(t, cmd); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { cmd.Process.Kill(); cmd.Wait() })

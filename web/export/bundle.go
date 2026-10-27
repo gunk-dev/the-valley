@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // GitProgram is the git this package runs: git on PATH, unless a build
@@ -40,7 +42,8 @@ const maxBundleHeader = 64 << 10
 //     history, as merge-base and log do, without parsing each commit.
 //
 // A refused bundle leaves no repository behind. Every refusal is an
-// *Error with CodeBadBundle.
+// *Error with CodeBadBundle. Once ctx is done, git is stopped, and the
+// error is no refusal.
 func AcceptBundle(ctx context.Context, path, repo, tip string) error {
 	format, err := checkBundleHeader(path, tip)
 	if err != nil {
@@ -151,7 +154,9 @@ func checkBundleHeader(path, tip string) (format string, err error) {
 
 // fetchMain makes repo a fresh bare repository holding refs/heads/main at
 // tip, fetched from source, and nothing else but main's commit-graph. It
-// removes repo again on any failure.
+// removes repo again on any failure, until ctx is done: a fetch ctx stopped
+// may leave repo part way, for the caller to remove. A fetch ctx stopped
+// is no refusal of the bundle.
 func fetchMain(ctx context.Context, source, repo, tip, format string) (err error) {
 	if !ValidObjectID(tip) {
 		return refuse(CodeBadBundle, "%q is not an object ID", tip)
@@ -161,7 +166,7 @@ func fetchMain(ctx context.Context, source, repo, tip, format string) (err error
 	}
 	defer func() {
 		if err != nil {
-			os.RemoveAll(repo)
+			removeAll(ctx, repo)
 		}
 	}()
 	if _, err := git(ctx, "", "init", "--quiet", "--bare", "--template=", "--initial-branch=main",
@@ -171,6 +176,9 @@ func fetchMain(ctx context.Context, source, repo, tip, format string) (err error
 	if _, err := git(ctx, repo, "-c", "transfer.fsckObjects=true", "-c", "core.fsync=all",
 		"fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--end-of-options",
 		source, MainRef+":"+MainRef); err != nil {
+		if ctx.Err() != nil {
+			return err
+		}
 		return refuse(CodeBadBundle, "%v", err)
 	}
 	refs, err := git(ctx, repo, "for-each-ref", "--format=%(objectname) %(refname)")
@@ -311,8 +319,9 @@ func run(cmd *exec.Cmd, verb string, stdin []byte, limit int64, read func(io.Rea
 	out := &bounded{r: pipe, n: limit, err: fmt.Errorf("git %s: %w", verb, ErrOutputLimit)}
 	readErr := read(out)
 	if readErr != nil || !out.eof {
-		// git may be blocked writing to a pipe nobody reads any more.
-		cmd.Process.Kill()
+		// git, or a process it started, may be blocked writing to a pipe
+		// nobody reads any more.
+		cmd.Cancel()
 	}
 	err = cmd.Wait()
 	switch {
@@ -384,14 +393,34 @@ func (h *head) String() string { return h.b.String() }
 // command is git, run in dir unless it is "", with replacement refs off
 // and an environment that holds none of the caller's GIT_ variables and
 // reads no system or global configuration.
+//
+// git runs in a process group of its own, and every process git starts
+// runs in that group unless it leaves it. Once ctx is done, the whole
+// group is killed, so no process git started keeps running, or keeps
+// git's output open, once git is stopped. A process that left the group
+// can still hold the output open. Go closes the output gitWaitDelay after
+// the group is killed, or after git exits once git is waited for.
 func command(ctx context.Context, dir string, args ...string) *exec.Cmd {
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)
 	}
 	cmd := exec.CommandContext(ctx, GitProgram, append([]string{"--no-replace-objects"}, args...)...)
 	cmd.Env = gitEnvironment(os.Environ())
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		// The group's ID is git's process ID.
+		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
+		return os.ErrProcessDone
+	}
+	cmd.WaitDelay = gitWaitDelay
 	return cmd
 }
+
+// gitWaitDelay is how long a git command's output may stay open once git
+// is stopped or has exited.
+const gitWaitDelay = 2 * time.Second
 
 func gitEnvironment(inherited []string) []string {
 	var env []string

@@ -20,6 +20,7 @@ import (
 
 	"the-valley/note"
 	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // The tests run the publisher against a real valley: bare repositories
@@ -190,21 +191,21 @@ func (v *testValley) run(dir string, name string, args ...string) string {
 	return v.runInput(dir, "", name, args...)
 }
 
-// runInput runs a command of the test's own. Its valley commands read
-// through a cache of their own, so the publisher's starts empty.
+// runInput runs a command of the test's own, with exporttest.Run, for at
+// most five minutes. Its valley commands read through a cache of their
+// own, so the publisher's starts empty.
 func (v *testValley) runInput(dir, stdin string, name string, args ...string) string {
 	v.t.Helper()
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "XDG_CACHE_HOME="+filepath.Join(v.root, "test-cache"))
 	cmd.Stdin = strings.NewReader(stdin)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if err := exporttest.Run(v.t, cmd, 5*time.Minute); err != nil {
 		v.t.Fatalf("%s %s: %v: %s", name, strings.Join(args, " "), err, stderr.String())
 	}
-	return string(out)
+	return out.String()
 }
 
 func (v *testValley) valley(project string, args ...string) string {

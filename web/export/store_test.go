@@ -519,12 +519,14 @@ func TestStoreRebuildsARepositoryACrashInterrupted(t *testing.T) {
 	cmd := exec.Command(self)
 	cmd.Env = append(os.Environ(), roleEnv+"=receiver", "EXPORT_TEST_STATE="+dir,
 		"EXPORT_TEST_MANIFEST="+manifest, "EXPORT_TEST_GIT="+realGit)
-	out, err := cmd.CombinedOutput()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err = exporttest.Run(t, cmd, time.Minute)
 	// git fetch runs only after git init succeeded, so a receiver killed
 	// at the fetch was interrupted between the two.
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.Sys().(syscall.WaitStatus).Signal() != syscall.SIGKILL {
-		t.Fatalf("the receiver was not killed as it fetched: %v: %s", err, out)
+		t.Fatalf("the receiver was not killed as it fetched: %v: %s", err, &out)
 	}
 	if _, err := os.Lstat(st.Repo("app")); !os.IsNotExist(err) {
 		t.Errorf("the crash left a repository at %s", st.Repo("app"))
@@ -639,8 +641,13 @@ func TestStoreStopsTheWritersOfDiscardedBodies(t *testing.T) {
 	case <-time.After(100 * time.Millisecond):
 	}
 	done()
-	if err := <-committed; err != nil {
-		t.Errorf("the commit once the writer is done: %v", err)
+	select {
+	case err := <-committed:
+		if err != nil {
+			t.Errorf("the commit once the writer is done: %v", err)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("Activate did not finish once the writer was done")
 	}
 }
 
@@ -840,6 +847,84 @@ func TestStoreWaitsForItsLockUntilTheContextIsDone(t *testing.T) {
 	}
 }
 
+// A sweep stops once its context is done, even part way through a
+// deletion. Here a manifest too large for MaxStorage sweeps before it is
+// refused, and its client goes away as the sweep starts on the trash. The
+// deletion stops before it deletes anything, the sweep deletes nothing
+// more, and Stage gives the context's error and stages nothing. The
+// store's lock is free again, and the next sweep empties the trash.
+func TestStoreSweepStopsWithItsContext(t *testing.T) {
+	f := exporttest.New(t)
+	dir := t.TempDir()
+	var r reports
+	s, err := export.OpenStore(dir, r.report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trash := filepath.Join(dir, "trash")
+	held := []string{"1-a", "2-b", "3-c"}
+	for _, name := range held {
+		if err := os.MkdirAll(filepath.Join(trash, name, "objects"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(trash, name, "objects", "pack"), []byte("pack"), 0o444); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u := fixtureUpload(t, f)
+	a := f.Admission()
+	a.Now = u.m.SignedAt()
+	m, err := export.VerifyManifest(bytes.NewReader(f.Sign(t, u.m)), a)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	removeAll := *export.RemoveAll
+	var deleted []string
+	inject(t, export.RemoveAll, func(c context.Context, path string) error {
+		deleted = append(deleted, path)
+		cancel()
+		return removeAll(c, path)
+	})
+	s.MaxStorage = 1
+	if _, err := s.Stage(ctx, m); !errors.Is(err, context.Canceled) {
+		t.Errorf("a manifest whose client went away during the sweep gave %v", err)
+	}
+	if len(deleted) != 1 {
+		t.Errorf("the sweep deleted %q, want the deletion its context stopped alone", deleted)
+	}
+	if got := entries(t, trash); !slices.Equal(got, held) {
+		t.Errorf("the trash holds %v once the sweep stopped, want %v", got, held)
+	}
+	if got := entries(t, filepath.Join(dir, "staging")); len(got) != 0 {
+		t.Errorf("staging holds %v, want nothing", got)
+	}
+	if errs := r.all(); len(errs) != 1 || !errors.Is(errs[0], context.Canceled) {
+		t.Errorf("the store reported %v, want the stopped sweep", errs)
+	}
+
+	*export.RemoveAll = removeAll
+	s.MaxStorage = 0
+	bounded, stop := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stop()
+	st, err := s.Stage(bounded, m)
+	if err != nil {
+		t.Fatalf("the manifest once the sweep stopped: %v", err)
+	}
+	inv, _ := s.Inventory(st)
+	for _, n := range inv.Needs {
+		putNeed(t, st, u, n)
+	}
+	if _, err := s.Activate(bounded, st); err != nil {
+		t.Fatal(err)
+	}
+	if got := entries(t, trash); len(got) != 0 {
+		t.Errorf("the trash holds %v after the next sweep", got)
+	}
+}
+
 // Activate measures the state directory after it builds each repository.
 // An upload that took the directory past MaxStorage is refused as
 // too-large, the repository it built is removed, and the active generation
@@ -994,11 +1079,12 @@ func TestStoreReportsASweepThatFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	trash := filepath.Join(s.Dir(), "trash")
-	inject(t, export.RemoveAll, func(path string) error {
+	removeAll := *export.RemoveAll
+	inject(t, export.RemoveAll, func(ctx context.Context, path string) error {
 		if strings.HasPrefix(path, trash+string(filepath.Separator)) {
 			return errInjected
 		}
-		return os.RemoveAll(path)
+		return removeAll(ctx, path)
 	})
 	g, err := send(t, f, s, u2)
 	if err != nil || g.Sequence != u2.m.Sequence {
@@ -1012,7 +1098,7 @@ func TestStoreReportsASweepThatFails(t *testing.T) {
 		t.Errorf("the trash holds %v, want the first generation", left)
 	}
 
-	*export.RemoveAll = os.RemoveAll
+	*export.RemoveAll = removeAll
 	s = openStore(t, dir)
 	if left := entries(t, trash); len(left) != 0 {
 		t.Errorf("the next sweep left %v in the trash", left)

@@ -12,8 +12,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
 	"the-valley/web/export"
+	"the-valley/web/export/exporttest"
 )
 
 // git runs git for a test, with none of the caller's GIT_ variables and no
@@ -36,14 +38,16 @@ func git(t *testing.T, dir string, stdin []byte, args ...string) string {
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if err := exporttest.Run(t, cmd, gitTimeout); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, stderr.String())
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out.String())
 }
+
+// gitTimeout is how long a test waits for one git command.
+const gitTimeout = 2 * time.Minute
 
 // source is a bare repository whose main has two commits, first and tip,
 // and whose side branch has a commit main does not reach.
@@ -273,11 +277,12 @@ func packObjects(t *testing.T, repo, objects string) []byte {
 	cmd := exec.Command("git", "-C", repo, "pack-objects", "--stdout", "--quiet")
 	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/dev/null")
 	cmd.Stdin = strings.NewReader(objects + "\n")
-	out, err := cmd.Output()
-	if err != nil {
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := exporttest.Run(t, cmd, gitTimeout); err != nil {
 		t.Fatal(err)
 	}
-	return out
+	return out.Bytes()
 }
 
 // Reachable admits only commits main's tip reaches, each named by its

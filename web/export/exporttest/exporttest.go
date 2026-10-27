@@ -29,7 +29,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -317,18 +316,19 @@ func fastImport(commits []commit) []byte {
 	return b.Bytes()
 }
 
+// gitTimeout is how long the fixture waits for one git command.
+const gitTimeout = 2 * time.Minute
+
 // git runs git as the export package does: in dir unless it is "", with no
-// GIT_ variable of the caller's and no system or global configuration. git
-// runs in a process group of its own, which is killed once git exits,
-// with anything git left running. Where the kernel can, it kills git when
-// the test process dies first, as on a timeout or an external kill.
+// GIT_ variable of the caller's and no system or global configuration. It
+// runs git with Run, so git and anything it started are killed once git
+// exits, or once gitTimeout has passed, which fails the test.
 func git(t testing.TB, dir string, stdin []byte, args ...string) []byte {
 	t.Helper()
 	if dir != "" {
 		args = append([]string{"-C", dir}, args...)
 	}
 	cmd := exec.Command(export.GitProgram, args...)
-	cmd.SysProcAttr = processGroup()
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "GIT_") {
 			cmd.Env = append(cmd.Env, kv)
@@ -338,14 +338,10 @@ func git(t testing.TB, dir string, stdin []byte, args ...string) []byte {
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if cmd.Process != nil {
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
-	if err != nil {
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if err := Run(t, cmd, gitTimeout); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, stderr.String())
 	}
-	return out
+	return out.Bytes()
 }

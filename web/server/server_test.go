@@ -175,13 +175,12 @@ func git(t *testing.T, repo string, stdin []byte, args ...string) string {
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
-	if err != nil {
+	var out, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &stderr
+	if err := exporttest.Run(t, cmd, 2*time.Minute); err != nil {
 		t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, stderr.String())
 	}
-	return strings.TrimSpace(string(out))
+	return strings.TrimSpace(out.String())
 }
 
 // section is the part of a page from one marker up to the next.

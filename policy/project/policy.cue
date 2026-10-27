@@ -48,6 +48,7 @@ project: {
 		"sigverify-e2e",
 		"web-unit",
 		"web-server-unit",
+		"web-receiver-unit",
 		"readaccess-unit",
 		"rebase-unit",
 		"valley-go-unit",
@@ -236,15 +237,16 @@ project: {
 	}
 
 	// The web UI's module: the export contract, its shared fixture, the
-	// publisher, and the server. The publisher's tests also read each
-	// project's policy/read and the instance's registry under the read and
-	// identity schemas. Changes require both checks.
+	// publisher, the server, and the receiver. The publisher's tests also
+	// read each project's policy/read and the instance's registry under the
+	// read and identity schemas. Changes require all three checks.
 	classes: web: {
-		paths: "web/**":              true
-		paths: "schema/read.cue":     true
-		paths: "schema/identity.cue": true
-		requires: "web-unit":         true
-		requires: "web-server-unit":  true
+		paths: "web/**":               true
+		paths: "schema/read.cue":      true
+		paths: "schema/identity.cue":  true
+		requires: "web-unit":          true
+		requires: "web-server-unit":   true
+		requires: "web-receiver-unit": true
 	}
 
 	// Read access: the two consents a reader needs, the evaluator that
@@ -449,7 +451,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"web.nix": ["web-unit", "web-server-unit", "readaccess-unit"]
+		"web.nix": ["web-unit", "web-server-unit", "web-receiver-unit", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

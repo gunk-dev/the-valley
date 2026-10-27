@@ -136,6 +136,7 @@
               valleyhook
               sigverify
               valley-web
+              valley-web-receive
               valley-web-publish
               valley-read-coverage
               ;

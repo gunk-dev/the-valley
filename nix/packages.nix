@@ -436,15 +436,17 @@ rec {
   # ../exactjson. The program built
   # from it is the publisher, cmd/valley-web-publish, which
   # valley-web-publish below wraps. The server and its command are built by
-  # valley-web below. The export's tests accept bundles and build the
-  # shared fixture's repositories with real git. The publisher's tests run
-  # it against a valley built with real git and the CLI itself (bin/valley,
-  # run by bash, with valley-go on PATH), read each project's policy/read
-  # and the instance's identity registry with cue under schema/read.cue and
-  # schema/identity.cue, and upload to a receiver over a real store. One
-  # lands a change as the integrator does, with a transfer statement attest
-  # signs under a key ssh-keygen makes, which the CLI verifies with attest.
-  # go vet runs after them. The fixture's expected export
+  # valley-web below, and the receiver by valley-web-receive. The export's
+  # tests accept bundles and build the shared fixture's repositories with
+  # real git. The publisher's tests run it against a valley built with real
+  # git and the CLI itself (bin/valley, run by bash, with valley-go on
+  # PATH), read each project's policy/read and the instance's identity
+  # registry with cue under schema/read.cue and schema/identity.cue, and
+  # upload to a receiver over a real store, and to the real receiver, whose
+  # state directory the real valley-web serves. One lands a change as the
+  # integrator does, with a transfer statement attest signs under a key
+  # ssh-keygen makes, which the CLI verifies with attest. go vet runs after
+  # them. The fixture's expected export
   # (export/exporttest/testdata/) is read by the tests alone. Go, standard
   # library only, so no module is fetched.
   web = goModule {
@@ -459,6 +461,7 @@ rec {
     excluded = [
       ../web/server
       ../web/cmd/valley-web
+      ../web/cmd/valley-web-receive
     ];
     preBuild = readsGoMod;
     tests = {
@@ -479,6 +482,8 @@ rec {
       # A test that cannot find a tool it needs fails rather than skipping.
       preCheck = ''
         export VALLEY_TEST_TOOLS=required
+        export VALLEY_WEB=${lib.getExe valley-web}
+        export VALLEY_WEB_RECEIVE=${lib.getExe valley-web-receive}
       '';
       postCheck = ''
         go vet ./...
@@ -565,6 +570,7 @@ rec {
     excluded = [
       ../web/export/exporttest/testdata
       ../web/cmd/valley-web-publish
+      ../web/cmd/valley-web-receive
     ];
     subPackages = [ "cmd/valley-web" ];
     preBuild = readsGoMod;
@@ -580,6 +586,47 @@ rec {
       '';
     };
     meta.mainProgram = "valley-web";
+  };
+
+  # The web export receiver, valley-web-receive (web/cmd/valley-web-receive/),
+  # which takes the publisher's uploads into a state directory that
+  # valley-web serves. Its source is the web module less the publisher,
+  # the server and its command, which it does not build, and the fixture's
+  # expected export; of ../readaccess and ../exactjson it reads the go.mod
+  # alone, as valley-web does. The git it accepts bundles with is fixed at
+  # build time. Its tests run the real program over the shared fixture and
+  # real git, with the real valley-web serving its state directory, and go
+  # vet runs after them. Go, standard library only.
+  valley-web-receive = goModule {
+    pname = "valley-web-receive";
+    dir = ../web;
+    modules = [
+      ../knot
+      ../note
+      ../readaccess/go.mod
+      ../exactjson/go.mod
+    ];
+    excluded = [
+      ../web/export/exporttest/testdata
+      ../web/cmd/valley-web-publish
+      ../web/cmd/valley-web
+      ../web/server
+    ];
+    subPackages = [ "cmd/valley-web-receive" ];
+    preBuild = readsGoMod;
+    ldflags = [ "-X the-valley/web/export.GitProgram=${lib.getExe pkgs.git}" ];
+    tests = {
+      nativeCheckInputs = [ pkgs.git ];
+      # A test that cannot find valley-web fails rather than skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+        export VALLEY_WEB=${lib.getExe valley-web}
+      '';
+      postCheck = ''
+        go vet ./cmd/valley-web-receive/...
+      '';
+    };
+    meta.mainProgram = "valley-web-receive";
   };
 
   # The web publisher: one pass of valley-web-publish, which reads a valley

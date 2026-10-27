@@ -1,6 +1,6 @@
-# The web UI (web/): the export contract the publisher and the server
-# share, and the server. Their tests run here, in the packages' unit
-# builds (nix/packages.nix).
+# The web UI (web/): the export contract the publisher, the receiver
+# and the server share, the server, and the receiver. Their tests run
+# here, in the packages' unit builds (nix/packages.nix).
 {
   packages,
   ...
@@ -26,7 +26,12 @@
   # before high-water names it, a repository a crash interrupted built
   # again, recovery checking a generation before it activates it and
   # keeping one whose check git did not finish, and injected sweep and
-  # swap failures, reported apart from the commit. go vet runs after them.
+  # swap failures, reported apart from the commit. The publisher's pass
+  # uploading to the real receiver with its token, the real valley-web
+  # serving what it activated, a pass with another token refused as
+  # unauthenticated while the edge keeps serving, and a pass after
+  # anyone's grant is withdrawn taking the project off the edge. go vet
+  # runs after them.
   web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
@@ -96,4 +101,28 @@
   # the receiver wrote under umask 0077 and that reads as another
   # user's, with nothing in it writable. go vet runs after them.
   web-server-unit = packages.valley-web.unit;
+
+  # The receiver, valley-web-receive, run as a process of its own over the
+  # shared fixture's export, signed now, and real git. Each step of the
+  # upload activating the export, which the real valley-web, a process of
+  # its own over the same state directory, serves; the manifest posted
+  # again and the commit made again refused as replayed. A request without
+  # the token, with another, in another scheme or twice refused as
+  # unauthenticated, whatever it asks, staging nothing. Stale, early,
+  # foreign-key and foreign-destination manifests refused, an older
+  # manifest than the one staged superseded, with its bodies, and a commit
+  # of a sequence never staged refused as no-manifest. Bodies with a hash
+  # mismatch, a size mismatch with and without a length, a
+  # Content-Encoding, or an undeclared hash refused; a body cut off half
+  # way leaving nothing in staging, its commit refused as incomplete with
+  # the active export as it was, and the body sent whole then activating.
+  # A body past --max-body and bodies past --max-upload refused as
+  # too-large before anything is staged, and an upload at both caps
+  # accepted. Every request slot held by a stalled upload, the next
+  # request answered 503 and one without the token still unauthenticated,
+  # while valley-web serves every page; the receiver taking uploads again
+  # once the stalled ones go away. A clean stop on SIGTERM, and a usage
+  # error, a token file it cannot use and verifiers it cannot read refused
+  # without printing the token. go vet runs after them.
+  web-receiver-unit = packages.valley-web-receive.unit;
 }

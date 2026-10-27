@@ -200,8 +200,12 @@ that names it. A missing ref is missing:
 - The integrator reads the floor at `--instance-ref` (`composed/composed.go`). The restacker takes
   only the `git ls-remote` line that names that ref exactly (`restack/main.go`). An instance
   repository with no such ref has no floor, and the pass is refused.
-- The web publisher refuses an instance repository with no `main` or no project list. It reads a
-  project's `main` at the object it staged (`webui/cmd/valley-web-publish/valley.go`).
+- The web publisher reads the instance repository's `main`, its project list and its registry ref
+  with `readaccess.ResolveRef`. It refuses an instance repository with no `main` or no project list.
+  It reads a project's `main` the same way, at the object it staged
+  (`webui/cmd/valley-web-publish/valley.go`).
+- `valley-read-coverage` reads the registry ref, the project list and each project's `main` with
+  `readaccess.ResolveRef` (`readaccess/cmd/valley-read-coverage/main.go`).
 - The check worker reads its own evidence ref exactly, and fetches the floor at the commit the
   owning valley's `refs/heads/main` names (`status/worker.go`). `valley ready --stamp` finds no
   local branch when the one it names is missing (`status/ready.go`).
@@ -223,12 +227,13 @@ push do not check for one (**not built**).
 
 Checks: `identity-e2e` compiles with `refs/heads/registry` missing and a forged registry at
 `refs/heads/refs/heads/registry`, and the compilation fails with the files unchanged.
-`integrator-unit`, `restack-unit`, `webui-unit`, `valley-ready` and `valley-request` each make the
-ref git would read in place of a missing one, and show that the program ignores it.
-`integrator-unit` deletes an evidence ref after the integrator lists it. `valley-request` approves
-with a branch on origin named like the request, with a tag named like the remote-tracking ref of
-`main` or of a branch that origin lacks, and with an owning valley whose `main` is missing. It also
-runs the check worker with a tag named like the worker's own evidence ref.
+`integrator-unit`, `restack-unit`, `webui-unit`, `readaccess-unit`, `valley-ready` and
+`valley-request` each make the ref git would read in place of a missing one, and show that the
+program ignores it. `integrator-unit` deletes an evidence ref after the integrator lists it.
+`valley-request` approves with a branch on origin named like the request, with a tag named like the
+remote-tracking ref of `main` or of a branch that origin lacks, and with an owning valley whose
+`main` is missing. It also runs the check worker with a tag named like the worker's own evidence
+ref.
 
 ## Trust roots
 

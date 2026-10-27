@@ -17,8 +17,8 @@ import (
 // principal, so the directory belongs to those three, the first a pass
 // used it for (bindState).
 
-// The files in a state directory beside the scratch repository, and the
-// journal (journal.go).
+// The files in a state directory beside the scratch repository, the
+// journal, and the observations reports leave part of (journal.go).
 const (
 	lockFile    = "lock"         // what a pass holds a lock on while it runs
 	bindingFile = "binding.json" // the repository, target and principal the directory belongs to

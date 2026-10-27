@@ -654,12 +654,11 @@ so their evidence stays fresh without their owners rebasing and approving again.
 by default, until it is stopped. Each reconciliation is one write pass, and `valley-restacker once`
 runs one write pass on its own. A pass reads origin whether or not `main` has moved, so a change
 readied since the last pass is found without another landing. A write pass first finishes the
-journal of an earlier operation, if the state directory holds one. It then plans each family, builds
-every write it would push for it, keeps those writes in its journal, and pushes them (see
+journal of earlier operations, if the state directory holds one. It then plans each family, builds
+every write it would push for it, adds those writes to its journal, and pushes them (see
 [Publishing](#publishing)). `valley-restacker once --report-only` plans and builds the same writes,
-and decides the journal of an earlier operation if there is one. It pushes nothing and writes no
-journal. A host runs one controller for each project it lists (see
-[The restacker on the host](#the-restacker-on-the-host)).
+and decides the journal if there is one. It pushes nothing and writes no journal. A host runs one
+controller for each project it lists (see [The restacker on the host](#the-restacker-on-the-host)).
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
 off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
@@ -704,9 +703,14 @@ lock, so the next pass can take it. A message of the program's own, such as the 
 is given up on after 5 seconds, so a stderr nobody reads cannot hold the process either. Checked by
 `restack-unit` and `restack-e2e`.
 
+A pass reads origin by listing its refs and then fetching the objects they name. When a ref moves in
+between and origin has dropped the object listed, as when `main` is rewritten and its old tip
+pruned, the fetch fails. The read then lists origin again, up to three listings in all, before the
+pass fails (`rebase/snapshot.go`). Checked by `rebase-unit`.
+
 A family is the connected layers of one snapshot, as the rebase engine captures them
 (`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family
-one of four answers:
+one of five answers:
 
 - **leave**: no layer is a ready change: drafts, withdrawn changes and uncertain landings alone. A
   plain branch is never planned on its own, and a submitted change is no layer.
@@ -714,6 +718,8 @@ one of four answers:
 - **hold**: something stops it, and each reason is listed. A layer that is not a ready change holds
   its family, as does any refusal of the engine's `Family.Check`.
 - **restack**: nothing holds it.
+- **wait**: it shares a change or a branch with a family the journal still holds, and nothing is
+  built for it until that family is let go (see [Publishing](#publishing)).
 
 A family is also held while a related integration request might still land. A request is related by
 its name (`c-<change-id>`, or the branch-derived name of any version the change has had), by a head
@@ -780,32 +786,48 @@ fallback (`restack/report.go`):
   requests. A path fits at up to 1,024 bytes of UTF-8 with no control character. A request fits when
   its ref is at most 256 bytes and its name is a branch name.
 - Its refusal has each run of control characters made one space, and is cut to fit 2,048 bytes.
-- Its refusal ends by saying what the report leaves out, with the digest of the whole observation,
-  so two fallbacks that show the same are told apart.
+- Its refusal ends by saying what the report leaves out, and names the file in the state directory
+  that keeps the whole observation, `observations/<digest>.json`, by the observation's digest. Two
+  fallbacks that show the same are told apart by it.
 - If the report is still over 64 KiB, it sheds its conflict paths, then its blocking requests, then
   every layer but the two it keeps.
 
 A family over 64 recorded changes is not held for its size: each change's report keeps its own
 layer. Checked by `restack-unit` and `restack-e2e`.
 
+The restacker writes the file a fallback names before it keeps the journal that holds the report,
+and nothing it does removes the file. So what a report leaves out, such as the paths of a conflict
+on more than 100 files, outlives the journal. The file holds the observation as its digest is taken,
+so its SHA-256 begins with the digest. Checked by `restack-unit`.
+
 A conflict is not tried again while nothing it saw has moved. A family is not rebased when every
 change in it has a current report that says `conflict`. Such a report is current only while `main`,
 each record and each branch are where it saw them, so the rebase would conflict as it did. Any of
 them moving, or a new layer on the family, makes the report historical, and the next pass rebases
-the family again. Checked by `restack-unit`.
+the family again. The paths the report left out stay in the file it names. Checked by
+`restack-unit`.
 
 ### The journal
 
-The journal is every write one operation intends, kept in the state directory as `journal.json`
-before the first of them is pushed (`restack/journal.go`). Its format is
-`valley-restack-journal/v1`, local to the restacker. It names the repository, target and principal,
-the operation, and `main`'s tip and the evidence fingerprint as captured. For each family it holds
-the whole observation (every layer, plain branches included, the related requests, every conflict
-path and the full refusal), the branch push, each version and each report, in the kept forms the
-rebase engine defines (`rebase/pending.go`). Each conflict path is kept in base64. JSON holds only
-UTF-8, and base64 keeps a file name that is not UTF-8 byte for byte. Every object those writes would
-push is kept reachable in the scratch repository under `refs/valley-restack/<operation>/`. The
-journal is written through a synced temporary file and renamed into place, and the scratch
+The journal is every write the restacker intends and has not yet seen through, kept in the state
+directory as `journal.json` before the first of them is pushed (`restack/journal.go`). Its format is
+`valley-restack-journal/v1`, local to the restacker. It names the repository, target and principal.
+A family stays in the journal while it is open, and a later pass adds the families it builds, so the
+journal can hold families of several operations. For each family it holds:
+
+- the operation that built it, and `main`'s tip and the evidence fingerprint as that operation
+  captured them;
+- the whole observation: every layer, plain branches included, the related requests, every conflict
+  path and the full refusal;
+- the branch push, each version and each report, in the kept forms the rebase engine defines
+  (`rebase/pending.go`);
+- each replacement, a report of what did happen that the pass built later (see
+  [Publishing](#publishing)).
+
+Each conflict path is kept in base64. JSON holds only UTF-8, and base64 keeps a file name that is
+not UTF-8 byte for byte. Every object those writes would push is kept reachable in the scratch
+repository under `refs/valley-restack/<operation>/<object>`, for as long as the journal names it.
+The journal is written through a synced temporary file and renamed into place, and the scratch
 repository syncs each object and ref it writes.
 
 A journal is read as strictly as it is written. A field missing, unknown or named twice, a form that
@@ -817,6 +839,9 @@ never a crash. A family's writes must agree with each other:
 - Each report gives the family's result: complete, conflict or blocked.
 - A report says a version was published exactly when the family adds that version, and then names
   that version's head, number and record commit.
+- A replacement says `complete` or `partial`, says each change was published at its prepared head,
+  and names a version only as the family adds it.
+- No two families share a change or a branch.
 
 The restacker does not keep a journal that would not read back as written. A lost journal is never
 inferred. A change whose branch a pass moved with no journal to say so is held by the planner,
@@ -825,16 +850,18 @@ because its branch is not at its recorded head. Checked by `restack-unit`.
 ### Recovery
 
 Recovery reads origin and the journal, and decides each write in the order a pass makes them: the
-branch push, then the versions, lower layers first, then the reports (`restack/recover.go`). Each
-write is `done` when origin holds it or has moved on from it, `finish` when it is still valid to
-push, or `stop` when it must not be pushed. A stop is final when no later pass could push it, and
-terminal when it is also a local failure the journal keeps the diagnostics of.
+branch push, then the versions, lower layers first, then the reports and replacements
+(`restack/recover.go`). Each write is `done` when origin holds it or has moved on from it, `finish`
+when it is still valid to push, or `stop` when it must not be pushed. A stop is final when no later
+pass could push it, and terminal when it is also a local failure the journal keeps the diagnostics
+of.
 
 | Write           | `finish` while                                                                                                                                            | `stop` (final) on                                                                                                                                             |
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The branch push | `main` is at the tip the family was rebased onto, every branch is at its lease, every record is at the record commit read, and nothing has been submitted | a branch moved, `main` moved, a record moved (an unready, a withdrawal, a new version), a submission, or a prepared head missing from the scratch repository  |
 | A version       | its branch is at the prepared head, or the branch push is still to finish, and its record is the record commit read                                       | the author moving the branch or the record, a withdrawal, an unready, a submission, a deleted branch, or a `main` that does not descend from the captured tip |
 | A report        | origin's report is the one it was built on, and what it says was published is on origin or is still to finish                                             | a version it says was added stopped, or origin's report moved                                                                                                 |
+| A replacement   | origin's report is the one it was built on, and it still says what did happen as the versions are decided now                                             | origin's report moved, or it says other than what did happen; another is built in its place                                                                   |
 
 A related integration request that might still land is a stop that is not final: the branch push
 waits, and the versions pause. Requests are related as the planner relates them, by every version
@@ -852,31 +879,40 @@ to finish (see [Publishing](#publishing)). Checked by `restack-unit`.
 A write pass makes its journal's writes the way recovery would make them after a crash
 (`restack/publish.go`). It reads origin, decides every write as [Recovery](#recovery) describes, and
 pushes the writes still to `finish`. It pushes one phase of each family at a time: the branch push,
-then the versions, lower layers first, then the reports. It reads origin again before each phase. So
-a request filed after a family's branch push pauses its versions. A push whose answer was lost is
-decided by what the next read finds on origin, so a version origin took is never added twice. A pass
-reads origin at most six times, and a write still to finish after that is left to the next pass.
-
-A pass lets go of its journal, and of the objects the journal keeps, once no family in it is open. A
-family is open in two cases:
-
-- its branch push is still to finish;
-- origin took its branch push, and one of its versions is neither added nor stopped for good. A
-  version paused by a request that might still land keeps its family open.
-
-While a journal is open, a pass starts no new operation, since the journal holds one operation at a
-time. A family whose branch push stopped moved nothing, and is left to the next plan. A journal that
-does not read, or that belongs to another repository, target or principal, stops every write pass
-until the operator moves it aside, since a new journal would replace it.
+then the versions, lower layers first, then the reports and replacements. It reads origin again
+before each phase. So a request filed after a family's branch push pauses its versions. A push whose
+answer was lost is decided by what the next read finds on origin, so a version origin took is never
+added twice. Settling a journal reads origin at most eight times, and a write still to finish after
+that is left to the next pass.
 
 A family whose branches moved gets a report for each of its changes that says what did happen. The
-report says `complete` when every version was added. It says `partial` when one was not, names each
-version origin holds, and says why each other version was not added. A pass pushes a `partial`
-report while the family is open, and replaces it once the family is not. These reports are built
-from the journal's observation, and are not journaled themselves. A pass that ends before pushing
-one builds it again from the same journal. A report that says what origin's current report says is
-not pushed. A family whose branch push stopped gets no report from the journal: the next plan
+reports the pass built say `complete`, which holds when every version was added. When a version was
+not added, the pass builds a replacement for each report: a report that says `partial`, names each
+version origin holds, and says why each other version was not added. A replacement is built from the
+journal's observation and origin as read. It is kept in the journal before it is pushed, and
+recovery decides it like any other write. A push that fails, or whose answer is lost, leaves it in
+the journal for the next read to decide. A replacement that would say what origin's current report
+says is not built. A family whose branch push stopped gets no report from the journal: the next plan
 reports on it, usually in the same pass. No pass writes the `superseded` result.
+
+A pass lets go of a family once a read of origin finds nothing of the journal left to push and no
+replacement to build, and the family is not open. A family is open in two cases:
+
+- a write of it is still to finish;
+- origin took its branch push, and one of its versions is neither added nor stopped for good. A
+  version paused by a request that might still land keeps its family open, and its replacements say
+  `partial` until the family is not open.
+
+So a report still to push is let go of only once a read shows it on origin. The pass lets go of the
+journal, and of the objects it keeps, once no family is left in it.
+
+A family that is still open stays in the journal. The planner has each family that shares a change
+or a branch with it wait, and builds nothing for that family, since its writes would race the open
+family's. Every other family is planned as usual, and the pass adds its writes to the same journal.
+A family paused by a request therefore holds up only its own changes and branches. A family whose
+branch push stopped moved nothing, and is left to the next plan. A journal that does not read, or
+that belongs to another repository, target or principal, stops every write pass until the operator
+moves it aside, since a new journal would replace it.
 
 Checked by `restack-unit`, through the rendered hook:
 
@@ -885,7 +921,10 @@ Checked by `restack-unit`, through the rendered hook:
 - a request holds its family until the request's outcome is a current `stale`;
 - a journal left after each of its steps is finished with exactly one version per change;
 - an owner's push to a restacked branch stops that change's version, reported `partial`;
-- a request filed between the phases pauses the versions until it is released;
+- a replacement whose push origin refuses stays in the journal until a later pass pushes it, and one
+  whose answer is lost is found on origin by the next read and not pushed again;
+- a request filed between the phases pauses the versions until it is released, and the family waits;
+- a family paused by a request waits while a change readied beside it is restacked;
 - the project's cap holds a change that has used it up;
 - `run` converges, finding a change readied after the landing.
 

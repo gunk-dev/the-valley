@@ -69,8 +69,10 @@ in
   # lost, foreign or malformed journal is never decided; and
   # once --report-only decides a journal of pending writes and pushes none
   # of them. A conflict on more than 100 paths keeps them all in the
-  # journal. No inherited git variable, nor the user's attributes file,
-  # reaches a pass, and a process whose stderr nobody reads still ends. Its
+  # journal, and a write pass that reports it leaves them all in the file
+  # its report names, which outlives the journal. No inherited git
+  # variable, nor the user's attributes file, reaches a pass, and a
+  # process whose stderr nobody reads still ends. Its
   # scratch repository commits as its flags say with no identity in the
   # environment, and with an author and a committer the environment
   # injects as git configuration, a pass locks its state directory, the
@@ -85,10 +87,13 @@ in
   # nothing, is reported, and is not tried again; a request holds its
   # family until its outcome is a current stale; a journal left after
   # any of its steps is finished with one version per change; an owner's
-  # push to a restacked branch stops that version, reported partial; a
-  # request between the phases pauses the versions and keeps the journal
-  # open until it is released; the project's cap holds; and run converges
-  # on a change readied after the landing, and ends when stopped.
+  # push to a restacked branch stops that version, reported partial, and
+  # that partial report stays in the journal while origin refuses it, and
+  # is pushed once when origin takes it and its answer is lost; a request
+  # between the phases pauses the versions and keeps the journal open
+  # until it is released, while a change readied beside the paused family
+  # is restacked; the project's cap holds; and run converges on a change
+  # readied after the landing, and ends when stopped.
   restack-unit = packages.restack-unwrapped.unit.overrideAttrs {
     inherit initScript;
     passAsFile = [ "initScript" ];

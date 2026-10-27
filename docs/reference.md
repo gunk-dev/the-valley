@@ -696,10 +696,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     to `5m`, until a pass succeeds. It prints only passes that pushed something or leave a journal
     open.
   - `valley-restacker once --repo <url> --state <dir> --principal <name> --schema <file> [flags]` —
-    one write pass: it settles the journal in `--state`, if there is one, then plans, keeps the
-    pass's writes in the journal, and pushes them (see [Publishing](architecture.md#publishing)). A
-    journal that does not read, or belongs to another repository, target or principal, stops the
-    pass.
+    one write pass: it settles the journal in `--state`, if there is one, then plans, adds the
+    pass's writes to the journal, and pushes them (see [Publishing](architecture.md#publishing)). A
+    family the journal still holds stays there, and each family that shares a change or a branch
+    with it waits. A journal that does not read, or belongs to another repository, target or
+    principal, stops the pass.
   - `valley-restacker once --report-only --repo <url> --state <dir> --principal <name> --schema <file> [flags]`
     — plans and builds the writes of a pass, decides the journal if there is one, and pushes
     nothing.
@@ -707,9 +708,15 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     `[--target main] [--commit-name <name>] [--commit-email <email>] [--timeout <duration>] [--known-signers <file>] [--integrator-name <name>] [--signer-projects <file>] [--attest <path>] [--instance-repo <url> | --instance <dir>] [--instance-ref <ref>] [--instance-policy <dir>] [--project-policy <dir>] [--json]`.
     `--timeout` (default `10m`) bounds each pass. While the `--signer-projects` file names the
     `--integrator-name`, no landing is proved by a transfer statement. A file that does not read
-    stops the pass. With `--json`, a pass prints its plan with `actions`, each write it pushed and
-    its result (`pushed`, `refused`, `unknown` or `unpushed`), and `pending`, what recovery last
-    decided of a journal the pass leaves open, or `null`.
+    stops the pass. With `--json`, a pass prints its plan: each family with its `action` (`leave`,
+    `current`, `hold`, `restack` or `wait`), `actions`, each write it pushed (`branches`, `version`,
+    `report` or `replacement`) and its result (`pushed`, `refused`, `unknown` or `unpushed`), and
+    `pending`, what recovery last decided of a journal the pass leaves open, or `null`.
+  - The state directory holds `binding.json`, `lock`, the scratch repository `scratch/`,
+    `journal.json` while a journal is open, and `observations/<digest>.json`, the whole observation
+    of each report that leaves part of it out (see
+    [What a pass builds](architecture.md#what-a-pass-builds)). Nothing the restacker does removes an
+    observation file.
 - **`valley-web-publish`**
   ([`web/cmd/valley-web-publish/main.go`](../web/cmd/valley-web-publish/main.go)): One pass of the
   web publisher (see [Web export publisher](#web-export-publisher)). It is wrapped with this flake's

@@ -477,6 +477,45 @@ func TestAPausedFamilyDoesNotHoldAnotherChange(t *testing.T) {
 	r.settledState()
 }
 
+// Two ready changes that name one branch, at heads neither of which
+// descends from the other, are two families, and the journal takes no two
+// families that share a branch. The pass has both wait, saying why, and
+// builds nothing for either, while a change beside them is restacked.
+func TestFamiliesThatShareABranchWait(t *testing.T) {
+	f := hooked(t)
+	f.readyAs(idA, "alice", "shared", "main", "A's title")
+	f.git("checkout", "--quiet", "-B", "elsewhere", "main")
+	other := f.commit("bob's own layer", "bob.txt")
+	f.writeRecord(idB, &change.Record{
+		Schema: change.Schema, ChangeID: idB, Target: rebase.Target, Owner: "bob", State: change.Ready, Seq: 1, Active: 1,
+		Versions: []change.Version{{N: 1, Head: change.HeadPrefix + other, Title: "B's title", Branch: "shared", Uploader: "bob"}},
+	}, "", other)
+	f.readyAs(idE, "carol", "e", "main", "E's title")
+	f.moveMain()
+	shared, a, b := f.at("refs/heads/shared"), f.at(change.Ref(rebase.Target, idA)), f.at(change.Ref(rebase.Target, idB))
+
+	r := newRestacker(t, f)
+	p := r.pass(64)
+	f.restackedTo(idE, "carol", "E's title", "e", f.at("refs/heads/e"))
+	waiting := 0
+	for _, fp := range p.Families {
+		if id := fp.Layers[0].ID; id == idA || id == idB {
+			if fp.Action != wait || fp.Writes != nil || len(fp.Reasons) != 1 || !strings.Contains(fp.Reasons[0], "shares the branch shared with") {
+				t.Errorf("%s is planned as %+v", id[:4], fp)
+			}
+			waiting++
+		}
+	}
+	if waiting != 2 {
+		t.Errorf("the pass planned %d of the two families on shared", waiting)
+	}
+	if f.at("refs/heads/shared") != shared || f.at(change.Ref(rebase.Target, idA)) != a || f.at(change.Ref(rebase.Target, idB)) != b ||
+		f.reportOf(idA) != nil || f.reportOf(idB) != nil {
+		t.Error("the pass wrote for a family that shares a branch")
+	}
+	r.settledState()
+}
+
 // A report of what did happen is kept in the journal before it is pushed,
 // and stays there until a read of origin shows it. Here an owner moves a
 // restacked branch, so the version above stops and the family's reports

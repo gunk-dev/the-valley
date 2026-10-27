@@ -16,7 +16,9 @@
 // (recover.go). A family the journal still holds, such as one whose
 // versions a request has paused, stays there, and each family that
 // shares a change or a branch with it waits: the pass builds nothing for
-// it. Every other family is planned as usual.
+// it. So does each family that shares a change or a branch with another
+// family the pass would build for, as two changes that name one branch
+// do (overlapping). Every other family is planned as usual.
 //
 // `valley-restacker once --report-only` reads one snapshot of origin and
 // says which families it would restack, which it would hold and why, and
@@ -88,7 +90,8 @@ usage: valley-restacker run [--interval DURATION] [flags]
         change's report, reading origin again before each. A family the
         journal still holds, such as one a request has paused, stays
         there, and each family that shares a change or a branch with it
-        waits
+        waits. So do two families that share a change or a branch with
+        each other
   once --report-only
         read one snapshot of origin and print what a pass would do: each
         family, restack or hold with the reason, its capacity, the
@@ -851,7 +854,53 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 		p.Families = append(p.Families, fp)
 		p.families = append(p.families, f)
 	}
+	overlapping(p)
 	return p, nil
+}
+
+// overlapping has each family the pass would build writes for wait when
+// it shares a change or a branch with another such family. Two changes
+// that name one branch are two families when neither's head descends
+// from the other's, and the journal takes no two families that share a
+// branch, since their writes would race. So neither is built while both
+// name it, and every other family is planned as usual.
+func overlapping(p *Plan) {
+	type holder struct {
+		family int
+		name   string
+	}
+	whose := map[string][]holder{} // the families that would be written, by each change and branch
+	for i, fp := range p.Families {
+		if fp.Action != restack && fp.Action != hold {
+			continue
+		}
+		for _, l := range p.families[i].Layers {
+			for _, key := range layerKeys(l.ID, l.Branch) {
+				if hs := whose[key]; len(hs) == 0 || hs[len(hs)-1].family != i {
+					whose[key] = append(whose[key], holder{i, l.Name})
+				}
+			}
+		}
+	}
+	for i := range p.Families {
+		fp := &p.Families[i]
+		if fp.Action != restack && fp.Action != hold {
+			continue
+		}
+		why := ""
+		for _, l := range p.families[i].Layers {
+			for _, key := range layerKeys(l.ID, l.Branch) {
+				for _, h := range whose[key] {
+					if h.family != i && why == "" {
+						why = fmt.Sprintf("%s shares the %s with %s, in another family, so neither family is built while both name it", l.Name, key, h.name)
+					}
+				}
+			}
+		}
+		if why != "" {
+			fp.Action, fp.Reasons = wait, []string{why}
+		}
+	}
 }
 
 // journaledLayers is the operation of each family the journal holds, by

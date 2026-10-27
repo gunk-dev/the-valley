@@ -27,7 +27,7 @@ const (
 	hold    = "hold"    // a layer, a request or a limit stops it; Reasons say which
 	current = "current" // the family already descends from main's tip
 	leave   = "leave"   // no layer is a ready change, so the restacker has no business with it
-	wait    = "wait"    // it shares a change or a branch with a family the journal still holds, or with another the pass would build for
+	wait    = "wait"    // it shares a change or a branch with a family the journal still holds, or, as one the pass would restack or hold, with another such family
 )
 
 // Plan is what one pass would do, from one snapshot of origin.
@@ -39,7 +39,7 @@ type Plan struct {
 	Operation string       `json:"operation"`            // the name the pass's writes are built under
 	Recovery  *Recovery    `json:"recovery"`             // what recovery decided of the journal in the state directory; null for none
 	Families  []FamilyPlan `json:"families"`
-	Actions   []Action     `json:"actions"` // each write a write pass pushed; none in --report-only
+	Actions   []Action     `json:"actions"` // each write a write pass tried, refused and unpushed ones included; none in --report-only
 	Pending   *Recovery    `json:"pending"` // what recovery last decided of a journal the pass leaves open; null for none
 
 	families []*rebase.Family // each family as captured, as Families

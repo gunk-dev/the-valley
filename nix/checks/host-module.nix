@@ -595,8 +595,10 @@ let
   # valley-restacker user in its own group, with no access to the bare
   # repositories on disk. It connects through localhost sshd as its
   # principal using the key passed via LoadCredential, verifies the host's
-  # own SSH key, writes only to its 0700 state directory, and reads the
-  # floor from the instance repository over the same SSH connection.
+  # own SSH key, has its 0700 state directory as its only persistent
+  # writable path (its private temporary directories are writable too),
+  # and reads the floor from the instance repository over the same SSH
+  # connection.
   restackerRenderedWithoutEnable =
     integratorHost.config.systemd.services ? "valley-restacker@"
     || integratorHost.config.systemd.targets ? valley-restackers
@@ -776,7 +778,7 @@ in
     else if restackerRenderedWithoutEnable then
       throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
     else if restackerMisrendered then
-      throw "valley module-eval: each restacker controller must run valley-restacker run for its project as its own account outside the git group, with its own 0700 state directory as the only path it may write, pushing over this host's sshd as its principal with the key systemd hands it as a credential, checking the host's own key, and reading the floor from the instance repository"
+      throw "valley module-eval: each restacker controller must run valley-restacker run for its project as its own account outside the git group, with its own 0700 state directory as the only persistent path it may write, pushing over this host's sshd as its principal with the key systemd hands it as a credential, checking the host's own key, and reading the floor from the instance repository"
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then

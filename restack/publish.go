@@ -65,7 +65,8 @@ import (
 // next pass, and holds only its own family in the journal.
 const maxSteps = 8
 
-// Action is one write a pass pushed, and what became of it.
+// Action is one write a pass tried to push, and what became of it: origin
+// may have taken it or refused it, or the pass may not have pushed it.
 type Action struct {
 	Operation string `json:"operation"`
 	Family    int    `json:"family"`              // the family's place in the journal

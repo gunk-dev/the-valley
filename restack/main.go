@@ -12,13 +12,14 @@
 // origin, plans every family, builds the writes it would make for each
 // family it would restack or hold (build.go), adds them to the journal,
 // and makes them the way recovery would after a crash: the branch push,
-// then the versions, then the reports, reading origin again between each
-// (recover.go). A family the journal still holds, such as one whose
-// versions a request has paused, stays there, and each family that
-// shares a change or a branch with it waits: the pass builds nothing for
-// it. So does each family that shares a change or a branch with another
-// family the pass would build for, as two changes that name one branch
-// do (overlapping). Every other family is planned as usual.
+// then the versions, then the reports, reading a full snapshot of origin
+// again before each phase (recover.go). A family the journal still holds,
+// such as one whose versions a request has paused, stays there, and each
+// family that shares a change or a branch with it waits: the pass builds
+// nothing for it. So does each family the pass would otherwise restack or
+// hold that shares a change or a branch with another such family, as two
+// separate captured families that name one branch do (overlapping). Every
+// other family is planned as usual.
 //
 // `valley-restacker once --report-only` reads one snapshot of origin and
 // says which families it would restack, which it would hold and why, and
@@ -46,7 +47,8 @@
 // and principal, the first a pass used it for, and a pass for any other
 // is refused. Every git, cue and attest a pass runs is killed, with what
 // it started, once the pass's --timeout passes. A pass whose output
-// nobody reads ends then too, and lets go of the lock. A message of its
+// nobody reads ends then too. once then lets go of the lock; run keeps
+// it, and starts its next pass after the wait. A message of its
 // own that nobody reads, such as the error it ends with, is given up on
 // after a few seconds.
 package main
@@ -87,9 +89,11 @@ usage: valley-restacker run [--interval DURATION] [flags]
         then plan every family, append the writes for each family to
         restack or hold to the journal, and push them in order: the
         branch push, each change's next version, and each change's
-        report, reading origin again before each push. Any family still
-        in the journal stays there, and any family that shares a change
-        or branch with it, or with another family in the same pass, waits
+        report, reading a full snapshot of origin again before each
+        phase. Any family still in the journal stays there, and any
+        family that shares a change or branch with it waits. A family
+        the pass would otherwise restack or hold also waits when it
+        shares a change or branch with another such family
   once --report-only
         read one snapshot of origin and print what a pass would do: each
         family, restack or hold with the reason, its capacity, the
@@ -139,9 +143,9 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "once", "run":
-		// An interrupt or a stop ends the pass as its timeout does: what it
-		// runs is killed, and the lock on its state is let go. It ends run
-		// between passes too.
+		// An interrupt or a stop ends the pass as its timeout does, killing
+		// what it runs, and then ends the command, which lets go of the lock
+		// on its state. It ends run between passes too.
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		command := once
 		if os.Args[1] == "run" {
@@ -307,9 +311,10 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 
 // loop is run: a write pass at once, and another every interval after
 // the last one ended, until ctx is done. It holds the lock on its state
-// for as long as it runs. A pass that fails is said, and the wait before
-// the next doubles, up to maxBackoff, until a pass succeeds. A pass that
-// pushed nothing and leaves no journal open prints nothing.
+// for as long as it runs, past a pass that ends at its timeout. A pass
+// that fails is said, and the wait before the next doubles, up to
+// maxBackoff, until a pass succeeds. A pass that tried no write and
+// leaves no journal open prints nothing.
 func loop(ctx context.Context, args []string, out, errOut io.Writer) error {
 	controlEnvironment()
 	c, _, err := parse("run", args, errOut)
@@ -357,9 +362,10 @@ func backoff(interval time.Duration, failures int) time.Duration {
 	return min(wait, maxBackoff)
 }
 
-// pass runs one pass under its timeout and prints it: the plan and what
-// it pushed, or, when quiet, only what it pushed and a journal it leaves
-// open.
+// pass runs one pass under its timeout and prints it: the plan and each
+// write it tried, or, when quiet, only the writes it tried and a journal
+// it leaves open. A write it tried may have been refused, or not pushed
+// at all.
 func pass(ctx context.Context, c config, reportOnly bool, out, errOut io.Writer, quiet bool) (*Plan, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
@@ -858,10 +864,11 @@ func plan(ctx context.Context, g rebase.Git, c config, s *rebase.Snapshot, cap i
 
 // overlapping has each family the pass would build writes for wait when
 // it shares a change or a branch with another such family. Two changes
-// that name one branch are two families when neither's head descends
-// from the other's, and the journal takes no two families that share a
-// branch, since their writes would race. So neither is built while both
-// name it, and every other family is planned as usual.
+// that name one branch are two captured families when neither's head
+// descends from the other's and no shared lower layer joins them, and
+// the journal takes no two families that share a branch, since their
+// writes would race. So neither is built while both name it, and every
+// other family is planned as usual.
 func overlapping(p *Plan) {
 	type holder struct {
 		family int
@@ -1004,7 +1011,7 @@ func judge(f *rebase.Family, s *rebase.Snapshot, principal string, p *Plan, requ
 }
 
 func printPlan(w io.Writer, p *Plan) {
-	fmt.Fprintf(w, "%s at %s, evidence %s, at most %d automatic versions a change\n", p.Target, short(p.Tip), p.Evidence, p.Cap)
+	fmt.Fprintf(w, "%s at %s, evidence %s, at most %d versions a change uploaded by the restacker's principal\n", p.Target, short(p.Tip), p.Evidence, p.Cap)
 	if r := p.Recovery; r != nil {
 		printRecovery(w, r)
 	}

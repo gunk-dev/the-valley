@@ -41,6 +41,12 @@ A write is allowed only if every rule that applies to its ref allows it:
                     makes one object stand in for another wherever git
                     looks it up; a note attaches text every reader sees;
                     the rest of the valley's namespace is the machinery's.
+  refs/refs/*, refs/heads/refs/*, refs/tags/refs/*, refs/remotes/refs/*
+                    nobody may create or update one, whatever a
+                    declaration says. Each is named like another ref:
+                    when that ref is missing, git reads, fetches and
+                    pushes to one of these in its place. A delete is
+                    decided by the rules below.
   a symbolic ref    nobody. A push to one would write the ref it points at.
   refs/heads/*      anyone: topic branches.
   refs/the-valley/attestations/<digest>/<key hash>

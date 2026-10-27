@@ -385,6 +385,8 @@ A refusal means the host did not accept that ref update. The message identifies 
 - **Record ownership or non-fast-forward record update:** fetch again and use `valley ready`,
   `unready`, or `withdraw` as the owner or a principal allowed to approve. Do not force a
   hand-edited record over someone else's update.
+- **A ref named like another ref:** push the branch or tag under a name that does not begin with
+  `refs/`.
 - **Malformed or oversized record or knot:** read the named validation error. Use the CLI to make
   valid records and `valley knot schema` to inspect the knot model. Reduce oversized content before
   retrying.
@@ -693,6 +695,29 @@ sudo touch /srv/git/.valley-hold
 Remove it after maintenance with `sudo rm /srv/git/.valley-hold`. Use your configured `dataDir` if
 it differs. The hold stops SSH pushes; stop the relevant integrator services separately if
 maintenance also requires local integration writes to stop.
+
+### Find refs named like other refs
+
+The push hook refuses to create or update a ref named like another ref: `refs/`, `refs/heads/`,
+`refs/tags/` or `refs/remotes/` followed by a full ref name. When the ref it is named for is
+missing, git reads, fetches and pushes to such a ref in its place. A host may hold some already,
+made before the hook refused them. List them once, in every repository the host serves:
+
+```sh
+for repo in /srv/git/*.git; do
+  sudo -u git git -C "$repo" for-each-ref --format="$repo %(refname)" \
+    refs/refs/ refs/heads/refs/ refs/tags/refs/ refs/remotes/refs/
+done
+```
+
+Each line names a repository and a ref. Once any work on a ref has been pushed under another name,
+delete the ref on the host:
+
+```sh
+sudo -u git git -C /srv/git/demo.git update-ref -d refs/heads/refs/heads/main
+```
+
+Use your configured `dataDir` if it differs.
 
 ## Contributing to the-valley
 

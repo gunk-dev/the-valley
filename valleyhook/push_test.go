@@ -124,3 +124,69 @@ func TestAPolicyKeyNotSpelledExactlyRefusesThePush(t *testing.T) {
 		}
 	}
 }
+
+// git looks a missing ref up under other names: refs/, refs/tags/,
+// refs/heads/ or refs/remotes/ followed by the name it was given. A ref
+// named that way could stand in for a ref the valley reads, so no push
+// may create or update one, even under a policy that makes the pusher a
+// writer of every ref and opens every ref to her through a grant. Each
+// may still be deleted. Names that hold refs anywhere else are ordinary.
+func TestARefNamedLikeAnotherIsNeitherCreatedNorUpdated(t *testing.T) {
+	r := newRecords(t)
+	h, h2 := r.source("one"), r.source("two")
+	file := filepath.Join(t.TempDir(), "policy.json")
+	policy := `{"grants": {"every": {"refs": ["refs/*"], "writers": ["alice"]}}, "refs": ["refs/*"], "writers": ["alice"]}`
+	if err := os.WriteFile(file, []byte(policy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	push := func(old, new, ref string) (int, string) {
+		t.Helper()
+		var stderr bytes.Buffer
+		code := preReceive([]string{"--project", "project", "--policy", file, "--principal", "alice"},
+			strings.NewReader(old+" "+new+" "+ref+"\n"), &stderr, gitRepository{})
+		return code, stderr.String()
+	}
+
+	for _, c := range []struct{ ref, prefix string }{
+		{"refs/heads/refs/the-valley/knots", "refs/heads/"},
+		{"refs/heads/refs/heads/main", "refs/heads/"},
+		{"refs/tags/refs/heads/main", "refs/tags/"},
+		{"refs/tags/refs/the-valley/integration-requests/main/c-1", "refs/tags/"},
+		{"refs/refs/the-valley/signers", "refs/"},
+		{"refs/remotes/refs/heads/registry", "refs/remotes/"},
+		{"refs/remotes/refs/heads/main/HEAD", "refs/remotes/"},
+	} {
+		for _, w := range []struct{ verb, old, new string }{
+			{"create", zeroID, h},
+			{"update", h, h2},
+		} {
+			code, says := push(w.old, w.new, c.ref)
+			want := fmt.Sprintf("valley: alice may not %s %s — no push may create or update a ref named %s followed by a full ref name: when %s is missing",
+				w.verb, c.ref, c.prefix, strings.TrimPrefix(c.ref, c.prefix))
+			if code == 0 || !strings.Contains(says, want) {
+				t.Errorf("%s %s: exit %d, %q", w.verb, c.ref, code, says)
+			}
+		}
+		if code, says := push(h, zeroID, c.ref); code != 0 {
+			t.Errorf("delete %s: exit %d, %q", c.ref, code, says)
+		}
+	}
+
+	for _, ref := range []string{
+		"refs/heads/fix-refs",
+		"refs/heads/a/refs/b",
+		"refs/heads/refs",
+		"refs/heads/refsx/y",
+		"refs/tags/a/refs/heads/main",
+		"refs/tags/refs",
+		"refs/remotes/origin/main",
+		"refs/meta/refs/heads/main",
+	} {
+		if code, says := push(zeroID, h, ref); code != 0 {
+			t.Errorf("create %s: exit %d, %q", ref, code, says)
+		}
+		if code, says := push(h, h2, ref); code != 0 {
+			t.Errorf("update %s: exit %d, %q", ref, code, says)
+		}
+	}
+}

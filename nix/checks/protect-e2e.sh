@@ -243,6 +243,86 @@ grep -q 'no grant of released' unopened.err
 lacks_ref released refs/tags/v1
 
 # ----------------------------------------------------------------------
+# A ref named like another ref takes no create and no update. When a ref
+# is missing, git reads, fetches and pushes to refs/, refs/tags/,
+# refs/heads/ or refs/remotes/ followed by its name instead, so a branch,
+# tag or other ref named that way could stand in for a ref the valley
+# reads. Each shape is refused to an open project's contributor and to
+# the writer of guarded's main, and no ref is made.
+read_exact() { git -C "$TMPDIR/$1.git" show-ref --verify --hash "$2"; }
+lookalikes=(
+  refs/heads/refs/the-valley/knots
+  refs/heads/refs/heads/main
+  refs/tags/refs/heads/main
+  refs/refs/the-valley/signers
+  refs/remotes/refs/heads/main
+)
+before="$(git rev-parse HEAD)"
+git commit --quiet --allow-empty -m lookalike
+for pair in open:contributor guarded:integrator; do
+  project="${pair%%:*}" who="${pair#*:}"
+  for ref in "${lookalikes[@]}"; do
+    refused lookalike.err "$who created $ref on $project" \
+      as "$who" git push --quiet "$project" "HEAD:$ref"
+    grep -qF "valley: $who may not create $ref — no push may create or update a ref named" lookalike.err
+    lacks_ref "$project" "$ref"
+  done
+done
+
+# Names that hold refs anywhere else are ordinary: branches pushed by a
+# contributor, and a release tag pushed under released's grant.
+for branch in fix-refs a/refs/b a/refs/heads/main; do
+  as contributor git push --quiet open "HEAD:refs/heads/$branch"
+  has_ref open "refs/heads/$branch"
+done
+tag=refs/tags/release/refs/heads/main
+git update-ref "$tag" HEAD
+as integrator git push --quiet released "$tag:$tag"
+has_ref released "$tag"
+
+# A host may hold such refs already, made before the hook refused them;
+# they are written here on the host. A push updates none of them, and
+# each is left where it was.
+for ref in "${lookalikes[@]}"; do
+  git -C "$TMPDIR/open.git" update-ref "$ref" "$before"
+done
+for ref in "${lookalikes[@]}"; do
+  refused lookalike.err "contributor updated $ref" \
+    as contributor git push --quiet --force open "HEAD:$ref"
+  grep -qF "valley: contributor may not update $ref — no push may create or update a ref named" lookalike.err
+  [ "$(read_exact open "$ref")" = "$before" ]
+done
+
+# The one-off report docs/guide.md gives lists each of them, and none of
+# the ordinary names.
+git -C "$TMPDIR/open.git" for-each-ref --format='%(refname)' \
+  refs/refs/ refs/heads/refs/ refs/tags/refs/ refs/remotes/refs/ > reported.txt
+printf '%s\n' "${lookalikes[@]}" | sort > expected.txt
+if ! sort reported.txt | cmp -s - expected.txt; then
+  echo "protect-e2e: the report of refs named like other refs is wrong" >&2
+  cat reported.txt >&2
+  exit 1
+fi
+
+# A delete is decided by the namespace's own rule: a contributor deletes
+# the branches. No grant of open opens the others, and the operator
+# deletes those on the host.
+as contributor git push --quiet --delete open refs/heads/refs/the-valley/knots refs/heads/refs/heads/main
+lacks_ref open refs/heads/refs/the-valley/knots
+lacks_ref open refs/heads/refs/heads/main
+refused lookalike.err "contributor deleted a tag no grant opens" \
+  as contributor git push --quiet --delete open refs/tags/refs/heads/main
+grep -q 'refs/tags/ opens only through a named grant' lookalike.err
+for ref in refs/tags/refs/heads/main refs/refs/the-valley/signers refs/remotes/refs/heads/main; do
+  git -C "$TMPDIR/open.git" update-ref -d "$ref"
+done
+for branch in fix-refs a/refs/b a/refs/heads/main; do
+  as contributor git push --quiet --delete open "refs/heads/$branch"
+done
+git update-ref -d "$tag"
+git reset --quiet --hard "$before"
+
+# ----------------------------------------------------------------------
 # Integration requests take writes only from a holder of the
 # approve grant. Pushing topic branches does not make a
 # principal one, and neither does being a declared writer.

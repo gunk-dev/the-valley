@@ -57,6 +57,26 @@ const (
 	grantRestack = "restack"
 )
 
+// lookupPrefixes are what git puts before a name it looks up, once the
+// name as given is not a ref (git's ref_rev_parse_rules). So a ref the
+// valley reads by its full name, when it is missing, is read, fetched and
+// pushed to as one of these prefixes followed by that name, or under
+// refs/remotes/ with /HEAD after it.
+var lookupPrefixes = []string{"refs/", "refs/tags/", "refs/heads/", "refs/remotes/"}
+
+// lookalike returns the prefix when ref is named like another ref: one of
+// lookupPrefixes followed by a full ref name. Every name git tries in
+// place of a missing full ref name has this shape, so the test needs no
+// list of the refs the valley reads.
+func lookalike(ref string) (string, bool) {
+	for _, prefix := range lookupPrefixes {
+		if strings.HasPrefix(ref, prefix+"refs/") {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
 // policy is everything one push is judged against.
 type policy struct {
 	project string
@@ -101,7 +121,9 @@ type update struct {
 //     integration requests, change records, restack reports and the plan
 //     graph. The plan graph is one ref, refs/the-valley/knots, matched
 //     exactly: a ref that only begins with its name is in the closed
-//     namespace.
+//     namespace. Nor may a push create or update a ref named like another
+//     (lookalike), since git would read it in place of that ref when that
+//     ref is missing. A push may still delete one, by the rules below.
 //  2. A ref that is symbolic in the repository takes no push. git would
 //     write the ref it points at, and that ref is not the one decided.
 //  3. The ref's namespace has its own rule. Topic branches are open.
@@ -136,6 +158,13 @@ func (p policy) decide(principal string, u update) string {
 		!strings.HasPrefix(u.ref, requestPrefix) && !strings.HasPrefix(u.ref, change.RefPrefix) &&
 		!strings.HasPrefix(u.ref, change.RestackPrefix) && u.ref != knot.Ref:
 		return refuse("write", fmt.Sprintf("%s is written only by the machinery on the host, and no push may write it", namespace(u.ref)))
+	}
+	if prefix, ok := lookalike(u.ref); ok && !isZero(u.new) {
+		verb := "update"
+		if isZero(u.old) {
+			verb = "create"
+		}
+		return refuse(verb, fmt.Sprintf("no push may create or update a ref named %s followed by a full ref name: when %s is missing, git reads, fetches and pushes to this ref in its place", prefix, strings.TrimPrefix(u.ref, prefix)))
 	}
 
 	if p.symrefs[u.ref] {

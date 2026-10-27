@@ -43,11 +43,14 @@ operator's account, keys and secrets (**deployment choice**).
 - **Their own identities.** Agents push with their own keys under their own principal, with a push
   grant and no `approve` grant (**deployment choice**). The hook takes the principal from the key
   that logged in (`valleyhook/shell.go`). Like any admitted key, an agent's key can push topic
-  branches and create attestation refs. The hook accepts an attestation ref only when every note in
-  it verifies under a known signer (`valleyhook/policy.go`, `valleyhook/attestation.go`). An agent's
-  key can also create change records, which makes the agent's principal the owner of those changes,
-  and add versions to them (`valleyhook/record.go`). A record never makes anything land. The
-  integrator reads records only to refuse a request or to void a withdrawn change's requests
+  branches and create attestation refs. No key can create or update a ref named like another ref,
+  such as a branch whose name begins with `refs/`, because git reads, fetches and pushes to such a
+  ref in place of a missing one (`implemented`, `valleyhook/policy.go`; checked by `protect-e2e` and
+  `valleyhook-unit`). The hook accepts an attestation ref only when every note in it verifies under
+  a known signer (`valleyhook/policy.go`, `valleyhook/attestation.go`). An agent's key can also
+  create change records, which makes the agent's principal the owner of those changes, and add
+  versions to them (`valleyhook/record.go`). A record never makes anything land. The integrator
+  reads records only to refuse a request or to void a withdrawn change's requests
   (`integrator/records.go`). Any principal that can create a record can hold back a head by
   recording it in a change and unreadying that change. Only an `approve` holder may delete that
   record, and deleting it releases the head.

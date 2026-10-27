@@ -1,6 +1,7 @@
-# The push path end to end, over the shipped binaries (web-push-e2e.nix).
-# Every server is started through start, which waits a bounded time for
-# it to listen, and the trap stops every one still running on any exit.
+# End-to-end test script for the web push path (see web-push-e2e.nix).
+# Each background server is launched with start, which waits up to 30
+# seconds for its listening address, and the EXIT trap stops all running
+# servers when the script exits.
 set -euo pipefail
 
 export HOME="$TMPDIR/home"

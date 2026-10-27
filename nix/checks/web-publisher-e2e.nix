@@ -6,15 +6,15 @@
 # reads no key outside its state, and reads no repository the host does not
 # declare, though the system's git configuration trusts every directory. The
 # unit receives the bearer token as a systemd credential while the token
-# file on disk stays readable by root alone. The unit reaches the one
-# address it is allowed, and no listener at an unrelated IPv4 or IPv6
-# address, though root reaches every one of them, so the filter is attached
-# on this kernel and not just configured. The unit's check before each pass
-# proves the same: it passes inside the unit, so the probe starts, and the
-# same check run by root outside the unit refuses, for root's datagram to
-# the canary is sent and arrives. A name that only a DNS server the unit may
-# not reach can answer resolves in the unit through the C library, while a
-# datagram from the unit to that server is denied.
+# file on disk stays readable by root alone. The unit can connect to its
+# allowed IP address while connections to disallowed IPv4 and IPv6 listeners
+# fail, even though root can reach all three listeners from outside the
+# unit. The unit's ExecStartPre egress check passes inside the unit
+# (allowing the probe to start) and fails when run by root outside the unit
+# (where root's UDP datagram reaches the canary listener). Inside the unit,
+# the C library resolves a host name through nscd from a DNS server on a
+# disallowed address, while a UDP datagram sent directly from the unit to
+# that DNS server fails with EPERM.
 {
   pkgs,
   lib,
@@ -95,9 +95,9 @@ let
       git -C "$cli" cat-file -e "$tip^{commit}" || fail "CLI shared objects could not be read"
       test "$(find "$cli/.git/objects" -type f | wc -l)" -eq 1 || fail "CLI objects were copied"
       chmod 0700 "$repos"
-      # Egress: the receiver's address, which the unit allows, and no
-      # other. A refused destination may answer EPERM or drop the packet,
-      # so both count, within the bound.
+      # Egress: the unit can connect to the allowed receiver address, and
+      # connections to disallowed IPv4 and IPv6 addresses fail within the
+      # 5-second timeout (whether rejected with EPERM or dropped).
       reach() {
         # shellcheck disable=SC2016
         timeout 5 bash -c 'exec 3<> "/dev/tcp/$1/8080" && head -n 1 <&3' reach "$1"
@@ -111,8 +111,8 @@ let
         fi
         test $((SECONDS - start)) -le 6 || fail "the connection to $addr took more than 6 seconds to fail"
       done
-      # Names: the C library asks nscd, which resolves outside the unit,
-      # and the unit itself may not reach the DNS server.
+      # DNS: the C library resolves names through nscd outside the unit,
+      # while the unit itself cannot send UDP packets to the DNS server.
       test "''${GODEBUG-}" = netdns=cgo || fail "Go's lookups are not pinned to the C library"
       getent hosts receiver.example.org > "$STATE_DIRECTORY/getent" ||
         fail "receiver.example.org did not resolve through the C library"
@@ -164,8 +164,8 @@ in
       };
       systemd.services.valley-web-publish.serviceConfig.ExecStart = lib.mkForce (lib.getExe probe);
       networking.enableIPv6 = true;
-      # The one DNS server, which answers for receiver.example.org at an
-      # address the unit is denied.
+      # Local DNS server on a disallowed IP address; answers queries for
+      # receiver.example.org.
       networking.nameservers = [ "192.0.2.53" ];
       environment.systemPackages = [
         pkgs.socat
@@ -196,9 +196,9 @@ in
           "echo edge-token-0123456789abcdef0123456789 | install -m 0400 /dev/stdin /run/keys/web-receiver-token",
       )
 
-      # A listener at the receiver's address, which the unit is allowed,
-      # and at an IPv4 and an IPv6 address it is not. Each answers with a
-      # line naming itself, and root reaches all three.
+      # Start TCP listeners on the allowed receiver address and on
+      # disallowed IPv4 and IPv6 addresses, and verify that root can
+      # reach all three.
       host.succeed(
           "ip addr add 192.0.2.1/32 dev lo",
           "ip addr add 192.0.2.2/32 dev lo",
@@ -206,8 +206,8 @@ in
           "ip addr add 198.51.100.1/32 dev lo",
           "ip addr add 192.0.2.53/32 dev lo",
       )
-      # socat splits its address at colons, so each listener answers with
-      # a label rather than its address.
+      # Each listener replies with its short label because socat splits
+      # option arguments on colons, which would break IPv6 literals.
       listeners = [
           ("allowed", "192.0.2.1", "TCP4-LISTEN:8080,bind=192.0.2.1"),
           ("ipv4", "192.0.2.2", "TCP4-LISTEN:8080,bind=192.0.2.2"),
@@ -218,25 +218,24 @@ in
       for label, addr, bind in listeners:
           host.wait_until_succeeds(f"timeout 5 bash -c 'exec 3<> /dev/tcp/{addr}/8080 && head -n 1 <&3' | grep -qx 'listener {label}'", timeout=30)
 
-      # The canary, which the unit's check sends a datagram to. What
-      # arrives is kept in /run/canary.
+      # UDP listener on the canary address (198.51.100.1:9); appends any
+      # datagram it receives to /run/canary.
       host.succeed("systemd-run --unit=canary socat -u UDP4-RECV:9,bind=198.51.100.1 OPEN:/run/canary,creat,append")
       host.wait_until_succeeds("ss -Hulnp | grep -q '198.51.100.1:9 '", timeout=30)
 
-      # The DNS server, which root asks directly.
+      # Start the DNS server on 192.0.2.53 and verify that root can query it.
       host.succeed("systemd-run --unit=dns dnsmasq --keep-in-foreground --no-resolv --no-hosts --bind-interfaces --listen-address=192.0.2.53 --address=/receiver.example.org/192.0.2.1")
       host.wait_until_succeeds("dig +short +time=2 +tries=1 @192.0.2.53 receiver.example.org | grep -qx 192.0.2.1", timeout=30)
 
-      # The unit's check, run by root outside the unit, where no filter
-      # denies the canary: its datagram is sent and arrives, and it refuses.
+      # Run the unit's egress check as root outside the unit's cgroup:
+      # the datagram reaches the canary listener, so the check fails.
       status, refused = host.execute("${check} 2>&1")
       print(refused)
       assert status != 0, "the egress check passed outside the unit"
       assert "a datagram to 198.51.100.1 port 9 was sent" in refused, "the egress check refused for another reason"
       host.wait_until_succeeds("grep -qx canary /run/canary", timeout=30)
 
-      # The filter as the module renders it: every address denied, and the
-      # receiver's allowed.
+      # Verify the systemd unit properties for the IP address filter.
       shown = host.succeed("systemctl show -p IPAddressDeny -p IPAddressAllow valley-web-publish.service")
       print(shown)
       assert "IPAddressAllow=192.0.2.1/32" in shown, "the unit does not allow the receiver's address"
@@ -248,7 +247,7 @@ in
       host.succeed("systemctl start valley-web-publish.service")
       journal = host.succeed("journalctl -u valley-web-publish.service --no-pager")
       print(journal)
-      assert "refused a datagram to 198.51.100.1 port 9 (EPERM), so it is in force" in journal, "the egress check did not pass inside the unit"
+      assert "refused a datagram to 198.51.100.1 port 9 (EPERM)" in journal, "the egress check did not pass inside the unit"
       assert host.succeed("cat /run/canary") == "canary", "a datagram from the unit's check reached the canary"
       assert "probe: confined" in journal, "the probe did not finish"
       host.succeed("test -e /var/lib/valley-web-publish/written")

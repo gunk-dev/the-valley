@@ -1,20 +1,26 @@
-# The push path end to end, over the shipped binaries: valley-web-publish,
-# valley-web-receive and valley-web as nix/packages.nix builds them, with
-# their wrappers, pinned tools and schemas, the valley CLI as the package
-# ships it (valley-script, unstamped, so no commit alone rebuilds it), and
-# real git. A valley instance grants anyone read of two projects in one
-# group. The publisher uploads them to the receiver, and valley-web serves
-# them at their group URLs, with an alias and a former name redirecting.
-# A pass with a wrong token is refused as unauthenticated, and the edge
-# keeps serving. Withdrawing a project's grant takes it off the edge on
-# the next pass. Both servers restart onto the same content. With the
-# receiver stopped, valley-web keeps serving, a withdrawal's pass fails
-# because its upload cannot connect and changes nothing, and once the
-# receiver is back the next pass takes the project off the edge.
+# End-to-end check for the web push path using the packaged binaries:
+# valley-web-publish, valley-web-receive, and valley-web as built and
+# wrapped by nix/packages.nix (with their pinned tools and schemas),
+# the packaged valley CLI (valley-script, unstamped so commits alone do
+# not trigger a rebuild), and git.
 #
-# It runs in the build sandbox as one user. The split between the
-# receiver's user and valley-web's is held by the receiver module's
-# checks in module-eval and by web-image.
+# The test creates a valley instance that grants anyone read access to
+# two projects in one group. It verifies that:
+#   1. valley-web-publish uploads both projects to valley-web-receive,
+#      and valley-web serves them at their group URLs and redirects a
+#      short alias and a former name with 308.
+#   2. An upload with a wrong token fails as unauthenticated while
+#      valley-web continues serving the previous export.
+#   3. Withdrawing a project's read grant removes the project on the
+#      next pass.
+#   4. Both servers preserve the active export across a restart.
+#   5. When the receiver is stopped, valley-web continues serving, a
+#      pass fails because the upload cannot connect, and the next pass
+#      after the receiver restarts applies the withdrawal.
+#
+# The check runs inside the Nix build sandbox as a single user. The
+# separation between the receiver's user and valley-web's user is
+# checked by module-eval and web-image.
 {
   pkgs,
   packages,

@@ -85,12 +85,13 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
 One pass of the web publisher: read the valley's public projects, and
 upload them to the receiver at URL, or write them to DIR.
 
-  --instance-repo URL  an absolute local path to the instance repository,
-                       the origin of the publisher's own bare repository,
-                       which the valley CLI discovers projects and
-                       signers through; its main holds policy/instance
-                       and no policy/valley; URL holds no #, no control
-                       character, and no space at either end
+  --instance-repo URL  absolute local path to the instance repository
+                       (used as origin of the publisher's cached bare
+                       repository so the valley CLI discovers projects
+                       and signers through it); its main must hold
+                       policy/instance and no policy/valley; URL must
+                       contain no #, control character, or leading or
+                       trailing space
   --instance NAME      the instance the manifest names, and the export
                        key's signing name, NAME/web-export
   --destination NAME   the receiver the manifest is for, and the destination
@@ -101,9 +102,9 @@ upload them to the receiver at URL, or write them to DIR.
                        project's group, web name, former names, and
                        aliases; colliding names are refused, and a
                        project in no group is private
-  --receiver URL       the receiver's base URL, http or https; an upload
-                       connects to it directly, and ignores HTTP_PROXY,
-                       HTTPS_PROXY and every other proxy setting
+  --receiver URL       the receiver's base URL, http or https; uploads
+                       connect directly to URL and ignore HTTP_PROXY,
+                       HTTPS_PROXY, and all other proxy settings
   --receiver-token FILE
                        the receiver's token, which every request of an
                        upload carries in its Authorization header: one

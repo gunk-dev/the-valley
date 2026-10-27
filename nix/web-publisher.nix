@@ -144,19 +144,19 @@ let
       out=$(timeout 5 bash -c 'printf canary > "/dev/udp/$1/$2"' check "$addr" "$port" 2>&1) || status=$?
       case $status:$out in
         0:*)
-          refuse "a datagram to $addr port $port was sent, though the unit's IP address filter must deny it: the filter is not in force, as when systemd lacks cgroup BPF support, or allowedAddresses covers $addr"
+          refuse "a datagram to $addr port $port was sent; the unit's IP address filter did not block it (check cgroup BPF support in systemd and the kernel, and check that allowedAddresses excludes $addr)"
           ;;
         124:*)
-          refuse "a datagram to $addr port $port was neither sent nor refused within 5 seconds: the unit's IP address filter is not proven in force"
+          refuse "sending a datagram to $addr port $port timed out after 5 seconds without EPERM from the unit's IP address filter"
           ;;
         *"write error: Operation not permitted"*)
-          echo "valley-web-publish-egress-check: the unit's IP address filter refused a datagram to $addr port $port (EPERM), so it is in force"
+          echo "valley-web-publish-egress-check: the unit's IP address filter refused a datagram to $addr port $port (EPERM)"
           ;;
         *"Network is unreachable"* | *"No route to host"*)
-          refuse "a datagram to $addr port $port had no route, so it never reached the unit's IP address filter, which is not proven in force; the host needs a route to $addr, such as a default route ($out)"
+          refuse "no route to $addr port $port ($out); add a route covering $addr, such as a default route, so the datagram reaches the unit's IP address filter"
           ;;
         *)
-          refuse "a datagram to $addr port $port failed, but not with the EPERM of the unit's IP address filter, which is not proven in force ($out)"
+          refuse "sending a datagram to $addr port $port failed without EPERM from the unit's IP address filter ($out)"
           ;;
       esac
     '';
@@ -220,34 +220,33 @@ in
         "2001:db8::10"
       ];
       description = ''
-        The IP addresses a pass may connect to, each an address or a
-        prefix: the receiver's addresses. The unit allows these
-        (`IPAddressAllow`) and denies every other (`IPAddressDeny=any`),
-        loopback included. The repositories are local paths and the
-        valley commands a pass runs use no network, so a pass needs
-        nothing else.
+        IPv4 or IPv6 addresses and prefixes that a pass may connect to.
+        Set this to the receiver's IP addresses. The unit allows only
+        these addresses (`IPAddressAllow`) and blocks all others
+        (`IPAddressDeny=any`), including loopback. A pass reads local
+        repositories and runs `valley` commands that use no network, so
+        it needs to reach only the receiver.
 
-        The filter is in force because the unit checks it before each
-        pass (`ExecStartPre`) and refuses to start the pass otherwise.
-        The check sends a UDP datagram to ${canary.address}, which the
-        filter must deny, and passes only when the send fails with EPERM.
-        systemd ignores the filter, with only a warning, where cgroup BPF
-        support is missing, and then no pass starts. The list may not
-        cover ${canary.address}, and the host needs a route to it, such as a
-        default route.
+        Before each pass, the unit runs an `ExecStartPre` check that
+        sends a UDP datagram to ${canary.address} and starts the pass
+        only if the cgroup filter rejects the send with `EPERM`. If
+        systemd or the kernel lacks cgroup BPF support, systemd logs a
+        warning and leaves the filter unattached, and the check stops
+        the pass from starting. Leave ${canary.address} out of this
+        list, and ensure the host has a route to it, such as a default
+        route.
 
-        Names need no resolver's address here. The unit sets
-        `GODEBUG=netdns=cgo`, so the publisher, built with cgo, looks
-        names up through the C library. On NixOS the C library asks nscd
-        ({option}`services.nscd.enable`, on by default) over a Unix
-        socket, and nscd queries DNS outside the unit. Without nscd, the
-        lookup runs inside the unit, and the filter denies the resolver
-        in /etc/resolv.conf unless its address is listed.
+        The unit sets `GODEBUG=netdns=cgo`, so the cgo-built publisher
+        resolves host names through the C library. On NixOS, the C
+        library queries `nscd` ({option}`services.nscd.enable`, enabled
+        by default) over a local Unix socket, and `nscd` queries DNS
+        outside the unit. If `nscd` is disabled, DNS queries run inside
+        the unit and require the resolver address from `/etc/resolv.conf`
+        in this list.
 
-        The list allows addresses and nothing else: any port at a listed
-        address is reachable, and the receiver's host name is not checked
-        against it. When the receiver's addresses change, a pass fails
-        until this list follows them.
+        The filter checks only the destination IP address and permits
+        every port on a listed address. When the receiver's IP addresses
+        change, passes fail until this list is updated.
       '';
     };
 

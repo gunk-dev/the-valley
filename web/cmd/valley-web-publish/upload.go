@@ -391,7 +391,7 @@ func (p *publisher) sequenceAfter(ctx context.Context, highWater int64) (int64, 
 	}
 	behind := time.Duration(highWater-seq) + time.Millisecond
 	if behind > maxClockWait {
-		return 0, fmt.Errorf("the receiver has accepted sequence %d, signed at %s, and this host's clock is %s behind it, too far to wait; the pass fails rather than publish out of order", highWater, time.Unix(0, highWater).UTC().Format(time.RFC3339), behind.Round(time.Second))
+		return 0, fmt.Errorf("the receiver has accepted sequence %d (signed at %s), and this host's clock is %s behind it; that exceeds the 2m wait limit, so the pass fails", highWater, time.Unix(0, highWater).UTC().Format(time.RFC3339), behind.Round(time.Second))
 	}
 	if err := p.sleep(ctx, behind); err != nil {
 		return 0, err

@@ -390,68 +390,73 @@ test both schemas against their rejected examples.
 
 ## The web publisher
 
-`valley-web-publish` runs on the valley host and pushes signed exports of the projects that `anyone`
-may read to the edge. It reads repositories, signs with a key of its own, and connects out to the
-receiver. Nothing on the edge connects back.
+`valley-web-publish` runs on the valley host and uploads signed exports of public projects to the
+edge. It reads local repositories, signs each manifest with its own key, and connects out to the
+receiver. Nothing on the edge connects back to the valley host.
 
-**Only projects anyone may read leave the host.** A pass exports a project only when its own
-`policy/read` names `anyone` and a read grant to `anyone` at the destination covers it, and the host
-declaration places it in a group (`implemented`, `web/cmd/valley-web-publish/valley.go`). The edge
-serves every reader anonymously, so what reaches it is public (see
+**Only projects `anyone` may read leave the host.** A pass exports a project only when three
+conditions hold: the project's `policy/read` names `anyone`, a read grant to `anyone` for the
+destination covers the project, and the host declaration places the project in a group
+(`implemented`, `web/cmd/valley-web-publish/valley.go`). The edge serves every reader anonymously,
+so everything that reaches it is public (see
 [What reaches the edge](./architecture.md#what-reaches-the-edge)).
 
-**The export key signs every manifest.** On its first start, the publisher makes an ed25519 key in
-its state directory and writes the key's verifier line beside it, under the signing name
+**The export key signs every manifest.** On its first start, the publisher generates an Ed25519 key
+in its state directory and writes the key's verifier line beside it under the signing name
 `<instance>/web-export` (`implemented`, `web/cmd/valley-web-publish/state.go`). The receiver admits
-only manifests that open under a verifier line it pins. Which line the edge pins is the operator's
-step (**deployment choice**). On NixOS the state directory is the unit's own, with mode `0700`
+only manifests that open under a verifier line it pins. Pinning that verifier line on the edge is a
+**deployment choice**. On NixOS, the state directory belongs to the unit with mode `0700`
 (`implemented`, `nix/web-publisher.nix`).
 
-**The pass runs confined.** On NixOS the publisher's unit runs as a dynamic user in the git group
-(`implemented`, `nix/web-publisher.nix`). The repositories are read-only to it, and nothing is
-writable but its state and cache directories. The git user's ssh identity and the host's signing,
-mirror and backup keys are inaccessible. Its safe.directory list names each repository the host
-declares and nothing else.
+**The pass runs confined.** On NixOS, the publisher's unit runs as a dynamic user in the `git` group
+(`implemented`, `nix/web-publisher.nix`). The host repositories are mounted read-only, and only the
+unit's state and cache directories are writable. The `git` user's SSH identity and the host's
+signing, mirror, and backup keys are mounted inaccessible. The unit's `safe.directory` list names
+only the repositories the host declares.
 
-**The pass connects only to the addresses it is allowed.** The unit denies every IP address
-(`IPAddressDeny=any`) and allows those `services.valley.webPublisher.allowedAddresses` lists
-(`implemented`, `nix/web-publisher.nix`). The module refuses to enable the publisher with an empty
-list. A pass needs only the receiver: the repositories are local paths, and the `valley` commands it
-runs use no network. The upload client connects to the receiver directly and ignores proxy settings
-such as `HTTPS_PROXY` (`implemented`, `web/cmd/valley-web-publish/upload.go`). The receiver's
-addresses are what to list, a **deployment choice**.
+**The pass connects only to allowed IP addresses.** The unit denies all IP traffic
+(`IPAddressDeny=any`) and allows only the addresses in
+`services.valley.webPublisher.allowedAddresses` (`implemented`, `nix/web-publisher.nix`). The module
+refuses to build when `allowedAddresses` is empty. A pass reads local repositories and runs `valley`
+commands that use no network, so it needs to reach only the receiver. Which receiver addresses to
+list is a **deployment choice**. The upload client connects directly to the receiver and ignores
+proxy environment variables such as `HTTPS_PROXY` (`implemented`,
+`web/cmd/valley-web-publish/upload.go`).
 
-**The filter is in force because the unit checks it before each pass.** systemd ignores
-`IPAddressDeny` and `IPAddressAllow`, with only a warning, where the kernel or the manager lacks
-cgroup BPF support. So the unit runs a check in its own cgroup before each pass (`ExecStartPre`,
-`implemented`, `nix/web-publisher.nix`). The check sends a UDP datagram to `198.51.100.1`, an
-address the filter must deny. The pass starts only when the send fails with `EPERM`, which is how
-the filter fails it. A datagram that is sent, or any other error, stops the pass with a message
-naming the problem. The module refuses an `allowedAddresses` that covers `198.51.100.1`. The host
-needs a route to that address, such as a default route, or the check fails. The check does not use
-TCP: the filter drops a SYN, and the connect then waits as it would for an address that never
-answers.
+**The unit checks that the IP filter is active before each pass.** When the kernel or service
+manager lacks cgroup BPF support, systemd logs a warning and leaves `IPAddressDeny` and
+`IPAddressAllow` unenforced. Before each pass, the unit therefore runs
+`valley-web-publish-egress-check` inside the unit's own cgroup (`ExecStartPre`, `implemented`,
+`nix/web-publisher.nix`). The check sends a UDP datagram to `198.51.100.1` port `9`, an address the
+filter must block. The pass starts only when that send fails immediately with `EPERM`. If the
+datagram goes out or fails with any other error, the check aborts the pass and logs the reason. The
+module refuses `allowedAddresses` entries that cover `198.51.100.1`. The host needs a route to
+`198.51.100.1`, such as a default route, so the datagram reaches the cgroup filter instead of
+failing earlier with no route. The check uses UDP because the cgroup filter returns `EPERM` on
+`send` at once, whereas a dropped TCP SYN waits for a connection timeout.
 
-**Names resolve outside the unit.** The unit sets `GODEBUG=netdns=cgo`, so the publisher looks names
-up through the C library and never through Go's own resolver (`implemented`,
-`nix/web-publisher.nix`). On NixOS the C library asks nscd over a Unix socket, and nscd queries DNS
-outside the unit, so no resolver's address goes on the list. This relies on two things. The
-publisher is built with cgo, as `nix/packages.nix` builds it. And nscd runs, as it does by default
-on NixOS (`services.nscd.enable`, a **deployment choice**). Without nscd, the lookup runs inside the
-unit, and the filter denies the resolver unless its address is listed.
+**Host names resolve outside the unit.** The unit sets `GODEBUG=netdns=cgo` so the publisher
+resolves host names through the C library instead of Go's built-in resolver (`implemented`,
+`nix/web-publisher.nix`). `nix/packages.nix` builds the publisher with cgo enabled. On NixOS, the C
+library queries `nscd` over a local Unix socket, and `nscd` sends the DNS query from outside the
+unit's cgroup. When `nscd` is enabled (`services.nscd.enable`, on by default in NixOS; a
+**deployment choice**), `allowedAddresses` needs only the receiver's addresses. If `nscd` is
+disabled, the C library sends DNS queries from inside the unit, and the filter blocks them unless
+`allowedAddresses` also includes the DNS resolver.
 
-The filter allows addresses and nothing narrower. Any port at a listed address is reachable, and the
-receiver's host name is not checked against the list.
+The cgroup filter checks only the destination IP address. It permits every port on an allowed
+address and checks the resolved address independently of the host name in `--receiver`.
 
-Checks: `module-eval` verifies the unit's filter, its check before each pass, its `GODEBUG` setting,
-its other confinement and its credentials. It refuses a publisher with no allowed address, and one
-whose list covers `198.51.100.1`. `web-publisher-e2e` runs the unit the module renders in a NixOS
-VM, with a probe in place of the publisher. There the unit's check passes, and the same check run by
-root outside the unit refuses, because root's datagram to `198.51.100.1` is sent. The probe reads
-the declared repositories and no others, writes no repository, and reads no key. It reaches a
-listener at its allowed address but none at an unrelated IPv4 or IPv6 address that root reaches from
-outside the unit. It resolves a name that only a DNS server at a denied address can answer, through
-the C library, and a datagram it sends to that server is refused.
+Checks: `module-eval` verifies the unit's IP filter, `ExecStartPre` check, `GODEBUG` setting,
+filesystem confinement, and credentials, and verifies that evaluation fails when `allowedAddresses`
+is empty or covers `198.51.100.1`. `web-publisher-e2e` boots a NixOS VM and runs the rendered unit
+with a probe script in place of the publisher. Inside the unit, the egress check passes; run by root
+outside the unit, the same check fails because root's datagram reaches `198.51.100.1`. The probe
+verifies that the unit can read only the declared repositories, writes to no repository, and reads
+no host key or raw token file. It also verifies that the unit can connect to a listener on its
+allowed address while connections to disallowed IPv4 and IPv6 listeners fail, and that the C library
+resolves a name served by a DNS server on a disallowed address while direct UDP packets from the
+unit to that DNS server fail with `EPERM`.
 
 ## The edge's receiver
 

@@ -762,21 +762,20 @@ services.valley.webPublisher = {
 };
 ```
 
-A pass may connect only to the addresses `allowedAddresses` lists. List every address of the
-receiver. A resolver's address does not go on the list. The publisher looks the receiver's name up
-through the C library, which on NixOS asks nscd, and nscd resolves it outside the unit. This needs
-nscd, which NixOS runs by default (`services.nscd.enable`). Without nscd, also list the address of
-the resolver in `/etc/resolv.conf`.
+Set `allowedAddresses` to the receiver's IP addresses. The unit allows connections only to addresses
+on that list, permits any port on a listed address, and checks only the destination IP address. When
+the receiver changes to a new address, passes fail until `allowedAddresses` includes it. The
+publisher connects to the receiver directly and ignores `HTTP_PROXY` and `HTTPS_PROXY`.
 
-The list allows addresses, not host names or ports, and a pass fails once the receiver moves to an
-address the list leaves out. The publisher ignores `HTTP_PROXY` and `HTTPS_PROXY`, so a proxy cannot
-stand in for the receiver.
+On NixOS, name lookups go through the C library to `nscd` (`services.nscd.enable`, enabled by
+default), which queries DNS outside the unit. If `nscd` is disabled, add the resolver address from
+`/etc/resolv.conf` to `allowedAddresses` as well.
 
-Before each pass, the unit checks that this filter is in force, and the pass does not start
-otherwise. The check sends a datagram to `198.51.100.1`, which the filter must deny. So the list
-must not cover that address, and the host needs a route to it, such as a default route. When the
-check refuses, `journalctl -u valley-web-publish` shows a line from
-`valley-web-publish-egress-check` that names the problem.
+Before each pass, `valley-web-publish-egress-check` verifies that the IP filter is active by sending
+a UDP datagram to `198.51.100.1` and starting the pass only when the filter blocks it. Leave
+`198.51.100.1` out of `allowedAddresses`, and ensure the host has a route to it, such as a default
+route. If the check stops the pass, `journalctl -u valley-web-publish` logs the reason from
+`valley-web-publish-egress-check`.
 
 Run the publisher once to generate the export signing key and read its verifier line:
 

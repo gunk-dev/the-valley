@@ -28,7 +28,8 @@
 #   integrator.nix   integrator-unit, integrator-e2e — the verdict rules,
 #                    and the controller over real repositories
 #   restack.nix      restack-unit, restack-e2e — the restacker's planner
-#                    over a repository wired with the rendered hook
+#                    and its write passes, over repositories wired with
+#                    the rendered hook
 #   signers.nix      signers-e2e — the signers the host publishes, read by
 #                    a fresh client to verify the real integrator's landing
 #   hooks.nix        valleyhook-unit, note-unit, change-unit,
@@ -67,6 +68,11 @@
 #                    NixOS machine: the worker's key, its enrollment and
 #                    its evidence on origin, and the slice's caps on its
 #                    builds and on builds that are not its own
+#   restack-host-e2e.nix
+#                    restack-host-e2e — the restacker's service in a NixOS
+#                    machine: its controller restacking a ready change
+#                    over sshd as its own principal, its Unix user's
+#                    isolation, and what its key can push
 #   web-publisher-e2e.nix
 #                    web-publisher-e2e — the web publisher's sandbox in
 #                    a NixOS machine: the unit the module renders, with a
@@ -156,6 +162,7 @@ import ./checks/host-module.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args
 // import ./checks/worker-e2e.nix args
+// import ./checks/restack-host-e2e.nix args
 // import ./checks/web-publisher-e2e.nix args
 # The web checks' old names, as the same derivations, until this change is on main.
 // {

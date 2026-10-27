@@ -76,6 +76,7 @@ project: {
 		"ssh-e2e",
 		"publish-e2e",
 		"worker-e2e",
+		"restack-host-e2e",
 		"web-publisher-e2e",
 	]
 	for n in ownChecks {
@@ -86,12 +87,14 @@ project: {
 	}
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
-	// publish-e2e, worker-e2e and web-publisher-e2e boot NixOS machines.
+	// publish-e2e, worker-e2e, restack-host-e2e and web-publisher-e2e boot
+	// NixOS machines.
 	// Every other check here takes seconds once its packages are built.
 	checks: "integrator-e2e": cost:    "slow"
 	checks: "ssh-e2e": cost:           "slow"
 	checks: "publish-e2e": cost:       "slow"
 	checks: "worker-e2e": cost:        "slow"
+	checks: "restack-host-e2e": cost:  "slow"
 	checks: "web-publisher-e2e": cost: "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
@@ -398,8 +401,8 @@ project: {
 
 	// The NixOS module and what its end-to-end checks run. The hook checks
 	// follow the scripts out of the hosts in nix/checks/hosts.nix, which
-	// are made of the three declarations named here; ssh-e2e, publish-e2e
-	// and worker-e2e run the module in NixOS machines.
+	// are made of the three declarations named here; ssh-e2e, publish-e2e,
+	// worker-e2e and restack-host-e2e run the module in NixOS machines.
 	classes: "host-module": {
 		paths: "nix/valley-host.nix":          true
 		paths: "nix/checks/hosts.nix":         true
@@ -415,6 +418,7 @@ project: {
 		requires: "ssh-e2e":                   true
 		requires: "publish-e2e":               true
 		requires: "worker-e2e":                true
+		requires: "restack-host-e2e":          true
 		requires: "valley-changes":            true
 	}
 

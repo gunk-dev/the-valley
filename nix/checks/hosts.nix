@@ -11,20 +11,23 @@
   stubbed ? false,
 }:
 let
-  # The stand-ins: the integrator, the identity compiler and valleyhook,
-  # each a script with the program's name that fails if anything runs it.
+  # The stand-ins: the integrator, the identity compiler, valleyhook and
+  # the restacker, each a script with the program's name that fails if
+  # anything runs it.
   # A host rendered over them renders the same units, hooks and scripts,
   # with the stand-ins' store paths where the programs' would be. None of
   # them changes when a program does, so a check that reads only what the
   # module renders changes only when the module or the check does. A check
   # that runs a program takes the hosts that run the real one.
-  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" ] (
+  stub =
     name:
     pkgs.writeShellScriptBin name ''
       echo "${name}: a stand-in the module checks render hosts over, which runs nothing" >&2
       exit 1
-    ''
-  );
+    '';
+  stubs = lib.genAttrs [ "integrator" "identity" "valleyhook" ] stub // {
+    restacker = stub "valley-restacker";
+  };
 
   # Each check host shares the machine baseline and supplies its own
   # declaration (and, where the declaration asks for backup, the secret
@@ -238,6 +241,50 @@ in
   };
 
   inherit workerHost;
+
+  # The restacker on for one of the projects the controllers serve, with
+  # the floor read from the instance repository.
+  restackerHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+      };
+      restacker = {
+        enable = true;
+        projects = [ "guarded" ];
+        sshKeyFile = "/run/agenix/valley-restacker-key";
+      };
+    };
+  };
+
+  # The restacker for a project this host does not serve.
+  unservedRestackerHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator.instanceProject = "sealed";
+      restacker = {
+        enable = true;
+        projects = [ "nowhere" ];
+        sshKeyFile = "/run/agenix/valley-restacker-key";
+      };
+    };
+  };
+
+  # The restacker with no key to push with.
+  keylessRestackerHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator.instanceProject = "sealed";
+      restacker = {
+        enable = true;
+        projects = [ "guarded" ];
+      };
+    };
+  };
 
   # The build slice alone, at caps of its own: every build of the daemon
   # capped, and no worker.

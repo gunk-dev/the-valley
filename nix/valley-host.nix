@@ -31,9 +31,10 @@
 # secrets: the backup options below take *paths* to consumer-provisioned
 # secret files; the contents never pass through this module or the store.
 #
-# Two services run under their own unix users rather than the git one: the
-# integrator, which is the first half of the split bd-500adf7 asks for, and
-# the check worker, which is not in the git group at all.
+# Three services run under their own unix users rather than the git one:
+# the integrator, which is the first half of the split bd-500adf7 asks
+# for, and the check worker and the restacker, which are not in the git
+# group at all.
 {
   config,
   pkgs,
@@ -369,6 +370,64 @@ let
       cfg.integrator.signingName
     else
       "${config.networking.hostName}/attestations";
+
+  # The restacker (restack/): one controller for each project listed,
+  # under its own Unix user. Its state for a project is a directory of its
+  # own, and it reaches the repositories as an ssh client of this host,
+  # as its own principal, so every push it makes passes the pre-receive
+  # hook like anyone else's. It is in no group that can read or write them
+  # on disk.
+  restackerPackage = cfg.packages.restacker;
+  restackerStateName = "valley-restacker";
+  restackerState = "%S/${restackerStateName}/%i";
+
+  # It authenticates with the key the operator provisions, which systemd
+  # hands it as a credential, and accepts only this host's own ssh keys,
+  # under one alias, as the worker does.
+  restackerSsh = lib.concatStringsSep " " [
+    "${config.programs.ssh.package}/bin/ssh -F none"
+    "-i %d/key"
+    "-p ${toString (lib.head config.services.openssh.ports)}"
+    "-o IdentitiesOnly=yes -o BatchMode=yes"
+    "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost"
+    "-o UserKnownHostsFile=${restackerState}/known_hosts -o GlobalKnownHostsFile=/dev/null"
+  ];
+
+  # This host's own ssh keys, written into the state directory before each
+  # start: the only keys the restacker's ssh accepts.
+  restackerKnownHosts = pkgs.writeShellScript "valley-restacker-known-hosts" ''
+    set -eu
+    : > "$1/known_hosts.new"
+    for pub in ${lib.escapeShellArgs (map (k: "${k.path}.pub") config.services.openssh.hostKeys)}; do
+      if [ -r "$pub" ]; then
+        printf 'localhost %s\n' "$(cut -d' ' -f1,2 "$pub")" >> "$1/known_hosts.new"
+      fi
+    done
+    mv -f "$1/known_hosts.new" "$1/known_hosts"
+  '';
+
+  # A pass reads landings with the verifier keys and the name the
+  # controllers read and sign under, and the floor from where the
+  # controllers read it: the instance repository, over ssh as itself, or
+  # the materialized directory.
+  restackerCommand = lib.concatStringsSep " " (
+    [
+      "${restackerPackage}/bin/valley-restacker run"
+      "--repo ${cfg.user}@localhost:%i.git"
+      "--state ${restackerState}"
+      "--principal ${cfg.restacker.principal}"
+      "--interval ${cfg.restacker.interval}"
+      "--integrator-name ${integratorName}"
+    ]
+    ++ lib.optional (knownSigners != "") "--known-signers ${knownSigners}"
+    ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
+    ++ (
+      if cfg.integrator.instanceProject != null then
+        [ "--instance-repo ${cfg.user}@localhost:${cfg.integrator.instanceProject}.git" ]
+      else
+        [ "--instance ${toString cfg.integrator.instancePolicy}" ]
+    )
+  );
 
   # The paths the consumer must supply once the integrator is enabled,
   # with what each names — for the assertion message. The signers file is
@@ -1559,6 +1618,69 @@ in
       };
     };
 
+    # The restacker (restack/): one controller for each project listed,
+    # which rebases the project's ready changes onto main when main moves,
+    # as its own principal. Machine options only. Registering the principal
+    # (its key and its restack grant, in services.valley.authorizedKeys and
+    # services.valley.grants.restack or in the registry) and provisioning
+    # its private key are the operator's, and nothing here does either.
+    restacker = {
+      enable = lib.mkEnableOption ''
+        the valley restacker: one controller for each project listed, which
+        rebases the project's ready changes onto main when main moves,
+        pushing over this host's sshd as its own principal'';
+
+      projects = lib.mkOption {
+        type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
+        default = [ ];
+        example = [ "the-valley" ];
+        description = ''
+          The projects the restacker serves, each a project this host
+          serves. Each gets a controller of its own,
+          `valley-restacker@<project>.service`, with a state directory of
+          its own under `/var/lib/valley-restacker`.
+        '';
+      };
+
+      principal = lib.mkOption {
+        type = lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*";
+        default = "valley-restacker";
+        description = ''
+          The principal the restacker pushes as, and names as the uploader
+          of every version it adds. Its key must be declared under this
+          name, and the name must hold the restack grant, for the hook to
+          take its versions and reports. A deployment declares both; this
+          module does neither.
+        '';
+      };
+
+      sshKeyFile = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "/run/agenix/valley-restacker-key";
+        description = ''
+          The private ssh key the restacker authenticates with, kept
+          outside the Nix store. systemd reads it as root and hands it to
+          each controller as a credential, so the file may stay readable
+          by root alone. Its public half is what the operator declares
+          for {option}`services.valley.restacker.principal`.
+        '';
+      };
+
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "15s";
+        example = "1m";
+        description = ''
+          How long a controller waits after one pass before the next. A
+          pass reads origin whether or not main has moved, so a change
+          readied since the last pass is found without another landing.
+          After a pass that fails, the wait doubles, up to five minutes,
+          until a pass succeeds.
+        '';
+      };
+    };
+
     # The identity registry compiler (dcr-b87f6e8): the step between the
     # instance's declared registry and the two gates that read what it
     # compiles to. Machine options only — whether this host compiles, and
@@ -1690,6 +1812,14 @@ in
         default = flakePackages.valleyhook;
         defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).valleyhook";
         description = "The push policy, which every pre-receive hook and the git user's login shell run.";
+      };
+
+      restacker = lib.mkOption {
+        type = lib.types.package;
+        internal = true;
+        default = flakePackages.valley-restacker;
+        defaultText = lib.literalExpression "(import ./packages.nix { inherit pkgs lib; }).valley-restacker";
+        description = "The restacker, which each restacker controller runs.";
       };
     };
   };
@@ -1853,6 +1983,31 @@ in
           message = "services.valley.worker.enable needs services.openssh.enable and nix.enable: the worker reaches this host's repositories through its sshd, and builds through its nix daemon.";
         }
       ]
+    )
+    ++ lib.optionals cfg.restacker.enable (
+      let
+        unserved = lib.filter (p: !(gitProjects ? ${p})) cfg.restacker.projects;
+      in
+      [
+        {
+          assertion = cfg.restacker.projects != [ ] && unserved == [ ];
+          message = "services.valley.restacker.projects must name at least one project, and only projects this host serves${
+            lib.optionalString (unserved != [ ]) ", and it names ${lib.concatStringsSep ", " unserved}"
+          }.";
+        }
+        {
+          assertion = cfg.restacker.sshKeyFile != null;
+          message = "services.valley.restacker.sshKeyFile must be set: the restacker pushes over this host's sshd with a key the operator provisions outside the Nix store.";
+        }
+        {
+          assertion = (cfg.integrator.instanceProject == null) != (cfg.integrator.instancePolicy == null);
+          message = "services.valley.restacker.enable needs exactly one of services.valley.integrator.instanceProject and services.valley.integrator.instancePolicy: the restacker reads the cap on its versions from the policy the controllers compose, over the floor they read.";
+        }
+        {
+          assertion = config.services.openssh.enable;
+          message = "services.valley.restacker.enable needs services.openssh.enable: the restacker reaches this host's repositories through its sshd.";
+        }
+      ]
     );
 
     users.groups.${cfg.group} = { };
@@ -1890,6 +2045,18 @@ in
       description = "The valley check worker";
     };
     users.groups.valley-worker = lib.mkIf cfg.worker.enable { };
+
+    # The restacker's own account. Its group is its own, not the git group,
+    # so it can neither read nor write the repositories on disk, and it is
+    # in no group that reads the integrator's or the worker's keys: it
+    # reaches the repositories as an ssh client, as its own principal.
+    users.users.valley-restacker = lib.mkIf cfg.restacker.enable {
+      isSystemUser = true;
+      group = "valley-restacker";
+      home = "/var/lib/${restackerStateName}";
+      description = "The valley restacker";
+    };
+    users.groups.valley-restacker = lib.mkIf cfg.restacker.enable { };
 
     services.openssh.enable = lib.mkDefault true;
 
@@ -2485,6 +2652,71 @@ in
         OnActiveSec = "5m";
         OnUnitInactiveSec = cfg.worker.interval;
       };
+    };
+
+    # One restacker controller for each project listed: valley-restacker
+    # run, which reconciles at its start and then every interval. It holds
+    # the lock on its state directory for as long as it runs, so one
+    # controller serves a project at a time. A controller that fails is
+    # restarted. It needs no ordering on the repositories' mounts or on
+    # valley-init: it reads and pushes through sshd, and the git user's
+    # shell holds a push until valley-init has converged.
+    systemd.services."valley-restacker@" = lib.mkIf cfg.restacker.enable {
+      description = "The valley restacker for %i";
+      after = [
+        "network.target"
+        "sshd.service"
+      ];
+      path = [ config.programs.ssh.package ];
+      environment = {
+        HOME = restackerState;
+        GIT_SSH_COMMAND = restackerSsh;
+      };
+      serviceConfig = {
+        ExecStartPre = "${restackerKnownHosts} ${restackerState}";
+        ExecStart = restackerCommand;
+        Restart = "on-failure";
+        RestartSec = "10s";
+        User = "valley-restacker";
+        Group = "valley-restacker";
+        StateDirectory = "${restackerStateName}/%i";
+        StateDirectoryMode = "0700";
+        WorkingDirectory = restackerState;
+        LoadCredential = [ "key:${toString cfg.restacker.sshKeyFile}" ];
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        PrivateTmp = true;
+        PrivateDevices = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        ProtectKernelLogs = true;
+        ProtectKernelModules = true;
+        ProtectKernelTunables = true;
+        ProtectControlGroups = true;
+        ProtectProc = "invisible";
+        RestrictAddressFamilies = [
+          "AF_INET"
+          "AF_INET6"
+          "AF_UNIX"
+        ];
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        CapabilityBoundingSet = "";
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" ];
+        UMask = "0077";
+      };
+    };
+
+    # wantedBy on a template unit enables nothing, so the controllers the
+    # declaration asks for are pulled in by name.
+    systemd.targets.valley-restackers = lib.mkIf cfg.restacker.enable {
+      description = "The valley restacker's controllers";
+      wantedBy = [ "multi-user.target" ];
+      wants = map (name: "valley-restacker@${name}.service") cfg.restacker.projects;
     };
 
     # Offsite backup, rendered only when the declaration asks for it. The

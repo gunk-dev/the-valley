@@ -46,6 +46,9 @@ let
     unrestrictedWorkerHost
     widerWorkerHost
     integratorNamedWorkerHost
+    restackerHost
+    unservedRestackerHost
+    keylessRestackerHost
     ;
 
   # The web publisher's module (nix/web-publisher.nix) beside the host
@@ -114,6 +117,7 @@ let
     ++ restrictedHost.config.assertions
     ++ identityHost.config.assertions
     ++ workerHost.config.assertions
+    ++ restackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
     ++ webPublisherOffHost.config.assertions
@@ -194,6 +198,16 @@ let
       host = integratorNamedWorkerHost;
       says = "services.valley.worker.signerName must differ from integrator";
       why = "a worker signing under the controllers' name would make every controller refuse to start";
+    }
+    {
+      host = unservedRestackerHost;
+      says = "services.valley.restacker.projects must name at least one project, and only projects this host serves, and it names nowhere";
+      why = "a controller for a project the host does not serve would fail every pass";
+    }
+    {
+      host = keylessRestackerHost;
+      says = "services.valley.restacker.sshKeyFile must be set";
+      why = "a restacker with no key cannot reach the repositories it serves, except as a user that could write them on disk";
     }
     {
       host = conflictingKeysHost;
@@ -575,6 +589,44 @@ let
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
+  # The restacker. Off, it renders nothing: integratorHost has the floor
+  # it would read and never enables it. On, each project listed gets a
+  # controller, valley-restacker run, as its own account outside the git
+  # group, so the repositories on disk are not its to read or write. It
+  # reaches them only through this host's sshd, as its principal, with the
+  # key systemd hands it as a credential, checking the host's own key. Its
+  # state is a directory of its own, the only path it may write, and it
+  # reads the floor from the instance repository over the same ssh.
+  restackerRenderedWithoutEnable =
+    integratorHost.config.systemd.services ? "valley-restacker@"
+    || integratorHost.config.systemd.targets ? valley-restackers
+    || integratorHost.config.users.users ? valley-restacker;
+
+  restackerMisrendered =
+    let
+      unit = restackerHost.config.systemd.services."valley-restacker@";
+      service = unit.serviceConfig;
+      account = restackerHost.config.users.users.valley-restacker;
+      target = restackerHost.config.systemd.targets.valley-restackers;
+      command = service.ExecStart;
+    in
+    service.User or null != "valley-restacker"
+    || service.Group or null != "valley-restacker"
+    || account.group != "valley-restacker"
+    || account.extraGroups != [ ]
+    || service.LoadCredential or [ ] != [ "key:/run/agenix/valley-restacker-key" ]
+    || service.StateDirectory or null != "valley-restacker/%i"
+    || service.StateDirectoryMode or null != "0700"
+    || service.ProtectSystem or null != "strict"
+    || service ? ReadWritePaths
+    || !(lib.hasInfix " -i %d/key " unit.environment.GIT_SSH_COMMAND)
+    || !(lib.hasInfix "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost" unit.environment.GIT_SSH_COMMAND)
+    || !(lib.hasInfix "-o UserKnownHostsFile=%S/valley-restacker/%i/known_hosts -o GlobalKnownHostsFile=/dev/null" unit.environment.GIT_SSH_COMMAND)
+    || !(lib.hasInfix "/bin/valley-restacker run --repo git@localhost:%i.git --state %S/valley-restacker/%i --principal valley-restacker --interval 15s " command)
+    || !(lib.hasInfix " --instance-repo git@localhost:sealed.git" command)
+    || target.wants != [ "valley-restacker@guarded.service" ]
+    || !(builtins.elem "multi-user.target" target.wantedBy);
+
   # The web publisher (nix/web-publisher.nix). Off, it renders nothing.
   # On, one pass is a oneshot on a five-minute timer whose first pass waits
   # five minutes after the timer starts, and which no switch starts or
@@ -721,6 +773,10 @@ in
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
       throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
+    else if restackerRenderedWithoutEnable then
+      throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
+    else if restackerMisrendered then
+      throw "valley module-eval: each restacker controller must run valley-restacker run for its project as its own account outside the git group, with its own 0700 state directory as the only path it may write, pushing over this host's sshd as its principal with the key systemd hands it as a credential, checking the host's own key, and reading the floor from the instance repository"
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then

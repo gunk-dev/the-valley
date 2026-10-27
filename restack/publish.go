@@ -38,8 +38,16 @@ import (
 // on, so a replacement still to push stays in the journal even when an
 // author rewrites or deletes every branch the family moved.
 //
-// Once a read finds nothing left to push and no replacement to build, the
-// pass lets go of each family that is not open (retire). A family is open
+// Each family goes at its own pace. At each read, a family with a write
+// still to finish pushes its next phase, and any other family whose
+// branches moved has its replacements built. A write origin keeps
+// refusing therefore holds back only its own family.
+//
+// Once a read finds nothing of a family left to push and no replacement
+// of it to build, the pass lets go of the family if it is not open
+// (retire). It does so when no family has anything left to push or build,
+// or at the pass's last read, for the families that have nothing left
+// then. A family is open
 // while a write of it is still to finish, or while origin took its branch
 // push and a version of it is neither added nor stopped for good, as a
 // version paused by a request that might still land is. An open family
@@ -54,7 +62,7 @@ import (
 // reports. A family with a replacement takes two more: one to build and
 // keep it, and one to push it. A read that confirms the last push comes
 // after these. A write still to finish after the last read is left to the
-// next pass.
+// next pass, and holds only its own family in the journal.
 const maxSteps = 8
 
 // Action is one write a pass pushed, and what became of it.
@@ -75,9 +83,11 @@ type settled struct {
 	closed  bool      // the journal was let go
 }
 
-// settle makes the journal's writes as recovery decides them. Once a read
-// finds nothing left to push and no replacement to build, it lets go of
-// each family that is not open, and of the journal once none is left.
+// settle makes the journal's writes as recovery decides them, each family
+// at its own pace. Once a read finds nothing left to push and no
+// replacement to build, or at the last read, it lets go of each family
+// that has nothing left then and is not open, and of the journal once
+// none is left.
 func settle(ctx context.Context, g rebase.Git, c config, j *Journal) (*settled, error) {
 	out := &settled{actions: []Action{}}
 	for step := 0; step < maxSteps; step++ {
@@ -91,20 +101,17 @@ func settle(ctx context.Context, g rebase.Git, c config, j *Journal) (*settled, 
 				return out, err
 			}
 		}
-		if pushed(ctx, g, j, out.last, &out.actions) {
-			continue
-		}
+		busy := pushed(ctx, g, j, out.last, &out.actions)
 		if err := ctx.Err(); err != nil {
 			return out, err
 		}
-		built, err := replace(ctx, g, c, j, out.last, rd.s)
-		if err != nil || built {
-			if err == nil {
-				continue
-			}
+		if err := replace(ctx, g, c, j, out.last, rd.s, busy); err != nil {
 			return out, err
 		}
-		if err := retire(ctx, g, c, j, out.last); err != nil {
+		if len(busy) > 0 && step < maxSteps-1 {
+			continue
+		}
+		if err := retire(ctx, g, c, j, out.last, busy); err != nil {
 			return out, err
 		}
 		if out.closed = len(j.Families) == 0; !out.closed {
@@ -176,16 +183,17 @@ func decisionsOf(r *Recovery) map[int]map[string]Decision {
 
 // pushed pushes, for each family, the first phase that has a write still
 // to finish: its branch push, then its versions, then its reports and its
-// replacements. It reports whether it tried any push.
-func pushed(ctx context.Context, g rebase.Git, j *Journal, r *Recovery, actions *[]Action) bool {
-	tried := false
+// replacements. It returns each family it tried a push of, by its place
+// in the journal.
+func pushed(ctx context.Context, g rebase.Git, j *Journal, r *Recovery, actions *[]Action) map[int]bool {
+	tried := map[int]bool{}
 	by := decisionsOf(r)
 	for i, f := range j.Families {
 		ds := by[i]
 		record := func(a Action) {
 			a.Operation, a.Family = f.Operation, i
 			*actions = append(*actions, a)
-			tried = true
+			tried[i] = true
 		}
 		if ctx.Err() != nil {
 			return tried
@@ -258,24 +266,26 @@ func isOpen(f JournalFamily, ds map[string]Decision) bool {
 	return false
 }
 
-// retire lets go of each family of the journal that is not open, and of
-// the journal once no family is left. It runs once a read finds nothing
-// left to push and no replacement to build, so each report of a family
-// whose branches moved is on origin, as that read showed.
-func retire(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recovery) error {
+// retire lets go of each family of the journal that is not open and not
+// busy, and of the journal once no family is left. A busy family had a
+// push tried or a replacement built at the read r was decided at, so what
+// became of it is for the next read to tell. Every other family had
+// nothing left to push and no replacement to build at that read, so each
+// report of it, if its branches moved, is on origin, as that read showed.
+func retire(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recovery, busy map[int]bool) error {
 	by := decisionsOf(r)
-	open := []JournalFamily{}
+	kept := []JournalFamily{}
 	for i, f := range j.Families {
-		if isOpen(f, by[i]) {
-			open = append(open, f)
+		if busy[i] || isOpen(f, by[i]) {
+			kept = append(kept, f)
 		}
 	}
 	switch {
-	case len(open) == 0:
-		j.Families = open
+	case len(kept) == 0:
+		j.Families = kept
 		return forget(ctx, g, c.state)
-	case len(open) < len(j.Families):
-		j.Families = open
+	case len(kept) < len(j.Families):
+		j.Families = kept
 		return keep(ctx, g, c.state, j)
 	}
 	return nil
@@ -315,21 +325,22 @@ func whatHappened(f JournalFamily, version func(id string) Decision) (Observatio
 	return o, published
 }
 
-// replace builds, for each family whose branches moved, a report of what
-// did happen for each of its changes whose report on origin says
-// otherwise, in place of any replacement of that change the family held.
-// It archives the observation a replacement is cut from when the
-// replacement leaves something out of it, and keeps the journal with them
-// before any is pushed. It reports whether it built any. A change origin
-// no longer records gets none, since the hook takes no report about it,
-// and so does a change no report of which fits, as when the family's
-// writes were built.
-func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recovery, s *rebase.Snapshot) (bool, error) {
+// replace builds, for each family whose branches moved and that is not
+// busy, a report of what did happen for each of its changes whose report
+// on origin says otherwise, in place of any replacement of that change
+// the family held. A family busy at this read has a push whose result the
+// next read tells. replace archives the observation a replacement is cut
+// from when the replacement leaves something out of it, and keeps the
+// journal with them before any is pushed. It marks each family it built a
+// replacement for busy. A change origin no longer records gets none,
+// since the hook takes no report about it, and so does a change no report
+// of which fits, as when the family's writes were built.
+func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recovery, s *rebase.Snapshot, busy map[int]bool) error {
 	by := decisionsOf(r)
 	built := false
 	for i := range j.Families {
 		f, ds := &j.Families[i], by[i]
-		if !moved(*f, ds) {
+		if busy[i] || !moved(*f, ds) {
 			continue
 		}
 		o, published := whatHappened(*f, func(id string) Decision { return ds["version "+id] })
@@ -347,12 +358,12 @@ func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recover
 			}
 			if len(omitted) > 0 {
 				if err := archive(c.state, o); err != nil {
-					return built, err
+					return err
 				}
 			}
 			p, err := rebase.BuildReport(ctx, g, rep, rebase.ReportMessage(l.Name, rep), s.Refs[rebase.RestackPrefix+l.ID])
 			if err != nil {
-				return built, err
+				return err
 			}
 			kept := JournalReport{Pending: p, Omitted: append([]string{}, omitted...)}
 			replaced := false
@@ -364,11 +375,11 @@ func replace(ctx context.Context, g rebase.Git, c config, j *Journal, r *Recover
 			if !replaced {
 				f.Replacements = append(f.Replacements, kept)
 			}
-			built = true
+			built, busy[i] = true, true
 		}
 	}
 	if !built {
-		return false, ctx.Err()
+		return ctx.Err()
 	}
-	return true, keep(ctx, g, c.state, j)
+	return keep(ctx, g, c.state, j)
 }

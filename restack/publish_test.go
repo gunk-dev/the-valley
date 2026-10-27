@@ -596,6 +596,59 @@ func TestAReportOfWhatHappenedOutlivesTheBranchesItReports(t *testing.T) {
 	}
 }
 
+// A report origin keeps refusing holds back only its own family. Here an
+// owner moves a restacked branch, so the family's reports say partial,
+// and origin refuses every push of one of them. A change beside that
+// family is restacked in the same pass and let go of, while the refused
+// report keeps its own family in the journal. After the next landing,
+// the change beside it is restacked again, and the refused family waits.
+func TestARefusedReportHoldsBackOnlyItsOwnFamily(t *testing.T) {
+	f := hooked(t)
+	f.readyAs(idA, "alice", "a", "main", "A's title")
+	f.readyAs(idB, "bob", "b", "a", "B's title")
+	f.readyAs(idE, "carol", "e", "main", "E's title")
+	f.moveMain()
+	t.Setenv("VALLEY_PRINCIPAL", "restacker")
+	r := newRestacker(t, f)
+	fam := of(t, r.journal(), idA)
+	if push, _ := fam.Branches.Push(context.Background(), r.g); push != rebase.Pushed {
+		t.Fatal("the branches were not pushed")
+	}
+	f.ownerPushes("b")
+	f.refuseOnOrigin(rebase.RestackPrefix + idB)
+	journaled := func() {
+		t.Helper()
+		j, err := loadJournal(r.c.state, r.c.binding())
+		if err != nil || j == nil || len(j.Families) != 1 || j.Families[0].Observed.Layers[0].ID != idA {
+			t.Fatalf("the journal does not hold a's family alone: %+v, %v", j, err)
+		}
+	}
+
+	r.pass(64)
+	f.restackedTo(idE, "carol", "E's title", "e", f.at("refs/heads/e"))
+	journaled()
+
+	f.git("checkout", "--quiet", "main")
+	f.commit("main moves again", "again.txt")
+	f.git("push", "--quiet", "origin", "main")
+	p := r.pass(64)
+	actions := map[string]string{}
+	for _, fp := range p.Families {
+		actions[fp.Layers[0].ID] = fp.Action
+	}
+	if actions[idA] != wait || actions[idE] != restack {
+		t.Errorf("after the landing, the pass planned a as %q and e as %q", actions[idA], actions[idE])
+	}
+	e := f.at("refs/heads/e")
+	if rec := f.recordOf(idE); len(rec.Versions) != 3 || rebase.HeadOf(rec.ActiveVersion()) != e || rec.ActiveVersion().Uploader != "restacker" {
+		t.Errorf("e was not restacked again: %+v", rec)
+	}
+	if parent := f.onOrigin("rev-parse", e+"^"); parent != f.at("refs/heads/main") {
+		t.Errorf("e is on %s, not main's tip", short(parent))
+	}
+	journaled()
+}
+
 // partialOf reports whether the change's latest report on origin, or one
 // before it, says partial: a's version added, the change's own not, for
 // the reason given. A later plan in the same pass may report on the

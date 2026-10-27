@@ -2110,18 +2110,20 @@ compact JSON ending with a newline.
   non-whitespace token after the root JSON object. It reads with `exactjson`, so a key must be a
   field's name spelled exactly, and a key given twice in one object is refused. A key that differs
   from a field's name in case, Unicode case folding included, is refused as a field spelled another
-  way. It requires `schema` to be `"valley-web-export/v1"`, projects to appear once in ascending
-  name order with valid project names and `public` visibility, and knot IDs to be valid and unique
-  within each project. It requires groups to appear once in ascending identifier order, each the
-  group of some project. Every group a project names must be listed. A project with a group must
-  have a web name, and a project with a web name, former names or aliases must have a group. Every
-  identifier, name, former name and alias must be a project name. Group names, group aliases and
-  project aliases must differ from one another, and from `-`, ignoring ASCII case. The web names and
-  former names of one group's projects must differ from one another, ignoring ASCII case. An export
-  without `groups` decodes. Each project's `source_tip`, non-empty `graph_tip`, and each change's
-  `version.head` must be a 40- or 64-hex lowercase object ID. Every knot's `title`, `body`,
-  `source`, `created_by`, and `owner`, and every comment's `body`, `author`, `edited`, and
-  `edited_by`, must be valid UTF-8 with no control characters other than `\n` and `\t`.
+  way. An array or object where the field's type holds none is refused before anything inside it is
+  read, and so are arrays and objects nested more than 1000 deep (`exactjson.MaxDepth`). It requires
+  `schema` to be `"valley-web-export/v1"`, projects to appear once in ascending name order with
+  valid project names and `public` visibility, and knot IDs to be valid and unique within each
+  project. It requires groups to appear once in ascending identifier order, each the group of some
+  project. Every group a project names must be listed. A project with a group must have a web name,
+  and a project with a web name, former names or aliases must have a group. Every identifier, name,
+  former name and alias must be a project name. Group names, group aliases and project aliases must
+  differ from one another, and from `-`, ignoring ASCII case. The web names and former names of one
+  group's projects must differ from one another, ignoring ASCII case. An export without `groups`
+  decodes. Each project's `source_tip`, non-empty `graph_tip`, and each change's `version.head` must
+  be a 40- or 64-hex lowercase object ID. Every knot's `title`, `body`, `source`, `created_by`, and
+  `owner`, and every comment's `body`, `author`, `edited`, and `edited_by`, must be valid UTF-8 with
+  no control characters other than `\n` and `\t`.
 - **Content digest (`Export.Digest`):** `Export.Digest` is the 64-hex SHA-256 of the export's JSON
   with `collected` cleared and each claim's `age_seconds` and `stale` zeroed. Those fields change
   with the clock rather than with the valley, so two exports of the same valley state have the same

@@ -240,8 +240,9 @@ func Decode(data []byte) (*Export, error) {
 // DecodeContext reads and validates an export while ctx remains active.
 // It reads the document twice, as exactjson.Decode does: first through
 // exactjson.Check, which refuses a key not spelled exactly as a field's
-// name and a key twice in one object, and then into the export. Both
-// reads check ctx between tokens and within long strings.
+// name, a key twice in one object, an array or object where the field
+// holds none, and nesting past exactjson.MaxDepth, and then into the
+// export. Both reads check ctx between tokens and within long strings.
 func DecodeContext(ctx context.Context, r io.Reader) (*Export, error) {
 	var data bytes.Buffer
 	dec := newTokenDecoder(ctx, io.TeeReader(r, &data))

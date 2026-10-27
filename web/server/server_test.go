@@ -2630,7 +2630,7 @@ func (c *cancelInPhase) Err() error {
 }
 
 func TestProcessingCancellationReleasesGeneration(t *testing.T) {
-	for _, phase := range []string{".decodeValue", "exactjson.check", ".(*Export).ValidateContext", ".CheckNames", ".(*Export).checkGroups",
+	for _, phase := range []string{".decodeValue", "exactjson.(*checker).check", ".(*Export).ValidateContext", ".CheckNames", ".(*Export).checkGroups",
 		".(*index).place", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
 		t.Run(phase, func(t *testing.T) {
 			h := newHarness(t)

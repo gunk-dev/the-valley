@@ -1,8 +1,12 @@
 package exactjson
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -205,5 +209,115 @@ func TestAnEmbeddedStructIsRefused(t *testing.T) {
 	}
 	if err := Decode([]byte(`{"slot": "s"}`), &embedsTagged{}); err == nil {
 		t.Errorf("a struct embedded under a tag name: Decode read its field's key as the embedding struct's")
+	}
+}
+
+// An array or object read into a type that holds none is refused where it
+// is, before anything inside it is read. encoding/json would refuse each
+// of these too, but only after reading the whole document.
+func TestAContainerOfTheWrongKindIsRefused(t *testing.T) {
+	for _, c := range []struct{ name, data, says string }{
+		{"an array for the document",
+			`[{"genesis": "alice"}]`,
+			`the document is an array, and exactjson.doc holds no array`},
+		{"an array for a map",
+			`{"principals": [{"keys": []}]}`,
+			`principals is an array, and map[string]exactjson.principal holds no array`},
+		{"an object for a string",
+			`{"genesis": {"Genesis": "alice"}}`,
+			`genesis is an object, and string holds no object`},
+		{"an object for a slice",
+			`{"principals": {"alice": {"keys": {"public": "k1"}}}}`,
+			`principals["alice"].keys is an object, and []exactjson.key holds no object`},
+		{"an array for a number",
+			`{"count": [1]}`,
+			`count is an array, and int64 holds no array`},
+		{"an array behind a pointer",
+			`{"principals": {"alice": {"keys": [{"public": "k1", "proof": []}]}}}`,
+			`principals["alice"].keys[0].proof is an array, and exactjson.proof holds no array`},
+	} {
+		var d doc
+		if err := Decode([]byte(c.data), &d); err == nil || err.Error() != c.says {
+			t.Errorf("%s: Decode read %+v, %v, not %q", c.name, d, err, c.says)
+		}
+		if err := json.Unmarshal([]byte(c.data), &doc{}); err == nil {
+			t.Errorf("%s: encoding/json reads the document", c.name)
+		}
+	}
+}
+
+// Arrays and objects may nest MaxDepth deep, counting the document's own,
+// and no deeper. Only a raw value or an interface nests freely enough to
+// reach the bound.
+func TestNestingPastMaxDepthIsRefused(t *testing.T) {
+	nested := func(depth int) string {
+		return `{"derived": ` + strings.Repeat("[", depth-1) + strings.Repeat("]", depth-1) + `}`
+	}
+	var d doc
+	if err := Decode([]byte(nested(MaxDepth)), &d); err != nil {
+		t.Errorf("a document %d deep: %v", MaxDepth, err)
+	}
+	says := fmt.Sprintf("the document nests arrays and objects more than %d deep", MaxDepth)
+	if err := Decode([]byte(nested(MaxDepth+1)), &d); err == nil || err.Error() != says {
+		t.Errorf("a document %d deep: Decode read %v, not %q", MaxDepth+1, err, says)
+	}
+	var v any
+	if err := Decode([]byte(strings.Repeat(`{"a":`, MaxDepth)+"1"+strings.Repeat("}", MaxDepth)), &v); err != nil {
+		t.Errorf("objects %d deep in an interface: %v", MaxDepth, err)
+	}
+	if err := Decode([]byte(strings.Repeat(`{"a":`, MaxDepth+1)+"1"+strings.Repeat("}", MaxDepth+1)), &v); err == nil || err.Error() != says {
+		t.Errorf("objects %d deep in an interface: Decode read %v, not %q", MaxDepth+1, err, says)
+	}
+}
+
+// counted counts the bytes read from r.
+type counted struct {
+	r io.Reader
+	n int
+}
+
+func (c *counted) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += n
+	return n, err
+}
+
+// A million brackets around null is refused at the first bracket the type
+// cannot hold, or at the bracket past MaxDepth, whichever comes first.
+// The check reads no further than that, and what it holds while it reads
+// grows with the depth it reaches, not with the document.
+func TestDeepBracketsAreRefusedEarly(t *testing.T) {
+	const n = 1 << 20
+	brackets := strings.Repeat("[", n) + "null" + strings.Repeat("]", n)
+	deep := fmt.Sprintf("the document nests arrays and objects more than %d deep", MaxDepth)
+	for _, c := range []struct {
+		name, data, says string
+		v                any
+	}{
+		{"a struct", brackets,
+			`the document is an array, and exactjson.doc holds no array`, &doc{}},
+		{"a slice of structs", brackets,
+			`[0] is an array, and exactjson.doc holds no array`, &[]doc{}},
+		{"an interface", brackets, deep, new(any)},
+		{"a raw value", brackets, deep, &json.RawMessage{}},
+		{"a raw value in a struct", `{"derived": ` + brackets + `}`, deep, &doc{}},
+	} {
+		in := []byte(c.data)
+		r := &counted{r: bytes.NewReader(in)}
+		if err := Check(json.NewDecoder(r), reflect.TypeOf(c.v)); err == nil || err.Error() != c.says {
+			t.Errorf("%s: Check read %v, not %q", c.name, err, c.says)
+		}
+		if r.n > 64<<10 {
+			t.Errorf("%s: Check read %d bytes of %d", c.name, r.n, len(in))
+		}
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		if err := Decode(in, c.v); err == nil || err.Error() != c.says {
+			t.Errorf("%s: Decode read %v, not %q", c.name, err, c.says)
+		}
+		runtime.ReadMemStats(&after)
+		if grew := after.TotalAlloc - before.TotalAlloc; grew > 1<<20 {
+			t.Errorf("%s: Decode allocated %d bytes", c.name, grew)
+		}
 	}
 }

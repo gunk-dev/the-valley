@@ -408,13 +408,17 @@ func TestBuildExportsThePublicProjectsGroups(t *testing.T) {
 
 // export.json is read strictly: a key that is not a field's name spelled
 // exactly, in any case or Unicode case-fold variant, a key twice in one
-// object, or a project name that is not safe as a file name, fails it.
-// Each case is refused for the reason it names.
+// object, an array where the field holds none, or a project name that is
+// not safe as a file name, fails it. Each case is refused for the reason
+// it names. Brackets nested a million deep are refused at the first one
+// the field cannot hold.
 func TestDecodeIsStrict(t *testing.T) {
 	f := exporttest.New(t)
 	if _, err := export.Decode(f.ExportJSON); err != nil {
 		t.Fatal(err)
 	}
+	const deep = 1 << 20
+	brackets := strings.Repeat("[", deep) + "null" + strings.Repeat("]", deep)
 	for _, c := range []struct {
 		name string
 		data []byte
@@ -448,6 +452,11 @@ func TestDecodeIsStrict(t *testing.T) {
 		{"a former name that is the project's web name", bytes.Replace(f.ExportJSON, []byte(`"former_names":["old-app"]`),
 			[]byte(`"former_names":["App"]`), 1),
 			`the web name of project app and former name 0 of project app are both "App"`},
+		{"brackets in place of the document", []byte(brackets),
+			`export.json: the document is an array, and export.Export holds no array`},
+		{"brackets in place of an alias", bytes.Replace(f.ExportJSON, []byte(`"aliases":["app"]`),
+			[]byte(`"aliases":[`+brackets+`]`), 1),
+			`export.json: projects[0].aliases[0] is an array, and string holds no array`},
 	} {
 		if _, err := export.Decode(c.data); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("Decode of %s gave %v, want an error saying %q", c.name, err, c.want)

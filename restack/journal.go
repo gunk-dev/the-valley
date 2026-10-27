@@ -10,39 +10,48 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"the-valley/change"
 	"the-valley/rebase"
 )
 
-// The journal is every write one operation intends, kept in the state
-// directory before the first of them is pushed, so a pass that ends part
-// way can tell afterwards what it did. It is the restacker's own, local
-// file, journal.json, in the format valley-restack-journal/v1:
+// The journal is every write the restacker intends and has not yet seen
+// through, kept in the state directory before the first of them is
+// pushed, so a pass that ends part way can tell afterwards what it did. It
+// is the restacker's own, local file, journal.json, in the format
+// valley-restack-journal/v1:
 //
 //	{
 //	  "schema": "valley-restack-journal/v1",
 //	  "repository": "<--repo>", "target": "main", "principal": "<--principal>",
-//	  "operation": "20261020T120400Z-1a2b3c4d",
-//	  "tip": "<main's tip as captured>",
-//	  "evidence": "<the evidence fingerprint as captured>",
 //	  "families": [
-//	    {"observed": { the whole observation: Observation },
+//	    {"operation": "20261020T120400Z-1a2b3c4d",
+//	     "tip": "<main's tip as captured>",
+//	     "evidence": "<the evidence fingerprint as captured>",
+//	     "observed": { the whole observation: Observation },
 //	     "branches": { the branch push, as rebase.PendingBranches keeps it } or null,
 //	     "versions": [ each version, as rebase.PendingVersion keeps it, lower layers first ],
 //	     "reports": [ {"pending": { as rebase.PendingReport keeps it },
-//	                   "omitted": [ what the report leaves out of the observation ]} ]}
+//	                   "omitted": [ what the report leaves out of the observation ]} ],
+//	     "replacements": [ each report of what did happen, in the form of a report ]}
 //	  ]
 //	}
 //
-// A family has a branch push and versions only when the operation would
-// restack it. Each version is leased on the record commit the capture
-// read, and each report on the report origin held. Every write names the
+// Each family carries the operation that built it, and main's tip and the
+// evidence fingerprint that operation captured, since a family stays in
+// the journal while it is open (publish.go) and is let go of on its own. A
+// family has a branch push and versions only when its operation would
+// restack it. A replacement is a report of what did happen to a family
+// whose branches moved, built when origin's report says otherwise
+// (publish.go).
+// Each version is leased on the record commit the capture read, and each
+// report and replacement on the report origin held. Every write names the
 // object it would push by its full ID, and every one of those objects is
 // kept reachable in the scratch repository, under
-// refs/valley-restack/<operation>/, for as long as the journal names it
-// (keep).
+// refs/valley-restack/<operation>/<object>, for as long as the journal
+// names it (keep).
 //
 // The journal is read as strictly as it is written: a field missing,
 // unknown or named twice, a form that does not agree with itself, or a
@@ -51,7 +60,9 @@ import (
 // only when every write it holds is about one of its layers. A family
 // that would restack adds exactly one version of each of its changes.
 // Each report gives the family's result, and says published exactly what
-// the family's versions add: nothing, for a family that adds none. A
+// the family's versions add: nothing, for a family that adds none. Each
+// replacement says complete or partial, says each change was published at
+// its prepared head, and names a version only as the family adds it. A
 // journal that would not read back as written is never kept (keep). A
 // journal that is missing is never inferred: what origin shows of a write
 // no journal names is left for the planner, which holds a change whose
@@ -67,28 +78,29 @@ const journalFile = "journal.json"
 // journaled operation would push.
 const retainPrefix = "refs/valley-restack/"
 
-// Journal is one operation's intended writes.
+// Journal is the writes of every family still to be seen through.
 type Journal struct {
 	Schema     string          `json:"schema"`
 	Repository string          `json:"repository"`
 	Target     string          `json:"target"`
 	Principal  string          `json:"principal"`
-	Operation  string          `json:"operation"`
-	Tip        string          `json:"tip"`      // main's tip as captured
-	Evidence   string          `json:"evidence"` // change.EvidenceFingerprint as captured
 	Families   []JournalFamily `json:"families"`
 }
 
 // JournalFamily is one family's observation and the writes it would make.
 type JournalFamily struct {
-	Observed Observation              `json:"observed"`
-	Branches *rebase.PendingBranches  `json:"branches"`
-	Versions []*rebase.PendingVersion `json:"versions"`
-	Reports  []JournalReport          `json:"reports"`
+	Operation    string                   `json:"operation"` // the operation that built it
+	Tip          string                   `json:"tip"`       // main's tip as that operation captured it
+	Evidence     string                   `json:"evidence"`  // change.EvidenceFingerprint as captured
+	Observed     Observation              `json:"observed"`
+	Branches     *rebase.PendingBranches  `json:"branches"`
+	Versions     []*rebase.PendingVersion `json:"versions"`
+	Reports      []JournalReport          `json:"reports"`
+	Replacements []JournalReport          `json:"replacements"` // reports of what did happen, at most one a change
 }
 
 // JournalReport is one change's report, and what it leaves out of the
-// family's observation: nothing for a report that holds it whole.
+// observation it was cut from: nothing for a report that holds it whole.
 type JournalReport struct {
 	Pending *rebase.PendingReport `json:"pending"`
 	Omitted []string              `json:"omitted"`
@@ -107,24 +119,24 @@ func (j *Journal) check(b binding) error {
 	case j.Repository != b.Repository || j.Target != b.Target || j.Principal != b.Principal:
 		return fmt.Errorf("it belongs to %s on %s as %s, and this pass is for %s on %s as %s",
 			j.Target, j.Repository, j.Principal, b.Target, b.Repository, b.Principal)
-	case !operationName.MatchString(j.Operation) || len(j.Operation) > change.MaxOperation:
-		return fmt.Errorf("its operation %q is not a report's operation name", j.Operation)
-	case !rebase.IsObjectID(j.Tip):
-		return fmt.Errorf("its tip %q is not a full object ID", j.Tip)
-	case !hexOf(j.Evidence, 16):
-		return fmt.Errorf("its evidence %q is not an evidence fingerprint", j.Evidence)
 	}
 	for i, f := range j.Families {
-		if err := f.check(j); err != nil {
+		if err := f.check(j.Target); err != nil {
 			return fmt.Errorf("its family %d: %w", i, err)
 		}
 	}
 	return nil
 }
 
-func (f *JournalFamily) check(j *Journal) error {
+func (f *JournalFamily) check(target string) error {
 	o := f.Observed
 	switch {
+	case !operationName.MatchString(f.Operation) || len(f.Operation) > change.MaxOperation:
+		return fmt.Errorf("its operation %q is not a report's operation name", f.Operation)
+	case !rebase.IsObjectID(f.Tip):
+		return fmt.Errorf("its tip %q is not a full object ID", f.Tip)
+	case !hexOf(f.Evidence, 16):
+		return fmt.Errorf("its evidence %q is not an evidence fingerprint", f.Evidence)
 	case o.Action != restack && o.Action != hold:
 		return fmt.Errorf("its action is %q, where %q or %q is expected", o.Action, restack, hold)
 	case o.Result != change.RestackComplete && o.Result != change.RestackConflict && o.Result != change.RestackBlocked:
@@ -170,8 +182,8 @@ func (f *JournalFamily) check(j *Journal) error {
 	}
 	news := map[string]string{}
 	if b := f.Branches; b != nil {
-		if b.Tip != j.Tip {
-			return fmt.Errorf("its branch push was prepared on %s, not the captured tip %s", b.Tip, j.Tip)
+		if b.Tip != f.Tip {
+			return fmt.Errorf("its branch push was prepared on %s, not the captured tip %s", b.Tip, f.Tip)
 		}
 		for _, u := range b.Updates {
 			l, ok := branches[u.Branch]
@@ -217,8 +229,8 @@ func (f *JournalFamily) check(j *Journal) error {
 			return fmt.Errorf("it reports on %s, which is none of its changes", p.ID)
 		case reported[p.ID]:
 			return fmt.Errorf("it reports on %s twice", p.ID)
-		case p.Report.Operation != j.Operation || p.Report.Target != j.Target || p.Report.TargetTip != change.HeadPrefix+j.Tip:
-			return fmt.Errorf("its report on %s is not this operation's, on %s at %s", p.ID, j.Target, j.Tip)
+		case !f.ours(p.Report, target):
+			return fmt.Errorf("its report on %s is not this operation's, on %s at %s", p.ID, target, f.Tip)
 		case p.Report.Result != o.Result:
 			return fmt.Errorf("its report on %s says %s, and the family's result is %s", p.ID, p.Report.Result, o.Result)
 		}
@@ -226,6 +238,63 @@ func (f *JournalFamily) check(j *Journal) error {
 			return fmt.Errorf("its report on %s %w", p.ID, err)
 		}
 		reported[p.ID] = true
+	}
+	replaced := map[string]bool{}
+	for _, r := range f.Replacements {
+		p := r.Pending
+		switch {
+		case p == nil:
+			return errors.New("it holds an empty replacement")
+		case f.Branches == nil:
+			return fmt.Errorf("it replaces the report on %s, and moved no branch", p.ID)
+		case layers[p.ID].ID == "":
+			return fmt.Errorf("it replaces a report on %s, which is none of its changes", p.ID)
+		case replaced[p.ID]:
+			return fmt.Errorf("it replaces the report on %s twice", p.ID)
+		case !f.ours(p.Report, target):
+			return fmt.Errorf("its replacement on %s is not this operation's, on %s at %s", p.ID, target, f.Tip)
+		}
+		if err := checkHappened(p.Report, layers, written, news); err != nil {
+			return fmt.Errorf("its replacement on %s %w", p.ID, err)
+		}
+		replaced[p.ID] = true
+	}
+	return nil
+}
+
+// ours reports whether a report is the family's operation's, on the
+// target at the tip the operation captured.
+func (f *JournalFamily) ours(r *change.RestackReport, target string) bool {
+	return r.Operation == f.Operation && r.Target == target && r.TargetTip == change.HeadPrefix+f.Tip
+}
+
+// checkHappened refuses a replacement that says other than what could
+// have happened to a family whose branches moved: each of its layers is
+// one of the family's changes, published at the head prepared for its
+// branch, with a version only as the family adds it. It says complete
+// when it names every change's version, and partial otherwise.
+func checkHappened(r *change.RestackReport, layers map[string]ObservedLayer, written map[string]*rebase.PendingVersion, news map[string]string) error {
+	all := true
+	for _, l := range r.Layers {
+		v, p := written[l.ChangeID], l.Published
+		switch {
+		case layers[l.ChangeID].ID == "":
+			return fmt.Errorf("has a layer for %s, which is none of the family's changes", l.ChangeID)
+		case p == nil || p.Head != change.HeadPrefix+news[layers[l.ChangeID].Branch]:
+			return fmt.Errorf("does not say %s was published at the head prepared for it", l.ChangeID)
+		case p.Version == nil && p.Record == nil:
+			all = false
+		case v == nil || p.Version == nil || *p.Version != v.Version || p.Record == nil || *p.Record != change.HeadPrefix+v.Commit:
+			return fmt.Errorf("says %s was published as a version the family does not add", l.ChangeID)
+		}
+	}
+	switch {
+	case r.Result == change.RestackComplete && !all:
+		return errors.New("says complete, and names a change with no version")
+	case r.Result == change.RestackPartial && all:
+		return errors.New("says partial, and names every change's version")
+	case r.Result != change.RestackComplete && r.Result != change.RestackPartial:
+		return fmt.Errorf("says %s, where complete or partial is expected", r.Result)
 	}
 	return nil
 }
@@ -302,32 +371,38 @@ func strictly(data []byte, v any) error {
 	return nil
 }
 
-// objects is every object the journal's writes would push: each prepared
-// head, each record commit and each report commit.
-func (j *Journal) objects() []string {
-	var all []string
+// retained is every object the journal's writes would push, each by the
+// ref the scratch repository keeps it under: each prepared head, each
+// record commit, each report commit and each replacement's.
+func (j *Journal) retained() map[string]string {
+	refs := map[string]string{}
 	for _, f := range j.Families {
+		var oids []string
 		if f.Branches != nil {
 			for _, u := range f.Branches.Updates {
-				all = append(all, u.New)
+				oids = append(oids, u.New)
 			}
 		}
 		for _, v := range f.Versions {
-			all = append(all, v.Commit)
+			oids = append(oids, v.Commit)
 		}
-		for _, r := range f.Reports {
-			all = append(all, r.Pending.Commit)
+		for _, r := range append(append([]JournalReport{}, f.Reports...), f.Replacements...) {
+			oids = append(oids, r.Pending.Commit)
+		}
+		for _, oid := range oids {
+			refs[retainPrefix+f.Operation+"/"+oid] = oid
 		}
 	}
-	return all
+	return refs
 }
 
 // keep makes the journal durable before any of its writes is pushed: it
 // keeps every object the writes would push reachable in the scratch
-// repository, under refs/valley-restack/<operation>/, and then writes the
-// journal to the state directory, synced, in place of any before it. A
-// journal that would not read back as written is refused before anything
-// is kept, since a later pass would refuse it in turn.
+// repository, under refs/valley-restack/<operation>/<object>, and then
+// writes the journal to the state directory, synced, in place of any
+// before it. Only then does it let go of each object the journal no
+// longer names. A journal that would not read back as written is refused
+// before anything is kept, since a later pass would refuse it in turn.
 func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 	if err := j.check(binding{Repository: j.Repository, Target: j.Target, Principal: j.Principal}); err != nil {
 		return fmt.Errorf("the journal cannot be kept: %w", err)
@@ -339,30 +414,74 @@ func keep(ctx context.Context, g rebase.Git, dir string, j *Journal) error {
 	if err := strictly(data, &Journal{}); err != nil {
 		return fmt.Errorf("the journal cannot be kept, since it would not read back as written: %w", err)
 	}
+	refs := j.retained()
+	var names []string
+	for ref := range refs {
+		names = append(names, ref)
+	}
+	sort.Strings(names)
 	var stdin strings.Builder
-	for i, oid := range j.objects() {
-		fmt.Fprintf(&stdin, "update %s%s/%d %s\n", retainPrefix, j.Operation, i, oid)
+	for _, ref := range names {
+		fmt.Fprintf(&stdin, "update %s %s\n", ref, refs[ref])
 	}
-	cmd := g.Command(ctx, "update-ref", "--stdin")
-	cmd.Stdin = strings.NewReader(stdin.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not keep the objects of operation %s: %v: %s", j.Operation, err, strings.TrimSpace(string(out)))
+	if err := updateRefs(ctx, g, stdin.String()); err != nil {
+		return fmt.Errorf("could not keep the objects of the journal: %w", err)
 	}
-	return writeDurably(dir, journalFile, append(data, '\n'))
+	if err := writeDurably(dir, journalFile, append(data, '\n')); err != nil {
+		return err
+	}
+	return letGo(ctx, g, refs)
 }
 
-// release lets go of what an operation kept in the scratch repository.
-func release(ctx context.Context, g rebase.Git, op string) error {
-	out, err := gitOut(ctx, g, "for-each-ref", "--format=delete %(refname)", retainPrefix+op+"/")
+// letGo lets go of every object the scratch repository keeps for the
+// journal, but those kept names: nil lets go of them all.
+func letGo(ctx context.Context, g rebase.Git, kept map[string]string) error {
+	out, err := gitOut(ctx, g, "for-each-ref", "--format=%(refname)", retainPrefix)
 	if err != nil {
 		return err
 	}
-	cmd := g.Command(ctx, "update-ref", "--stdin")
-	cmd.Stdin = strings.NewReader(out)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("could not let go of the objects of operation %s: %v: %s", op, err, strings.TrimSpace(string(out)))
+	var stdin strings.Builder
+	for _, ref := range strings.Fields(out) {
+		if _, ok := kept[ref]; !ok {
+			fmt.Fprintf(&stdin, "delete %s\n", ref)
+		}
+	}
+	if err := updateRefs(ctx, g, stdin.String()); err != nil {
+		return fmt.Errorf("could not let go of the objects the journal no longer names: %w", err)
 	}
 	return nil
+}
+
+// updateRefs runs git update-ref --stdin with the instructions given, all
+// in one transaction.
+func updateRefs(ctx context.Context, g rebase.Git, instructions string) error {
+	if instructions == "" {
+		return nil
+	}
+	cmd := g.Command(ctx, "update-ref", "--stdin")
+	cmd.Stdin = strings.NewReader(instructions)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// forget removes the journal from the state directory, durably, and then
+// lets go of every object kept for it.
+func forget(ctx context.Context, g rebase.Git, dir string) error {
+	if err := os.Remove(filepath.Join(dir, journalFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	d.Close()
+	if err != nil {
+		return err
+	}
+	return letGo(ctx, g, nil)
 }
 
 // writeDurably writes a file in dir through a synced temporary file, and

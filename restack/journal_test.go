@@ -262,8 +262,14 @@ func TestTheJournalKeepsEveryWriteBeforeAnyPush(t *testing.T) {
 		t.Errorf("e's writes are %+v", e)
 	}
 
-	want := j.objects()
-	got := strings.Fields(gitOutT(t, r.g, "for-each-ref", "--format=%(objectname)", retainPrefix+j.Operation+"/"))
+	var want []string
+	for ref, oid := range j.retained() {
+		if !strings.HasPrefix(ref, retainPrefix+j.Families[0].Operation+"/") {
+			t.Errorf("%s is not kept under the operation's refs", ref)
+		}
+		want = append(want, ref+" "+oid)
+	}
+	got := strings.Split(gitOutT(t, r.g, "for-each-ref", "--format=%(refname) %(objectname)", retainPrefix), "\n")
 	sort.Strings(want)
 	sort.Strings(got)
 	if !reflect.DeepEqual(got, want) {
@@ -531,7 +537,7 @@ func TestReportOnlyRecoveryPushesNothing(t *testing.T) {
 	if err := json.Unmarshal(out.Bytes(), &p); err != nil {
 		t.Fatal(err)
 	}
-	if p.Recovery == nil || p.Recovery.Operation != j.Operation {
+	if p.Recovery == nil || len(p.Recovery.Decisions) == 0 || p.Recovery.Decisions[0].Operation != j.Families[0].Operation {
 		t.Fatalf("the plan holds no recovery of the journal: %s", out.String())
 	}
 	finish := map[string]int{}
@@ -685,7 +691,7 @@ func TestAJournalThatWouldNotReadBackIsNotKept(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := release(ctx, r.g, j.Operation); err != nil {
+	if err := letGo(ctx, r.g, nil); err != nil {
 		t.Fatal(err)
 	}
 	j.Families[0].Observed.Reasons = append(j.Families[0].Observed.Reasons, "a reason in Latin-1: caf\xe9")
@@ -695,7 +701,7 @@ func TestAJournalThatWouldNotReadBackIsNotKept(t *testing.T) {
 	if now, _ := os.ReadFile(path); !bytes.Equal(now, before) {
 		t.Error("the journal before it was replaced")
 	}
-	if left := gitOutT(t, r.g, "for-each-ref", retainPrefix+j.Operation+"/"); left != "" {
+	if left := gitOutT(t, r.g, "for-each-ref", retainPrefix); left != "" {
 		t.Errorf("objects were kept for a journal that was not:\n%s", left)
 	}
 }

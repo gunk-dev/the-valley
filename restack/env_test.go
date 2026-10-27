@@ -21,13 +21,18 @@ import (
 )
 
 // roleEnv, set to "main", makes the test binary valley-restacker itself,
-// so a test can run the program as a process of its own.
+// so a test can run the program as a process of its own. Set to
+// "drop-acks", it makes the test binary origin's receive-pack, less its
+// answer to a push of the ref dropEnv names (lossyReceivePack).
 const roleEnv = "RESTACK_TEST_ROLE"
 
 func TestMain(m *testing.M) {
-	if os.Getenv(roleEnv) == "main" {
+	switch os.Getenv(roleEnv) {
+	case "main":
 		main()
 		os.Exit(0)
+	case "drop-acks":
+		os.Exit(lossyReceivePack(os.Getenv(dropEnv), os.Args[1:]))
 	}
 	os.Exit(m.Run())
 }

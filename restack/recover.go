@@ -10,7 +10,8 @@ import (
 
 // Recovery reads origin and a journal, and decides each write the journal
 // names, in the order a pass makes them: a family's branch push, then its
-// versions, lower layers first, then its reports. Each write is one of:
+// versions, lower layers first, then its reports and its replacements.
+// Each write is one of:
 //
 //   - done: origin holds it, or has moved on from it;
 //   - finish: origin does not hold it, and everything the write was built
@@ -40,7 +41,10 @@ import (
 // published is on origin, or will be once the writes before it are
 // finished. A report whose claims no longer can be, because a version it
 // names stopped, stops, and a report of what did happen is built in its
-// place.
+// place: a replacement. A replacement is finished while origin's report
+// is still the one it was built on and it still says what did happen, as
+// the family's versions are decided now. One that no longer does stops,
+// and another is built in its place.
 //
 // In --report-only mode recovery decides and pushes nothing.
 
@@ -53,23 +57,23 @@ const (
 
 // Recovery is what recovery decided about a journal.
 type Recovery struct {
-	Journal   string     `json:"journal"`             // the journal's path
-	Operation string     `json:"operation,omitempty"` // the operation it names
-	Error     string     `json:"error,omitempty"`     // why it was not read, so nothing in it is decided
-	Settled   bool       `json:"settled"`             // every write is done or stopped for good
+	Journal   string     `json:"journal"`         // the journal's path
+	Error     string     `json:"error,omitempty"` // why it was not read, so nothing in it is decided
+	Settled   bool       `json:"settled"`         // every write is done or stopped for good
 	Decisions []Decision `json:"decisions"`
 }
 
 // Decision is what recovery decided about one write.
 type Decision struct {
-	Family   int    `json:"family"`              // the family's place in the journal
-	Write    string `json:"write"`               // branches, version or report
-	ID       string `json:"change_id,omitempty"` // the change a version or a report is about
-	Commit   string `json:"commit,omitempty"`    // the record or report commit it pushes
-	Action   string `json:"action"`              // done, finish or stop
-	Final    bool   `json:"final"`               // a stop no later pass can finish
-	Terminal bool   `json:"terminal"`            // a final stop that is a local failure, kept with its diagnostics
-	Why      string `json:"why"`
+	Family    int    `json:"family"`              // the family's place in the journal
+	Operation string `json:"operation"`           // the operation that built the family
+	Write     string `json:"write"`               // branches, version, report or replacement
+	ID        string `json:"change_id,omitempty"` // the change a version or a report is about
+	Commit    string `json:"commit,omitempty"`    // the record or report commit it pushes
+	Action    string `json:"action"`              // done, finish or stop
+	Final     bool   `json:"final"`               // a stop no later pass can finish
+	Terminal  bool   `json:"terminal"`            // a final stop that is a local failure, kept with its diagnostics
+	Why       string `json:"why"`
 }
 
 func (d Decision) settled() bool { return d.Action == writeDone || d.Action == writeStop && d.Final }
@@ -87,9 +91,13 @@ type reading struct {
 
 // decide decides every write the journal names.
 func decide(j *Journal, rd reading) *Recovery {
-	rec := &Recovery{Operation: j.Operation, Decisions: []Decision{}, Settled: true}
+	rec := &Recovery{Decisions: []Decision{}, Settled: true}
 	for i, f := range j.Families {
-		rec.Decisions = append(rec.Decisions, rd.family(i, j, f)...)
+		ds := rd.family(i, f)
+		for k := range ds {
+			ds[k].Operation = f.Operation
+		}
+		rec.Decisions = append(rec.Decisions, ds...)
 	}
 	for _, d := range rec.Decisions {
 		rec.Settled = rec.Settled && d.settled()
@@ -97,7 +105,7 @@ func decide(j *Journal, rd reading) *Recovery {
 	return rec
 }
 
-func (rd reading) family(i int, j *Journal, f JournalFamily) []Decision {
+func (rd reading) family(i int, f JournalFamily) []Decision {
 	var out []Decision
 	stopped := func(d *Decision, final bool, why string, a ...any) {
 		d.Action, d.Final, d.Why = writeStop, final, fmt.Sprintf(why, a...)
@@ -109,13 +117,13 @@ func (rd reading) family(i int, j *Journal, f JournalFamily) []Decision {
 
 	// Whether main still descends from the tip the family was rebased onto.
 	compatible, final, target := true, true, ""
-	switch descends, err := rd.is(j.Tip, rd.s.Tip); {
+	switch descends, err := rd.is(f.Tip, rd.s.Tip); {
 	case rd.s.Tip == "":
 		compatible, target = false, "origin has no "+rebase.Target
 	case err != nil:
-		compatible, final, target = false, false, fmt.Sprintf("whether %s at %s descends from %s cannot be told", rebase.Target, short(rd.s.Tip), short(j.Tip))
+		compatible, final, target = false, false, fmt.Sprintf("whether %s at %s descends from %s cannot be told", rebase.Target, short(rd.s.Tip), short(f.Tip))
 	case !descends:
-		compatible, target = false, fmt.Sprintf("%s at %s no longer descends from %s, the tip the family was rebased onto", rebase.Target, short(rd.s.Tip), short(j.Tip))
+		compatible, target = false, fmt.Sprintf("%s at %s no longer descends from %s, the tip the family was rebased onto", rebase.Target, short(rd.s.Tip), short(f.Tip))
 	}
 	held := rd.holding(f)
 	var submitted []string
@@ -161,8 +169,8 @@ func (rd reading) family(i int, j *Journal, f JournalFamily) []Decision {
 			stopped(&d, true, "the scratch repository no longer holds the prepared head %s", strings.Join(missing, ", "))
 		case !compatible:
 			stopped(&d, final, "the branches were not pushed, and %s", target)
-		case rd.s.Tip != j.Tip:
-			stopped(&d, true, "%s moved from %s to %s before the branches were pushed, so the next pass prepares the family again", rebase.Target, short(j.Tip), short(rd.s.Tip))
+		case rd.s.Tip != f.Tip:
+			stopped(&d, true, "%s moved from %s to %s before the branches were pushed, so the next pass prepares the family again", rebase.Target, short(f.Tip), short(rd.s.Tip))
 		case recordMoved != "":
 			stopped(&d, true, "the branches were not pushed, and %s", recordMoved)
 		case len(submitted) > 0:
@@ -258,6 +266,49 @@ func (rd reading) family(i int, j *Journal, f JournalFamily) []Decision {
 			d.Action, d.Why = writeFinish, "once the writes it reports are pushed"
 		default:
 			d.Action, d.Why = writeFinish, "origin's report is still the one it was built on"
+		}
+		out = append(out, d)
+	}
+
+	// Each replacement, against what did happen as the versions are
+	// decided now.
+	var happened Observation
+	var published map[string]*change.RestackPublished
+	if branches.Action == writeDone {
+		happened, published = whatHappened(f, func(id string) Decision { return versions[id] })
+	}
+	for _, r := range f.Replacements {
+		p := r.Pending
+		d := Decision{Family: i, Write: "replacement", ID: p.ID, Commit: p.Commit}
+		at := rd.s.Refs[p.Ref]
+		current, found := rd.s.Report(p.ID)
+		says := ""
+		if branches.Action == writeDone {
+			if want, _, err := bound(fullReport(f.Operation, f.Tip, p.ID, happened, published), happened.Digest()); err != nil {
+				says = err.Error()
+			} else if !sameReport(want, p.Report) {
+				says = "it no longer says what did happen"
+			}
+		}
+		switch {
+		case at == p.Commit || at != "" && at != p.Old && rd.reaches(p.Commit, at):
+			d.Action, d.Why = writeDone, "origin holds the report"
+		case rd.s.Refs[change.Ref(rebase.Target, p.ID)] == "":
+			stopped(&d, true, "origin no longer holds a record of %s, and the hook takes no report about a change it does not record. The report is kept here: %s, %s",
+				p.ID, p.Report.Result, oneLine(p.Report))
+			d.Terminal = true
+		case found && sameReport(current.Report, p.Report):
+			d.Action, d.Why = writeDone, "origin's report already says the same"
+		case at != p.Old:
+			stopped(&d, true, "origin's report moved to %s since this one was built on %s; a report of what did happen is built in its place", short(at), orNone(p.Old))
+		case !rd.have(p.Commit):
+			stopped(&d, true, "the scratch repository no longer holds the report commit %s; a report of what did happen is built in its place", short(p.Commit))
+		case branches.Action != writeDone:
+			stopped(&d, true, "origin no longer shows the family's branch push: %s", branches.Why)
+		case says != "":
+			stopped(&d, true, "%s; a report of what did happen is built in its place", says)
+		default:
+			d.Action, d.Why = writeFinish, "origin's report is still the one it was built on, and this one says what did happen"
 		}
 		out = append(out, d)
 	}

@@ -1,13 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -419,6 +422,226 @@ func TestARequestBetweenPhasesPausesTheVersions(t *testing.T) {
 	}
 	f.restackedTo(idA, "alice", "A's title", "a", fam.Branches.Updates[0].New)
 	r.settledState()
+}
+
+// A report of what did happen is kept in the journal before it is pushed,
+// and stays there until a read of origin shows it. Here an owner moves a
+// restacked branch, so the version above stops and the family's reports
+// say partial. When origin refuses the push of one of them, the pass
+// leaves the journal open with that report in it, and the next pass
+// pushes it. When origin takes the push and its answer is lost, the next
+// read finds it there, and it is not pushed again.
+func TestAReportOfWhatHappenedOutlivesAFailedPush(t *testing.T) {
+	for _, failure := range []string{"refused", "answer lost"} {
+		t.Run(failure, func(t *testing.T) {
+			f := hooked(t)
+			f.readyAs(idA, "alice", "a", "main", "A's title")
+			f.readyAs(idB, "bob", "b", "a", "B's title")
+			f.moveMain()
+			t.Setenv("VALLEY_PRINCIPAL", "restacker")
+			r := newRestacker(t, f)
+			fam := of(t, r.journal(), idA)
+			if push, _ := fam.Branches.Push(context.Background(), r.g); push != rebase.Pushed {
+				t.Fatal("the branches were not pushed")
+			}
+			f.ownerPushes("b")
+			ref := rebase.RestackPrefix + idB
+			lift := func() {}
+			if failure == "refused" {
+				lift = f.refuseOnOrigin(ref)
+			} else {
+				r.loseAnswers(ref)
+			}
+
+			p := r.pass(64)
+			var pushes []string
+			for _, a := range p.Actions {
+				if a.Write == "replacement" && a.ID == idB {
+					pushes = append(pushes, a.Result)
+				}
+			}
+			if failure == "answer lost" {
+				if strings.Join(pushes, " ") != "unknown" {
+					t.Errorf("b's report of what happened was pushed as %v, where once, its answer lost, is expected", pushes)
+				}
+				if !partialOf(f, idB) {
+					t.Error("no report of b on origin says partial")
+				}
+				r.settledState()
+				return
+			}
+			if len(pushes) == 0 || strings.Trim(strings.Join(pushes, " "), "refused ") != "" {
+				t.Errorf("b's report of what happened was pushed as %v", pushes)
+			}
+			if f.reportOf(idB) != nil {
+				t.Fatal("origin holds a report of b it refused")
+			}
+			j, err := loadJournal(r.c.state, r.c.binding())
+			if err != nil || j == nil || p.Pending == nil {
+				t.Fatalf("the pass let go of the journal that holds b's report: %v", err)
+			}
+			kept := false
+			for _, rep := range of(t, j, idA).Replacements {
+				kept = kept || rep.Pending.ID == idB && rep.Pending.Report.Result == change.RestackPartial
+			}
+			if !kept {
+				t.Fatalf("the journal does not hold b's report of what happened: %+v", of(t, j, idA).Replacements)
+			}
+
+			lift()
+			r.pass(64)
+			if !partialOf(f, idB) {
+				t.Error("no report of b on origin says partial once origin takes it")
+			}
+			r.settledState()
+		})
+	}
+}
+
+// partialOf reports whether the change's latest report on origin, or one
+// before it, says partial: a's version added, the change's own not, since
+// its author moved it. A later plan in the same pass may report on the
+// change again.
+func partialOf(f *fixture, id string) bool {
+	f.t.Helper()
+	for commit := f.at(rebase.RestackPrefix + id); commit != ""; commit = f.parentOf(commit) {
+		rep := f.reportAt(commit)
+		if rep.Result != change.RestackPartial || rep.Refusal == nil || !strings.Contains(*rep.Refusal, "its author moved it") {
+			continue
+		}
+		for _, l := range rep.Layers {
+			if l.Published == nil || (l.ChangeID == idA) != (l.Published.Version != nil) {
+				f.t.Errorf("the partial report of %s does not say what was published: %+v", id[:4], l)
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// refuseOnOrigin has origin refuse every push that moves the ref, ahead
+// of its own hook, until the function it returns is called.
+func (f *fixture) refuseOnOrigin(ref string) (lift func()) {
+	f.t.Helper()
+	hook := filepath.Join(f.origin, "hooks", "pre-receive")
+	own := hook + ".own"
+	if err := os.Rename(hook, own); err != nil {
+		f.t.Fatal(err)
+	}
+	script := fmt.Sprintf("#!/bin/sh\nlines=$(cat)\n"+
+		"if printf '%%s\\n' \"$lines\" | grep -q ' %s$'; then echo 'origin refuses %s for the test' >&2; exit 1; fi\n"+
+		"printf '%%s\\n' \"$lines\" | exec '%s'\n", ref, ref, own)
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		f.t.Fatal(err)
+	}
+	return func() {
+		if err := os.Rename(own, hook); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+}
+
+// dropEnv names the ref whose pushes lossyReceivePack loses the answer to.
+const dropEnv = "RESTACK_TEST_DROP"
+
+// loseAnswers has origin's answer lost to every push of the restacker's
+// that moves the ref: origin takes the push, and the pass hears nothing.
+func (r *restacker) loseAnswers(ref string) {
+	r.t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	path := filepath.Join(r.t.TempDir(), "lossy-receive-pack")
+	script := fmt.Sprintf("#!/bin/sh\n%s=drop-acks %s='%s' exec '%s' \"$@\"\n", roleEnv, dropEnv, ref, self)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		r.t.Fatal(err)
+	}
+	gitOutT(r.t, r.g, "config", "remote.origin.receivepack", path)
+}
+
+// lossyReceivePack is git receive-pack less its answer to a push that
+// moves the ref named. It runs the real receive-pack, which takes the
+// push, and passes its report on without the status of any ref when one
+// of them is that ref, as when origin's answer is lost. The side-band
+// capabilities are taken out of its advertisement, so the report comes as
+// plain pkt-lines. The rebase engine's tests drop every answer the same
+// way.
+func lossyReceivePack(ref string, args []string) int {
+	cmd := exec.Command("git", append([]string{"receive-pack"}, args...)...)
+	cmd.Stdin, cmd.Stderr = os.Stdin, os.Stderr
+	out, err := cmd.StdoutPipe()
+	if err != nil || cmd.Start() != nil {
+		return 1
+	}
+	r := bufio.NewReader(out)
+	advertised := false
+	var status [][]byte
+	for {
+		p, err := readPkt(r)
+		if err != nil {
+			break
+		}
+		switch {
+		case !advertised && p == nil:
+			advertised = true
+		case !advertised:
+			if refs, caps, ok := bytes.Cut(p, []byte{0}); ok {
+				var kept []string
+				for _, c := range strings.Fields(string(caps)) {
+					if !strings.HasPrefix(c, "side-band") {
+						kept = append(kept, c)
+					}
+				}
+				p = []byte(string(refs) + "\x00" + strings.Join(kept, " ") + "\n")
+			}
+		case bytes.HasPrefix(p, []byte("ok ")) || bytes.HasPrefix(p, []byte("ng ")) || bytes.HasPrefix(p, []byte("option ")):
+			status = append(status, p)
+			continue
+		case p == nil:
+			lost := false
+			for _, line := range status {
+				if fields := strings.Fields(string(line)); len(fields) > 1 && fields[1] == ref {
+					lost = true
+				}
+			}
+			for _, line := range status {
+				if !lost {
+					writePkt(line)
+				}
+			}
+			status = nil
+		}
+		writePkt(p)
+	}
+	if cmd.Wait() != nil {
+		return 1
+	}
+	return 0
+}
+
+// readPkt reads one pkt-line, nil for a flush.
+func readPkt(r *bufio.Reader) ([]byte, error) {
+	var size [4]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return nil, err
+	}
+	n, err := strconv.ParseUint(string(size[:]), 16, 16)
+	if err != nil || n < 4 {
+		return nil, err
+	}
+	p := make([]byte, n-4)
+	_, err = io.ReadFull(r, p)
+	return p, err
+}
+
+// writePkt writes one pkt-line to stdout, nil as a flush.
+func writePkt(p []byte) {
+	if p == nil {
+		io.WriteString(os.Stdout, "0000")
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%04x%s", len(p)+4, p)
 }
 
 // The project's cap on automatic versions holds: with a cap of 1, the

@@ -96,8 +96,7 @@ func newOperation(now time.Time) string {
 // when its context is done.
 func build(ctx context.Context, g rebase.Git, s *rebase.Snapshot, p *Plan, b binding, op string) (*built, error) {
 	out := &built{journal: &Journal{
-		Schema: journalSchema, Repository: b.Repository, Target: b.Target, Principal: b.Principal,
-		Operation: op, Tip: p.Tip, Evidence: p.Evidence, Families: []JournalFamily{},
+		Schema: journalSchema, Repository: b.Repository, Target: b.Target, Principal: b.Principal, Families: []JournalFamily{},
 	}}
 	for i := range p.Families {
 		fp := &p.Families[i]
@@ -121,6 +120,7 @@ func build(ctx context.Context, g rebase.Git, s *rebase.Snapshot, p *Plan, b bin
 		}
 		fp.Writes = w
 		if jf.Branches != nil || len(jf.Reports) > 0 {
+			jf.Operation, jf.Tip, jf.Evidence = op, p.Tip, p.Evidence
 			out.journal.Families = append(out.journal.Families, *jf)
 		}
 	}
@@ -148,7 +148,7 @@ func reportedConflict(s *rebase.Snapshot, f *rebase.Family) bool {
 // family builds one family's writes.
 func (out *built) family(ctx context.Context, g rebase.Git, s *rebase.Snapshot, f *rebase.Family, fp FamilyPlan, principal, op string) (*JournalFamily, *Writes, error) {
 	o := observe(f, fp)
-	jf := &JournalFamily{Versions: []*rebase.PendingVersion{}, Reports: []JournalReport{}}
+	jf := &JournalFamily{Versions: []*rebase.PendingVersion{}, Reports: []JournalReport{}, Replacements: []JournalReport{}}
 	published := map[string]*change.RestackPublished{}
 	switch fp.Action {
 	case hold:

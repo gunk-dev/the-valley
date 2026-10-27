@@ -724,10 +724,7 @@ func writeOnce(ctx context.Context, g rebase.Git, c config) (*Plan, error) {
 		actions, found = st.actions, st.last
 		found.Journal = path
 		if !st.closed {
-			return &Plan{
-				Target: rebase.Target, Tip: j.Tip, Evidence: j.Evidence, Operation: j.Operation,
-				Recovery: found, Pending: found, Actions: actions, Families: []FamilyPlan{},
-			}, nil
+			return &Plan{Target: rebase.Target, Recovery: found, Pending: found, Actions: actions, Families: []FamilyPlan{}}, nil
 		}
 	}
 	s, p, err := planned(ctx, g, c)
@@ -968,7 +965,7 @@ func printPublished(w io.Writer, p *Plan) {
 		fmt.Fprintln(w)
 	}
 	if r := p.Pending; r != nil {
-		fmt.Fprintf(w, "the journal of operation %s stays open, so this pass starts no new operation:\n", r.Operation)
+		fmt.Fprintln(w, "the journal stays open, so this pass starts no new operation:")
 		for _, d := range r.Decisions {
 			if d.settled() {
 				continue
@@ -977,7 +974,7 @@ func printPublished(w io.Writer, p *Plan) {
 			if d.ID != "" {
 				what += " " + d.ID
 			}
-			fmt.Fprintf(w, "  family %d %s: %s: %s\n", d.Family, what, d.Action, d.Why)
+			fmt.Fprintf(w, "  operation %s, family %d %s: %s: %s\n", d.Operation, d.Family, what, d.Action, d.Why)
 		}
 	}
 }
@@ -1020,7 +1017,7 @@ func printRecovery(w io.Writer, r *Recovery) {
 	if !r.Settled {
 		state = "not settled"
 	}
-	fmt.Fprintf(w, "recovery: %s, operation %s, %s\n", r.Journal, r.Operation, state)
+	fmt.Fprintf(w, "recovery: %s, %s\n", r.Journal, state)
 	for _, d := range r.Decisions {
 		what := d.Write
 		if d.ID != "" {
@@ -1033,6 +1030,6 @@ func printRecovery(w io.Writer, r *Recovery) {
 		case d.Final:
 			action += " (final)"
 		}
-		fmt.Fprintf(w, "  family %d %s: %s: %s\n", d.Family, what, action, d.Why)
+		fmt.Fprintf(w, "  operation %s, family %d %s: %s: %s\n", d.Operation, d.Family, what, action, d.Why)
 	}
 }

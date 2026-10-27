@@ -185,11 +185,15 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		log: logger, slots: make(chan struct{}, maxRequests),
 	}
 	srv := &http.Server{
-		Handler:           rv,
-		ReadHeaderTimeout: headerTimeout,
-		IdleTimeout:       idleTimeout,
-		MaxHeaderBytes:    16 << 10,
-		ErrorLog:          logger,
+		Handler: rv,
+		// The server's own handler for OPTIONS * reads the body before
+		// any check, with no deadline. Every request goes to rv instead,
+		// which refuses one without the token before it reads anything.
+		DisableGeneralOptionsHandler: true,
+		ReadHeaderTimeout:            headerTimeout,
+		IdleTimeout:                  idleTimeout,
+		MaxHeaderBytes:               16 << 10,
+		ErrorLog:                     logger,
 	}
 	fmt.Fprintf(stderr, "valley-web-receive: listening on %s\n", ln.Addr())
 	served := make(chan error, 1)
@@ -213,24 +217,39 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 }
 
 // limitListener accepts at most n connections at once. Accept waits for
-// one to close before it takes another.
+// one to close before it takes another, or for the listener to be closed.
 func limitListener(ln net.Listener, n int) net.Listener {
-	return &limited{Listener: ln, slots: make(chan struct{}, n)}
+	return &limited{Listener: ln, slots: make(chan struct{}, n), closed: make(chan struct{})}
 }
 
 type limited struct {
 	net.Listener
-	slots chan struct{}
+	slots  chan struct{}
+	closed chan struct{}
+	once   sync.Once
 }
 
+// Accept returns net.ErrClosed once the listener is closed, even while it
+// waits for a slot. Server.Shutdown and Server.Close wait for Accept to
+// return, so a wait that closing the listener did not end would hold up
+// the stop for as long as every connection stayed open.
 func (l *limited) Accept() (net.Conn, error) {
-	l.slots <- struct{}{}
+	select {
+	case l.slots <- struct{}{}:
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
 	c, err := l.Listener.Accept()
 	if err != nil {
 		<-l.slots
 		return nil, err
 	}
 	return &limitedConn{Conn: c, release: sync.OnceFunc(func() { <-l.slots })}, nil
+}
+
+func (l *limited) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return l.Listener.Close()
 }
 
 type limitedConn struct {

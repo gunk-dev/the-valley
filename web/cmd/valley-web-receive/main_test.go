@@ -699,6 +699,11 @@ func TestAnOversizedUploadIsRefused(t *testing.T) {
 // serving every page. A request without the token is still refused as
 // unauthenticated, taking no slot. Once the stalled requests go away, the
 // receiver takes uploads again.
+//
+// Then every connection the receiver takes is held by a client that sends
+// part of a request's headers and stops. valley-web keeps serving. A body
+// sent meanwhile waits in the listen queue until the header timeout closes
+// those connections, and no longer.
 func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 	e := newEdge(t, exporttest.New(t))
 	e.upload()
@@ -729,9 +734,54 @@ func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 		return err == nil && status == http.StatusNotFound
 	})
 
+	for range maxConns {
+		fmt.Fprintf(e.dial(), "PUT %s HTTP/1.1\r\nHost: %s\r\n", probe, e.addr)
+	}
+	began := time.Now()
+	e.serves(web)
 	e.put(m, export.ExportFile)
+	if took := time.Since(began); took < headerTimeout/2 || took > headerTimeout+5*time.Second {
+		t.Errorf("a body sent behind a connection on every slot was answered after %v, want about the header timeout, %v", took, headerTimeout)
+	}
 	e.commit(m)
 	e.serves(web)
+}
+
+// OPTIONS * is the receiver's to answer, as any other request is: refused
+// as unauthenticated without the token, and 404 with it. Either is
+// answered at once, without reading the body it declares, and its
+// connection is closed. So OPTIONS * requests that withhold their bodies,
+// one on every connection the receiver takes, hold none of them, and an
+// upload goes through.
+func TestOptionsStarHoldsNoConnection(t *testing.T) {
+	e := newEdge(t, exporttest.New(t))
+	conns := make([]net.Conn, maxConns)
+	for i := range conns {
+		auth := ""
+		if i%2 == 1 {
+			auth = "Authorization: " + export.Authorization(token) + "\r\n"
+		}
+		conns[i] = e.dial()
+		fmt.Fprintf(conns[i], "OPTIONS * HTTP/1.1\r\nHost: %s\r\n%sContent-Length: 1\r\n\r\n", e.addr, auth)
+	}
+	e.upload()
+	for i, c := range conns {
+		c.SetReadDeadline(time.Now().Add(requestTimeout))
+		res, err := http.ReadResponse(bufio.NewReader(c), nil)
+		if err != nil {
+			t.Fatalf("OPTIONS * on connection %d was not answered: %v", i, err)
+		}
+		reply, _ := io.ReadAll(res.Body)
+		res.Body.Close()
+		if i%2 == 0 {
+			refused(t, "OPTIONS * with no token", res.StatusCode, reply, export.CodeUnauthenticated)
+		} else if res.StatusCode != http.StatusNotFound {
+			t.Errorf("OPTIONS * with the token was answered %d, want 404", res.StatusCode)
+		}
+		if !res.Close {
+			t.Errorf("the receiver kept the connection of OPTIONS * open")
+		}
+	}
 }
 
 // waitFor polls done until it reports true, and fails the test unless it
@@ -753,9 +803,19 @@ func waitFor(t *testing.T, what string, done func(ctx context.Context) bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// The receiver stops cleanly on SIGTERM.
+// The receiver stops on SIGTERM within its stop timeout, even with every
+// connection it takes held: four by manifests stalled part way, which
+// hold every request slot, and the rest by idle connections. A further
+// connection waits in the listen queue.
 func TestStopsOnSIGTERM(t *testing.T) {
 	e := newEdge(t, exporttest.New(t))
+	for range maxConns - maxRequests {
+		e.idle()
+	}
+	signed, _ := e.signedNow()
+	e.stallAll(signed)
+	fmt.Fprintf(e.dial(), "OPTIONS * HTTP/1.1\r\nHost: %s\r\nContent-Length: 1\r\n\r\n", e.addr)
+	began := time.Now()
 	if err := e.proc.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -766,6 +826,9 @@ func TestStopsOnSIGTERM(t *testing.T) {
 	}
 	if e.proc.err != nil {
 		t.Errorf("valley-web-receive stopped with %v", e.proc.err)
+	}
+	if took := time.Since(began); took > stopTimeout+5*time.Second {
+		t.Errorf("valley-web-receive took %v to stop, past its stop timeout of %v", took, stopTimeout)
 	}
 }
 

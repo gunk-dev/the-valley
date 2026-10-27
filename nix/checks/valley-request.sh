@@ -2221,6 +2221,28 @@ said unreached-2 "$line: published $unreachedref"
 built nothing
 pushed "$unreachedref"
 [ "$(git -C "$served" rev-parse "$unreachedref")" = "$storedobject" ]
+# A tag in the cache clone named like the ref the worker stores a
+# change's evidence at, while that ref is missing. The worker reads its
+# own ref by that exact name, so it does not take the tag for evidence an
+# earlier pass stored: it builds the change and publishes what attest
+# stored.
+readied tagged docs/readme.md
+taggedref="refs/the-valley/attestations/$(attest digest --rev tagged | cut -d: -f2)/$workerhash"
+git -C "$cache" update-ref "refs/tags/$taggedref" "$storedobject"
+fresh
+working tagged VALLEY_NOW=2026-10-23T09:02:00Z && taggedpass=0 || taggedpass=$?
+if grep -qF "an earlier pass stored $taggedref" "$r/tagged.log"; then
+  echo "valley-request: the worker took a tag named like its own ref for evidence an earlier pass stored" >&2
+  cat "$r/tagged.log" >&2
+  exit 1
+fi
+if [ "$taggedpass" != 0 ]; then
+  echo "valley-request: the pass with a tag named like the worker's own ref exited $taggedpass" >&2
+  cat "$r/tagged.log" >&2
+  exit 1
+fi
+said tagged "$line: published $taggedref"
+pushed "$taggedref"
 
 # 21e. A head superseded while it is built. A stand-in hook readies a new
 #      version of the change in the middle of the batch. The pass does not
@@ -2523,6 +2545,147 @@ if [ "$worktrees" != 1 ]; then
   git worktree list >&2
   exit 1
 fi
+
+# ----------------------------------------------------------------------
+# 22. approve reads each ref by its exact name. Given a ref name that is
+#     missing, git goes on to try other names for it, refs/tags/<name>
+#     and refs/heads/<name> among them. ls-remote and fetch take a ref
+#     whose name ends in the one asked for. Any pusher can make such a
+#     ref, and a fetch brings a tag along with the commits it names. Each
+#     case leaves a ref missing, makes the ref git would take for it, and
+#     shows that approve treats the ref as missing. Every branch here
+#     touches quiet/ alone, so nothing is required and no key is needed.
+#     The refs are read here with show-ref, which reads that exact name.
+lookorigin="$TMPDIR/lookalike.git"
+git init --quiet --bare "$lookorigin"
+look="$TMPDIR/lookalike"
+git init --quiet "$look"
+cd "$look" || exit 1
+git remote add origin "$lookorigin"
+mkdir -p docs policy
+echo "the readme" > docs/readme.md
+echo "$valley" > policy/valley
+git add -A
+git commit --quiet -m base
+git push --quiet origin main
+lookbase="$(git rev-parse main)"
+quiet_branch() {
+  git checkout --quiet -b "topic/$1" "$2"
+  mkdir -p quiet
+  echo "a quiet note for $1" > quiet/note.md
+  git add -A
+  git commit --quiet -m "a quiet note for $1"
+  git push --quiet origin "topic/$1"
+  git checkout --quiet main
+}
+# The request ref approve filed on lookorigin, or nothing.
+filed() {
+  git -C "$lookorigin" show-ref --verify --hash \
+    "refs/the-valley/integration-requests/main/topic-$1" 2> /dev/null || true
+}
+
+# A request ref that is missing, with a branch on origin named like it at
+# the head approved. Read through that branch, the request would already
+# stand at this head, and approve would report success and file nothing.
+# git push matches its destination the same way, so a push to the
+# request ref would write that branch, and approve refuses to push at
+# all while it stands. Once it is deleted, approve files the request.
+quiet_branch lookalike main
+lookhead="$(git rev-parse topic/lookalike)"
+lookref=refs/heads/refs/the-valley/integration-requests/main/topic-lookalike
+git -C "$lookorigin" update-ref "$lookref" "$lookhead"
+if env -u VALLEY_ATTEST_KEY valley approve origin/topic/lookalike < /dev/null \
+  > "$w/lookalike.out" 2> "$w/lookalike.err"; then
+  echo "valley-request: approve reported success with a branch named like the request it files" >&2
+  cat "$w/lookalike.out" >&2
+  exit 1
+fi
+grep -qF "origin holds $lookref, whose name ends in the name of a ref this approval pushes" "$w/lookalike.err"
+[ -z "$(filed lookalike)" ] || {
+  echo "valley-request: approve filed a request past a branch named like it" >&2
+  exit 1
+}
+git -C "$lookorigin" update-ref -d "$lookref"
+env -u VALLEY_ATTEST_KEY valley approve origin/topic/lookalike < /dev/null \
+  > "$w/lookalike-again.out" 2> "$w/lookalike-again.err"
+if [ "$(filed lookalike)" != "$lookhead" ]; then
+  echo "valley-request: with the branch named like it gone, approve filed no request" >&2
+  cat "$w/lookalike-again.out" "$w/lookalike-again.err" >&2
+  exit 1
+fi
+
+# A branch that is not on origin, with a tag origin carries named like its
+# remote-tracking ref. The fetch brings the tag, and read through it the
+# branch would be approved at the tag's commit.
+git -C "$lookorigin" update-ref refs/tags/refs/remotes/origin/topic/gone "$lookhead"
+if env -u VALLEY_ATTEST_KEY valley approve origin/topic/gone < /dev/null \
+  > "$w/gone.out" 2> "$w/gone.err"; then
+  echo "valley-request: approve filed a branch origin does not have, at a tag named like it" >&2
+  exit 1
+fi
+# The verb refuses it itself, before approve reads the branch again.
+grep -qx 'valley: no such branch on origin: topic/gone' "$w/gone.err"
+git show-ref --verify --quiet refs/tags/refs/remotes/origin/topic/gone || {
+  echo "valley-request: the fetch did not bring the tag, so nothing was tested" >&2
+  exit 1
+}
+[ -z "$(filed gone)" ] || {
+  echo "valley-request: approve filed a request for a branch origin does not have" >&2
+  exit 1
+}
+if valley review topic/gone < /dev/null > "$w/gone-review.out" 2> "$w/gone-review.err"; then
+  echo "valley-request: review went on with a branch origin does not have" >&2
+  exit 1
+fi
+# review refuses it before it reads the stack, and says nothing else.
+if [ "$(cat "$w/gone-review.err")" != 'valley: no such branch on origin: topic/gone' ]; then
+  echo "valley-request: review read a branch origin does not have before refusing it:" >&2
+  cat "$w/gone-review.err" >&2
+  exit 1
+fi
+
+# An owning valley with no main, and a branch on it named
+# refs/heads/main, which git stores as refs/heads/refs/heads/main. Fetched
+# through that branch, the floor would come from it.
+lookvalley="$TMPDIR/lookalike-valley.git"
+git init --quiet --bare "$lookvalley"
+git -C "$valleywork" push --quiet "$lookvalley" main:refs/heads/refs/heads/main
+echo "$lookvalley" > policy/valley
+git commit --quiet -am "a valley with no main"
+git push --quiet origin main
+quiet_branch floorless main
+if env -u VALLEY_ATTEST_KEY valley approve origin/topic/floorless < /dev/null \
+  > "$w/floorless.out" 2> "$w/floorless.err"; then
+  echo "valley-request: approve read a floor from a valley with no main" >&2
+  exit 1
+fi
+grep -qF "the owning valley $lookvalley has no refs/heads/main" "$w/floorless.err"
+[ -z "$(filed floorless)" ] || {
+  echo "valley-request: approve filed a request under a valley with no main" >&2
+  exit 1
+}
+
+# origin with no main, and a tag origin carries named like main's
+# remote-tracking ref, at a commit whose floor requires nothing of this
+# branch. Read through the tag, approve would derive the policy from it
+# and file the request.
+quiet_branch mainless "$lookbase"
+git -C "$lookorigin" update-ref refs/tags/refs/remotes/origin/main "$lookbase"
+git -C "$lookorigin" update-ref -d refs/heads/main
+if env -u VALLEY_ATTEST_KEY valley approve origin/topic/mainless < /dev/null \
+  > "$w/mainless.out" 2> "$w/mainless.err"; then
+  echo "valley-request: approve filed a request while origin has no main" >&2
+  exit 1
+fi
+grep -q 'origin has no main to approve onto; nothing published' "$w/mainless.err"
+git show-ref --verify --quiet refs/tags/refs/remotes/origin/main || {
+  echo "valley-request: the fetch did not bring the tag, so nothing was tested" >&2
+  exit 1
+}
+[ -z "$(filed mainless)" ] || {
+  echo "valley-request: approve filed a request while origin has no main" >&2
+  exit 1
+}
 cd "$repo" || exit 1
 
 # ----------------------------------------------------------------------

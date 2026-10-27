@@ -149,3 +149,65 @@ func TestAMissingPublicationIsWritten(t *testing.T) {
 		t.Fatalf("no publication at %s (%v)", signersRef, err)
 	}
 }
+
+// Evidence is read through the objects its refs held when they were
+// listed. A ref deleted after the listing is read as it was listed, never
+// through a branch named like it.
+func TestEvidenceDeletedAfterListingIsReadAsListed(t *testing.T) {
+	s := newScratchRepo(t)
+	head := s.git("rev-parse", "HEAD")
+	subject := strings.Repeat("ab", 32)
+	ref := attestationPrefix + "/" + subject + "/" + strings.Repeat("cd", 32)
+	noteTree := func(note string) string {
+		blob := s.input(note, "hash-object", "-w", "--stdin")
+		dir := s.input("100644 blob "+blob+"\t"+statementNote+"\n", "mktree")
+		return s.input("040000 tree "+dir+"\ttree-ok\n", "mktree")
+	}
+	listed := "predicate.check.name tree-ok\npredicate.result pass\n\nthe listed signature\n"
+	planted := "predicate.check.name tree-ok\npredicate.result pass\n\nthe planted signature\n"
+	s.git("update-ref", ref, noteTree(listed))
+	plantedCommit := s.git("commit-tree", noteTree(planted), "-m", "planted")
+
+	// attest is not under test: every note reads as signed by nobody the
+	// verifier holds, and collectEvidence returns it as read.
+	attest := filepath.Join(t.TempDir(), "attest")
+	if err := os.WriteFile(attest, []byte("#!/bin/sh\necho 'attest: "+unknownSigner+"'\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	in := &integrator{repo: s.repo, attest: attest, evidenceListed: func() {
+		s.git("update-ref", "-d", ref)
+		s.git("update-ref", "refs/heads/"+ref, plantedCommit)
+	}}
+	_, notes, err := in.collectEvidence(&worktree{repo: s.repo, dir: s.repo}, head, subject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(notes["tree-ok"]); got != listed {
+		t.Fatalf("with %s deleted after it was listed, and refs/heads/%s planted, the note read is %q", ref, ref, got)
+	}
+}
+
+// A request that is gone when the integrator consumes it did not move,
+// whatever a branch named like it holds, and the landing says it was not
+// consumed.
+func TestAGoneRequestDidNotMove(t *testing.T) {
+	s := newScratchRepo(t)
+	head := s.git("rev-parse", "HEAD")
+	other := s.commit("other", head)
+	ref := requestPrefix + "/main/topic"
+	s.git("update-ref", "refs/heads/"+ref, other)
+
+	out, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	in := &integrator{repo: s.repo, out: out}
+	why := in.consume(request{ref: ref, change: "topic", target: "refs/heads/main", head: head})
+	said, err := os.ReadFile(out.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(why, "the request ref "+ref+" was not consumed") || strings.Contains(string(said), "moved") {
+		t.Fatalf("with %s gone and refs/heads/%s planted, consuming it said %q and returned %q", ref, ref, said, why)
+	}
+}

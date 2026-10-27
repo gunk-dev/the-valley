@@ -992,6 +992,25 @@ fetch_origin() {
   git fetch --prune --quiet origin
 }
 
+# ref_oid <ref>: the object ID that ref, a full ref name, holds here, read
+# by that exact name with show-ref. 1 no such ref, 2 a read that failed.
+#
+# git rev-parse, and every git command given a ref name, does not stop at
+# the name it is given. For a missing refs/remotes/origin/main it goes on
+# to try other names, refs/tags/refs/remotes/origin/main and
+# refs/heads/refs/remotes/origin/main among them, and a fetch can bring the
+# first from origin. So a ref is read here once, and what it held is read
+# through the object ID from then on.
+ref_oid() {
+  local rc
+  git show-ref --exists --end-of-options "$1" 2> /dev/null && rc=0 || rc=$?
+  case "$rc" in
+    0) git show-ref --verify --hash --end-of-options "$1" || return 2 ;;
+    2) return 1 ;;
+    *) return 2 ;;
+  esac
+}
+
 # Resolve the pager as git would for a diff: pager.diff first (per-command
 # pager configs — e.g. home-manager's delta module — set pager.diff and leave
 # core.pager alone), then git var GIT_PAGER (core.pager, GIT_PAGER, PAGER,
@@ -1286,7 +1305,7 @@ compare_shown() {
   COMPARE_KIND=none
   : > "$REVIEW_TMP/compare"
   [ -n "$1" ] || return 0
-  if ! tip="$(git rev-parse --verify --quiet refs/remotes/origin/main)" \
+  if ! tip="$(ref_oid refs/remotes/origin/main)" \
     || ! valley-go compare --tip "$tip" "$1" "$2" "$3" > "$out"; then
     printf 'valley: warning: could not compare v%s of change %s with its approved version; reviewing it in full\n' \
       "$2" "$1" >&2
@@ -1376,19 +1395,21 @@ does_of() {
 }
 
 # full_diff <branch> <head>: the whole diff of a change alone: its log
-# and its diff against origin/main.
+# and its diff against origin/main. main is read by its exact name, since
+# git would take a tag named origin/main for it.
 full_diff() {
-  local sha
+  local sha tip
   sha="$(git rev-parse --short "$2")"
+  tip="$(ref_oid refs/remotes/origin/main)" || return 1
   if [ -n "$CHANGE_HEAD" ]; then
     printf 'change %s v%s at %s, on branch %s, log against origin/main:\n\n' \
       "$CHANGE_HANDLE" "$CHANGE_VERSION" "$sha" "$1"
   else
     printf 'branch %s, log against origin/main:\n\n' "$1"
   fi
-  git --no-pager log --oneline "origin/main..$2"
+  git --no-pager log --oneline "$tip..$2"
   printf '\n'
-  git --no-pager diff "origin/main...$2"
+  git --no-pager diff "$tip...$2"
 }
 
 # show_review <branch>: show a change alone. A change that is not ready
@@ -1536,11 +1557,29 @@ subject_of() {
 # The value of a ref on origin, as one id or the empty string. Failing to
 # read it is not the same as reading that it is absent, so the two are
 # separate answers: this returns 1 for a read that did not happen.
+# ls-remote matches a pattern against the tail of a ref name, so with the
+# ref absent a pushed refs/heads/<ref> would match it. Only the line
+# naming the ref itself is read.
 remote_ref() {
   local out
   out="$(git ls-remote origin "$1" 2>/dev/null)" || return 1
-  printf '%s' "$out" | cut -f1
-  return 0
+  printf '%s\n' "$out" | awk -v r="$1" '$2 == r { print $1 }'
+}
+
+# push_lookalike <ref>...: a ref origin holds whose name ends in one of
+# these, other than the ref itself, printed, or nothing. git push matches
+# a destination as rev-parse matches a name. With <ref> missing on origin,
+# a push to <ref> writes refs/heads/<ref> instead, and with both there it
+# is refused as ambiguous. So no push to these refs is made while origin
+# holds such a ref. Fails for a read that did not happen.
+push_lookalike() {
+  local out ref
+  local -a patterns=()
+  for ref in "$@"; do patterns+=("$ref" "$ref/HEAD"); done
+  out="$(git ls-remote origin "${patterns[@]}" 2>/dev/null)" || return 1
+  printf '%s\n' "$out" | awk -v refs="$*" '
+    BEGIN { n = split(refs, r, " "); for (i = 1; i <= n; i++) exact[r[i]] = 1 }
+    $2 != "" && !($2 in exact) { print $2; exit }'
 }
 
 # Where the checks this run signed are stored, for every failure that
@@ -1608,7 +1647,17 @@ approve() {
     refuse "not a git repository; nothing published"
     return 1
   }
-  tip=refs/remotes/origin/main
+  # main's tip as the fetch left it, read once by its exact name. The
+  # merge base, the fast-forward and both policy layers are read at that
+  # one commit.
+  tip="$(ref_oid refs/remotes/origin/main)" || {
+    if [ $? -eq 1 ]; then
+      refuse "origin has no main to approve onto; nothing published"
+    else
+      refuse "could not read origin/main; nothing published"
+    fi
+    return 1
+  }
   # A change with a record is filed at exactly the head bound to this
   # approval, under its own request name, c-<change ID>, and only while its
   # record says it is ready and lists that head as a version's. Where its
@@ -1630,7 +1679,7 @@ approve() {
     change="$(change_name "$branch")"
     what="$branch"
   else
-    head="$(git rev-parse "refs/remotes/origin/$branch")" || {
+    head="$(ref_oid "refs/remotes/origin/$branch")" || {
       refuse "no such branch on origin: $branch; nothing published"
       return 1
     }
@@ -1682,8 +1731,8 @@ approve() {
   # integrator will derive, from whatever branch the operator happens to be
   # on. It is printed for exactly that reason.
   policy_defaults "$root"
-  resolve_instance_layer "$root" "$tip" || return 1
-  resolve_project_layer "$root" "$tip" || return 1
+  resolve_instance_layer "$root" refs/remotes/origin/main "$tip" || return 1
+  resolve_project_layer "$root" refs/remotes/origin/main "$tip" || return 1
   derive_required "$POLICY_SCHEMA" "$POLICY_INSTANCE" "$POLICY_PROJECT" \
     "$base" "$head" || return 1
   sort_into required "${!DERIVED_REQUIRED[@]}" || {
@@ -1834,9 +1883,19 @@ approve() {
   # request ref may already exist, and what to do about it depends on
   # where it points. A read that does not happen is not a read that found
   # nothing, so it ends the verb here.
-  local pending
-  if ! pending="$(remote_ref "$ref")"; then
+  #
+  # A ref on origin whose name ends in the request's, or in an evidence
+  # ref's, would take the push in its place (push_lookalike). So it is
+  # refused here, and nothing is pushed while it stands.
+  local pending lookalike
+  if ! pending="$(remote_ref "$ref")" \
+    || ! lookalike="$(push_lookalike "$ref" ${evidence[@]+"${evidence[@]}"})"; then
     refuse "could not read $ref from origin; nothing published"
+    report_local_evidence ${evidence[@]+"${evidence[@]}"}
+    return 1
+  fi
+  if [ -n "$lookalike" ]; then
+    refuse "origin holds $lookalike, whose name ends in the name of a ref this approval pushes. git would push to $lookalike in that ref's place, or refuse the push as ambiguous. Nothing published; $lookalike has to be deleted on origin before this change can be filed"
     report_local_evidence ${evidence[@]+"${evidence[@]}"}
     return 1
   fi
@@ -2085,8 +2144,16 @@ change_head() {
   if [ -n "$CHANGE_HEAD" ]; then
     printf '%s\n' "$CHANGE_HEAD"
   else
-    git rev-parse "refs/remotes/origin/$1"
+    ref_oid "refs/remotes/origin/$1"
   fi
+}
+
+# fast_forwards <commit>: whether the commit fast-forwards from main's tip
+# as the fetch left it. A main that cannot be read is not one it
+# fast-forwards from.
+fast_forwards() {
+  local tip
+  tip="$(ref_oid refs/remotes/origin/main)" && git merge-base --is-ancestor "$tip" "$1"
 }
 
 # For a change with a record, refuse unless the branch's tip on origin is
@@ -2098,7 +2165,7 @@ change_head() {
 check_recorded_tip() {
   local branch="$1" undone="$2" tip
   [ -n "$CHANGE_HEAD" ] || return 0
-  tip="$(git rev-parse "refs/remotes/origin/$branch")" || {
+  tip="$(ref_oid "refs/remotes/origin/$branch")" || {
     refuse "no such branch on origin: $branch; $undone"
     return 1
   }
@@ -2333,7 +2400,7 @@ read_and_decide() {
   # than fast-forwarding: a stale branch is a request it can judge, and
   # rebasing first is a convenience rather than a precondition.
   while ! shown_not_ready > /dev/null \
-    && ! git merge-base --is-ancestor refs/remotes/origin/main "$(change_head "$branch")"; do
+    && ! fast_forwards "$(change_head "$branch")"; do
     if failed="$(approve_failed_at "$branch")"; then
       printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
         "$branch" "$failed"
@@ -2579,7 +2646,7 @@ summarize_stack() {
 # and only [s]top is offered then. Fails when the review stops here.
 base_stack() {
   local n choice offered="[b]ase" stopped="; nothing done"
-  while ! git merge-base --is-ancestor refs/remotes/origin/main "${L_HEAD[0]}"; do
+  while ! fast_forwards "${L_HEAD[0]}"; do
     n="${#L_NAME[@]}"
     if [ -n "$offered" ]; then
       printf '%s, at the bottom, does not fast-forward from main: [b]ase all %d onto main, [s]top? ' \
@@ -2797,7 +2864,7 @@ cmd_review() {
   local branch="$CHANGE_BRANCH"
   TOP_NAME="$1"
   fetch_origin
-  git rev-parse --verify --quiet "refs/remotes/origin/$branch" >/dev/null \
+  ref_oid "refs/remotes/origin/$branch" >/dev/null \
     || die "no such branch on origin: $branch"
   bind_review
   trap cleanup_scratch EXIT
@@ -2861,7 +2928,7 @@ cmd_approve() {
   if [ -n "$CHANGE_ID" ]; then
     bind_head "$want" || exit 1
   else
-    tip="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch")" \
+    tip="$(ref_oid "refs/remotes/origin/$branch")" \
       || die "no such branch on origin: $branch"
     if [ -n "$want" ] && [ "$(git rev-parse --verify --quiet "$want^{commit}" || true)" != "$tip" ]; then
       die "origin/$branch is at $tip, not $want; nothing published"
@@ -3164,21 +3231,23 @@ copy_layer() {
   [ "$copied" -eq 1 ]
 }
 
-# The ref whose tip supplies the policy, printed the way a person names it,
-# with the commit it stood at. Staleness in a remote-tracking ref is a real
-# thing to see, so the report says which commit the layers came out of
-# rather than only which ref. A ref that cannot be read fails, so that no
-# report names a tip nobody read.
+# target_label <ref> <tip>: the ref whose tip supplies the policy, printed
+# the way a person names it, with the commit it stood at when it was read.
+# Staleness in a remote-tracking ref is a real thing to see, so the report
+# says which commit the layers came out of rather than only which ref. A
+# tip that cannot be read fails, so that no report names a tip nobody read.
 target_label() {
   local ref="$1" short
-  short="$(git rev-parse --short "$ref")" || return 1
+  short="$(git rev-parse --short "$2")" || return 1
   ref="${ref#refs/remotes/}"
   ref="${ref#refs/heads/}"
   printf '%s %s' "$ref" "$short"
 }
 
-# Resolve the project's own layer, out of the target's tip, into
-# POLICY_PROJECT, and set POLICY_PROJECT_LABEL to where it came from.
+# resolve_project_layer <root> <target ref> <target tip>: resolve the
+# project's own layer, out of the target's tip, into POLICY_PROJECT, and
+# set POLICY_PROJECT_LABEL to where it came from. The tip is the object ID
+# the target ref held when it was read, and the layer is read at it.
 #
 # A target carrying no layer of its own is derived under the floor alone.
 # The project layer only ever adds (dcr-f41f718), so the identity of "adds"
@@ -3194,10 +3263,10 @@ target_label() {
 # It reports and returns rather than dying, for the reason derive_required
 # does: a refusal inside the review loop is not the end of the session.
 resolve_project_layer() {
-  local root="$1" target="$2" rc at
+  local root="$1" target="$3" rc at
 
-  at="$(target_label "$target")" || {
-    refuse "could not read $target; nothing derived"
+  at="$(target_label "$2" "$target")" || {
+    refuse "could not read $2; nothing derived"
     return 1
   }
   cleanup_project_tmp
@@ -3244,9 +3313,11 @@ pointer_url() {
   printf '%s' "$url"
 }
 
-# Resolve the floor to a directory on disk, into POLICY_INSTANCE, and set
+# resolve_instance_layer <root> <target ref> <target tip>: resolve the
+# floor to a directory on disk, into POLICY_INSTANCE, and set
 # POLICY_INSTANCE_LABEL to where it came from — a temporary directory is
-# not an answer a reader can check.
+# not an answer a reader can check. The tip is the object ID the target
+# ref held when it was read, and the pointer is read at it.
 #
 # Every project has exactly one owning valley, and the floor is that
 # valley's (dcr-9b5da04). It is read from the valley's own repository and
@@ -3272,9 +3343,9 @@ pointer_url() {
 # It reports and returns rather than dying, for the reason derive_required
 # does: a refusal inside the review loop is not the end of the session.
 resolve_instance_layer() {
-  local root="$1" target="$2" url bare dest rc at
-  at="$(target_label "$target")" || {
-    refuse "could not read $target; nothing derived"
+  local root="$1" target="$3" url bare dest rc at listing valley_tip
+  at="$(target_label "$2" "$target")" || {
+    refuse "could not read $2; nothing derived"
     return 1
   }
   cleanup_instance_tmp
@@ -3318,13 +3389,28 @@ resolve_instance_layer() {
     refuse "no scratch repository to fetch the floor into; nothing derived"
     return 1
   }
-  git -C "$bare" fetch --quiet --depth 1 "$url" "$VALLEY_POINTER_REF" || {
+  # The valley's main is read by its exact name, and fetched by the object
+  # it names. Given a ref name the valley lacks, fetch takes another ref
+  # whose name ends in it, such as refs/heads/refs/heads/main. ls-remote
+  # lists such a ref too, so each line it lists is compared whole.
+  listing="$(git -C "$bare" ls-remote "$url" "$VALLEY_POINTER_REF")" || {
+    cleanup_instance_tmp
+    refuse "could not fetch the owning valley $url at $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $at); nothing derived"
+    return 1
+  }
+  valley_tip="$(printf '%s\n' "$listing" | awk -v r="$VALLEY_POINTER_REF" '$2 == r { print $1 }')"
+  [ -n "$valley_tip" ] || {
+    cleanup_instance_tmp
+    refuse "the owning valley $url has no $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $at); nothing derived"
+    return 1
+  }
+  git -C "$bare" fetch --quiet --depth 1 "$url" "$valley_tip" || {
     cleanup_instance_tmp
     refuse "could not fetch the owning valley $url at $VALLEY_POINTER_REF (named by $VALLEY_POINTER at $at); nothing derived"
     return 1
   }
 
-  copy_layer "$bare" FETCH_HEAD "$INSTANCE_DIR" "$dest" && rc=0 || rc=$?
+  copy_layer "$bare" "$valley_tip" "$INSTANCE_DIR" "$dest" && rc=0 || rc=$?
   case "$rc" in
     0) ;;
     1)
@@ -3425,17 +3511,23 @@ sort_into() {
 # is the branch as the integrator holds it and not as this checkout last
 # built it.
 #
-# Only a ref that is not there falls through to the next. show-ref says
-# "not there" with 1 and fails any other way with another status, so a
-# read of origin's ref that failed ends here: falling through would read
-# the policy out of the local main, which may be older. 1 no main at all,
-# 2 a read failed.
+# It sets TARGET_REF to the ref, and TARGET_TIP to the object ID it held
+# when it was read (ref_oid). The merge base and both layers are read at
+# TARGET_TIP, so they are read at one commit, and never through a name git
+# would take another ref for.
+#
+# Only a ref that is not there falls through to the next. A read of
+# origin's ref that failed ends here: falling through would read the
+# policy out of the local main, which may be older. 1 no main at all, 2 a
+# read failed.
+TARGET_REF=""
+TARGET_TIP=""
 target_ref() {
   local ref rc
   for ref in refs/remotes/origin/main refs/heads/main; do
-    git show-ref --verify --quiet "$ref" && rc=0 || rc=$?
+    TARGET_TIP="$(ref_oid "$ref")" && rc=0 || rc=$?
     case "$rc" in
-      0) echo "$ref"; return 0 ;;
+      0) TARGET_REF="$ref"; return 0 ;;
       1) ;;
       *) return 2 ;;
     esac
@@ -3705,16 +3797,17 @@ cmd_checks() {
   # either layer is left to its default — and it is what an unnamed base
   # is the merge base with.
   if [ -z "$instance" ] || [ -z "$project" ] || [ $# -lt 1 ]; then
-    target="$(target_ref)" || {
+    target_ref || {
       [ $? -eq 1 ] || die "could not read the main branch; nothing derived"
       die "no main branch: the target's tip is where the policy layers are read from, and there is none here"
     }
+    target="$TARGET_REF"
   fi
   if [ $# -ge 1 ]; then
     base="$(git rev-parse --verify --quiet "$1^{commit}")" \
       || die "no such commit: $1"
   else
-    base="$(git merge-base "$target" "$head")" \
+    base="$(git merge-base "$TARGET_TIP" "$head")" \
       || die "$head and ${target#refs/} do not share history — name a base"
   fi
 
@@ -3726,14 +3819,14 @@ cmd_checks() {
   if [ -n "$instance" ]; then
     label="${instance#"$root"/}"
   else
-    resolve_instance_layer "$root" "$target" || exit 1
+    resolve_instance_layer "$root" "$target" "$TARGET_TIP" || exit 1
     instance="$POLICY_INSTANCE"
     label="$POLICY_INSTANCE_LABEL"
   fi
   if [ -n "$project" ]; then
     plabel="${project#"$root"/}"
   else
-    resolve_project_layer "$root" "$target" || exit 1
+    resolve_project_layer "$root" "$target" "$TARGET_TIP" || exit 1
     project="$POLICY_PROJECT"
     plabel="$POLICY_PROJECT_LABEL"
   fi

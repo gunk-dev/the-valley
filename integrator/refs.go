@@ -549,19 +549,8 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	for _, ref := range refs {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
-	// The request is consumed only if it still names the head that landed.
-	// A second approval can replace it while this pass works — the asker's
-	// write is leased against what it read, and nothing stops it reading
-	// the request this pass is about to land — and a delete that did not
-	// compare would take the new request with the old one. A request that
-	// moved is a new request, and it stands for the next pass.
-	if _, err := git(in.repo, "update-ref", "-d", r.ref, r.head); err != nil {
-		if now, found, _ := resolveRef(in.repo, r.ref); found && now != r.head {
-			fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
-				r.ref, verdict.Short(now), verdict.Short(r.head))
-		} else {
-			unrecorded = append(unrecorded, fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err))
-		}
+	if why := in.consume(r); why != "" {
+		unrecorded = append(unrecorded, why)
 	}
 	done()
 	// The bus comes last. Everything above is the landing's own record; an
@@ -576,6 +565,29 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 			ch.ID, verdict.Short(l.commit), strings.Join(unrecorded, "; "))
 	}
 	return "", nil
+}
+
+// consume deletes the request that landed, and returns why it was not
+// consumed, or "" when it was or when it moved.
+//
+// The request is consumed only if it still names the head that landed.
+// A second approval can replace it while this pass works — the asker's
+// write is leased against what it read, and nothing stops it reading the
+// request this pass is about to land — and a delete that did not compare
+// would take the new request with the old one. A request that moved is a
+// new request, and it stands for the next pass. A request that is gone
+// did not move, whatever a branch named like it holds.
+func (in *integrator) consume(r request) string {
+	_, err := git(in.repo, "update-ref", "-d", r.ref, r.head)
+	if err == nil {
+		return ""
+	}
+	if now, found, _ := resolveRef(in.repo, r.ref); found && now != r.head {
+		fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
+			r.ref, verdict.Short(now), verdict.Short(r.head))
+		return ""
+	}
+	return fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err)
 }
 
 // report prints the verdict, per check, in the order it was judged.

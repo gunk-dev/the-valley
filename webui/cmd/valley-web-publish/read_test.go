@@ -224,13 +224,16 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			says: "valley plan --all lists _pointer, and the instance repository publishes app, not a name, site, valley",
 		},
 		{
-			// With no project list, git rev-parse would read a branch
-			// named refs/heads/refs/the-valley/projects as the list.
+			// With no project list, git rev-parse would read a tag named
+			// refs/tags/refs/the-valley/projects as the list. The tag
+			// holds the list the instance published, which reads as a
+			// project list, so only the exact read refuses it.
 			name: "the instance publishes no project list",
 			breaks: func(v *testValley) []string {
 				instance := filepath.Join(v.srv, "valley.git")
+				list := strings.TrimSpace(v.run("", "git", "-C", instance, "show-ref", "--verify", "--hash", projectsRef))
 				v.run("", "git", "-C", instance, "update-ref", "-d", projectsRef)
-				v.run("", "git", "-C", instance, "update-ref", "refs/heads/"+projectsRef, "refs/heads/main")
+				v.run("", "git", "-C", instance, "update-ref", "refs/tags/"+projectsRef, list)
 				return nil
 			},
 			says: "the instance repository publishes no refs/the-valley/projects",

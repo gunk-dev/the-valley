@@ -455,10 +455,20 @@ func policyLayers(g git, tip string) (instance, project string, done func(), err
 		if _, err := v.output(true, "init", "--quiet", "--bare"); err != nil {
 			return "", "", done, errors.New("no scratch repository to fetch the floor into")
 		}
-		if _, err := v.output(true, "fetch", "--quiet", "--depth", "1", "--no-tags", "--end-of-options", url, "refs/heads/main"); err != nil {
+		// The valley's main is read by its exact name, and fetched by the
+		// object it names: given a ref name the valley lacks, fetch takes
+		// another ref whose name ends in it, such as
+		// refs/heads/refs/heads/main.
+		at, err := remoteRef(v, url, "refs/heads/main")
+		if err != nil {
+			return "", "", done, fmt.Errorf("could not fetch the owning valley %s", url)
+		} else if at == "" {
+			return "", "", done, fmt.Errorf("the owning valley %s has no refs/heads/main", url)
+		}
+		if _, err := v.output(true, "fetch", "--quiet", "--depth", "1", "--no-tags", "--end-of-options", url, at); err != nil {
 			return "", "", done, fmt.Errorf("could not fetch the owning valley %s", url)
 		}
-		floor = composed.Floor{Repo: scratch, Ref: "FETCH_HEAD", Dir: instanceLayer}
+		floor = composed.Floor{Repo: scratch, Ref: at, Dir: instanceLayer}
 	}
 	instance, end, err := floor.Open(ctx, "valley-work-floor")
 	ends = append(ends, end)

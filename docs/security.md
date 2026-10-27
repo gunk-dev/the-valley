@@ -180,35 +180,55 @@ a push while that record does not match the running configuration (`nix/valley-h
 
 ## Refs are read by their exact names
 
-A program that reads a ref by name reads that one ref (`implemented`). `git rev-parse`, and every
+Each program listed below reads a ref by its exact name (`implemented`). `git rev-parse`, and every
 git command given a ref name, does not stop at the name it is given. For a missing ref, git tries
 other names in turn, among them `refs/tags/<name>` and `refs/heads/<name>`. Any pusher can make a
 branch named `refs/heads/registry`, which git stores as `refs/heads/refs/heads/registry`. A program
 that asked git for a missing `refs/heads/registry` would read that branch.
 
-So each program reads a ref with `git show-ref`, which reads that exact name, and from then on reads
-the object the ref held. A missing ref is missing:
+So each of these programs reads a ref once, by its exact name, and from then on reads the object the
+ref held. It reads a local ref with `git show-ref`, and a remote one from the `git ls-remote` line
+that names it. A missing ref is missing:
 
 - The identity compiler fails when the instance repository has no registry ref, and the last good
   files stay in place (`identity/registry.go`).
 - The integrator refuses a request named for a change that has no record. It does not judge a
   request whose target is missing, and a withdrawn change does not void such a request. A request
-  with no memo has none, and the signers publication is written when there is none yet
-  (`integrator/`).
+  with no memo has none, and the signers publication is written when there is none yet. It reads
+  evidence through the objects its refs held when it listed them. A request that is gone when the
+  integrator consumes it is not reported as moved (`integrator/`).
 - The integrator reads the floor at `--instance-ref` (`composed/composed.go`). The restacker takes
   only the `git ls-remote` line that names that ref exactly (`restack/main.go`). An instance
   repository with no such ref has no floor, and the pass is refused.
 - The web publisher refuses an instance repository with no `main` or no project list. It reads a
   project's `main` at the object it staged (`webui/cmd/valley-web-publish/valley.go`).
-- `valley ready --stamp` finds no local branch when the one it names is missing (`status/ready.go`).
+- The check worker reads its own evidence ref exactly, and fetches the floor at the commit the
+  owning valley's `refs/heads/main` names (`status/worker.go`). `valley ready --stamp` finds no
+  local branch when the one it names is missing (`status/ready.go`).
+- `valley review`, `valley approve` and `valley checks` read `origin/main` and the change's branch
+  by their exact names (`bin/valley`). approve reads `origin/main` once, and reads the merge base
+  and both policy layers at that commit. The floor is fetched at the commit the owning valley's
+  `refs/heads/main` names. A request ref missing on origin is missing, whatever a branch named like
+  it holds.
 
 The identity compiler, the integrator and the restacker refuse a configured ref that is not a full
 ref name, such as `main`.
 
+`git push` matches the ref it writes the same way. With `<ref>` missing on origin, a push to `<ref>`
+writes a branch named `<ref>` instead, and with both present git refuses the push as ambiguous.
+`valley approve` reads origin before it pushes. While origin holds a ref whose name ends in the
+request ref's or an evidence ref's name, approve pushes nothing and names that ref (`implemented`).
+The host's hook does not refuse a branch named like a protected ref, and the other programs that
+push do not check for one (**not built**).
+
 Checks: `identity-e2e` compiles with `refs/heads/registry` missing and a forged registry at
 `refs/heads/refs/heads/registry`, and the compilation fails with the files unchanged.
-`integrator-unit`, `restack-unit`, `webui-unit` and `valley-ready` each make the ref git would read
-in place of a missing one, and show that the program ignores it.
+`integrator-unit`, `restack-unit`, `webui-unit`, `valley-ready` and `valley-request` each make the
+ref git would read in place of a missing one, and show that the program ignores it.
+`integrator-unit` deletes an evidence ref after the integrator lists it. `valley-request` approves
+with a branch on origin named like the request, with a tag named like the remote-tracking ref of
+`main` or of a branch that origin lacks, and with an owning valley whose `main` is missing. It also
+runs the check worker with a tag named like the worker's own evidence ref.
 
 ## Trust roots
 

@@ -170,6 +170,11 @@ type integrator struct {
 	// clock, when set, is the instant the effectful window is measured
 	// against. Zero means the wall clock.
 	clock time.Time
+
+	// evidenceListed, when set, runs once collectEvidence has listed a
+	// subject's attestation refs, before it reads any of them. Tests set
+	// it to delete a ref in that window.
+	evidenceListed func()
 }
 
 func main() {

@@ -57,6 +57,9 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 	if err != nil {
 		return nil, nil, err
 	}
+	if in.evidenceListed != nil {
+		in.evidenceListed()
+	}
 	type read struct {
 		ev   verdict.Evidence
 		note []byte

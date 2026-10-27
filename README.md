@@ -38,12 +38,8 @@ valley review kqxm              # inspect the diff (and interactively approve)
   principals may approve, and enabling the integrator or identity compiler are host choices
   (`valley.cue`, `services.valley`); push mirrors receive only `main` and tags, not
   [project storage](./docs/concepts.md#records-project-storage-the-plan-graph-and-knots).
-- **Not built yet:** For restacking, the rebase library behind `valley rebase` and `[b]ase` in
-  `valley review`, the host's `restack` grant and report validation, and the read-only planner
-  (`valley-restacker once --report-only`) are built, while the service that rebases ready changes
-  automatically after each landing is not built or running yet. Automatic approval carry across
-  restacks, hardware-key (`sk-*`) touch-bound approval envelopes, and atomic multi-ref landing
-  transactions are also not built yet.
+- **Not built yet:** Automatic approval carry across restacks, hardware-key (`sk-*`) touch-bound
+  approval envelopes, and atomic multi-ref landing transactions are not built yet.
 
 ## Documentation
 

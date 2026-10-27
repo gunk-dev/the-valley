@@ -117,6 +117,14 @@ version with its approved version from git objects, and never trusts a report's 
 the architecture's
 [Review against the approved version](./architecture.md#review-against-the-approved-version)).
 
+On a host, the restacker runs as the Unix user `valley-restacker`, whose group is its own
+(`nix/valley-host.nix`). That user cannot read or write the served repositories on disk, so it
+reaches them only through sshd, as its principal, and every write it makes passes the hook. It holds
+no integrator key, no worker key and no signing name, so it cannot sign evidence or a landing. Its
+own private key is provisioned outside the Nix store, and systemd hands it to the controller as a
+credential. Registering the principal, granting it `restack`, and provisioning the key are the
+operator's (**deployment choice**). Check: `restack-host-e2e`.
+
 Readiness is different. A change record's state is the author's workflow signal, and the integrator
 enforces it as closely as refs allow. It does not enforce it atomically. A record written between
 the integrator's last read of the records and its move of the target can be missed. That can land a
@@ -171,7 +179,7 @@ a push while that record does not match the running configuration (`nix/valley-h
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                               |
 | An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                       |
-| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2).                                                                      |
+| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.        |
 | A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                        |
 | A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                |
 | A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                 |

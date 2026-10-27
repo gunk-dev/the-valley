@@ -204,8 +204,9 @@ versions. It leaves your local checkout in place. Read its output before editing
 fetch the remote updates and reconcile your local branch with them. If a record update fails, finish
 with the exact `valley ready` command it prints.
 
-Get the rebased version reviewed and approved again. Automatic restacking and automatic approval
-carry are not built. For conflicts or an uncertain landing, use
+Get the rebased version reviewed and approved again. A host that runs the restacker rebases ready
+changes for you after each landing, and its versions need approval in the same way. Automatic
+approval carry is not built. For conflicts or an uncertain landing, use
 [recovery](#recovering-from-failure).
 
 ## Reviewing and approving changes

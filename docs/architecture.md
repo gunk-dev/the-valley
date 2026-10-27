@@ -35,8 +35,8 @@ The parts are:
   activated state directory's plan, knots and `main` source over HTTP (`GET` and `HEAD`). The
   receiver's HTTP upload handlers and a host service for `valley-web` are not built yet;
 - read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
-- `valley-restacker`, the restacker, which plans and builds its writes without pushing them, and
-  which nothing deploys yet (`restack/`);
+- `valley-restacker`, the restacker, which rebases ready changes onto `main` as its own principal,
+  one controller for each project a host lists (`restack/`);
 - the review record and its history, which nothing writes or admits yet (`review/`);
 - `sigverify`, a hardware-key signature verifier that nothing calls yet (`sigverify/`).
 
@@ -650,10 +650,16 @@ read, so corrupt storage is the only way to get one.
 
 The restacker rebases ready changes onto `main` when `main` moves under them, as its own principal,
 so their evidence stays fresh without their owners rebasing and approving again.
-`valley-restacker once --report-only` (`restack/`) reads one snapshot of origin and prints what a
-pass would do. It plans each family, builds every write a pass would push for it, and decides the
-journal of an earlier operation if the state directory holds one. It pushes nothing and writes no
-journal. Publishing, the loop and the host service are not built, and nothing deploys it.
+`valley-restacker run` (`restack/`) reconciles at its start and then every `--interval`, 15 seconds
+by default, until it is stopped. Each reconciliation is one write pass, and `valley-restacker once`
+runs one write pass on its own. A pass reads origin whether or not `main` has moved, so a change
+readied since the last pass is found without another landing. A write pass first finishes the
+journal of an earlier operation, if the state directory holds one. It then plans each family, builds
+every write it would push for it, keeps those writes in its journal, and pushes them (see
+[Publishing](#publishing)). `valley-restacker once --report-only` plans and builds the same writes,
+and decides the journal of an earlier operation if there is one. It pushes nothing and writes no
+journal. A host runs one controller for each project it lists (see
+[The restacker on the host](#the-restacker-on-the-host)).
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
 off and no system or user git configuration, so no filter driver is defined. Nothing is ever checked
@@ -686,14 +692,17 @@ composes the policy run without them too. The scratch repository's `core.attribu
 `HOME`, and an attribute such as `merge=union` there would change how a rebase merges.
 
 A pass locks its state directory from start to end, so a second pass on the same directory fails at
-once while one runs. The directory belongs to the repository, target and principal of the first pass
-that used it, recorded in its `binding.json`. A pass for any other is refused, and needs its own
-`--state`. A pass runs for at most `--timeout`, 10 minutes by default. When the timeout passes, or
-the pass is interrupted or stopped, every git, cue and attest it started is killed, with whatever
-each of them started, ssh included. Writing the plan is bounded the same way. A pass whose output
-nobody reads ends at its timeout and lets go of the lock, so the next pass can take it. A message of
-the program's own, such as the error it ends with, is given up on after 5 seconds, so a stderr
-nobody reads cannot hold the process either. Checked by `restack-unit` and `restack-e2e`.
+once while one runs. `run` holds the lock for as long as it runs, so one controller serves a state
+directory at a time. When a pass fails, `run` says so on stderr and waits twice as long before the
+next, from the interval up to 5 minutes, until a pass succeeds. The directory belongs to the
+repository, target and principal of the first pass that used it, recorded in its `binding.json`. A
+pass for any other is refused, and needs its own `--state`. A pass runs for at most `--timeout`, 10
+minutes by default. When the timeout passes, or the pass is interrupted or stopped, every git, cue
+and attest it started is killed, with whatever each of them started, ssh included. Writing the plan
+is bounded the same way. A pass whose output nobody reads ends at its timeout and lets go of the
+lock, so the next pass can take it. A message of the program's own, such as the error it ends with,
+is given up on after 5 seconds, so a stderr nobody reads cannot hold the process either. Checked by
+`restack-unit` and `restack-e2e`.
 
 A family is the connected layers of one snapshot, as the rebase engine captures them
 (`rebase.Capture`). Two stacks on a shared lower layer are one family. The planner gives each family
@@ -779,6 +788,12 @@ fallback (`restack/report.go`):
 A family over 64 recorded changes is not held for its size: each change's report keeps its own
 layer. Checked by `restack-unit` and `restack-e2e`.
 
+A conflict is not tried again while nothing it saw has moved. A family is not rebased when every
+change in it has a current report that says `conflict`. Such a report is current only while `main`,
+each record and each branch are where it saw them, so the rebase would conflict as it did. Any of
+them moving, or a new layer on the family, makes the report historical, and the next pass rebases
+the family again. Checked by `restack-unit`.
+
 ### The journal
 
 The journal is every write one operation intends, kept in the state directory as `journal.json`
@@ -829,7 +844,83 @@ not record. A family whose writes stop does not stop another's. A `main` that ha
 still descends from the captured tip, does not stop a version whose branch was pushed.
 
 In `--report-only` mode recovery decides and pushes nothing, and leaves the journal as it is. The
-decisions are printed, and under `recovery` with `--json`. Checked by `restack-unit`.
+decisions are printed, and under `recovery` with `--json`. A write pass pushes what recovery decides
+to finish (see [Publishing](#publishing)). Checked by `restack-unit`.
+
+### Publishing
+
+A write pass makes its journal's writes the way recovery would make them after a crash
+(`restack/publish.go`). It reads origin, decides every write as [Recovery](#recovery) describes, and
+pushes the writes still to `finish`. It pushes one phase of each family at a time: the branch push,
+then the versions, lower layers first, then the reports. It reads origin again before each phase. So
+a request filed after a family's branch push pauses its versions. A push whose answer was lost is
+decided by what the next read finds on origin, so a version origin took is never added twice. A pass
+reads origin at most six times, and a write still to finish after that is left to the next pass.
+
+A pass lets go of its journal, and of the objects the journal keeps, once no family in it is open. A
+family is open in two cases:
+
+- its branch push is still to finish;
+- origin took its branch push, and one of its versions is neither added nor stopped for good. A
+  version paused by a request that might still land keeps its family open.
+
+While a journal is open, a pass starts no new operation, since the journal holds one operation at a
+time. A family whose branch push stopped moved nothing, and is left to the next plan. A journal that
+does not read, or that belongs to another repository, target or principal, stops every write pass
+until the operator moves it aside, since a new journal would replace it.
+
+A family whose branches moved gets a report for each of its changes that says what did happen. The
+report says `complete` when every version was added. It says `partial` when one was not, names each
+version origin holds, and says why each other version was not added. A pass pushes a `partial`
+report while the family is open, and replaces it once the family is not. These reports are built
+from the journal's observation, and are not journaled themselves. A pass that ends before pushing
+one builds it again from the same journal. A report that says what origin's current report says is
+not pushed. A family whose branch push stopped gets no report from the journal: the next plan
+reports on it, usually in the same pass. No pass writes the `superseded` result.
+
+Checked by `restack-unit`, through the rendered hook:
+
+- after a landing, a stack of two owners' changes is restacked once, each layer on the new layer
+  below it, and a conflict beside it is reported and not tried again;
+- a request holds its family until the request's outcome is a current `stale`;
+- a journal left after each of its steps is finished with exactly one version per change;
+- an owner's push to a restacked branch stops that change's version, reported `partial`;
+- a request filed between the phases pauses the versions until it is released;
+- the project's cap holds a change that has used it up;
+- `run` converges, finding a change readied after the landing.
+
+Checked by `restack-e2e` too: write passes through an ssh stand-in, after the real integrator lands
+a change, restack two owners' changes once each, with the answer to a record push dropped.
+
+### The restacker on the host
+
+`services.valley.restacker` runs one controller, `valley-restacker@<project>.service`, for each
+project in `projects` (`nix/valley-host.nix`). Each runs `valley-restacker run` as the system user
+`valley-restacker`, whose group is its own. That user is in no group that can read or write the
+served repositories on disk, or read the integrator's or the worker's keys. Each controller's state
+is a directory of its own, `/var/lib/valley-restacker/<project>`, mode 0700. Its unit is sandboxed
+as the worker's is: the file system is read-only to it except for its state directory.
+
+The controller is a git client of this host's sshd, on localhost, as its own principal. It
+authenticates with the private key that `sshKeyFile` names. systemd reads that file as root and
+hands it to the controller as a credential, so the file can be readable by root alone. The
+controller's ssh accepts only this host's own host keys, which the unit writes into the state
+directory before each start. It reads the floor from the instance repository over the same ssh, or
+from `integrator.instancePolicy`. It verifies landings with the known-signers file and the signing
+name that the integrator's controllers use.
+
+The module does not register the restacker. Declaring its public key under its principal
+(`principal`, by default `valley-restacker`), granting that principal `restack`, and provisioning
+the private key are each a **deployment choice**. Until the key is declared and granted, the hook
+refuses the controller's versions and reports.
+
+Checked by `restack-host-e2e`, in a NixOS machine with the principal registered and the key
+provisioned:
+
+- after `main` moves, the controller restacks a ready change, as its principal;
+- its user is refused the served repositories, the integrator's key and state, and its own key file;
+- over ssh its key is refused `main`, an integration request, an integrator outcome and a record
+  deletion, and may push a topic branch, as any named principal may.
 
 ## The check worker
 
@@ -3083,7 +3174,7 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                               |
 | Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                       |
 | Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                     |
-| The restacker                               | `valley-restacker once --report-only` builds the writes of a pass (`restack/`). Nothing is pushed.                                                                                                                                                                     |
+| The restacker                               | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                          |
 | The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                   |
 | The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                 |
 | The web server and export                   | `valley-web-publish` builds and uploads exports, `export.Store` stages and activates them, and `valley-web` serves an activated state directory over `GET` and `HEAD` (`web/`). The receiver's HTTP upload handlers and a host service for `valley-web` are not built. |

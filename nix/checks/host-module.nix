@@ -1,6 +1,6 @@
-# What the NixOS module renders from a declaration, and what it must refuse.
-# The web publisher's module, which sits beside it, is held here too, and
-# so is the web receiver's module, which an edge host runs.
+# What the NixOS modules render from a declaration, and what they must refuse.
+# This covers the valley host module, the web publisher module alongside it,
+# and the web receiver module on an edge host.
 # The refusals are eval-time: a host that must not evaluate is caught by a
 # throw here, since there is nothing to build once it has. What a host does
 # render is pinned by module-eval.sh over the rendered scripts.
@@ -108,9 +108,9 @@ let
     ];
   };
 
-  # The web receiver's module (nix/web-receiver.nix) on an edge host,
-  # which runs no valley host. Its programs are stand-ins too.
-  # webReceiverOffHost imports the module and leaves it off.
+  # The web receiver module (nix/web-receiver.nix) on a standalone edge
+  # host, evaluated with stand-in binaries. webReceiverOffHost imports the
+  # module while leaving it disabled.
   edgeStub =
     name:
     pkgs.writeShellScriptBin name ''
@@ -773,16 +773,18 @@ let
     || timer.timerConfig.OnUnitInactiveSec or null != "5min"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
-  # The web receiver (nix/web-receiver.nix). Off, it renders nothing. On,
-  # the receiver and valley-web are two units, each started at boot and
-  # restarted when it fails, neither requiring the other. The receiver runs
-  # as valley-web-receive in the valley-web group, owns the state directory
-  # at mode 0750, and is given the instance, the destination, the pinned
-  # verifiers from the store, its token as a credential from a file outside
-  # the store, and the caps on bodies. valley-web runs as valley-web in the
-  # same group, after the receiver, with the state directory read-only and
-  # nothing writable, and is given the state directory and its own
-  # listener. Each has its own memory cap with no swap.
+  # The web receiver module (nix/web-receiver.nix). When disabled, it
+  # renders no units or users. When enabled, it renders separate systemd
+  # units for valley-web-receive and valley-web; both start at boot, restart
+  # on failure, and run independently. The receiver runs as
+  # valley-web-receive in group valley-web, owns the mode-0750 state
+  # directory, and takes the instance, the destination, the pinned verifiers
+  # from the Nix store, the bearer token as a systemd credential from outside
+  # the store, and the body and storage caps. valley-web runs as valley-web
+  # in the same group, orders after the receiver, mounts the state directory
+  # read-only with no persistent writable paths, and takes the state
+  # directory and its listener address. Each unit has its own memory cap and
+  # disables swap.
   webReceiverRenderedWithoutEnable =
     webReceiverOffHost.config.systemd.services ? valley-web-receive
     || webReceiverOffHost.config.systemd.services ? valley-web

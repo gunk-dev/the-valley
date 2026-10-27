@@ -5,8 +5,8 @@
 # repositories the host serves and nothing more: it writes no repository,
 # reads no key outside its state, and reads no repository the host does
 # not declare, though the system's git configuration trusts every
-# directory. The receiver's token reaches it as a credential, though the
-# token's own file is root's alone.
+# directory. The unit receives the bearer token as a systemd credential
+# while the token file on disk stays readable by root alone.
 {
   pkgs,
   lib,

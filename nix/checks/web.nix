@@ -1,6 +1,6 @@
-# The web UI (web/): the export contract the publisher, the receiver
-# and the server share, the server, and the receiver. Their tests run
-# here, in the packages' unit builds (nix/packages.nix).
+# The web UI (web/): the shared export contract, the publisher, the
+# receiver, and the web server. Each check runs the unit test derivation
+# defined in nix/packages.nix.
 {
   pkgs,
   packages,
@@ -21,21 +21,21 @@
   # format's length, alone or among several; git's
   # output read within its limit, with git stopped past it or when its
   # reader stops early; and the receiver's state directory. For the state
-  # directory: uploads private to the receiver and generations readable
-  # by every user, whatever its umask; readers holding
-  # a generation through activations, every file of a generation synced
-  # before high-water names it, a repository a crash interrupted built
-  # again, recovery checking a generation before it activates it and
-  # keeping one whose check git did not finish, and injected sweep and
-  # swap failures, reported apart from the commit; a stage and a commit
-  # waiting for a lock another holds only until their context is done,
-  # staging and activating nothing then; and a commit that took the state
-  # directory past MaxStorage refused, its repository removed. The
-  # publisher's pass uploading to the real receiver with its token, the
-  # real valley-web serving what it activated, a pass with another token
-  # refused as unauthenticated while the edge keeps serving, and a pass
-  # after anyone's grant is withdrawn taking the project off the edge. go
-  # vet runs after them.
+  # directory: uploads/ stays private to the receiver and generations/ stays
+  # group- and world-readable under any umask; readers hold
+  # a generation through activations, every file of a generation is synced
+  # before high-water names it, a repository interrupted by a crash is
+  # rebuilt, recovery verifies a generation before activating it and keeps
+  # one whose git check was interrupted, and injected sweep and swap
+  # failures are reported separately from the commit; Stage and Activate
+  # wait for a held store lock only until their context expires, leaving
+  # staging and the active generation unchanged on cancellation; and an
+  # activation that exceeds MaxStorage is refused with its new repositories
+  # removed. An end-to-end pass uploads to a real valley-web-receive with
+  # its bearer token, a real valley-web serves the activated export, a pass
+  # with a wrong token fails as unauthenticated while the edge keeps serving,
+  # and a pass after withdrawing anyone's grant removes the project from the
+  # edge. go vet runs after the tests.
   web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both
@@ -101,52 +101,51 @@
   # MaxLarge, their pages' starts counted, with a large page it has no
   # room for answering 503 while the plan, a knot and a directory still
   # render; and valley-web run as a process of its own, serving and
-  # stopping on SIGTERM, and serving every page from a state directory
-  # the receiver wrote under umask 0077 and that reads as another
-  # user's, with nothing in it writable. go vet runs after them.
+  # stopping on SIGTERM, and serving every page from a read-only state
+  # directory that the receiver wrote under umask 0077 as another user. go
+  # vet runs after the tests.
   web-server-unit = packages.valley-web.unit;
 
-  # The receiver, valley-web-receive, run as a process of its own over the
-  # shared fixture's export, signed now, and real git. Each step of the
-  # upload activating the export, which the real valley-web, a process of
-  # its own over the same state directory, serves; the manifest posted
-  # again and the commit made again refused as replayed. A request without
-  # the token, with another, in another scheme or twice refused as
-  # unauthenticated, whatever it asks, staging nothing. Stale, early,
-  # foreign-key and foreign-destination manifests refused, an older
-  # manifest than the one staged superseded, with its bodies, and a commit
-  # of a sequence never staged refused as no-manifest. Bodies with a hash
-  # mismatch, a size mismatch with and without a length, a
-  # Content-Encoding, or an undeclared hash refused; a body sent while
-  # another request stages it answered 503; a body cut off half way
-  # leaving nothing in staging, its commit refused as incomplete with the
-  # active export as it was, and the body sent whole then activating. A
-  # body past --max-body and bodies past --max-upload refused as too-large
-  # before anything is staged, and an upload at both caps accepted; a
-  # manifest naming one bundle for eight projects refused under
-  # --max-storage, and uploads within it accepted. Every request slot held
-  # by a stalled manifest, the next request answered 503 and one without
-  # the token still unauthenticated, while valley-web serves every page;
-  # the receiver taking uploads again once the stalled ones go away; then
-  # every connection held by unfinished headers, valley-web serving, and a
-  # body sent behind them answered once the header timeout closes them.
-  # OPTIONS * with a withheld body on every connection answered at once,
-  # and an upload going through. A manifest waiting for the store's lock,
-  # held as a commit holds it, staging nothing once its client goes away.
-  # A stop on SIGTERM within its timeout with every connection held, and a
-  # usage error, a token file it cannot use and verifiers it cannot read
-  # refused without printing the token. Every request and dial is bounded,
-  # and every program the tests start dies with the test process. go vet
-  # runs after them.
+  # The receiver binary, valley-web-receive, run as a subprocess over the
+  # shared fixture's signed export and real git. A three-step upload
+  # activates an export that a separate valley-web process serves from the
+  # same state directory, and re-posting the manifest or commit is refused
+  # as replayed. Requests with no token, a wrong token, a non-Bearer scheme,
+  # or two Authorization headers are refused as unauthenticated on every
+  # route without staging anything. Stale, future-dated, foreign-key, and
+  # foreign-destination manifests are refused; a manifest older than the
+  # staged one is refused as superseded while newer manifests replace staged
+  # bodies; and committing an unstaged sequence fails as no-manifest. Bodies
+  # with a hash mismatch, a size mismatch (with or without Content-Length),
+  # a Content-Encoding header, or an undeclared hash are refused; a
+  # concurrent upload of the same body receives 503; and an interrupted body
+  # upload leaves no partial file in staging, fails commit as incomplete
+  # while keeping the active export intact, and activates once re-sent in
+  # full. Manifests and bodies past --max-body or --max-upload fail as
+  # too-large before staging, while uploads at both caps succeed; a manifest
+  # reusing one bundle across eight projects fails when it exceeds
+  # --max-storage, and uploads within the cap succeed. When stalled
+  # manifests fill all 4 request slots, the next authenticated request gets
+  # 503 and an unauthenticated request still gets 401 while valley-web keeps
+  # serving, and uploads resume once the stalled clients disconnect. When 32
+  # connections stall in headers, valley-web keeps serving and a subsequent
+  # upload succeeds once the header timeout closes them. OPTIONS * with a
+  # withheld body on all 32 connections returns immediately so a following
+  # upload succeeds. A manifest request canceled while waiting for the store
+  # lock stages nothing. On SIGTERM the receiver drains and exits within its
+  # timeout even with all connections held, and CLI usage, token-file, and
+  # verifier-file errors exit without printing the token. Every test request
+  # and dial is bounded, and every subprocess exits with the test process.
+  # go vet runs after the tests.
   web-receiver-unit = packages.valley-web-receive.unit;
 
-  # The edge's container image, unpacked as a container runtime would:
-  # valley-web and valley-web-receive at /bin, each pointing at a program
-  # the image holds, with the git each runs held too; both users and their
-  # group in /etc/passwd and /etc/group; /var/lib/valley-web the image's
-  # one volume, owned by the receiver's user and group with mode 0750; and
-  # the image running as valley-web unless told otherwise, starting no
-  # program of its own.
+  # The edge container image, unpacked layer by layer: /bin/valley-web and
+  # /bin/valley-web-receive resolve to store paths inside the image along
+  # with the git binary embedded in each; /etc/passwd and /etc/group define
+  # valley-web-receive, valley-web, and their shared valley-web group;
+  # /var/lib/valley-web is the sole declared volume and is owned by
+  # valley-web-receive:valley-web with mode 0750; and the image defaults to
+  # user valley-web with no default entrypoint or command.
   web-image = pkgs.runCommand "valley-web-image" {
     nativeBuildInputs = [ pkgs.jq ];
     image = packages.valley-web-image;

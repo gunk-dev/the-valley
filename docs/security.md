@@ -175,18 +175,18 @@ a push while that record does not match the running configuration (`nix/valley-h
 
 ## Threat model
 
-| Threat                              | Response                                                                                                                                                                                                                                             |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                                                 |
-| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                                         |
-| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.                          |
-| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                                          |
-| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                                  |
-| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                                   |
-| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                                              |
-| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)).                   |
-| A stranger reaching the receiver    | Is refused as `unauthenticated` before the receiver reads anything else of the request, and takes no request slot. A flood of connections can still delay uploads, and leaves `valley-web` serving (see [The edge's receiver](#the-edges-receiver)). |
-| A stolen receiver token             | Uses the receiver's capacity up to its caps. Without the export key, it cannot make the edge serve anything (see [The edge's receiver](#the-edges-receiver)).                                                                                        |
+| Threat                              | Response                                                                                                                                                                                                                                                |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                                                    |
+| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                                            |
+| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.                             |
+| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                                             |
+| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                                     |
+| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                                      |
+| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                                                 |
+| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)).                      |
+| A stranger reaching the receiver    | The receiver refuses the request as `unauthenticated` before reading any other part of it, without taking a request slot. A connection flood can still delay uploads while `valley-web` keeps serving (see [The edge's receiver](#the-edges-receiver)). |
+| A stolen receiver token             | The holder can spend the receiver's capacity up to its caps. Serving a new export still requires a manifest signed by the export key (see [The edge's receiver](#the-edges-receiver)).                                                                  |
 
 ## Refs are read by their exact names
 
@@ -377,56 +377,58 @@ test both schemas against their rejected examples.
 
 ## The edge's receiver
 
-`valley-web-receive` takes the publisher's uploads on the edge, and `valley-web` serves what it
-activates (see [The receiver](./architecture.md#the-receiver)). Two checks guard an upload, and they
-protect different things.
+`valley-web-receive` accepts uploads from the publisher on the edge, and `valley-web` serves the
+active generation (see [The receiver](./architecture.md#the-receiver)). Two independent checks guard
+an upload.
 
 **The manifest's signature decides what the edge serves.** The receiver stages a manifest only when
-it opens under a verifier the receiver pins, names the receiver's instance and destination, and
-carries a sequence newer than any it accepted (`implemented`, `web/export/manifest.go`). It keeps
-only bodies whose size and SHA-256 the manifest declares, and activates them only when every bundle
-passes acceptance (`implemented`, `web/export/body.go`, `web/export/bundle.go`). Whoever holds the
-publisher's export key decides the edge's content. The token alone decides none of it.
+it opens under a pinned verifier, names the receiver's instance and destination, and carries a
+sequence newer than any accepted sequence (`implemented`, `web/export/manifest.go`). It keeps only
+bodies whose size and SHA-256 the manifest declares, and activates a generation only when every
+bundle passes acceptance (`implemented`, `web/export/body.go`, `web/export/bundle.go`). Only a
+holder of the publisher's export key can authorize content for the edge to serve. The bearer token
+grants upload access alone.
 
-**The token decides who may use the receiver.** Every request must carry the token in its
-`Authorization` header. The receiver checks it before it reads anything else of the request, and
-refuses a request without it as `unauthenticated` (`implemented`,
-`web/cmd/valley-web-receive/receive.go`). A stranger who reaches the receiver therefore cannot have
-a manifest verified, stream a body into staging, or start a commit. A holder of the token without
-the export key can do those things up to the receiver's caps, but cannot make the edge serve
-anything the publisher did not sign.
+**The token decides who may use the receiver.** Every request must carry the bearer token in its
+`Authorization` header. The receiver checks the header before reading any other part of the request
+and refuses an unauthenticated request as `unauthenticated` (`implemented`,
+`web/cmd/valley-web-receive/receive.go`). A stranger who reaches the receiver cannot trigger
+manifest verification, stream a body into staging, or start a commit. A holder of the token without
+the export key can spend the receiver's staging and request capacity up to its caps, while what the
+edge serves stays signed by the publisher.
 
-**The token stays out of the Nix store and out of `valley-web`'s reach.** On NixOS, each module
-reads its token file as a systemd credential of its own unit, from a path outside the Nix store, and
-refuses a path inside it (`implemented`, `nix/web-publisher.nix`, `nix/web-receiver.nix`).
-`valley-web` runs as another user, with no credential. The publisher follows no redirect, so it
-sends the token to the configured receiver URL alone (`implemented`,
-`web/cmd/valley-web-publish/upload.go`). No program prints the token. Where the token file lives on
-a container host, and who can read it there, is a **deployment choice**.
+**The token stays out of the Nix store and out of `valley-web`'s reach.** On NixOS, both modules
+load the token file as a systemd credential for their own unit from a path outside the Nix store,
+and both refuse a store path at evaluation time (`implemented`, `nix/web-publisher.nix`,
+`nix/web-receiver.nix`). `valley-web` runs as a separate user without that credential. The publisher
+refuses HTTP redirects, so it sends the token only to the configured receiver URL (`implemented`,
+`web/cmd/valley-web-publish/upload.go`). Neither program prints the token. Where a container host
+stores the token file, and who can read it there, is a **deployment choice**.
 
-**The token is secret only on a private path.** The token travels in every request. Whether the
-publisher reaches the receiver over HTTPS, through a reverse proxy that terminates TLS, or over a
-private network is a **deployment choice**. Over plain HTTP across a network others can read, the
-token can be read there.
+**The token stays secret only on an encrypted or private network path.** Every upload request
+carries the token. Whether the publisher reaches the receiver over HTTPS, through a TLS-terminating
+reverse proxy, or over a private network is a **deployment choice**. Sending requests over plain
+HTTP across an untrusted network exposes the token to anyone who can read that network.
 
-**`valley-web` cannot change what the edge serves.** It opens the state directory read-only and
-writes nothing (`implemented`, `web/export/store.go`). On NixOS its unit has the state directory
-read-only (`implemented`, `nix/web-receiver.nix`). What its unit can write is temporary: the `/tmp`
-and `/var/tmp` that `PrivateTmp` gives the unit, which no other unit sees and which systemd removes
-when the unit stops, and the host's `/dev/shm`, which `PrivateDevices` keeps writable
-(`implemented`, `nix/web-receiver.nix`). None of them is the state directory, and the receiver reads
-none of them. A fault in `valley-web`, which parses requests from anyone, reaches neither the
-staging area nor the token.
+**`valley-web` has read-only access to the state directory.** It opens the state directory read-only
+and writes nothing there (`implemented`, `web/export/store.go`). On NixOS its unit mounts the state
+directory read-only (`implemented`, `nix/web-receiver.nix`). The unit's only writable paths are
+temporary: its private `/tmp` and `/var/tmp` from `PrivateTmp` (hidden from other units and removed
+when the unit stops) and `/dev/shm` from `PrivateDevices` (`implemented`, `nix/web-receiver.nix`).
+Those temporary paths are separate from the state directory, and the receiver ignores them. A fault
+in `valley-web`, which handles requests from arbitrary readers, reaches neither the staging area nor
+the token.
 
-Checks: `web-receiver-unit` refuses requests with no token, another token, the token in another
-scheme or the token twice, before anything is staged (`TestAnUnauthenticatedRequestIsRefused`),
-answers `OPTIONS *` with a withheld body at once on every connection, without reading the body
-(`TestOptionsStarHoldsNoConnection`), and refuses stale, early, foreign-key and foreign-destination
-manifests (`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`)
-checks that a pass with another token is refused and that the edge keeps serving what it has.
-`module-eval` checks the credentials and users both modules render, and refuses a token file in the
-Nix store. `web-publisher-e2e` checks in a NixOS machine that the publisher's unit reads the token
-as a credential while the token's own file stays root's.
+Checks: `web-receiver-unit` verifies that the receiver refuses requests with no token, a wrong
+token, a non-Bearer scheme, or two `Authorization` headers before staging anything
+(`TestAnUnauthenticatedRequestIsRefused`), answers `OPTIONS *` with a withheld body immediately on
+every connection without reading the body (`TestOptionsStarHoldsNoConnection`), and refuses stale,
+future-dated, foreign-key, and foreign-destination manifests
+(`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`) verifies
+that a pass with a wrong token is refused while the edge keeps serving the active export.
+`module-eval` verifies the credentials and users both modules render and rejects a token path in the
+Nix store. `web-publisher-e2e` verifies in a NixOS VM that the publisher's unit receives the token
+as a credential while the token file on disk stays readable by root alone.
 
 ## Secrets
 
@@ -494,13 +496,14 @@ themselves when to deploy.
 - **A withdrawal waits on reading the instance and every selected project.** A project leaves the
   edge only when a new export is built and activated. A pass that cannot read the instance
   repository or any project selected by a read grant to `anyone` sends no export.
-- **The receiver's token is a shared secret.** The publisher and the receiver hold the same token,
-  and every request carries it. A holder of the token can fill the receiver's request slots and its
-  staging area up to the caps, which delays uploads until it stops. Over plain HTTP on a network
-  others can read, the token can be read there.
-- **Anyone who reaches the receiver can hold its connections.** Without the token, a client can
-  still open the receiver's 32 connections and keep each for up to 10 seconds of headers, which
-  delays uploads while it lasts. Who can reach the receiver's address is a **deployment choice**.
+- **The receiver's token is a shared secret.** The publisher and the receiver share one bearer
+  token, and every upload request carries it. Anyone holding the token can fill the receiver's
+  request slots and staging area up to its caps, delaying uploads while the flood lasts. Plain HTTP
+  over an untrusted network exposes the token in transit.
+- **Anyone who reaches the receiver can occupy its connection limit.** An unauthenticated client can
+  open all 32 concurrent connections and hold each one for up to the 10-second header timeout,
+  delaying uploads while the flood lasts. Which network peers can reach the receiver's listener is a
+  **deployment choice**.
 - **The bus has no authentication.** Any local process on the valley host can publish events.
   Nothing treats an event as authoritative.
 - **Listing `integrator` in `protection.writers` opens a push path to `main`.** The integrator moves

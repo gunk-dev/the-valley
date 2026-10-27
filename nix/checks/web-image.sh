@@ -15,15 +15,15 @@ jq -e '.config.Volumes | keys == ["/var/lib/valley-web"]' "$config" > /dev/null 
 jq -e '.config.Entrypoint == null and .config.Cmd == null' "$config" > /dev/null ||
   fail "the image starts a program of its own"
 
-# Every layer, unpacked in order, and the owner and mode of each entry as
-# the archive gives them, which an unprivileged unpacking cannot keep.
+# Unpack every layer in order and record each entry's owner and mode from
+# the tar headers, since unprivileged extraction drops ownership.
 for layer in $(jq -r '.[0].Layers[]' image/manifest.json); do
   tar --numeric-owner --absolute-names -tvf "image/$layer" >> listing
   tar -xf "image/$layer" -C root 2> /dev/null
   chmod -R u+w root
 done
-# A file at the image's root is a link to a store path the image holds,
-# which only a path under root reaches here.
+# Resolve a root-level symlink inside the unpacked image so its target
+# stays under root/.
 inside() {
   local link
   link=$(readlink "root$1") || link=$1

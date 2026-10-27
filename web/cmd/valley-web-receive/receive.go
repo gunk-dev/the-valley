@@ -70,7 +70,7 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		w.Header().Set("WWW-Authenticate", `Bearer realm="valley-web-receive"`)
 		rv.fail(w, r, &export.Error{Code: export.CodeUnauthenticated,
-			Message: "the request does not carry the receiver's token in its Authorization header"})
+			Message: "Authorization header must carry the receiver's bearer token"})
 		return
 	}
 	step, seq, sum, allow := route(r.URL.Path)
@@ -210,10 +210,10 @@ func (rv *receiver) upload(seq int64) (export.Staging, error) {
 	switch {
 	case rv.staged == nil || rv.staged.Manifest.Sequence < seq:
 		return export.Staging{}, &export.Error{Code: export.CodeNoManifest,
-			Message: fmt.Sprintf("nothing is staged for sequence %d", seq)}
+			Message: fmt.Sprintf("no manifest is staged for sequence %d", seq)}
 	case rv.staged.Manifest.Sequence > seq:
 		return export.Staging{}, &export.Error{Code: export.CodeSuperseded,
-			Message: fmt.Sprintf("the upload with sequence %d supersedes this one, %d", rv.staged.Manifest.Sequence, seq)}
+			Message: fmt.Sprintf("staged upload %d supersedes sequence %d", rv.staged.Manifest.Sequence, seq)}
 	}
 	return *rv.staged, nil
 }
@@ -235,7 +235,7 @@ func (rv *receiver) body(ctx context.Context, rc *http.ResponseController, r *ht
 	}
 	if want == nil {
 		return &export.Error{Code: export.CodeNotDeclared,
-			Message: fmt.Sprintf("the manifest with sequence %d declares no body with SHA-256 %s", seq, sum)}
+			Message: fmt.Sprintf("manifest for sequence %d declares no body with SHA-256 %s", seq, sum)}
 	}
 	path := st.Body(*want)
 	rv.mu.Lock()
@@ -278,7 +278,7 @@ func (rv *receiver) body(ctx context.Context, rc *http.ResponseController, r *ht
 			return err
 		}
 		return &export.Error{Code: export.CodeNoManifest,
-			Message: fmt.Sprintf("nothing is staged for sequence %d any more", seq)}
+			Message: fmt.Sprintf("staging for sequence %d was cleared before the body finished", seq)}
 	}
 	return err
 }

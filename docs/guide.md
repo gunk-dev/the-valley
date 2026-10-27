@@ -722,19 +722,20 @@ Use your configured `dataDir` if it differs.
 
 ### Run the web edge
 
-The web edge is a web server that shows the projects `anyone` may read. The valley host's publisher
-pushes signed exports to it, and the edge never connects back. On the edge, `valley-web-receive`
-takes the uploads into a state directory, and `valley-web` serves them. They run as two processes,
-as two users, over one state directory (see [The receiver](./architecture.md#the-receiver)).
+The web edge is a read-only web server for projects that `anyone` may read. The publisher on the
+valley host pushes signed exports to the edge over HTTP, and the edge never connects back to the
+valley host. On the edge, `valley-web-receive` receives uploads into a state directory and
+`valley-web` serves them. They run as two processes under two Unix users over that shared state
+directory (see [The receiver](./architecture.md#the-receiver)).
 
-Make a token, and give the same file to both sides. Keep it out of the Nix store and readable by
-root alone:
+Generate a shared bearer token and install the same file on both hosts outside the Nix store,
+readable by root alone:
 
 ```sh
 head -c 32 /dev/urandom | base64 | sudo install -m 0400 /dev/stdin /run/keys/valley-web-receiver-token
 ```
 
-On the valley host, enable the publisher with the receiver's URL and the token file:
+On the valley host, enable the publisher with the receiver URL and token file:
 
 ```nix
 imports = [ the-valley.nixosModules.default the-valley.nixosModules.web-publisher ];
@@ -746,18 +747,19 @@ services.valley.webPublisher = {
 };
 ```
 
-The first pass makes the export key and writes its verifier line. Read it, and give it to the
-receiver:
+Run the publisher once to generate the export signing key and read its verifier line:
 
 ```sh
 sudo systemctl start valley-web-publish
 sudo cat /var/lib/valley-web-publish/verifier
 ```
 
-Until the receiver pins that line, it refuses every upload as `bad-signature`, and the pass fails.
+Until the receiver pins that verifier line, it refuses every upload with `bad-signature` and the
+publisher pass fails.
 
-On an edge that runs NixOS, enable the receiver's module. The receiver listens where the publisher
-reaches it, and `valley-web` behind the reverse proxy that serves the edge's name:
+On an edge host running NixOS, enable `services.valley.webReceiver`. Configure `listen` on the
+address the publisher reaches and `webListen` behind the reverse proxy that serves the edge's public
+domain:
 
 ```nix
 imports = [ the-valley.nixosModules.web-receiver ];
@@ -772,17 +774,17 @@ services.valley.webReceiver = {
 };
 ```
 
-On an edge that does not run NixOS, run the container image instead. Build it with Nix from a
-checkout of the-valley, and load it:
+On an edge host that does not run NixOS, build and load the container image from a checkout of
+the-valley:
 
 ```sh
 nix build .#valley-web-image
 docker load < result
 ```
 
-`docker load` prints the image's name and tag. Put the verifier line and a copy of the token where
-the receiver's user, uid 990, can read them, and run two containers over one volume. The receiver
-gets the volume writable, and `valley-web` gets it read-only:
+`docker load` prints the image name and tag. Install the verifier line and a copy of the token where
+the receiver's user (uid 990) can read them, then run two containers sharing one volume — writable
+in `valley-web-receive` and read-only in `valley-web`:
 
 ```sh
 sudo install -d -m 0750 -o 990 -g 990 /etc/valley-web
@@ -804,27 +806,25 @@ docker run -d --name valley-web --user valley-web \
   valley-web --state /var/lib/valley-web --listen :8080
 ```
 
-A new volume takes the owner and mode of the image's `/var/lib/valley-web`: the receiver's user,
-mode `0750`. `valley-web` reads it through the group the two users share.
+A new volume inherits the owner and permissions of `/var/lib/valley-web` from the image: the
+receiver's user with mode `0750`. `valley-web` reads the volume through the shared group.
 
-Each container gets a memory limit of its own. A container that reaches its limit is held to it: the
-kernel reclaims memory, or kills a process, in that container alone. That keeps a spike in one
-container from taking the other's memory or the host's only when the host has room for both limits
-and its own work, so keep the two limits well within the host's memory. `--memory` is the limit, and
-`--memory-swap` set to the same value gives the container no swap, as the NixOS module's units have
-none. The sizes above are the module's defaults for `receiverMemoryMax` and `webMemoryMax`. They are
-a deployment choice: size them to the edge's uploads and readers.
+Give each container its own memory limit. When a container reaches `--memory`, the kernel reclaims
+memory or kills a process inside that container alone. Setting `--memory-swap` equal to `--memory`
+disables swap for the container, matching the NixOS module's units. Keep the sum of both limits well
+within the host's physical memory so a spike in one container cannot starve the other or the host.
+The `2g` and `1g` limits above match the module's defaults for `receiverMemoryMax` and
+`webMemoryMax`; sizing them for the edge's uploads and readers is a deployment choice.
 
-The receiver holds the state directory to `--max-storage`, 8 GiB by default. That cap is best
-effort, and the hard bound on the disk is the filesystem the state directory lives on (see
-[Bounds](./architecture.md#bounds)). So put the state directory on a filesystem of fixed size, or
-under a quota, a little larger than `--max-storage`. For the containers, that is the filesystem the
-volume lives on. On NixOS, mount such a filesystem at the receiver's state directory,
-`/var/lib/valley-web` by default.
+The receiver caps the state directory at `--max-storage` (8 GiB by default). Because `--max-storage`
+is best effort, place the state directory on a fixed-size filesystem or under a disk quota slightly
+larger than `--max-storage` (see [Bounds](./architecture.md#bounds)). For containers, apply that
+bound to the filesystem backing the volume. On NixOS, mount a bounded filesystem at the receiver's
+state directory (`/var/lib/valley-web` by default).
 
-The token travels in every upload request. Reach the receiver over HTTPS, through a reverse proxy
-that terminates TLS, or over a private network. On the next pass, the publisher prints
-`the receiver activated sequence <n>`, and `valley-web` serves the export.
+Because every upload request carries the token, reach the receiver over HTTPS, through a reverse
+proxy that terminates TLS, or over a private network. On the next pass, the publisher prints
+`the receiver activated sequence <n>` and `valley-web` serves the export.
 
 ## Contributing to the-valley
 

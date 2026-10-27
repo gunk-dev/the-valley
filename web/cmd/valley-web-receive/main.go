@@ -49,33 +49,33 @@ const usage = `usage: valley-web-receive --state DIR --listen ADDR --instance NA
                           [--max-body SIZE] [--max-upload SIZE]
                           [--max-storage SIZE]
 
-Receive the web publisher's uploads into a state directory, which
-valley-web serves.
+Receive web export uploads from valley-web-publish into a state directory
+that valley-web serves.
 
-  --state DIR          the state directory, created if it does not exist;
-                       the receiver is its one writer
-  --listen ADDR        the TCP address to listen on, such as
-                       127.0.0.1:8081; port 0 picks a free port
-  --instance NAME      the instance every manifest must name
-  --destination NAME   the destination every manifest must name: this
-                       receiver's name
-  --verifiers FILE     the publisher's verifier lines, one per line, as
-                       the publisher writes its own to <state>/verifier;
-                       a manifest must open under one of them
-  --token-file FILE    the token every request must carry, in an
-                       Authorization header: one line of 32 to 256 visible
-                       ASCII characters, the same file the publisher's
-                       --receiver-token names
-  --max-body SIZE      the most bytes one body may declare (default 1G)
-  --max-upload SIZE    the most bytes the bodies of one manifest may
-                       declare together (default 2G)
-  --max-storage SIZE   the most bytes the state directory may take on
-                       disk, with every generation it holds, the staged
-                       upload's bodies and each repository built from
-                       them (default 8G)
+  --state DIR          state directory (created if missing); the receiver
+                       is its only writer
+  --listen ADDR        TCP address to listen on, such as 127.0.0.1:8081;
+                       port 0 picks a free port
+  --instance NAME      instance name required in every manifest
+  --destination NAME   destination name required in every manifest (this
+                       receiver's name)
+  --verifiers FILE     file of publisher verifier lines, one per line, as
+                       written to <state>/verifier; every manifest must
+                       verify under one of them
+  --token-file FILE    file holding the bearer token required in every
+                       request's Authorization header: one line of 32 to
+                       256 visible ASCII characters, matching the file
+                       passed to the publisher's --receiver-token
+  --max-body SIZE      maximum declared byte size of a single body
+                       (default 1G)
+  --max-upload SIZE    maximum total declared byte size of all bodies in
+                       one manifest (default 2G)
+  --max-storage SIZE   maximum disk space used by the state directory,
+                       including held generations, staged bodies, and
+                       built repositories (default 8G)
 
-A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
-GiB or TiB.
+A SIZE is a positive byte count, optionally suffixed with K, M, G, or T
+for KiB, MiB, GiB, or TiB.
 
 valley-web-receive prints "valley-web-receive: listening on ADDR" once it
 listens, and stops on SIGINT or SIGTERM.
@@ -155,9 +155,9 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	case *listen == "":
 		return usageError{errors.New("--listen is required")}
 	case !export.ValidName(*instance):
-		return usageError{fmt.Errorf("--instance %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", *instance)}
+		return usageError{fmt.Errorf("--instance %q must be 1 to 64 ASCII letters, digits, dots, dashes, or underscores, starting with a letter or digit", *instance)}
 	case !export.ValidName(*destination):
-		return usageError{fmt.Errorf("--destination %q is not a name: it is 1 to 64 letters, digits, dots, dashes and underscores, opening with a letter or a digit", *destination)}
+		return usageError{fmt.Errorf("--destination %q must be 1 to 64 ASCII letters, digits, dots, dashes, or underscores, starting with a letter or digit", *destination)}
 	case *verifiers == "":
 		return usageError{errors.New("--verifiers is required")}
 	case *tokenFile == "":
@@ -176,10 +176,10 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	if err != nil {
 		// The parser's error quotes the line, which would print a token
 		// given here by mistake.
-		return fmt.Errorf("%s is not a file of verifier lines", *verifiers)
+		return fmt.Errorf("cannot parse verifier lines in %s", *verifiers)
 	}
 	if len(keys) == 0 {
-		return fmt.Errorf("%s holds no verifier line", *verifiers)
+		return fmt.Errorf("%s contains no verifier lines", *verifiers)
 	}
 
 	logger := log.New(stderr, "valley-web-receive: ", log.LstdFlags)
@@ -227,7 +227,7 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 		drained, cancel := context.WithTimeout(context.Background(), drainTimeout)
 		defer cancel()
 		if !rv.drain(drained) {
-			logger.Printf("requests were still running %v after they were ended", drainTimeout)
+			logger.Printf("requests were still running %v after connections were closed", drainTimeout)
 		}
 	}
 	if err := <-served; !errors.Is(err, http.ErrServerClosed) {
@@ -297,7 +297,7 @@ func (b *byteSize) Set(v string) error {
 	}
 	x, err := strconv.ParseInt(number, 10, 64)
 	if err != nil || x <= 0 || x > math.MaxInt64/unit {
-		return fmt.Errorf("%q is not a size: a positive number of bytes, or one with K, M, G or T", v)
+		return fmt.Errorf("invalid size %q: must be a positive byte count, optionally suffixed with K, M, G, or T", v)
 	}
 	*b = byteSize(x * unit)
 	return nil

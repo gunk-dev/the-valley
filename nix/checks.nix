@@ -46,12 +46,10 @@
 #                    and OpenSSH's software authenticator
 #   web.nix          web-unit, web-server-unit, web-receiver-unit,
 #                    web-image, readaccess-unit — the web UI's export
-#                    contract: the projection, the manifest, the upload's
-#                    checks and the receiver's state; the server and
-#                    valley-web; the receiver, valley-web-receive; over the
-#                    shared fixture and real git; the edge's container
-#                    image; and read access, the two consents the
-#                    publisher reads, with the coverage report
+#                    contract (projection, manifest, upload checks, and
+#                    receiver state directory), the valley-web server, the
+#                    valley-web-receive receiver, the edge container image,
+#                    and the two read-access consents and coverage report
 #   cli.nix          valley-cli, review-notes, policy-deriver,
 #                    own-policy, valley-request, rebase-unit,
 #                    valley-go-unit, valley-status, valley-ready,

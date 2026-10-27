@@ -39,6 +39,12 @@ func compile(args []string) error {
 			return fmt.Errorf("--%s is required", required.flag)
 		}
 	}
+	// A full ref name is read by that exact name. Any other name, such as
+	// main, git would resolve by trying several refs in turn, and a pusher
+	// can make one of them.
+	if !strings.HasPrefix(*ref, "refs/") {
+		return fmt.Errorf("--ref %s is not a full ref name; name it whole, as refs/heads/main", *ref)
+	}
 
 	// The day expiry is judged against. A flag rather than the clock alone,
 	// so a compilation can be reproduced and a check can pin one.

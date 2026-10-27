@@ -224,12 +224,29 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			says: "valley plan --all lists _pointer, and the instance repository publishes app, not a name, site, valley",
 		},
 		{
+			// With no project list, git rev-parse would read a branch
+			// named refs/heads/refs/the-valley/projects as the list.
 			name: "the instance publishes no project list",
 			breaks: func(v *testValley) []string {
-				v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", "-d", projectsRef)
+				instance := filepath.Join(v.srv, "valley.git")
+				v.run("", "git", "-C", instance, "update-ref", "-d", projectsRef)
+				v.run("", "git", "-C", instance, "update-ref", "refs/heads/"+projectsRef, "refs/heads/main")
 				return nil
 			},
 			says: "the instance repository publishes no refs/the-valley/projects",
+		},
+		{
+			// With no main, git rev-parse would read a branch named
+			// refs/heads/refs/heads/main, here the instance's own main,
+			// as main.
+			name: "the instance has no main",
+			breaks: func(v *testValley) []string {
+				instance := filepath.Join(v.srv, "valley.git")
+				v.run("", "git", "-C", instance, "update-ref", "refs/heads/refs/heads/main", "refs/heads/main")
+				v.run("", "git", "-C", instance, "update-ref", "-d", "refs/heads/main")
+				return nil
+			},
+			says: filepath.Join("SRV", "valley.git") + " holds no main, so it is not an instance repository",
 		},
 		{
 			name:   "the read schema cannot be read",
@@ -252,7 +269,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 			if c.upload {
 				rv = newReceiver(t, v)
 			}
-			mustSay(t, c.name, v.fails(rv, more...), c.says)
+			mustSay(t, c.name, v.fails(rv, more...), strings.ReplaceAll(c.says, "SRV", v.srv))
 		})
 	}
 
@@ -729,7 +746,7 @@ func TestSharedCacheRefreshBudget(t *testing.T) {
 	source := filepath.Join(v.srv, "app.git")
 	refs := map[string]string{"refs/heads/main": "refs/heads/main"}
 	ctx := context.Background()
-	if err := p.shareRepository(ctx, dir, source, refs); err != nil {
+	if _, err := p.shareRepository(ctx, dir, source, refs); err != nil {
 		t.Fatal(err)
 	}
 	old, err := revParse(ctx, dir, "refs/heads/main")
@@ -743,7 +760,7 @@ func TestSharedCacheRefreshBudget(t *testing.T) {
 		t.Fatal(err)
 	}
 	p.cfg.maxStorage = byteSize(used)
-	if err := p.shareRepository(ctx, dir, source, refs); err == nil {
+	if _, err := p.shareRepository(ctx, dir, source, refs); err == nil {
 		t.Fatal("refresh exceeded its budget")
 	}
 	if tip, err := revParse(ctx, dir, "refs/heads/main"); err != nil || tip != old {
@@ -753,11 +770,27 @@ func TestSharedCacheRefreshBudget(t *testing.T) {
 		t.Fatalf("refused refresh left partial data: %v, %v", entries, err)
 	}
 	p.cfg.maxStorage = 1 << 20
-	if err := p.shareRepository(ctx, dir, source, refs); err != nil {
+	if _, err := p.shareRepository(ctx, dir, source, refs); err != nil {
 		t.Fatal(err)
 	}
 	if tip, err := revParse(ctx, dir, "refs/heads/main"); err != nil || tip == old {
 		t.Fatalf("refresh did not advance main: %s, %v", tip, err)
+	}
+}
+
+// A cache's refs are read from the source by their exact names. With main
+// gone from app and refs/heads/refs/heads/main made in its place, git
+// rev-parse would read that branch as main; sharedFiles finds no main. The
+// publisher lists a project's main before it reads it, so only a push
+// between the two reaches this.
+func TestSharedFilesReadEachRefByItsExactName(t *testing.T) {
+	v := newValley(t)
+	source := filepath.Join(v.srv, "app.git")
+	v.run("", "git", "-C", source, "update-ref", "refs/heads/refs/heads/main", "refs/heads/main")
+	v.run("", "git", "-C", source, "update-ref", "-d", "refs/heads/main")
+	files, err := sharedFiles(context.Background(), source, map[string]string{"refs/heads/main": "refs/heads/main"})
+	if err == nil || err.Error() != source+" holds no refs/heads/main" {
+		t.Fatalf("with app's main gone, the cache's files are %v (%v)", files, err)
 	}
 }
 

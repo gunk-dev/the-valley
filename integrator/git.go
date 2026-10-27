@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -42,6 +43,32 @@ func gitInput(repo string, stdin []byte, args ...string) ([]byte, error) {
 func gitLine(repo string, args ...string) (string, error) {
 	out, err := git(repo, args...)
 	return strings.TrimSpace(out), err
+}
+
+// resolveRef reads the object ID that ref, a full ref name, holds in repo.
+// It reads that one ref, with git show-ref. ok is false when repo holds no
+// ref of that name. An error is a repository git could not read.
+//
+// git rev-parse is not used, because it does not stop at the name it is
+// given. When repo holds no refs/the-valley/signers, rev-parse goes on to
+// try other names, refs/heads/refs/the-valley/signers among them, and a
+// pusher can make that branch. Read what the ref holds through the object
+// ID resolveRef returns, never through the name again.
+func resolveRef(repo, ref string) (oid string, ok bool, err error) {
+	// show-ref --exists exits 2 for a ref that is missing, and with
+	// another status for a failure to read.
+	_, err = git(repo, "show-ref", "--exists", "--end-of-options", ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	oid, err = gitLine(repo, "show-ref", "--verify", "--hash", "--end-of-options", ref)
+	if err != nil {
+		return "", false, err
+	}
+	return oid, true, nil
 }
 
 // gitTry runs a git command that is allowed to fail, and reports both what

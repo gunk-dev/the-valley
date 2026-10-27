@@ -96,12 +96,19 @@ const (
 func readRegistry(repo, ref, dir, schema string) (registry, string, error) {
 	var r registry
 
-	// The ref is resolved once, and everything after reads the commit it
-	// resolved to. Reading through the ref again would let a push landing
-	// mid-read mix two registries, compiled under the first one's commit.
-	commit, err := git(repo, "rev-parse", "--verify", ref+"^{commit}")
+	// The ref is resolved once, by its exact name, and everything after
+	// reads the commit it resolved to. Reading through the ref again would
+	// let a push landing mid-read mix two registries, compiled under the
+	// first one's commit.
+	oid, ok, err := resolveRef(repo, ref)
 	if err != nil {
-		return r, "", fmt.Errorf("%s has no %s: %w", repo, ref, err)
+		return r, "", fmt.Errorf("could not read %s in %s: %w", ref, repo, err)
+	} else if !ok {
+		return r, "", fmt.Errorf("%s has no %s", repo, ref)
+	}
+	commit, err := git(repo, "rev-parse", "--verify", "--end-of-options", oid+"^{commit}")
+	if err != nil {
+		return r, "", fmt.Errorf("%s in %s is not a commit: %w", ref, repo, err)
 	}
 
 	tree := commit + ":" + dir
@@ -167,6 +174,32 @@ func git(repo string, args ...string) (string, error) {
 		return "", commandError(err)
 	}
 	return strings.TrimRight(string(out), "\n"), nil
+}
+
+// resolveRef reads the object ID that ref, a full ref name, holds in repo.
+// It reads that one ref, with git show-ref. ok is false when repo holds no
+// ref of that name. An error is a repository git could not read.
+//
+// git rev-parse is not used, because it does not stop at the name it is
+// given. When repo holds no refs/heads/registry, rev-parse goes on to try
+// other names, refs/heads/refs/heads/registry among them, and a pusher can
+// make that branch. The registry it holds would then be compiled into the
+// keys and grants.
+func resolveRef(repo, ref string) (oid string, ok bool, err error) {
+	// show-ref --exists exits 2 for a ref that is missing, and with
+	// another status for a failure to read.
+	_, err = git(repo, "show-ref", "--exists", "--end-of-options", ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	oid, err = git(repo, "show-ref", "--verify", "--hash", "--end-of-options", ref)
+	if err != nil {
+		return "", false, err
+	}
+	return oid, true, nil
 }
 
 // gitEnvironment is the environment git runs in: the caller's, less every

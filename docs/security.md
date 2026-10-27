@@ -178,6 +178,38 @@ a push while that record does not match the running configuration (`nix/valley-h
 | The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                            |
 | A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)). |
 
+## Refs are read by their exact names
+
+A program that reads a ref by name reads that one ref (`implemented`). `git rev-parse`, and every
+git command given a ref name, does not stop at the name it is given. For a missing ref, git tries
+other names in turn, among them `refs/tags/<name>` and `refs/heads/<name>`. Any pusher can make a
+branch named `refs/heads/registry`, which git stores as `refs/heads/refs/heads/registry`. A program
+that asked git for a missing `refs/heads/registry` would read that branch.
+
+So each program reads a ref with `git show-ref`, which reads that exact name, and from then on reads
+the object the ref held. A missing ref is missing:
+
+- The identity compiler fails when the instance repository has no registry ref, and the last good
+  files stay in place (`identity/registry.go`).
+- The integrator refuses a request named for a change that has no record. It does not judge a
+  request whose target is missing, and a withdrawn change does not void such a request. A request
+  with no memo has none, and the signers publication is written when there is none yet
+  (`integrator/`).
+- The integrator reads the floor at `--instance-ref` (`composed/composed.go`). The restacker takes
+  only the `git ls-remote` line that names that ref exactly (`restack/main.go`). An instance
+  repository with no such ref has no floor, and the pass is refused.
+- The web publisher refuses an instance repository with no `main` or no project list. It reads a
+  project's `main` at the object it staged (`webui/cmd/valley-web-publish/valley.go`).
+- `valley ready --stamp` finds no local branch when the one it names is missing (`status/ready.go`).
+
+The identity compiler, the integrator and the restacker refuse a configured ref that is not a full
+ref name, such as `main`.
+
+Checks: `identity-e2e` compiles with `refs/heads/registry` missing and a forged registry at
+`refs/heads/refs/heads/registry`, and the compilation fails with the files unchanged.
+`integrator-unit`, `restack-unit`, `webui-unit` and `valley-ready` each make the ref git would read
+in place of a missing one, and show that the program ignores it.
+
 ## Trust roots
 
 The operator's trust roots are hardware keys that the deployment supplies (**deployment choice**):

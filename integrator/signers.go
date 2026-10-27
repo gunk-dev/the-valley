@@ -109,7 +109,12 @@ func publishSigners(args []string) error {
 	if err != nil {
 		return err
 	}
-	old, _ := gitLine(*repo, "rev-parse", "--verify", "--quiet", signersRef)
+	// The ref is read by its exact name. With no publication yet, old is
+	// "", whatever branch is named like the ref.
+	old, _, err := resolveRef(*repo, signersRef)
+	if err != nil {
+		return err
+	}
 	if old == tree {
 		fmt.Printf("%s already publishes %s and the signers in %s\n", signersRef, *name, *known)
 		return nil

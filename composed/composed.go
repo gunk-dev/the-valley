@@ -29,6 +29,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -40,6 +41,10 @@ import (
 
 // Floor is where the group's floor comes from: a repository's tip, read
 // with ls-tree and show and never written, or else a directory on disk.
+//
+// A Ref that is a full ref name, opening with refs/, is read by that exact
+// name, once, and the floor is read at the commit it held. Anything else,
+// such as an object ID or FETCH_HEAD, is read as given.
 type Floor struct {
 	Repo string // the repository carrying the floor; "" when Path is set
 	Ref  string // the ref whose tip is authoritative
@@ -68,7 +73,17 @@ func (f Floor) Open(ctx context.Context, prefix string) (string, func(), error) 
 		}
 		return f.Path, noop, nil
 	}
-	dir, found, done, err := readLayer(ctx, f.Repo, f.Ref, f.Dir, prefix)
+	at := f.Ref
+	if strings.HasPrefix(at, "refs/") {
+		oid, ok, err := resolveRef(ctx, f.Repo, f.Ref)
+		if err != nil {
+			return "", noop, err
+		} else if !ok {
+			return "", noop, fmt.Errorf("no instance policy layer: %s has no %s: %s", f.Repo, f.Ref, Floorless)
+		}
+		at = oid
+	}
+	dir, found, done, err := readLayer(ctx, f.Repo, at, f.Dir, prefix)
 	switch {
 	case err != nil:
 		return "", noop, err
@@ -475,6 +490,31 @@ func git(ctx context.Context, repo string, args ...string) (string, error) {
 		return "", fmt.Errorf("git %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(errb.String()))
 	}
 	return out.String(), nil
+}
+
+// resolveRef reads the object ID that ref, a full ref name, holds in repo.
+// It reads that one ref, with git show-ref. ok is false when repo holds no
+// ref of that name. An error is a repository git could not read.
+//
+// git rev-parse, and every git command given a ref name, does not stop at
+// the name it is given. When repo holds no refs/heads/main, git goes on to
+// try other names, refs/heads/refs/heads/main among them, and a pusher can
+// make that branch.
+func resolveRef(ctx context.Context, repo, ref string) (oid string, ok bool, err error) {
+	// show-ref --exists exits 2 for a ref that is missing, and with
+	// another status for a failure to read.
+	_, err = git(ctx, repo, "show-ref", "--exists", "--end-of-options", ref)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	out, err := git(ctx, repo, "show-ref", "--verify", "--hash", "--end-of-options", ref)
+	if err != nil {
+		return "", false, err
+	}
+	return strings.TrimSpace(out), true, nil
 }
 
 // scratch makes one throwaway directory under whatever TMPDIR names. The

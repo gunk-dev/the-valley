@@ -320,7 +320,7 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 			"That namespace admits creations only, so approve builds the rest (bd-7b7d58f)", own, strings.Join(names, ", "))
 		return true, nil
 	}
-	if stored, err := r.g.output(true, "rev-parse", "--verify", "--quiet", own); err == nil && stored != "" {
+	if stored, found, err := r.g.ref(own); err == nil && found {
 		say("an earlier pass stored %s, and origin does not hold it", own)
 		w.publish(r, own, stored, met, say)
 		return true, nil
@@ -342,8 +342,8 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 		return true, nil
 	}
 	w.failures.passed(r.name, batch)
-	stored, err := r.g.output(true, "rev-parse", "--verify", "--quiet", own)
-	if err != nil || stored == "" {
+	stored, found, err := r.g.ref(own)
+	if err != nil || !found {
 		say("attest stored no %s, so nothing is published", own)
 		w.troubles++
 		return true, nil

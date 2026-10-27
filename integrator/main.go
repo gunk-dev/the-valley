@@ -75,7 +75,8 @@ flags:
                       listed beside them (see below); read once, at start
   --instance-repo DIR the bare repository carrying the group's floor; the
                       instance layer is read from its integrated tip
-  --instance-ref REF  the ref whose tip carries it (default refs/heads/main)
+  --instance-ref REF  the ref whose tip carries it, a full ref name read by
+                      that exact name (default refs/heads/main)
   --instance-policy P the floor's directory in that tip (default
                       policy/instance); a floor that is not there is refused
   --instance DIR      a materialized instance layer, for a host that serves
@@ -273,6 +274,12 @@ func run(args []string, loop bool) error {
 	// how the layer says which of its two sources it is.
 	layer := composed.Floor{Ref: *instanceRef, Dir: *instancePolicy}
 	if *instanceRepo != "" {
+		// A full ref name is read by that exact name. Any other name,
+		// such as main, git would resolve by trying several refs in
+		// turn, and a pusher can make one of them.
+		if !strings.HasPrefix(*instanceRef, "refs/") {
+			return fmt.Errorf("--instance-ref %s is not a full ref name; name it whole, as refs/heads/main", *instanceRef)
+		}
 		layer.Repo = abs(*instanceRepo)
 	} else {
 		layer.Path = abs(*instance)

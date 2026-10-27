@@ -1508,6 +1508,11 @@ beside `grants`. Go's JSON decoder alone would read that field as `grants`. So t
 a registry whose export holds a key that is not a field of the schema, spelled exactly. It also
 refuses an export that holds a key twice in one object.
 
+The compiler reads the registry at `--ref` by that exact name, and reads the commit the ref held
+from then on. An instance repository with no such ref fails the compilation, whatever other ref git
+would take the name for (see
+[Refs are read by their exact names](security.md#refs-are-read-by-their-exact-names)).
+
 The compiler computes everything before it writes anything, so a refused registry leaves the last
 good files in place. Checked by `identity-e2e`, `identity-schema` and `exactjson-unit`, and by the
 Go tests in `identity/identity_test.go`. Why identity is a governed registry, and why machine keys

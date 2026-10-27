@@ -111,7 +111,10 @@ here costs the compilation and never the git user's access.
 
 flags:
   --repo DIR             the bare instance repository carrying the registry
-  --ref REF              the ref whose tip is read (default refs/heads/main)
+  --ref REF              the ref whose tip is read, a full ref name read by
+                         that exact name (default refs/heads/main). An
+                         instance repository with no such ref has no
+                         registry, and the compilation fails
   --dir DIR              the registry's directory in that tip (default
                          identity)
   --schema FILE          the identity schema (default

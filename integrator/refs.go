@@ -133,8 +133,10 @@ func (in *integrator) reconcile() error {
 // timed again either.
 func (in *integrator) handle(r request, idx *recordIndex) error {
 	watch := newStopwatch()
-	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
+	tip, ok, err := resolveRef(in.repo, r.target)
 	if err != nil {
+		return err
+	} else if !ok {
 		return fmt.Errorf("no target %s to integrate onto", r.target)
 	}
 	// Level-triggering: the verdict is a function of the request's head,
@@ -554,7 +556,7 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	// compare would take the new request with the old one. A request that
 	// moved is a new request, and it stands for the next pass.
 	if _, err := git(in.repo, "update-ref", "-d", r.ref, r.head); err != nil {
-		if now, found := gitTry(in.repo, "rev-parse", "--verify", "--quiet", r.ref); found && now != r.head {
+		if now, found, _ := resolveRef(in.repo, r.ref); found && now != r.head {
 			fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
 				r.ref, verdict.Short(now), verdict.Short(r.head))
 		} else {
@@ -597,8 +599,15 @@ func (in *integrator) memoRef(r request) string {
 	return outcomePrefix + "/" + strings.TrimPrefix(r.ref, requestPrefix+"/")
 }
 
+// readMemo reads the memo of a request, or "" when it has none. The memo
+// ref is read by its exact name, so a tag or branch named like a missing
+// memo is no memo.
 func (in *integrator) readMemo(r request) (string, error) {
-	out, ok := gitTry(in.repo, "cat-file", "blob", in.memoRef(r))
+	oid, ok, err := resolveRef(in.repo, in.memoRef(r))
+	if err != nil || !ok {
+		return "", err
+	}
+	out, ok := gitTry(in.repo, "cat-file", "blob", oid)
 	if !ok {
 		return "", nil
 	}

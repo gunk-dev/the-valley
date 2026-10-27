@@ -405,6 +405,34 @@ func TestInstanceReadEndsAtTheDeadline(t *testing.T) {
 	})
 }
 
+// The floor is read at --instance-ref by that exact name. ls-remote
+// matches its pattern against the tail of each name, so for an instance
+// repository with no refs/heads/main it lists
+// refs/heads/refs/heads/main, a branch a pusher can make. That branch is
+// no floor, and the pass finds none.
+func TestTheFloorIsReadAtItsRefByItsExactName(t *testing.T) {
+	f := newFixture(t, "")
+	tip := f.git("rev-parse", "HEAD")
+	if err := os.MkdirAll(filepath.Join(f.work, "policy", "instance"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f.commit("package verification", filepath.Join("policy", "instance", "floor.cue"))
+	instance := filepath.Join(t.TempDir(), "instance.git")
+	f.run(f.work, "init", "--quiet", "--bare", instance)
+	f.git("push", "--quiet", instance, "HEAD:refs/heads/refs/heads/main")
+	c := config{repo: f.origin, state: t.TempDir(), principal: "restacker",
+		commitName: "The Restacker", commitEmail: "restacker@example.invalid",
+		instanceRepo: instance, floor: composed.Floor{Ref: "refs/heads/main", Dir: "policy/instance"}}
+	g, err := scratchRepo(context.Background(), c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = policyCap(context.Background(), g, c, tip)
+	if err == nil || !strings.Contains(err.Error(), "has no refs/heads/main: "+composed.Floorless) {
+		t.Fatalf("with no refs/heads/main, the floor read returned %v", err)
+	}
+}
+
 // Through the host's rendered hook, the restacker principal, which holds
 // the restack grant and not the request grant, adds a restack version to
 // a change another principal owns: the version keeps the active title

@@ -51,7 +51,9 @@ const unknownSigner = "no signature on this note is by a key the verifier holds"
 // else the last note read, so a note that does not verify is reported and
 // the verdict can reject rather than quietly look past it.
 func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[string]verdict.Evidence, map[string][]byte, error) {
-	refs, err := git(in.repo, "for-each-ref", "--format=%(refname)", attestationPrefix+"/"+subject)
+	// Each ref is read through the object it held when listed, never by its
+	// name again: a ref deleted since would have git try other names for it.
+	refs, err := git(in.repo, "for-each-ref", "--format=%(objectname)", attestationPrefix+"/"+subject)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -60,8 +62,8 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 		note []byte
 	}
 	var all []read
-	for _, ref := range strings.Fields(refs) {
-		listing, err := git(in.repo, "ls-tree", "-r", "--name-only", ref)
+	for _, oid := range strings.Fields(refs) {
+		listing, err := git(in.repo, "ls-tree", "-r", "--name-only", oid)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -69,7 +71,7 @@ func (in *integrator) collectEvidence(wt *worktree, rev, subject string) (map[st
 			if path.Base(entry) != statementNote {
 				continue
 			}
-			note, err := git(in.repo, "cat-file", "blob", ref+":"+entry)
+			note, err := git(in.repo, "cat-file", "blob", oid+":"+entry)
 			if err != nil {
 				return nil, nil, err
 			}

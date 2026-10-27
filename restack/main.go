@@ -90,7 +90,8 @@ flags:
                         stops the pass
   --attest PATH         the attest helper that checks a note (default: attest on PATH)
   --instance-repo URL   the repository carrying the group's floor
-  --instance-ref REF    the ref whose tip carries the floor (refs/heads/main)
+  --instance-ref REF    the ref whose tip carries the floor, a full ref name
+                        read by that exact name (refs/heads/main)
   --instance-policy DIR the floor's directory in that tip (policy/instance)
   --instance DIR        a materialized floor, for a host that serves none
   --project-policy DIR  the project layer, in the target tip (policy/project)
@@ -214,6 +215,9 @@ func once(ctx context.Context, args []string, out, errOut io.Writer) error {
 	// directory on disk, and never from both, as for the integrator.
 	if (c.instanceRepo == "") == (c.floor.Path == "") {
 		return errors.New("exactly one of --instance-repo and --instance is required: the floor is read from the instance repository's tip, or from a materialized directory")
+	}
+	if c.instanceRepo != "" && !strings.HasPrefix(c.floor.Ref, "refs/") {
+		return fmt.Errorf("--instance-ref %s is not a full ref name; name it whole, as refs/heads/main", c.floor.Ref)
 	}
 	if c.verify.Attest == "" {
 		c.verify.Attest, _ = exec.LookPath("attest")
@@ -500,7 +504,15 @@ func policyCap(ctx context.Context, g rebase.Git, c config, tip string) (int, er
 		if ctx.Err() != nil {
 			return 0, err
 		}
-		oid, _, _ := strings.Cut(out, "\t")
+		// ls-remote matches its pattern against the tail of each name,
+		// so it lists refs/heads/refs/heads/main for refs/heads/main, a
+		// branch a pusher can make. Only the ref of that exact name counts.
+		var oid string
+		for _, line := range strings.Split(out, "\n") {
+			if id, name, ok := strings.Cut(line, "\t"); ok && name == floor.Ref {
+				oid = id
+			}
+		}
 		if err != nil || !rebase.IsObjectID(oid) {
 			return 0, fmt.Errorf("no instance policy layer: %s has no %s: %s", c.instanceRepo, floor.Ref, composed.Floorless)
 		}

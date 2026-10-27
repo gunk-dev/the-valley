@@ -506,29 +506,44 @@ func (p *publisher) fetchMain(ctx context.Context, name, url string) (string, st
 	}
 
 	mirror := filepath.Join(p.cache, "repos", name+".git")
-	if err := p.shareRepository(ctx, mirror, url, map[string]string{"refs/heads/main": "refs/heads/main"}); err != nil {
+	oids, err := p.shareRepository(ctx, mirror, url, map[string]string{"refs/heads/main": "refs/heads/main"})
+	if err != nil {
 		return "", "", err
 	}
-	tip, err := revParse(ctx, mirror, "refs/heads/main^{commit}")
+	tip, err := revParse(ctx, mirror, oids["refs/heads/main"]+"^{commit}")
 	return mirror, tip, err
 }
 
 // shareRepository replaces a disposable cache with refs and an alternate.
 // No fetch transport runs, so even objects added concurrently cannot be
 // copied. All bytes to be written are known before staging starts. Old
-// caches remain counted until the replacement is complete.
-func (p *publisher) shareRepository(ctx context.Context, dir, source string, refs map[string]string) error {
+// caches remain counted until the replacement is complete. It returns the
+// object ID it staged at each of the cache's refs, which the caller reads
+// from then on.
+func (p *publisher) shareRepository(ctx context.Context, dir, source string, refs map[string]string) (map[string]string, error) {
 	files, err := sharedFiles(ctx, source, refs)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return p.stageFiles(dir, files)
+	if err := p.stageFiles(dir, files); err != nil {
+		return nil, err
+	}
+	oids := map[string]string{}
+	for dest := range refs {
+		oids[dest] = strings.TrimSpace(files[dest])
+	}
+	return oids, nil
 }
 
 func quoteGit(s string) string {
 	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "\t", "\\t").Replace(s)
 }
 
+// sharedFiles are the files of a cache that borrows source's objects:
+// HEAD, the config, the alternate, and at each ref of the cache named in
+// refs, the object ID the source ref it maps to holds. Each source ref is
+// read by its exact name with readaccess.ResolveRef, and one source lacks
+// is an error.
 func sharedFiles(ctx context.Context, source string, refs map[string]string) (map[string]string, error) {
 	if !filepath.IsAbs(source) || strings.ContainsAny(source, "\n\r") {
 		return nil, fmt.Errorf("repository must be an absolute local path: %q", source)
@@ -556,9 +571,11 @@ func sharedFiles(ctx context.Context, source string, refs map[string]string) (ma
 		"objects/info/alternates": strings.TrimSpace(string(objects)) + "\n",
 	}
 	for dest, ref := range refs {
-		tip, err := revParse(ctx, source, ref)
+		tip, ok, err := readaccess.ResolveRef(ctx, source, ref)
 		if err != nil {
 			return nil, err
+		} else if !ok {
+			return nil, fmt.Errorf("%s holds no %s", source, ref)
 		}
 		files[dest] = tip + "\n"
 	}
@@ -633,6 +650,8 @@ func listsRef(out []byte, ref string) bool {
 	return false
 }
 
+// revParse resolves rev in repo. rev is an object ID to peel, or a ref the
+// publisher staged itself, never a ref name read from another repository.
 func revParse(ctx context.Context, repo, rev string) (string, error) {
 	out, err := git(ctx, repo, "rev-parse", "--verify", "--end-of-options", rev)
 	if err != nil {

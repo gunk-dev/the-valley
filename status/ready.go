@@ -146,7 +146,10 @@ func ready(g git, a readyArgs, w io.Writer) (int, error) {
 	var head string
 	switch {
 	case a.stamp:
-		if head, err = g.output(true, "rev-parse", "--verify", "--quiet", "refs/heads/"+a.branch+"^{commit}"); err != nil {
+		// The local branch is read by its exact name, so a branch named
+		// refs/heads/<branch> is not taken for it.
+		var found bool
+		if head, found, err = g.ref("refs/heads/" + a.branch); err != nil || !found {
 			return 0, failure("--stamp amends the head of your local " + a.branch + ", and there is no such branch")
 		}
 	case a.head != "":

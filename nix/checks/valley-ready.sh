@@ -293,6 +293,14 @@ unchanged "$stamped_id" refused 'has a record on origin already' \
 [ "$(git rev-parse HEAD)" = "$restamped" ] || fail '--stamp rewrote the head of a change with a record'
 [ "$(git -C "$origin" rev-parse refs/heads/stamped)" != "$restamped" ] \
   || fail '--stamp pushed for a change with a record'
+# --stamp reads the local branch by its exact name. With no local ghost,
+# git rev-parse would take the branch named refs/heads/ghost, which is
+# refs/heads/refs/heads/ghost, for it, and stamp and push that.
+git branch refs/heads/ghost "$(git commit-tree -p main -m ghost 'main^{tree}')"
+refused 'there is no such branch' as contributor valley ready --stamp ghost
+git -C "$origin" show-ref --exists refs/heads/ghost 2> /dev/null \
+  && fail '--stamp pushed the branch named like the missing one'
+git branch -D --quiet refs/heads/ghost
 
 # ----------------------------------------------------------------------
 # A change named by its handle is approved, reviewed and rebased at the

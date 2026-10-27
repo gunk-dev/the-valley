@@ -224,6 +224,30 @@ func (g git) succeeds(quiet bool, args ...string) bool {
 	return err == nil
 }
 
+// ref reads the object ID that name, a full ref name, holds. It reads that
+// one ref, with git show-ref. ok is false when there is no ref of that
+// name. An error is a repository git could not read.
+//
+// git rev-parse is not used, because it does not stop at the name it is
+// given. For a missing refs/heads/topic, it goes on to try other names,
+// refs/heads/refs/heads/topic among them.
+func (g git) ref(name string) (oid string, ok bool, err error) {
+	// show-ref --exists exits 2 for a ref that is missing, and with
+	// another status for a failure to read.
+	_, err = g.output(true, "show-ref", "--exists", "--end-of-options", name)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 2 {
+		return "", false, nil
+	} else if err != nil {
+		return "", false, err
+	}
+	oid, err = g.output(true, "show-ref", "--verify", "--hash", "--end-of-options", name)
+	if err != nil {
+		return "", false, err
+	}
+	return oid, true, nil
+}
+
 // clock is the time the knot and plan verbs take as now: the time
 // VALLEY_NOW holds, when it is set, or else the system's clock. A knot's
 // created date, a claim's time and a comment's stamp are written at it,

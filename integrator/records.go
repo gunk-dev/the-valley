@@ -142,10 +142,13 @@ func (in *integrator) readRecords() (*recordIndex, error) {
 // errNoRecord is a record ref that does not exist.
 var errNoRecord = errors.New("no such record")
 
-// readRecord reads the one record at ref, fresh.
+// readRecord reads the one record at ref, fresh. The ref is read by its
+// exact name, so a branch named like a missing record is no record.
 func (in *integrator) readRecord(ref string) (*change.Record, error) {
-	oid, ok := gitTry(in.repo, "rev-parse", "--verify", "--quiet", ref)
-	if !ok {
+	oid, ok, err := resolveRef(in.repo, ref)
+	if err != nil {
+		return nil, err
+	} else if !ok {
 		return nil, errNoRecord
 	}
 	records, errs, err := in.records([]string{ref}, []string{oid})
@@ -425,8 +428,8 @@ func (in *integrator) void(r request, ref string) bool {
 			return false
 		}
 	}
-	tip, err := gitLine(in.repo, "rev-parse", "--verify", "--quiet", r.target)
-	if err != nil {
+	tip, ok, err := resolveRef(in.repo, r.target)
+	if err != nil || !ok {
 		return false
 	}
 	evidence, err := in.evidenceState()

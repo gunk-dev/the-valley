@@ -107,7 +107,7 @@ cat > racing/git <<RACING
 #!/bin/sh
 "$realgit" "\$@" || exit
 case " \$* " in
-*" rev-parse "*) "$realgit" -C "$TMPDIR/instance.git" update-ref refs/heads/main "$moved" ;;
+*" show-ref --verify "*) "$realgit" -C "$TMPDIR/instance.git" update-ref refs/heads/main "$moved" ;;
 esac
 RACING
 chmod +x racing/git
@@ -143,6 +143,31 @@ fi
 git -C instance.git update-ref refs/heads/main "$resolved"
 compile --now 2026-08-09 || exit 1
 diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
+
+# The registry is read at its ref by that exact name. For a missing
+# refs/heads/registry, git rev-parse would go on to read
+# refs/heads/refs/heads/registry, a branch any pusher can make, here holding
+# the forged registry. The compiler finds no refs/heads/registry, and the
+# compilation fails, leaving the artifacts as they were. A ref that is not a
+# full name is refused before anything is read.
+git -C instance.git update-ref refs/heads/refs/heads/registry "$moved"
+if compile --ref refs/heads/registry --now 2026-08-09 2> missing.log; then
+  echo "identity-e2e: the compiler read the missing refs/heads/registry through another ref" >&2
+  exit 1
+fi
+grep -qF "has no refs/heads/registry" missing.log || {
+  echo "identity-e2e: the compilation with refs/heads/registry missing did not say so" >&2
+  cat missing.log >&2
+  exit 1
+}
+diff -u "$compiled/authorized_keys" "$TMPDIR/keys" || exit 1
+diff -u "$compiled/grants" "$TMPDIR/grants" || exit 1
+if compile --ref main --now 2026-08-09 2> short.log || ! grep -qF -- "--ref main is not a full ref name" short.log; then
+  echo "identity-e2e: the compiler took a ref that is not a full name" >&2
+  cat short.log >&2
+  exit 1
+fi
+git -C instance.git update-ref -d refs/heads/refs/heads/registry
 
 # What the hook does with the compiled grants. A bare repository is wired
 # with the pre-receive hook a host compiling this registry renders,

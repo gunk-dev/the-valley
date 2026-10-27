@@ -14,3 +14,7 @@ unknown-protection-field	protection.requires
 grant-opens-replacement-refs	grants.replace.refs.0
 grant-opens-requests	grants.requests.refs.0
 allow-in-protection	protection.allow
+group-names-differ-in-case	_firstSegments.tools: conflicting values
+project-alias-is-a-group-name	_firstSegments.tools: conflicting values
+undeclared-group	_groupless.app: conflicting values "INVALID: the project's group is not declared under groups"
+aliases-without-group	_groupless.app: conflicting values "INVALID: a project with aliases belongs to a group"

@@ -8,13 +8,25 @@
 // with the installer, never here.
 package valley
 
+import "strings"
+
 // #Host is a complete valley host declaration: the set of projects the
-// host serves, and the durability policy for the data behind them.
+// host serves, the groups they belong to, and the durability policy for
+// the data behind them.
 #Host: {
 	// projects maps a project name to its declaration. Names must be
 	// filesystem- and URL-safe because they become on-disk directory
-	// names ("<name>.git") and clone paths.
-	projects: [=~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"]: #Project
+	// names ("<name>.git") and clone paths. A project's name is its
+	// identifier: its repository, its plan graph, its policy/read and its
+	// read grants all name it by it.
+	projects: [#ProjectName]: #Project
+
+	// groups maps each group's identifier to its declaration. The
+	// identifier never changes, and the projects of the group name it.
+	// The group's name and aliases are what its web URLs say, and they
+	// may change. Optional: a declaration without groups evaluates as it
+	// did before groups existed, and its projects have no web URLs.
+	groups: [#GroupID]: #Group
 
 	// The host's offsite-backup policy. Optional: a declaration without
 	// it is a host without offsite backup, and evaluates exactly as it
@@ -57,7 +69,45 @@ package valley
 	// person is the case they exist for: tags take no push except through
 	// one. Empty by default, so a project opens nothing it does not name.
 	grants: [#GrantName]: #RefGrant
+
+	// The identifier of the group the project belongs to, which groups
+	// declares. A project's web URLs open with its group's name:
+	// /<group>/<project>/…. Optional: a project in no group has no web
+	// URL, so the web publisher publishes nothing of it.
+	group?: #GroupID
+
+	// The project's short aliases. Each is a first segment of a web URL:
+	// /<alias>/… answers with a permanent redirect to the same path under
+	// /<group>/<project>/…. Empty by default. A project with aliases
+	// belongs to a group.
+	aliases: [...#WebName] | *[]
 }
+
+// #ProjectName names a project on the host.
+#ProjectName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$"
+
+// #GroupID is a group's identifier: the name the declaration keys it by,
+// and its projects name it by. It never changes, and no URL shows it.
+#GroupID: #WebName
+
+// #Group is one group of projects. Its members and stewards are not
+// declared yet: a group is its name and its aliases.
+#Group: {
+	// The group's name: the first segment of its projects' web URLs.
+	name: #WebName
+
+	// Other first segments for the group. A web URL under an alias
+	// answers with a permanent redirect to the same path under name, so
+	// a group that is renamed keeps its former name here and its links
+	// keep working. Empty by default.
+	aliases: [...#WebName] | *[]
+}
+
+// #WebName is a name a web URL holds as one segment: a group's name or
+// alias, or a project's alias. It has the project-name shape and at most
+// 64 characters, so it never starts with "-", and the web server's own
+// paths, under /-/, are never a name's.
+#WebName: =~"^[a-zA-Z0-9][a-zA-Z0-9._-]*$" & strings.MaxRunes(64)
 
 // #RefGrant is one named grant: ref patterns, and the principals who may
 // write the refs they match. A grant only adds writers. A protected ref it
@@ -191,6 +241,42 @@ package valley
 //   cue export schema/valley.cue <config>.cue
 projects: #Host.projects
 
+// Mirrors #Host.groups.
+groups: #Host.groups
+
+// Every group a project names is declared, and a project with aliases is
+// in a group. A project that breaks either lands in _groupless as a
+// sentinel string against a `bool`, and fails vet naming the project.
+_groupless: [string]: bool
+_groupless: {
+	for n, p in projects {
+		if p.group != _|_ if groups[p.group] == _|_ {
+			"\(n)": "INVALID: the project's group is not declared under groups"
+		}
+		if p.group == _|_ if len(p.aliases) > 0 {
+			"\(n)": "INVALID: a project with aliases belongs to a group"
+		}
+	}
+}
+
+// Group names, group aliases and projects' aliases share one namespace:
+// the first segment of a web URL. Two of them that differ at most in case
+// collide, and so does a name given twice. Each claim lands in
+// _firstSegments under its lowercased name, with who makes it, and two
+// claims of one name conflict and fail vet naming both.
+_firstSegments: [string]: string
+_firstSegments: {
+	for id, g in groups {
+		(strings.ToLower(g.name)): "the name of group \(id)"
+		for i, a in g.aliases {
+			(strings.ToLower(a)): "alias \(i) of group \(id)"
+		}
+	}
+	for n, p in projects for i, a in p.aliases {
+		(strings.ToLower(a)): "alias \(i) of project \(n)"
+	}
+}
+
 // Mirrors #Host.backup. CUE cannot reference an optional field, so the
 // constraint is restated against the same definition.
 backup?: #Backup
@@ -200,4 +286,4 @@ backup?: #Backup
 // explicitly: anything but the #Host fields — a `project:` typo, a
 // deployment concern like `user:` — conflicts with this sentinel and
 // fails vet with an error naming the field.
-[!="projects" & !="backup"]: "INVALID: unknown top-level field; only \"projects\" and \"backup\" are allowed"
+[!="projects" & !="groups" & !="backup"]: "INVALID: unknown top-level field; only \"projects\", \"groups\" and \"backup\" are allowed"

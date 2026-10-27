@@ -1,5 +1,5 @@
 // A worked valley host declaration: one project with a publication mirror,
-// and a backup. This file is the single domain input: the NixOS
+// in a group, and a backup. This file is the single domain input: the NixOS
 // module validates it against schema/valley.cue and provisions the host
 // from it. Machines never redefine what is declared here.
 //
@@ -16,8 +16,19 @@ projects: {
 	// git.enable defaults to true — git is the only store type today.
 	"the-valley": {
 		mirrors: ["git@mirror.example.org:the-valley.git"]
+
+		// Its group, by the group's identifier, so its web URLs open
+		// /valley/the-valley/…. Its short alias makes /the-valley/…
+		// redirect there.
+		group: "valley"
+		aliases: ["the-valley"]
 	}
 }
+
+// The groups, each under an identifier that never changes. A group's name
+// opens its projects' web URLs. Renaming the group keeps the former name
+// among its aliases, which redirect to the name.
+groups: valley: name: "valley"
 
 // The durability policy (dcr-d7952bc): nightly encrypted restic
 // snapshots of the host's data to an sftp server.

@@ -5,6 +5,13 @@ cue vet -c "$schema" "$example"
 cue export "$schema" "$example" > example.json
 grep -q 'mirror.example.org:the-valley' example.json
 grep -q 'restic-sftp' example.json
+[ "$(cue export -e 'projects."the-valley".group' "$schema" "$example")" = '"valley"' ]
+[ "$(cue export -e 'groups.valley.name' "$schema" "$example")" = '"valley"' ]
+
+# A declaration without groups exports none, and its projects no group,
+# and no aliases.
+[ "$(cue export -e groups "$schema" "$hosts/no-backup.cue")" = '{}' ]
+[ "$(cue export -e 'projects."the-valley".aliases' "$schema" "$hosts/no-backup.cue")" = '[]' ]
 
 # A declaration with no optional field set must stay valid —
 # consumers written before backup or protection existed keep

@@ -5,9 +5,11 @@
 # held to naming it.
 { pkgs, partOf, ... }:
 {
-  # A host declaration: the pilot's own, the compatibility case, the
-  # protection block the installer renders a hook from, and the twelve
-  # declarations the schema must refuse. The event payloads live here too —
+  # A host declaration: the pilot's own, with a group and an alias, the
+  # compatibility case, the protection block the installer renders a hook
+  # from, and the sixteen declarations the schema must refuse, among them
+  # group names that collide, a project alias that is a group's name, an
+  # undeclared group and aliases without a group. The event payloads live here too —
   # the publisher hook's vocabulary is a schema like any other — and so
   # does the worked verification policy under examples/policy/, with the
   # carry modes and the restacker's cap case by case under

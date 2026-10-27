@@ -736,7 +736,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   `git`, `cue`, and `valley`, with `VALLEY_READ_SCHEMA` set to `schema/read.cue` and
   `VALLEY_IDENTITY_SCHEMA` set to `schema/identity.cue`. On a host, `services.valley.webPublisher`
   runs it on a timer (see [The web publisher's options](#the-web-publishers-options)).
-  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
+  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> (--receiver <url> --receiver-token <file> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
     - `--instance-repo <url>`: An absolute local path to the instance repository. It is the `origin`
       of the publisher's own bare repository, and the CLI discovers projects and signers through it.
       Its `main` must hold `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no
@@ -747,6 +747,10 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `edge-read` boundary whose read grants decide what `anyone` may read there.
     - `--receiver <url>`: The receiver's base URL, `http` or `https`, with no user, query, or
       fragment. The upload's paths are appended to it.
+    - `--receiver-token <file>`: The file that holds the receiver's token, which every request of
+      the upload carries in its `Authorization` header. It holds one line of 32 to 256 visible ASCII
+      characters, and is the file the receiver's `--token-file` names. Required with `--receiver`,
+      and refused with `--out`.
     - `--out <dir>`: Write the export to `<dir>` instead of uploading it. `<dir>` must not exist or
       must be empty. Exactly one of `--receiver` and `--out` is given.
     - `--principals <file>`: The display mapping, a JSON object from each principal's name to the
@@ -1008,20 +1012,22 @@ services.valley.webPublisher = {
   enable = true;
   destination = "example.org";
   receiver = "https://example.org";
+  receiverTokenFile = "/run/keys/valley-web-receiver-token";
   principals = { operator = "operator"; alice = "agent"; };
 };
 ```
 
-| NixOS option (`services.valley.webPublisher.*`) | Default                         | Meaning                                                                                                                                          |
-| :---------------------------------------------- | :------------------------------ | :----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enable`                                        | `false`                         | Runs `valley-web-publish` on a timer. Needs `services.valley.integrator.instanceProject`, the instance repository the publisher reads.           |
-| `destination`                                   | (required)                      | The receiver's name, which every manifest is signed for.                                                                                         |
-| `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                |
-| `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                          |
-| `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`. |
-| `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.             |
-| `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                 |
-| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                    |
+| NixOS option (`services.valley.webPublisher.*`) | Default                         | Meaning                                                                                                                                                    |
+| :---------------------------------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable`                                        | `false`                         | Runs `valley-web-publish` on a timer. Needs `services.valley.integrator.instanceProject`, the instance repository the publisher reads.                     |
+| `destination`                                   | (required)                      | The receiver's name, which every manifest is signed for.                                                                                                   |
+| `receiver`                                      | (required)                      | The receiver's base URL, `http://` or `https://`.                                                                                                          |
+| `receiverTokenFile`                             | (required)                      | The file that holds the receiver's token, outside the Nix store. The unit reads it as the credential `receiver-token` and passes it as `--receiver-token`. |
+| `principals`                                    | `{}`                            | The display mapping, written to a JSON file for `--principals`. A principal it does not name is shown as `contributor`.                                    |
+| `stateDir`                                      | `"/var/lib/valley-web-publish"` | The state directory, under `/var/lib`. The cache is the directory of the same name under `/var/cache`, given to the service as `XDG_CACHE_HOME`.           |
+| `memoryMax`                                     | `"1G"`                          | The most memory a pass may use, with every program it runs (`MemoryMax`, with `MemorySwapMax=0`). Past it, the kernel ends the pass.                       |
+| `maxBundles`                                    | `"1G"`                          | Passed as `--max-bundles`: the most the bundles of one export may hold together.                                                                           |
+| `maxStorage`                                    | `"16G"`                         | Passed as `--max-storage`: the most the state and cache directories may hold.                                                                              |
 
 The module also passes `services.valley.identity.ref` as `--registry-ref` and
 `services.valley.identity.directory` as `--registry-dir`, so the publisher reads the registry from
@@ -1031,9 +1037,11 @@ as it does when the identity compiler is enabled (`implemented`, `nix/valley-hos
 
 - **The pass:** `valley-web-publish.service` is a oneshot. It runs
   `valley-web-publish --instance-repo <dataDir>/<instanceProject>.git --instance <networking.hostName>`
-  with the destination, receiver, display mapping, state directory, and size bounds above. No switch
-  starts it: nothing wants the service, and a changed unit is not restarted
-  (`restartIfChanged = false`). A pass that runs longer than an hour is stopped (`TimeoutStartSec`).
+  with the destination, receiver, token, display mapping, state directory, and size bounds above.
+  The token reaches the unit as a systemd credential (`LoadCredential`), so the token's file may be
+  readable by root alone. A token file in the Nix store fails an assertion. No switch starts it:
+  nothing wants the service, and a changed unit is not restarted (`restartIfChanged = false`). A
+  pass that runs longer than an hour is stopped (`TimeoutStartSec`).
 - **The timer:** `valley-web-publish.timer` starts the first pass five minutes after the timer
   starts (`OnActiveSec`). After that it starts a pass five minutes after the last one ended
   (`OnUnitInactiveSec`). Both are delays only. When the switch that starts the timer runs longer
@@ -1051,8 +1059,54 @@ as it does when the identity compiler is enabled (`implemented`, `nix/valley-hos
   user's `<dataDir>/.ssh`, `/var/lib/valley-integrator`, the integrator's signing key file, the
   worker's state directory when the worker runs, and the backup's secret files. `web-publisher-e2e`
   runs the unit in a NixOS machine, with a probe in place of the publisher, under a system
-  configuration with `safe.directory=*`. The probe reads a served repository, and cannot read an
-  undeclared one, write a repository, or read the git user's ssh key or the backup's key.
+  configuration with `safe.directory=*`. The probe reads a served repository and the token as a
+  credential, and cannot read an undeclared repository, write a repository, or read the git user's
+  ssh key, the backup's key, or the token's own file.
+
+#### The web receiver's options
+
+The web receiver's module, `nixosModules.web-receiver`
+([`nix/web-receiver.nix`](../nix/web-receiver.nix)), adds `services.valley.webReceiver` to an edge
+host (`deployment choice`). It needs no other module of the-valley.
+
+```nix
+imports = [ the-valley.nixosModules.web-receiver ];
+services.valley.webReceiver = {
+  enable = true;
+  instance = "valley-host";
+  destination = "example.org";
+  verifiers = [ "valley-host/web-export+1a2b3c4d+AQ..." ];
+  tokenFile = "/run/keys/valley-web-receiver-token";
+  listen = "192.0.2.10:8081";
+  webListen = "127.0.0.1:8080";
+};
+```
+
+| NixOS option (`services.valley.webReceiver.*`) | Default                 | Meaning                                                                                                                                       |
+| :--------------------------------------------- | :---------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enable`                                       | `false`                 | Runs `valley-web-receive` and `valley-web` over one state directory.                                                                          |
+| `instance`                                     | (required)              | The instance every manifest must name: the publishing host's `networking.hostName`.                                                           |
+| `destination`                                  | (required)              | This receiver's name, which every manifest must name: the publisher's `destination`.                                                          |
+| `verifiers`                                    | (required)              | The publisher's verifier lines, written to a file in the Nix store for `--verifiers`. An empty list fails an assertion.                       |
+| `tokenFile`                                    | (required)              | The file that holds the token, outside the Nix store. The receiver's unit reads it as the credential `token` and passes it as `--token-file`. |
+| `listen`                                       | (required)              | The receiver's TCP address, which the publisher reaches.                                                                                      |
+| `webListen`                                    | (required)              | `valley-web`'s TCP address, which readers or a reverse proxy reach.                                                                           |
+| `stateDir`                                     | `"/var/lib/valley-web"` | The state directory, under `/var/lib`.                                                                                                        |
+| `maxBody`, `maxUpload`                         | `"1G"`, `"2G"`          | Passed as `--max-body` and `--max-upload`.                                                                                                    |
+| `receiverMemoryMax`, `webMemoryMax`            | `"2G"`, `"1G"`          | Each unit's `MemoryMax`, with `MemorySwapMax=0`.                                                                                              |
+
+- **The units:** `valley-web-receive.service` runs as the system user `valley-web-receive`, and
+  `valley-web.service` as the system user `valley-web`. Both users are in the group `valley-web`.
+  Both units start at boot (`wantedBy = multi-user.target`) and restart when they fail
+  (`Restart=on-failure`). `valley-web` starts after the receiver, and neither requires the other.
+- **The state directory:** The receiver's unit owns it (`StateDirectory`), with mode `0750` and
+  group `valley-web`, so `valley-web` reads it through the group. `valley-web`'s unit lists it in
+  `ReadOnlyPaths`.
+- **The sandbox:** Both units run with `ProtectSystem=strict`, `NoNewPrivileges`, no capabilities,
+  `@system-service` system calls, and `UMask=0077`. Nothing is writable for `valley-web`. For the
+  receiver, only the state directory is writable.
+
+`module-eval` holds both units to the users, modes, credentials, ordering and caps above.
 
 ---
 
@@ -1924,9 +1978,9 @@ consists of `export.json`, one git bundle of `main` for each exported project, a
 that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
 the web server, and the web server never connects back to the host. Package `export` of the `web`
 module ([`web/export/`](../web/export/)) implements the types, the verification checks below, and
-the receiver's state directory. `valley-web-publish` is the publisher, and the web server,
-[`valley-web`](#web-server-valley-web), reads the receiver's state directory with the package. The
-receiver's HTTP handlers are `not built`.
+the receiver's state directory. `valley-web-publish` is the publisher,
+[`valley-web-receive`](#web-export-receiver-valley-web-receive) is the receiver, and the web server,
+[`valley-web`](#web-server-valley-web), reads the receiver's state directory with the package.
 
 #### `export.json` (`valley-web-export/v1`)
 
@@ -2086,7 +2140,16 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 The publisher uploads an export to the receiver in three steps. Every response body is JSON. A full
 upload is two requests plus one `PUT` for each needed body. Package `export` defines the paths,
-reply schemas, and checks for each step; the HTTP handlers that wire them are `not built`.
+reply schemas, and checks for each step, and `valley-web-receive` serves them.
+
+- **The token:** Every request carries `Authorization: Bearer <token>`, with the token the receiver
+  is configured with (`export.Authorization`). The receiver refuses a request without exactly that
+  header as `unauthenticated`, with `401` and `WWW-Authenticate: Bearer`, before it reads the body
+  (`export.Authorized`). `export.ReadToken` reads a token file on both sides: one line of 32 to 256
+  visible ASCII characters (`0x21` to `0x7e`), with a newline after it or none.
+- **Caps at step 1:** After `export.VerifyManifest` admits a manifest, `Manifest.CheckSizes` refuses
+  it as `too-large` when it declares a body larger than the receiver's cap on one body, or bodies
+  larger than its cap on one upload together. A body declared twice under one SHA-256 counts once.
 
 | Step | Request                                                                       | Reply                                                                                                                                                                                                                               |
 | :--- | :---------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -2156,7 +2219,8 @@ reply schemas, and checks for each step; the HTTP handlers that wire them are `n
 
 | Code                | HTTP  | Step | Meaning                                                                                                   |
 | :------------------ | :---- | :--- | :-------------------------------------------------------------------------------------------------------- |
-| `too-large`         | `413` | 1, 2 | A manifest over 64 KiB, or a body declared larger than the receiver's cap.                                |
+| `unauthenticated`   | `401` | 1-3  | The request does not carry the receiver's token.                                                          |
+| `too-large`         | `413` | 1, 2 | A manifest over 64 KiB, a body declared larger than the receiver's cap, or bodies over its upload cap.    |
 | `bad-signature`     | `403` | 1    | The manifest does not open under the pinned key.                                                          |
 | `bad-manifest`      | `400` | 1    | The manifest's text is not a valid manifest.                                                              |
 | `wrong-instance`    | `403` | 1    | The manifest is from another instance.                                                                    |
@@ -2360,6 +2424,97 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   `<state>/verifier`. When the line differs, for a new key or a new `--instance`, the pass writes it
   there and prints `valley-web-publish: the export key's verifier line is <line>`. The receiver pins
   that line. The private key is never printed.
+
+#### Web export receiver (`valley-web-receive`)
+
+`valley-web-receive` takes the publisher's uploads into a state directory, by the steps of
+[Web export upload](#web-export-upload), and `valley-web` serves what it activates.
+[`web/cmd/valley-web-receive/`](../web/cmd/valley-web-receive/) is the command, and the flake builds
+it as the `valley-web-receive` package, with the `git` it accepts bundles with fixed at build time.
+
+```sh
+valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
+  --instance valley-host --destination example.org \
+  --verifiers /etc/valley-web/verifiers --token-file /run/keys/valley-web-receiver-token
+```
+
+- **Flags:**
+  - `--state DIR` (required): The state directory. `export.OpenStore` creates its layout when it is
+    missing, and finishes an activation a crash interrupted (see
+    [Web export receiver state](#web-export-receiver-state)). The receiver is the directory's one
+    writer.
+  - `--listen ADDR` (required): The TCP address to listen on. Port `0` picks a free port.
+  - `--instance NAME`, `--destination NAME` (required): The instance and the destination every
+    manifest must name.
+  - `--verifiers FILE` (required): The publisher's verifier lines, one per line, with blank lines
+    and `#` comments skipped. The publisher writes its own to `<state>/verifier`. A manifest must
+    open under one of them.
+  - `--token-file FILE` (required): The token every request must carry, read with
+    `export.ReadToken`. It is the file the publisher's `--receiver-token` names.
+  - `--max-body SIZE` (default `1G`): The most bytes one body may declare.
+  - `--max-upload SIZE` (default `2G`): The most bytes the bodies of one manifest may declare
+    together.
+
+  A `SIZE` is a number of bytes, or a number with `K`, `M`, `G` or `T` for KiB, MiB, GiB or TiB.
+
+- **Running:** Once listening, the receiver prints `valley-web-receive: listening on <addr>` on
+  `stderr`. It logs each refusal and each failure with the request's method, path and remote
+  address, each activation's sequence, and what `export.Store` reports. It never logs the token, and
+  an unreadable token file or verifier file is reported without its contents. On `SIGINT` or
+  `SIGTERM` it stops taking connections and gives requests in flight 10 seconds to finish, then
+  closes them, which stops a commit's `git`. A commit stopped this way leaves the active export as
+  it was. It exits `0` after a stop, `1` on a runtime failure, and `2` on invalid flags. `--help`
+  prints usage on `stderr` and exits `0`.
+- **Routes:** The receiver checks the token first, on every request. With the token, it answers the
+  three steps of the upload:
+
+| Route                                | Method | Step            |
+| :----------------------------------- | :----- | :-------------- |
+| `/web-export/v1/manifest`            | `POST` | 1, the manifest |
+| `/web-export/v1/<sequence>/<sha256>` | `PUT`  | 2, one body     |
+| `/web-export/v1/<sequence>/commit`   | `POST` | 3, the commit   |
+
+`<sequence>` is a positive decimal with no leading zero, and `<sha256>` 64 lowercase hex digits. Any
+other path answers `404`, and another method on one of these paths answers `405` with `Allow`. Both
+have an empty body.
+
+- **Limits:**
+
+| Limit                                     | Value        |
+| :---------------------------------------- | :----------- |
+| Authenticated requests running at once    | 4            |
+| Connections open at once                  | 32           |
+| Request headers: time to arrive, and size | 10 s, 16 KiB |
+| A manifest request, from its headers      | 1 minute     |
+| A body request, from its headers          | 30 minutes   |
+| A commit request, from its headers        | 30 minutes   |
+| An idle connection                        | 1 minute     |
+
+An authenticated request past 4 at once answers `503` with `Retry-After: 5` and an empty body. A
+connection past 32 waits in the listen queue. A request without the token takes no request slot. A
+failure that is not a refusal answers `500` with an empty body. The publisher retries both, as
+failures in transit.
+
+- **The staged upload:** The receiver keeps the newest upload a manifest staged in memory. A body or
+  commit for a newer sequence is refused as `no-manifest`, and one for an older sequence as
+  `superseded`. A body for an upload that a commit activated, or that a newer manifest discarded, is
+  refused as `no-manifest`. After a restart, the receiver holds no staged upload until the next
+  manifest, and the publisher signs one.
+
+- **The container image:** The `valley-web-image` package is a container image built with
+  `dockerTools.buildLayeredImage`. It holds `valley-web` and `valley-web-receive` at `/bin`, and the
+  `git` both run.
+
+  | Path or setting        | Value                                                              |
+  | :--------------------- | :----------------------------------------------------------------- |
+  | `/etc/passwd`          | `valley-web-receive` (uid 990) and `valley-web` (uid 991), gid 990 |
+  | `/etc/group`           | `valley-web` (gid 990)                                             |
+  | `/var/lib/valley-web`  | The image's one volume: owner 990, group 990, mode `0750`          |
+  | Default user           | `valley-web`                                                       |
+  | Entrypoint and command | None: each container names `valley-web` or `valley-web-receive`    |
+
+  `nix build .#valley-web-image` writes the image as a gzipped tar, which `docker load` and
+  `podman load` read. The image's tag is its store path's hash.
 
 #### Web export receiver state
 

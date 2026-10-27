@@ -175,16 +175,18 @@ a push while that record does not match the running configuration (`nix/valley-h
 
 ## Threat model
 
-| Threat                              | Response                                                                                                                                                                                                                           |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                               |
-| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                       |
-| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.        |
-| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                        |
-| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                |
-| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                 |
-| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                            |
-| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)). |
+| Threat                              | Response                                                                                                                                                                                                                                             |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An agent acting as the operator     | Agents run with their own principals and no operator keys (step 1). The push hook scopes refs by principal (step 2).                                                                                                                                 |
+| An interactive coordinator          | An agent that directs other agents runs with them, under an agent's principal. Only a verified touch stops an agent that holds a grant, and that gate is not built (step 3).                                                                         |
+| A compromised restacker             | Its `restack` grant adds versions to ready changes and writes reports, never requests. What it adds lands only once the operator approves that head (step 2). Its Unix user reaches the repositories only through the hook.                          |
+| A compromised agent                 | Assume it runs arbitrary commands inside its boundary. The boundary holds no production secrets and no signing sockets, and its egress is limited (step 1).                                                                                          |
+| A broken but honest change          | A landing needs a signed statement that each required check passed. A failed activation rolls back or holds (step 5). A human signature does not prove correctness.                                                                                  |
+| A lost hardware key                 | An offline backup hardware key holds every role (see [Trust roots](#trust-roots)).                                                                                                                                                                   |
+| The valley host compromised or down | Hosts that deploy from it keep their current systems. A compromised valley host can move `main`, so recovery that does not depend on it needs signed releases (step 4).                                                                              |
+| A reader of the edge                | Reads from an export only the projects that both consents in that pass authorize `anyone` to read. A pass omits every other project from the export and bundles it builds (see [Who can read a project](#who-can-read-a-project)).                   |
+| A stranger reaching the receiver    | Is refused as `unauthenticated` before the receiver reads anything else of the request, and takes no request slot. A flood of connections can still delay uploads, and leaves `valley-web` serving (see [The edge's receiver](#the-edges-receiver)). |
+| A stolen receiver token             | Uses the receiver's capacity up to its caps. Without the export key, it cannot make the edge serve anything (see [The edge's receiver](#the-edges-receiver)).                                                                                        |
 
 ## Refs are read by their exact names
 
@@ -349,21 +351,19 @@ principal: its session leaves `VALLEY_PRINCIPAL` unset. It is not `anyone`, whic
 unauthenticated edge reads.
 
 **Withdrawal.** When either consent for `anyone` is withdrawn, the next publisher pass omits the
-project from the export it builds. `valley-web-publish` includes the HTTP upload client and
-`web/export` includes `Store.Activate` to replace the active generation in a state directory
-(`implemented`, `web/export/store.go`), while `valley-web` serves only `GET` and `HEAD`
-(`web/server/server.go`) and the receiver's HTTP upload handlers are **not built** (publisher tests
-use an `httptest` receiver in `web/cmd/valley-web-publish/publish_test.go`). A pass reads the
-instance repository and every project selected by a read grant to `anyone`; if any of those cannot
-be read, the pass sends nothing, so a withdrawal waits until they can be read. Projects not selected
-by a grant to `anyone` are not read and do not block publication or withdrawal (`implemented`,
-`web/cmd/valley-web-publish/read_test.go`). There is no serving expiry: while the valley host cannot
-reach the edge, the edge keeps serving what it has. Reaching the edge again does not by itself
-complete a withdrawal. A withdrawal takes effect at the edge only when the edge activates an export
-that reflects it. The receiver that accepts an upload over HTTP and activates it is **not built**.
-An upload can still fail after the host reaches the edge again. The pass then fails, and the
-withdrawal waits for a later pass whose export the edge activates
-(`web/cmd/valley-web-publish/upload.go`). Unbuilt parts of read access are listed in
+project from the export it builds. `valley-web-publish` uploads that export, and
+`valley-web-receive` activates it with `Store.Activate`, which replaces the active generation
+(`implemented`, `web/cmd/valley-web-receive/`, `web/export/store.go`). `valley-web` then serves the
+new generation, without the project (`implemented`, checked by `TestPublishesToTheRealReceiver` in
+`web-unit`). A pass reads the instance repository and every project selected by a read grant to
+`anyone`; if any of those cannot be read, the pass sends nothing, so a withdrawal waits until they
+can be read. Projects not selected by a grant to `anyone` are not read and do not block publication
+or withdrawal (`implemented`, `web/cmd/valley-web-publish/read_test.go`). There is no serving
+expiry: while the valley host cannot reach the edge, the edge keeps serving what it has. Reaching
+the edge again does not by itself complete a withdrawal. A withdrawal takes effect at the edge only
+when the edge activates an export that reflects it. An upload can still fail after the host reaches
+the edge again. The pass then fails, and the withdrawal waits for a later pass whose export the edge
+activates (`web/cmd/valley-web-publish/upload.go`). Unbuilt parts of read access are listed in
 [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
 
 Checks: `readaccess-unit` reads both consents from real commits under the real schemas, including
@@ -374,6 +374,54 @@ private sentinel appears in any export or bundle (`TestPrivateSentinelsNeverLeav
 project stays private when the registry ref is missing even if `refs/heads/refs/heads/registry`
 grants `anyone` read. `module-eval` rejects a short registry ref. `cue-vet` and `identity-schema`
 test both schemas against their rejected examples.
+
+## The edge's receiver
+
+`valley-web-receive` takes the publisher's uploads on the edge, and `valley-web` serves what it
+activates (see [The receiver](./architecture.md#the-receiver)). Two checks guard an upload, and they
+protect different things.
+
+**The manifest's signature decides what the edge serves.** The receiver stages a manifest only when
+it opens under a verifier the receiver pins, names the receiver's instance and destination, and
+carries a sequence newer than any it accepted (`implemented`, `web/export/manifest.go`). It keeps
+only bodies whose size and SHA-256 the manifest declares, and activates them only when every bundle
+passes acceptance (`implemented`, `web/export/body.go`, `web/export/bundle.go`). Whoever holds the
+publisher's export key decides the edge's content. The token alone decides none of it.
+
+**The token decides who may use the receiver.** Every request must carry the token in its
+`Authorization` header. The receiver checks it before it reads anything else of the request, and
+refuses a request without it as `unauthenticated` (`implemented`,
+`web/cmd/valley-web-receive/receive.go`). A stranger who reaches the receiver therefore cannot have
+a manifest verified, stream a body into staging, or start a commit. A holder of the token without
+the export key can do those things up to the receiver's caps, but cannot make the edge serve
+anything the publisher did not sign.
+
+**The token stays out of the Nix store and out of `valley-web`'s reach.** On NixOS, each module
+reads its token file as a systemd credential of its own unit, from a path outside the Nix store, and
+refuses a path inside it (`implemented`, `nix/web-publisher.nix`, `nix/web-receiver.nix`).
+`valley-web` runs as another user, with no credential. The publisher follows no redirect, so it
+sends the token to the configured receiver URL alone (`implemented`,
+`web/cmd/valley-web-publish/upload.go`). No program prints the token. Where the token file lives on
+a container host, and who can read it there, is a **deployment choice**.
+
+**The token is secret only on a private path.** The token travels in every request. Whether the
+publisher reaches the receiver over HTTPS, through a reverse proxy that terminates TLS, or over a
+private network is a **deployment choice**. Over plain HTTP across a network others can read, the
+token can be read there.
+
+**`valley-web` cannot change what the edge serves.** It opens the state directory read-only and
+writes nothing (`implemented`, `web/export/store.go`). On NixOS its unit has the state directory
+read-only and nothing writable (`implemented`, `nix/web-receiver.nix`). A fault in `valley-web`,
+which parses requests from anyone, reaches neither the staging area nor the token.
+
+Checks: `web-receiver-unit` refuses requests with no token, another token, the token in another
+scheme or the token twice, before anything is staged (`TestAnUnauthenticatedRequestIsRefused`), and
+refuses stale, early, foreign-key and foreign-destination manifests
+(`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`) checks that
+a pass with another token is refused and that the edge keeps serving what it has. `module-eval`
+checks the credentials and users both modules render, and refuses a token file in the Nix store.
+`web-publisher-e2e` checks in a NixOS machine that the publisher's unit reads the token as a
+credential while the token's own file stays root's.
 
 ## Secrets
 
@@ -441,6 +489,13 @@ themselves when to deploy.
 - **A withdrawal waits on reading the instance and every selected project.** A project leaves the
   edge only when a new export is built and activated. A pass that cannot read the instance
   repository or any project selected by a read grant to `anyone` sends no export.
+- **The receiver's token is a shared secret.** The publisher and the receiver hold the same token,
+  and every request carries it. A holder of the token can fill the receiver's request slots and its
+  staging area up to the caps, which delays uploads until it stops. Over plain HTTP on a network
+  others can read, the token can be read there.
+- **Anyone who reaches the receiver can hold its connections.** Without the token, a client can
+  still open the receiver's 32 connections and keep each for up to 10 seconds of headers, which
+  delays uploads while it lasts. Who can reach the receiver's address is a **deployment choice**.
 - **The bus has no authentication.** Any local process on the valley host can publish events.
   Nothing treats an event as authoritative.
 - **Listing `integrator` in `protection.writers` opens a push path to `main`.** The integrator moves

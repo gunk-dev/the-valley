@@ -29,11 +29,12 @@ The parts are:
 - the `valley` command line tool (`bin/valley`);
 - `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
   changes before approval (`status/worker.go`);
-- `valley-web-publish`, `valley-web` and the web export (`web/`). The publisher builds a signed
-  export of the projects `anyone` may read and has an HTTP upload client, and a host can run it on a
-  timer. `web/export` stages and activates exports in a state directory, and `valley-web` serves an
-  activated state directory's plan, knots and `main` source over HTTP (`GET` and `HEAD`). The
-  receiver's HTTP upload handlers and a host service for `valley-web` are not built yet;
+- `valley-web-publish`, `valley-web-receive`, `valley-web` and the web export (`web/`). The
+  publisher builds a signed export of the projects `anyone` may read and uploads it, and a host can
+  run it on a timer. `valley-web-receive` takes the uploads into a state directory, where
+  `web/export` stages and activates them. `valley-web` serves the activated state directory's plan,
+  knots and `main` source over HTTP (`GET` and `HEAD`). An edge runs the receiver and `valley-web`
+  side by side, from a NixOS module or a container image;
 - read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
 - `valley-restacker`, the restacker, which rebases ready changes onto `main` as its own principal,
   one controller for each project a host lists (`restack/`);
@@ -3046,15 +3047,14 @@ anonymously.
 For each exported project, the export and its git bundle carry the project's reader view: every knot
 and comment in its plan graph, its ready changes, and `main` with its commit history (see
 [Web export](./reference.md#web-export-the-valleyweb-exportv1)). `valley-web-publish` can write an
-export to `--out` or upload it over HTTP to a receiver URL. In a state directory, `export.Store`
-stages an upload with `Store.Stage` and activates the staged export with `Store.Activate`
-(`web/export/store.go`). `valley-web` serves only `GET` and `HEAD` from a state directory
-(`web/server/server.go`); the receiver's HTTP upload handlers are not built yet, and publisher tests
-use an `httptest` receiver (`web/cmd/valley-web-publish/publish_test.go`). A missing or invalid
-registry makes every project private, so the pass builds an empty export. A missing or invalid
-`policy/read` makes that project private. A failure to read the instance repository, the schemas, or
-any project selected by a grant to `anyone` aborts the pass. The pass then writes no output export
-and uploads nothing, though it may already have written the caches it reads through.
+export to `--out` or upload it over HTTP to a receiver URL. `valley-web-receive` takes the upload:
+it stages it with `Store.Stage` and activates it with `Store.Activate` (`web/export/store.go`; see
+[The receiver](#the-receiver)). `valley-web` serves only `GET` and `HEAD` from the state directory
+(`web/server/server.go`). A missing or invalid registry makes every project private, so the pass
+builds an empty export. A missing or invalid `policy/read` makes that project private. A failure to
+read the instance repository, the schemas, or any project selected by a grant to `anyone` aborts the
+pass. The pass then writes no output export and uploads nothing, though it may already have written
+the caches it reads through.
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
 (`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
@@ -3068,7 +3068,8 @@ pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wir
 
 `valley-web` serves a receiver's state directory over HTTP to anonymous readers: the plan page, each
 knot page, and a source browser for each public project's `main` branch (`web/server/`,
-`web/cmd/valley-web/`). Nothing deploys it yet. Its flags, routes, and limits are in
+`web/cmd/valley-web/`). It runs beside the receiver as a process of its own (see
+[The receiver](#the-receiver)). Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
@@ -3244,6 +3245,117 @@ the field is omitted once that hidden blocker is done. Also checked by `web-serv
 (`TestWaitsOnChip`), which checks that the plan page's chip lists both the public blocker and the
 unpublished one.
 
+## The receiver
+
+`valley-web-receive` is the receiver. It takes the publisher's uploads into a state directory, by
+the three steps package `export` defines, and `valley-web` serves what it activates
+(`web/cmd/valley-web-receive/`). Its flags, routes and limits are in
+[Web export receiver (`valley-web-receive`)](./reference.md#web-export-receiver-valley-web-receive).
+
+### Two processes over one state directory
+
+The receiver and `valley-web` are two processes. They share the state directory and nothing else.
+The receiver opens the directory with `export.OpenStore` and is its one writer. `valley-web` opens
+it with `export.OpenReadOnly` and writes nothing (see
+[Reading the state directory](#reading-the-state-directory)). The store's `flock(2)` locks work
+across processes, so an activation by the receiver never deletes a generation that a `valley-web`
+request holds (`web/export/store.go`).
+
+The project runs them apart, rather than as one process with two listeners, for three reasons:
+
+- **Separate budgets.** Each process has its own listener and its own limits. The receiver listens
+  where the publisher reaches it, and `valley-web` where readers reach it. When uploads saturate the
+  receiver, it answers its own requests `503`, and `valley-web`'s limits are untouched.
+- **Separate users.** `valley-web` parses requests from anyone. Its user cannot write the state
+  directory, so a fault in `valley-web` cannot change what the edge serves. The receiver's user
+  holds the token, and `valley-web`'s user does not.
+- **Separate memory.** The operating system holds each process to its own memory cap: a systemd
+  unit's `MemoryMax`, or a container's memory limit. The `git` a commit runs counts against the
+  receiver's cap alone.
+
+One process would share one heap, one set of file descriptors and one user between public reads and
+uploads, so a flood or a fault in either would reach the other.
+
+### Authenticating the transport
+
+Every request to the receiver carries a token in its `Authorization` header, as `Bearer <token>`
+(`web/export/token.go`). The receiver checks the token first: before it routes the request, before
+it takes a request slot, and before it reads any of the body (`web/cmd/valley-web-receive/`). A
+request without the token is refused `401` as `unauthenticated`, and its connection is closed. The
+receiver compares the SHA-256 sums of the header it got and the header it expects, in constant time.
+
+The token and the manifest's signature check different things. The signature decides what the edge
+serves: only a manifest that opens under a pinned verifier is staged, and only bodies whose hashes
+it declares are kept. The token decides who may use the receiver at all. Without the token, anyone
+who reaches the receiver could have manifests verified, stream bodies into staging up to the caps,
+and start commits that run `git`. The token turns them away before any of that.
+
+The publisher reads the token from the file `--receiver-token` names
+(`web/cmd/valley-web-publish/main.go`), and the receiver from the file `--token-file` names. Both
+read it with `export.ReadToken`, which accepts one line of 32 to 256 visible ASCII characters. The
+publisher's HTTP client follows no redirect, so the token goes to the configured receiver URL alone
+(`web/cmd/valley-web-publish/upload.go`). What the token protects, and what it does not, is in
+[The edge's receiver](./security.md#the-edges-receiver).
+
+### Bounds
+
+The receiver bounds its requests, its bodies and its staging area
+(`web/cmd/valley-web-receive/main.go`, `web/cmd/valley-web-receive/receive.go`):
+
+- **Requests.** At most 4 authenticated requests run at once. The next one is answered `503`, with
+  `Retry-After` and no refusal, and the publisher retries it after a pause. At most 32 connections
+  are open at once, and a further connection waits in the listen queue. A request without the token
+  takes no request slot. Each step has a time limit from when its headers arrive: 1 minute for a
+  manifest, 30 minutes for a body, and 30 minutes for a commit, whose `git` is stopped at the limit.
+- **Bodies.** The receiver refuses a manifest as `too-large` at step 1 when it declares a body
+  larger than `--max-body`, or bodies larger than `--max-upload` together (`Manifest.CheckSizes`).
+  `export.StageBody` checks the body cap again at step 2, and reads at most one byte past the
+  declared size.
+- **Staging.** `Store.Stage` discards every older upload when it stages a manifest, so one upload is
+  staged at a time. Staging holds that upload's bodies, at most `--max-upload` bytes, and a partial
+  file for each body being sent, at most 4 at once. Staging is private to the receiver's user until
+  activation (see [Reading the state directory](#reading-the-state-directory)).
+
+The receiver keeps the newest staged upload in memory. After a restart, it refuses a body or a
+commit for an upload staged before the restart as `no-manifest`, and the publisher signs a new
+manifest.
+
+### Running the receiver and `valley-web`
+
+On NixOS, `services.valley.webReceiver` runs two units, `valley-web-receive` and `valley-web`
+(`nix/web-receiver.nix`). They run as the users `valley-web-receive` and `valley-web`, both in the
+group `valley-web`. The receiver's unit owns the state directory, `/var/lib/valley-web` by default,
+with mode `0750`, so `valley-web` reads it through the group. The receiver's unit reads the token
+file as a systemd credential, from a path outside the Nix store. `valley-web`'s unit has the state
+directory read-only, and nothing writable. Neither unit requires the other. `valley-web` starts
+after the receiver, and keeps serving while the receiver restarts. Each unit has its own
+`MemoryMax`, with no swap.
+
+On a host that does not run NixOS, the `valley-web-image` package is a container image built with
+Nix (`nix/packages.nix`). It holds `valley-web`, `valley-web-receive` and the `git` both run. Its
+`/etc/passwd` names their two users: `valley-web-receive` (uid 990) and `valley-web` (uid 991), both
+in the group `valley-web` (gid 990). Its volume, `/var/lib/valley-web`, is owned by the receiver's
+user with mode `0750`. The image runs as `valley-web` unless it is told otherwise, and starts no
+program by itself. An edge runs two containers of it over one volume: the receiver as
+`valley-web-receive` with the volume writable, and `valley-web` as `valley-web` with the volume
+read-only (see [Run the web edge](./guide.md#run-the-web-edge)). How an edge runs the containers,
+where they listen, and how the token reaches them are **deployment choices**.
+
+Checked by `web-receiver-unit`, which runs the receiver as a process of its own over the shared
+fixture and real git: each step of an upload, with the real `valley-web` serving the result
+(`TestAnUploadActivatesAndValleyWebServesIt`); requests without the token refused before anything is
+staged (`TestAnUnauthenticatedRequestIsRefused`); stale, early and foreign manifests refused
+(`TestAManifestIsAdmittedOnlyWhenFresh`); bodies refused unless they verify, and a body cut off half
+way leaving the active export as it was (`TestABodyIsKeptOnlyWhenItVerifies`); uploads over the caps
+refused (`TestAnOversizedUploadIsRefused`); and every request slot held by stalled uploads while
+`valley-web` serves every page (`TestASaturatedUploadLeavesValleyWebServing`). Checked by `web-unit`
+(`TestPublishesToTheRealReceiver`), which runs the real publisher against the real receiver and
+`valley-web`, a pass with another token, and a pass after a grant is withdrawn. Checked by
+`module-eval`, which holds both modules' rendered units to the users, modes, credentials and caps
+above; by `web-publisher-e2e`, which checks in a NixOS machine that the token reaches the
+publisher's unit as a credential while the token's own file stays root's; and by `web-image`, which
+unpacks the image and checks its programs, its users, its volume and its default user.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors
@@ -3290,23 +3402,23 @@ supplies the host configuration, the project declaration and the secrets (**depl
 
 ## Not deployed or not wired yet
 
-| What                                        | State                                                                                                                                                                                                                                                                  |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                |
-| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                               |
-| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                               |
-| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                       |
-| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                     |
-| The restacker                               | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                          |
-| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                   |
-| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                 |
-| The web server and export                   | `valley-web-publish` builds and uploads exports, `export.Store` stages and activates them, and `valley-web` serves an activated state directory over `GET` and `HEAD` (`web/`). The receiver's HTTP upload handlers and a host service for `valley-web` are not built. |
-| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                              |
-| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                     |
-| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                |
-| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                      |
-| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                     |
-| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                               |
-| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                       |
-| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                          |
-| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                   |
+| What                                        | State                                                                                                                                                                                                                                                                              |
+| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                            |
+| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                           |
+| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
+| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                                   |
+| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                                 |
+| The restacker                               | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                                      |
+| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
+| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
+| The web server and export                   | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
+| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                          |
+| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                                 |
+| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
+| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |
+| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                 |
+| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                                           |
+| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                                   |
+| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
+| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |

@@ -720,6 +720,95 @@ sudo -u git git -C /srv/git/demo.git update-ref -d refs/heads/refs/heads/main
 
 Use your configured `dataDir` if it differs.
 
+### Run the web edge
+
+The web edge is a web server that shows the projects `anyone` may read. The valley host's publisher
+pushes signed exports to it, and the edge never connects back. On the edge, `valley-web-receive`
+takes the uploads into a state directory, and `valley-web` serves them. They run as two processes,
+as two users, over one state directory (see [The receiver](./architecture.md#the-receiver)).
+
+Make a token, and give the same file to both sides. Keep it out of the Nix store and readable by
+root alone:
+
+```sh
+head -c 32 /dev/urandom | base64 | sudo install -m 0400 /dev/stdin /run/keys/valley-web-receiver-token
+```
+
+On the valley host, enable the publisher with the receiver's URL and the token file:
+
+```nix
+imports = [ the-valley.nixosModules.default the-valley.nixosModules.web-publisher ];
+services.valley.webPublisher = {
+  enable = true;
+  destination = "example.org";
+  receiver = "https://example.org";
+  receiverTokenFile = "/run/keys/valley-web-receiver-token";
+};
+```
+
+The first pass makes the export key and writes its verifier line. Read it, and give it to the
+receiver:
+
+```sh
+sudo systemctl start valley-web-publish
+sudo cat /var/lib/valley-web-publish/verifier
+```
+
+Until the receiver pins that line, it refuses every upload as `bad-signature`, and the pass fails.
+
+On an edge that runs NixOS, enable the receiver's module. The receiver listens where the publisher
+reaches it, and `valley-web` behind the reverse proxy that serves the edge's name:
+
+```nix
+imports = [ the-valley.nixosModules.web-receiver ];
+services.valley.webReceiver = {
+  enable = true;
+  instance = "valley-host";
+  destination = "example.org";
+  verifiers = [ "valley-host/web-export+1a2b3c4d+AQ..." ];
+  tokenFile = "/run/keys/valley-web-receiver-token";
+  listen = "192.0.2.10:8081";
+  webListen = "127.0.0.1:8080";
+};
+```
+
+On an edge that does not run NixOS, run the container image instead. Build it with Nix from a
+checkout of the-valley, and load it:
+
+```sh
+nix build .#valley-web-image
+docker load < result
+```
+
+`docker load` prints the image's name and tag. Put the verifier line and a copy of the token where
+the receiver's user, uid 990, can read them, and run two containers over one volume. The receiver
+gets the volume writable, and `valley-web` gets it read-only:
+
+```sh
+sudo install -d -m 0750 -o 990 -g 990 /etc/valley-web
+sudo install -m 0400 -o 990 -g 990 /run/keys/valley-web-receiver-token /etc/valley-web/token
+echo 'valley-host/web-export+1a2b3c4d+AQ...' | sudo install -m 0444 -o 990 /dev/stdin /etc/valley-web/verifiers
+
+docker run -d --name valley-web-receive --user valley-web-receive \
+  -v valley-web:/var/lib/valley-web -v /etc/valley-web:/etc/valley-web:ro \
+  -p 192.0.2.10:8081:8081 valley-web:<tag> \
+  valley-web-receive --state /var/lib/valley-web --listen :8081 \
+  --instance valley-host --destination example.org \
+  --verifiers /etc/valley-web/verifiers --token-file /etc/valley-web/token
+
+docker run -d --name valley-web --user valley-web \
+  -v valley-web:/var/lib/valley-web:ro \
+  -p 127.0.0.1:8080:8080 valley-web:<tag> \
+  valley-web --state /var/lib/valley-web --listen :8080
+```
+
+A new volume takes the owner and mode of the image's `/var/lib/valley-web`: the receiver's user,
+mode `0750`. `valley-web` reads it through the group the two users share.
+
+The token travels in every upload request. Reach the receiver over HTTPS, through a reverse proxy
+that terminates TLS, or over a private network. On the next pass, the publisher prints
+`the receiver activated sequence <n>`, and `valley-web` serves the export.
+
 ## Contributing to the-valley
 
 Contributors work in a checkout of this repository. Read [AGENTS.md](../AGENTS.md) before editing.

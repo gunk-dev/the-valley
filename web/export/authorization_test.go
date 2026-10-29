@@ -320,3 +320,55 @@ func TestAnAuthorizationWithABasisNeedsItStored(t *testing.T) {
 		t.Errorf("Authorize refused an authorization on the stored basis: %v", err)
 	}
 }
+
+// A prune that selected a withdrawn repository, and is paused before it
+// deletes it, deletes nothing once an authorization names the project
+// again: it reads the authorization again under the authorization lock.
+// The reply to that authorization says the receiver serves the export
+// whole, and the repository survives the prune.
+func TestAPruneKeepsWhatAnAuthorizationNamesAgain(t *testing.T) {
+	f := exporttest.New(t)
+	s := openStore(t, payload(t))
+	g := f.Upload(t, s)
+	repo, _ := g.Repo("app")
+	digest, err := f.Export.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	exporttest.Authorize(t, s)
+	paused, resume := make(chan struct{}), make(chan struct{})
+	*export.PruneSelected = func() {
+		close(paused)
+		<-resume
+	}
+	defer func() { *export.PruneSelected = nil }()
+	pruned := make(chan error, 1)
+	go func() { pruned <- s.Prune(context.Background()) }()
+	<-paused
+
+	exporttest.Authorize(t, s, "app")
+	reply := func() *export.AuthorizationReply {
+		active, _, err := s.Holdings()
+		if err != nil {
+			t.Fatal(err)
+		}
+		missing, err := s.Missing()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &export.AuthorizationReply{Active: active, Missing: missing}
+	}
+	if r := reply(); !r.Serves(digest) {
+		t.Errorf("named again while a prune was paused, the reply is %+v; want the export served whole", r)
+	}
+	close(resume)
+	if err := <-pruned; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(repo); err != nil {
+		t.Errorf("the prune deleted the repository an authorization named again: %v", err)
+	}
+	if r := reply(); !r.Serves(digest) {
+		t.Errorf("after the prune the reply is %+v; want the export served whole", r)
+	}
+}

@@ -6,4 +6,6 @@ var (
 	SyncFile  = &syncFile
 	Rename    = &rename
 	RemoveAll = &removeAll
+
+	PruneSelected = &pruneSelected
 )

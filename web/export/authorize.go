@@ -234,9 +234,12 @@ func (s *Store) Missing() ([]string, error) {
 // done. While a reader holds the generation it deletes nothing and returns
 // ErrHeld, and the caller tries again later. With no stored authorization
 // it deletes nothing: a server serves nothing without one, and a later
-// authorization may name what the generation holds. export.json stays as
-// it was signed, so it keeps the withdrawn projects' plan text until a
-// later activation replaces the generation.
+// authorization may name what the generation holds. It decides what to
+// delete, and renames it away, under the authorization lock too, so a
+// repository an authorization names again is never deleted after
+// Authorize returns. export.json stays as it was signed, so it keeps the
+// withdrawn projects' plan text until a later activation replaces the
+// generation.
 func (s *Store) Prune(ctx context.Context) error {
 	if s.readOnly {
 		return errReadOnly
@@ -249,57 +252,113 @@ func (s *Store) Prune(ctx context.Context) error {
 	return s.prune(ctx)
 }
 
-// prune is Prune, with the activation lock held.
+// prune is Prune, with the activation lock held. It selects the
+// repositories of the projects the stored authorization does not name.
+// Then, under the authorization lock, it reads the authorization again,
+// keeps only those it still does not name, and renames them into the
+// trash. An authorization stored meanwhile is either read again here, so
+// what it names again is kept, or is stored once the rename is done, when
+// Missing reports what it deleted. It deletes the trash once it lets the
+// authorization lock go.
 func (s *Store) prune(ctx context.Context) error {
-	a, _, err := s.Authorization()
-	if errors.Is(err, ErrNoAuthorization) {
-		return nil
+	g, withdrawn, err := s.withdrawn()
+	if err != nil || len(withdrawn) == 0 {
+		return err
 	}
+	if pruneSelected != nil {
+		pruneSelected()
+	}
+	unlock, err := s.lockAuthorization(ctx)
 	if err != nil {
 		return err
 	}
-	seq, ok, err := s.active()
-	if err != nil || !ok {
-		return err
-	}
-	g := Generation{Sequence: seq, Dir: s.generationDir(seq)}
-	e, err := g.Export()
-	if err != nil {
-		return err
-	}
-	var withdrawn []string
-	for _, p := range e.Projects {
-		if repo, _ := g.Repo(p.Name); !a.Names(p.Name, p.Identity) && exists(repo) {
-			withdrawn = append(withdrawn, repo)
-		}
-	}
-	if len(withdrawn) == 0 {
-		return nil
-	}
-	f, err := os.Open(g.Dir)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := flock(f, syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
-		return ErrHeld
-	} else if err != nil {
-		return err
-	}
-	// Holding the generation exclusively, no reader is in it, and one
-	// that opens it next finds the repositories gone.
-	var trash []string
-	for _, repo := range withdrawn {
-		to := s.path("trash", "withdrawn-"+filepath.Base(repo)+"-"+random())
-		if err := rename(repo, to); err != nil {
-			return err
-		}
-		trash = append(trash, to)
-	}
-	err = syncPath(filepath.Join(g.Dir, "repos"))
-	f.Close()
+	trash, err := s.renameWithdrawn(g, withdrawn)
+	unlock()
 	for _, t := range trash {
 		err = errors.Join(err, removeAll(ctx, t))
 	}
 	return err
 }
+
+// withdrawn are the active generation and the projects of it whose
+// repositories it holds and the stored authorization does not name. With
+// no stored authorization there are none.
+func (s *Store) withdrawn() (Generation, []string, error) {
+	a, _, err := s.Authorization()
+	if errors.Is(err, ErrNoAuthorization) {
+		return Generation{}, nil, nil
+	}
+	if err != nil {
+		return Generation{}, nil, err
+	}
+	seq, ok, err := s.active()
+	if err != nil || !ok {
+		return Generation{}, nil, err
+	}
+	g := Generation{Sequence: seq, Dir: s.generationDir(seq)}
+	e, err := g.Export()
+	if err != nil {
+		return Generation{}, nil, err
+	}
+	var withdrawn []string
+	for _, p := range e.Projects {
+		if repo, _ := g.Repo(p.Name); !a.Names(p.Name, p.Identity) && exists(repo) {
+			withdrawn = append(withdrawn, p.Name)
+		}
+	}
+	return g, withdrawn, nil
+}
+
+// renameWithdrawn renames into the trash the repositories of the projects
+// of g in names that the stored authorization, read again, still does not
+// name, while no reader holds g. The caller holds the authorization lock.
+// It returns what it put in the trash.
+func (s *Store) renameWithdrawn(g Generation, names []string) ([]string, error) {
+	a, _, err := s.Authorization()
+	if err != nil {
+		return nil, err
+	}
+	e, err := g.Export()
+	if err != nil {
+		return nil, err
+	}
+	still := map[string]bool{}
+	for _, p := range e.Projects {
+		still[p.Name] = !a.Names(p.Name, p.Identity)
+	}
+	var repos []string
+	for _, name := range names {
+		if repo, _ := g.Repo(name); still[name] && exists(repo) {
+			repos = append(repos, repo)
+		}
+	}
+	if len(repos) == 0 {
+		return nil, nil
+	}
+	f, err := os.Open(g.Dir)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if err := flock(f, syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+		return nil, ErrHeld
+	} else if err != nil {
+		return nil, err
+	}
+	// Holding the generation exclusively, no reader is in it, and one
+	// that opens it next finds the repositories gone.
+	var trash []string
+	for _, repo := range repos {
+		to := s.path("trash", "withdrawn-"+filepath.Base(repo)+"-"+random())
+		if err := rename(repo, to); err != nil {
+			return trash, err
+		}
+		trash = append(trash, to)
+	}
+	return trash, syncPath(filepath.Join(g.Dir, "repos"))
+}
+
+// pruneSelected, when it is set, is called by prune once it has selected
+// the repositories to delete and before it takes the authorization lock. A
+// test pauses there.
+var pruneSelected func()

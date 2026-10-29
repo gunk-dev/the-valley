@@ -21,10 +21,13 @@
 // reader may read, by name and publication identity, along with its
 // readers. Its sequence comes from the publisher's counter, and the
 // receiver admits an authorization with VerifyAuthorization by sequence
-// alone, regardless of age. The receiver stores it with Store.Authorize
-// without taking the activation lock, and a server serves a project only
-// while the stored authorization names it. No content manifest can grant
-// or restore access.
+// alone, regardless of age, and by its basis, when it has one. The
+// receiver stores it with Store.Authorize without taking the activation
+// lock, and a server serves a project only while the stored authorization
+// names it. Authorize renames the authorization into place under the
+// serving lock, which a server holds from its last check of the
+// authorization until a response's headers are written (HoldServing). No
+// content manifest can grant or restore access.
 //
 // Digest is the export's content digest. It leaves out every
 // display-time field, so the publisher uploads only when the valley
@@ -44,7 +47,7 @@
 // one HTTP request. Every reply is JSON.
 //
 // Every request carries the receiver's token, which ReadToken reads, in
-// its Authorization header (Authorization). The token authenticates the
+// its Authorization header (BearerHeader). The token authenticates the
 // transport; the manifest's signature still authenticates the export. The
 // receiver refuses a request without the token as unauthenticated, with
 // 401, before it reads the body or anything else of the request.

@@ -3094,7 +3094,16 @@ own admission rules.
   any delayed or replayed authorization whose sequence number is at or below the stored sequence. If
   the receiver already holds a higher sequence number — for example, after the publisher's state is
   restored from an older backup — the policy path re-evaluates the policy and signs a new
-  authorization above the receiver's sequence number instead of resending an earlier signature.
+  authorization above the receiver's sequence number instead of resending an earlier signature. A
+  higher sequence alone does not make a check fresh, so the retry keeps no access that it could not
+  check.
+- **Kept access needs the receiver's agreement.** When a project's policy cannot be read, the policy
+  path keeps the access that the last authorization the receiver acknowledged gave the project, and
+  names that authorization's sequence as the new one's `basis`. The receiver stores an authorization
+  with a basis only while it holds exactly that one, and refuses it as `stale-basis` otherwise
+  (`web/export/authorization.go`). After a `replayed` or `stale-basis` refusal, the publisher's
+  record is out of date, and the retry keeps nothing it could not check. So a record restored from
+  an old backup cannot sign a withdrawn grant above the receiver's withdrawal.
 - **Content uploads confer no access.** A content manifest records each project's publication
   identity, ref tips, and bundle digest, without any reader list. The receiver builds repositories
   in a generation only for projects named in the stored authorization, and `valley-web` serves a
@@ -3106,18 +3115,23 @@ own admission rules.
   sweeps (`web/export/authorize.go`). A stalled content upload or a long commit cannot delay a
   withdrawal. When the receiver replies `200`, the authorization is already synced to disk.
 - **Checked on every request.** `valley-web` reads the stored authorization at the start of every
-  request and checks it again after rendering the response, before writing the first byte. If a new
-  authorization arrived while the response was rendering, `valley-web` discards the response and
-  renders it again. Every request that arrives after the receiver replies uses the new authorization
-  without restarting `valley-web`. Responses that have already started writing to the connection
-  finish normally. When the authorization is missing or invalid, `valley-web` serves no projects.
+  request and checks it again after rendering the response. If a new authorization arrived while the
+  response was rendering, `valley-web` discards the response and renders it again. The last check
+  and the response's headers happen under `serving.lock`, held shared, and the receiver renames a
+  new authorization into place under the same lock, held exclusively, and replies only after it
+  releases it (`web/export/authorize.go`, `web/server/server.go`). So a response whose headers are
+  written after the receiver replies was checked against the new authorization, without restarting
+  `valley-web`. Responses whose headers were written before finish normally. When the authorization
+  is missing or invalid, `valley-web` serves no projects.
 - **Withdrawal and repository pruning.** When a new authorization omits a project, `valley-web`
   hides that project starting with the next request. Once no reader holds the active generation, the
   receiver deletes the project's git repository from that generation and omits it from future
   activations. The signed `export.json` file remains unchanged on disk, so the withdrawn project's
   plan text stays in the active generation until a later activation replaces and deletes that
   generation. Repository deletion runs in the background and retries on the next authorization,
-  activation, or receiver startup without delaying the authorization reply.
+  activation, or receiver startup without delaying the authorization reply. A prune decides what to
+  delete, and renames it away, under the authorization lock, after reading the authorization again
+  there, so it never deletes a repository that an acknowledged authorization names again.
 - **Policy-check freshness.** Every pass sends an authorization, even when no content changed, and
   records in `checked` the time of the last complete policy check. Web pages display that timestamp
   as "Policy last checked …" alongside the export's collection time, and mark a page stale only when
@@ -3125,14 +3139,17 @@ own admission rules.
   time so the timestamp on the page does not advance. A recent `checked` time shows that the
   publisher can reach the edge, while `collected` shows the age of the exported content.
 
-Checked by `web-unit` (`TestVerifyAuthorizationSteps`,
+Checked by `web-unit` (`TestVerifyAuthorizationSteps`, `TestAnAuthorizationWithABasisNeedsItStored`,
 `TestStoreAuthorizesWhileTheActivationLockIsHeld`, `TestStorePrunesAWithdrawnRepository`,
-`TestTheAuthorizationSequenceIsDurable`, and `TestUploadSkipsAnUnchangedDigest`), by
-`web-receiver-unit` (`TestAnAuthorizationIsAdmittedBySequence` and
-`TestASaturatedUploadLeavesValleyWebServing`), by `web-server-unit`
-(`TestAuthorizationIsReadOnEveryRequest` and `TestAResponseIsHeldToTheAuthorizationWhenWritten`),
-and by `web-push-e2e`, which withdraws a project with `--policy-only` while a content upload is
-stalled on the receiver's activation lock and verifies that the stalled upload restores nothing.
+`TestAPruneKeepsWhatAnAuthorizationNamesAgain`, `TestTheAuthorizationSequenceIsDurable`,
+`TestTheAuthorizationCounterSurvivesFailedWrites`, `TestARestoredStateRestoresNoWithdrawnAccess`,
+and `TestUploadSkipsAnUnchangedDigest`), by `web-receiver-unit`
+(`TestAnAuthorizationIsAdmittedBySequence` and `TestASaturatedUploadLeavesValleyWebServing`), by
+`web-server-unit` (`TestAuthorizationIsReadOnEveryRequest`,
+`TestAResponseIsHeldToTheAuthorizationWhenWritten` and
+`TestAWithdrawalWaitsForAResponseItsCheckAdmitted`), and by `web-push-e2e`, which withdraws a
+project with `--policy-only` while a content upload is stalled on the receiver's activation lock and
+verifies that the stalled upload restores nothing.
 
 ### One pass, one instance
 
@@ -3180,11 +3197,13 @@ for every request. `valley-web` runs alongside the receiver as a separate proces
 
 `valley-web` only reads the receiver's store. Both programs take the path to the store's descriptor
 file, and the store's payloads live in the `v2/` directory beside that file. `valley-web` opens the
-store with `export.OpenReadOnly`, which creates no files and takes only a shared `flock(2)` lock on
-the generation opened for a request (`web/export/store.go`). When the receiver opens the store with
-`export.OpenStore`, it recovers any interrupted activation, sweeps old generations, and prunes
-withdrawn repositories. Until the receiver finishes an interrupted activation, `valley-web`
-continues to serve the generation that `current` points to.
+store with `export.OpenReadOnly`, which creates no files and takes only shared `flock(2)` locks: on
+the generation opened for a request, and on `serving.lock`, which it opens read-only, from its last
+check of the authorization until the response's headers are written (`web/export/store.go`,
+`web/export/authorize.go`). When the receiver opens the store with `export.OpenStore`, it recovers
+any interrupted activation, sweeps old generations, and prunes withdrawn repositories. Until the
+receiver finishes an interrupted activation, `valley-web` continues to serve the generation that
+`current` points to.
 
 The store's entry point is a regular file so that binaries built for the v1 store layout, which
 required a directory path for `--state`, refuse to open it. The `v2/` payload directory also omits
@@ -3706,24 +3725,24 @@ supplies the host configuration, the project declaration and the secrets (**depl
 
 ## Not deployed or not wired yet
 
-| What                                        | State                                                                                                                                                                                                                                                                              |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sigverify`                                 | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                            |
-| Hardware-backed keys in the registry        | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                           |
-| SSHSIG evidence                             | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
-| Approvals                                   | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                                   |
-| Approval carry                              | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                                 |
-| The restacker                               | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                                      |
-| The check worker                            | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
-| The build slice                             | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
-| The web server and export                   | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
-| Named readers at the edge                   | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                          |
-| Withdrawal independent of content reads     | A withdrawal takes effect only when the next export is built and activated, which requires reading the instance repository and every project selected by a read grant to `anyone`.                                                                                                 |
-| Filesystem sandbox for the web publisher    | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                |
-| Clones from the edge                        | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
-| Read grants over ssh                        | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |
-| Reviews                                     | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                 |
-| A crash-safe landing ledger                 | Landing is several separate ref updates.                                                                                                                                                                                                                                           |
-| Policy and registry snapshot in the outcome | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                                   |
-| Registry compile on an instance landing     | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
-| Bus authentication                          | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |
+| What                                         | State                                                                                                                                                                                                                                                                              |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sigverify`                                  | On `main` and tested. Nothing calls it.                                                                                                                                                                                                                                            |
+| Hardware-backed keys in the registry         | `identity compile` verifies YubiKey PIV attestations. No host service or gate uses them.                                                                                                                                                                                           |
+| SSHSIG evidence                              | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
+| Approvals                                    | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                                   |
+| Approval carry                               | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                                 |
+| The restacker                                | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                                      |
+| The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
+| The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
+| The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
+| Named readers at the edge                    | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                          |
+| Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps the access the receiver's current authorization gives it.              |
+| Filesystem sandbox for the web publisher     | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                |
+| Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
+| Read grants over ssh                         | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |
+| Reviews                                      | `review/` defines the record and its history. The hook refuses every push to them.                                                                                                                                                                                                 |
+| A crash-safe landing ledger                  | Landing is several separate ref updates.                                                                                                                                                                                                                                           |
+| Policy and registry snapshot in the outcome  | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                                   |
+| Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
+| Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |

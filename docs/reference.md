@@ -3084,9 +3084,10 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     `Retry-After: 5`.
   - The "Busy" (`503`), "Page too large" (`500`) and "Not found" (`404`) pages are rendered once
     when the server starts. They show no export data and take none of the 64 MiB budget.
-- **Access:** Every project route checks that the export lists the project with `public` visibility
-  and a `group`. Every `404` serves the same page, byte for byte, whether the project is hidden or
-  missing, the knot or path does not exist, or the commit is not served.
+- **Access:** Every project route checks that the stored authorization lets `anyone` read the
+  project, under the identity the export gives it, and that the project has a `group`. Every `404`
+  serves the same page, byte for byte, whether the project is hidden or missing, the knot or path
+  does not exist, or the commit is not served.
 - **Not found:** The `404` page is titled "Not found" and shows a box of preformatted text in the
   server's stylesheet. Its last line, "Return to the source", links to `/`. The page omits
   navigation, the export age, and the site name:

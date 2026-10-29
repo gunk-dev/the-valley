@@ -6,13 +6,24 @@
 // # The export
 //
 // An export is export.json and one git bundle of main per project. It
-// holds only public projects, and only what an anonymous reader of one
+// holds the projects the publisher exports, and only what a reader of one
 // may see. Build projects the valley's own JSON onto it: `valley plan
 // --all --json`, `valley pending --all --json`, and `valley knot show
-// --project P <id> --json` for each knot of each public project, with
-// each project's visibility, its main, and a display mapping for
-// principal names. Visibility is per project: every knot and comment of
-// an exported project is exported.
+// --project P <id> --json` for each knot of each exported project, with
+// each project's publication identity, its main, and a display mapping
+// for principal names. Every knot and comment of an exported project is
+// exported. The export says nothing of who may read a project.
+//
+// # The authorization
+//
+// An Authorization is a signed note, apart from the export, that names
+// each project a reader may read, by name and publication identity, and
+// its readers. Its sequence is the publisher's own counter, and the
+// receiver admits one with VerifyAuthorization by its sequence alone,
+// never its age. The receiver stores it with Store.Authorize, without the
+// activation lock, and a server serves a project only while the stored
+// authorization names it. No content manifest can grant or restore
+// access.
 //
 // Digest is the export's content digest. It leaves out every
 // display-time field, so the publisher uploads only when the valley
@@ -23,7 +34,7 @@
 // A Manifest is a signed note that names the instance that signed it,
 // the destination it is for, its sequence (the signing time in Unix
 // nanoseconds), export.json's hash and size, and each project's
-// visibility, graph tip, source tip and bundle. VerifyManifest admits one
+// identity, graph tip, source tip and bundle. VerifyManifest admits one
 // in a fixed order of steps, and CheckExport holds export.json to it.
 //
 // # The upload
@@ -36,6 +47,11 @@
 // transport; the manifest's signature still authenticates the export. The
 // receiver refuses a request without the token as unauthenticated, with
 // 401, before it reads the body or anything else of the request.
+//
+// Before the upload, the publisher sends its authorization: POST
+// AuthorizationPath with the signed note as the body. The receiver admits
+// it with VerifyAuthorization, stores it, and replies 200 with an
+// AuthorizationReply, which says what export it serves.
 //
 //  1. POST ManifestPath with the signed manifest as the body. The
 //     receiver admits it with VerifyManifest, holds the bodies it declares
@@ -94,10 +110,12 @@
 //
 // # The receiver's state
 //
-// Store is the receiver's state directory: its generations, the active
-// symlink, the high-water mark and the staging area. Open resolves the
-// active generation once per request and holds it until released, and
-// Activate makes a staged upload the active generation. The receiver
-// opens the state directory with OpenStore, and the server with
-// OpenReadOnly, which needs only read access to it.
+// Store is the receiver's store: a descriptor file, and beside it the
+// payload directory v2 with the authorization, the generations, the
+// current symlink, the high-water mark and the staging area. Open
+// resolves the current generation once per request and holds it until
+// released, Activate makes a staged upload the current generation, and
+// Prune deletes the repositories a withdrawal left. The receiver opens the
+// store with OpenStore, and the server with OpenReadOnly, which needs only
+// read access to it.
 package export

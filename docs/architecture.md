@@ -3121,8 +3121,10 @@ own admission rules.
   new authorization into place under the same lock, held exclusively, and replies only after it
   releases it (`web/export/authorize.go`, `web/server/server.go`). So a response whose headers are
   written after the receiver replies was checked against the new authorization, without restarting
-  `valley-web`. Responses whose headers were written before finish normally. When the authorization
-  is missing or invalid, `valley-web` serves no projects.
+  `valley-web`. Responses whose headers were written before finish normally. A request waits for
+  `serving.lock` only until its deadline, or until its reader goes away, so a receiver stopped while
+  it holds the lock makes requests answer `503` and writes nothing they rendered. When the
+  authorization is missing or invalid, `valley-web` serves no projects.
 - **Withdrawal and repository pruning.** When a new authorization omits a project, `valley-web`
   hides that project starting with the next request. Once no reader holds the active generation, the
   receiver deletes the project's git repository from that generation and omits it from future
@@ -3143,13 +3145,13 @@ Checked by `web-unit` (`TestVerifyAuthorizationSteps`, `TestAnAuthorizationWithA
 `TestStoreAuthorizesWhileTheActivationLockIsHeld`, `TestStorePrunesAWithdrawnRepository`,
 `TestAPruneKeepsWhatAnAuthorizationNamesAgain`, `TestTheAuthorizationSequenceIsDurable`,
 `TestTheAuthorizationCounterSurvivesFailedWrites`, `TestARestoredStateRestoresNoWithdrawnAccess`,
-and `TestUploadSkipsAnUnchangedDigest`), by `web-receiver-unit`
-(`TestAnAuthorizationIsAdmittedBySequence` and `TestASaturatedUploadLeavesValleyWebServing`), by
-`web-server-unit` (`TestAuthorizationIsReadOnEveryRequest`,
-`TestAResponseIsHeldToTheAuthorizationWhenWritten` and
-`TestAWithdrawalWaitsForAResponseItsCheckAdmitted`), and by `web-push-e2e`, which withdraws a
-project with `--policy-only` while a content upload is stalled on the receiver's activation lock and
-verifies that the stalled upload restores nothing.
+`TestAReceiverThatLostItsStateGetsTheReadableGrants`, and `TestUploadSkipsAnUnchangedDigest`), by
+`web-receiver-unit` (`TestAnAuthorizationIsAdmittedBySequence` and
+`TestASaturatedUploadLeavesValleyWebServing`), by `web-server-unit`
+(`TestAuthorizationIsReadOnEveryRequest`, `TestAResponseIsHeldToTheAuthorizationWhenWritten`,
+`TestAWithdrawalWaitsForAResponseItsCheckAdmitted` and `TestAServingLockWaitEndsWithTheRequest`),
+and by `web-push-e2e`, which withdraws a project with `--policy-only` while a content upload is
+stalled on the receiver's activation lock and verifies that the stalled upload restores nothing.
 
 ### One pass, one instance
 

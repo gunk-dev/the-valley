@@ -548,19 +548,22 @@ verifies that a pass with a wrong token is refused while the edge keeps serving 
 and (`TestStoreDescriptorRetiresTheFirstLayout`) that both store openers refuse a directory. It
 verifies that a restored publisher state keeps no withdrawn access
 (`TestARestoredStateRestoresNoWithdrawnAccess`), that a paused prune keeps a repository an
-authorization names again (`TestAPruneKeepsWhatAnAuthorizationNamesAgain`), and that retiring the
-first layout finishes after a stop at any step and waits for its lock
-(`TestRetiringTheFirstLayoutResumes`). `web-server-unit` verifies that a withdrawal takes effect at
-the next request, that a response rendered while the authorization changed is rendered again, and
-that a withdrawal stored while a response holds the serving lock returns only after that response's
-headers are written (`TestAuthorizationIsReadOnEveryRequest`,
-`TestAResponseIsHeldToTheAuthorizationWhenWritten`,
-`TestAWithdrawalWaitsForAResponseItsCheckAdmitted`). `web-push-e2e` withdraws a project with
-`--policy-only` while an upload is stalled, and checks that the stalled upload restores nothing and
-that a store with its authorization removed serves no project. `module-eval` verifies the
-credentials and users both modules render and rejects a token path in the Nix store.
-`web-publisher-e2e` verifies in a NixOS VM that the publisher's unit receives the token as a
-credential while the token file on disk stays readable by root alone.
+authorization names again (`TestAPruneKeepsWhatAnAuthorizationNamesAgain`), that retiring the first
+layout finishes after a stop at any step and waits for its lock
+(`TestRetiringTheFirstLayoutResumes`), and that a new store deletes nothing that only shares a name
+with the first layout's state (`TestANewStoreKeepsWhatOnlySharesTheFirstLayoutsNames`).
+`web-server-unit` verifies that a withdrawal takes effect at the next request, that a response
+rendered while the authorization changed is rendered again, and that a withdrawal stored while a
+response holds the serving lock returns only after that response's headers are written
+(`TestAuthorizationIsReadOnEveryRequest`, `TestAResponseIsHeldToTheAuthorizationWhenWritten`,
+`TestAWithdrawalWaitsForAResponseItsCheckAdmitted`), and that a request waits for a held serving
+lock only until its deadline or until its reader goes away
+(`TestAServingLockWaitEndsWithTheRequest`). `web-push-e2e` withdraws a project with `--policy-only`
+while an upload is stalled, and checks that the stalled upload restores nothing and that a store
+with its authorization removed serves no project. `module-eval` verifies the credentials and users
+both modules render and rejects a token path in the Nix store. `web-publisher-e2e` verifies in a
+NixOS VM that the publisher's unit receives the token as a credential while the token file on disk
+stays readable by root alone.
 
 ## Secrets
 

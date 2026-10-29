@@ -2762,6 +2762,8 @@ beside the descriptor:
     tmp/<project>.git             a repository being built
     repos/<project>.git           a repository once accepted and synced
 <dir>/v2/trash/                   generations and repositories renamed away before deletion
+<dir>/v2/retiring                 the names of the first layout's state still to delete, while
+                                  a retirement of it is unfinished
 ```
 
 - **The descriptor:** `OpenStore` refuses a `--state` path that is a directory or a file whose
@@ -2774,15 +2776,23 @@ beside the descriptor:
   binaries find no `active` symlink and no `exports/` directory, so they serve nothing. In addition,
   each generation holds repositories only for projects that the authorization named when the
   generation was built, so a rollback cannot expose unauthorized repositories.
-- **Retiring the first layout:** On every start, `OpenStore` looks in the descriptor's directory for
-  any of the first layout's names: `active`, `high-water`, `exports/`, `staging/`, `trash/`, and
-  `lock`. When it finds one, it takes an exclusive `flock(2)` on `lock`, as the first layout's
-  receiver does for each activation, and fails with an error naming the lock while another process
-  holds it. It then deletes each name in that order, syncing the directory after `active`, so a
-  first-layout binary started there again serves nothing. Each step deletes whatever is left of its
-  name, so a retirement a crash stopped at any step finishes on the next start. It reports that the
-  first layout was retired. The descriptor's directory belongs to the store: `OpenStore` refuses a
-  `--state` that is a directory before it deletes anything.
+- **Retiring the first layout:** `OpenStore` deletes the first layout's state only when it has proof
+  that the state is the first layout's, and it records that proof before it deletes anything.
+  - **Proof:** When the descriptor does not exist yet, `OpenStore` looks in the descriptor's
+    directory for an `active` symlink that points into `exports/`, or a `high-water` file that holds
+    a sequence and a newline, as the first layout writes them. Either is proof. Without proof it
+    deletes nothing, so a new store made beside unrelated files that share a name with the first
+    layout's (`active`, `high-water`, `exports/`, `staging/`, `trash/`, `lock`) leaves them alone.
+  - **Record:** With proof, `OpenStore` takes an exclusive `flock(2)` on the first layout's `lock`,
+    as that layout's receiver does for each activation, and fails with an error naming the lock
+    while another process holds it. It then writes the names of the first layout's state that the
+    directory holds to `v2/retiring`, durably, and writes the descriptor.
+  - **Deletion:** It deletes each recorded name in the order above, syncing the directory after
+    `active`, so a first-layout binary started there again serves nothing. It then removes
+    `v2/retiring` and reports that the first layout was retired.
+  - **A later start** continues a retirement only while `v2/retiring` is there. Each step deletes
+    whatever is left of its name, so a retirement that a crash stopped at any step finishes on the
+    next start. `OpenStore` refuses a `--state` that is a directory before it deletes anything.
 
 - **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<dir>/v2/lock`, `Activate`
   runs these steps in order:
@@ -2878,9 +2888,10 @@ next pass. Upgrade in this order:
    automatically. Stop the first layout's receiver before starting the new one: the new receiver
    refuses to start while another process holds the first layout's `lock`. On its first start, the
    receiver creates the descriptor and `v2/`, and deletes the first layout's state from `<dir>`
-   (`active` first), finishing a deletion an earlier start left part done. Until the host is
-   upgraded, the edge serves nothing (every page shows "Nothing published yet") and the old
-   publisher on the host fails each pass with `unsupported-version`.
+   (`active` first), once an `active` symlink into `exports/` or a first-layout `high-water` file
+   proves it is that layout's. A later start finishes a deletion an earlier start left part done.
+   Until the host is upgraded, the edge serves nothing (every page shows "Nothing published yet")
+   and the old publisher on the host fails each pass with `unsupported-version`.
 2. **Then the host.** Upgrade `valley-web-publish`. On its next pass, the publisher sends an
    authorization and then uploads the full export, because the receiver's authorization reply
    reports no active export. To publish immediately, run
@@ -2955,8 +2966,10 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   re-parses it only when its bytes have changed. It serves only the projects that the authorization
   lets `anyone` read under the identity in the export. Once the response is rendered, the request
   takes `v2/serving.lock` shared, reads the authorization again, and writes the response's headers
-  (including for redirects) before it releases the lock and writes the body. If the authorization
-  bytes changed, the server discards the rendered response and renders it again under the new
+  (including for redirects) before it releases the lock and writes the body. A request waits for the
+  lock only until its 15-second deadline, or until its reader goes away. It then writes nothing it
+  rendered: it answers `503`, or nothing to a reader that went away. If the authorization bytes
+  changed, the server discards the rendered response and renders it again under the new
   authorization (up to three renders total, after which the request answers `503`). The receiver
   renames a new authorization into place under the same lock, exclusively, and replies only after it
   releases it. So a response whose headers are written after the receiver replies was checked

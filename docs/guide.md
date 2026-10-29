@@ -839,8 +839,12 @@ docker run -d --name valley-web --user valley-web \
 A new volume inherits the owner and permissions of `/var/lib/valley-web` from the image: the
 receiver's user with mode `0750`. `valley-web` reads the volume through the shared group. Both
 containers take the store descriptor `/var/lib/valley-web/store`, which the receiver creates on its
-first start. When upgrading from a release where `--state` was a directory, upgrade the edge before
-the host (see [Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host)).
+first start. When upgrading from a release where `--state` was a directory, stop the old receiver,
+start the new one, and upgrade the host after the edge (see
+[Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host)). Then delete the
+first layout's state from the volume by hand: `active`, `high-water`, `exports/`, `staging/`,
+`trash/` and `lock`, beside the descriptor. Leaving them is harmless, because the first layout held
+public projects only.
 
 Give each container its own memory limit. When a container reaches `--memory`, the kernel reclaims
 memory or kills a process inside that container alone. Setting `--memory-swap` equal to `--memory`

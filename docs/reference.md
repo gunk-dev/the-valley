@@ -2762,8 +2762,6 @@ beside the descriptor:
     tmp/<project>.git             a repository being built
     repos/<project>.git           a repository once accepted and synced
 <dir>/v2/trash/                   generations and repositories renamed away before deletion
-<dir>/v2/retiring                 the names of the first layout's state still to delete, while
-                                  a retirement of it is unfinished
 ```
 
 - **The descriptor:** `OpenStore` refuses a `--state` path that is a directory or a file whose
@@ -2772,27 +2770,14 @@ beside the descriptor:
   checks and requires both the descriptor and `v2/` to exist. Binaries from the first store layout
   expect a directory for `--state`: a first-layout `valley-web` exits `1` reporting that the
   descriptor is not a directory, and a first-layout `valley-web-receive` exits `1` when it cannot
-  create a directory there. If pointed at the parent directory or `v2/` instead, first-layout
-  binaries find no `active` symlink and no `exports/` directory, so they serve nothing. In addition,
-  each generation holds repositories only for projects that the authorization named when the
-  generation was built, so a rollback cannot expose unauthorized repositories.
-- **Retiring the first layout:** `OpenStore` deletes the first layout's state only when it has proof
-  that the state is the first layout's, and it records that proof before it deletes anything.
-  - **Proof:** When the descriptor does not exist yet, `OpenStore` looks in the descriptor's
-    directory for an `active` symlink that points into `exports/`, or a `high-water` file that holds
-    a sequence and a newline, as the first layout writes them. Either is proof. Without proof it
-    deletes nothing, so a new store made beside unrelated files that share a name with the first
-    layout's (`active`, `high-water`, `exports/`, `staging/`, `trash/`, `lock`) leaves them alone.
-  - **Record:** With proof, `OpenStore` takes an exclusive `flock(2)` on the first layout's `lock`,
-    as that layout's receiver does for each activation, and fails with an error naming the lock
-    while another process holds it. It then writes the names of the first layout's state that the
-    directory holds to `v2/retiring`, durably, and writes the descriptor.
-  - **Deletion:** It deletes each recorded name in the order above, syncing the directory after
-    `active`, so a first-layout binary started there again serves nothing. It then removes
-    `v2/retiring` and reports that the first layout was retired.
-  - **A later start** continues a retirement only while `v2/retiring` is there. Each step deletes
-    whatever is left of its name, so a retirement that a crash stopped at any step finishes on the
-    next start. `OpenStore` refuses a `--state` that is a directory before it deletes anything.
+  create a directory there. Pointed at `v2/`, first-layout binaries find no `active` symlink and no
+  `exports/` directory, so they serve nothing from the store. In addition, each generation holds
+  repositories only for projects that the authorization named when the generation was built, so a
+  rollback cannot expose unauthorized repositories.
+- **Nothing outside the store:** The receiver writes and deletes nothing outside the descriptor and
+  `v2/`. `OpenStore` refuses a `--state` that is a directory before it creates anything. State of
+  the first store layout in the descriptor's directory stays there until the operator deletes it
+  (see [Upgrading the edge and the host](#upgrading-the-edge-and-the-host)).
 
 - **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<dir>/v2/lock`, `Activate`
   runs these steps in order:
@@ -2885,26 +2870,36 @@ next pass. Upgrade in this order:
 
 1. **The edge first.** Upgrade `valley-web-receive` and `valley-web`, passing `--state <dir>/store`
    to both, where `<dir>` is the state directory. The receiver NixOS module sets this path
-   automatically. Stop the first layout's receiver before starting the new one: the new receiver
-   refuses to start while another process holds the first layout's `lock`. On its first start, the
-   receiver creates the descriptor and `v2/`, and deletes the first layout's state from `<dir>`
-   (`active` first), once an `active` symlink into `exports/` or a first-layout `high-water` file
-   proves it is that layout's. A later start finishes a deletion an earlier start left part done.
-   Until the host is upgraded, the edge serves nothing (every page shows "Nothing published yet")
-   and the old publisher on the host fails each pass with `unsupported-version`.
+   automatically. Stop the first layout's receiver, then start the new one. On its first start, the
+   receiver creates the descriptor and `v2/` and touches nothing else in `<dir>`. Until the host is
+   upgraded, the edge serves nothing (every page shows "Nothing published yet") and the old
+   publisher on the host fails each pass with `unsupported-version`.
 2. **Then the host.** Upgrade `valley-web-publish`. On its next pass, the publisher sends an
    authorization and then uploads the full export, because the receiver's authorization reply
    reports no active export. To publish immediately, run
    `systemctl start valley-web-publish.service`.
+
+3. **Then delete the first layout by hand.** Once the new receiver runs, delete the first layout's
+   state from `<dir>`, beside the descriptor: `active`, `high-water`, `exports/`, `staging/`,
+   `trash/` and `lock`. On NixOS:
+
+   ```sh
+   sudo sh -c 'cd /var/lib/valley-web && rm -rf active high-water exports staging trash lock'
+   ```
+
+   Leaving them is harmless: the first layout held public projects only, because its exports carried
+   nothing else, and the new binaries never read them. The receiver deletes nothing outside its
+   descriptor and `v2/`, so this step is the operator's.
 
 If the host is upgraded before the edge, each pass fails when sending its authorization: the old
 receiver answers `404`, and the publisher reports that the edge must be upgraded first. The edge
 continues serving its existing export until upgraded.
 
 Rolling the edge back to first-layout binaries serves nothing from the v2 store: those binaries
-refuse the descriptor file and find no first-layout state beside it. Because the upgrade deleted the
-first-layout state, a rolled-back deployment serves nothing until a first-protocol publisher uploads
-a full export to a first-layout directory.
+refuse the descriptor file, and find no first-layout state in `v2/`. Pointed at `<dir>` before step
+3, they serve the first layout's last export, which held public projects only. After step 3, a
+rolled-back deployment serves nothing until a first-protocol publisher uploads a full export to a
+first-layout directory.
 
 #### Web server (`valley-web`)
 

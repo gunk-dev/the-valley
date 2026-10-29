@@ -502,10 +502,13 @@ every bundle passes acceptance (`implemented`, `web/export/body.go`, `web/export
 holder of the publisher's export key can put content or an authorization on the edge. The bearer
 token grants upload access alone.
 
-**A rollback of the edge serves nothing.** The store's entry point is a descriptor file (`store`),
-which binaries of the first store layout refuse. Its payloads live under `v2/`, which those binaries
-never read (`implemented`, `web/export/store.go`). Neither a rolled-back binary nor a missing
-authorization can serve the store's content.
+**A rollback of the edge serves nothing from the store.** The store's entry point is a descriptor
+file (`store`), which binaries of the first store layout refuse. Its payloads live under `v2/`,
+which those binaries never read (`implemented`, `web/export/store.go`). Neither a rolled-back binary
+nor a missing authorization can serve the store's content. The receiver deletes nothing outside its
+descriptor and `v2/` (`implemented`), so the first layout's state stays beside the descriptor until
+the operator deletes it by hand. It held public projects only, and a rolled-back binary pointed at
+it serves that old public export.
 
 **The token decides who may use the receiver.** Every request must carry the bearer token in its
 `Authorization` header. The receiver checks the header before reading the request body and refuses
@@ -545,17 +548,15 @@ future-dated, foreign-key, and foreign-destination manifests
 dated long ago by its sequence, refuses a replayed authorization, and refuses a request of the first
 protocol (`TestAnAuthorizationIsAdmittedBySequence`). `web-unit` (`TestPublishesToTheRealReceiver`)
 verifies that a pass with a wrong token is refused while the edge keeps serving the active export,
-and (`TestStoreDescriptorRetiresTheFirstLayout`) that both store openers refuse a directory. It
-verifies that a restored publisher state keeps no withdrawn access
-(`TestARestoredStateRestoresNoWithdrawnAccess`), that a paused prune keeps a repository an
-authorization names again (`TestAPruneKeepsWhatAnAuthorizationNamesAgain`), that retiring the first
-layout finishes after a stop at any step and waits for its lock
-(`TestRetiringTheFirstLayoutResumes`), and that a new store deletes nothing that only shares a name
-with the first layout's state (`TestANewStoreKeepsWhatOnlySharesTheFirstLayoutsNames`).
-`web-server-unit` verifies that a withdrawal takes effect at the next request, that a response
-rendered while the authorization changed is rendered again, and that a withdrawal stored while a
-response holds the serving lock returns only after that response's headers are written
-(`TestAuthorizationIsReadOnEveryRequest`, `TestAResponseIsHeldToTheAuthorizationWhenWritten`,
+and (`TestStoreDescriptorLeavesTheFirstLayout`) that both store openers refuse a directory and that
+a new store deletes none of the first layout's state beside it. It verifies that a restored
+publisher state keeps no withdrawn access (`TestARestoredStateRestoresNoWithdrawnAccess`), and that
+a paused prune keeps a repository an authorization names again
+(`TestAPruneKeepsWhatAnAuthorizationNamesAgain`). `web-server-unit` verifies that a withdrawal takes
+effect at the next request, that a response rendered while the authorization changed is rendered
+again, and that a withdrawal stored while a response holds the serving lock returns only after that
+response's headers are written (`TestAuthorizationIsReadOnEveryRequest`,
+`TestAResponseIsHeldToTheAuthorizationWhenWritten`,
 `TestAWithdrawalWaitsForAResponseItsCheckAdmitted`), and that a request waits for a held serving
 lock only until its deadline or until its reader goes away
 (`TestAServingLockWaitEndsWithTheRequest`). `web-push-e2e` withdraws a project with `--policy-only`

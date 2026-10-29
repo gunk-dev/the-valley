@@ -3209,10 +3209,11 @@ receiver finishes an interrupted activation, `valley-web` continues to serve the
 
 The store's entry point is a regular file so that binaries built for the v1 store layout, which
 required a directory path for `--state`, refuse to open it. The `v2/` payload directory also omits
-the `active` symlink and `exports/` directory that v1 binaries read, so pointing a v1 binary at the
-parent directory or at `v2/` serves nothing. Rolling the edge back to v1 binaries therefore serves
-no content from a v2 store, and no v1 binary ever reads the store without checking the
-authorization.
+the `active` symlink and `exports/` directory that v1 binaries read, so pointing a v1 binary at
+`v2/` serves nothing. Rolling the edge back to v1 binaries therefore serves no content from a v2
+store, and no v1 binary ever reads the store without checking the authorization. The receiver writes
+nothing outside the descriptor and `v2/`: state of the v1 layout beside the descriptor, which held
+public projects only, stays until the operator deletes it by hand.
 
 Because `valley-web` writes nothing to the state directory, it can run as a separate Unix user with
 read-only access. The receiver keeps each staged upload private to its own user until activation,

@@ -196,9 +196,10 @@ func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 
 // OpenStore opens the store whose descriptor is at path, creating the
 // descriptor and the payload directory when path does not exist. path
-// that is a directory, as the first layout's state was, is refused. A new
-// store retires the first layout's state from the descriptor's directory,
-// so a binary of the first layout started there again serves nothing.
+// that is a directory, as the first layout's state was, is refused. On
+// every start it retires whatever it finds of the first layout's state in
+// the descriptor's directory, so a binary of the first layout started
+// there again serves nothing; the directory belongs to the store.
 // OpenStore finishes an activation a crash interrupted after high-water
 // was written, deletes what no activation can use, and deletes the
 // repositories the stored authorization withdrew. If it cannot finish
@@ -223,15 +224,24 @@ func OpenStore(path string, report func(error)) (*Store, error) {
 		report = func(error) {}
 	}
 	info, err := os.Lstat(abs)
+	missing := errors.Is(err, fs.ErrNotExist)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		if err := createDescriptor(abs, report); err != nil {
-			return nil, err
-		}
+	case missing:
 	case err != nil:
 		return nil, err
 	default:
 		if err := checkDescriptor(abs, info); err != nil {
+			return nil, err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		return nil, err
+	}
+	if err := retireFirstLayout(filepath.Dir(abs), report); err != nil {
+		return nil, err
+	}
+	if missing {
+		if err := createDescriptor(abs); err != nil {
 			return nil, err
 		}
 	}
@@ -296,46 +306,76 @@ func checkDescriptor(path string, info fs.FileInfo) error {
 	return nil
 }
 
-// createDescriptor makes a new store at path: it retires the first
-// layout's state from path's directory, makes the payload directory, and
-// writes the descriptor last, so a descriptor always has its payload
-// directory.
-func createDescriptor(path string, report func(error)) error {
-	parent := filepath.Dir(path)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return err
-	}
-	if err := retireFirstLayout(parent, report); err != nil {
-		return err
-	}
+// createDescriptor makes a new store at path: it makes the payload
+// directory, and writes the descriptor last, so a descriptor always has
+// its payload directory.
+func createDescriptor(path string) error {
 	if err := os.MkdirAll(payloadDir(path), 0o755); err != nil {
 		return err
 	}
 	return writeDurably(path, []byte(StoreDescriptor+"\n"))
 }
 
+// firstLayout are the names the first layout keeps in its state
+// directory, in the order retireFirstLayout deletes them: active first,
+// so a binary of that layout serves nothing once it is gone, and lock
+// last.
+var firstLayout = []string{"active", "high-water", "exports", "staging", "trash", "lock"}
+
+// retireStep, when it is set, is called before retireFirstLayout deletes
+// each name of firstLayout, and an error it returns stops the retirement
+// there, as a crash would. A test sets it.
+var retireStep func(name string) error
+
 // retireFirstLayout deletes the first layout's state from dir, when dir
-// holds it: active first, and durably, so a binary of that layout serves
-// nothing from dir once this returns, then high-water and the rest.
+// holds any of it. It first takes the first layout's lock, which that
+// layout's receiver held for every activation, and fails when another
+// process holds it. It then deletes each name of firstLayout in order,
+// syncing dir after active. Each step deletes what is left of its name,
+// so a retirement a crash stopped at any step is finished by the next
+// one, whatever remains.
 func retireFirstLayout(dir string, report func(error)) error {
-	active := filepath.Join(dir, "active")
-	if info, err := os.Lstat(active); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+	found := false
+	for _, name := range firstLayout {
+		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
+			found = true
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	if !found {
 		return nil
 	}
-	for _, name := range []string{"active", "high-water"} {
-		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return err
+	lockPath := filepath.Join(dir, "lock")
+	lock, err := os.OpenFile(lockPath, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err := flock(lock, syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
+		return fmt.Errorf("%s holds state of the first store layout, and another process holds its lock, %s; stop the receiver of the first layout, then start this one again", dir, lockPath)
+	} else if err != nil {
+		return err
+	}
+	for _, name := range firstLayout {
+		if retireStep != nil {
+			if err := retireStep(name); err != nil {
+				return fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err)
+			}
+		}
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			return fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err)
+		}
+		if name == "active" {
+			if err := syncPath(dir); err != nil {
+				return err
+			}
 		}
 	}
 	if err := syncPath(dir); err != nil {
 		return err
 	}
-	for _, name := range []string{"exports", "staging", "trash", "lock"} {
-		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
-			report(fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err))
-		}
-	}
-	report(fmt.Errorf("%s held a state directory of the first store layout, which is retired; the publisher's next pass sends everything again", dir))
+	report(fmt.Errorf("%s held state of the first store layout, which is retired; the publisher's next pass sends everything again", dir))
 	return nil
 }
 

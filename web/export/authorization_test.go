@@ -372,3 +372,82 @@ func TestAPruneKeepsWhatAnAuthorizationNamesAgain(t *testing.T) {
 		t.Errorf("after the prune the reply is %+v; want the export served whole", r)
 	}
 }
+
+// firstLayout makes, in dir, the state of the first store layout: active
+// pointing at a generation, high-water, exports/, staging/, trash/ and
+// lock.
+func firstLayout(t *testing.T, dir string) {
+	t.Helper()
+	for _, d := range []string{"exports/1/repos", "staging/2/bodies", "trash/old"} {
+		if err := os.MkdirAll(filepath.Join(dir, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, data := range map[string]string{"high-water": "1\n", "lock": "", "exports/1/export.json": "{}"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("exports/1", filepath.Join(dir, "active")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A retirement stopped before any of its steps, as by a crash, is
+// finished by the next start, whatever of the first layout is left: the
+// next start finds it by any of its names. A process holding the first
+// layout's lock stops the retirement before it deletes anything.
+func TestRetiringTheFirstLayoutResumes(t *testing.T) {
+	steps := []string{"active", "high-water", "exports", "staging", "trash", "lock"}
+	for _, step := range steps {
+		t.Run(step, func(t *testing.T) {
+			dir := t.TempDir()
+			firstLayout(t, dir)
+			stopped := errors.New("stopped")
+			*export.RetireStep = func(name string) error {
+				if name == step {
+					return stopped
+				}
+				return nil
+			}
+			_, err := export.OpenStore(filepath.Join(dir, "store"), nil)
+			*export.RetireStep = nil
+			if !errors.Is(err, stopped) {
+				t.Fatalf("OpenStore gave %v, want the retirement stopped at %s", err, step)
+			}
+			if _, err := os.Lstat(filepath.Join(dir, step)); err != nil {
+				t.Errorf("the retirement stopped at %s deleted it: %v", step, err)
+			}
+			var r reports
+			if _, err := export.OpenStore(filepath.Join(dir, "store"), r.report); err != nil {
+				t.Fatal(err)
+			}
+			if got := entries(t, dir); strings.Join(got, " ") != "store v2" {
+				t.Errorf("after the retirement resumed the directory holds %v", got)
+			}
+			if errs := r.all(); len(errs) != 1 || !strings.Contains(errs[0].Error(), "retired") {
+				t.Errorf("the store reported %v, want the retired layout", errs)
+			}
+		})
+	}
+
+	t.Run("lock held", func(t *testing.T) {
+		dir := t.TempDir()
+		firstLayout(t, dir)
+		lock, err := os.OpenFile(filepath.Join(dir, "lock"), os.O_RDWR, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer lock.Close()
+		if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+			t.Fatal(err)
+		}
+		_, err = export.OpenStore(filepath.Join(dir, "store"), nil)
+		if err == nil || !strings.Contains(err.Error(), "stop the receiver of the first layout") {
+			t.Errorf("OpenStore beside a held first-layout lock gave %v", err)
+		}
+		if got := entries(t, dir); strings.Join(got, " ") != "active exports high-water lock staging trash" {
+			t.Errorf("a refused retirement left %v", got)
+		}
+	})
+}

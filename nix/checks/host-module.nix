@@ -852,7 +852,7 @@ let
     || receive.serviceConfig.StateDirectoryMode or null != "0750"
     || receive.serviceConfig.LoadCredential or [ ] != [ "token:/run/keys/valley-web-receiver-token" ]
     || receive.serviceConfig.MemoryMax or null != "2G"
-    || !(lib.hasInfix "/bin/valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 --instance valley-host --destination example.org --verifiers /nix/store/" receive.serviceConfig.ExecStart)
+    || !(lib.hasInfix "/bin/valley-web-receive --state /var/lib/valley-web/store --listen 192.0.2.10:8081 --instance valley-host --destination example.org --verifiers /nix/store/" receive.serviceConfig.ExecStart)
     || !(lib.hasSuffix "-valley-web-verifiers --token-file %d/token --max-body 1G --max-upload 2G --max-storage 8G" receive.serviceConfig.ExecStart)
     || web.serviceConfig.User or null != "valley-web"
     || web.serviceConfig.Group or null != "valley-web"
@@ -862,7 +862,7 @@ let
     || web.serviceConfig.ReadOnlyPaths or [ ] != [ "-/var/lib/valley-web" ]
     || web.serviceConfig.MemoryMax or null != "1G"
     || !(builtins.elem "valley-web-receive.service" web.after)
-    || !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080" web.serviceConfig.ExecStart);
+    || !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080" web.serviceConfig.ExecStart);
 in
 {
   module-eval =

@@ -7,28 +7,59 @@ import (
 	"strconv"
 )
 
-// The upload's paths, under the receiver's base URL.
+// The receiver's paths, under its base URL. Every path is under
+// PathPrefix. A receiver answers a path under LegacyPrefix, where the
+// first version of the upload went, with an unsupported-version refusal.
 const (
+	PathPrefix   = "/web-export/v2/"
+	LegacyPrefix = "/web-export/v1/"
+
+	// AuthorizationPath takes the POST of a signed authorization.
+	AuthorizationPath = PathPrefix + "authorization"
 	// ManifestPath takes step 1's POST of a signed manifest.
-	ManifestPath = "/web-export/v1/manifest"
+	ManifestPath = PathPrefix + "manifest"
 )
 
 // BodyPath takes step 2's PUT of one body of the upload with sequence.
 func BodyPath(sequence int64, sha256 string) string {
-	return "/web-export/v1/" + strconv.FormatInt(sequence, 10) + "/" + sha256
+	return PathPrefix + strconv.FormatInt(sequence, 10) + "/" + sha256
 }
 
 // CommitPath takes step 3's POST that commits the upload with sequence.
 func CommitPath(sequence int64) string {
-	return "/web-export/v1/" + strconv.FormatInt(sequence, 10) + "/commit"
+	return PathPrefix + strconv.FormatInt(sequence, 10) + "/commit"
 }
 
 // The schemas of the receiver's replies.
 const (
-	InventorySchema = "valley-web-inventory/v1"
-	CommittedSchema = "valley-web-committed/v1"
-	ErrorSchema     = "valley-web-error/v1"
+	AuthorizedSchema = "valley-web-authorized/v1"
+	InventorySchema  = "valley-web-inventory/v2"
+	CommittedSchema  = "valley-web-committed/v2"
+	ErrorSchema      = "valley-web-error/v1"
 )
+
+// AuthorizationReply is the reply to an authorization the receiver admitted and
+// stored durably: its sequence, which every request a server answers from
+// then on is held to. It also says what content the receiver serves, so a
+// publisher whose export is unchanged knows whether to upload it.
+type AuthorizationReply struct {
+	Schema   string `json:"schema"`
+	Sequence int64  `json:"sequence"`
+	// Active is the export the receiver serves, or nil for none.
+	Active *Active `json:"active"`
+	// Missing are the projects the active export holds and the stored
+	// authorization names, whose repositories the receiver does not
+	// hold: it deleted them when an earlier authorization withdrew the
+	// project. A content upload sends their bundles again.
+	Missing []string `json:"missing"`
+}
+
+// Serves reports whether the reply says the receiver serves the export
+// with digest whole: it is the active export, and no repository of it
+// that the authorization names is missing.
+func (r *AuthorizationReply) Serves(digest string) bool {
+	return r != nil && r.Active != nil && r.Active.Digest == digest && len(r.Missing) == 0
+}
 
 // Inventory is the reply to a manifest the receiver admitted: what it
 // already holds, and the bodies it still needs before the upload can be
@@ -104,7 +135,8 @@ const (
 	CodeUnreadable Code = "unreadable"
 	// CodeBadSignature: a manifest that does not open under the pinned key.
 	CodeBadSignature Code = "bad-signature"
-	// CodeBadManifest: a manifest whose text is not a valid manifest.
+	// CodeBadManifest: a manifest or authorization whose text is not a
+	// valid one, or that is the other kind of document.
 	CodeBadManifest Code = "bad-manifest"
 	// CodeWrongInstance and CodeWrongDestination: a manifest signed for
 	// another instance, or for another receiver.
@@ -112,7 +144,9 @@ const (
 	CodeWrongDestination Code = "wrong-destination"
 	// CodeReplayed: a manifest whose sequence is not greater than the
 	// greatest accepted. It is a replay of an accepted manifest, or older
-	// than one. The publisher waits for its clock to pass HighWater.
+	// than one. The publisher waits for its clock to pass HighWater. For
+	// an authorization, its sequence is not greater than the stored one's,
+	// and the publisher signs the current policy again above HighWater.
 	CodeReplayed Code = "replayed"
 	// CodeOutOfWindow: a manifest signed more than MaxAge ago, or more than
 	// MaxAhead ahead of the receiver's clock.
@@ -137,6 +171,9 @@ const (
 	CodeBadBundle Code = "bad-bundle"
 	// CodeIncomplete: a commit before every needed body has verified.
 	CodeIncomplete Code = "incomplete"
+	// CodeUnsupportedVersion: a request under LegacyPrefix, from a
+	// publisher older than the receiver's protocol.
+	CodeUnsupportedVersion Code = "unsupported-version"
 )
 
 // Status is the HTTP status a refusal is replied with.
@@ -156,6 +193,8 @@ func (c Code) Status() int {
 		return http.StatusNotFound
 	case CodeHashMismatch, CodeBadExport, CodeBadBundle:
 		return http.StatusUnprocessableEntity
+	case CodeUnsupportedVersion:
+		return http.StatusGone
 	}
 	return http.StatusBadRequest
 }

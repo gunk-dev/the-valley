@@ -1,5 +1,5 @@
 {
-  "schema": "valley-web-export/v1",
+  "schema": "valley-web-export/v2",
   "collected": "2026-10-25T12:00:00Z",
   "groups": [
     {
@@ -13,7 +13,7 @@
   "projects": [
     {
       "project": "app",
-      "visibility": "public",
+      "identity": "9da6809f038df92138c131cd16bed76d",
       "group": "core",
       "name": "app",
       "former_names": [

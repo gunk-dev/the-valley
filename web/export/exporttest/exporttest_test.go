@@ -57,7 +57,7 @@ func TestFixtureIsConsistent(t *testing.T) {
 			t.Errorf("%s's tip is not reachable in the export directory: %v %v", p.Name, ok, err)
 		}
 	}
-	s, err := export.OpenStore(t.TempDir(), func(err error) { t.Errorf("the store reported: %v", err) })
+	s, err := export.OpenStore(exporttest.StorePath(t), func(err error) { t.Errorf("the store reported: %v", err) })
 	if err != nil {
 		t.Fatal(err)
 	}

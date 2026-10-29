@@ -11,7 +11,7 @@
 {{- if .Nav}}
 <nav class="site" aria-label="Pages">
   {{- range .Nav}}<a href="{{.URL}}">{{.Text}}</a>{{end}}
-  {{- with .Fresh}}<span class="fresh">Collected {{.Collected}}, {{.Age}}{{if .Stale}} <span class="chip stale">stale</span>{{end}}</span>{{end}}
+  {{- with .Fresh}}<span class="fresh">Collected {{.Collected}}. Policy last checked {{.Checked}}, {{.Age}}{{if .Stale}} <span class="chip stale">stale</span>{{end}}</span>{{end}}
 </nav>
 {{- end}}
 {{template "content" .Content}}

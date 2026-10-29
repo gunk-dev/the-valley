@@ -94,7 +94,7 @@ func (q *request) page(status int, name, title string, content any) {
 			p := q.idx.projects[name]
 			data.Nav = append(data.Nav, link{name + " source", treeURL(q.idx.bases[name], p.SourceTip, nil)})
 		}
-		data.Fresh = freshnessOf(q.e.Collected, q.now)
+		data.Fresh = freshnessOf(q.e.Collected, q.auth.a.Checked, q.now)
 	}
 	q.drop()
 	if q.s.rendering != nil {
@@ -267,21 +267,25 @@ func (s *Server) give(n int) {
 	}
 }
 
-// freshness is the export's collection time and its age, as of the
-// request. An export is stale once it is older than StaleAfter.
+// freshness is when the export's plan was collected, and when the
+// publisher last finished a check of the policy, with that check's age as
+// of the request. The pages are stale once that check is older than
+// StaleAfter: the publisher checks the policy on every pass, whether or
+// not the content changed, so a page goes stale only once the publisher
+// stops reaching the edge. The collection time is shown apart, and says
+// how old the content is; a recent check does not make old content new.
 type freshness struct {
 	Collected string
+	Checked   string
 	Age       string
 	Stale     bool
 }
 
-func freshnessOf(collected string, now time.Time) *freshness {
-	at, err := parseTime(collected)
-	if err != nil {
-		return &freshness{Collected: collected, Age: "of unknown age", Stale: true}
-	}
-	age := now.Sub(at)
-	return &freshness{Collected: stamp(at), Age: ago(age), Stale: age > StaleAfter}
+func freshnessOf(collected string, checked, now time.Time) *freshness {
+	f := &freshness{Collected: stampOf(collected), Checked: stamp(checked)}
+	age := now.Sub(checked)
+	f.Age, f.Stale = ago(age), age > StaleAfter
+	return f
 }
 
 // stamp is a time as the pages show it, to the minute, in UTC.

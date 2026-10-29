@@ -12,15 +12,17 @@ import (
 	"the-valley/web/export"
 )
 
-// index is an export's projects and knots by name, where each public
-// project's pages are, and its plan page's structure, built once per
-// generation.
+// index is one reader's view of an export: the projects the authorization
+// lets the reader read and their knots, by name, where each of those
+// projects' pages are, and the plan page's structure. It is built once for
+// each generation, authorization and reader, from what visible returns
+// alone, so no page built from it names a project the reader may not read.
 type index struct {
 	// building is set only while the worker constructs the index.
 	building context.Context
 	projects map[string]*export.Project
 	knots    map[string]map[string]*export.Knot
-	// public are the public projects' names, in the export's order: those
+	// public are the visible projects' names, in the export's order: those
 	// that have a web URL, which a project in no group does not.
 	public []string
 	// bases are each public project's URL, /<group name>/<web name>,
@@ -50,7 +52,23 @@ func (idx *index) checkBuild() {
 	}
 }
 
-func newIndex(ctx context.Context, e *export.Export) (result *index, err error) {
+// visible is the one project-view filter: the projects of e that the
+// authorization lets reader read, by name, each named with the identity e
+// gives it. A nil authorization lets no one read anything. Every view a
+// server builds, of the plan, the navigation, the groups, the references
+// between projects and the redirects, is built through it.
+func visible(e *export.Export, a *export.Authorization, reader string) map[string]bool {
+	shown := map[string]bool{}
+	for _, p := range e.Projects {
+		if a.Allows(reader, p.Name, p.Identity) {
+			shown[p.Name] = true
+		}
+	}
+	return shown
+}
+
+// newIndex is the index of e's projects that shown names.
+func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (result *index, err error) {
 	defer func() {
 		if p := recover(); p != nil {
 			if stopped, ok := p.(indexCancelled); ok {
@@ -65,10 +83,13 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 		formers: map[string]map[string]string{}, aliases: map[string]string{}}
 	idx.checkBuild()
 	defer func() { idx.building = nil }()
-	idx.place(e)
+	idx.place(e, shown)
 	for i := range e.Projects {
 		idx.checkBuild()
 		p := &e.Projects[i]
+		if !shown[p.Name] {
+			continue
+		}
 		idx.projects[p.Name] = p
 		byID := map[string]*export.Knot{}
 		for j := range p.Knots {
@@ -82,27 +103,26 @@ func newIndex(ctx context.Context, e *export.Export) (result *index, err error) 
 	return idx, nil
 }
 
-// place indexes where each public project's pages are, and where each
-// alias and former name redirects to. A project in no group has no pages.
-// It checks for cancellation before each group, project and name, so the
-// work between two checks is bounded by a name's length.
-func (idx *index) place(e *export.Export) {
+// place indexes where each project shown names has its pages, and where
+// each alias and former name redirects to. A project in no group has no
+// pages, and a group with no project shown has no alias. It checks for
+// cancellation before each group, project and name, so the work between
+// two checks is bounded by a name's length.
+func (idx *index) place(e *export.Export, shown map[string]bool) {
 	groups := map[string]export.Group{}
 	for _, g := range e.Groups {
 		idx.checkBuild()
 		groups[g.ID] = g
-		for _, alias := range g.Aliases {
-			idx.checkBuild()
-			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
-		}
 	}
+	used := map[string]bool{}
 	for i := range e.Projects {
 		idx.checkBuild()
 		p := &e.Projects[i]
 		g, grouped := groups[p.Group]
-		if p.Visibility != export.Public || !grouped {
+		if !shown[p.Name] || !grouped {
 			continue
 		}
+		used[g.ID] = true
 		idx.public = append(idx.public, p.Name)
 		base := "/" + url.PathEscape(g.Name) + "/" + url.PathEscape(p.WebName)
 		idx.bases[p.Name] = base
@@ -118,6 +138,16 @@ func (idx *index) place(e *export.Export) {
 		for _, alias := range p.Aliases {
 			idx.checkBuild()
 			idx.aliases[alias] = base
+		}
+	}
+	for _, g := range e.Groups {
+		idx.checkBuild()
+		if !used[g.ID] {
+			continue
+		}
+		for _, alias := range g.Aliases {
+			idx.checkBuild()
+			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
 		}
 	}
 }

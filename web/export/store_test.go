@@ -52,7 +52,7 @@ func receiver() int {
 	if err != nil {
 		return fail(err)
 	}
-	s, err := export.OpenStore(os.Getenv("EXPORT_TEST_STATE"), func(err error) { fmt.Fprintln(os.Stderr, err) })
+	s, err := export.OpenStore(descriptorOf(os.Getenv("EXPORT_TEST_STATE")), func(err error) { fmt.Fprintln(os.Stderr, err) })
 	if err != nil {
 		return fail(err)
 	}
@@ -209,26 +209,39 @@ func putNeed(t *testing.T, st export.Staging, u upload, n export.Need) {
 	}
 }
 
-// openStore opens the store at dir. Nothing should go wrong in it, so
-// whatever it reports fails the test.
+// payload is the payload directory of a new store, which openStore and
+// descriptorOf open it by.
+func payload(t *testing.T) string { return filepath.Join(t.TempDir(), "v2") }
+
+// descriptorOf is the descriptor of the store whose payload directory is
+// dir.
+func descriptorOf(dir string) string { return filepath.Join(filepath.Dir(dir), "store") }
+
+// openStore opens the store whose payload directory is dir. Nothing should
+// go wrong in it, so whatever it reports fails the test.
 func openStore(t *testing.T, dir string) *export.Store {
 	t.Helper()
-	s, err := export.OpenStore(dir, func(err error) { t.Errorf("the store reported: %v", err) })
+	s, err := export.OpenStore(descriptorOf(dir), func(err error) { t.Errorf("the store reported: %v", err) })
 	if err != nil {
 		t.Fatal(err)
+	}
+	// The fixture's uploads are of app, which a store this opens lets
+	// anyone read, as a publisher's first authorization would.
+	if _, err := s.ReadAuthorization(); errors.Is(err, export.ErrNoAuthorization) {
+		exporttest.Authorize(t, s, "app")
 	}
 	return s
 }
 
 func generations(t *testing.T, s *export.Store) []string {
 	t.Helper()
-	return entries(t, filepath.Join(s.Dir(), "exports"))
+	return entries(t, filepath.Join(s.Dir(), "generations"))
 }
 
 func seqName(u upload) string { return strconv.FormatInt(u.m.Sequence, 10) }
 
 func TestStoreServesNothingBeforeTheFirstActivation(t *testing.T) {
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	_, release, err := s.Open()
 	release()
 	if !errors.Is(err, export.ErrNoExport) {
@@ -243,13 +256,13 @@ func TestStoreServesNothingBeforeTheFirstActivation(t *testing.T) {
 }
 
 // An activated upload is the directory layout the package states: the
-// generation under exports/, high-water, and active pointing at it.
+// generation under generations/, high-water, and current pointing at it.
 func TestStoreActivates(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	g := f.Upload(t, s)
 	seq := strconv.FormatInt(f.Manifest.Sequence, 10)
-	if target, err := os.Readlink(filepath.Join(s.Dir(), "active")); err != nil || target != "exports/"+seq {
+	if target, err := os.Readlink(filepath.Join(s.Dir(), "current")); err != nil || target != "generations/"+seq {
 		t.Errorf("active points at %q, %v", target, err)
 	}
 	if hw, _ := os.ReadFile(filepath.Join(s.Dir(), "high-water")); string(hw) != seq+"\n" {
@@ -291,7 +304,7 @@ func TestStoreModes(t *testing.T) {
 	old := syscall.Umask(0o077)
 	t.Cleanup(func() { syscall.Umask(old) })
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	mode := func(path string) fs.FileMode {
 		t.Helper()
 		info, err := os.Lstat(path)
@@ -324,8 +337,8 @@ func TestStoreModes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := mode(filepath.Join(s.Dir(), "exports")); m != 0o755 {
-		t.Errorf("exports/ has mode %v, not 0755", m)
+	if m := mode(filepath.Join(s.Dir(), "generations")); m != 0o755 {
+		t.Errorf("generations/ has mode %v, not 0755", m)
 	}
 	files := 0
 	err = filepath.WalkDir(g.Dir, func(path string, d fs.DirEntry, err error) error {
@@ -356,7 +369,7 @@ func TestStoreModes(t *testing.T) {
 // After an activation, the same manifest, or an older one, is refused.
 func TestStoreRefusesReplays(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	f.Upload(t, s)
 	_, err := s.Stage(context.Background(), f.Manifest)
 	wantCode(t, err, export.CodeReplayed)
@@ -371,7 +384,7 @@ func TestStoreRefusesReplays(t *testing.T) {
 // what was already sent.
 func TestStoreInventory(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u := fixtureUpload(t, f)
 	st := stage(t, f, s, u)
 	inv, err := s.Inventory(st)
@@ -396,7 +409,7 @@ func TestStoreInventory(t *testing.T) {
 // alone, and the new generation carries the held repository.
 func TestStoreCarriesHeldRepositories(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	f.Upload(t, s)
 	u := later(t, f, time.Minute)
 	st := stage(t, f, s, u)
@@ -433,7 +446,7 @@ func TestStoreCarriesHeldRepositories(t *testing.T) {
 // needed, and activates nothing.
 func TestStoreRefusesIncompleteCommits(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	st := stage(t, f, s, fixtureUpload(t, f))
 	_, err := s.Activate(context.Background(), st)
 	wantCode(t, err, export.CodeIncomplete)
@@ -452,7 +465,7 @@ func TestStoreRefusesIncompleteCommits(t *testing.T) {
 // activated.
 func TestStoreDropsABundleThatFails(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 
 	// site's bundle, declared as app's: its main is not app's source tip.
 	u := fixtureUpload(t, f)
@@ -492,7 +505,7 @@ func TestStoreDropsABundleThatFails(t *testing.T) {
 // staged, and its commit builds the repository again.
 func TestStoreRebuildsARepositoryACrashInterrupted(t *testing.T) {
 	f := exporttest.New(t)
-	dir := t.TempDir()
+	dir := payload(t)
 	s := openStore(t, dir)
 	u := fixtureUpload(t, f)
 	st := stage(t, f, s, u)
@@ -561,7 +574,7 @@ func gitBundle(t *testing.T, repo, path string) {
 // staging is discarded.
 func TestStoreSupersedesOlderUploads(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	older, newer := fixtureUpload(t, f), later(t, f, time.Minute)
 	stOlder := stage(t, f, s, older)
 	stage(t, f, s, newer)
@@ -582,7 +595,7 @@ func TestStoreSupersedesOlderUploads(t *testing.T) {
 // and removes its bodies only once each is done.
 func TestStoreStopsTheWritersOfDiscardedBodies(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	older, newer := fixtureUpload(t, f), later(t, f, time.Minute)
 	stOlder := stage(t, f, s, older)
 	wctx, done, err := s.Writer(context.Background(), stOlder)
@@ -655,7 +668,7 @@ func TestStoreStopsTheWritersOfDiscardedBodies(t *testing.T) {
 // the generation is deleted once it is released.
 func TestStoreHoldsAGenerationForItsReader(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
 	if _, err := send(t, f, s, u1); err != nil {
 		t.Fatal(err)
@@ -692,7 +705,7 @@ func TestStoreHoldsAGenerationForItsReader(t *testing.T) {
 // export.json they read is the one uploaded under the sequence they hold.
 func TestStoreReadersSeeOneGeneration(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	var uploads []upload
 	collected := map[int64]string{}
 	for i := range 6 {
@@ -758,7 +771,7 @@ func TestStoreReadersSeeOneGeneration(t *testing.T) {
 // activates and the other finds the upload already accepted.
 func TestStoreSerialisesActivations(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u := fixtureUpload(t, f)
 	st := stage(t, f, s, u)
 	inv, _ := s.Inventory(st)
@@ -794,7 +807,7 @@ func TestStoreSerialisesActivations(t *testing.T) {
 // lock, as another process's activation would.
 func TestStoreWaitsForItsLockUntilTheContextIsDone(t *testing.T) {
 	f := exporttest.New(t)
-	dir := t.TempDir()
+	dir := payload(t)
 	s := openStore(t, dir)
 	first, err := send(t, f, s, fixtureUpload(t, f))
 	if err != nil {
@@ -855,9 +868,9 @@ func TestStoreWaitsForItsLockUntilTheContextIsDone(t *testing.T) {
 // store's lock is free again, and the next sweep empties the trash.
 func TestStoreSweepStopsWithItsContext(t *testing.T) {
 	f := exporttest.New(t)
-	dir := t.TempDir()
+	dir := payload(t)
 	var r reports
-	s, err := export.OpenStore(dir, r.report)
+	s, err := export.OpenStore(descriptorOf(dir), r.report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +944,7 @@ func TestStoreSweepStopsWithItsContext(t *testing.T) {
 // stays as it was. Once the cap allows it, the same upload activates.
 func TestStoreHoldsActivationToMaxStorage(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u := fixtureUpload(t, f)
 	st := stage(t, f, s, u)
 	inv, _ := s.Inventory(st)
@@ -958,7 +971,7 @@ func TestStoreHoldsActivationToMaxStorage(t *testing.T) {
 // names.
 func TestStoreFinishesAnInterruptedActivation(t *testing.T) {
 	f := exporttest.New(t)
-	dir := t.TempDir()
+	dir := payload(t)
 	u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
 	crashBeforeSwap(t, f, dir, u1, u2)
 	s := openStore(t, dir)
@@ -986,9 +999,9 @@ func crashBeforeSwap(t *testing.T, f *exporttest.Fixture, dir string, u1, u2 upl
 		t.Fatal(err)
 	}
 	release()
-	active := filepath.Join(dir, "active")
+	active := filepath.Join(dir, "current")
 	os.Remove(active)
-	if err := os.Symlink("exports/"+seqName(u1), active); err != nil {
+	if err := os.Symlink("generations/"+seqName(u1), active); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -998,12 +1011,12 @@ func crashBeforeSwap(t *testing.T, f *exporttest.Fixture, dir string, u1, u2 upl
 // stale staging and trash.
 func TestStoreDiscardsAnActivationThatDidNotFinish(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u1 := fixtureUpload(t, f)
 	if _, err := send(t, f, s, u1); err != nil {
 		t.Fatal(err)
 	}
-	orphan := filepath.Join(s.Dir(), "exports", strconv.FormatInt(u1.m.Sequence+1, 10))
+	orphan := filepath.Join(s.Dir(), "generations", strconv.FormatInt(u1.m.Sequence+1, 10))
 	stale := filepath.Join(s.Dir(), "staging", seqName(u1))
 	trash := filepath.Join(s.Dir(), "trash", "leftover")
 	for _, d := range []string{filepath.Join(orphan, "repos"), stale, trash} {
@@ -1068,13 +1081,13 @@ func wantServing(t *testing.T, s *export.Store, u upload) {
 // what was left.
 func TestStoreReportsASweepThatFails(t *testing.T) {
 	f := exporttest.New(t)
-	dir := t.TempDir()
+	dir := payload(t)
 	u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
 	if _, err := send(t, f, openStore(t, dir), u1); err != nil {
 		t.Fatal(err)
 	}
 	var r reports
-	s, err := export.OpenStore(dir, r.report)
+	s, err := export.OpenStore(descriptorOf(dir), r.report)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1114,12 +1127,12 @@ func TestStoreReportsASweepThatFails(t *testing.T) {
 // publisher's next manifest, signed later, activates.
 func TestStoreSwapThatFailsFailsTheCommit(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
 	if _, err := send(t, f, s, u1); err != nil {
 		t.Fatal(err)
 	}
-	active := filepath.Join(s.Dir(), "active")
+	active := filepath.Join(s.Dir(), "current")
 	inject(t, export.Rename, func(old, new string) error {
 		if new == active {
 			return errInjected
@@ -1161,11 +1174,11 @@ func TestStoreSwapThatFailsFailsTheCommit(t *testing.T) {
 func TestStoreReportsASwapNotOnDisk(t *testing.T) {
 	f := exporttest.New(t)
 	var r reports
-	s, err := export.OpenStore(t.TempDir(), r.report)
+	s, err := export.OpenStore(exporttest.StorePath(t), r.report)
 	if err != nil {
 		t.Fatal(err)
 	}
-	active := filepath.Join(s.Dir(), "active")
+	active := filepath.Join(s.Dir(), "current")
 	swapped := false
 	inject(t, export.Rename, func(old, new string) error {
 		err := os.Rename(old, new)
@@ -1208,7 +1221,7 @@ func idOf(t *testing.T, fi os.FileInfo) fileID {
 // bundle, and the second carries it from the first generation.
 func TestStoreSyncsAGenerationBeforeHighWater(t *testing.T) {
 	f := exporttest.New(t)
-	s := openStore(t, t.TempDir())
+	s := openStore(t, payload(t))
 	type event struct {
 		synced  fileID // the file a sync synced
 		renamed string // the new name of a rename
@@ -1317,15 +1330,15 @@ func TestStoreRecoveryChecksTheGeneration(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := exporttest.New(t)
-			dir := t.TempDir()
+			dir := payload(t)
 			u1, u2, u3 := fixtureUpload(t, f), later(t, f, time.Minute), later(t, f, 2*time.Minute)
 			// A crash between high-water and the swap, after which the disk
 			// has lost part of the new generation.
 			crashBeforeSwap(t, f, dir, u1, u2)
-			c.damage(t, filepath.Join(dir, "exports", seqName(u2), "repos", "app.git"))
+			c.damage(t, filepath.Join(dir, "generations", seqName(u2), "repos", "app.git"))
 
 			var r reports
-			s, err := export.OpenStore(dir, r.report)
+			s, err := export.OpenStore(descriptorOf(dir), r.report)
 			if err != nil {
 				t.Fatalf("OpenStore failed on a damaged generation: %v", err)
 			}
@@ -1373,7 +1386,7 @@ func TestStoreKeepsAGenerationRecoveryCouldNotCheck(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := exporttest.New(t)
-			dir := t.TempDir()
+			dir := payload(t)
 			u1, u2 := fixtureUpload(t, f), later(t, f, time.Minute)
 			crashBeforeSwap(t, f, dir, u1, u2)
 
@@ -1383,16 +1396,16 @@ func TestStoreKeepsAGenerationRecoveryCouldNotCheck(t *testing.T) {
 			t.Setenv("EXPORT_TEST_GIT", realGit)
 			t.Setenv("EXPORT_TEST_FSCK", c.fsck)
 			var r reports
-			if _, err := export.OpenStore(dir, r.report); err == nil || !strings.Contains(err.Error(), c.want) {
+			if _, err := export.OpenStore(descriptorOf(dir), r.report); err == nil || !strings.Contains(err.Error(), c.want) {
 				t.Errorf("OpenStore gave %v; want the check's failure, %q", err, c.want)
 			}
 			if errs := r.all(); len(errs) != 0 {
 				t.Errorf("the store reported %v; a check that did not finish reports nothing", errs)
 			}
-			if got := fmt.Sprint(entries(t, filepath.Join(dir, "exports"))); got != fmt.Sprint([]string{seqName(u1), seqName(u2)}) {
+			if got := fmt.Sprint(entries(t, filepath.Join(dir, "generations"))); got != fmt.Sprint([]string{seqName(u1), seqName(u2)}) {
 				t.Errorf("after the check failed the generations are %s; want both kept", got)
 			}
-			if target, err := os.Readlink(filepath.Join(dir, "active")); err != nil || target != "exports/"+seqName(u1) {
+			if target, err := os.Readlink(filepath.Join(dir, "current")); err != nil || target != "generations/"+seqName(u1) {
 				t.Errorf("after the check failed active is %q, %v; want the first generation", target, err)
 			}
 

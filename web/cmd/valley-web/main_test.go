@@ -38,12 +38,12 @@ func valleyWeb(args ...string) *exec.Cmd {
 	return cmd
 }
 
-// uploaded is a state directory the fixture's export was uploaded to, as
-// a receiver uploads it.
+// uploaded is the descriptor of a store the fixture's export was uploaded
+// to, as a receiver uploads it.
 func uploaded(t *testing.T) (*exporttest.Fixture, string) {
 	t.Helper()
 	f := exporttest.New(t)
-	state := t.TempDir()
+	state := exporttest.StorePath(t)
 	store, err := export.OpenStore(state, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -163,10 +163,10 @@ func TestServesAReadOnlyStateDirectory(t *testing.T) {
 	umask := syscall.Umask(0o077)
 	f, state := uploaded(t)
 	syscall.Umask(umask)
-	if err := os.Chmod(state, 0o755); err != nil {
+	if err := os.Chmod(filepath.Dir(state), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	asOthers(t, state)
+	asOthers(t, filepath.Dir(state))
 	real, err := exec.LookPath(export.GitProgram)
 	if err != nil {
 		t.Fatal(err)
@@ -184,9 +184,15 @@ func TestServesAReadOnlyStateDirectory(t *testing.T) {
 	cmd.Env = append(cmd.Env, "VALLEY_WEB_TEST_GIT="+wrapper)
 	get(t, start(t, cmd), routes(f))
 
-	out, err := output(t, valleyWeb("--state", filepath.Join(state, "missing"), "--listen", "127.0.0.1:0"))
+	out, err := output(t, valleyWeb("--state", filepath.Join(filepath.Dir(state), "missing"), "--listen", "127.0.0.1:0"))
 	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-		t.Errorf("valley-web on a state directory that does not exist gave %v:\n%s", err, out)
+		t.Errorf("valley-web on a store that does not exist gave %v:\n%s", err, out)
+	}
+	// The directory the store is in is what the first layout took as its
+	// state. valley-web refuses it, rather than serve anything from it.
+	out, err = output(t, valleyWeb("--state", filepath.Dir(state), "--listen", "127.0.0.1:0"))
+	if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 || !strings.Contains(string(out), "is a directory") {
+		t.Errorf("valley-web on a directory gave %v:\n%s", err, out)
 	}
 }
 
@@ -245,7 +251,7 @@ func TestUsage(t *testing.T) {
 	} {
 		out, err := output(t, valleyWeb(args...))
 		exit, ok := err.(*exec.ExitError)
-		if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "usage: valley-web --state DIR --listen ADDR") {
+		if !ok || exit.ExitCode() != 2 || !strings.Contains(string(out), "usage: valley-web --state FILE --listen ADDR") {
 			t.Errorf("valley-web %q gave %v:\n%s", args, err, out)
 		}
 	}

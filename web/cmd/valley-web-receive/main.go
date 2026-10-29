@@ -1,19 +1,19 @@
 // Command valley-web-receive is the web export receiver. It takes the
-// publisher's uploads into a state directory, by the protocol package
-// export defines, and valley-web serves what it activates.
+// publisher's signed authorizations and uploads into a store, by the
+// protocol package export defines, and valley-web serves what it activates
+// as the newest authorization allows.
 //
-//	valley-web-receive --state DIR --listen ADDR --instance NAME
+//	valley-web-receive --state FILE --listen ADDR --instance NAME
 //	                   --destination NAME --verifiers FILE --token-file FILE
 //	                   [--max-body SIZE] [--max-upload SIZE]
 //	                   [--max-storage SIZE]
 //
-// It opens the state directory with export.OpenStore, which creates its
-// layout and finishes an activation a crash interrupted, and it is the
-// directory's one writer. valley-web runs beside it as a process of its
-// own, as another user, and opens the same directory with
-// export.OpenReadOnly. The two share nothing but the directory: each has
-// its own listener, its own limits and its own memory, so a saturated
-// upload leaves valley-web serving.
+// It opens the store with export.OpenStore, which creates its layout and
+// finishes an activation a crash interrupted, and it is the store's one
+// writer. valley-web runs beside it as a process of its own, as another
+// user, and opens the same store with export.OpenReadOnly. The two share
+// nothing but the store: each has its own listener, its own limits and its
+// own memory, so a saturated upload leaves valley-web serving.
 //
 // Every request must carry the token in --token-file. A request without
 // it is refused as unauthenticated before anything else of it is read,
@@ -44,16 +44,20 @@ import (
 	"the-valley/web/export"
 )
 
-const usage = `usage: valley-web-receive --state DIR --listen ADDR --instance NAME
+const usage = `usage: valley-web-receive --state FILE --listen ADDR --instance NAME
                           --destination NAME --verifiers FILE --token-file FILE
                           [--max-body SIZE] [--max-upload SIZE]
                           [--max-storage SIZE]
 
-Receive web export uploads from valley-web-publish into a state directory
-that valley-web serves.
+Receive signed authorizations and web export uploads from
+valley-web-publish into a store that valley-web serves.
 
-  --state DIR          state directory (created if missing); the receiver
-                       is its only writer
+  --state FILE         the store's descriptor file, such as
+                       /var/lib/valley-web/store; the receiver creates it,
+                       and the payload directory v2 beside it, when FILE
+                       does not exist, and is the store's only writer; a
+                       directory, as the first store layout used, is
+                       refused
   --listen ADDR        TCP address to listen on, such as 127.0.0.1:8081;
                        port 0 picks a free port
   --instance NAME      instance name required in every manifest
@@ -71,9 +75,10 @@ that valley-web serves.
   --max-upload SIZE    maximum total declared byte size of the unique
                        bodies in one manifest, each SHA-256 counted once
                        (default 2G)
-  --max-storage SIZE   best-effort cap on the disk space used by the state
-                       directory, including held generations, staged
-                       bodies, and built repositories (default 8G)
+  --max-storage SIZE   best-effort cap on the disk space used by the
+                       store's payload directory, including held
+                       generations, staged bodies, and built repositories
+                       (default 8G)
 
 A SIZE is a positive byte count, optionally suffixed with K, M, G, or T
 for KiB, MiB, GiB, or TiB.
@@ -83,12 +88,15 @@ listens, and stops on SIGINT or SIGTERM.
 `
 
 // How many requests and connections the receiver takes at once. An
-// authenticated request past maxRequests is answered 503 with no refusal,
-// which the publisher retries after a pause. A connection past maxConns
-// waits in the listen queue until another closes.
+// authenticated upload request past maxRequests, or authorization request
+// past maxAuthorizations, is answered 503 with no refusal, which the
+// publisher retries after a pause. The two are counted apart, so uploads
+// that fill their slots leave an authorization room. A connection past
+// maxConns waits in the listen queue until another closes.
 const (
-	maxRequests = 4
-	maxConns    = 32
+	maxRequests       = 4
+	maxAuthorizations = 2
+	maxConns          = 32
 )
 
 // How long a request may take, from when its headers have been read. A
@@ -96,14 +104,18 @@ const (
 // requests in flight stopTimeout to finish, and then ends them and waits
 // drainTimeout more for them, and the git they run, to stop.
 const (
-	headerTimeout   = 10 * time.Second
-	shortTimeout    = 10 * time.Second
-	manifestTimeout = time.Minute
-	bodyTimeout     = 30 * time.Minute
-	commitTimeout   = 30 * time.Minute
-	idleTimeout     = time.Minute
-	stopTimeout     = 10 * time.Second
-	drainTimeout    = 5 * time.Second
+	headerTimeout        = 10 * time.Second
+	shortTimeout         = 10 * time.Second
+	authorizationTimeout = 30 * time.Second
+	manifestTimeout      = time.Minute
+	// pruneTimeout bounds how long a prune after an authorization waits
+	// for the readers of the active generation.
+	pruneTimeout  = 5 * time.Minute
+	bodyTimeout   = 30 * time.Minute
+	commitTimeout = 30 * time.Minute
+	idleTimeout   = time.Minute
+	stopTimeout   = 10 * time.Second
+	drainTimeout  = 5 * time.Second
 )
 
 func main() {
@@ -196,7 +208,8 @@ func run(ctx context.Context, args []string, stderr io.Writer) error {
 	rv := &receiver{
 		store: store, verifiers: keys, instance: *instance, destination: *destination, token: token,
 		maxBody: int64(maxBody), maxUpload: int64(maxUpload),
-		log: logger, slots: make(chan struct{}, maxRequests),
+		log: logger, slots: make(chan struct{}, maxRequests), authSlots: make(chan struct{}, maxAuthorizations),
+		pruneDelay: 100 * time.Millisecond,
 	}
 	srv := &http.Server{
 		Handler: rv,

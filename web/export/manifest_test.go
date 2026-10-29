@@ -101,7 +101,7 @@ func TestVerifyManifestOpensUnderThePinnedKey(t *testing.T) {
 func TestVerifyManifestRequiresTheTypeLine(t *testing.T) {
 	f := exporttest.New(t)
 	rest := strings.SplitN(string(f.Manifest.Text()), "\n", 2)[1]
-	for _, first := range []string{"the-valley/attestation/v1", "the-valley/web-export/v2", "the-valley/web-export/v1 ", ""} {
+	for _, first := range []string{"the-valley/attestation/v1", "the-valley/web-export/v1", "the-valley/web-export/v2 ", ""} {
 		_, err := export.VerifyManifest(bytes.NewReader(signText(t, first+"\n"+rest)), f.Admission())
 		wantCode(t, err, export.CodeBadManifest)
 	}
@@ -236,10 +236,10 @@ func TestParseManifestRefuses(t *testing.T) {
 		"a size with a leading zero": replace(bundle, strings.Join(append(strings.Fields(bundle)[:3], "0"+strings.Fields(bundle)[3]), " ")),
 		"a hash in uppercase":        replace(sha, strings.ToUpper(sha)),
 		"a short hash":               replace(sha, sha[:63]),
-		"a private project":          replace(" public ", " private "),
+		"a visibility for identity":  replace(" "+exporttest.Identities["app"]+" ", " public "),
 		"a short source tip":         replace(project, project[:len(project)-1]),
 		"no closing newline":         strings.TrimSuffix(text, "\n"),
-		"one hash with two sizes":    text + "project other public - " + f.Export.Projects[0].SourceTip + "\nbundle other " + sha + " 1\n",
+		"one hash with two sizes":    text + "project other " + exporttest.Identities["app"] + " - " + f.Export.Projects[0].SourceTip + "\nbundle other " + sha + " 1\n",
 	}
 	for name, text := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -259,7 +259,7 @@ func TestParseManifestRefuses(t *testing.T) {
 }
 
 // export.json agrees with the manifest: its hash and size, and every
-// project with its visibility and both tips.
+// project with its identity and both tips.
 func TestCheckExport(t *testing.T) {
 	f := exporttest.New(t)
 	if _, err := f.Manifest.CheckExport(f.ExportJSON); err != nil {

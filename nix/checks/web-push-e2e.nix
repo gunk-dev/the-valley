@@ -6,17 +6,32 @@
 #
 # The test creates a valley instance that grants anyone read access to
 # two projects in one group. It verifies that:
-#   1. valley-web-publish uploads both projects to valley-web-receive,
-#      and valley-web serves them at their group URLs and redirects a
-#      short alias and a former name with 308.
+#   1. valley-web-publish sends an authorization and uploads both
+#      projects to valley-web-receive, which makes the store's descriptor
+#      and its v2 payload directory, and valley-web serves them at their
+#      group URLs and redirects a short alias and a former name with 308.
+#      The pages say when the policy was last checked, and a pass with
+#      nothing changed sends no content but a newly signed authorization,
+#      whose later check the pages show, while export.json keeps its
+#      bytes. A replayed authorization, a forged one, and a manifest of the
+#      first protocol are refused, and valley-web refuses the directory the
+#      first store layout took as its state.
 #   2. An upload with a wrong token fails as unauthenticated while
 #      valley-web continues serving the previous export.
 #   3. Withdrawing a project's read grant removes the project on the
-#      next pass.
+#      next pass. A --policy-only pass withdraws a project while a
+#      content upload is stalled on the receiver's activation lock: the
+#      next request to valley-web, not restarted, no longer serves it; the
+#      stalled upload, whose export still holds the project, activates
+#      later and restores nothing; the receiver deletes the project's
+#      repository, and the active export.json keeps its bytes. Removing
+#      the stored authorization serves no project. Granting the project
+#      again sends its bundle again.
 #   4. Both servers preserve the active export across a restart.
 #   5. When the receiver is stopped, valley-web continues serving, a
-#      pass fails because the upload cannot connect, and the next pass
-#      after the receiver restarts applies the withdrawal.
+#      pass fails because it cannot send its authorization, and the next
+#      pass after the receiver restarts signs a new authorization, with a
+#      later sequence, that applies the withdrawal.
 #
 # The check runs inside the Nix build sandbox as a single user. The
 # separation between the receiver's user and valley-web's user is
@@ -33,6 +48,7 @@
       pkgs.cue
       pkgs.curl
       pkgs.jq
+      pkgs.util-linux
       packages.valley-script
       packages.valley-web-publish
       packages.valley-web-receive

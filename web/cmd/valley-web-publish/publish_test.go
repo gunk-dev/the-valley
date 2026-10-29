@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -462,9 +463,27 @@ func TestOutIsAnExportTheStoreActivates(t *testing.T) {
 		t.Errorf("export.json holds the title of a private project's knot")
 	}
 
-	// A store activates it, from the directory's bodies alone.
-	s, err := export.OpenStore(t.TempDir(), func(err error) { t.Errorf("the store reported: %v", err) })
+	// The directory's authorization lets anyone read app, under the
+	// identity the export gives it, and nothing else.
+	signed, err := os.ReadFile(filepath.Join(dir, "authorization"))
 	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := export.VerifyAuthorization(bytes.NewReader(signed), export.AuthorizationAdmission{Verifiers: v.verifiers(),
+		Instance: instanceName, Destination: destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(auth.Projects) != 1 || !auth.Allows(export.Anyone, "app", app.Identity) {
+		t.Errorf("the authorization names %+v, want anyone reading app alone", auth.Projects)
+	}
+
+	// A store activates it, from the directory's bodies alone.
+	s, err := export.OpenStore(exporttest.StorePath(t), func(err error) { t.Errorf("the store reported: %v", err) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Authorize(context.Background(), auth, signed); err != nil {
 		t.Fatal(err)
 	}
 	st, err := s.Stage(context.Background(), m)
@@ -889,6 +908,9 @@ type testReceiver struct {
 	store    *export.Store
 	staged   map[int64]export.Staging
 	requests []string
+	// authorizations are the authorizations stored, in order. They are
+	// not among requests.
+	authorizations []*export.Authorization
 	// refuse is asked about each request, by its kind and sequence, and
 	// a refusal it returns is replied instead. A status alone, with no
 	// refusal, is replied as a plain error.
@@ -913,13 +935,47 @@ func (rv *testReceiver) flags() []string {
 // replaceStore gives the receiver an empty state directory, as a volume
 // replaced after a loss would.
 func (rv *testReceiver) replaceStore() {
-	s, err := export.OpenStore(rv.t.TempDir(), func(err error) { rv.t.Errorf("the store reported: %v", err) })
+	s, err := export.OpenStore(exporttest.StorePath(rv.t), func(err error) { rv.t.Errorf("the store reported: %v", err) })
 	if err != nil {
 		rv.t.Fatal(err)
 	}
 	rv.mu.Lock()
 	rv.store, rv.staged = s, map[int64]export.Staging{}
 	rv.mu.Unlock()
+}
+
+// authorize admits and stores an authorization, as the real receiver
+// does, and records it.
+func (rv *testReceiver) authorize(r *http.Request) (export.AuthorizationReply, error) {
+	hw, err := rv.store.AuthorizationHighWater()
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	signed, err := io.ReadAll(r.Body)
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	a, err := export.VerifyAuthorization(bytes.NewReader(signed), export.AuthorizationAdmission{Verifiers: rv.v.verifiers(),
+		Instance: instanceName, Destination: destination, HighWater: hw})
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	if err := rv.store.Authorize(r.Context(), a, signed); err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	if err := rv.store.Prune(r.Context()); err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	rv.authorizations = append(rv.authorizations, a)
+	active, _, err := rv.store.Holdings()
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	missing, err := rv.store.Missing()
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	return export.AuthorizationReply{Schema: export.AuthorizedSchema, Sequence: a.Sequence, Active: active, Missing: missing}, nil
 }
 
 // taken are the requests since the last call.
@@ -952,11 +1008,29 @@ func (rv *testReceiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		reply(http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}
-	if !export.Authorized(r, rv.token) {
+	if !export.CarriesToken(r, rv.token) {
 		fail(&export.Error{Code: export.CodeUnauthenticated, Message: "no token"})
 		return
 	}
-	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/web-export/v1/"), "/")
+	if r.Method == http.MethodPost && r.URL.Path == export.AuthorizationPath {
+		if rv.refuse != nil {
+			if e, status := rv.refuse("authorization", 0); e != nil {
+				fail(e)
+				return
+			} else if status != 0 {
+				reply(status, nil)
+				return
+			}
+		}
+		got, err := rv.authorize(r)
+		if err != nil {
+			fail(err)
+			return
+		}
+		reply(http.StatusOK, got)
+		return
+	}
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, export.PathPrefix), "/")
 	kind, seq := "", int64(0)
 	switch {
 	case r.Method == http.MethodPost && r.URL.Path == export.ManifestPath:
@@ -1079,9 +1153,11 @@ func sameRequests(t *testing.T, what string, got []string, want ...string) {
 }
 
 // An upload is made only when the content digest changed since the
-// receiver acknowledged it, or when the acknowledgement is older than
-// --recheck; then the inventory shows whether the receiver still serves
-// it, and a receiver that lost its state is sent everything again.
+// receiver acknowledged it, when the acknowledgement is older than
+// --recheck, or when the receiver's reply to the authorization says it no
+// longer serves that digest; then the inventory shows whether the receiver
+// still serves it, and a receiver that lost its state is sent everything
+// again.
 func TestUploadSkipsAnUnchangedDigest(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
@@ -1117,12 +1193,13 @@ func TestUploadSkipsAnUnchangedDigest(t *testing.T) {
 	}
 	sameRequests(t, "a recheck", rv.taken(), "manifest")
 
-	// A receiver that lost its state is sent everything at the recheck.
+	// A receiver that lost its state says so in its reply to the
+	// authorization, and is sent everything at once, within --recheck.
 	rv.replaceStore()
 	upload()
-	sameRequests(t, "a pass within --recheck after the receiver lost its state", rv.taken())
-	upload("--recheck", "0s")
-	sameRequests(t, "a recheck after the receiver lost its state", rv.taken(), "manifest", "body export.json", "body app", "commit")
+	sameRequests(t, "a pass within --recheck after the receiver lost its state", rv.taken(), "manifest", "body export.json", "body app", "commit")
+	upload()
+	sameRequests(t, "a pass after the receiver was sent everything again", rv.taken())
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app"}) {
 		t.Errorf("the receiver serves %v after it was synchronised again, want app", got)
 	}

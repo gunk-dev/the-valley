@@ -26,6 +26,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/http/httptest"
@@ -63,8 +64,8 @@ var (
 	// a bug and a comment, is not in it.
 	Principals = export.Principals{"app-operator": "operator", "app-agent": "agent"}
 
-	// Visibility exports app alone.
-	Visibility = map[string]export.Visibility{"app": export.Public}
+	// Identities export app alone, with its publication identity.
+	Identities = map[string]string{"app": "9da6809f038df92138c131cd16bed76d"}
 
 	// Groups are the instance's one group, and Placements both projects'
 	// places in it.
@@ -119,7 +120,7 @@ func New(t testing.TB) *Fixture {
 	in := export.Inputs{
 		Plan:       read(t, "valley/plan.json"),
 		Pending:    read(t, "valley/pending.json"),
-		Visibility: Visibility,
+		Identities: Identities,
 		SourceTips: map[string]string{},
 		Principals: Principals,
 		Groups:     Groups,
@@ -142,7 +143,7 @@ func New(t testing.TB) *Fixture {
 	}
 	// The source tip of a project that is not exported is never read.
 	for name := range in.SourceTips {
-		if _, ok := Visibility[name]; !ok {
+		if _, ok := Identities[name]; !ok {
 			delete(in.SourceTips, name)
 		}
 	}
@@ -202,6 +203,48 @@ func (f *Fixture) Sign(t testing.TB, m *export.Manifest) []byte {
 	return signed
 }
 
+// StorePath is the path of a new store's descriptor, in a directory of
+// its own.
+func StorePath(t testing.TB) string {
+	t.Helper()
+	return filepath.Join(t.TempDir(), "store")
+}
+
+// Authorization is an authorization with sequence seq that lets anyone
+// read each project given, under its identity in Identities.
+func Authorization(seq int64, projects ...string) *export.Authorization {
+	a := &export.Authorization{Instance: Instance, Destination: Destination, Sequence: seq, Checked: Collected}
+	for _, name := range projects {
+		a.Projects = append(a.Projects, export.AuthorizedProject{Name: name, Identity: Identities[name], Readers: []string{export.Anyone}})
+	}
+	return a
+}
+
+// SignAuthorization is the authorization signed by the fixture's key.
+func SignAuthorization(t testing.TB, a *export.Authorization) []byte {
+	t.Helper()
+	signed, err := a.Sign(SignerName, Key())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+
+// Authorize stores in s, as a receiver does, an authorization one
+// sequence past the stored one's that lets anyone read each project given.
+func Authorize(t testing.TB, s *export.Store, projects ...string) *export.Authorization {
+	t.Helper()
+	hw, err := s.AuthorizationHighWater()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := Authorization(hw+1, projects...)
+	if err := s.Authorize(context.Background(), a, SignAuthorization(t, a)); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
 // Admission is what a receiver admits the fixture's manifest with: the
 // pinned verifier, the instance and destination, no high-water mark, and a
 // clock a second past the signing time.
@@ -234,9 +277,19 @@ func (f *Fixture) BodyBytes(t testing.TB, name string) []byte {
 
 // Upload runs the upload's three steps against the store, as a receiver
 // does: it admits the signed manifest, stages it, stages every body the
-// inventory needs, and activates it. It returns the active generation.
+// inventory needs, and activates it. It returns the active generation. A
+// store that holds no authorization is first given one that lets anyone
+// read every project the fixture exports, as a publisher sends one before
+// content.
 func (f *Fixture) Upload(t testing.TB, s *export.Store) export.Generation {
 	t.Helper()
+	if _, err := s.ReadAuthorization(); errors.Is(err, export.ErrNoAuthorization) {
+		var names []string
+		for _, p := range f.Export.Projects {
+			names = append(names, p.Name)
+		}
+		Authorize(t, s, names...)
+	}
 	hw, err := s.HighWater()
 	if err != nil {
 		t.Fatal(err)

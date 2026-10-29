@@ -195,7 +195,10 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 		says   string
 	}{
 		{
-			name:   "the pending listing cannot read site",
+			// The policy path reads site's policy before any content
+			// work, finds it cannot, and fails the pass once it has sent
+			// what it could check.
+			name:   "site cannot be read",
 			upload: true,
 			breaks: func(v *testValley) []string {
 				if err := os.Rename(filepath.Join(v.srv, "site.git"), filepath.Join(v.srv, "site.moved")); err != nil {
@@ -203,7 +206,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 				}
 				return nil
 			},
-			says: "site: could not prepare CLI cache",
+			says: "the policy check is incomplete: site: could not read main",
 		},
 		{
 			name: "a project mirror cannot be staged",

@@ -17,16 +17,14 @@ import (
 
 // Schema is the export.json document's schema. A change to any field's
 // name or meaning is a new schema version.
-const Schema = "valley-web-export/v1"
+const Schema = "valley-web-export/v2"
 
-// Visibility is who may read an exported project. Public is the only
-// visibility v1 carries: the export holds what an anonymous reader may see.
-type Visibility string
-
-const Public Visibility = "public"
-
-// Export is export.json: every public project of one valley, as an
-// anonymous reader may see it.
+// Export is export.json: the projects of one valley that the publisher
+// exports, as a reader may see them. It says nothing of who may read
+// them. Each project carries its publication identity, and a signed
+// authorization (see Authorization) says which readers may read which
+// project and identity. A server serves a project only as its current
+// authorization allows.
 type Export struct {
 	Schema string `json:"schema"`
 	// Collected is when the plan was read (valley-plan/v1's now), in
@@ -43,8 +41,11 @@ type Export struct {
 // graph tip is refs/the-valley/knots, which its knots were read at, and
 // the source tip is main, which its bundle carries.
 type Project struct {
-	Name       string     `json:"project"`
-	Visibility Visibility `json:"visibility"`
+	Name string `json:"project"`
+	// Identity is the project's publication identity, as its policy/read
+	// declares it: 32 lowercase hex digits. An authorization names a
+	// project by its name and this identity together.
+	Identity string `json:"identity"`
 	// Group is the identifier of the project's group. WebName is its name
 	// within the group, the second segment of its web URLs, which Name,
 	// its identifier, need not be. FormerNames are its former web names
@@ -297,8 +298,8 @@ func (e *Export) ValidateContext(ctx context.Context) error {
 		if i > 0 && e.Projects[i-1].Name >= p.Name {
 			return fmt.Errorf("export.json lists project %s out of order or twice", p.Name)
 		}
-		if p.Visibility != Public {
-			return fmt.Errorf("project %s has visibility %q; v1 exports public projects alone", p.Name, p.Visibility)
+		if !ValidIdentity(p.Identity) {
+			return fmt.Errorf("project %s has identity %q, which is not 32 lowercase hex digits", p.Name, p.Identity)
 		}
 		if p.GraphTip != "" && !ValidObjectID(p.GraphTip) {
 			return fmt.Errorf("project %s has graph tip %q, which is not an object ID", p.Name, p.GraphTip)
@@ -390,6 +391,10 @@ func (e *Export) checkGroups(ctx context.Context) error {
 // for a project's or a principal's name. Such a name holds no slash and
 // cannot be a dot segment, so it is safe as a file name.
 func ValidName(s string) bool { return knot.IsName(s) }
+
+// ValidIdentity reports whether s is a publication identity: 32 lowercase
+// hex digits, as schema/read.cue's #Identity.
+func ValidIdentity(s string) bool { return len(s) == 32 && isHex(s) }
 
 // ValidObjectID reports whether s is a full git object ID, SHA-1 or
 // SHA-256, in lowercase hex.

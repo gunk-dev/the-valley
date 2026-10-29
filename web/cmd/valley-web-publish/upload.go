@@ -32,10 +32,11 @@ const (
 // How long each request may take. A commit waits for the receiver to
 // fetch and check every bundle it was sent.
 const (
-	manifestTimeout = 2 * time.Minute
-	bodyTimeout     = 30 * time.Minute
-	commitTimeout   = 30 * time.Minute
-	maxReply        = 1 << 20
+	authorizationTimeout = time.Minute
+	manifestTimeout      = 2 * time.Minute
+	bodyTimeout          = 30 * time.Minute
+	commitTimeout        = 30 * time.Minute
+	maxReply             = 1 << 20
 )
 
 // bundles are each exported project's bundle of main, by project: the
@@ -229,8 +230,9 @@ func (b *budgeted) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// writeOut writes the export to --out, as an upload would send it: the
-// signed manifest, export.json, and bundles/<project>.bundle. The
+// writeOut writes the export to --out, as a pass would send it: the
+// signed authorization, the signed manifest, export.json, and
+// bundles/<project>.bundle. The
 // directory is written beside its place and renamed into it whole, so a
 // reader never sees part of it.
 func (p *publisher) writeOut(ctx context.Context, r *reading) error {
@@ -255,6 +257,9 @@ func (p *publisher) writeOut(ctx context.Context, r *reading) error {
 	}
 	defer os.RemoveAll(tmp)
 	if err := os.WriteFile(filepath.Join(tmp, "manifest"), signed, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(tmp, authorizationFile), p.signedAuthorization, 0o644); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(tmp, export.ExportFile), r.json, 0o644); err != nil {
@@ -493,6 +498,26 @@ func newClient() *http.Client {
 	}
 }
 
+// postAuthorization posts a signed authorization.
+func (rc receiver) postAuthorization(ctx context.Context, signed []byte) (export.AuthorizationReply, error) {
+	var reply export.AuthorizationReply
+	err := rc.do(ctx, authorizationTimeout, http.MethodPost, export.AuthorizationPath, "text/plain; charset=utf-8",
+		func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(signed)), nil },
+		int64(len(signed)), http.StatusOK, export.AuthorizedSchema, &reply)
+	return reply, err
+}
+
+// statusError is a reply with a status other than the one wanted, and no
+// refusal in it.
+type statusError struct {
+	method, path, status string
+	code                 int
+}
+
+func (e statusError) Error() string {
+	return fmt.Sprintf("%s %s: the receiver replied %s", e.method, e.path, e.status)
+}
+
 // postManifest is step 1.
 func (rc receiver) postManifest(ctx context.Context, signed []byte) (export.Inventory, error) {
 	var inv export.Inventory
@@ -544,7 +569,7 @@ func (rc receiver) do(ctx context.Context, timeout time.Duration, method, path, 
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	req.Header.Set("Authorization", export.Authorization(rc.token))
+	req.Header.Set("Authorization", export.BearerHeader(rc.token))
 	resp, err := rc.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("%s %s: %w", method, path, err)
@@ -562,7 +587,7 @@ func (rc receiver) do(ctx context.Context, timeout time.Duration, method, path, 
 		if json.Unmarshal(reply, &refusal) == nil && refusal.Schema == export.ErrorSchema && refusal.Code != "" {
 			return &export.Error{Code: refusal.Code, Message: refusal.Message, HighWater: refusal.HighWater, Needs: refusal.Needs}
 		}
-		return fmt.Errorf("%s %s: the receiver replied %s", method, path, resp.Status)
+		return statusError{method: method, path: path, status: resp.Status, code: resp.StatusCode}
 	}
 	if into == nil {
 		return nil

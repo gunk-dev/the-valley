@@ -9,12 +9,22 @@
 // each project's group and short aliases. A declaration whose names
 // collide is refused, and no pass runs.
 //
-// A pass, in order:
+// Every pass runs the policy path first (policy.go), which alone writes
+// authorizations. Under the authorization lock in the state directory, it
+// reads the export key, or makes one on the first start; reads the
+// instance's read grants and each selected project's policy/read, into
+// caches of its own; allocates the next sequence from a durable counter;
+// and signs an authorization that names each project anyone may read. It
+// then sends the authorization to the receiver, outside the lock. It reads
+// no plan and no knot, so no project's graph holds up a withdrawal. With
+// --policy-only the pass ends there, and takes no other lock.
 //
-//  1. take the lock in the state directory, so two passes never overlap;
-//  2. read the export key from the state directory, or make one on the
-//     first start, say its verifier line whenever it changes, and hold the
-//     state and the caches to --max-storage before anything is fetched;
+// The content pass then runs, in order:
+//
+//  1. take the lock in the state directory, so two content passes never
+//     overlap;
+//  2. hold the state and the caches to --max-storage before anything is
+//     fetched;
 //  3. fetch main, refs/the-valley/projects and --registry-ref of the
 //     instance repository into the publisher's own bare repository, whose
 //     origin it is, once for the whole pass, refuse a main that carries
@@ -40,9 +50,13 @@
 //  8. bundle each public project's main, writing each bundle only into
 //     what --max-bundles and --max-storage leave;
 //  9. upload it, unless the receiver acknowledged the same content digest
-//     less than --recheck ago, or write it to --out instead.
+//     less than --recheck ago and its reply to the authorization says it
+//     serves that digest with every repository the authorization names,
+//     or write it to --out instead.
 //
-// A project is public when anyone may read it and it has a web URL: its
+// The export carries no visibility: a project is exported when anyone may
+// read it, and the authorization alone says who may. A project is public
+// when anyone may read it and it has a web URL: its
 // own policy/read names anyone (schema/read.cue), a read grant to anyone at
 // the destination covers it (schema/identity.cue), and the host declaration
 // places it in a group. Package readaccess reads and evaluates the two
@@ -80,10 +94,12 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
                           [--state DIR] [--read-schema FILE]
                           [--identity-schema FILE] [--registry-ref REF]
                           [--registry-dir DIR] [--recheck DURATION]
+                          [--policy-only]
                           [--max-bundles SIZE] [--max-storage SIZE]
 
-One pass of the web publisher: read the valley's public projects, and
-upload them to the receiver at URL, or write them to DIR.
+One pass of the web publisher: check who may read each project and send
+the receiver a signed authorization, then read the valley's public
+projects and upload them to the receiver at URL, or write both to DIR.
 
   --instance-repo URL  absolute local path to the instance repository
                        (used as origin of the publisher's cached bare
@@ -112,13 +128,14 @@ upload them to the receiver at URL, or write them to DIR.
                        same file the receiver's --token-file names;
                        required with --receiver
   --out DIR            write the export to DIR, which must not exist or be
-                       empty, instead of uploading it: manifest, export.json
-                       and bundles/<project>.bundle
+                       empty, instead of uploading it: authorization,
+                       manifest, export.json and bundles/<project>.bundle
   --principals FILE    the display mapping: a JSON object from each
                        principal's name to the name an export shows; a
                        name it does not map is shown as contributor
-  --state DIR          the key, its verifier line, the lock and the last
-                       acknowledgement (default
+  --state DIR          the key, its verifier line, the locks, the
+                       authorization counter, the last authorization
+                       signed and the last acknowledgement (default
                        ${XDG_STATE_HOME:-$HOME/.local/state}/valley/web-publish)
   --read-schema FILE   schema/read.cue (default $VALLEY_READ_SCHEMA)
   --identity-schema FILE
@@ -132,8 +149,13 @@ upload them to the receiver at URL, or write them to DIR.
   --registry-dir DIR   the identity registry's directory in that commit
                        (default identity)
   --recheck DURATION   how long an acknowledgement is trusted: a pass whose
-                       digest the receiver acknowledged less than this ago
-                       sends nothing (default 1h)
+                       digest the receiver acknowledged less than this ago,
+                       and that the receiver still serves whole, uploads no
+                       content (default 1h)
+  --policy-only        check the policy and send the authorization alone:
+                       no plan, knot or bundle is read, and the content
+                       pass's lock is not taken, so a stalled content pass
+                       does not hold it up; needs --receiver
   --max-bundles SIZE   the most the bundles of one export may hold
                        together; a bundle is written only into what it
                        leaves, and a pass past it sends nothing
@@ -192,6 +214,7 @@ type config struct {
 	registryRef  string
 	registryDir  string
 	recheck      time.Duration
+	policyOnly   bool
 	maxBundles   byteSize
 	maxStorage   byteSize
 }
@@ -214,6 +237,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.registryRef, "registry-ref", "refs/heads/main", "")
 	fs.StringVar(&c.registryDir, "registry-dir", "identity", "")
 	fs.DurationVar(&c.recheck, "recheck", time.Hour, "")
+	fs.BoolVar(&c.policyOnly, "policy-only", false, "")
 	fs.Var(&c.maxBundles, "max-bundles", "")
 	fs.Var(&c.maxStorage, "max-storage", "")
 	if err := fs.Parse(args); err != nil {
@@ -241,6 +265,8 @@ func parseArgs(args []string) (config, error) {
 		return c, errors.New("give exactly one of --receiver and --out")
 	case (c.receiver == "") != (c.token == ""):
 		return c, errors.New("--receiver-token goes with --receiver, and --receiver needs it")
+	case c.policyOnly && c.receiver == "":
+		return c, errors.New("--policy-only sends an authorization, so it needs --receiver")
 	case !readaccess.ValidRef(c.registryRef):
 		return c, fmt.Errorf("--registry-ref %q is not a full ref name: it opens with refs/, and git check-ref-format accepts it", c.registryRef)
 	case c.readSchema == "" || c.idSchema == "":
@@ -305,6 +331,12 @@ type publisher struct {
 	cache          string
 	origin         string
 	pointer        string
+	// mirrors holds a mirror of each project's main that a pass reads.
+	// The policy path has its own origin and mirrors.
+	mirrors string
+	// signedAuthorization is the authorization the policy path signed,
+	// which --out writes beside the export.
+	signedAuthorization []byte
 
 	principals export.Principals
 	places     webPlaces
@@ -351,6 +383,7 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 	return &publisher{
 		cfg: cfg, stdout: stdout, stderr: stderr,
 		cache: cache, origin: filepath.Join(cache, "origin.git"), pointer: filepath.Join(cache, "_pointer.git"),
+		mirrors:    filepath.Join(cache, "repos"),
 		principals: principals,
 		places:     places,
 		token:      token,
@@ -362,9 +395,17 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 	}, nil
 }
 
-// pass is one run of the publisher.
+// pass is one run of the publisher: the policy path, and then, unless
+// --policy-only is given, the content pass. The policy path sends an
+// authorization before any content work starts, so no failure of the
+// content pass holds up a withdrawal. An incomplete policy check sends its
+// authorization and then fails the pass before any content work.
 func (p *publisher) pass(ctx context.Context) error {
 	if err := os.MkdirAll(p.cfg.state, 0o700); err != nil {
+		return err
+	}
+	reply, err := p.authorize(ctx)
+	if err != nil || p.cfg.policyOnly {
 		return err
 	}
 	unlock, err := lockFile(filepath.Join(p.cfg.state, "lock"))
@@ -372,9 +413,6 @@ func (p *publisher) pass(ctx context.Context) error {
 		return err
 	}
 	defer unlock()
-	if p.key, err = p.loadKey(); err != nil {
-		return err
-	}
 	if err := p.checkStorage(); err != nil {
 		return err
 	}
@@ -397,7 +435,7 @@ func (p *publisher) pass(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if ack.covers(p.cfg, digest, p.now(), p.cfg.recheck) {
+	if ack.covers(p.cfg, digest, p.now(), p.cfg.recheck) && reply.Serves(digest) {
 		p.say("the receiver acknowledged digest %s at %s, and nothing has changed since; nothing is sent", short(digest), ack.At)
 		return nil
 	}

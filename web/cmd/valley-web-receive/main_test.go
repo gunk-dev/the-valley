@@ -65,11 +65,12 @@ var client = &http.Client{
 	},
 }
 
-// edge is a receiver running over a state directory, and the fixture it
-// is sent.
+// edge is a receiver running over a store, and the fixture it is sent.
+// store is the store's descriptor, and state its payload directory.
 type edge struct {
 	t     *testing.T
 	f     *exporttest.Fixture
+	store string
 	state string
 	addr  string
 	proc  *proc
@@ -126,15 +127,31 @@ func newEdge(t *testing.T, f *exporttest.Fixture, more ...string) *edge {
 func newEdgeWithGit(t *testing.T, f *exporttest.Fixture, git string, more ...string) *edge {
 	t.Helper()
 	tokenFile, verifiers := files(t)
-	state := filepath.Join(t.TempDir(), "state")
-	cmd := receiveCmd(append([]string{"--state", state, "--listen", "127.0.0.1:0",
+	dir := filepath.Join(t.TempDir(), "edge")
+	store, state := filepath.Join(dir, "store"), filepath.Join(dir, "v2")
+	cmd := receiveCmd(append([]string{"--state", store, "--listen", "127.0.0.1:0",
 		"--instance", exporttest.Instance, "--destination", exporttest.Destination,
 		"--verifiers", verifiers, "--token-file", tokenFile}, more...)...)
 	if git != "" {
 		cmd.Env = append(cmd.Env, "VALLEY_WEB_RECEIVE_TEST_GIT="+git)
 	}
 	p := start(t, cmd, "valley-web-receive")
-	return &edge{t: t, f: f, state: state, proc: p, addr: p.addr}
+	e := &edge{t: t, f: f, store: store, state: state, proc: p, addr: p.addr}
+	// The publisher sends an authorization before any content, and the
+	// fixture's uploads are of app.
+	if status, reply := e.authorize(1, "app"); status != http.StatusOK {
+		t.Fatalf("the first authorization was answered %d: %s", status, reply)
+	}
+	return e
+}
+
+// authorize posts an authorization with sequence seq that lets anyone
+// read the projects given, and returns the status and the reply.
+func (e *edge) authorize(seq int64, projects ...string) (int, []byte) {
+	e.t.Helper()
+	signed := exporttest.SignAuthorization(e.t, exporttest.Authorization(seq, projects...))
+	status, reply, _ := e.request(http.MethodPost, export.AuthorizationPath, signed, nil)
+	return status, reply
 }
 
 // proc is a program start runs: where it listens, what it writes to
@@ -259,7 +276,7 @@ func (e *edge) do(ctx context.Context, method, path string, body []byte, header 
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	req.Header.Set("Authorization", export.Authorization(token))
+	req.Header.Set("Authorization", export.BearerHeader(token))
 	for k, v := range header {
 		req.Header[k] = v
 	}
@@ -305,7 +322,7 @@ func (e *edge) idle() net.Conn {
 	for range 100 {
 		c := e.dial()
 		fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: 0\r\n\r\n",
-			export.CommitPath(1), e.addr, export.Authorization(token))
+			export.CommitPath(1), e.addr, export.BearerHeader(token))
 		c.SetReadDeadline(time.Now().Add(requestTimeout))
 		res, err := http.ReadResponse(bufio.NewReader(c), nil)
 		if err != nil {
@@ -338,7 +355,7 @@ func (e *edge) stall(method, path string, content []byte) net.Conn {
 	e.t.Helper()
 	c := e.dial()
 	fmt.Fprintf(c, "%s %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n",
-		method, path, e.addr, export.Authorization(token), len(content))
+		method, path, e.addr, export.BearerHeader(token), len(content))
 	c.Write(content[:1])
 	if answered(c, 200*time.Millisecond) {
 		c.Close()
@@ -485,7 +502,7 @@ func (e *edge) valleyWeb() string {
 		}
 		e.t.Skip("VALLEY_WEB names no valley-web; the nix check provides one")
 	}
-	return start(e.t, command(bin, "--state", e.state, "--listen", "127.0.0.1:0"), "valley-web").addr
+	return start(e.t, command(bin, "--state", e.store, "--listen", "127.0.0.1:0"), "valley-web").addr
 }
 
 // serves checks that valley-web at addr answers every page of the
@@ -581,10 +598,10 @@ func TestAnUnauthenticatedRequestIsRefused(t *testing.T) {
 		}
 	}
 	send("a manifest with no token", http.MethodPost, export.ManifestPath, signed, nil)
-	send("a manifest with another token", http.MethodPost, export.ManifestPath, signed, []string{export.Authorization(token + "x")})
+	send("a manifest with another token", http.MethodPost, export.ManifestPath, signed, []string{export.BearerHeader(token + "x")})
 	send("a manifest with the token in another scheme", http.MethodPost, export.ManifestPath, signed, []string{"Basic " + token})
 	send("a manifest with the token twice", http.MethodPost, export.ManifestPath, signed,
-		[]string{export.Authorization(token), export.Authorization(token)})
+		[]string{export.BearerHeader(token), export.BearerHeader(token)})
 	send("a body with no token", http.MethodPut, export.BodyPath(m.Sequence, m.File.SHA256), e.f.ExportJSON, nil)
 	send("a commit with no token", http.MethodPost, export.CommitPath(m.Sequence), nil, nil)
 	send("a path the upload does not use", http.MethodGet, "/", nil, nil)
@@ -664,7 +681,7 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Authorization", export.Authorization(token))
+	req.Header.Set("Authorization", export.BearerHeader(token))
 	res, err := client.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -687,7 +704,7 @@ func TestABodyIsKeptOnlyWhenItVerifies(t *testing.T) {
 
 	// Cut off half way.
 	c := e.dial()
-	fmt.Fprintf(c, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n", path, e.addr, export.Authorization(token), file.Size)
+	fmt.Fprintf(c, "PUT %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n", path, e.addr, export.BearerHeader(token), file.Size)
 	c.Write(e.f.ExportJSON[:file.Size/2])
 	c.Close()
 
@@ -767,6 +784,11 @@ func TestASaturatedUploadLeavesValleyWebServing(t *testing.T) {
 	res.Body.Close()
 	refused(t, "a manifest with no token while the receiver is saturated", res.StatusCode, reply, export.CodeUnauthenticated)
 	e.serves(web)
+	// Authorizations have slots of their own, and take no activation
+	// lock, so one is stored while uploads hold every upload slot.
+	if status, reply := e.authorize(2, "app"); status != http.StatusOK {
+		t.Errorf("an authorization while uploads hold every slot was answered %d: %s", status, reply)
+	}
 
 	for _, c := range stalled {
 		c.Close()
@@ -801,7 +823,7 @@ func TestOptionsStarHoldsNoConnection(t *testing.T) {
 	for i := range conns {
 		auth := ""
 		if i%2 == 1 {
-			auth = "Authorization: " + export.Authorization(token) + "\r\n"
+			auth = "Authorization: " + export.BearerHeader(token) + "\r\n"
 		}
 		conns[i] = e.dial()
 		fmt.Fprintf(conns[i], "OPTIONS * HTTP/1.1\r\nHost: %s\r\n%sContent-Length: 1\r\n\r\n", e.addr, auth)
@@ -843,7 +865,7 @@ func TestAManifestStopsWaitingWhenItsClientGoesAway(t *testing.T) {
 	signed, _ := e.signedNow()
 	c := e.dial()
 	fmt.Fprintf(c, "POST %s HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nContent-Length: %d\r\n\r\n%s",
-		export.ManifestPath, e.addr, export.Authorization(token), len(signed), signed)
+		export.ManifestPath, e.addr, export.BearerHeader(token), len(signed), signed)
 	if answered(c, time.Second) {
 		t.Fatal("the manifest was answered while the store's lock was held")
 	}
@@ -969,7 +991,7 @@ func TestANewerManifestStopsTheOlderUploadsBodies(t *testing.T) {
 func TestAReleasedGenerationMakesRoomForAnUpload(t *testing.T) {
 	e := newEdge(t, exporttest.New(t), "--max-storage", "6M")
 	first := e.upload()
-	reader, err := export.OpenReadOnly(e.state)
+	reader, err := export.OpenReadOnly(e.store)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -997,7 +1019,7 @@ func TestAReleasedGenerationMakesRoomForAnUpload(t *testing.T) {
 	}
 	release()
 	third := e.upload()
-	if gens, _ := filepath.Glob(filepath.Join(e.state, "exports", "*")); len(gens) != 1 || filepath.Base(gens[0]) != strconv.FormatInt(third.Sequence, 10) {
+	if gens, _ := filepath.Glob(filepath.Join(e.state, "generations", "*")); len(gens) != 1 || filepath.Base(gens[0]) != strconv.FormatInt(third.Sequence, 10) {
 		t.Errorf("the state directory holds the generations %v, want the third alone", gens)
 	}
 }
@@ -1221,5 +1243,31 @@ func TestUsage(t *testing.T) {
 	out, err := output(t, receiveCmd("--help"))
 	if err != nil || !strings.HasPrefix(string(out), "usage: valley-web-receive") {
 		t.Errorf("valley-web-receive --help gave %v:\n%s", err, out)
+	}
+}
+
+// The receiver admits an authorization by its sequence alone: one checked
+// long ago, with a sequence above the stored one's, is stored, and the
+// same one posted again is refused as replayed. Its reply says what the
+// receiver serves. A path of the first protocol is refused with
+// unsupported-version.
+func TestAnAuthorizationIsAdmittedBySequence(t *testing.T) {
+	e := newEdge(t, exporttest.New(t))
+	e.upload()
+	old := exporttest.Authorization(7, "app")
+	old.Checked = time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	signed := exporttest.SignAuthorization(t, old)
+	status, reply, _ := e.request(http.MethodPost, export.AuthorizationPath, signed, nil)
+	var got export.AuthorizationReply
+	if err := json.Unmarshal(reply, &got); status != http.StatusOK || err != nil || got.Schema != export.AuthorizedSchema ||
+		got.Sequence != 7 || got.Active == nil || len(got.Missing) != 0 {
+		t.Errorf("an old-dated authorization above the stored one was answered %d: %s", status, reply)
+	}
+	status, reply, _ = e.request(http.MethodPost, export.AuthorizationPath, signed, nil)
+	refused(t, "the same authorization again", status, reply, export.CodeReplayed)
+	status, reply, _ = e.request(http.MethodPost, "/web-export/v1/manifest", e.f.Signed, nil)
+	refused(t, "a manifest of the first protocol", status, reply, export.CodeUnsupportedVersion)
+	if !strings.Contains(string(reply), "upgrade valley-web-publish") {
+		t.Errorf("the refusal of the first protocol does not say what to upgrade: %s", reply)
 	}
 }

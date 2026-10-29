@@ -193,23 +193,31 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 	r := &reading{mirrors: map[string]string{}}
 	in := export.Inputs{
 		Plan: planJSON, Pending: pendingJSON,
-		Visibility: map[string]export.Visibility{}, SourceTips: map[string]string{},
+		Identities: map[string]string{}, SourceTips: map[string]string{},
 		Principals: p.principals,
 		Groups:     p.places.groups, Placements: p.places.placements,
 	}
 	for _, proj := range plan.Projects {
 		name := proj.Project
-		public := false
+		var read consentRead
 		if p.selects(grants, name) {
-			if public, err = p.readableByAnyone(ctx, name, repos[name], grants, in.SourceTips, r.mirrors); err != nil {
+			repo := repos[name]
+			if repo.Error != nil {
+				return nil, fmt.Errorf("%s: the pending listing could not read it: %s", name, *repo.Error)
+			}
+			if repo.URL == "" {
+				return nil, fmt.Errorf("%s: the pending listing gives no URL to read it from", name)
+			}
+			if read, err = p.readableByAnyone(ctx, name, repo.URL, grants); err != nil {
 				return nil, err
 			}
 		}
-		if !public {
+		if !read.public {
 			r.private = append(r.private, name)
 			continue
 		}
-		in.Visibility[name] = export.Public
+		in.Identities[name] = read.consent.Identity
+		in.SourceTips[name], r.mirrors[name] = read.tip, read.mirror
 		for _, k := range proj.Knots {
 			detail, err := p.valley(ctx, p.origin, "knot", "show", "--project", name, k.ID, "--json")
 			if err != nil {
@@ -243,46 +251,47 @@ func listNames(list []string) string {
 	return strings.Join(list, ", ")
 }
 
+// consentRead is what readableByAnyone read of a project: whether it is
+// public, and for a public project its consent, main's tip and the mirror
+// main was fetched into.
+type consentRead struct {
+	public      bool
+	consent     readaccess.Consent
+	tip, mirror string
+}
+
 // readableByAnyone decides whether a project a read grant to anyone names
-// is public: its own policy/read on main lets anyone read it, under that
-// grant. For a public project it records main's tip and the mirror it was
-// fetched into. A project with no main, or whose policy/read is missing,
-// invalid or does not let anyone read it, is private, and an invalid
-// policy is said. A project that cannot be read is an error.
-func (p *publisher) readableByAnyone(ctx context.Context, name string, repo pendingRepo,
-	grants readaccess.Grants, tips, mirrors map[string]string) (bool, error) {
+// is public: its own policy/read on main, read from the repository at url,
+// lets anyone read it, under that grant. A project with no main, or whose
+// policy/read is missing, invalid or does not let anyone read it, is
+// private, and an invalid policy is said. A project that cannot be read
+// is an error.
+func (p *publisher) readableByAnyone(ctx context.Context, name, url string, grants readaccess.Grants) (consentRead, error) {
 	if !export.ValidName(name) {
 		p.warn("%q is not a project name, so it is private", name)
-		return false, nil
+		return consentRead{}, nil
 	}
-	if repo.Error != nil {
-		return false, fmt.Errorf("%s: the pending listing could not read it: %s", name, *repo.Error)
-	}
-	if repo.URL == "" {
-		return false, fmt.Errorf("%s: the pending listing gives no URL to read it from", name)
-	}
-	mirror, tip, err := p.fetchMain(ctx, name, repo.URL)
+	mirror, tip, err := p.fetchMain(ctx, name, url)
 	if errors.Is(err, errNoMain) {
-		return false, nil
+		return consentRead{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("%s: could not read main: %w", name, err)
+		return consentRead{}, fmt.Errorf("%s: could not read main: %w", name, err)
 	}
 	consent, err := p.access.Consent(ctx, mirror, tip, name)
 	var bad *readaccess.InvalidError
 	switch {
 	case errors.Is(err, readaccess.ErrMissing):
-		return false, nil
+		return consentRead{}, nil
 	case errors.As(err, &bad):
 		p.warn("%s: its policy/read at %s is not valid, so it is private: %v", name, short(tip), err)
-		return false, nil
+		return consentRead{}, nil
 	case err != nil:
-		return false, fmt.Errorf("%s: could not read its policy/read at %s: %w", name, short(tip), err)
+		return consentRead{}, fmt.Errorf("%s: could not read its policy/read at %s: %w", name, short(tip), err)
 	case !grants.May(readaccess.Anyone, consent):
-		return false, nil
+		return consentRead{}, nil
 	}
-	tips[name], mirrors[name] = tip, mirror
-	return true, nil
+	return consentRead{public: true, consent: consent, tip: tip, mirror: mirror}, nil
 }
 
 // preparePointer makes the repository valley plan and valley pending run
@@ -349,13 +358,7 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 		if !export.ValidName(name) {
 			return fmt.Errorf("invalid project name %q", name)
 		}
-		u := strings.TrimRight(p.cfg.instanceRepo, "/")
-		cut := strings.LastIndex(u, "/") + 1
-		suffix := ""
-		if strings.HasSuffix(u[cut:], ".git") {
-			suffix = ".git"
-		}
-		url := u[:cut] + name + suffix
+		url := p.projectURL(name)
 		urls[name] = url
 		sum := sha256.Sum256([]byte(url))
 		staged[hex.EncodeToString(sum[:8])+"-"+name] = true
@@ -393,6 +396,19 @@ func (p *publisher) prepareCLICaches(ctx context.Context, names []string) error 
 	// those bounded metadata writes before invoking any collection command.
 	p.collectionRoom = int64(len(names)+1) * 4096
 	return p.reserveStorage(p.collectionRoom)
+}
+
+// projectURL is where the CLI finds the project called name: beside the
+// instance repository, with its .git suffix when the instance repository
+// has one.
+func (p *publisher) projectURL(name string) string {
+	u := strings.TrimRight(p.cfg.instanceRepo, "/")
+	cut := strings.LastIndex(u, "/") + 1
+	suffix := ""
+	if strings.HasSuffix(u[cut:], ".git") {
+		suffix = ".git"
+	}
+	return u[:cut] + name + suffix
 }
 
 func (p *publisher) cliReposDir() string {
@@ -515,7 +531,7 @@ func (p *publisher) fetchMain(ctx context.Context, name, url string) (string, st
 		return "", "", errNoMain
 	}
 
-	mirror := filepath.Join(p.cache, "repos", name+".git")
+	mirror := filepath.Join(p.mirrors, name+".git")
 	oids, err := p.shareRepository(ctx, mirror, url, map[string]string{"refs/heads/main": "refs/heads/main"})
 	if err != nil {
 		return "", "", err

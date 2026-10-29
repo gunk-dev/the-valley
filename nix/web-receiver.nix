@@ -1,10 +1,12 @@
 # The web export receiver (web/cmd/valley-web-receive) and valley-web
 # (web/cmd/valley-web) on a NixOS edge host: two long-running units
-# over one state directory.
+# over one store in one state directory.
 #
-# The receiver takes the publisher's uploads and is the state directory's
-# one writer. valley-web serves the activated export to anonymous readers
-# and only reads the directory. Each runs as a user of its own, both in
+# The receiver takes the publisher's authorizations and uploads, and is
+# the store's one writer. valley-web serves the activated export to
+# anonymous readers, as the stored authorization allows, and only reads
+# the store. Both are given the store's descriptor, <stateDir>/store; its
+# payloads are in <stateDir>/v2 (web/export/store.go). Each runs as a user of its own, both in
 # the valley-web group. The directory is the receiver's, mode 0750, so
 # valley-web reads it through the group, and the receiver keeps its
 # staging area to itself (web/export/store.go). Each unit has its own
@@ -27,6 +29,10 @@ let
   cfg = config.services.valley.webReceiver;
   stateDir = toString cfg.stateDir;
   stateName = lib.removePrefix "/var/lib/" stateDir;
+  # The store's descriptor, which the receiver creates on its first start.
+  # Binaries of the first store layout took the directory itself, and
+  # refuse a file.
+  storeFile = "${stateDir}/store";
 
   verifiersFile = pkgs.writeText "valley-web-verifiers" (
     lib.concatMapStrings (line: line + "\n") cfg.verifiers
@@ -34,7 +40,7 @@ let
 
   receiveCommand = lib.concatStringsSep " " [
     (lib.getExe cfg.receiverPackage)
-    "--state ${lib.escapeShellArg stateDir}"
+    "--state ${lib.escapeShellArg storeFile}"
     "--listen ${lib.escapeShellArg cfg.listen}"
     "--instance ${lib.escapeShellArg cfg.instance}"
     "--destination ${lib.escapeShellArg cfg.destination}"
@@ -48,7 +54,7 @@ let
 
   webCommand = lib.concatStringsSep " " [
     (lib.getExe cfg.webPackage)
-    "--state ${lib.escapeShellArg stateDir}"
+    "--state ${lib.escapeShellArg storeFile}"
     "--listen ${lib.escapeShellArg cfg.webListen}"
   ];
 
@@ -165,7 +171,11 @@ in
       default = "/var/lib/valley-web";
       description = ''
         The state directory, under /var/lib: the receiver's, mode 0750,
-        and readable by valley-web through the valley-web group.
+        and readable by valley-web through the valley-web group. It holds
+        the store's descriptor, `store`, and its payloads, `v2/`. On its
+        first start the receiver makes a new store there, and removes the
+        first store layout's state if it finds it; the publisher's next
+        pass sends everything again.
       '';
     };
 

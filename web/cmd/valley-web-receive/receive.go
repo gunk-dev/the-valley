@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"the-valley/note"
@@ -29,8 +32,17 @@ type receiver struct {
 	maxUpload   int64
 	log         *log.Logger
 
-	// slots holds one token for each authenticated request running.
-	slots chan struct{}
+	// slots holds one token for each authenticated upload request
+	// running, and authSlots one for each authorization request, so a
+	// saturated upload never holds up an authorization.
+	slots     chan struct{}
+	authSlots chan struct{}
+	// pruning is set while a prune runs after an authorization, so one
+	// prune at a time waits for the readers of the active generation.
+	pruning atomic.Bool
+	// pruneDelay is the first pause before prune tries again while a
+	// reader holds the generation. A test shortens it.
+	pruneDelay time.Duration
 
 	mu sync.Mutex
 	// staged is the newest upload a manifest staged, or nil before the
@@ -51,11 +63,15 @@ type receiver struct {
 // of the same upload.
 var errBusy = errors.New("another request is staging this body")
 
-// The kinds of request the upload makes.
+// The kinds of request the publisher makes.
 const (
-	stepManifest = "manifest"
-	stepBody     = "body"
-	stepCommit   = "commit"
+	stepAuthorization = "authorization"
+	stepManifest      = "manifest"
+	stepBody          = "body"
+	stepCommit        = "commit"
+	// stepLegacy is a path of the first version of the upload, which is
+	// refused as unsupported-version.
+	stepLegacy = "legacy"
 )
 
 // ServeHTTP authenticates the request, then routes it, then takes a slot
@@ -64,7 +80,7 @@ const (
 func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rc := http.NewResponseController(w)
 	rc.SetWriteDeadline(time.Now().Add(shortTimeout))
-	if !export.Authorized(r, rv.token) {
+	if !export.CarriesToken(r, rv.token) {
 		// Closing the connection after the reply reads none of the body.
 		rc.SetReadDeadline(time.Now())
 		w.Header().Set("Connection", "close")
@@ -80,6 +96,12 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Connection", "close")
 		reply(w, http.StatusNotFound, nil)
 		return
+	case step == stepLegacy:
+		rc.SetReadDeadline(time.Now())
+		w.Header().Set("Connection", "close")
+		rv.fail(w, r, &export.Error{Code: export.CodeUnsupportedVersion,
+			Message: "this receiver takes signed authorizations and the-valley/web-export/v2 manifests under " + export.PathPrefix + "; upgrade valley-web-publish on the valley host"})
+		return
 	case r.Method != allow:
 		rc.SetReadDeadline(time.Now())
 		w.Header().Set("Connection", "close")
@@ -87,9 +109,13 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reply(w, http.StatusMethodNotAllowed, nil)
 		return
 	}
+	slots := rv.slots
+	if step == stepAuthorization {
+		slots = rv.authSlots
+	}
 	select {
-	case rv.slots <- struct{}{}:
-		defer func() { <-rv.slots }()
+	case slots <- struct{}{}:
+		defer func() { <-slots }()
 	default:
 		busy(w, rc)
 		return
@@ -98,13 +124,21 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// The deadline bounds the connection's reads and writes, and ctx the
 	// store's work: waiting for its lock, and the git a commit runs. ctx
 	// is done, too, once the client goes away.
-	timeout := map[string]time.Duration{stepManifest: manifestTimeout, stepBody: bodyTimeout, stepCommit: commitTimeout}[step]
+	timeout := map[string]time.Duration{stepAuthorization: authorizationTimeout, stepManifest: manifestTimeout, stepBody: bodyTimeout, stepCommit: commitTimeout}[step]
 	deadline := time.Now().Add(timeout)
 	rc.SetReadDeadline(deadline)
 	rc.SetWriteDeadline(deadline)
 	ctx, cancel := context.WithDeadline(r.Context(), deadline)
 	defer cancel()
 	switch step {
+	case stepAuthorization:
+		got, err := rv.authorization(ctx, r)
+		if err != nil {
+			rv.fail(w, r, err)
+			return
+		}
+		rv.log.Printf("stored authorization %d", got.Sequence)
+		reply(w, http.StatusOK, got)
 	case stepManifest:
 		inv, err := rv.manifest(ctx, r)
 		if err != nil {
@@ -138,10 +172,15 @@ func (rv *receiver) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // body's path names its upload's sequence and its SHA-256, and a commit's
 // the sequence. step is "" for a path the upload does not use.
 func route(path string) (step string, seq int64, sum, method string) {
-	if path == export.ManifestPath {
+	switch {
+	case path == export.AuthorizationPath:
+		return stepAuthorization, 0, "", http.MethodPost
+	case path == export.ManifestPath:
 		return stepManifest, 0, "", http.MethodPost
+	case strings.HasPrefix(path, export.LegacyPrefix):
+		return stepLegacy, 0, "", ""
 	}
-	rest, ok := strings.CutPrefix(path, "/web-export/v1/")
+	rest, ok := strings.CutPrefix(path, export.PathPrefix)
 	if !ok {
 		return "", 0, "", ""
 	}
@@ -172,6 +211,81 @@ func isSHA256(s string) bool {
 		}
 	}
 	return true
+}
+
+// authorization admits a signed authorization by its signature, its type,
+// its instance and destination, and its sequence, and stores it durably,
+// without the store's activation lock. The reply is sent once it is
+// stored. It then deletes, in the background, the repositories the
+// authorization withdrew, once no reader holds them; neither the reply nor
+// the next authorization waits for that.
+func (rv *receiver) authorization(ctx context.Context, r *http.Request) (export.AuthorizationReply, error) {
+	hw, err := rv.store.AuthorizationHighWater()
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	signed, err := io.ReadAll(io.LimitReader(r.Body, export.MaxAuthorization+1))
+	if err != nil {
+		return export.AuthorizationReply{}, &export.Error{Code: export.CodeUnreadable, Message: fmt.Sprintf("the authorization could not be read: %v", err)}
+	}
+	a, err := export.VerifyAuthorization(bytes.NewReader(signed), export.AuthorizationAdmission{Verifiers: rv.verifiers,
+		Instance: rv.instance, Destination: rv.destination, HighWater: hw})
+	if err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	if err := rv.store.Authorize(ctx, a, signed); err != nil {
+		return export.AuthorizationReply{}, err
+	}
+	rv.prune()
+	got := export.AuthorizationReply{Schema: export.AuthorizedSchema, Sequence: a.Sequence}
+	// What the receiver serves only advises the publisher, so a failure
+	// to read it does not undo the reply: the publisher then uploads.
+	active, _, err := rv.store.Holdings()
+	if err == nil {
+		got.Missing, err = rv.store.Missing()
+	}
+	if err != nil {
+		rv.log.Printf("reading what the store serves: %v", err)
+		return got, nil
+	}
+	got.Active = active
+	return got, nil
+}
+
+// prune deletes the repositories the stored authorization withdrew, in a
+// goroutine of its own, unless one is running already: that one reads the
+// authorization again each time it tries. While a reader holds the active
+// generation it tries again, after a pause that doubles up to five
+// seconds, for at most pruneTimeout. A prune that does not finish is
+// logged, and the next authorization, activation or start of the receiver
+// tries again.
+func (rv *receiver) prune() {
+	if !rv.pruning.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer rv.pruning.Store(false)
+		ctx, cancel := context.WithTimeout(context.Background(), pruneTimeout)
+		defer cancel()
+		pause := rv.pruneDelay
+		for {
+			err := rv.store.Prune(ctx)
+			if err == nil {
+				return
+			}
+			if !errors.Is(err, export.ErrHeld) {
+				rv.log.Printf("deleting withdrawn repositories: %v", err)
+				return
+			}
+			select {
+			case <-time.After(pause):
+				pause = min(2*pause, 5*time.Second)
+			case <-ctx.Done():
+				rv.log.Printf("deleting withdrawn repositories: readers held the active generation for %v; the next authorization or activation tries again", pruneTimeout)
+				return
+			}
+		}
+	}()
 }
 
 // manifest is step 1: admit the manifest, hold its bodies to the caps,
@@ -289,7 +403,13 @@ func (rv *receiver) commit(ctx context.Context, seq int64) (export.Generation, e
 	if err != nil {
 		return export.Generation{}, err
 	}
-	return rv.store.Activate(ctx, st)
+	g, err := rv.store.Activate(ctx, st)
+	if err == nil {
+		// Activate prunes what it can; a reader may have held the old
+		// generation, which the new one replaced, or the new one.
+		rv.prune()
+	}
+	return g, err
 }
 
 // fail replies with the refusal err is, or with 500 and no refusal for any
@@ -310,11 +430,13 @@ func (rv *receiver) fail(w http.ResponseWriter, r *http.Request, err error) {
 // reports whether it took them all. A request that comes after takes no
 // slot, and is answered 503.
 func (rv *receiver) drain(ctx context.Context) bool {
-	for range cap(rv.slots) {
-		select {
-		case rv.slots <- struct{}{}:
-		case <-ctx.Done():
-			return false
+	for _, slots := range []chan struct{}{rv.slots, rv.authSlots} {
+		for range cap(slots) {
+			select {
+			case slots <- struct{}{}:
+			case <-ctx.Done():
+				return false
+			}
 		}
 	}
 	return true

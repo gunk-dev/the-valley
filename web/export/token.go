@@ -43,20 +43,20 @@ func ReadToken(path string) (string, error) {
 	return token, nil
 }
 
-// Authorization is the value of the Authorization header that carries the
+// BearerHeader is the value of the Authorization header that carries the
 // token on every request of an upload.
-func Authorization(token string) string { return "Bearer " + token }
+func BearerHeader(token string) string { return "Bearer " + token }
 
-// Authorized reports whether the request carries the token in exactly one
+// CarriesToken reports whether the request carries the token in exactly one
 // Authorization header. It compares SHA-256 sums in constant time, so the
 // time it takes says nothing about how much of the token a request got
 // right, or how long the token is.
-func Authorized(r *http.Request, token string) bool {
+func CarriesToken(r *http.Request, token string) bool {
 	got := r.Header.Values("Authorization")
 	if len(got) != 1 {
 		return false
 	}
 	a := sha256.Sum256([]byte(got[0]))
-	b := sha256.Sum256([]byte(Authorization(token)))
+	b := sha256.Sum256([]byte(BearerHeader(token)))
 	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }

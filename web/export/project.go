@@ -34,9 +34,9 @@ type Inputs struct {
 	// Details are `valley knot show --project P <id> --json`, one for
 	// every knot of every public project.
 	Details [][]byte
-	// Visibility is each project's visibility. A project it does not name
-	// is not exported.
-	Visibility map[string]Visibility
+	// Identities are the publication identities of the projects to
+	// export, by project. A project it does not name is not exported.
+	Identities map[string]string
 	// SourceTips are each public project's main.
 	SourceTips map[string]string
 	// Principals is the display mapping principal names pass through.
@@ -227,13 +227,11 @@ func Build(in Inputs) (*Export, error) {
 	}
 
 	exported := map[string]bool{}
-	for name, v := range in.Visibility {
-		switch v {
-		case Public:
-			exported[name] = true
-		default:
-			return nil, fmt.Errorf("project %s has visibility %q; v1 exports public projects alone", name, v)
+	for name, id := range in.Identities {
+		if !ValidIdentity(id) {
+			return nil, fmt.Errorf("project %s has identity %q, which is not 32 lowercase hex digits", name, id)
 		}
+		exported[name] = true
 	}
 	planned := map[string]planProject{}
 	for _, p := range plan.Projects {
@@ -253,17 +251,17 @@ func Build(in Inputs) (*Export, error) {
 	for _, name := range names {
 		p, ok := planned[name]
 		if !ok {
-			return nil, fmt.Errorf("public project %s is not in the plan", name)
+			return nil, fmt.Errorf("exported project %s is not in the plan", name)
 		}
 		if p.Error != nil {
-			return nil, fmt.Errorf("the plan could not read public project %s", name)
+			return nil, fmt.Errorf("the plan could not read exported project %s", name)
 		}
 		r, ok := repos[name]
 		if !ok {
-			return nil, fmt.Errorf("public project %s is not in the pending listing", name)
+			return nil, fmt.Errorf("exported project %s is not in the pending listing", name)
 		}
 		if r.Error != nil {
-			return nil, fmt.Errorf("the pending listing could not read public project %s", name)
+			return nil, fmt.Errorf("the pending listing could not read exported project %s", name)
 		}
 		out, err := project(name, p, r, details, exported, in)
 		if err != nil {
@@ -287,14 +285,14 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 	shown := in.Principals.Show
 	tip := in.SourceTips[name]
 	if !ValidObjectID(tip) {
-		return Project{}, fmt.Errorf("public project %s has no source tip, or one that is not an object ID", name)
+		return Project{}, fmt.Errorf("exported project %s has no source tip, or one that is not an object ID", name)
 	}
 	placed := in.Placements[name]
 	if placed.Group == "" {
-		return Project{}, fmt.Errorf("public project %s belongs to no group, so it has no web URL", name)
+		return Project{}, fmt.Errorf("exported project %s belongs to no group, so it has no web URL", name)
 	}
 	out := Project{
-		Name: name, Visibility: Public,
+		Name: name, Identity: in.Identities[name],
 		Group: placed.Group, WebName: placed.Name, FormerNames: placed.FormerNames, Aliases: placed.Aliases,
 		GraphTip: p.Tip, SourceTip: tip,
 		Roots: nonNil(p.Roots), Knots: []Knot{}, OpenResiduals: []Residuals{}, Changes: []Change{},
@@ -412,7 +410,7 @@ func exportedGroups(projects []Project, groups []Group) ([]Group, error) {
 	}
 	for _, p := range projects {
 		if used[p.Group] {
-			return nil, fmt.Errorf("public project %s belongs to the group %q, which is not declared", p.Name, p.Group)
+			return nil, fmt.Errorf("exported project %s belongs to the group %q, which is not declared", p.Name, p.Group)
 		}
 	}
 	return out, nil

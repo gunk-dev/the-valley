@@ -153,7 +153,7 @@ func TestWaitingOnHiddenFollowsAHiddenBlocker(t *testing.T) {
 func TestBuildKeepsEdgesBetweenExportedProjects(t *testing.T) {
 	f := exporttest.New(t)
 	in := f.Inputs
-	in.Visibility = map[string]export.Visibility{"app": export.Public, "site": export.Public}
+	in.Identities = map[string]string{"app": exporttest.Identities["app"], "site": "273d5668702918ea7ae079de374db96b"}
 	in.SourceTips = map[string]string{"app": in.SourceTips["app"], "site": strings.Repeat("e", 40)}
 	in.Details = append(in.Details,
 		detail("site", "8c2e4a6b0d1f3e5a7c9b1d3f5e7a9c0b2d4f6e81", "oc-b000001"),
@@ -267,18 +267,18 @@ func TestBuildRefuses(t *testing.T) {
 			in.Plan = bytes.Replace(in.Plan, []byte(`"project": "app",
       "error": null`), []byte(`"project": "app",
       "error": "unreadable"`), 1)
-		}, "could not read public project app"},
+		}, "could not read exported project app"},
 		{"a public project the pending listing could not read", func(in *export.Inputs) {
 			in.Pending = bytes.Replace(in.Pending, []byte(`"url": "git@valley-host:app.git",
       "error": null`), []byte(`"url": "git@valley-host:app.git",
       "error": "unreadable"`), 1)
-		}, "pending listing could not read public project app"},
+		}, "pending listing could not read exported project app"},
 		{"a public project the plan does not list", func(in *export.Inputs) {
-			in.Visibility = map[string]export.Visibility{"app": export.Public, "other": export.Public}
+			in.Identities = map[string]string{"app": exporttest.Identities["app"], "other": "0123456789abcdef0123456789abcdef"}
 		}, "not in the plan"},
-		{"a visibility v1 does not export", func(in *export.Inputs) {
-			in.Visibility = map[string]export.Visibility{"app": "private"}
-		}, "public projects alone"},
+		{"an identity that is not one", func(in *export.Inputs) {
+			in.Identities = map[string]string{"app": "private"}
+		}, "not 32 lowercase hex digits"},
 		{"a public project with no source tip", func(in *export.Inputs) { in.SourceTips = nil }, "no source tip"},
 		{"a display name with a control character", func(in *export.Inputs) {
 			in.Principals = export.Principals{"app-agent": "agent\x1b"}
@@ -293,7 +293,7 @@ func TestBuildRefuses(t *testing.T) {
 		}, "control character"},
 		{"a public project in no group", func(in *export.Inputs) {
 			in.Placements["app"] = export.Placement{}
-		}, "public project app belongs to no group"},
+		}, "exported project app belongs to no group"},
 		{"group names that differ in case", func(in *export.Inputs) {
 			in.Groups = append(in.Groups, export.Group{ID: "web", Name: "Tools"})
 		}, `the name of group core and the name of group web are both "Tools", ignoring case`},
@@ -364,7 +364,7 @@ func TestBuildRefuses(t *testing.T) {
 func TestBuildExportsNothingWhenNothingIsPublic(t *testing.T) {
 	f := exporttest.New(t)
 	in := f.Inputs
-	in.Visibility = nil
+	in.Identities = nil
 	e, err := export.Build(in)
 	if err != nil {
 		t.Fatal(err)
@@ -627,8 +627,8 @@ func TestDecodeContextValues(t *testing.T) {
 	f := exporttest.New(t)
 	for _, data := range [][]byte{
 		f.ExportJSON,
-		[]byte(`{"schema":"valley-web-export/v1","projects":null}`),
-		[]byte(`{"schema":"valley-web-export/v1","projects":[]}`),
+		[]byte(`{"schema":"valley-web-export/v2","projects":null}`),
+		[]byte(`{"schema":"valley-web-export/v2","projects":[]}`),
 	} {
 		var want export.Export
 		if err := json.Unmarshal(data, &want); err != nil {
@@ -647,7 +647,7 @@ func TestDecodeContextValues(t *testing.T) {
 		`"knots":[{"id":"oc-a000001","comment_count":9223372036854775808}]`,
 		`"knots":[{"id":"oc-a000001","comment_count":1.5}]`, `"knots":[{"id":"oc-a000001","unknown":true}]`,
 	} {
-		data := []byte(`{"schema":"valley-web-export/v1","projects":[{"project":"app","visibility":"public","source_tip":"` + strings.Repeat("a", 40) + `",` + field + `}]}`)
+		data := []byte(`{"schema":"valley-web-export/v2","projects":[{"project":"app","identity":"9da6809f038df92138c131cd16bed76d","source_tip":"` + strings.Repeat("a", 40) + `",` + field + `}]}`)
 		if _, err := export.DecodeContext(context.Background(), bytes.NewReader(data)); err == nil {
 			t.Errorf("accepted %s", field)
 		}
@@ -692,7 +692,7 @@ func TestDecodeContextFinalStringChunk(t *testing.T) {
 			defer cancel()
 			ctx := &finalStringContext{Context: base, cancel: cancel}
 			value := strings.Repeat(`\u0061`, 1<<17)
-			data := `{"schema":"valley-web-export/v1","collected":"` + value + `"}`
+			data := `{"schema":"valley-web-export/v2","collected":"` + value + `"}`
 			if key {
 				data = `{"` + value + `":null}`
 			}
@@ -772,11 +772,11 @@ func TestDecodeStringValues(t *testing.T) {
 	}
 	prefixes := []string{""}
 	for offset := 0; offset < 12; offset++ {
-		prefixes = append(prefixes, strings.Repeat("a", 4096-len(`{"schema":"valley-web-export/v1","collected":"`)-offset))
+		prefixes = append(prefixes, strings.Repeat("a", 4096-len(`{"schema":"valley-web-export/v2","collected":"`)-offset))
 	}
 	for _, prefix := range prefixes {
 		for _, value := range values {
-			data := []byte(`{"schema":"valley-web-export/v1","collected":"` + prefix + value[1:] + `}`)
+			data := []byte(`{"schema":"valley-web-export/v2","collected":"` + prefix + value[1:] + `}`)
 			var want export.Export
 			if err := json.Unmarshal(data, &want); err != nil {
 				t.Fatal(err)
@@ -791,7 +791,7 @@ func TestDecodeStringValues(t *testing.T) {
 		}
 	}
 	for _, value := range []string{`"\x"`, `"\uZZZZ"`, `"\u123"`, `"unterminated`, "\"\n\"", `"\uD834\uZZZZ"`} {
-		data := []byte(`{"schema":"valley-web-export/v1","collected":` + value + `}`)
+		data := []byte(`{"schema":"valley-web-export/v2","collected":` + value + `}`)
 		if _, err := export.Decode(data); err == nil {
 			t.Errorf("accepted invalid string %q", value)
 		}
@@ -801,8 +801,8 @@ func TestDecodeStringValues(t *testing.T) {
 // More must not consume and hide a string error before a closing delimiter.
 func TestDecodeRetainsStringError(t *testing.T) {
 	for _, data := range []string{
-		`{"schema":"valley-web-export/v1","projects":["\x]}`,
-		`{"schema":"valley-web-export/v1","\x}`,
+		`{"schema":"valley-web-export/v2","projects":["\x]}`,
+		`{"schema":"valley-web-export/v2","\x}`,
 	} {
 		if _, err := export.Decode([]byte(data)); err == nil {
 			t.Errorf("accepted malformed document %q", data)

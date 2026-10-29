@@ -45,7 +45,7 @@ type harness struct {
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	f := exporttest.New(t)
-	store, err := export.OpenStore(t.TempDir(), func(err error) { t.Errorf("the store reported: %v", err) })
+	store, err := export.OpenStore(exporttest.StorePath(t), func(err error) { t.Errorf("the store reported: %v", err) })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +92,7 @@ func (h *harness) publish(at time.Time, bundles map[string]string, change func(*
 		t.Fatal(err)
 	}
 	change(e)
+	h.authorizeAll(e)
 	data, err := e.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -146,6 +147,37 @@ func (h *harness) publish(at time.Time, bundles map[string]string, change func(*
 		t.Fatal(err)
 	}
 	return g
+}
+
+// authorizeAll stores an authorization that lets anyone read every
+// project of e, unless the stored one does already.
+func (h *harness) authorizeAll(e *export.Export) {
+	h.t.Helper()
+	a, _, err := h.store.Authorization()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	all := true
+	for _, p := range e.Projects {
+		all = all && a.Allows(export.Anyone, p.Name, p.Identity)
+	}
+	if all {
+		return
+	}
+	next := &export.Authorization{Instance: exporttest.Instance, Destination: exporttest.Destination,
+		Sequence: a.Sequence + 1, Checked: a.Checked}
+	for _, p := range e.Projects {
+		next.Projects = append(next.Projects, export.AuthorizedProject{Name: p.Name, Identity: p.Identity, Readers: []string{export.Anyone}})
+	}
+	h.authorize(next)
+}
+
+// authorize stores the authorization a, as the receiver does.
+func (h *harness) authorize(a *export.Authorization) {
+	h.t.Helper()
+	if err := h.store.Authorize(context.Background(), a, exporttest.SignAuthorization(h.t, a)); err != nil {
+		h.t.Fatal(err)
+	}
 }
 
 // active is the generation the store serves.
@@ -214,7 +246,7 @@ func TestPlanPage(t *testing.T) {
 		"Nothing here waits on you.",
 		"Ready changes — order not assessed",
 		`<span class="handle">kmno</span>`, "plan: list the milestones", "app v2", "approved · integrator: stale",
-		"Collected 2026-10-25 12:00 UTC, 2 minutes ago",
+		"Collected 2026-10-25 12:00 UTC. Policy last checked 2026-10-25 12:00 UTC, 2 minutes ago",
 		"claimed by agent 2 hours ago",
 		"in progress, unclaimed",
 		"Readers browse the app&#39;s plan", "1 of 5 done",
@@ -256,8 +288,8 @@ func TestPlanPage(t *testing.T) {
 
 	h.now = exporttest.Collected.Add(6 * time.Minute)
 	page = h.page("/")
-	if !strings.Contains(page, `Collected 2026-10-25 12:00 UTC, 6 minutes ago <span class="chip stale">stale</span>`) {
-		t.Error("an export six minutes old is not marked stale")
+	if !strings.Contains(page, `Collected 2026-10-25 12:00 UTC. Policy last checked 2026-10-25 12:00 UTC, 6 minutes ago <span class="chip stale">stale</span>`) {
+		t.Error("a policy check six minutes old is not marked stale")
 	}
 }
 
@@ -1996,7 +2028,7 @@ func TestSlowReadersHoldNothing(t *testing.T) {
 // Before the first activation the server says nothing is published, and
 // it answers GET and HEAD alone.
 func TestNothingPublishedAndMethods(t *testing.T) {
-	store, err := export.OpenStore(t.TempDir(), nil)
+	store, err := export.OpenStore(exporttest.StorePath(t), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2689,7 +2721,7 @@ func TestPlacingStopsWhenCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	count := &cancelInPhase{Context: context.Background(), phase: ".(*index).place"}
-	if _, err := newIndex(count, e); err != nil {
+	if _, err := newIndex(count, e, map[string]bool{"app": true}); err != nil {
 		t.Fatal(err)
 	}
 	if names := 3 + 3 + 3; count.checks < names {
@@ -2698,10 +2730,78 @@ func TestPlacingStopsWhenCancelled(t *testing.T) {
 	for at := 1; at <= count.checks; at++ {
 		base, cancel := context.WithCancel(context.Background())
 		ctx := &cancelInPhase{Context: base, cancel: cancel, phase: ".(*index).place", at: at}
-		idx, err := newIndex(ctx, e)
+		idx, err := newIndex(ctx, e, map[string]bool{"app": true})
 		cancel()
 		if idx != nil || !errors.Is(err, context.Canceled) || ctx.checks != at {
 			t.Errorf("cancelled at check %d of %d, newIndex returned %v after %d checks", at, count.checks, err, ctx.checks)
 		}
+	}
+}
+
+// The server reads the stored authorization on every request. One that
+// withdraws app takes it off every page at the next request, with no
+// restart; one that names it again serves it again; and with none stored,
+// nothing is served, though the export is indexed already.
+func TestAuthorizationIsReadOnEveryRequest(t *testing.T) {
+	h := newHarness(t)
+	h.srv.log = func(error) {}
+	app := "/tools/app/knots/oc-a000002"
+	if w := h.get(app); w.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d", app, w.Code)
+	}
+	a, _, err := h.store.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawn := exporttest.Authorization(a.Sequence + 1)
+	h.authorize(withdrawn)
+	for _, path := range []string{app, "/tools/app/", "/t/app/", "/app/", "/tools/old-app/"} {
+		if w := h.get(path); w.Code != http.StatusNotFound {
+			t.Errorf("after the withdrawal GET %s answered %d, want 404", path, w.Code)
+		}
+	}
+	if page := h.page("/"); strings.Contains(page, "/tools/app") {
+		t.Error("after the withdrawal the plan page links app")
+	}
+	h.authorize(exporttest.Authorization(a.Sequence+2, "app"))
+	if w := h.get(app); w.Code != http.StatusOK {
+		t.Errorf("named again, GET %s answered %d", app, w.Code)
+	}
+	if err := os.Remove(filepath.Join(h.store.Dir(), "authorization")); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/", app, "/tools/app/"} {
+		w := h.get(path)
+		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "Nothing published yet") || strings.Contains(w.Body.String(), "oc-a000002") {
+			t.Errorf("with no authorization GET %s answered %d:\n%s", path, w.Code, w.Body)
+		}
+	}
+}
+
+// A response is written only under the authorization it was rendered
+// under. One the authorization withdraws while it renders, a page or a
+// redirect, is rendered again under the new one, and the reader gets the
+// 404 the new one gives.
+func TestAResponseIsHeldToTheAuthorizationWhenWritten(t *testing.T) {
+	for _, path := range []string{"/tools/app/knots/oc-a000002", "/tools/app/", "/app/knots/oc-a000002"} {
+		t.Run(path, func(t *testing.T) {
+			h := newHarness(t)
+			a, _, err := h.store.Authorization()
+			if err != nil {
+				t.Fatal(err)
+			}
+			renders := 0
+			h.srv.checked = func() {
+				if renders++; renders == 1 {
+					h.authorize(exporttest.Authorization(a.Sequence + 1))
+				}
+			}
+			if w := h.get(path); w.Code != http.StatusNotFound || w.Header().Get("Location") != "" {
+				t.Errorf("GET %s withdrawn while it rendered answered %d, to %q", path, w.Code, w.Header().Get("Location"))
+			}
+			if renders != 2 {
+				t.Errorf("GET %s rendered %d times, want twice", path, renders)
+			}
+		})
 	}
 }

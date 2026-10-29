@@ -18,7 +18,7 @@ import (
 
 const (
 	// ManifestType is the first line of every manifest's text.
-	ManifestType = "the-valley/web-export/v1"
+	ManifestType = "the-valley/web-export/v2"
 
 	// MaxManifest is the most bytes of a signed manifest a receiver reads.
 	MaxManifest = 64 << 10
@@ -68,17 +68,19 @@ func FileBody(name, path string) (Body, error) {
 // Manifest is the signed statement an upload is admitted by. It names the
 // valley instance that signed it and the destination it is for, its
 // sequence, export.json's hash and size, and for each project its
-// visibility, its graph and source tips, and its bundle's hash and size.
+// publication identity, its graph and source tips, and its bundle's hash
+// and size. It says nothing of who may read a project: an Authorization
+// does, and no content manifest can grant or restore access.
 //
 // Its text is the type line and then one record per line, each a keyword
 // and its fields separated by single spaces:
 //
-//	the-valley/web-export/v1
+//	the-valley/web-export/v2
 //	instance valley-host
 //	destination example.org
 //	sequence 1792929600000000000
 //	file export.json <sha256> <size>
-//	project app public <graph-tip> <source-tip>
+//	project app <identity> <graph-tip> <source-tip>
 //	bundle app <sha256> <size>
 //
 // The sequence is the signing time in Unix nanoseconds. A project with no
@@ -93,8 +95,8 @@ type Manifest struct {
 
 // ManifestProject is one project's two records.
 type ManifestProject struct {
-	Name       string
-	Visibility Visibility
+	Name     string
+	Identity string
 	// GraphTip is "" for a project with no plan graph.
 	GraphTip  string
 	SourceTip string
@@ -112,7 +114,7 @@ func NewManifest(instance, destination string, sequence int64, e *Export, export
 			return nil, fmt.Errorf("project %s has no bundle", p.Name)
 		}
 		b.Name = p.Name
-		m.Projects = append(m.Projects, ManifestProject{Name: p.Name, Visibility: p.Visibility,
+		m.Projects = append(m.Projects, ManifestProject{Name: p.Name, Identity: p.Identity,
 			GraphTip: p.GraphTip, SourceTip: p.SourceTip, Bundle: b})
 	}
 	if len(bundles) != len(m.Projects) {
@@ -138,7 +140,7 @@ func (m *Manifest) Text() []byte {
 		if graph == "" {
 			graph = "-"
 		}
-		fmt.Fprintf(&b, "project %s %s %s %s\n", p.Name, p.Visibility, graph, p.SourceTip)
+		fmt.Fprintf(&b, "project %s %s %s %s\n", p.Name, p.Identity, graph, p.SourceTip)
 		fmt.Fprintf(&b, "bundle %s %s %d\n", p.Bundle.Name, p.Bundle.SHA256, p.Bundle.Size)
 	}
 	return b.Bytes()
@@ -369,15 +371,15 @@ func ParseManifest(text []byte) (*Manifest, error) {
 			}
 			m.File = b
 		case "project":
-			name, vis, graph, source := args[0], Visibility(args[1]), args[2], args[3]
+			name, id, graph, source := args[0], args[1], args[2], args[3]
 			if !ValidName(name) {
 				return nil, bad("line %d names project %q, which is not a project name", n, name)
 			}
 			if projects[name] != nil {
 				return nil, bad("line %d is a second project record for %s", n, name)
 			}
-			if vis != Public {
-				return nil, bad("line %d gives %s visibility %q; v1 exports public projects alone", n, name, vis)
+			if !ValidIdentity(id) {
+				return nil, bad("line %d gives %s identity %q, which is not 32 lowercase hex digits", n, name, id)
 			}
 			if graph == "-" {
 				graph = ""
@@ -387,7 +389,7 @@ func ParseManifest(text []byte) (*Manifest, error) {
 			if !ValidObjectID(source) {
 				return nil, bad("line %d gives %s source tip %q, which is not an object ID", n, name, source)
 			}
-			projects[name] = &ManifestProject{Name: name, Visibility: vis, GraphTip: graph, SourceTip: source}
+			projects[name] = &ManifestProject{Name: name, Identity: id, GraphTip: graph, SourceTip: source}
 		case "bundle":
 			if !ValidName(args[0]) {
 				return nil, bad("line %d names bundle %q, which is not a project name", n, args[0])
@@ -460,7 +462,7 @@ func decimal(s string) (int64, bool) {
 
 // CheckExport holds export.json to the manifest: its bytes have the
 // declared hash and size, it is a valid export, and it names the same
-// projects with the same visibility and tips. It returns the export.
+// projects with the same identities and tips. It returns the export.
 func (m *Manifest) CheckExport(data []byte) (*Export, error) {
 	if got := BodyOf(ExportFile, data); got != m.File {
 		return nil, refuse(CodeHashMismatch, "export.json has SHA-256 %s and %d bytes; the manifest declares %s and %d", got.SHA256, got.Size, m.File.SHA256, m.File.Size)
@@ -477,8 +479,8 @@ func (m *Manifest) CheckExport(data []byte) (*Export, error) {
 		switch {
 		case p.Name != mp.Name:
 			return nil, refuse(CodeBadExport, "export.json holds project %s where the manifest has %s", p.Name, mp.Name)
-		case p.Visibility != mp.Visibility:
-			return nil, refuse(CodeBadExport, "project %s is %s in export.json and %s in the manifest", p.Name, p.Visibility, mp.Visibility)
+		case p.Identity != mp.Identity:
+			return nil, refuse(CodeBadExport, "project %s has identity %s in export.json and %s in the manifest", p.Name, p.Identity, mp.Identity)
 		case p.GraphTip != mp.GraphTip:
 			return nil, refuse(CodeBadExport, "project %s has graph tip %q in export.json and %q in the manifest", p.Name, p.GraphTip, mp.GraphTip)
 		case p.SourceTip != mp.SourceTip:

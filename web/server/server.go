@@ -1,16 +1,20 @@
 // Package server is the web UI's read side. It serves the active export
-// of a receiver's state directory to anonymous readers: the plan page,
-// each knot, and a source browser over each public project's main.
+// of a receiver's store to anonymous readers, as the store's authorization
+// allows: the plan page, each knot, and a source browser over the main of
+// each project the authorization lets anyone read.
 //
 // # Snapshots
 //
-// Every request opens the store's active generation once, with
-// export.Store.Open, and renders its whole response from that
-// generation. An activation during the request changes nothing the
-// request reads. The server keeps a snapshot of the newest generation it
-// has read: the export, decoded, and its index. A request opens its
-// generation only once the generation has a snapshot, and every request
-// for that generation serves from the one snapshot.
+// Every request reads the store's authorization when it arrives, opens
+// the store's active generation once, with export.Store.Open, and renders
+// its whole response from that generation under that authorization. An
+// activation during the request changes nothing the request reads. The
+// server keeps a snapshot of the newest generation it has read under one
+// authorization: the export, decoded, and its index for anyone. A request
+// opens its generation only once the generation has a snapshot under the
+// authorization it read, and every such request serves from the one
+// snapshot. A new authorization indexes the cached export again, and
+// reads no export.json.
 //
 // A request whose generation has no snapshot yet waits for a load. A load
 // runs in a worker of its own, which opens the active generation, holds
@@ -94,10 +98,21 @@
 //
 // # Access
 //
-// Every route checks that the export holds its project as public, in a
-// group. A project it does not hold answers exactly as a project that
-// does not exist: every 404 is the same page, made once when the server
-// starts.
+// The store's authorization decides what is served. A request reads it
+// from the store when it arrives, and reads it again once its response is
+// rendered, before the first byte is written. A response rendered under an
+// authorization that has since been replaced is not written: the request
+// renders again under the new one. So the next request after the receiver
+// stores an authorization is held to it, with no restart and no cache in
+// between. A store with no authorization, or one that cannot be read,
+// serves no project: every page says nothing is published.
+//
+// The index a request serves from holds only the projects the
+// authorization lets anyone read, under the identity the export gives
+// them (visible). Every route, every reference between projects, every
+// alias and every redirect is built from that index, so a project the
+// authorization does not name answers exactly as a project that does not
+// exist: every 404 is the same page, made once when the server starts.
 //
 // # Safety
 //
@@ -245,8 +260,11 @@ type Server struct {
 	large  int
 
 	mu sync.Mutex
-	// cached is the newest generation's snapshot read so far.
+	// cached is the newest generation's snapshot read so far, under the
+	// authorization a load read last.
 	cached *snapshot
+	// auth is the last valid authorization readAuthorization read.
+	auth authState
 	// loads are the loads a request that waits may still join: those that
 	// have not ended, and that some request waits for.
 	loads map[*load]struct{}
@@ -261,6 +279,9 @@ type Server struct {
 	admitted  func()
 	loading   func(export.Generation)
 	rendering func(name string)
+	// checked is called once a request has rendered its response, before
+	// it reads the authorization again.
+	checked func()
 }
 
 // New is a Server over c's store.
@@ -279,13 +300,55 @@ func New(c Config) *Server {
 	return s
 }
 
-// snapshot is one generation's export, decoded, and its index. A
-// generation is immutable once active, and its sequence names it, so a
-// snapshot serves every request that opens its generation.
+// snapshot is one generation's export, decoded, and its index under one
+// authorization, for anyone. A generation's export.json never changes once
+// it is active, and its sequence names it, and auth is the stored
+// authorization's signed note the index was built under, so a snapshot
+// serves every request that opens its generation under that authorization.
 type snapshot struct {
-	seq int64
-	e   *export.Export
-	idx *index
+	seq  int64
+	auth authState
+	e    *export.Export
+	idx  *index
+}
+
+// authState is the stored authorization as one read found it: the signed
+// note, and the authorization parsed from it, or the error that left none.
+// Two reads are of one revision when their notes are the same bytes.
+type authState struct {
+	signed []byte
+	a      *export.Authorization
+	err    error
+}
+
+// same reports whether two reads found one revision of the authorization.
+func (st authState) same(o authState) bool {
+	return bytes.Equal(st.signed, o.signed) && (st.a == nil) == (o.a == nil)
+}
+
+// readAuthorization reads the stored authorization. It reads the file on
+// every call, and parses it again only when its bytes changed since the
+// last valid one it read.
+func (s *Server) readAuthorization() authState {
+	signed, err := s.store.ReadAuthorization()
+	if err != nil {
+		return authState{err: err}
+	}
+	s.mu.Lock()
+	last := s.auth
+	s.mu.Unlock()
+	if last.a != nil && bytes.Equal(last.signed, signed) {
+		return last
+	}
+	a, err := export.ReadStoredAuthorization(signed)
+	if err != nil {
+		return authState{signed: signed, err: err}
+	}
+	st := authState{signed: signed, a: a}
+	s.mu.Lock()
+	s.auth = st
+	s.mu.Unlock()
+	return st
 }
 
 // load reads the active generation's export for every request that
@@ -301,6 +364,7 @@ type load struct {
 	cancel context.CancelFunc
 	opened bool
 	seq    int64
+	auth   authState
 	// started is closed once the load starts, and done once its worker
 	// ends. err is the worker's error, set before done is closed.
 	started chan struct{}
@@ -327,6 +391,10 @@ type request struct {
 	e    *export.Export
 	idx  *index
 	now  time.Time
+	// auth is the stored authorization as the request read it when it
+	// arrived. The request serves what it allows, and its response is
+	// written only if the authorization is the same when it is.
+	auth authState
 
 	// The response: a status and a page, or a redirect. It is written
 	// once the request has given back its generation and git slot, and
@@ -338,15 +406,43 @@ type request struct {
 	permanent bool
 }
 
+// ServeHTTP reads the stored authorization, renders the response under
+// it, and reads it again before the first byte is written. A response the
+// authorization changed under is not written: the request is rendered
+// again under the new one, at most maxRenders times in all, and then
+// answers 503. So every response, a redirect and an error page too, is
+// one the authorization stored when it is written allows.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	setHeaders(w.Header())
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
-	q := &request{s: s, w: w, r: r, ctx: ctx, now: s.now()}
-	defer q.drop()
-	q.serve()
-	q.write()
+	for render := 1; ; render++ {
+		h := w.Header()
+		for k := range h {
+			delete(h, k)
+		}
+		setHeaders(h)
+		q := &request{s: s, w: w, r: r, ctx: ctx, now: s.now(), auth: s.readAuthorization()}
+		q.serve()
+		if s.checked != nil {
+			s.checked()
+		}
+		if s.readAuthorization().same(q.auth) {
+			q.write()
+			q.drop()
+			return
+		}
+		q.drop()
+		if render == maxRenders {
+			q.busy()
+			q.write()
+			return
+		}
+	}
 }
+
+// maxRenders is how many times a request is rendered while the stored
+// authorization keeps changing under it.
+const maxRenders = 3
 
 // serve renders the request's response. A source request is admitted
 // first, and holds its git slot until it renders, or until serve returns
@@ -357,6 +453,15 @@ func (q *request) serve() {
 		q.w.Header().Set("Allow", "GET, HEAD")
 		q.page(http.StatusMethodNotAllowed, "error", "Method not allowed", errorPage{
 			Heading: "Method not allowed", Text: "This server answers GET and HEAD alone.",
+		})
+		return
+	}
+	if q.auth.a == nil {
+		if !errors.Is(q.auth.err, export.ErrNoAuthorization) {
+			q.s.log(fmt.Errorf("the stored authorization cannot be read, so nothing is served: %w", q.auth.err))
+		}
+		q.page(http.StatusServiceUnavailable, "error", "Nothing published", errorPage{
+			Heading: "Nothing published yet", Text: "This server holds no authorization to serve anything.",
 		})
 		return
 	}
@@ -378,7 +483,7 @@ func (q *request) serve() {
 			q.s.admitted()
 		}
 	}
-	g, snap, release, err := q.s.open(wait)
+	g, snap, release, err := q.s.open(wait, q.auth)
 	defer release()
 	switch {
 	case errors.Is(err, export.ErrNoExport):
@@ -386,7 +491,7 @@ func (q *request) serve() {
 			Heading: "Nothing published yet", Text: "No export has been activated on this server.",
 		})
 		return
-	case errors.Is(err, errLoadsFull):
+	case errors.Is(err, errLoadsFull), errors.Is(err, errAuthorizationChanged):
 		q.busy()
 		return
 	case err != nil:
@@ -446,15 +551,20 @@ func (s *Server) admit(ctx context.Context) (done func(), ok bool) {
 // while MaxLoadWaiting requests wait already.
 var errLoadsFull = errors.New("too many requests wait for exports to be read")
 
-// open opens the active generation once its snapshot is cached, and
-// returns both. release gives the generation back.
+// errAuthorizationChanged is open's error for a request whose
+// authorization was replaced while it waited. ServeHTTP renders it again
+// under the new one.
+var errAuthorizationChanged = errors.New("the stored authorization changed")
+
+// open opens the active generation once its snapshot under auth is
+// cached, and returns both. release gives the generation back.
 //
 // A request whose active generation has no snapshot waits for a load,
 // and opens nothing until the load ends. It is admitted among the
 // MaxLoadWaiting requests that may wait before it waits, and it keeps its
 // place until open returns. Once the load ends it looks again, since
 // another generation may have been activated meanwhile.
-func (s *Server) open(ctx context.Context) (g export.Generation, snap *snapshot, release func(), err error) {
+func (s *Server) open(ctx context.Context, auth authState) (g export.Generation, snap *snapshot, release func(), err error) {
 	release = func() {}
 	waiting := false
 	defer func() {
@@ -470,7 +580,7 @@ func (s *Server) open(ctx context.Context) (g export.Generation, snap *snapshot,
 		s.mu.Lock()
 		snap = s.cached
 		s.mu.Unlock()
-		if snap != nil && snap.seq == seq {
+		if snap != nil && snap.seq == seq && snap.auth.same(auth) {
 			g, release, err = s.store.Open()
 			if err != nil || g.Sequence == seq {
 				return g, snap, release, err
@@ -487,31 +597,35 @@ func (s *Server) open(ctx context.Context) (g export.Generation, snap *snapshot,
 				return g, nil, release, errLoadsFull
 			}
 		}
-		if err := s.await(ctx, seq); err != nil {
+		if err := s.await(ctx, seq, auth); err != nil {
 			return g, nil, release, err
+		}
+		if !s.readAuthorization().same(auth) {
+			return g, nil, release, errAuthorizationChanged
 		}
 	}
 }
 
-// await waits until a load of generation seq, or of a newer one, ends,
-// or until ctx is done. It joins a load that will read seq or a newer
-// generation, since a worker reads whatever generation is active once it
-// starts, and otherwise makes one.
+// await waits until a load of generation seq under auth, or of a newer
+// generation, ends, or until ctx is done. It joins a load that will read
+// one of those, since a worker reads whatever generation is active and
+// whatever authorization is stored once it starts, and otherwise makes
+// one.
 //
 // A load starts only once one of its requests takes a loader slot for
 // it. While every slot is taken, each of its requests waits for one, and
 // the first to take one starts the load, so no load is queued that no
 // request waits for. A request that stops waiting leaves the load, and
 // the last to leave stops it.
-func (s *Server) await(ctx context.Context, seq int64) error {
+func (s *Server) await(ctx context.Context, seq int64, auth authState) error {
 	s.mu.Lock()
-	if c := s.cached; c != nil && c.seq >= seq {
+	if c := s.cached; c != nil && (c.seq > seq || c.seq == seq && c.auth.same(auth)) {
 		s.mu.Unlock()
 		return nil
 	}
 	var l *load
 	for m := range s.loads {
-		if !m.opened || m.seq >= seq {
+		if !m.opened || m.seq > seq || m.seq == seq && m.auth.same(auth) {
 			l = m
 			break
 		}
@@ -571,15 +685,17 @@ func (s *Server) leave(l *load) {
 }
 
 // run is l's worker. It caches the snapshot it reads when the snapshot's
-// generation is newer than the cached one's, so a load of an older
-// generation never displaces a newer. A load that was stopped caches
-// nothing: leave stops it under mu, and run looks under mu. The worker
-// gives back its generation before it ends, and then its loader slot.
+// generation is newer than the cached one's, or the same generation under
+// another authorization, so a load of an older generation never displaces
+// a newer. A load that was stopped caches nothing: leave stops it under
+// mu, and run looks under mu. The worker gives back its generation before
+// it ends, and then its loader slot.
 func (s *Server) run(ctx context.Context, l *load) {
 	snap, err := s.read(ctx, l)
 	s.mu.Lock()
 	delete(s.loads, l)
-	if snap != nil && ctx.Err() == nil && (s.cached == nil || s.cached.seq < snap.seq) {
+	if snap != nil && ctx.Err() == nil && (s.cached == nil || s.cached.seq < snap.seq ||
+		s.cached.seq == snap.seq && !s.cached.auth.same(snap.auth)) {
 		s.cached = snap
 	}
 	l.err = err
@@ -589,10 +705,13 @@ func (s *Server) run(ctx context.Context, l *load) {
 	<-s.loaders
 }
 
-// read opens the active generation for l, and holds it while it reads
-// and indexes the generation's export. It reads nothing when the
-// generation is cached already or another load reads it, and its waiting
-// requests look again. It stops reading once ctx is done.
+// read opens the active generation for l, reads the stored
+// authorization, and holds the generation while it reads and indexes the
+// generation's export under that authorization. It reads nothing when the
+// generation is cached already under that authorization or another load
+// reads the same, and its waiting requests look again. A generation cached
+// under another authorization is not read again: its export is indexed
+// anew. It stops reading once ctx is done.
 func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) {
 	// Cancellation can close the file during any operation. Report the
 	// context error instead of the resulting descriptor error.
@@ -609,17 +728,29 @@ func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) 
 		return nil, err
 	}
 	defer release()
+	auth := s.readAuthorization()
+	if auth.a == nil {
+		return nil, nil
+	}
 	s.mu.Lock()
-	read := s.cached == nil || s.cached.seq < g.Sequence
+	cached := s.cached
+	read := cached == nil || cached.seq < g.Sequence || cached.seq == g.Sequence && !cached.auth.same(auth)
 	for m := range s.loads {
-		if m != l && m.opened && m.seq == g.Sequence {
+		if m != l && m.opened && m.seq == g.Sequence && m.auth.same(auth) {
 			read = false
 		}
 	}
-	l.opened, l.seq = true, g.Sequence
+	l.opened, l.seq, l.auth = true, g.Sequence, auth
 	s.mu.Unlock()
 	if !read {
 		return nil, nil
+	}
+	if cached != nil && cached.seq == g.Sequence {
+		idx, err := newIndex(ctx, cached.e, visible(cached.e, auth.a, export.Anyone))
+		if err != nil {
+			return nil, err
+		}
+		return &snapshot{seq: g.Sequence, auth: auth, e: cached.e, idx: idx}, nil
 	}
 	if s.loading != nil {
 		s.loading(g)
@@ -651,11 +782,11 @@ func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	idx, err := newIndex(ctx, e)
+	idx, err := newIndex(ctx, e, visible(e, auth.a, export.Anyone))
 	if err != nil {
 		return nil, err
 	}
-	return &snapshot{seq: g.Sequence, e: e, idx: idx}, nil
+	return &snapshot{seq: g.Sequence, auth: auth, e: e, idx: idx}, nil
 }
 
 // contextReader reads from r until ctx is done.
@@ -790,7 +921,7 @@ func (q *request) project(name string) (*export.Project, bool) { return q.idx.pr
 
 func (idx *index) project(name string) (*export.Project, bool) {
 	p, ok := idx.projects[name]
-	if _, placed := idx.bases[name]; !ok || p.Visibility != export.Public || !placed {
+	if _, placed := idx.bases[name]; !ok || !placed {
 		return nil, false
 	}
 	return p, true

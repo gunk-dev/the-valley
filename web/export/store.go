@@ -22,41 +22,75 @@ import (
 // ErrNoExport is Open's error when the receiver has activated no export.
 var ErrNoExport = errors.New("no export has been activated")
 
-// Store is a receiver's state directory. Its layout is:
+// ErrNoAuthorization is the error of reading the stored authorization
+// when the receiver has admitted none.
+var ErrNoAuthorization = errors.New("no authorization has been received")
+
+// ErrHeld is Prune's error when a reader holds the generation it would
+// delete repositories from. It deletes them once no reader does.
+var ErrHeld = errors.New("a reader holds the active generation")
+
+// StoreDescriptor is the one line of a store's descriptor file. The
+// descriptor is the store's entry point: the receiver and the server are
+// given its path, and the store's payloads are in the directory v2 beside
+// it. Binaries that read the first layout take a directory as the state
+// and refuse a file, so none of them can open this store, and none can
+// read its payloads as the first layout's public exports.
+const StoreDescriptor = "the-valley/web-store/v2"
+
+// Store is a receiver's store: a descriptor file and its payload
+// directory. Its layout is:
 //
-//	<state>/lock                          serialises activations
-//	<state>/high-water                    the greatest sequence accepted
-//	<state>/active                        symlink to exports/<sequence>
-//	<state>/exports/<sequence>/           one generation, immutable once active
-//	    export.json
-//	    repos/<project>.git
-//	<state>/staging/<sequence>/           one upload, until it is committed
-//	    bodies/<sha256>
-//	    export.json
-//	    tmp/<project>.git                 a repository being built
-//	    repos/<project>.git               a repository once it is accepted
-//	<state>/trash/                        what is being deleted: old
+//	<descriptor>                          one line, StoreDescriptor
+//	<parent>/v2/                          the payload directory, Dir:
+//	    lock                              serialises activations
+//	    authorization.lock                serialises authorization writes
+//	    authorization                     the newest authorization admitted
+//	    high-water                        the greatest sequence accepted
+//	    current                           symlink to generations/<sequence>
+//	    generations/<sequence>/           one generation
+//	        export.json
+//	        repos/<project>.git
+//	    staging/<sequence>/               one upload, until it is committed
+//	        bodies/<sha256>
+//	        export.json
+//	        tmp/<project>.git             a repository being built
+//	        repos/<project>.git           a repository once it is accepted
+//	    trash/                            what is being deleted: old
 //	                                      generations, discarded uploads,
-//	                                      and repositories past the cap
+//	                                      withdrawn repositories, and
+//	                                      repositories past the cap
+//
+// <parent> is the directory the descriptor is in. The payload directory
+// holds no active symlink and no exports/, which the first layout served
+// from, so a binary of the first layout given it serves nothing either.
 //
 // staging/ and each upload in it are the receiver's alone, mode 0700, so
-// no other user reads a body before it is verified. exports/ and every
-// generation in it are readable by every user who can reach them:
-// directories 0755 and files 0644, or 0444 for git's read-only objects,
-// whatever the receiver's umask. Who can reach them is the state
-// directory's own mode, which is the deployment's to set.
+// no other user reads a body before it is verified. generations/, every
+// generation in it, and authorization are readable by every user who can
+// reach them: directories 0755 and files 0644, or 0444 for git's
+// read-only objects, whatever the receiver's umask. Who can reach them is
+// the parent directory's own mode, which is the deployment's to set.
 //
 // A generation is activated by renaming its staging directory into
-// exports/, writing high-water durably, and then swapping active
-// atomically. A reader resolves active once per request with Open and
+// generations/, writing high-water durably, and then swapping current
+// atomically. A reader resolves current once per request with Open and
 // keeps that generation, locked against deletion, until it releases it.
 // An old generation is deleted only once no reader holds it.
 //
+// The authorization is a second stream beside the generations: its own
+// file, its own sequence and its own lock. Authorize replaces it durably
+// without the activation lock, so no upload, commit or check of a
+// repository holds it up. A generation holds a repository only for each
+// project the authorization names: Activate builds none for another, and
+// Prune deletes one the authorization withdrew, once no reader holds the
+// generation. export.json stays as it was signed.
+//
 // The locks are flock(2) locks, so readers and activations in different
 // processes on one host are held to the same rule as goroutines are. A
-// reader needs only to reach the state directory and read it, active and
-// exports/: the receiver opens it with OpenStore, and a server with
-// OpenReadOnly, which writes nothing.
+// reader needs only to reach the payload directory and read it: the
+// receiver opens it with OpenStore, and a server with OpenReadOnly, which
+// writes nothing.
 type Store struct {
 	// MaxStorage is the most bytes the state directory may take on disk,
 	// as usage counts them, or 0 for no cap. Stage refuses a manifest
@@ -77,8 +111,10 @@ type Store struct {
 	// Activate.
 	readOnly bool
 	// turn holds a token while one of the store's goroutines holds the
-	// lock, so the others wait their turn on it.
-	turn chan struct{}
+	// lock, so the others wait their turn on it. authTurn is the same for
+	// authorization.lock.
+	turn     chan struct{}
+	authTurn chan struct{}
 	// writing is the writers Writer admitted.
 	writing writing
 }
@@ -158,34 +194,61 @@ func (st Staging) Repo(name string) string {
 // tmp is the directory a staged repository is built in.
 func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 
-// OpenStore opens the state directory at dir, creating its layout. It
-// finishes an activation a crash interrupted after high-water was written,
-// and deletes what no activation can use. If it cannot finish checking the
-// generation that activation would make active, as when git is killed, it
-// deletes nothing and returns the error, and the receiver tries again.
+// OpenStore opens the store whose descriptor is at path, creating the
+// descriptor and the payload directory when path does not exist. path
+// that is a directory, as the first layout's state was, is refused. A new
+// store retires the first layout's state from the descriptor's directory,
+// so a binary of the first layout started there again serves nothing.
+// OpenStore finishes an activation a crash interrupted after high-water
+// was written, deletes what no activation can use, and deletes the
+// repositories the stored authorization withdrew. If it cannot finish
+// checking the generation that activation would make current, as when git
+// is killed, it deletes nothing and returns the error, and the receiver
+// tries again.
 //
 // report is told of each failure the store works past rather than
 // returns: deleting what no activation can use, which the next sweep
-// tries again; syncing a swap of active to disk, which the next
-// OpenStore repeats after a crash; and a generation high-water names that
-// recovery found damaged and did not activate. None undoes an activation
-// that succeeded. A receiver logs them. A nil report drops them.
-func OpenStore(dir string, report func(error)) (*Store, error) {
-	abs, err := filepath.Abs(dir)
+// tries again; syncing a swap of current to disk, which the next
+// OpenStore repeats after a crash; a generation high-water names that
+// recovery found damaged and did not activate; and repositories a
+// withdrawal left, which the next authorization or activation deletes.
+// None undoes an activation that succeeded. A receiver logs them. A nil
+// report drops them.
+func OpenStore(path string, report func(error)) (*Store, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 	if report == nil {
 		report = func(error) {}
 	}
-	s := &Store{dir: abs, report: report, turn: make(chan struct{}, 1)}
-	for _, d := range []string{abs, s.path("exports"), s.path("staging"), s.path("trash")} {
+	info, err := os.Lstat(abs)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		if err := createDescriptor(abs, report); err != nil {
+			return nil, err
+		}
+	case err != nil:
+		return nil, err
+	default:
+		if err := checkDescriptor(abs, info); err != nil {
+			return nil, err
+		}
+	}
+	dir := payloadDir(abs)
+	s := &Store{dir: dir, report: report, turn: make(chan struct{}, 1), authTurn: make(chan struct{}, 1)}
+	for _, d := range []string{dir, s.path("generations"), s.path("staging"), s.path("trash")} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
 	}
-	if err := os.Chmod(s.path("exports"), 0o755); err != nil {
-		return nil, err
+	// The payload directory and generations/ are readable by every user
+	// who can reach them, whatever the umask; the descriptor's directory
+	// decides who can.
+	for _, d := range []string{dir, s.path("generations")} {
+		if err := os.Chmod(d, 0o755); err != nil {
+			return nil, err
+		}
 	}
 	if err := os.Chmod(s.path("staging"), 0o700); err != nil {
 		return nil, err
@@ -201,41 +264,119 @@ func OpenStore(dir string, report func(error)) (*Store, error) {
 	if err := s.sweep(context.Background()); err != nil {
 		s.report(err)
 	}
+	if err := s.prune(context.Background()); err != nil {
+		s.report(fmt.Errorf("deleting withdrawn repositories: %w", err))
+	}
 	return s, nil
 }
 
-// OpenReadOnly opens the state directory at dir for reading alone, as a
-// server does. It writes nothing: it creates no directory, takes no lock
-// but a reader's shared one on the generation it opens, and neither
-// recovers an interrupted activation nor sweeps, which the receiver's
-// OpenStore does. So a server may run as a user that can only read the
-// receiver's state directory. Until the receiver finishes an interrupted
-// activation, a reader is served the generation active points at. dir
-// must be a directory already.
-func OpenReadOnly(dir string) (*Store, error) {
-	abs, err := filepath.Abs(dir)
+// payloadDir is the payload directory of the store whose descriptor is at
+// the absolute path descriptor.
+func payloadDir(descriptor string) string { return filepath.Join(filepath.Dir(descriptor), "v2") }
+
+// checkDescriptor holds the file at path, whose Lstat is info, to a
+// store's descriptor.
+func checkDescriptor(path string, info fs.FileInfo) error {
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory, as a state directory of the first store layout is; give the path of the store's descriptor file instead, such as %s, and the receiver makes a new store there", path, filepath.Join(path, "store"))
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file, so it is no store's descriptor", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if string(data) != StoreDescriptor+"\n" {
+		return fmt.Errorf("%s does not hold %q, so it is no store's descriptor", path, StoreDescriptor)
+	}
+	return nil
+}
+
+// createDescriptor makes a new store at path: it retires the first
+// layout's state from path's directory, makes the payload directory, and
+// writes the descriptor last, so a descriptor always has its payload
+// directory.
+func createDescriptor(path string, report func(error)) error {
+	parent := filepath.Dir(path)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return err
+	}
+	if err := retireFirstLayout(parent, report); err != nil {
+		return err
+	}
+	if err := os.MkdirAll(payloadDir(path), 0o755); err != nil {
+		return err
+	}
+	return writeDurably(path, []byte(StoreDescriptor+"\n"))
+}
+
+// retireFirstLayout deletes the first layout's state from dir, when dir
+// holds it: active first, and durably, so a binary of that layout serves
+// nothing from dir once this returns, then high-water and the rest.
+func retireFirstLayout(dir string, report func(error)) error {
+	active := filepath.Join(dir, "active")
+	if info, err := os.Lstat(active); err != nil || info.Mode()&fs.ModeSymlink == 0 {
+		return nil
+	}
+	for _, name := range []string{"active", "high-water"} {
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	if err := syncPath(dir); err != nil {
+		return err
+	}
+	for _, name := range []string{"exports", "staging", "trash", "lock"} {
+		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
+			report(fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err))
+		}
+	}
+	report(fmt.Errorf("%s held a state directory of the first store layout, which is retired; the publisher's next pass sends everything again", dir))
+	return nil
+}
+
+// OpenReadOnly opens the store whose descriptor is at path for reading
+// alone, as a server does. It writes nothing: it creates no directory,
+// takes no lock but a reader's shared one on the generation it opens, and
+// neither recovers an interrupted activation nor sweeps, which the
+// receiver's OpenStore does. So a server may run as a user that can only
+// read the receiver's store. Until the receiver finishes an interrupted
+// activation, a reader is served the generation current points at. The
+// descriptor and the payload directory must exist already, and path that
+// is a directory is refused.
+func OpenReadOnly(path string) (*Store, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(abs)
+	info, err := os.Lstat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkDescriptor(abs, info); err != nil {
+		return nil, err
+	}
+	dir := payloadDir(abs)
+	info, err = os.Stat(dir)
 	if err != nil {
 		return nil, err
 	}
 	if !info.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", abs)
+		return nil, fmt.Errorf("%s is not a directory", dir)
 	}
-	return &Store{dir: abs, report: func(error) {}, readOnly: true, turn: make(chan struct{}, 1)}, nil
+	return &Store{dir: dir, report: func(error) {}, readOnly: true, turn: make(chan struct{}, 1), authTurn: make(chan struct{}, 1)}, nil
 }
 
-// Dir is the state directory.
+// Dir is the store's payload directory.
 func (s *Store) Dir() string { return s.dir }
 
 func (s *Store) path(parts ...string) string {
 	return filepath.Join(append([]string{s.dir}, parts...)...)
 }
 
-func (s *Store) exportDir(sequence int64) string {
-	return s.path("exports", strconv.FormatInt(sequence, 10))
+func (s *Store) generationDir(sequence int64) string {
+	return s.path("generations", strconv.FormatInt(sequence, 10))
 }
 
 // HighWater is the greatest sequence the store has accepted, 0 for none.
@@ -254,19 +395,19 @@ func (s *Store) HighWater() (int64, error) {
 	return n, nil
 }
 
-// active is the sequence active points at, and false when there is none.
+// active is the sequence current points at, and false when there is none.
 func (s *Store) active() (int64, bool, error) {
-	target, err := os.Readlink(s.path("active"))
+	target, err := os.Readlink(s.path("current"))
 	if errors.Is(err, os.ErrNotExist) {
 		return 0, false, nil
 	}
 	if err != nil {
 		return 0, false, err
 	}
-	name, ok := strings.CutPrefix(target, "exports/")
+	name, ok := strings.CutPrefix(target, "generations/")
 	n, valid := decimal(name)
 	if !ok || !valid {
-		return 0, false, fmt.Errorf("%s points at %q, which is no generation", s.path("active"), target)
+		return 0, false, fmt.Errorf("%s points at %q, which is no generation", s.path("current"), target)
 	}
 	return n, true, nil
 }
@@ -297,7 +438,7 @@ func (s *Store) Open() (Generation, func(), error) {
 		if !ok {
 			return Generation{}, func() {}, ErrNoExport
 		}
-		dir := s.exportDir(seq)
+		dir := s.generationDir(seq)
 		f, err := os.Open(dir)
 		if errors.Is(err, os.ErrNotExist) {
 			continue // active moved on and the generation was deleted
@@ -481,29 +622,29 @@ func discarded(sequence, open int64) error {
 // export.json is needed until it is staged. A bundle is needed until it is
 // staged or its repository is, unless the active generation holds its
 // project at the declared source tip, from which Activate carries it.
+//
+// A bundle is needed only for a project the stored authorization names.
+// The receiver builds no repository of any other, so with no stored
+// authorization no bundle is needed. A project whose repository a
+// withdrawal deleted is not held.
 func (s *Store) Inventory(st Staging) (Inventory, error) {
 	inv := Inventory{Schema: InventorySchema, Sequence: st.Manifest.Sequence, Holds: []Held{}, Needs: []Need{}}
-	held := map[string]string{}
-	g, release, err := s.Open()
-	defer release()
-	switch {
-	case errors.Is(err, ErrNoExport):
-	case err != nil:
+	named, err := s.named()
+	if err != nil {
 		return Inventory{}, err
-	default:
-		e, err := g.Export()
-		if err != nil {
-			return Inventory{}, err
-		}
-		digest, err := e.Digest()
-		if err != nil {
-			return Inventory{}, err
-		}
-		inv.Active = &Active{Sequence: g.Sequence, Digest: digest}
-		for _, p := range e.Projects {
-			inv.Holds = append(inv.Holds, Held{Project: p.Name, SourceTip: p.SourceTip})
-			held[p.Name] = p.SourceTip
-		}
+	}
+	active, held, err := s.Holdings()
+	if err != nil {
+		return Inventory{}, err
+	}
+	inv.Active = active
+	var names []string
+	for name := range held {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		inv.Holds = append(inv.Holds, Held{Project: name, SourceTip: held[name]})
 	}
 	needed := map[string]bool{}
 	need := func(b Body) {
@@ -516,7 +657,7 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 		need(st.Manifest.File)
 	}
 	for _, p := range st.Manifest.Projects {
-		if !exists(st.Repo(p.Name)) && held[p.Name] != p.SourceTip {
+		if named(p.Name, p.Identity) && !exists(st.Repo(p.Name)) && held[p.Name] != p.SourceTip {
 			need(p.Bundle)
 		}
 	}
@@ -524,7 +665,7 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 }
 
 // Activate commits a staged upload: it makes it the active generation, or
-// refuses it and leaves the active one as it was. It holds the store's
+// refuses it and leaves the current one as it was. It holds the store's
 // lock throughout, so activations are serialised. It waits for the lock
 // until ctx is done, and the git it runs is stopped once ctx is done. In
 // order, it:
@@ -534,7 +675,8 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     with the bodies still needed, unless Inventory needs none;
 //  2. moves the staged export.json into place, readable by every user,
 //     and holds it to the manifest with CheckExport;
-//  3. gives every project its repository: one already staged, the staged
+//  3. gives every project the stored authorization names its repository,
+//     and removes a staged one of any other: one already staged, the staged
 //     bundle through AcceptBundle, or the active generation's repository
 //     at the same source tip through CarryRepo. A repository is built
 //     under tmp/, made readable by every user, every file and directory
@@ -552,9 +694,10 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 //     both parents;
 //  6. writes high-water durably, once every file and directory of the
 //     generation is on disk;
-//  7. swaps active to the new generation;
-//  8. syncs the swap to disk, and deletes the generations no reader holds
-//     and the stale staging directories, until ctx is done.
+//  7. swaps current to the new generation;
+//  8. syncs the swap to disk, deletes the generations no reader holds and
+//     the stale staging directories, and prunes the repositories of
+//     projects the authorization withdrew meanwhile, until ctx is done.
 //
 // The activation has succeeded once step 7 is done: the new generation
 // serves, and high-water names it, so the next OpenStore restores it
@@ -566,7 +709,7 @@ func (s *Store) Inventory(st Staging) (Inventory, error) {
 // next OpenStore deletes the new one. After step 6 the sequence is
 // accepted: a commit retried after a failure between 6 and 7 is refused
 // as replayed. A crash between 6 and 7 is finished by the next OpenStore,
-// which swaps active to the generation high-water names.
+// which swaps current to the generation high-water names.
 func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 	if s.readOnly {
 		return Generation{}, errReadOnly
@@ -621,7 +764,22 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		return Generation{}, err
 	}
 
+	// A repository is built for each project the stored authorization
+	// names, and for no other: one staged for a project it withdrew since
+	// is removed.
+	named, err := s.named()
+	if err != nil {
+		return Generation{}, err
+	}
+	var want []ManifestProject
 	for _, p := range m.Projects {
+		if !named(p.Name, p.Identity) {
+			if err := s.remove(ctx, st.Repo(p.Name)); err != nil {
+				return Generation{}, err
+			}
+			continue
+		}
+		want = append(want, p)
 		if exists(st.Repo(p.Name)) {
 			continue
 		}
@@ -646,7 +804,7 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 			return Generation{}, err
 		}
 	}
-	if err := checkStaged(ctx, st); err != nil {
+	if err := checkStaged(ctx, st, want); err != nil {
 		return Generation{}, err
 	}
 	// Past here the upload is made the active generation, which a client
@@ -664,11 +822,11 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 			return Generation{}, err
 		}
 	}
-	dir := s.exportDir(m.Sequence)
+	dir := s.generationDir(m.Sequence)
 	if err := rename(st.Dir, dir); err != nil {
 		return Generation{}, err
 	}
-	for _, d := range []string{s.path("exports"), s.path("staging")} {
+	for _, d := range []string{s.path("generations"), s.path("staging")} {
 		if err := syncPath(d); err != nil {
 			return Generation{}, err
 		}
@@ -680,10 +838,14 @@ func (s *Store) Activate(ctx context.Context, st Staging) (Generation, error) {
 		return Generation{}, err
 	}
 	if err := syncPath(s.dir); err != nil {
-		s.report(fmt.Errorf("the swap of active to generation %d is not on disk: %w", m.Sequence, err))
+		s.report(fmt.Errorf("the swap of current to generation %d is not on disk: %w", m.Sequence, err))
 	}
 	if err := s.sweep(ctx); err != nil {
 		s.report(err)
+	}
+	// The authorization may have withdrawn a project while this built it.
+	if err := s.prune(ctx); err != nil && !errors.Is(err, ErrHeld) {
+		s.report(fmt.Errorf("deleting withdrawn repositories: %w", err))
 	}
 	return Generation{Sequence: m.Sequence, Dir: dir}, nil
 }
@@ -740,8 +902,7 @@ func (s *Store) carry(ctx context.Context, p ManifestProject, repo string) error
 			return err
 		}
 		for _, held := range e.Projects {
-			if held.Name == p.Name && held.SourceTip == p.SourceTip {
-				from, _ := g.Repo(p.Name)
+			if from, _ := g.Repo(p.Name); held.Name == p.Name && held.SourceTip == p.SourceTip && exists(from) {
 				return CarryRepo(ctx, from, repo, p.SourceTip)
 			}
 		}
@@ -749,8 +910,9 @@ func (s *Store) carry(ctx context.Context, p ManifestProject, repo string) error
 	return refuse(CodeIncomplete, "project %s has no staged bundle, and the receiver holds no repository of it at %s", p.Name, p.SourceTip)
 }
 
-// checkStaged holds the staging directory to step 4 of Activate.
-func checkStaged(ctx context.Context, st Staging) error {
+// checkStaged holds the staging directory to step 4 of Activate: it holds
+// a repository for each project of want, and no other.
+func checkStaged(ctx context.Context, st Staging, want []ManifestProject) error {
 	entries, err := os.ReadDir(st.Dir)
 	if err != nil {
 		return err
@@ -766,10 +928,10 @@ func checkStaged(ctx context.Context, st Staging) error {
 	if err != nil {
 		return err
 	}
-	if len(repos) != len(st.Manifest.Projects) {
-		return fmt.Errorf("the staging directory holds %d repositories for %d projects", len(repos), len(st.Manifest.Projects))
+	if len(repos) != len(want) {
+		return fmt.Errorf("the staging directory holds %d repositories for %d projects", len(repos), len(want))
 	}
-	for _, p := range st.Manifest.Projects {
+	for _, p := range want {
 		refs, err := git(ctx, st.Repo(p.Name), "for-each-ref", "--format=%(objectname) %(refname)")
 		if err != nil {
 			return err
@@ -786,12 +948,14 @@ var errNotWhole = errors.New("the generation is not whole")
 
 // checkGeneration holds the activated generation at dir to what Activate
 // checked before high-water named it, and to git fsck. export.json is a
-// valid export, and each of its projects has a repository that git fsck
-// finds whole and that holds refs/heads/main at the project's source tip
-// and no other ref. A generation that fails gives an error that wraps
+// valid export, and each repository the generation holds is of one of its
+// projects, git fsck finds it whole, and it holds refs/heads/main at the
+// project's source tip and no other ref. A project named lacks no
+// repository: named reports, by the stored authorization, which projects
+// Activate built one for. A generation that fails gives an error that wraps
 // errNotWhole. Any other error says nothing about the generation: the
 // check did not finish, as when git is killed or fails to start.
-func checkGeneration(ctx context.Context, dir string) error {
+func checkGeneration(ctx context.Context, dir string, named func(name, identity string) bool) error {
 	g := Generation{Dir: dir}
 	data, err := os.ReadFile(g.ExportPath())
 	if errors.Is(err, fs.ErrNotExist) {
@@ -807,7 +971,10 @@ func checkGeneration(ctx context.Context, dir string) error {
 	for _, p := range e.Projects {
 		repo, _ := g.Repo(p.Name)
 		if _, err := os.Lstat(repo); errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("%w: the repository of %s is gone", errNotWhole, p.Name)
+			if named(p.Name, p.Identity) {
+				return fmt.Errorf("%w: the repository of %s is gone", errNotWhole, p.Name)
+			}
+			continue
 		} else if err != nil {
 			return err
 		}
@@ -910,14 +1077,14 @@ func (s *Store) staged() ([]int64, error) {
 	return seqs, nil
 }
 
-// swap points active at the generation with sequence, atomically. The
-// caller syncs the state directory.
+// swap points current at the generation with sequence, atomically. The
+// caller syncs the payload directory.
 func (s *Store) swap(sequence int64) error {
-	tmp := s.path("active." + random())
-	if err := os.Symlink("exports/"+strconv.FormatInt(sequence, 10), tmp); err != nil {
+	tmp := s.path("current." + random())
+	if err := os.Symlink("generations/"+strconv.FormatInt(sequence, 10), tmp); err != nil {
 		return err
 	}
-	if err := rename(tmp, s.path("active")); err != nil {
+	if err := rename(tmp, s.path("current")); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -925,7 +1092,7 @@ func (s *Store) swap(sequence int64) error {
 }
 
 // recover finishes an activation interrupted between writing high-water
-// and swapping active. The generation high-water names was on disk before
+// and swapping current. The generation high-water names was on disk before
 // high-water was written, so it is whole unless the disk lost what it was
 // told to keep. recover holds it to checkGeneration before it swaps
 // active to it. A generation that fails is reported and not activated:
@@ -946,11 +1113,15 @@ func (s *Store) recover() error {
 	if ok && seq == hw {
 		return nil
 	}
-	dir := s.exportDir(hw)
+	dir := s.generationDir(hw)
 	if !exists(dir) {
 		return nil
 	}
-	if err := checkGeneration(context.Background(), dir); errors.Is(err, errNotWhole) {
+	named, err := s.named()
+	if err != nil {
+		return err
+	}
+	if err := checkGeneration(context.Background(), dir, named); errors.Is(err, errNotWhole) {
 		s.report(fmt.Errorf("generation %d, which high-water names, is not activated: %w", hw, err))
 		return nil
 	} else if err != nil {
@@ -978,16 +1149,16 @@ func (s *Store) sweep(ctx context.Context) error {
 		return fmt.Errorf("sweeping %s: %w", s.dir, err)
 	}
 	var errs []error
-	exports, err := os.ReadDir(s.path("exports"))
+	generations, err := os.ReadDir(s.path("generations"))
 	errs = append(errs, err)
-	for _, e := range exports {
+	for _, e := range generations {
 		if ctx.Err() != nil {
 			break
 		}
 		if n, valid := decimal(e.Name()); valid && ok && n == active {
 			continue
 		}
-		errs = append(errs, s.delete(ctx, s.path("exports", e.Name())))
+		errs = append(errs, s.delete(ctx, s.path("generations", e.Name())))
 	}
 	staging, err := os.ReadDir(s.path("staging"))
 	errs = append(errs, err)
@@ -1095,18 +1266,28 @@ func removeTree(ctx context.Context, path string) error {
 // holds off other processes, and lock polls for it, since a process
 // cannot stop waiting in flock(2) when ctx is done.
 func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
-	waiting := func() error { return fmt.Errorf("waiting for the lock on %s: %w", s.dir, ctx.Err()) }
+	return s.lockFile(ctx, "lock", s.turn)
+}
+
+// lockAuthorization takes the authorization lock, as lock takes the
+// activation lock. The two are independent: neither waits for the other.
+func (s *Store) lockAuthorization(ctx context.Context) (unlock func(), err error) {
+	return s.lockFile(ctx, "authorization.lock", s.authTurn)
+}
+
+func (s *Store) lockFile(ctx context.Context, name string, turn chan struct{}) (unlock func(), err error) {
+	waiting := func() error { return fmt.Errorf("waiting for the lock %s: %w", s.path(name), ctx.Err()) }
 	if ctx.Err() != nil {
 		return nil, waiting()
 	}
 	select {
-	case s.turn <- struct{}{}:
+	case turn <- struct{}{}:
 	case <-ctx.Done():
 		return nil, waiting()
 	}
-	f, err := os.OpenFile(s.path("lock"), os.O_RDWR|os.O_CREATE, 0o644)
+	f, err := os.OpenFile(s.path(name), os.O_RDWR|os.O_CREATE, 0o644)
 	if err != nil {
-		<-s.turn
+		<-turn
 		return nil, err
 	}
 	for pause := time.Millisecond; ; pause = min(2*pause, 100*time.Millisecond) {
@@ -1116,20 +1297,20 @@ func (s *Store) lock(ctx context.Context) (unlock func(), err error) {
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) {
 			f.Close()
-			<-s.turn
+			<-turn
 			return nil, err
 		}
 		select {
 		case <-time.After(pause):
 		case <-ctx.Done():
 			f.Close()
-			<-s.turn
+			<-turn
 			return nil, waiting()
 		}
 	}
 	unlock = func() {
 		f.Close()
-		<-s.turn
+		<-turn
 	}
 	// ctx may have been done while flock(2) succeeded, and the caller
 	// does no work once it is.
@@ -1281,14 +1462,18 @@ func flock(f *os.File, how int) error {
 }
 
 // writeDurably replaces the file at path with data: a temporary file
-// beside it, synced, renamed over it, and the directory synced.
+// beside it, mode 0644 whatever the umask, synced, renamed over it, and
+// the directory synced.
 func writeDurably(path string, data []byte) error {
 	tmp := path + "." + random()
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
-	_, err = f.Write(data)
+	err = f.Chmod(0o644)
+	if err == nil {
+		_, err = f.Write(data)
+	}
 	if err == nil {
 		err = syncFile(f)
 	}

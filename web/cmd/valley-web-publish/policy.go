@@ -297,7 +297,7 @@ func writeDurable(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	defer d.Close()
-	return d.Sync()
+	return syncFile(d)
 }
 
 // sendAuthorization posts the signed authorization, and retries, with the

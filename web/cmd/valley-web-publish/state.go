@@ -29,6 +29,13 @@ const (
 	acknowledgedFile = "acknowledged"
 )
 
+// The calls writeFile and writeDurable sync and rename with. A test
+// replaces them to make one fail, as a crash or a full disk would.
+var (
+	syncFile   = (*os.File).Sync
+	renameFile = os.Rename
+)
+
 // lockFile takes an exclusive flock(2) lock on path, waiting for a pass
 // that holds it to finish.
 func lockFile(path string) (func(), error) {
@@ -124,14 +131,14 @@ func writeFile(path string, data []byte, mode os.FileMode) error {
 		f.Close()
 		return err
 	}
-	if err := f.Sync(); err != nil {
+	if err := syncFile(f); err != nil {
 		f.Close()
 		return err
 	}
 	if err := f.Close(); err != nil {
 		return err
 	}
-	return os.Rename(f.Name(), path)
+	return renameFile(f.Name(), path)
 }
 
 // acknowledgedSchema is the acknowledged file's schema.

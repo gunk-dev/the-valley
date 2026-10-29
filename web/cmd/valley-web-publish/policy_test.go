@@ -127,3 +127,61 @@ func TestARestoredStateRestoresNoWithdrawnAccess(t *testing.T) {
 		})
 	}
 }
+
+// A failure while the counter is written, at the file's sync, its rename
+// or the directory's sync, returns no sequence, and leaves no temporary
+// file behind. No later allocation hands out a sequence at or below one
+// handed out before: a failure at the directory's sync may have written
+// the counter, and the next allocation counts from it.
+func TestTheAuthorizationCounterSurvivesFailedWrites(t *testing.T) {
+	state := t.TempDir()
+	next := func() (int64, error) {
+		p := &publisher{cfg: config{state: state}, stdout: io.Discard, stderr: io.Discard}
+		return p.nextSequence(0)
+	}
+	handed := int64(0)
+	allocate := func() {
+		t.Helper()
+		seq, err := next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seq <= handed {
+			t.Fatalf("allocated %d after %d", seq, handed)
+		}
+		handed = seq
+	}
+	allocate()
+	failed := errors.New("injected")
+	realSync, realRename := syncFile, renameFile
+	defer func() { syncFile, renameFile = realSync, realRename }()
+	dirSync := func(f *os.File) error {
+		if info, err := f.Stat(); err == nil && info.IsDir() {
+			return failed
+		}
+		return realSync(f)
+	}
+	for _, c := range []struct {
+		name   string
+		sync   func(*os.File) error
+		rename func(string, string) error
+	}{
+		{"the file's sync", func(*os.File) error { return failed }, realRename},
+		{"the rename", realSync, func(string, string) error { return failed }},
+		{"the directory's sync", dirSync, realRename},
+	} {
+		syncFile, renameFile = c.sync, c.rename
+		if seq, err := next(); !errors.Is(err, failed) {
+			t.Errorf("a failure at %s gave sequence %d, %v", c.name, seq, err)
+		}
+		syncFile, renameFile = realSync, realRename
+		entries, err := os.ReadDir(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != authorizationSequenceFile {
+			t.Errorf("after a failure at %s the state directory holds %v", c.name, entries)
+		}
+		allocate()
+	}
+}

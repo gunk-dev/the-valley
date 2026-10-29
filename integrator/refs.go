@@ -44,6 +44,13 @@ const (
 	outcomePrefix = "refs/the-valley/integration-outcomes"
 )
 
+// landingTries is how many times a landing builds its ref transaction and
+// applies it, while what fails it is a record ref that moved since it was
+// read. A record ref moves under a landing only when something other than
+// this pass writes it, such as a push creating an attestation ref the
+// landing adds to.
+const landingTries = 3
+
 // request is one integration request as the refs transport found it.
 type request struct {
 	ref    string
@@ -164,7 +171,7 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	outcome, err := in.refuse(r, idx, tip, last, memo)
 	done()
 	if err == nil && outcome == "" {
-		outcome, err = in.act(r, tip, watch)
+		outcome, err = in.act(r, tip, memo, watch)
 	}
 	if err != nil {
 		printTiming := in.timing(r, tip, failedMemo, watch)
@@ -179,7 +186,11 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 		return nil
 	}
 	printTiming := in.timing(r, tip, string(outcome), watch)
-	err = in.writeMemo(r, memo+" "+string(outcome))
+	// A landing wrote its outcome record in the transaction that moved
+	// the target.
+	if outcome != verdict.Land {
+		err = in.writeMemo(r, memo+" "+string(outcome))
+	}
 	printTiming()
 	return err
 }
@@ -261,8 +272,9 @@ func (in *integrator) answered(last, memo string) bool {
 }
 
 // act judges one request and does what the verdict says, returning the
-// outcome so the memo can record it.
-func (in *integrator) act(r request, tip string, watch *stopwatch) (verdict.Outcome, error) {
+// outcome so the memo can record it. A landing records its own: memo is
+// what it records it after.
+func (in *integrator) act(r request, tip, memo string, watch *stopwatch) (verdict.Outcome, error) {
 	ch, snap, landed, err := in.materialize(r, tip, watch)
 	if err != nil {
 		return "", err
@@ -275,7 +287,7 @@ func (in *integrator) act(r request, tip string, watch *stopwatch) (verdict.Outc
 
 	switch v.Outcome {
 	case verdict.Land:
-		outcome, err := in.land(ch, v, r, tip, landed, watch)
+		outcome, err := in.land(ch, v, r, tip, landed, memo, watch)
 		if outcome != "" || err != nil {
 			if outcome == "" {
 				outcome = v.Outcome
@@ -375,11 +387,21 @@ func (in *integrator) materialize(r request, tip string, watch *stopwatch) (verd
 
 	snap := verdict.Snapshot{Required: required, Touched: map[string]bool{}, Now: in.now()}
 
-	// Apply the delta. A base that is already the tip is a fast-forward:
-	// the head lands as it stands and its tree is the tree that was
-	// attested.
+	// Apply the delta. Every change lands as one commit that the integrator
+	// writes on the tip, whatever its base. None of the head's own commits
+	// reaches the target, so nothing lands that review did not show. When
+	// the base is already the tip, the candidate's tree is the head's tree,
+	// which is the attested tree.
 	if base == tip {
-		land.commit = r.head
+		done = watch.stage(stageApply)
+		tree, err := gitLine(in.repo, "rev-parse", "--verify", r.head+"^{tree}")
+		if err == nil {
+			land.commit, err = in.commitTree(tree, tip, r)
+		}
+		done()
+		if err != nil {
+			return ch, snap, land, err
+		}
 		land.digest = attested
 		snap.Apply = verdict.Applied{Clean: true, Tree: attested}
 	} else {
@@ -434,9 +456,9 @@ func (in *integrator) materialize(r request, tip string, watch *stopwatch) (verd
 // itself. Which integrator committed is carried by the name beside it.
 const committerEmail = "integrator@the-valley.invalid"
 
-// commitTree turns the merged tree into the commit that would become the
-// target's new tip. The tip is its only parent, so the ref write is a
-// fast-forward; the change's authorship is carried over from its head.
+// commitTree writes the candidate commit for the change's tree with the tip
+// as its only parent. The ref write is then a fast-forward, and the change's
+// authorship comes from its head.
 //
 // Both identities are stated here rather than left to git. The author is the
 // asker's, because re-parenting a delta is not authoring it. The committer is
@@ -476,31 +498,33 @@ func (in *integrator) commitTree(tree, tip string, r request) (string, error) {
 	return strings.TrimSpace(out), err
 }
 
-// land moves the protected ref, stores the evidence, and says so on the
-// bus. The ref write is a compare-and-swap against the tip the verdict was
-// computed over, so a request that lost a race to another lands nothing and
-// is judged again next pass against the tip that won.
+// land moves the protected ref and records the landing, in one ref
+// transaction, and then says so on the bus. The transaction compares the
+// target against the tip the verdict was computed over, so a request that
+// lost a race to another lands nothing and is judged again next pass
+// against the tip that won.
 //
-// The order is the commit point's. Everything that can fail while the
-// integrator is still deciding happens first, and the ref write is the
-// commit. Composing the transfer statement — vetting it, writing it down,
-// signing it — is part of deciding: a claim the integrator cannot write
-// down is a claim it has not made, and a stream moved on a decision that
-// cannot be stated is a landing nothing records. A failure before the
-// commit point leaves the stream where it was and the request where it was,
-// which is a transaction abandoned before it committed and costs one pass
-// to redo.
+// Everything that can fail happens before the transaction. Composing the
+// transfer statement — vetting it, writing it down, signing it — is part
+// of deciding: a claim the integrator cannot write down is a claim it has
+// not made. Then every object the landing records is built: the evidence
+// trees with the transfer statement, the landing record and the outcome
+// record. The transaction is the commit point. It moves the target, moves
+// every evidence and record ref from the value it was read at, and deletes
+// the request, all or nothing. So no landing exists that its records do
+// not name, and a failure before the commit point leaves the stream and
+// the request where they were, which costs one pass to redo.
 //
-// Past the commit point the landing is a fact in the stream, and what is
-// left is recording it: handing the ref move to the host to publish,
-// storing the evidence, consuming the request, and saying so on the bus.
-// None of those may be skipped because an earlier one failed, and
-// consuming the request in particular may not be reachable only through
-// something that can fail — a request left pending for a change
-// already in the stream is re-judged against an empty delta on every pass,
-// forever. So each step runs, each failure is reported, and the landing is
-// reported as having happened, because it did.
-func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing, watch *stopwatch) (verdict.Outcome, error) {
+// When the transaction fails because a ref moved since it was read,
+// nothing changed. A target that moved means nothing lands. A record ref
+// that moved is read again, the objects are built again from what it
+// holds, and the transaction is tried again, landingTries times in all.
+//
+// Past the commit point what is left is handing the ref move to the host
+// to publish, and the bus events. Both are notices of what the
+// transaction recorded, and a failure of either is reported and changes
+// nothing.
+func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip string, l landing, memo string, watch *stopwatch) (verdict.Outcome, error) {
 	done := watch.stage(stageSign)
 	transfer, err := in.composeTransfer(ch, v, l.digest, l.commit, tip, l.policy)
 	if err != nil {
@@ -517,9 +541,10 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	// or withdrawn meanwhile, or a record can come to name a commit this
 	// request brings. So every record is read again here, as the last
 	// thing before the commit point, and a refusal lands nothing. A record
-	// written between this read and the ref write is still missed: refs
-	// offer no way to make the two one step. What lands then is still the
-	// head the operator approved.
+	// written between this read and the transaction is still missed: a
+	// transaction can compare refs it knows of, and a record created since
+	// is one it does not. What lands then is still the head the operator
+	// approved.
 	done = watch.stage(stageRefusal)
 	outcome, why, err := in.finalRefusal(r, tip)
 	done()
@@ -530,64 +555,175 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 		return outcome, err
 	}
 
-	// The commit point.
-	done = watch.stage(stageLand)
-	_, err = git(in.repo, "update-ref", ch.Target, l.commit, tip)
-	done()
-	if err != nil {
-		return "", fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
+	var tx transaction
+	for try := 1; ; try++ {
+		done = watch.stage(stageRecord)
+		tx, err = in.prepareLanding(ch, r, tip, l, evidence, memo)
+		done()
+		if err != nil {
+			return "", fmt.Errorf("nothing landed: %w", err)
+		}
+		// The commit point.
+		done = watch.stage(stageLand)
+		err = in.apply(tx.updates)
+		done()
+		if err == nil {
+			break
+		}
+		if now, found, rerr := resolveRef(in.repo, ch.Target); rerr == nil && (!found || now != tip) {
+			return "", fmt.Errorf("%s moved under the verdict; nothing landed: %w", ch.Target, err)
+		}
+		if try == landingTries {
+			return "", fmt.Errorf("nothing landed: a ref the landing records moved under each of %d tries: %w", landingTries, err)
+		}
 	}
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
-	done = watch.stage(stageRecord)
-	in.queueRefUpdate(ch.Target, tip, l.commit)
-
-	var unrecorded []string
-	refs, err := in.store(evidence)
-	if err != nil {
-		unrecorded = append(unrecorded, fmt.Sprintf("the evidence was not stored (%v)", err))
-	}
-	for _, ref := range refs {
+	for _, ref := range tx.evidence {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
 	}
-	if why := in.consume(r); why != "" {
-		unrecorded = append(unrecorded, why)
+	fmt.Fprintf(in.out, "  record   %s\n", tx.landing)
+	if tx.requestNow != "" {
+		fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
+			r.ref, verdict.Short(tx.requestNow), verdict.Short(r.head))
 	}
-	done()
-	// The bus comes last. Everything above is the landing's own record; an
-	// event is a best-effort notice of it, and a bus that fails or hangs
-	// must not leave any of that record undone.
+
+	// The notices come last, as best effort: a queue or a bus that fails
+	// or hangs changes nothing the transaction recorded.
 	done = watch.stage(stagePublish)
+	in.queueRefUpdate(ch.Target, tip, l.commit)
 	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)
 	done()
-	if len(unrecorded) > 0 {
-		return "", fmt.Errorf("%s landed as %s and the landing is not fully recorded: %s",
-			ch.ID, verdict.Short(l.commit), strings.Join(unrecorded, "; "))
-	}
 	return "", nil
 }
 
-// consume deletes the request that landed, and returns why it was not
-// consumed, or "" when it was or when it moved.
+// refUpdate is one ref a transaction moves: from old to new, where old is
+// the zero object ID for a ref that must not exist yet, and new is "" for
+// a ref the transaction deletes.
+type refUpdate struct {
+	ref, new, old string
+}
+
+// transaction is a landing's ref transaction, and what it records.
+type transaction struct {
+	updates  []refUpdate
+	evidence []string // the evidence refs it moves, in order
+	landing  string   // the landing record's ref
+
+	// requestNow is the head the request names, when it no longer names
+	// the head that lands: a second approval replaced it while this pass
+	// worked. It is a new request, and it stands for the next pass.
+	requestNow string
+}
+
+// prepareLanding builds every object a landing records and the ref
+// transaction that applies them: the target moved from the tip to the
+// landed commit; each evidence ref moved to its new tree; the landing
+// record for the head; the outcome record, which says land after memo;
+// and the request deleted. Every ref but the target is read here, and the
+// transaction compares it against the value read.
 //
-// The request is consumed only if it still names the head that landed.
-// A second approval can replace it while this pass works — the asker's
-// write is leased against what it read, and nothing stops it reading the
-// request this pass is about to land — and a delete that did not compare
-// would take the new request with the old one. A request that moved is a
-// new request, and it stands for the next pass. A request that is gone
-// did not move, whatever a branch named like it holds.
-func (in *integrator) consume(r request) string {
-	_, err := git(in.repo, "update-ref", "-d", r.ref, r.head)
-	if err == nil {
-		return ""
+// The request is deleted only while it names the head that lands. A
+// delete that did not compare would take a second approval, filed while
+// this pass worked, with the first. A request that is gone is not
+// deleted, and a request that moved is left standing.
+func (in *integrator) prepareLanding(ch verdict.Change, r request, tip string, l landing, e landedEvidence, memo string) (transaction, error) {
+	zero := strings.Repeat("0", len(tip))
+	read := func(ref string) (string, error) {
+		oid, found, err := resolveRef(in.repo, ref)
+		if !found && err == nil {
+			oid = zero
+		}
+		return oid, err
 	}
-	if now, found, _ := resolveRef(in.repo, r.ref); found && now != r.head {
-		fmt.Fprintf(in.out, "  request  %s moved to %s while %s landed; it stands for the next pass\n",
-			r.ref, verdict.Short(now), verdict.Short(r.head))
-		return ""
+	tx := transaction{updates: []refUpdate{{ref: ch.Target, new: l.commit, old: tip}}}
+	evidence, err := in.evidenceUpdates(e, zero)
+	if err != nil {
+		return tx, err
 	}
-	return fmt.Sprintf("the request ref %s was not consumed (%v)", r.ref, err)
+	for _, u := range evidence {
+		tx.updates = append(tx.updates, u)
+		tx.evidence = append(tx.evidence, u.ref)
+	}
+
+	record, err := in.landingRecord(r, l.commit)
+	if err != nil {
+		return tx, err
+	}
+	tx.landing = change.LandingRef(strings.TrimPrefix(r.target, "refs/heads/"), r.head)
+	old, err := read(tx.landing)
+	if err != nil {
+		return tx, err
+	}
+	tx.updates = append(tx.updates, refUpdate{ref: tx.landing, new: record, old: old})
+
+	outcome, err := in.writeBlob([]byte(memo + " " + string(verdict.Land) + "\n"))
+	if err != nil {
+		return tx, err
+	}
+	if old, err = read(in.memoRef(r)); err != nil {
+		return tx, err
+	}
+	tx.updates = append(tx.updates, refUpdate{ref: in.memoRef(r), new: outcome, old: old})
+
+	now, found, err := resolveRef(in.repo, r.ref)
+	switch {
+	case err != nil:
+		return tx, err
+	case found && now == r.head:
+		tx.updates = append(tx.updates, refUpdate{ref: r.ref, old: r.head})
+	case found:
+		tx.requestNow = now
+	}
+	return tx, nil
+}
+
+// landingRecord writes the commit of the landing record for r's head
+// landing as commit (change.Landing): a commit with no parent whose tree
+// holds the one file change.LandingFile. Its author and committer are the
+// integrator, at the landed commit's committer date, so a pass that builds
+// the record again builds the identical commit.
+func (in *integrator) landingRecord(r request, commit string) (string, error) {
+	file := change.Landing{Landed: commit, Request: r.change, Head: r.head}.Format()
+	blob, err := in.writeBlob(file)
+	if err != nil {
+		return "", err
+	}
+	tree, err := in.writeTree(map[string]string{change.LandingFile: blob})
+	if err != nil {
+		return "", err
+	}
+	date, err := gitLine(in.repo, "log", "-1", "--format=%cI", commit)
+	if err != nil {
+		return "", err
+	}
+	out, err := in.gitEnv(map[string]string{
+		"GIT_AUTHOR_NAME":     in.signerName,
+		"GIT_AUTHOR_EMAIL":    committerEmail,
+		"GIT_AUTHOR_DATE":     date,
+		"GIT_COMMITTER_NAME":  in.signerName,
+		"GIT_COMMITTER_EMAIL": committerEmail,
+		"GIT_COMMITTER_DATE":  date,
+	}, "commit-tree", tree, "-m", fmt.Sprintf("%s landed as %s", r.change, commit))
+	return strings.TrimSpace(out), err
+}
+
+// apply makes the ref updates as one transaction, with git update-ref
+// --stdin: every ref is locked and compared against its old value first,
+// and then all of them move, or, when any old value does not match, none.
+func (in *integrator) apply(updates []refUpdate) error {
+	var stdin strings.Builder
+	stdin.WriteString("start\n")
+	for _, u := range updates {
+		if u.new == "" {
+			fmt.Fprintf(&stdin, "delete %s %s\n", u.ref, u.old)
+			continue
+		}
+		fmt.Fprintf(&stdin, "update %s %s %s\n", u.ref, u.new, u.old)
+	}
+	stdin.WriteString("prepare\ncommit\n")
+	_, err := gitInput(in.repo, []byte(stdin.String()), "update-ref", "--stdin")
+	return err
 }
 
 // report prints the verdict, per check, in the order it was judged.

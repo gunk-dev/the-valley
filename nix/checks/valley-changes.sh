@@ -189,10 +189,14 @@ memo() {
   git -C "$data/open.git" update-ref "refs/the-valley/integration-outcomes/main/$name" "$blob"
 }
 
-# transfer <change> <head> <landed> <key> <name>: a transfer statement,
-# as the integrator composes, signs and stores one.
+# transfer <change> <head> <landed> <key> <name> [single]: a transfer
+# statement, as the integrator composes, signs and stores one, at
+# transfer.d/<2 hex>/<2 hex>/<rest>.note, split from the landed commit's
+# ID. With single, it is stored as the one transfer.note at the top of the
+# tree, the layout of a ref the integrator wrote before it kept one
+# statement per landed commit, which the reader still reads.
 transfer() {
-  local change="$1" head="$2" at="$3" key="$4" name="$5" ldigest blob tree
+  local change="$1" head="$2" at="$3" key="$4" name="$5" layout="${6:-}" ldigest blob tree
   ldigest="$(tree_digest "$at")"
   jq -n --arg change "$change" --arg base "$(tree_digest "$head")" --arg landed "$ldigest" \
     --arg commit "$at" --arg tip "$fhead" '{
@@ -204,11 +208,18 @@ transfer() {
     }' > "$w/statement.json"
   attest render "$w/statement.json" | attest sign --key "$key" --name "$name" > "$w/transfer.note"
   blob="$(git -C "$data/open.git" hash-object -w "$w/transfer.note")"
-  tree="$(printf '100644 blob %s\ttransfer.note\n' "$blob" | git -C "$data/open.git" mktree)"
+  if [ "$layout" = single ]; then
+    tree="$(printf '100644 blob %s\ttransfer.note\n' "$blob" | git -C "$data/open.git" mktree)"
+  else
+    tree="$(printf '100644 blob %s\t%s.note\n' "$blob" "${at:4}" | git -C "$data/open.git" mktree)"
+    tree="$(printf '040000 tree %s\t%s\n' "$tree" "${at:2:2}" | git -C "$data/open.git" mktree)"
+    tree="$(printf '040000 tree %s\t%s\n' "$tree" "${at:0:2}" | git -C "$data/open.git" mktree)"
+    tree="$(printf '040000 tree %s\ttransfer.d\n' "$tree" | git -C "$data/open.git" mktree)"
+  fi
   git -C "$data/open.git" update-ref "refs/the-valley/attestations/$ldigest/$(printf '%08x' "${#name}")" "$tree"
 }
 memo reparent "$(git rev-parse reparent)" land
-transfer reparent "$(git rev-parse reparent)" "$landed" "$w/integrator.key" integrator
+transfer reparent "$(git rev-parse reparent)" "$landed" "$w/integrator.key" integrator single
 
 # U's request was consumed, and no evidence was stored.
 memo lost "$(git rev-parse lost)" land

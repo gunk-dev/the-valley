@@ -34,9 +34,9 @@ const (
 	stageApply    = "apply"    // merging the delta onto the tip
 	stageClosures = "closures" // recomputing input closures on a moved tree
 	stageSign     = "sign"     // composing and signing the transfer statement
-	stageLand     = "land"     // the ref write that moves the target
-	stageRecord   = "record"   // storing the evidence and consuming the request
-	stagePublish  = "publish"  // the bus events
+	stageLand     = "land"     // the ref transaction that moves the target and records the landing
+	stageRecord   = "record"   // building what the transaction records: evidence trees, landing and outcome records
+	stagePublish  = "publish"  // the publisher's queue and the bus events
 )
 
 // stopwatch times one decision, as a whole and by stage. A nil stopwatch

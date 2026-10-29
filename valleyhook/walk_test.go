@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"the-valley/change"
 )
 
 // A git tree can name the same subtree any number of times, so a handful
@@ -69,6 +71,29 @@ func TestAWalkStopsAtItsBoundsBeforeReadingPastThem(t *testing.T) {
 	notes, err := gitRepository{}.notes(attested)
 	if err != nil || string(notes["prose-format/statement.note"]) != "a note\n" {
 		t.Errorf("an attestation's tree: notes = %q, error = %v", notes, err)
+	}
+
+	// So is what the integrator writes: a transfer statement at
+	// change.TransferPath, beside a countersigned note. One level deeper
+	// is past the bound.
+	commit := strings.Repeat("ab", 20)
+	path := change.TransferPath(commit)
+	fanned := func(levels []string) string {
+		id := mktree(t, dir, 1, "100644 blob "+note, levels[len(levels)-1])
+		for i := len(levels) - 2; i >= 0; i-- {
+			id = mktree(t, dir, 1, "040000 tree "+id, levels[i])
+		}
+		return id
+	}
+	transfer := fanned(strings.Split(path, "/")[1:])
+	landed := gitIn(t, dir, "040000 tree "+leaf+"\tprose-format\n040000 tree "+transfer+"\ttransfer.d\n", "mktree")
+	notes, err = gitRepository{}.notes(landed)
+	if err != nil || string(notes[path]) != "a note\n" || len(notes) != 2 {
+		t.Errorf("the integrator's tree: notes = %q, error = %v", notes, err)
+	}
+	deeper := fanned(append(strings.Split(path, "/")[:3], "ef", "statement.note"))
+	if _, err := (gitRepository{}).notes(deeper); err == nil || !strings.Contains(err.Error(), "deeper than the 4") {
+		t.Errorf("a tree one level deeper than the integrator's: error = %v", err)
 	}
 }
 

@@ -149,10 +149,17 @@ in
       # The request ref alone files the change for integration.
       seed("project", f"{change}:refs/the-valley/integration-requests/main/one")
 
+      # The change lands as one commit the integrator makes on the base,
+      # with the change's tree. That commit is what main, the mirror and
+      # the events carry from here on.
       with subtest("the landing moves main"):
           host.wait_until_succeeds(
-              f"test \"$({git} -C /srv/git/project.git rev-parse refs/heads/main)\" = {change}", timeout=120
+              f"test \"$({git} -C /srv/git/project.git rev-parse refs/heads/main^)\" = {base}", timeout=120
           )
+          landing = host.succeed(f"{git} -C /srv/git/project.git rev-parse refs/heads/main").strip()
+          assert landing != change, "the change's own commit landed"
+          tree = f"{git} -C /srv/git/project.git rev-parse"
+          assert host.succeed(f"{tree} {landing}^{{tree}}") == host.succeed(f"{tree} {change}^{{tree}}")
 
       with subtest("a failed mirror push keeps the move queued and fails the run"):
           host.wait_until_succeeds(
@@ -171,7 +178,7 @@ in
           host.succeed(f"test -n \"$(ls -A {queue})\"")
           moved = [p for p in payloads() if '"event":"ref-updated"' in p]
           assert moved == [
-              f'{{"event":"ref-updated","repo":"project","ref":"refs/heads/main","old":"{base}","new":"{change}"}}'
+              f'{{"event":"ref-updated","repo":"project","ref":"refs/heads/main","old":"{base}","new":"{landing}"}}'
           ], moved
 
       with subtest("systemd retries the push after a delay, and the retry reaches the mirror"):
@@ -180,7 +187,7 @@ in
               f"{git} init --quiet --bare /srv/mirror.git",
           )
           host.wait_until_succeeds(
-              f"test \"$({git} -C /srv/mirror.git rev-parse refs/heads/main)\" = {change}", timeout=90
+              f"test \"$({git} -C /srv/mirror.git rev-parse refs/heads/main)\" = {landing}", timeout=90
           )
           host.wait_until_succeeds("journalctl -t valley-mirror | grep -q 'project: pushed to /srv/mirror.git'")
           host.wait_until_succeeds(f"test -z \"$(ls -A {queue})\"")
@@ -210,10 +217,10 @@ in
       with subtest("the landing is one ref-updated event on the bus"):
           moved = [e for e in events() if e["event"] == "ref-updated"]
           assert moved == [
-              {"event": "ref-updated", "repo": "project", "ref": "refs/heads/main", "old": base, "new": change}
+              {"event": "ref-updated", "repo": "project", "ref": "refs/heads/main", "old": base, "new": landing}
           ], moved
           landed = [e for e in events() if e["event"] == "integration-succeeded"]
-          assert len(landed) == 1 and landed[0]["new"] == change, landed
+          assert len(landed) == 1 and landed[0]["new"] == landing, landed
 
       # What a client verifies the landing with, in the instance repository:
       # the controllers' signers file, and the name they sign under, which

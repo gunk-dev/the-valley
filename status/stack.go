@@ -3,8 +3,8 @@
 //
 // The layers are what valley pending lists under the change (pending.go):
 // each change whose active version has not landed, and each branch on
-// origin that no record is on and main does not reach, whose head the
-// change's head strictly contains. A ready change, a draft and a branch
+// origin that no record is on, that main does not reach and that no landed
+// version's head reaches, whose head the change's head strictly contains. A ready change, a draft and a branch
 // are layers, as in pending. A withdrawn change that has not landed is a
 // layer too, where pending names it only in an includes line: the
 // integrator refuses to land anything above it, and review warns of that.

@@ -210,7 +210,8 @@ that names it. A missing ref is missing:
   request whose target is missing, and a withdrawn change does not void such a request. A request
   with no memo has none, and the signers publication is written when there is none yet. It reads
   evidence through the objects its refs held when it listed them. A request that is gone when the
-  integrator consumes it is not reported as moved (`integrator/`).
+  integrator lands its head is not reported as moved, and the landing's transaction does not touch
+  it (`integrator/`).
 - The integrator reads the floor at `--instance-ref` (`composed/composed.go`). The restacker takes
   only the `git ls-remote` line that names that ref exactly (`restack/main.go`). An instance
   repository with no such ref has no floor, and the pass is refused.
@@ -263,9 +264,9 @@ The operator's trust roots are hardware keys that the deployment supplies (**dep
 
 ## What a client trusts to read a landing
 
-A client decides that a version landed through an integrator merge (`landed-recorded`) by verifying
-the integrator's transfer statement. It verifies the statement with a known-signers file and the
-integrator's signing name. By default it reads both from the host's publication at
+A client decides that a version landed through a commit the integrator wrote (`landed-recorded`) by
+verifying the integrator's transfer statement. It verifies the statement with a known-signers file
+and the integrator's signing name. By default it reads both from the host's publication at
 `refs/the-valley/signers` in the instance repository (`implemented`; see
 [the signers publication](./architecture.md#the-signers-publication)).
 
@@ -290,8 +291,10 @@ publication. A flag or a variable set on the client replaces the publication for
 The restacker reads neither the publication nor the variables, only its own flags.
 
 A wrong publication cannot by itself make a version read `landed-recorded`. That also takes the
-integrator's outcome record for the version, saying it landed at the version's head, and no push may
-write an outcome record. A wrong publication can make a real landing read `uncertain`.
+integrator's landing record for the version's head, or for a landing made before landing records
+existed, its outcome record, saying the head landed as that commit. No push may write either record
+(`implemented`, checked by `protect-e2e` and `valleyhook-unit`). A wrong publication can make a real
+landing read `uncertain`.
 
 ## Who can read a project
 

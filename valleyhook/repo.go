@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"the-valley/change"
 )
 
 // gitProgram is the git this program runs. The package sets it at build
@@ -69,16 +71,18 @@ type budget struct {
 }
 
 // The bounds on reading an attestation ref. attest writes a tree holding
-// one subtree per check, each holding one note, and the integrator writes a
-// tree holding notes directly, so these are far above anything either
-// writes.
+// one subtree per check, each holding one note. The integrator adds its
+// countersignatures there, and writes its transfer statements two levels
+// of directories down from transfer.d (change.TransferPath), so a tree it
+// writes is four trees deep. Every bound is shared with the integrator,
+// which refuses to write a tree past any of them.
 const (
-	maxDepth         = 3        // trees from the ref's tree down, inclusive
-	maxEntriesInTree = 64       // entries in any one tree
-	maxEntries       = 256      // entries visited in the whole walk
-	maxTreeSize      = 16 << 10 // bytes in any one tree object
-	maxNoteSize      = 64 << 10 // bytes in any one note
-	maxBytes         = 1 << 20  // bytes read in the whole walk
+	maxDepth         = change.AttestationDepth       // trees from the ref's tree down, inclusive
+	maxEntriesInTree = change.AttestationTreeEntries // entries in any one tree
+	maxEntries       = change.AttestationEntries     // entries visited in the whole walk
+	maxTreeSize      = change.AttestationTreeBytes   // bytes in any one tree object
+	maxNoteSize      = change.AttestationNoteBytes   // bytes in any one note
+	maxBytes         = change.AttestationBytes       // bytes read in the whole walk
 )
 
 // context is a context for one reading within the budget: it ends when the

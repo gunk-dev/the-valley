@@ -170,7 +170,7 @@ func UnlandedOn(ctx context.Context, g Git, o Origin, branch string, v Verifier)
 	}
 	var want []string
 	for ref, oid := range o.Refs {
-		if ref == "refs/heads/"+Target || strings.HasPrefix(ref, OutcomePrefix) {
+		if ref == "refs/heads/"+Target || strings.HasPrefix(ref, OutcomePrefix) || strings.HasPrefix(ref, LandingPrefix) {
 			want = append(want, oid)
 		}
 	}

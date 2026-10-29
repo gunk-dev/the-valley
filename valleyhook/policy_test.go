@@ -90,6 +90,7 @@ func TestNoRuleStandsInForAnother(t *testing.T) {
 		{"writer", "refs/replace/" + some, false, "refs/replace/ is closed to every push"},
 		{"writer", "refs/notes/commits", false, "refs/notes/ is closed to every push"},
 		{"writer", "refs/the-valley/integration-outcomes/main/c", false, "written only by the machinery"},
+		{"writer", "refs/the-valley/integration-landings/main/" + some, false, "written only by the machinery"},
 		// A symbolic ref is refused whoever writes it.
 		{"writer", "refs/heads/alias", false, "symbolic ref"},
 		// The approve grant is needed whatever else is declared, and

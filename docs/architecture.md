@@ -254,22 +254,22 @@ decides any ref. It asks `git symbolic-ref` whether each pushed ref is symbolic,
 symbolic ref exactly as git does. Checked by `protect-e2e`, `ssh-e2e` and `valleyhook-unit`, and for
 the plan graph by `knots-e2e`.
 
-| Ref namespace                                                                 | Who may push                                                                                     | Rule                                                                                                                                                                    |
-| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `refs/heads/*` (topic branches)                                               | Any key                                                                                          | Create, update and delete.                                                                                                                                              |
-| Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                        |
-| `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`). |
-| `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                              |
-| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                 |
-| `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).          |
-| `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).      |
-| `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                           |
-| `refs/the-valley/signers` (instance repository)                               | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).     |
-| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, and review histories (see [Reviews](#reviews)).                      |
-| `refs/replace/*`, `refs/notes/*`                                              | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                    |
-| Symbolic refs                                                                 | Nobody                                                                                           |                                                                                                                                                                         |
-| `refs/refs/*`, `refs/heads/refs/*`, `refs/tags/refs/*`, `refs/remotes/refs/*` | Nobody creates or updates one                                                                    | A ref named like another ref. When that ref is missing, git reads, fetches and pushes to this one in its place. A delete follows the rule of its namespace.             |
-| Tags and every other ref                                                      | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                 |
+| Ref namespace                                                                 | Who may push                                                                                     | Rule                                                                                                                                                                                                                            |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `refs/heads/*` (topic branches)                                               | Any key                                                                                          | Create, update and delete.                                                                                                                                                                                                      |
+| Protected refs (default `refs/heads/main`)                                    | Principals in `protection.writers` (default empty)                                               | The integrator moves them on disk, so it needs no place in `protection.writers`.                                                                                                                                                |
+| `refs/the-valley/attestations/<tree>/<key-hash>`                              | Any key                                                                                          | Create only. The ref must name a tree of notes within size bounds, and each note must verify under a known signer and be about that tree (`valleyhook/attestation.go`).                                                         |
+| `refs/the-valley/integration-requests/<target>/<c>`                           | Principals with the `approve` grant (also accepted as `request`)                                 | Create, update and delete. A change with a record is requested as `c-<change-id>` (see [The integrator](#the-integrator)).                                                                                                      |
+| `refs/the-valley/changes/main/<change-id>`                                    | Any named principal creates; the owner, `approve` or `restack` holders update; `approve` deletes | A change record. The hook allows only the transitions in [Change records](#change-records) (`valleyhook/record.go`). The integrator reads it to refuse.                                                                         |
+| `refs/the-valley/restack/main/<change-id>`                                    | Principals with the `restack` grant                                                              | A restack report about a change the repository records. Created and extended, never deleted (see [Restack reports](#restack-reports), `valleyhook/report.go`).                                                                  |
+| `refs/the-valley/knots`                                                       | Any named principal                                                                              | The plan graph, that name exactly. One commit on the tip that keeps the graph valid; never deleted (see [The plan graph](#the-plan-graph), `valleyhook/knots.go`).                                                              |
+| `refs/the-valley/projects` (instance repository)                              | Nobody                                                                                           | `valley-init` writes it on disk: the host's project list (see [valley-init](#valley-init-and-the-push-hold)).                                                                                                                   |
+| `refs/the-valley/signers` (instance repository)                               | Nobody                                                                                           | `valley-signers` writes it on disk, and the integrator can: what clients verify transfer statements with (see [The signers publication](#the-signers-publication)).                                                             |
+| Every other `refs/the-valley/*`                                               | Nobody                                                                                           | This covers the integrator's outcome records, `refs/the-valley/integration-outcomes/<target>/<c>`, its landing records, `refs/the-valley/integration-landings/<target>/<head>`, and review histories (see [Reviews](#reviews)). |
+| `refs/replace/*`, `refs/notes/*`                                              | Nobody                                                                                           | A replace ref would let git show other content under a watched name.                                                                                                                                                            |
+| Symbolic refs                                                                 | Nobody                                                                                           |                                                                                                                                                                                                                                 |
+| `refs/refs/*`, `refs/heads/refs/*`, `refs/tags/refs/*`, `refs/remotes/refs/*` | Nobody creates or updates one                                                                    | A ref named like another ref. When that ref is missing, git reads, fetches and pushes to this one in its place. A delete follows the rule of its namespace.                                                                     |
+| Tags and every other ref                                                      | Principals named in a project grant: `grants.<name>: {refs, writers}` (`schema/valley.cue`)      | Grant patterns cannot name `heads`, `replace`, `notes` or `the-valley`.                                                                                                                                                         |
 
 Branches and tags hold the source. The namespaces under `refs/the-valley/` are project storage, as
 [The source and project storage](#the-source-and-project-storage) describes.
@@ -580,27 +580,63 @@ requests in order, then sleeps 15 seconds and starts again (`integrator/main.go`
    every pass, and reported only when it is new, so a draft readied again is judged on the next
    pass.
 
-5. **Build the candidate.** The base is `git merge-base` of the tip and the head. If the base is the
-   tip, the candidate is the head. Otherwise `git merge-tree --write-tree` builds the tree, and the
-   integrator commits it with the tip as the only parent. The commit keeps the head's author. Its
-   committer is the integrator at `integrator@the-valley.invalid`. A conflict makes the request
-   stale.
+5. **Build the candidate.** Every change lands as one commit that the integrator writes, with the
+   tip as its only parent. None of the head's own commits reaches the target, so the target's
+   history holds only the trees that review showed. The base is `git merge-base` of the tip and the
+   head. If the base is the tip, the candidate's tree is the head's tree. Otherwise
+   `git merge-tree --write-tree` builds the tree, and a conflict makes the request stale. The commit
+   keeps the head's author and message. Its committer is the integrator at
+   `integrator@the-valley.invalid`. A stack approved at its top lands as one commit, with landing
+   evidence for its top alone.
 6. **Derive the required checks** (see Policy below).
 7. **Judge the evidence** (see Evidence below). The outcome is `land`, `stale` or `reject`. A stale
    request publishes `request-stale`.
 8. **Land.** The integrator signs a transfer statement that records the policy digest and the checks
    it relied on. Then, as the last thing before the commit point, it reads every record again into a
    fresh index and applies step 4 once more, since judging and signing can take minutes. Then it
-   moves the target with compare-and-swap (`git update-ref <target> <new> <tip>`). That is the
-   commit point. Then it queues the landing for the publisher, stores its countersigned evidence,
-   deletes the request with compare-and-swap, publishes `integration-succeeded`, and writes the
-   outcome record.
+   lands and records the landing in one ref transaction, as described below. Then it queues the
+   landing for the publisher and publishes `ref-updated` and `integration-succeeded`.
 
-Each step is a separate `git update-ref` call. A crash between steps can leave a landing without its
-evidence or outcome record. Checked by `integrator-e2e` (scenarios for fast-forward, merge,
-conflict, stale evidence, tampered notes, retries, a moved target, requests named for changes,
-drafts under either kind of name, a child of a draft's head, merges, and a request voided by a
-withdrawal) and `integrator-unit`.
+A landing is published in this order (`integrator/refs.go`):
+
+1. **Build every object.** The integrator writes the landing commit, then the evidence: each
+   attestation ref's new tree, with the countersigned notes and the transfer statement added to what
+   the ref already holds. It writes the landing record for the head (see
+   [Landing records](#landing-records)) and the outcome record that says `land`. Each ref but the
+   target is read here, and the value read is kept.
+2. **Apply them in one transaction.** One `git update-ref --stdin` transaction (`start`, `update`
+   and `delete` lines, `prepare`, `commit`) moves the target from the judged tip to the landing
+   commit, moves each evidence and record ref from the value it was read at, and deletes the request
+   while it still names the head that lands. git locks and compares every ref before it moves any,
+   so all of them change or none does. This is the commit point.
+3. **On a conflict, nothing changed.** When the target moved, nothing lands, and the request is
+   judged again next pass. When another ref moved, as when a push created an attestation ref the
+   landing adds to, the integrator reads the refs again, builds the objects again, and retries,
+   three times in all.
+4. **Notices last.** The publisher's queue and the bus events follow the transaction, as best
+   effort. A failure of either is reported and changes nothing the transaction recorded.
+
+A request that was replaced while the pass worked is a new approval. The transaction leaves it
+standing, and the integrator says so. One window remains: a crash inside git's commit phase. With
+the files ref backend, git renames each ref's lock file into place one ref at a time, so a crash
+there can leave some refs moved and others not. A landing cut short this way can read `uncertain`.
+Checked by `integrator-e2e` (scenarios for a change on the tip, merge, conflict, stale evidence,
+tampered notes, retries, a moved target, a request approved again during a landing, requests named
+for changes, drafts under either kind of name, a child of a draft's head, merges, a request voided
+by a withdrawal, a landing record that outlasts the next version's landing, and a tree that lands
+twice) and `integrator-unit`.
+
+### Landing records
+
+A landing record says that one head landed. The integrator writes one for each head it lands, at
+`refs/the-valley/integration-landings/<target>/<head>`, in the landing's transaction
+(`change/landing.go`). It names the commit the head landed as and the request name it landed under.
+An outcome record is kept per request name, so the next version of a change to land under the same
+name replaces it. A landing record is kept per head, so that later landing leaves it in place. No
+push may write the namespace (see [What a push may write](#what-a-push-may-write)). Clients read it
+to bind a transfer statement to the exact head that landed (see
+[Listing changes](#listing-changes)). Its format is in
+[the reference](./reference.md#integrator-landing-record-refsthe-valleyintegration-landingstargethead).
 
 Each decision the integrator reports is followed by one timing line in its output, which the unit's
 journal keeps (`integrator/timing.go`). The line is the label `timing` and a JSON object:
@@ -615,12 +651,13 @@ fails has the outcome `failed`. `duration_ms` is the whole decision. `stages_ms`
 the stages the decision reached: `refusal` (step 4, and the second reading of the records in step
 8), `checkout` (the worktree of the tip), `evidence` (verifying the notes), `policy` (step 6),
 `apply` (step 5's merge), `closures` (recomputing input closures for a moved tree), `sign` (the
-transfer statement), `land` (the commit point's ref write), `record` (the steps after it), and
-`publish` (the bus). A voided request gets a timing line too. A refusal that repeats is not reported
-again, so it is not timed again either. The line is output only: no ref, record or event carries it.
-The line is printed after the decision's outcome is recorded. It is dropped when it cannot be
-written within a second, so a journal that stalls or goes away cannot keep an outcome from being
-recorded. Checked by `integrator-unit` and `integrator-e2e`.
+transfer statement), `record` (building the landing's evidence trees, landing record and outcome
+record), `land` (the commit point's ref transaction), and `publish` (the publisher's queue and the
+bus). A voided request gets a timing line too. A refusal that repeats is not reported again, so it
+is not timed again either. The line is output only: no ref, record or event carries it. The line is
+printed after the decision's outcome is recorded. It is dropped when it cannot be written within a
+second, so a journal that stalls or goes away cannot keep an outcome from being recorded. Checked by
+`integrator-unit` and `integrator-e2e`.
 
 The security invariant is the operator's approval: only content the operator approved lands. The
 request names the exact head that was approved, and the integrator lands only what a request names.
@@ -1970,9 +2007,10 @@ not been read.
 layers `valley-go stack` lists under it. A change with nothing under it is a stack of one. In a
 throwaway worktree, bottom first, each layer's own commits are rebased onto the rebased layer below
 it, and the bottom's onto `main`. So each layer keeps its own delta. Commits under the bottom that a
-lower change landed through an integrator merge drop out, since their content is on `main`. The
-rebase reads that landing as `valley changes` does, and verifies the transfer statement with the
-same signers (see [Listing changes](#listing-changes)).
+lower change landed drop out, since the integrator landed them as one new commit and their content
+is on `main`. So does a branch below such a change: it is no layer. The rebase reads that landing as
+`valley changes` does, and verifies the transfer statement with the same signers (see
+[Listing changes](#listing-changes)).
 
 The rebase refuses, and changes nothing, when the stack cannot move whole:
 
@@ -2330,34 +2368,46 @@ they decide its landing evidence (`status/inventory.go`). The first rule that ap
 1. `landed`: the version's head is on `main`'s first-parent history, and no commit on that history
    between the head and `main`'s tip is a merge. That is, `git rev-list --first-parent` from `main`
    lists the head, and `git rev-list --first-parent --merges <head>..main` lists nothing. The
-   integrator never writes a merge, and a fast-forward puts every commit of a change on that
-   history. Ancestry alone is not enough: a merge can drop the content of either of its parents, so
-   a head below any merge has not landed by this rule.
+   integrator never writes a merge, and it never puts a change's own commits on `main`. This rule
+   matches a head that reached `main` by a direct write, or through an earlier integrator that
+   landed a head commit directly. Ancestry alone is not enough: a merge can drop the content of
+   either of its parents, so a head below any merge has not landed by this rule.
 2. `landed-recorded`: every one of these holds.
    - A commit `L` on `main`'s first-parent history, with no merge above it, carries a transfer
      statement whose `change` is one of the version's request names. The request names are the
      version's branch with each `/` replaced by `-`, and `c-<change id>`.
-   - `L` has exactly one parent, as every commit the integrator lands as does.
+   - `L` has one parent. Every commit that the integrator writes has one parent.
    - The statement's `base` is the `valley-tree-v1` digest of the version's tree, and its signature
      verifies as the integrator's.
-   - The integrator's outcome record for that request name says `land`, and its head is this
-     version's head. Only the integrator writes outcome records: the hook refuses a push to them.
-     The record names the exact head that landed, which a statement about trees cannot do.
+   - The integrator recorded landing this version's head as `L` under that request name. A statement
+     about trees cannot name the exact head that landed, and the integrator's records do. When
+     origin holds a landing record for the head, it must name `L`, the request name and the head. A
+     landing made before landing records were written has none, and then the outcome record for that
+     request name must say `land` with this version's head. Only the integrator writes either
+     record: the hook refuses a push to them.
    - The integrator's merge of the version's head onto `L`'s parent gives `L`'s tree. The client
      recomputes it as `integrator/git.go` makes it:
-     `git merge-tree --write-tree --merge-base=<merge base> L^1 <head>`.
+     `git merge-tree --write-tree --merge-base=<merge base> L^1 <head>`. When the change's base is
+     `L`'s parent, the merge base is `L`'s parent and `merge-tree` gives the head's tree.
 
    A head with a landed tree on another parent is another delta. These rules keep it from borrowing
    the landing's evidence.
 
-3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`. The
-   integrator moves `main` before it stores its evidence, so a landing can exist without its
-   evidence. A request is consumed when its outcome record says `land` for this head and the request
-   ref does not point at it.
+3. `uncertain`: a request for the version was consumed, or its outcome record says `failed`, or a
+   landing record names its head. The integrator records a landing in the transaction that moves
+   `main`, so only a landing made before it did, or one cut short inside git's commit phase, exists
+   without its evidence. A request is consumed when its outcome record says `land` for this head and
+   the request ref does not point at it.
 4. `not-landed`: otherwise.
 
-The outcome record alone is never proof of a landing, because a later pass can overwrite it. A
-landing whose outcome record a later pass overwrote reads `uncertain`, never `landed-recorded`.
+Neither record alone is proof of a landing. A landing record is kept per head, so a later landing
+under the same request name leaves the earlier one `landed-recorded`. An outcome record is kept per
+request name, and a later pass overwrites it. Take a landing made before landing records were
+written, whose head is not on `main`'s first-parent history. Only its outcome record bound it to its
+head. When a newer version under the same request name replaces that outcome record, the version
+reads `not-landed`, not `uncertain`, and the overwritten record cannot be recovered. Its commits can
+then count as work in the listing of a change whose head descends from it. Rebasing that change does
+not guarantee their removal: commits replayed by the rebase can still count as work.
 
 The client checks a transfer statement with `attest verify`. The signature must be by the
 integrator's signing name, under a key in a known-signers file. The client takes each of these two
@@ -2475,8 +2525,10 @@ configuration.
   then terminal ones, each group in ID order. Links to other projects or to GitHub are ignored. Each
   repository's graph is read once per command. When the graph is missing or unreadable, every change
   gets `[]`, and `-v` says why on stderr.
-- `branches` lists each branch on origin, other than `main`, that `main` does not reach and that is
-  no change's active head. A branch name that is not UTF-8 is left out, with a warning on stderr.
+- `branches` lists each branch on origin, other than `main`, that `main` does not reach, that is no
+  change's active head, and that no landed version's head reaches. A version lands as one new
+  commit, so `main` reaches neither its own commits nor a branch below them, though their content is
+  on `main`. A branch name that is not UTF-8 is left out, with a warning on stderr.
 
 `valley pending` prints three sections. `ready` holds the ready changes whose active version is
 neither `landed` nor `landed-recorded`. `branches` holds the branches no change is on. `drafts`
@@ -2493,10 +2545,12 @@ own commit. When a knot links a change, the first knot's ID follows the title, a
 whole.
 
 An entry's base is the nearest other entry its head strictly contains, or `main` when there is none.
-That is the ancestry `includes` reads. A stack is an entry no other entry contains, the top, then
-every entry the top contains. Those entries are listed under the top at one indentation, however
-deep the stack is. Each entry is listed before the entries it contains. Approving the top lands
-everything listed under it, and the top says how many entries that is.
+That is the ancestry `includes` reads. Its commits and diff are counted from the nearer of its base
+and the head of any landed version its head contains, since that version's commits are not on `main`
+and its content is. A stack is an entry no other entry contains, the top, then every entry the top
+contains. Those entries are listed under the top at one indentation, however deep the stack is. Each
+entry is listed before the entries it contains. Approving the top lands everything listed under it,
+and the top says how many entries that is.
 
 Each listed entry is on the entry listed right after it. Where it is not, it says `on <base>`. That
 happens at a fork, where two entries are on one base: the base is listed under only one of them, and

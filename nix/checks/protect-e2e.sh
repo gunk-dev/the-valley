@@ -199,13 +199,15 @@ grep -q 'refs/tags/ opens only through a named grant' tag.err
 grep -q 'no grant of guarded' tag.err
 lacks_ref guarded refs/tags/v1
 
-# Notes, replacement refs and the valley's own namespace are
-# closed outright, wherever they are pushed and by whom.
+# Notes, replacement refs and the valley's own namespace, outcome and
+# landing records among it, are closed outright, wherever they are pushed
+# and by whom.
 git notes add -m "a note" HEAD
 git commit --quiet --allow-empty -m decoy
 replaced="refs/replace/$(git rev-parse HEAD~1)"
 git update-ref "$replaced" HEAD
 outcome=refs/the-valley/integration-outcomes/main/idea
+landing="refs/the-valley/integration-landings/main/$(git rev-parse HEAD)"
 for project in guarded open; do
   for who in contributor integrator; do
     refused notes.err "$who pushed a notes ref to $project" \
@@ -217,10 +219,14 @@ for project in guarded open; do
     refused outcome.err "$who pushed an integration outcome to $project" \
       as "$who" git push --quiet "$project" "HEAD:$outcome"
     grep -q 'refs/the-valley/integration-outcomes/ is written only by the machinery' outcome.err
+    refused landing.err "$who pushed a landing record to $project" \
+      as "$who" git push --quiet "$project" "HEAD:$landing"
+    grep -q 'refs/the-valley/integration-landings/ is written only by the machinery' landing.err
   done
   lacks_ref "$project" refs/notes/commits
   lacks_ref "$project" "$replaced"
   lacks_ref "$project" "$outcome"
+  lacks_ref "$project" "$landing"
 done
 git update-ref -d "$replaced"
 git reset --quiet --hard HEAD~1

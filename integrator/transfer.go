@@ -15,8 +15,16 @@ package main
 // A contributor's statement is about the tree it was produced over; the
 // transfer statement is about the tree that landed. When nothing
 // intervened those are the same tree and the two notes share one ref.
+//
+// One tree can land more than once, as when a change lands and a later
+// change reverts its revert. An attestation ref can therefore hold several
+// transfer statements. Each statement is stored under the commit it
+// records landing, at change.TransferPath. Storing a landing adds its notes
+// to the ref and keeps every note already there that it does not
+// overwrite: other landings' statements, and every other path.
 
 import (
+	"the-valley/change"
 	"the-valley/integrator/verdict"
 
 	"encoding/json"
@@ -25,10 +33,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
-
-const transferNote = "transfer.note"
 
 // landedEvidence is the note set the integrator stores for a landing.
 type landedEvidence struct {
@@ -136,8 +143,8 @@ func (in *integrator) pipe(stdin []byte, name string, args ...string) ([]byte, e
 
 // countersign builds the note set a landing stores: every transferring
 // check's note with the integrator's sibling signature added, keyed by the
-// subject it is about, plus the transfer statement keyed by the tree that
-// landed.
+// subject it is about, plus the transfer statement keyed by the landed tree
+// and the commit it landed as.
 func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landing, transfer []byte) (landedEvidence, error) {
 	out := landedEvidence{refs: map[string]map[string]string{}}
 	add := func(ref, path string, content []byte) error {
@@ -166,31 +173,190 @@ func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landin
 		}
 	}
 	landed := fmt.Sprintf("%s/%s/%s", attestationPrefix, l.digest, in.keyHash)
-	if err := add(landed, transferNote, transfer); err != nil {
+	// A check's name never holds a dot, so no check's directory is named
+	// change.TransferDir.
+	if err := add(landed, change.TransferPath(l.commit), transfer); err != nil {
 		return out, err
 	}
 	return out, nil
 }
 
-// store writes the note set into the repository as one ref per subject.
-// Deterministic by construction: a ref's value is a function of the notes
-// beneath it and nothing else.
-func (in *integrator) store(e landedEvidence) ([]string, error) {
-	var written []string
+// evidenceUpdates builds the tree each ref of the note set moves to, and
+// returns the ref updates in the order of the refs' names. Nothing is
+// written to a ref here: the updates go into the landing's one ref
+// transaction (refs.go). A ref that exists keeps every note this landing
+// does not overwrite, so an earlier landing's transfer statement stays in
+// place. Each update names the value the ref was read at, so a note
+// written to the ref since is never dropped: the transaction fails, and is
+// built again from what the ref holds then.
+//
+// A tree's value is a function of the notes beneath it and nothing else.
+// A tree the push hook would refuse to read is not written, and nothing
+// lands.
+func (in *integrator) evidenceUpdates(e landedEvidence, zero string) ([]refUpdate, error) {
+	var refs []string
 	for ref := range e.refs {
-		written = append(written, ref)
+		refs = append(refs, ref)
 	}
-	sort.Strings(written)
-	for _, ref := range written {
-		top, err := in.writeTree(e.refs[ref])
+	sort.Strings(refs)
+	var updates []refUpdate
+	for _, ref := range refs {
+		old, found, err := resolveRef(in.repo, ref)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := git(in.repo, "update-ref", ref, top); err != nil {
+		blobs := map[string]string{}
+		if found {
+			if blobs, err = in.readNotes(old); err != nil {
+				return nil, err
+			}
+		} else {
+			old = zero
+		}
+		for path, blob := range e.refs[ref] {
+			blobs[path] = blob
+		}
+		sizes, err := in.blobSizes(blobs)
+		if err != nil {
 			return nil, err
 		}
+		if err := hookReadable(blobs, sizes, len(zero)/2); err != nil {
+			return nil, fmt.Errorf("the evidence for %s cannot be stored: %w", ref, err)
+		}
+		top, err := in.writeTree(blobs)
+		if err != nil {
+			return nil, err
+		}
+		updates = append(updates, refUpdate{ref: ref, new: top, old: old})
 	}
-	return written, nil
+	return updates, nil
+}
+
+// hookReadable refuses a note set whose tree the push hook would refuse
+// to read: a tree past change.AttestationDepth or any bound beside it.
+// It counts what the hook's walk reads. Every entry of every tree counts,
+// a directory's own entry in its parent included. A tree object's bytes
+// are its entries as git stores them: the mode, a space, the name, a NUL
+// and the raw object ID, hashSize bytes long. Every note counts once for
+// each path it sits at. sizes holds each blob's size in bytes.
+func hookReadable(blobs map[string]string, sizes map[string]int, hashSize int) error {
+	paths := make([]string, 0, len(blobs))
+	for path := range blobs {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	read := 0                               // bytes the walk reads
+	entries := map[string]map[string]bool{} // a directory's path → its names, each true for a tree
+	for _, path := range paths {
+		segments := strings.Split(path, "/")
+		if len(segments) > change.AttestationDepth {
+			return fmt.Errorf("%s would nest trees deeper than the %d the push hook reads", path, change.AttestationDepth)
+		}
+		size := sizes[blobs[path]]
+		if size > change.AttestationNoteBytes {
+			return fmt.Errorf("the note at %s would be %d bytes, and the push hook reads at most %d in one note", path, size, change.AttestationNoteBytes)
+		}
+		read += size
+		dir := ""
+		for i, name := range segments {
+			if entries[dir] == nil {
+				entries[dir] = map[string]bool{}
+			}
+			entries[dir][name] = i < len(segments)-1
+			dir = strings.TrimPrefix(dir+"/"+name, "/")
+		}
+	}
+	dirs := make([]string, 0, len(entries))
+	for dir := range entries {
+		dirs = append(dirs, dir)
+	}
+	sort.Strings(dirs)
+	total := 0
+	for _, dir := range dirs {
+		names := entries[dir]
+		where := dir
+		if where == "" {
+			where = "the top of the tree"
+		}
+		if len(names) > change.AttestationTreeEntries {
+			return fmt.Errorf("%s would hold %d entries, and the push hook reads at most %d in one tree", where, len(names), change.AttestationTreeEntries)
+		}
+		total += len(names)
+		size := 0
+		for name, tree := range names {
+			mode := "100644"
+			if tree {
+				mode = "40000"
+			}
+			size += len(mode) + 1 + len(name) + 1 + hashSize
+		}
+		if size > change.AttestationTreeBytes {
+			return fmt.Errorf("%s would be a tree of %d bytes, and the push hook reads at most %d in one tree", where, size, change.AttestationTreeBytes)
+		}
+		read += size
+	}
+	if total > change.AttestationEntries {
+		return fmt.Errorf("its trees would hold %d entries, and the push hook reads at most %d in all", total, change.AttestationEntries)
+	}
+	if read > change.AttestationBytes {
+		return fmt.Errorf("its trees and notes would come to %d bytes, and the push hook reads at most %d in all", read, change.AttestationBytes)
+	}
+	return nil
+}
+
+// blobSizes asks git, in one call, for the size in bytes of each blob
+// blobs names.
+func (in *integrator) blobSizes(blobs map[string]string) (map[string]int, error) {
+	sizes := map[string]int{}
+	var ids []string
+	for _, id := range blobs {
+		if _, seen := sizes[id]; !seen {
+			sizes[id] = -1
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return sizes, nil
+	}
+	out, err := gitInput(in.repo, []byte(strings.Join(ids, "\n")+"\n"),
+		"cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)")
+	if err != nil {
+		return nil, fmt.Errorf("sizing the notes: %w", err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 3 || fields[1] != "blob" {
+			return nil, fmt.Errorf("sizing the notes: git answered %q", line)
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil {
+			return nil, fmt.Errorf("sizing the notes: git answered %q", line)
+		}
+		sizes[fields[0]] = size
+	}
+	for _, id := range ids {
+		if sizes[id] < 0 {
+			return nil, fmt.Errorf("sizing the notes: git gave no size for %s", id)
+		}
+	}
+	return sizes, nil
+}
+
+// readNotes lists the note blobs beneath an attestation ref's tree, keyed
+// by their path.
+func (in *integrator) readNotes(tree string) (map[string]string, error) {
+	out, err := git(in.repo, "ls-tree", "-r", "-z", tree)
+	if err != nil {
+		return nil, err
+	}
+	blobs := map[string]string{}
+	for _, entry := range strings.Split(out, "\x00") {
+		meta, path, ok := strings.Cut(entry, "\t")
+		if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" {
+			blobs[path] = fields[2]
+		}
+	}
+	return blobs, nil
 }
 
 func (in *integrator) writeBlob(content []byte) (string, error) {
@@ -205,8 +371,10 @@ func (in *integrator) writeBlob(content []byte) (string, error) {
 }
 
 // writeTree builds a tree from paths to blob ids, creating a subtree per
-// path segment. Paths here are one or two segments deep — "transfer.note",
-// "<check>/statement.note" — so the recursion is shallow by construction.
+// path segment. Paths here are at most change.AttestationDepth segments
+// deep — "<check>/statement.note", "transfer.d/<2 hex>/<2 hex>/<rest>.note",
+// and in a ref written before statements were kept per landing,
+// "transfer.note" — so the recursion is shallow by construction.
 func (in *integrator) writeTree(blobs map[string]string) (string, error) {
 	here := map[string]string{}
 	under := map[string]map[string]string{}

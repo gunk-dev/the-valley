@@ -156,8 +156,8 @@ func (s *snapshot) includes(n recorded, candidates []recorded) []string {
 }
 
 // unrecorded is every branch on origin, other than main, whose tip main
-// does not reach and that is not the head of any change's active version,
-// in the order of their names.
+// does not reach, that is not the head of any change's active version, and
+// that no landed version's head reaches, in the order of their names.
 func (s *snapshot) unrecorded() []jsonBranch {
 	branches := []jsonBranch{}
 	for _, b := range s.land.Unrecorded() {

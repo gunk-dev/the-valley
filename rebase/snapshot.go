@@ -2,15 +2,17 @@
 // has landed.
 //
 // A snapshot is one read of origin: every branch, every record, every
-// integration request and outcome, every attestation ref, and every
-// restack report. From it, for each version of each change, it decides the
-// landing evidence the version has. The first rule that applies is the
-// answer:
+// integration request, outcome record and landing record, every
+// attestation ref, and every restack report. From it, for each version of
+// each change, it decides the landing evidence the version has. The first
+// rule that applies is the answer:
 //
 //  1. landed: the version's head is on main's first-parent history, and
 //     no commit on that history between the head and main's tip is a
-//     merge. The integrator never writes a merge, and a fast-forward puts
-//     every commit of a change on that history. A merge above the head
+//     merge. The integrator never writes a merge, and it never puts a
+//     change's own commits on that history. This rule matches a head
+//     written to main directly, or landed directly by an earlier
+//     integrator. A merge above the head
 //     could have dropped the head's content, whichever parent the head is
 //     reached through, so it leaves the head not landed by this rule.
 //  2. landed-recorded: a commit L on main's first-parent history, with one
@@ -18,20 +20,28 @@
 //     whose change is a request name of the version and whose base is
 //     the valley-tree-v1 digest of the version's tree. The integrator
 //     writes one when it lands a change (integrator/transfer.go). The
-//     integrator's outcome record for that request name says land, at
-//     this version's head: only the integrator writes outcome records,
-//     and the record names the exact head it landed, which a statement
-//     about trees does not. And the integrator's own merge of the head
-//     onto L's parent gives L's tree.
+//     integrator recorded landing this version's head as L under that
+//     request name: a statement about trees does not name the exact head,
+//     and the integrator's records do. Only the integrator writes them.
+//     The landing record for the head (change/landing.go) says so when
+//     origin holds one. A landing made before the integrator wrote
+//     landing records has none, and then the outcome record for the
+//     request name must say land at this version's head. And the
+//     integrator's own merge of the head onto L's parent gives L's tree.
 //  3. uncertain: a request for the version was consumed, or the outcome
-//     record says the integrator failed on it, and neither of the above
-//     holds. The integrator moves main before it stores its evidence
-//     (integrator/refs.go), so a landing can exist without its evidence.
+//     record says the integrator failed on it, or a landing record names
+//     its head, and neither of the above holds. The integrator records a
+//     landing in the transaction that moves main (integrator/refs.go), so
+//     only a landing made before it did, or one cut short inside git's
+//     commit of that transaction, exists without its evidence.
 //  4. not-landed: otherwise.
 //
-// The outcome record alone is never proof of a landing, because a later
-// pass can overwrite it. A record a later pass overwrote leaves a landing
-// uncertain, never landed-recorded.
+// An outcome record or a landing record alone is never proof of a
+// landing. An outcome record is kept per request name, so a later pass
+// can overwrite it: a landing that only its outcome record bound to its
+// head, and whose record a later pass overwrote, reads uncertain, never
+// landed-recorded. A landing record is kept per head, so a later landing
+// under the same request name leaves it in place.
 
 package rebase
 
@@ -56,10 +66,7 @@ const (
 	NotLanded        = "not-landed"
 )
 
-const (
-	transferNote      = "transfer.note"
-	predicateTransfer = "the-valley/integration/transfer/v1"
-)
+const predicateTransfer = "the-valley/integration/transfer/v1"
 
 // Verifier is what a transfer statement is checked with: the verifier
 // keys of the identity registry's known-signers file, the name the
@@ -108,6 +115,7 @@ type Snapshot struct {
 	verify Verifier
 
 	outcomes    map[string]Outcome   // outcome ref → the record it holds
+	landed      map[string]landingAt // head → its landing record, once read
 	reports     map[string]Report    // change ID → its restack report, once read
 	landings    map[string][2]string // "<change ID> <n>" → landing and commit
 	firstParent map[string]bool      // main's first-parent history, down to its first merge; nil until read
@@ -127,9 +135,9 @@ type Snapshot struct {
 const snapshotTries = 3
 
 // ReadSnapshot lists origin once and fetches every object the snapshot
-// reads: main, every branch tip, every record commit, every outcome record
-// and every restack report. A record commit has its version heads as
-// parents, so they come with it.
+// reads: main, every branch tip, every record commit, every outcome and
+// landing record, and every restack report. A record commit has its
+// version heads as parents, so they come with it.
 //
 // A ref can move between the listing and the fetch. Origin may then no
 // longer hold the object the listing named, as when main was rewritten and
@@ -154,7 +162,8 @@ func ReadSnapshot(ctx context.Context, g Git, v Verifier) (*Snapshot, error) {
 func fetchSnapshot(ctx context.Context, g Git, o Origin, v Verifier) (*Snapshot, error) {
 	var want []string
 	for ref, oid := range o.Refs {
-		if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, OutcomePrefix) || strings.HasPrefix(ref, RestackPrefix) {
+		if strings.HasPrefix(ref, "refs/heads/") || strings.HasPrefix(ref, OutcomePrefix) ||
+			strings.HasPrefix(ref, LandingPrefix) || strings.HasPrefix(ref, RestackPrefix) {
 			want = append(want, oid)
 		}
 	}
@@ -176,7 +185,7 @@ func NewSnapshot(ctx context.Context, g Git, o Origin, all []Recorded, v Verifie
 	s := &Snapshot{
 		Origin: o, Tip: o.Refs["refs/heads/"+Target], Changes: all,
 		ctx: ctx, g: g, verify: v,
-		outcomes: map[string]Outcome{}, reports: map[string]Report{}, landings: map[string][2]string{},
+		outcomes: map[string]Outcome{}, landed: map[string]landingAt{}, reports: map[string]Report{}, landings: map[string][2]string{},
 		reachesOf: map[string]bool{}, reachOf: map[string]map[string]bool{}, digestOf: map[string]string{},
 	}
 	for ref, oid := range o.Refs {
@@ -295,6 +304,9 @@ func (s *Snapshot) decideLanding(id string, v change.Version) (kind, commit stri
 			return LandingUncertain, ""
 		}
 	}
+	if s.Refs[LandingPrefix+head] != "" {
+		return LandingUncertain, ""
+	}
 	return NotLanded, ""
 }
 
@@ -322,7 +334,7 @@ func (s *Snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 		if !names[t.change] || !IsObjectID(t.landed) || !s.OnMain(t.landed) || !s.singleParent(t.landed) {
 			continue
 		}
-		if m, ok := s.outcomes[OutcomePrefix+t.change]; !ok || m.Decision != "land" || m.Head != head {
+		if !s.boundTo(t, head) {
 			continue
 		}
 		digest, ok := s.digest(head)
@@ -338,6 +350,49 @@ func (s *Snapshot) recordedLanding(id string, v change.Version) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// boundTo reports whether the integrator recorded landing head as the
+// statement's commit, under the statement's request name. When origin
+// holds a landing record for the head, that record alone answers. A
+// landing made before landing records were written has none, and its
+// outcome record answers instead.
+func (s *Snapshot) boundTo(t transferStatement, head string) bool {
+	if at, found := s.landingRecord(head); found {
+		return at.read && at.Landed == t.landed && at.Request == t.change && at.Head == head
+	}
+	m, ok := s.outcomes[OutcomePrefix+t.change]
+	return ok && m.Decision == "land" && m.Head == head
+}
+
+// landingAt is a landing record as a snapshot read it, and whether it
+// read.
+type landingAt struct {
+	change.Landing
+	read bool
+}
+
+// landingRecord reads the landing record origin holds for head, once.
+// found is false when origin holds none. A record that does not read is
+// found, and says nothing.
+func (s *Snapshot) landingRecord(head string) (landingAt, bool) {
+	oid := s.Refs[LandingPrefix+head]
+	if oid == "" {
+		return landingAt{}, false
+	}
+	if at, ok := s.landed[head]; ok {
+		return at, true
+	}
+	var at landingAt
+	if err := Fetch(s.ctx, s.g, oid); err != nil {
+		s.unverified = true
+	} else if data, err := s.g.output(s.ctx, true, "cat-file", "blob", oid+":"+change.LandingFile); err == nil {
+		if l, err := change.ParseLanding([]byte(data + "\n")); err == nil {
+			at = landingAt{Landing: l, read: true}
+		}
+	}
+	s.landed[head] = at
+	return at, true
 }
 
 // singleParent reports whether a commit has exactly one parent, as every
@@ -374,9 +429,12 @@ func (s *Snapshot) mergesTo(head, landed string) bool {
 }
 
 // transferStatements reads every transfer statement under origin's
-// attestation refs, once. A transfer statement is the transfer.note at
-// the top of an attestation ref's tree. Anything unreadable is skipped:
-// what is not read is not believed.
+// attestation refs, once. A transfer statement is a note at
+// change.TransferPath of a landed commit, under the transfer.d directory
+// at the top of an attestation ref's tree, or a single transfer.note at
+// the top of the tree, as a ref written before statements were kept per
+// landing holds it. Anything unreadable is skipped: what is not read is
+// not believed.
 func (s *Snapshot) transferStatements() []transferStatement {
 	if s.read {
 		return s.transfers
@@ -398,18 +456,34 @@ func (s *Snapshot) transferStatements() []transferStatement {
 	}
 	var query bytes.Buffer
 	for _, tree := range trees {
-		fmt.Fprintf(&query, "%s:%s\n", tree, transferNote)
+		fmt.Fprintf(&query, "%s:%s\n%s:%s\n", tree, change.TransferNote, tree, change.TransferDir)
 	}
 	out, err := s.g.input(s.ctx, true, &query, "cat-file", "--batch-check=%(objectname) %(objecttype)")
 	if err != nil {
 		s.unverified = true
 		return nil
 	}
+	var blobs []string
 	for _, line := range strings.Split(out, "\n") {
 		oid, kind, _ := strings.Cut(line, " ")
-		if kind != "blob" {
-			continue
+		switch kind {
+		case "blob":
+			blobs = append(blobs, oid)
+		case "tree":
+			listing, err := s.g.output(s.ctx, true, "ls-tree", "-r", "-z", oid)
+			if err != nil {
+				s.unverified = true
+				continue
+			}
+			for _, entry := range strings.Split(listing, "\x00") {
+				meta, path, ok := strings.Cut(entry, "\t")
+				if fields := strings.Fields(meta); ok && len(fields) == 3 && fields[1] == "blob" && isTransferPath(path) {
+					blobs = append(blobs, fields[2])
+				}
+			}
 		}
+	}
+	for _, oid := range blobs {
 		note, err := s.g.output(s.ctx, true, "cat-file", "blob", oid)
 		if err != nil {
 			continue
@@ -427,6 +501,17 @@ func (s *Snapshot) transferStatements() []transferStatement {
 		})
 	}
 	return s.transfers
+}
+
+// isTransferPath reports whether a path within the transfer.d directory is
+// where change.TransferPath puts the statement for some commit:
+// <2 hex>/<2 hex>/<rest>.note, the three parts a full object ID.
+func isTransferPath(path string) bool {
+	parts := strings.Split(strings.TrimSuffix(path, ".note"), "/")
+	if len(parts) != 3 || len(parts[0]) != 2 || len(parts[1]) != 2 || !strings.HasSuffix(path, ".note") {
+		return false
+	}
+	return IsObjectID(parts[0] + parts[1] + parts[2])
 }
 
 // noteText is the statement text of a note: everything before the last
@@ -553,8 +638,14 @@ type BranchHead struct {
 }
 
 // Unrecorded is every branch on origin, other than main, whose tip main
-// does not reach and that is not the head of any change's active version,
-// in the order of their names.
+// does not reach, that is not the head of any change's active version, and
+// that no landed version's head reaches, in the order of their names.
+//
+// A version lands as one new commit on main, so main does not reach the
+// version's own commits, nor a branch below them. Their content is on
+// main, so such a branch is no work waiting to land: it is left out, as
+// the rebase engine cuts a landed version's commits from a family
+// (LandedUnder).
 func (s *Snapshot) Unrecorded() []BranchHead {
 	active := map[string]bool{}
 	for _, n := range s.Changes {
@@ -563,13 +654,53 @@ func (s *Snapshot) Unrecorded() []BranchHead {
 	var branches []BranchHead
 	for ref, oid := range s.Refs {
 		name, ok := strings.CutPrefix(ref, "refs/heads/")
-		if !ok || name == Target || active[oid] || s.Reaches(oid) {
+		if !ok || name == Target || active[oid] || s.Reaches(oid) || s.underLanded(oid) {
 			continue
 		}
 		branches = append(branches, BranchHead{Branch: name, Head: oid})
 	}
 	sort.Slice(branches, func(i, j int) bool { return branches[i].Branch < branches[j].Branch })
 	return branches
+}
+
+// underLanded reports whether a landed version's head is oid or reaches
+// it. Each version's landing is decided once per snapshot, before
+// anything is walked, and only a landed version's head has its reach
+// read, once per snapshot.
+func (s *Snapshot) underLanded(oid string) bool {
+	for _, n := range s.Changes {
+		for _, v := range n.Record.Versions {
+			if h := HeadOf(v); s.IsLanded(n.ID, v) && (h == oid || s.Reach(h)[oid]) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// LandedUnder is the head of every version that has landed, by the first
+// two rules, and that head reaches while main does not, head itself
+// included: work a landing took onto main as one new commit, which main
+// does not reach. They are in the order of the changes' IDs and their
+// versions. Each version's landing is decided first, and head's reach is
+// read only once some version has landed.
+func (s *Snapshot) LandedUnder(head string) []string {
+	var reach map[string]bool
+	var heads []string
+	for _, n := range s.Changes {
+		for _, v := range n.Record.Versions {
+			if !s.IsLanded(n.ID, v) {
+				continue
+			}
+			if reach == nil {
+				reach = s.Reach(head)
+			}
+			if h := HeadOf(v); reach[h] {
+				heads = append(heads, h)
+			}
+		}
+	}
+	return heads
 }
 
 // Node is one head among those Nest stacks: a change's active head or a

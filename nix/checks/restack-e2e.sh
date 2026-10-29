@@ -674,4 +674,37 @@ write_pass
 jq -e '.actions == []' "$w/plan.json" > /dev/null || fail "a second write pass pushed: $(jq -c .actions "$w/plan.json")"
 [ "$(git -C "$served" for-each-ref --format='%(refname) %(objectname)')" = "$before" ] || fail 'a second write pass moved a ref'
 
+# ----------------------------------------------------------------------
+# main -> under-p -> under-a -> under-b, with under-p a plain branch. The
+# real integrator lands under-a as one new commit, so main reaches neither
+# under-a's commits nor under-p. The planner reads under-p as no layer:
+# under-b's family is under-b alone, and it is restacked.
+git checkout --quiet -B under-p "$(at "$served" refs/heads/main)"
+echo "a plain branch below a landed change" > under-p.txt
+git add under-p.txt
+git commit --quiet -m 'a plain branch below a landed change'
+as alice git push --quiet origin under-p
+git checkout --quiet -B under-a
+echo "a line the landed change adds" >> src/main.txt
+git commit --quiet -am 'a change the integrator lands on the plain branch'
+under_a="$(attested under-a --check code-build)"
+git checkout --quiet -B under-b
+echo "a change above the landed one" > under-b.txt
+git add under-b.txt
+git commit --quiet -m 'a change above the landed one'
+as alice git push --quiet origin under-b
+ok as alice valley ready
+under_b="$(sed -n 's/^The change ID \([k-z]*\) is new\..*/\1/p' "$w/out")"
+git push --quiet "$(url requester "$served")" "under-a:refs/the-valley/integration-requests/main/c-$under_a"
+integrate
+judged "$under_a" land
+git -C "$served" merge-base --is-ancestor "$(git rev-parse under-p)" main \
+  && fail 'main reaches under-p; the fixture proves nothing'
+served_plan --known-signers "$signers" --integrator-name "$integrator_name"
+[ "$(family "$under_b" | jq -c '[.layers[].id]')" = "[\"$under_b\"]" ] \
+  || fail "under-b's family is not under-b alone: $(family "$under_b")"
+action "$under_b" restack
+jq -e '[.families[].layers[] | select(.name == "under-p")] | length == 0' "$w/plan.json" > /dev/null \
+  || fail "the plain branch below the landed change was planned: $(jq -c .families "$w/plan.json")"
+
 touch "$out"

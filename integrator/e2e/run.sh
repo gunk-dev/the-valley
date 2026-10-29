@@ -169,12 +169,37 @@ reconcile() {
     "$@"
 }
 
+# integrate [flag…] — one pass, its output kept in last.out. pre is main's
+# tip on origin before the pass.
 integrate() {
+  pre="$(tip)"
   reconcile "$@" 2>&1 | tee "$work/last.out"
   grep -q . "$work/last.out" || die "the integrator said nothing"
 }
 
 tip() { git -C "$origin" rev-parse refs/heads/main; }
+# landed_as HEAD BEFORE [REPO [NAME]] — main in REPO, origin by default,
+# is the one commit the integrator signing as NAME made for the change
+# whose head is HEAD, on BEFORE, the tip main was at before the pass:
+# HEAD's tree, the integrator as committer, BEFORE as its one parent, and
+# main one commit ahead of BEFORE. So none of HEAD's own commits reached
+# main in the pass.
+landed_as() {
+  local in="${3:-$origin}" name="${4:-$integrator_name}" main
+  main="$(git -C "$in" rev-parse refs/heads/main)"
+  [ "$main" != "$1" ] || die "main is at $1 itself, not a commit the integrator made"
+  [ "$(git -C "$in" rev-parse "$main^{tree}")" = "$(git -C "$in" rev-parse "$1^{tree}")" ] \
+    || die "main does not hold the tree of $1"
+  [ "$(git -C "$in" rev-list --no-walk --parents "$main")" = "$main $2" ] \
+    || die "main's tip is not one commit whose one parent is $2, the tip before the pass"
+  [ "$(git -C "$in" rev-list --count "$2..$main")" = 1 ] \
+    || die "main gained more than one commit in the pass"
+  [ "$(git -C "$in" log -1 --format=%cn "$main")" = "$name" ] \
+    || die "main's tip was not committed by the integrator"
+}
+# transfer_path COMMIT — where an attestation ref holds the transfer
+# statement for a landing as COMMIT (change.TransferPath).
+transfer_path() { printf 'transfer.d/%s/%s/%s.note' "${1:0:2}" "${1:2:2}" "${1:4}"; }
 forget() { git -C "$origin" update-ref -d "refs/the-valley/integration-requests/main/$1"; }
 
 # ----------------------------------------------------------------------
@@ -198,10 +223,22 @@ grep -q '"event":"integration-succeeded"' "$work/last.out" || die "no integratio
 grep -qF "event    ref-updated {\"event\":\"ref-updated\",\"repo\":" "$work/last.out" \
   || die "no ref-updated event"
 [ "$(tip)" != "$before" ] || die "the protected ref did not move"
-[ "$(tip)" = "$(git rev-parse c1)" ] || die "main is not at the change's head"
+landed_as "$(git rev-parse c1)" "$pre"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c1 > /dev/null \
   && die "the request ref outlived the landing"
 holds "main moved $(git rev-parse --short "$before") -> $(git -C "$origin" rev-parse --short refs/heads/main)"
+
+# The landing is recorded per head: a commit with no parent, holding one
+# file that names the landed commit, the request and the head. The outcome
+# record, written in the same transaction, says land.
+record="refs/the-valley/integration-landings/main/$(git rev-parse c1)"
+[ "$(git -C "$origin" cat-file blob "$record:landing")" = "$(printf 'landed %s\nrequest c1\nhead %s' "$(tip)" "$(git rev-parse c1)")" ] \
+  || die "the landing record does not name the landing: $(git -C "$origin" cat-file blob "$record:landing" 2>&1)"
+[ "$(git -C "$origin" rev-list --no-walk --parents "$record" | wc -w)" = 1 ] || die "the landing record's commit has a parent"
+[ "$(git -C "$origin" cat-file blob refs/the-valley/integration-outcomes/main/c1 | cut -d' ' -f1,2,4)" = "$(git rev-parse c1) $before land" ] \
+  || die "the outcome record does not say land at c1 on the tip it was judged against"
+grep -qx "  record   $record" "$work/last.out" || die "the landing record was not reported"
+holds "the landing record and the outcome record name the landing"
 
 # The decision is followed by one timing line: JSON after a fixed label,
 # naming the request and what was decided, with the time each stage took.
@@ -240,7 +277,7 @@ grep -q 'matches the recorded subject digest' "$work/landed.verify" || die "the 
 holds "the landed note carries contributor and integrator sibling signatures and verifies"
 
 # And the integrator's own transfer statement sits beside it.
-git -C "$origin" cat-file blob "$landed:transfer.note" > "$work/transfer.note"
+git -C "$origin" cat-file blob "$landed:$(transfer_path "$(tip)")" > "$work/transfer.note"
 head -n1 "$work/transfer.note" | grep -qx 'the-valley/attestation/v1' || die "the transfer note is not a statement"
 grep -qx 'predicateType the-valley/integration/transfer/v1' "$work/transfer.note" || die "wrong predicate type"
 grep -qx 'predicate.change c1' "$work/transfer.note" || die "the transfer statement names no change"
@@ -316,6 +353,7 @@ attest_change elsewhere "" "" --check code-build
 request elsewhere main "$(git rev-parse elsewhere)"
 integrate
 grep -q "^elsewhere -> refs/heads/main .*: land$" "$work/last.out" || die "the intervening change did not land"
+intervened="$(tip)"
 
 request c2b main "$c2b"
 integrate
@@ -323,7 +361,7 @@ grep -q "^c2b -> refs/heads/main .*: land$" "$work/last.out" || die "c2b did not
 grep -q "check    prose-format .*transferred (closure)" "$work/last.out" \
   || die "the evidence did not transfer by closure equality"
 landedtree="$(git -C "$origin" rev-parse refs/heads/main^{tree})"
-[ "$(git -C "$origin" rev-parse "refs/heads/main^")" = "$(git rev-parse elsewhere)" ] \
+[ "$(git -C "$origin" rev-parse "refs/heads/main^")" = "$intervened" ] \
   || die "the landing is not a fast-forward from the tip it was judged against"
 [ "$(git -C "$origin" rev-parse refs/heads/main^{tree})" != "$(git rev-parse "$c2b^{tree}")" ] \
   || die "the tree did not actually move; the scenario proves nothing"
@@ -342,7 +380,7 @@ git -C "$origin" cat-file blob \
 grep -qx "subject.digest.valley-tree-v1 $attested" "$work/rebased.note" \
   || die "the countersigned statement is not about the tree it was made over"
 git -C "$origin" cat-file blob \
-  "refs/the-valley/attestations/$landed_digest/$ihash:transfer.note" > "$work/rebased.transfer"
+  "refs/the-valley/attestations/$landed_digest/$ihash:$(transfer_path "$(tip)")" > "$work/rebased.transfer"
 grep -qx "subject.digest.valley-tree-v1 $landed_digest" "$work/rebased.transfer" \
   || die "the transfer statement is not about the landed tree"
 grep -qx "predicate.base.valley-tree-v1 $attested" "$work/rebased.transfer" \
@@ -401,6 +439,7 @@ integrate
 grep -q "^under-c2c -> refs/heads/main .*: land$" "$work/last.out" || die "the intervening change did not land"
 
 request c2c main "$c2c"
+pre="$(tip)"
 scrubbed integrator reconcile \
   --repo "$origin" \
   --key "$work/integrator" --name "$integrator_name" \
@@ -415,7 +454,10 @@ grep -q "^c2c -> refs/heads/main .*: land$" "$work/last.out" \
   || die "a landing with no git identity in the environment did not land: $(cat "$work/last.out")"
 
 landed_commit="$(git -C "$origin" rev-parse refs/heads/main)"
-[ "$landed_commit" != "$c2c" ] || die "the landing was a fast-forward; the scenario proves nothing"
+[ "$(git -C "$origin" merge-base "$c2c" "$pre")" != "$pre" ] \
+  || die "c2c's base is the tip it landed on, so main did not move under it; the scenario proves nothing"
+[ "$(git -C "$origin" rev-list --no-walk --parents "$landed_commit")" = "$landed_commit $pre" ] \
+  || die "c2c did not land as one commit on the tip before the pass"
 [ "$(git -C "$origin" log -1 --format='%an <%ae>' "$landed_commit")" = "a contributor <contributor@valley.invalid>" ] \
   || die "the landed commit is not authored by the asker: $(git -C "$origin" log -1 --format='%an <%ae>' "$landed_commit")"
 [ "$(git -C "$origin" log -1 --format='%cn <%ce>' "$landed_commit")" = "$integrator_name <integrator@the-valley.invalid>" ] \
@@ -598,7 +640,7 @@ attest_change c8 "" "" --check prose-format
 integrate
 grep -q "^c8 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "the request was not re-judged after its evidence arrived"
-[ "$(tip)" = "$(git rev-parse c8)" ] || die "main is not at the change's head"
+landed_as "$(git rev-parse c8)" "$pre"
 holds "a pass re-judges when evidence arrives, with the request and the tip unmoved"
 
 # ----------------------------------------------------------------------
@@ -789,12 +831,12 @@ grep -q '^c12 -> refs/heads/main .*: land$' "$work/last.out" \
   || die "a change with nothing required did not land: $(cat "$work/last.out")"
 grep -q 'the policy requires no check of the paths this change touches' "$work/last.out" \
   || die "the verdict did not say the policy required nothing"
-[ "$(tip)" = "$(git rev-parse c12)" ] || die "c12 did not land"
+landed_as "$(git rev-parse c12)" "$pre"
 git -C "$origin" rev-parse --verify --quiet "refs/the-valley/integration-requests/main/c12" > /dev/null \
   && die "the request ref survived the landing"
 
 nothing="refs/the-valley/attestations/$(attest digest --repo "$repo" --rev c12 | cut -d: -f2)/$ihash"
-git -C "$origin" cat-file blob "$nothing:transfer.note" > "$work/nothing.note"
+git -C "$origin" cat-file blob "$nothing:$(transfer_path "$(tip)")" > "$work/nothing.note"
 grep -qx 'predicate.required none' "$work/nothing.note" \
   || die "the transfer statement does not say the required set was empty: $(cat "$work/nothing.note")"
 grep -q '^predicate.checks' "$work/nothing.note" \
@@ -936,7 +978,7 @@ grep -qF "policy   no project layer at policy/project; the floor alone" "$work/l
   || die "the pass did not say it composed the floor alone"
 grep -q "check    prose-format .*transferred" "$work/last.out" \
   || die "the floor's own requirement did not govern a project with no layer"
-[ "$(tip)" = "$(git rev-parse c15)" ] || die "main is not at the change's head"
+landed_as "$(git rev-parse c15)" "$pre"
 holds "no project layer is no addition; the floor alone required prose-format and the change landed"
 
 # ----------------------------------------------------------------------
@@ -972,7 +1014,7 @@ grep -q 'the policy requires no check of the paths this change touches' "$work/l
   || die "the verdict did not say the policy required nothing"
 grep -qF "policy   no project layer at policy/project; the floor alone" "$work/last.out" \
   || die "the pass did not say it composed the floor alone"
-[ "$(tip)" = "$(git rev-parse c16)" ] || die "main is not at the change's head"
+landed_as "$(git rev-parse c16)" "$pre"
 holds "a floor that states it requires nothing composes, judges, and lands the change requiring nothing"
 
 # ----------------------------------------------------------------------
@@ -1112,8 +1154,8 @@ PATH="$work/hung-bus:$PATH" timeout 120 "$INTEGRATOR_UNWRAPPED" reconcile \
   || die "the pass did not finish with a bus that never answers: $(cat "$work/last.out")"
 elapsed=$((SECONDS - started))
 grep -q "^c19 -> refs/heads/main .*: land$" "$work/last.out" || die "c19 did not land: $(cat "$work/last.out")"
-[ "$(tip)" = "$(git rev-parse c19)" ] || die "main is not at c19's head"
-[ "$(cat "$work"/queue/*)" = "$before $(git rev-parse c19) refs/heads/main" ] \
+landed_as "$(git rev-parse c19)" "$before"
+[ "$(cat "$work"/queue/*)" = "$before $(tip) refs/heads/main" ] \
   || die "the move was not queued for the mirrors: $(ls -A "$work/queue")"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c19 > /dev/null \
   && die "the request outlived the landing"
@@ -1165,8 +1207,8 @@ PATH="$work/hung-cue:$PATH" timeout 120 "$INTEGRATOR_UNWRAPPED" reconcile \
   || die "the pass did not finish with a cue that never answers: $(cat "$work/last.out")"
 elapsed=$((SECONDS - started))
 grep -q "^c20 -> refs/heads/main .*: land$" "$work/last.out" || die "c20 did not land: $(cat "$work/last.out")"
-[ "$(tip)" = "$(git rev-parse c20)" ] || die "main is not at c20's head"
-[ "$(cat "$work"/queue20/*)" = "$before $(git rev-parse c20) refs/heads/main" ] \
+landed_as "$(git rev-parse c20)" "$before"
+[ "$(cat "$work"/queue20/*)" = "$before $(tip) refs/heads/main" ] \
   || die "the move was not queued for the mirrors: $(ls -A "$work/queue20")"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c20 > /dev/null \
   && die "the request outlived the landing"
@@ -1207,9 +1249,9 @@ id21="$readied"
 request "c-$id21" main "$(git rev-parse c21)"
 integrate
 grep -q "^c-$id21 -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id21 did not land"
-[ "$(tip)" = "$(git rev-parse c21)" ] || die "main is not at c21's head"
+landed_as "$(git rev-parse c21)" "$pre"
 landed="refs/the-valley/attestations/$(attest digest --repo "$repo" --rev c21 | cut -d: -f2)/$ihash"
-git -C "$origin" cat-file blob "$landed:transfer.note" | grep -qx "predicate.change c-$id21" \
+git -C "$origin" cat-file blob "$landed:$(transfer_path "$(tip)")" | grep -qx "predicate.change c-$id21" \
   || die "the transfer statement does not name the request c-$id21"
 holds "a ready change's request, named for its ID, landed, and its transfer statement names it so"
 
@@ -1256,7 +1298,7 @@ valley ready --change "$id22" c22 > /dev/null 2>&1 || die "valley ready --change
 integrate
 grep -q "^c-$id22 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "the change readied again did not land: $(cat "$work/last.out")"
-[ "$(tip)" = "$(git rev-parse c22)" ] || die "main is not at c22's head"
+landed_as "$(git rev-parse c22)" "$pre"
 holds "unready stopped a filed request, the refusal was said once, and ready let the same request land"
 
 # ----------------------------------------------------------------------
@@ -1394,11 +1436,11 @@ request "c-$id26" main "$(git rev-parse c26)"
 integrate
 grep -q "^c-$id26 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "the fresh approval did not land: $(cat "$work/last.out")"
-[ "$(tip)" = "$(git rev-parse c26)" ] || die "main is not at c26's head"
+landed_as "$(git rev-parse c26)" "$pre"
 holds "withdraw voided the request on the next pass; readied again, the change landed only on a fresh approval"
 
 # ----------------------------------------------------------------------
-say "27. a stack is rebased whole, a landed change under it drops out, and approving its top lands every layer"
+say "27. a stack is rebased whole, a landed change under it drops out, and approving its top lands it as one commit"
 
 # approve reads the floor where the integrator does: the owning valley,
 # which policy/valley names at main's tip.
@@ -1449,8 +1491,11 @@ grep -q "^c27-x -> refs/heads/main .*: land$" "$work/last.out" || die "c27-x did
 request "c-$id27a" main "$a"
 integrate
 grep -q "^c-$id27a -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id27a did not land"
+[ "$(git -C "$origin" merge-base "$a" "$pre")" != "$pre" ] \
+  || die "a's base is the tip it landed on, so main did not move under it; the scenario proves nothing"
 main27="$(tip)"
-git -C "$origin" merge-base --is-ancestor "$a" "$main27" && die "a landed by fast-forward; the scenario proves nothing"
+[ "$(git -C "$origin" rev-list --no-walk --parents "$main27")" = "$main27 $pre" ] \
+  || die "a did not land as one commit on the tip before the pass"
 
 # The rebase reads a's landing from its transfer statement, so a is no
 # layer, and its two commits under the plain branch drop out. Each layer
@@ -1470,19 +1515,23 @@ git merge-base --is-ancestor "$nb" "$nc" || die "c is not on b"
 grep -q "^  c27-p .* origin/c27-p pushed$" "$work/rebase.out" || die "the manifest did not list the plain branch: $(cat "$work/rebase.out")"
 holds "the stack moved whole onto main, and the landed change's commits dropped out from under it"
 
-# Approving the rebased top, and landing it, lands every layer.
+# Approving the rebased top, and landing it, lands the whole stack as one
+# commit the integrator makes, with landing evidence for the top alone. A
+# lower layer's landing evidence comes with per-layer landing, which lands
+# a stack as one commit per layer.
 VALLEY_ATTEST_KEY="$work/contributor" VALLEY_ATTEST_NAME="$contributor" \
   valley approve --head "$nc" "$id27c" > "$work/approve.out" 2>&1 \
   || die "approving the rebased top failed: $(cat "$work/approve.out")"
 integrate
 grep -q "^c-$id27c -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id27c did not land"
-[ "$(tip)" = "$nc" ] || die "main is not at the top's rebased head"
-for id in "$id27b" "$id27c"; do
-  valley status --json "$id" | grep -q '"landing": *"landed"' || die "change $id does not read landed"
+landed_as "$nc" "$pre"
+[ "$(git -C "$origin" rev-parse "$(tip)^")" = "$main27" ] || die "the stack did not land as one commit on the tip"
+for commit in "$np" "$nb" "$nc"; do
+  git -C "$origin" merge-base --is-ancestor "$commit" "$(tip)" && die "the stack's own commit $commit is on main"
 done
-git -C "$origin" merge-base --is-ancestor "$np" "$(tip)" || die "the plain branch did not land"
+valley status --json "$id27c" | grep -q '"landing": *"landed-recorded"' || die "the top's landing was not read as recorded"
 unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
-holds "the rebased stack landed as one fast-forward, and every layer reads landed"
+holds "the rebased stack landed as one commit, none of its own commits is on main, and the top reads landed-recorded"
 
 # ----------------------------------------------------------------------
 say "28. a signer restricted to some projects counts in those, and is unknown in every other"
@@ -1530,12 +1579,13 @@ git init --quiet --bare "$elsewhere"
 git -C "$origin" push --quiet "$elsewhere" main c28 "$c28ref" refs/the-valley/integration-requests/main/c28
 [ "$(git -C "$elsewhere" rev-parse "$c28ref")" = "$(git -C "$origin" rev-parse "$c28ref")" ] \
   || die "the second project does not hold the same note"
+before28="$(git -C "$elsewhere" rev-parse main)" before="$(tip)"
 integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
   || die "the worker's evidence counted in a project not listed for it"
 grep -q "check    prose-format .*signed by no signer the integrator holds" "$work/last.out" \
   || die "the worker's note was not reported as an unknown signer's"
-[ "$(git -C "$elsewhere" rev-parse main)" != "$c28" ] || die "main moved in the second project"
+[ "$(git -C "$elsewhere" rev-parse main)" = "$before28" ] || die "main moved in the second project"
 holds "in a project not listed for it, the worker's note is classified as a stranger's"
 
 # A signer projects file the controller cannot read stops it before it
@@ -1555,7 +1605,7 @@ for list in named_twice key_line no_break_space missing names_the_integrator; do
   grep -q "signer projects file" "$work/$list.out" \
     || die "the $list signer projects file was not named as the reason: $(cat "$work/$list.out")"
   grep -q "^c28 " "$work/$list.out" && die "a controller given the $list signer projects file judged c28"
-  [ "$(tip)" != "$c28" ] || die "main moved under the $list signer projects file"
+  [ "$(tip)" = "$before" ] || die "main moved under the $list signer projects file"
 done
 grep -qF "names $integrator_name, the name the integrator signs under" "$work/names_the_integrator.out" \
   || die "the integrator's own name was not the reason: $(cat "$work/names_the_integrator.out")"
@@ -1566,7 +1616,7 @@ integrate "${restricted[@]}"
 grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "the worker's evidence did not count in the project listed for it"
 grep -q "check    prose-format .*transferred" "$work/last.out" || die "prose-format did not transfer"
-[ "$(tip)" = "$c28" ] || die "main is not at c28's head"
+landed_as "$c28" "$pre"
 holds "in the project listed for it, the same note lands c28"
 
 # Landing countersigned the worker's note: the first controller stored it,
@@ -1582,7 +1632,7 @@ git -C "$origin" push --quiet "$elsewhere" "$countersigned"
 integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: stale$" "$work/last.out" \
   || die "another controller's countersignature made the worker's note count in a project not listed for it"
-[ "$(git -C "$elsewhere" rev-parse main)" != "$c28" ] || die "main moved in the second project"
+[ "$(git -C "$elsewhere" rev-parse main)" = "$before28" ] || die "main moved in the second project"
 holds "another controller's countersignature does not stand in for the worker"
 
 # A signer the file does not name still counts in the second project. The
@@ -1593,7 +1643,178 @@ git push --quiet "$elsewhere" "refs/the-valley/attestations/$c28digest/$(cut -d+
 integrate "${second[@]}"
 grep -q "^c28 -> refs/heads/main .*: land$" "$work/last.out" \
   || die "an unrestricted signer's evidence did not count in the second project"
-[ "$(git -C "$elsewhere" rev-parse main)" = "$c28" ] || die "main in the second project is not at c28's head"
+landed_as "$c28" "$before28" "$elsewhere" "$second_integrator"
 holds "a signer the file does not name counts in every project, as before"
+
+# ----------------------------------------------------------------------
+say "29. a change lands as one commit on the tip, and a tree that lands twice keeps both proofs"
+
+# A change of three commits on the tip. The middle one adds a build output
+# and the last removes it, so no diff review shows holds it. The change
+# lands as one commit the integrator makes, and the build output is in no
+# commit on main.
+export VALLEY_KNOWN_SIGNERS="$work/reader_keys" VALLEY_INTEGRATOR_SIGNER="$integrator_name"
+git fetch --quiet origin
+git checkout --quiet -B c29-a origin/main
+echo "the first text" > docs/c29.md
+git add -A
+git commit --quiet -m "c29: a document"
+mkdir -p build
+echo "a build output" > build/output.bin
+git add -A
+git commit --quiet -m "c29: a build output"
+git rm --quiet -r build
+git commit --quiet -m "c29: no build output"
+attest_change c29-a "" "" --check prose-format
+ready_change c29-a
+id29a="$readied"
+request "c-$id29a" main "$(git rev-parse c29-a)"
+integrate
+grep -q "^c-$id29a -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id29a did not land"
+landed_as "$(git rev-parse c29-a)" "$pre"
+land29a="$(tip)"
+[ -z "$(git -C "$origin" log --format=%H refs/heads/main -- build)" ] || die "the build output is on main"
+valley status --json "$id29a" | grep -q '"landing": *"landed-recorded"' || die "c-$id29a's landing was not read as recorded"
+holds "three commits on the tip landed as one commit, and the build output one of them held is nowhere on main"
+
+# Two single-commit changes: one changes the document, and the next puts
+# back the first text, so the tree c29-a landed lands again. Each landing
+# keeps its own transfer statement under that tree's ref, and both read
+# landed-recorded.
+git fetch --quiet origin
+git checkout --quiet -B c29-b origin/main
+echo "the second text" > docs/c29.md
+git commit --quiet -am "c29: the second text"
+attest_change c29-b "" "" --check prose-format
+ready_change c29-b
+request "c-$readied" main "$(git rev-parse c29-b)"
+integrate
+grep -q "^c-$readied -> refs/heads/main .*: land$" "$work/last.out" || die "c-$readied did not land"
+landed_as "$(git rev-parse c29-b)" "$pre"
+git fetch --quiet origin
+git checkout --quiet -B c29-c origin/main
+echo "the first text" > docs/c29.md
+git commit --quiet -am "c29: the first text again"
+[ "$(git rev-parse "c29-c^{tree}")" = "$(git -C "$origin" rev-parse "$land29a^{tree}")" ] \
+  || die "c29-c does not hold the tree c29-a landed; the scenario proves nothing"
+git push --quiet origin c29-c
+ready_change c29-c
+id29c="$readied"
+request "c-$id29c" main "$(git rev-parse c29-c)"
+integrate
+grep -q "^c-$id29c -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id29c did not land"
+landed_as "$(git rev-parse c29-c)" "$pre"
+land29c="$(tip)"
+landed="refs/the-valley/attestations/$(attest digest --repo "$repo" --rev c29-c | cut -d: -f2)/$ihash"
+for commit in "$land29a" "$land29c"; do
+  git -C "$origin" cat-file blob "$landed:$(transfer_path "$commit")" > "$work/twice.note" \
+    || die "no transfer statement for the landing as $commit"
+  grep -qx "subject.digest.git-sha1 $commit" "$work/twice.note" || die "the statement in $commit's slot is about another commit"
+done
+for id in "$id29a" "$id29c"; do
+  valley status --json "$id" | grep -q '"landing": *"landed-recorded"' || die "change $id does not read landed-recorded"
+done
+unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
+holds "one tree landed twice, each landing kept its own statement, and both read landed-recorded"
+
+# ----------------------------------------------------------------------
+say "30. a change's next version lands under the same name, and the version before stays landed-recorded"
+
+# Version 1 lands under c-<ID>. Version 2, rebased onto the landing, lands
+# under the same name, and its outcome record replaces version 1's. Each
+# version's landing record still binds its own head to its own landing.
+export VALLEY_KNOWN_SIGNERS="$work/reader_keys" VALLEY_INTEGRATOR_SIGNER="$integrator_name"
+git fetch --quiet origin
+git checkout --quiet -B c30 origin/main
+echo "the first version" > docs/c30.md
+git add -A
+git commit --quiet -m "c30: the first version"
+attest_change c30 "" "" --check prose-format
+ready_change c30
+id30="$readied" v1="$(git rev-parse c30)"
+request "c-$id30" main "$v1"
+integrate
+grep -q "^c-$id30 -> refs/heads/main .*: land$" "$work/last.out" || die "version 1 of c-$id30 did not land"
+landed_as "$v1" "$pre"
+land30v1="$(tip)"
+git fetch --quiet origin
+git checkout --quiet -B c30-again origin/main
+echo "the second version" > docs/c30-again.md
+git add -A
+git commit --quiet -m "c30: the second version"
+attest_change c30-again "" "" --check prose-format
+valley ready --change "$id30" c30-again > /dev/null 2>&1 || die "valley ready --change $id30 c30-again failed"
+v2="$(git rev-parse c30-again)"
+request "c-$id30" main "$v2"
+integrate
+grep -q "^c-$id30 -> refs/heads/main .*: land$" "$work/last.out" || die "version 2 of c-$id30 did not land"
+landed_as "$v2" "$pre"
+land30v2="$(tip)"
+[ "$(git -C "$origin" cat-file blob "refs/the-valley/integration-outcomes/main/c-$id30" | cut -d' ' -f1)" = "$v2" ] \
+  || die "the outcome record under c-$id30 does not name version 2; the scenario proves nothing"
+valley changes --json > "$work/changes30.json"
+jq -e --arg id "$id30" --arg l1 "$land30v1" --arg l2 "$land30v2" '
+  [.repos[].changes[] | select(.change_id == $id) | .versions[] | [.landing, .landed_commit]]
+  == [["landed-recorded", $l1], ["landed-recorded", $l2]]' "$work/changes30.json" > /dev/null \
+  || die "both versions do not read landed-recorded as their own landings: $(jq -c --arg id "$id30" '.repos[].changes[] | select(.change_id == $id) | .versions' "$work/changes30.json")"
+holds "version 2 replaced the outcome record, and version 1's landing record kept it landed-recorded"
+
+# ----------------------------------------------------------------------
+say "31. a branch below a landed change is no layer, and the change above it is measured from the landing"
+
+# main -> p -> a -> b, with p a plain branch, and a and b changes. a lands
+# as one new commit, so main reaches neither a's commits nor p, though
+# both are on main in content. p is listed nowhere and is no layer of b's
+# stack, and b counts its own commit alone.
+git fetch --quiet origin
+git checkout --quiet -B c31-p origin/main
+echo "the plain branch" > docs/c31-p.md
+git add -A
+git commit --quiet -m "c31: a plain branch"
+git push --quiet origin c31-p
+git checkout --quiet -B c31-a
+echo "change a" > docs/c31-a.md
+git add -A
+git commit --quiet -m "c31: change a"
+attest_change c31-a "" "" --check prose-format
+ready_change c31-a
+id31a="$readied"
+git checkout --quiet -B c31-b
+echo "change b" > docs/c31-b.md
+git add -A
+git commit --quiet -m "c31: change b"
+git push --quiet origin c31-b
+ready_change c31-b
+id31b="$readied"
+p31="$(git rev-parse c31-p)" a31="$(git rev-parse c31-a)" b31="$(git rev-parse c31-b)"
+request "c-$id31a" main "$a31"
+integrate
+grep -q "^c-$id31a -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id31a did not land"
+landed_as "$a31" "$pre"
+main31="$(tip)"
+git -C "$origin" merge-base --is-ancestor "$p31" "$main31" && die "main reaches the plain branch; the scenario proves nothing"
+
+valley changes --json > "$work/changes31.json"
+jq -e --arg p "$p31" '[.repos[].branches[] | select(.head == $p)] == []' "$work/changes31.json" > /dev/null \
+  || die "valley changes lists the plain branch below the landed change"
+valley pending --json > "$work/pending31.json"
+jq -e --arg p "$p31" '[.repos[].branches[] | select(.head == $p)] == []' "$work/pending31.json" > /dev/null \
+  || die "valley pending --json lists the plain branch below the landed change"
+h31b="$(jq -r --arg id "$id31b" '.repos[].changes[] | select(.change_id == $id) | .handle' "$work/pending31.json")"
+[ -n "$h31b" ] || die "valley pending does not list c-$id31b"
+valley pending > "$work/pending31.out"
+grep -q "c31-p" "$work/pending31.out" && die "valley pending lists the plain branch below the landed change: $(cat "$work/pending31.out")"
+grep -A2 "^$h31b v1\( \|$\)" "$work/pending31.out" | tail -n1 | grep -qx '  1 commit · 1 file +1 −0' \
+  || die "valley pending does not measure b from a's landing: $(grep -A3 "^$h31b v1" "$work/pending31.out")"
+holds "valley changes and valley pending leave out the plain branch, and pending counts b's own commit alone"
+
+valley rebase "$id31b" > "$work/rebase31.out" 2>&1 || die "the rebase of b failed: $(cat "$work/rebase31.out")"
+git fetch --quiet origin
+nb31="$(git rev-parse origin/c31-b)"
+[ "$(git rev-parse "$nb31^")" = "$main31" ] || die "b was not rebased as one commit onto main"
+[ "$(git diff "$a31" "$b31")" = "$(git diff "$main31" "$nb31")" ] || die "b's diff changed in the rebase"
+[ "$(git rev-parse origin/c31-p)" = "$p31" ] || die "the rebase moved the plain branch below the landed change"
+holds "b rebased alone onto main: the plain branch and a's commits dropped out from under it"
+unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
 
 printf '\nintegrator-e2e: every scenario held\n'

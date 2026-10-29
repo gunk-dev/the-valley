@@ -16,6 +16,7 @@ import (
 
 	"the-valley/change"
 	"the-valley/composed"
+	"the-valley/integrator/verdict"
 )
 
 // A request named for a change with no record is refused, whatever a
@@ -187,9 +188,9 @@ func TestEvidenceDeletedAfterListingIsReadAsListed(t *testing.T) {
 	}
 }
 
-// A request that is gone when the integrator consumes it did not move,
-// whatever a branch named like it holds, and the landing says it was not
-// consumed.
+// A request that is gone when the integrator lands did not move, whatever
+// a branch named like it holds: the landing's transaction neither deletes
+// it nor says it moved.
 func TestAGoneRequestDidNotMove(t *testing.T) {
 	s := newScratchRepo(t)
 	head := s.git("rev-parse", "HEAD")
@@ -197,17 +198,19 @@ func TestAGoneRequestDidNotMove(t *testing.T) {
 	ref := requestPrefix + "/main/topic"
 	s.git("update-ref", "refs/heads/"+ref, other)
 
-	out, err := os.CreateTemp(t.TempDir(), "out")
+	in := &integrator{repo: s.repo, signerName: "integrator"}
+	r := request{ref: ref, change: "topic", target: "refs/heads/main", head: head}
+	tx, err := in.prepareLanding(verdict.Change{Target: r.target}, r, head, landing{commit: head},
+		landedEvidence{refs: map[string]map[string]string{}}, head+" "+head+" 0000000000000000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	in := &integrator{repo: s.repo, out: out}
-	why := in.consume(request{ref: ref, change: "topic", target: "refs/heads/main", head: head})
-	said, err := os.ReadFile(out.Name())
-	if err != nil {
-		t.Fatal(err)
+	for _, u := range tx.updates {
+		if u.ref == ref {
+			t.Errorf("with %s gone and refs/heads/%s planted, the transaction updates it: %+v", ref, ref, u)
+		}
 	}
-	if !strings.HasPrefix(why, "the request ref "+ref+" was not consumed") || strings.Contains(string(said), "moved") {
-		t.Fatalf("with %s gone and refs/heads/%s planted, consuming it said %q and returned %q", ref, ref, said, why)
+	if tx.requestNow != "" {
+		t.Errorf("with %s gone and refs/heads/%s planted, the landing says it moved to %s", ref, ref, tx.requestNow)
 	}
 }

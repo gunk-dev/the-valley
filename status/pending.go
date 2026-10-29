@@ -3,7 +3,8 @@
 // It prints three sections, in this order. ready holds the ready changes
 // whose active version has not landed, by the first two landing rules
 // (inventory.go). branches holds each branch on origin, other than main,
-// that main does not reach and that is no change's active head. drafts
+// that main does not reach, that is no change's active head, and that no
+// landed version's head reaches. drafts
 // holds the changes whose record says they are drafts. When no ready
 // change is at the top of a stack, one line says so in place of ready,
 // and says where any ready change inside another section's stack is.
@@ -33,7 +34,10 @@
 //
 // An entry's base is the nearest other entry its head strictly contains,
 // or main when there is none. That is the ancestry includes reads
-// (inventory.go). A stack is an entry that no other entry contains, the
+// (inventory.go). Its commits and diff are counted from the nearer of its
+// base and the head of a landed version its head contains: a landed
+// version's commits are not on main, since it landed as one new commit,
+// and its content is. A stack is an entry that no other entry contains, the
 // top, then every entry the top contains, as one list at one indentation,
 // however deep the stack is. Each entry is listed before the entries it
 // contains. The top's block says how many entries approving it lands with
@@ -394,14 +398,33 @@ func byActivity(list []*entry, when func(*entry) int64) {
 	})
 }
 
-// measure reads what an entry adds to its base: how many commits, and the
-// diff from the base, or from its merge base with main. A branch's title
-// is the subject of the first of those commits on its first-parent line.
+// measure reads what an entry adds to what it stands on: how many
+// commits, and the diff. It stands on the nearest of its base and every
+// landed version's head below it, as the rebase engine cuts a landed
+// version's commits from a family, or on its merge base with main when
+// there is none. A landed version's commits are not on main, since it
+// landed as one new commit, and its content is. A branch's title is the
+// subject of the first of the entry's own commits on its first-parent
+// line.
 func (s *snapshot) measure(e *entry) {
+	var below []string
+	for _, h := range s.land.LandedUnder(e.head) {
+		if h != e.head {
+			below = append(below, h)
+		}
+	}
+	if e.base != nil {
+		below = append(below, e.base.head)
+	}
 	var not []string
 	from := s.tip
-	if e.base != nil {
-		not, from = append(not, "^"+e.base.head), e.base.head
+	for _, h := range below {
+		not = append(not, "^"+h)
+		// The heads below are all the entry's ancestors, and the nearest
+		// is the one that contains every other.
+		if from == s.tip || s.strictAncestor(from, h) {
+			from = h
+		}
 	}
 	if s.tip != "" {
 		not = append(not, "^"+s.tip)

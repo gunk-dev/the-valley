@@ -1,7 +1,8 @@
 // A family of layers, captured from one snapshot of origin.
 //
 // A layer is a change whose active version has not landed, in any state,
-// or a branch on origin that no record is on and main does not reach.
+// or a branch on origin that no record is on, that main does not reach,
+// and that no landed version's head reaches (Snapshot.Unrecorded).
 // Each layer sits on its base: the nearest layer its head strictly
 // contains, as valley pending nests its entries (Snapshot.Nest). A layer
 // with no base sits on main. Linear history gives every layer at most one
@@ -27,9 +28,10 @@
 //     the rule the integrator lands by (integrator/records.go), applied
 //     before the rebase.
 //
-// Commits under the bottom that a lower change landed through an
-// integrator merge drop out of the rebase: their content is on main
-// already. They are the commits a landed version's head reaches.
+// Commits under the bottom that a lower change landed drop out of the
+// rebase: the integrator landed them as one new commit, so their content
+// is on main already though main does not reach them. They are the commits
+// a landed version's head reaches.
 
 package rebase
 
@@ -335,13 +337,8 @@ func (f *Family) check() error {
 func (f *Family) commits() error {
 	s, bottom := f.s, f.Bottom()
 	not := []string{"^" + f.Tip}
-	reach := s.Reach(bottom.Head)
-	for _, n := range s.Changes {
-		for _, v := range n.Record.Versions {
-			if h := HeadOf(v); reach[h] && s.IsLanded(n.ID, v) {
-				not, f.Cut = append(not, "^"+h), append(f.Cut, h)
-			}
-		}
+	for _, h := range s.LandedUnder(bottom.Head) {
+		not, f.Cut = append(not, "^"+h), append(f.Cut, h)
 	}
 	for _, top := range f.Tops() {
 		chain := map[string]bool{}

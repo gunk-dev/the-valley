@@ -5,25 +5,26 @@
 //
 // # The export
 //
-// An export is export.json and one git bundle of main per project. It
-// holds the projects the publisher exports, and only what a reader of one
-// may see. Build projects the valley's own JSON onto it: `valley plan
-// --all --json`, `valley pending --all --json`, and `valley knot show
-// --project P <id> --json` for each knot of each exported project, with
-// each project's publication identity, its main, and a display mapping
-// for principal names. Every knot and comment of an exported project is
-// exported. The export says nothing of who may read a project.
+// An export consists of export.json and one git bundle of main per
+// project. It holds the projects the publisher exports, and only what a
+// reader of an exported project may see. Build projects the valley's own
+// JSON onto the export: `valley plan --all --json`, `valley pending --all
+// --json`, and `valley knot show --project P <id> --json` for each knot of
+// each exported project, along with each project's publication identity,
+// its main commit, and a display mapping for principal names. Every knot
+// and comment of an exported project is included. The export states
+// nothing about who may read a project.
 //
 // # The authorization
 //
-// An Authorization is a signed note, apart from the export, that names
-// each project a reader may read, by name and publication identity, and
-// its readers. Its sequence is the publisher's own counter, and the
-// receiver admits one with VerifyAuthorization by its sequence alone,
-// never its age. The receiver stores it with Store.Authorize, without the
-// activation lock, and a server serves a project only while the stored
-// authorization names it. No content manifest can grant or restore
-// access.
+// An Authorization is a separate signed note that names each project a
+// reader may read, by name and publication identity, along with its
+// readers. Its sequence comes from the publisher's counter, and the
+// receiver admits an authorization with VerifyAuthorization by sequence
+// alone, regardless of age. The receiver stores it with Store.Authorize
+// without taking the activation lock, and a server serves a project only
+// while the stored authorization names it. No content manifest can grant
+// or restore access.
 //
 // Digest is the export's content digest. It leaves out every
 // display-time field, so the publisher uploads only when the valley
@@ -48,10 +49,10 @@
 // receiver refuses a request without the token as unauthenticated, with
 // 401, before it reads the body or anything else of the request.
 //
-// Before the upload, the publisher sends its authorization: POST
-// AuthorizationPath with the signed note as the body. The receiver admits
-// it with VerifyAuthorization, stores it, and replies 200 with an
-// AuthorizationReply, which says what export it serves.
+// Before the upload, the publisher sends its authorization by posting the
+// signed note to AuthorizationPath. The receiver admits it with
+// VerifyAuthorization, stores it, and replies 200 with an
+// AuthorizationReply, which reports what export the receiver serves.
 //
 //  1. POST ManifestPath with the signed manifest as the body. The
 //     receiver admits it with VerifyManifest, holds the bodies it declares
@@ -110,12 +111,12 @@
 //
 // # The receiver's state
 //
-// Store is the receiver's store: a descriptor file, and beside it the
-// payload directory v2 with the authorization, the generations, the
-// current symlink, the high-water mark and the staging area. Open
+// Store is the receiver's store: a descriptor file and, beside it, the
+// payload directory v2 holding the authorization, the generations, the
+// current symlink, the high-water mark, and the staging area. Open
 // resolves the current generation once per request and holds it until
-// released, Activate makes a staged upload the current generation, and
-// Prune deletes the repositories a withdrawal left. The receiver opens the
-// store with OpenStore, and the server with OpenReadOnly, which needs only
-// read access to it.
+// released. Activate makes a staged upload the current generation. Prune
+// deletes the repositories of withdrawn projects. The receiver opens the
+// store with OpenStore, and the server opens it read-only with
+// OpenReadOnly.
 package export

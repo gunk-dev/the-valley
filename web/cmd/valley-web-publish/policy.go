@@ -65,7 +65,7 @@ func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, 
 		reply, err := p.sendAuthorization(ctx, a, c.signed)
 		var refusal *export.Error
 		if errors.As(err, &refusal) && refusal.Code == export.CodeReplayed && attempt < authorizeAttempts {
-			p.warn("the receiver holds authorization %d already, and this one is %d; the policy is checked again and signed above it", refusal.HighWater, a.Sequence)
+			p.warn("the receiver already holds authorization %d (this pass signed %d); rechecking the policy and signing above %d", refusal.HighWater, a.Sequence, refusal.HighWater)
 			floor = refusal.HighWater
 			continue
 		}
@@ -180,7 +180,7 @@ func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization)
 		if err != nil {
 			failed = append(failed, err)
 			if old, ok := prev.Project(name); ok && grants.Covers(readaccess.Anyone, name, old.Identity) {
-				p.warn("%s: its policy could not be read, so it keeps what authorization %d gave it", name, prev.Sequence)
+				p.warn("%s: could not read its policy; keeping the access from authorization %d", name, prev.Sequence)
 				c.projects = append(c.projects, export.AuthorizedProject{Name: name, Identity: old.Identity, Readers: []string{export.Anyone}})
 			}
 			continue
@@ -207,7 +207,7 @@ func (p *publisher) lastAuthorization() (*export.Authorization, error) {
 	}
 	a, err := export.ReadStoredAuthorization(data)
 	if err != nil {
-		p.warn("%s is not an authorization this publisher signed; it is set aside: %v", filepath.Join(p.cfg.state, authorizationFile), err)
+		p.warn("%s is not a valid authorization; ignoring it: %v", filepath.Join(p.cfg.state, authorizationFile), err)
 		return nil, nil
 	}
 	return a, nil
@@ -229,12 +229,12 @@ func (p *publisher) nextSequence(floor int64) (int64, error) {
 	default:
 		last, err = strconv.ParseInt(strings.TrimSuffix(string(data), "\n"), 10, 64)
 		if err != nil || last < 0 {
-			return 0, fmt.Errorf("%s holds %q, which is not a sequence; restore it from a backup, or remove it and the receiver's reply restores it", path, data)
+			return 0, fmt.Errorf("%s holds %q, which is not a valid sequence; restore it from a backup, or remove it so the receiver's reply can advance the sequence", path, data)
 		}
 	}
 	last = max(last, floor)
 	if last == math.MaxInt64 {
-		return 0, fmt.Errorf("the authorization sequence %d is the greatest there is", last)
+		return 0, fmt.Errorf("authorization sequence %d has reached the maximum value", last)
 	}
 	next := last + 1
 	if err := writeDurable(path, []byte(strconv.FormatInt(next, 10)+"\n"), 0o600); err != nil {
@@ -278,7 +278,7 @@ func (p *publisher) sendAuthorization(ctx context.Context, a *export.Authorizati
 		}
 		var status statusError
 		if errors.As(err, &status) && status.code == 404 {
-			return nil, fmt.Errorf("the receiver answered 404 to %s, so it runs a valley-web-receive older than this publisher, which takes no authorization; upgrade the edge before the valley host", export.AuthorizationPath)
+			return nil, fmt.Errorf("the receiver answered 404 to %s because its valley-web-receive is older than this publisher; upgrade the edge before the valley host", export.AuthorizationPath)
 		}
 		var refusal *export.Error
 		if errors.As(err, &refusal) && refusal.Code != export.CodeUnreadable {

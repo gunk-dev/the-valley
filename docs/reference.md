@@ -761,7 +761,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       ASCII characters, matching the receiver's `--token-file`. Required with `--receiver` and
       refused with `--out`.
     - `--out <dir>`: Write the authorization and the export to `<dir>` instead of sending them.
-      `<dir>` must not exist or must be empty. Exactly one of `--receiver` and `--out` is given.
+      `<dir>` must not exist or must be empty. Pass either `--receiver` or `--out`.
     - `--principals <file>`: The display mapping, a JSON object from each principal's name to the
       name an export shows. Without it, every principal is shown as `contributor`.
     - `--state <dir>`: The state directory (default
@@ -780,9 +780,9 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
-    - `--policy-only`: Run the policy path alone: check the policy, sign an authorization, and send
-      it. No plan, knot, or bundle is read, and the content pass's lock is not taken, so a stalled
-      content pass does not hold it up. Requires `--receiver`.
+    - `--policy-only`: Run only the policy path: check the policy, sign an authorization, and send
+      it. It reads no plan, knot, or bundle and takes only the authorization lock, so a stalled
+      content pass never holds it up. Requires `--receiver`.
     - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
     - `--max-storage <size>`: The most the state directory and the caches may hold (default `16G`).
     - A `<size>` is a number of bytes, or a number followed by `K`, `M`, `G`, or `T` for KiB, MiB,
@@ -790,11 +790,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   - Prints
     `valley-web-publish: the receiver stored authorization <sequence>: anyone may read <projects>`
     once the receiver stores the pass's authorization. A content pass then prints
-    `valley-web-publish: public: <projects>; private: <projects>`, then one line for what it did.
-    Warnings go to `stderr`, and so does what the CLI prints there.
+    `valley-web-publish: public: <projects>; private: <projects>`, followed by one line stating what
+    it did. Warnings and CLI error output go to `stderr`.
   - Exits `0` when the pass sent its authorization and uploaded the export, found no content to
-    send, or wrote `--out`. It exits `1` when the pass failed, and `2` for invalid flags. A pass
-    that fails in its content pass has sent its authorization already; it sends no content.
+    send, or wrote `--out`. It exits `1` when the pass failed, and `2` for invalid flags. When a
+    content pass fails, it has already sent its authorization and sends no content.
 - **`valley-read-coverage`**
   ([`readaccess/cmd/valley-read-coverage/main.go`](../readaccess/cmd/valley-read-coverage/main.go)):
   Evaluates the two read-access consents for `<principal>` at `<destination>` and lists each project
@@ -1110,7 +1110,7 @@ services.valley.webReceiver = {
 | `tokenFile`                                    | (required)              | Runtime path (outside the Nix store) to the bearer token file. Loaded by the receiver unit as credential `token` and passed as `--token-file`. |
 | `listen`                                       | (required)              | TCP listen address for `valley-web-receive`, reached by the publisher.                                                                         |
 | `webListen`                                    | (required)              | TCP listen address for `valley-web`, reached by readers or a reverse proxy.                                                                    |
-| `stateDir`                                     | `"/var/lib/valley-web"` | Shared state directory under `/var/lib`. Both units are given its descriptor, `<stateDir>/store`, as `--state`.                                |
+| `stateDir`                                     | `"/var/lib/valley-web"` | Shared state directory under `/var/lib`. Both units take its descriptor, `<stateDir>/store`, as `--state`.                                     |
 | `maxBody`, `maxUpload`, `maxStorage`           | `"1G"`, `"2G"`, `"8G"`  | Size limits passed to `valley-web-receive` as `--max-body`, `--max-upload`, and `--max-storage`.                                               |
 | `receiverMemoryMax`, `webMemoryMax`            | `"2G"`, `"1G"`          | Per-unit `MemoryMax` (with `MemorySwapMax=0`) for `valley-web-receive.service` and `valley-web.service`.                                       |
 
@@ -1999,11 +1999,11 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
 
 A web export is the snapshot a valley host sends to a read-only web server for public projects. It
 consists of `export.json`, one git bundle of `main` for each exported project, and a signed manifest
-that authenticates both. A second signed document, the
-[authorization](#web-authorization-the-valleyweb-authorizationv1), says who may read which project.
-The export carries no reader and no visibility, so no content upload can grant or restore access. A
-publisher on the valley host pushes both over HTTP to a receiver on the web server, and the web
-server never connects back to the host. Package `export` of the `web` module
+that authenticates both. A separate signed document, the
+[authorization](#web-authorization-the-valleyweb-authorizationv1), states who may read which
+project. The export carries no reader and no visibility, so a content upload never grants or
+restores access. A publisher on the valley host pushes both over HTTP to a receiver on the web
+server, and the web server never connects back to the host. Package `export` of the `web` module
 ([`web/export/`](../web/export/)) implements the types, the verification checks below, and the
 receiver's store. `valley-web-publish` is the publisher,
 [`valley-web-receive`](#web-export-receiver-valley-web-receive) is the receiver, and the web server,
@@ -2045,7 +2045,7 @@ as compact JSON ending with a newline.
   the publication identity given. The publisher names a project when both consents authorize
   `anyone` to read it at the destination (see [Read policy](#read-policy-schemareadcue)) and the
   host declaration places it in a group. Every knot and every comment of an exported project is
-  included. Whether a server shows the project is the authorization's to say, not the export's.
+  included. The authorization alone decides whether a server shows the project.
 - **Top-level fields:** `schema` (`"valley-web-export/v2"`), `collected` (`string`, the plan's
   `now`), `groups`, and `projects` (sorted by project name).
 - **`groups[]` fields:** The groups of the exported projects, sorted by identifier. Only groups with
@@ -2198,11 +2198,11 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 #### Web authorization (`the-valley/web-authorization/v1`)
 
-An authorization is a signed note that says who may read which project at one destination. The
+An authorization is a signed note that states who may read which project at one destination. The
 publisher's policy path is its only writer, and it signs with the same export key as content
-manifests. The receiver stores the newest one it admits, and `valley-web` serves a project only
-while the stored authorization names it, by name and identity, with a reader the request is
-(`implemented`).
+manifests. The receiver stores the newest authorization it admits. `valley-web` serves a project
+only while the stored authorization names that project by name and identity and grants access to the
+request's reader (`implemented`).
 
 ```text
 the-valley/web-authorization/v1
@@ -2219,52 +2219,55 @@ reader app anyone
 - **Records:** Line 1 is `the-valley/web-authorization/v1`. Each remaining line in the note body is
   a keyword and its fields, separated by single spaces:
   - `instance <name>` and `destination <name>`: As in the manifest.
-  - `sequence <decimal>`: The publisher's authorization counter. It reads no clock. Each
-    authorization the publisher signs has a greater sequence than every one before.
-  - `checked <time>`: When the publisher last finished a check of the policy in full, in RFC 3339,
-    UTC, to the second. Pages show it. Nothing decides access by it.
+  - `sequence <decimal>`: The publisher's authorization counter. It uses no clock. Each
+    authorization the publisher signs carries a greater sequence than every earlier one.
+  - `checked <time>`: When the publisher last finished a complete policy check, in RFC 3339 UTC to
+    the second. Pages display this time. Access never depends on it.
   - `project <name> <identity>`: One project the authorization names, with its publication identity.
-  - `reader <name> <principal>`: One effective reader of the project `<name>`. Every project has one
-    reader or more. The publisher writes only the reader `anyone`, for each project anyone may read
-    and that the host declaration places in a group. Named readers are `not built`.
+  - `reader <name> <principal>`: One effective reader of the project `<name>`. Every named project
+    has at least one reader. The publisher writes only the reader `anyone`, for each project that
+    `anyone` may read and that the host declaration places in a group. Named readers are
+    `not built`.
 - **Grammar rules (`export.ParseAuthorization`, `Authorization.Text`):** `instance`, `destination`,
-  `sequence`, and `checked` appear once each. A project appears once, a reader of a project once,
-  and a `reader` record names a project that has a `project` record. Names and principals follow the
-  project-name rule. `ParseAuthorization` accepts records in any order; `Authorization.Text` writes
-  them in the order shown above, with projects sorted by name and readers sorted.
+  `sequence`, and `checked` appear once each. Each project appears once, each reader of a project
+  appears once, and every `reader` record names a project that has a `project` record. Names and
+  principals follow the project-name rule. `ParseAuthorization` accepts records in any order;
+  `Authorization.Text` writes them in the order shown above, with projects sorted by name and
+  readers sorted.
 - **Admission (`export.VerifyAuthorization`):** The receiver admits an authorization in five
   separate steps, in this exact order:
   1. Read at most 256 KiB (`MaxAuthorization`), and refuse a longer one as `too-large`.
   2. Open the signed note under the receiver's pinned verifier keys.
   3. Check the `the-valley/web-authorization/v1` header line and parse the records. A content
-     manifest fails here as `bad-manifest`, and so does an authorization posted as a manifest.
+     manifest fails here as `bad-manifest`, as does an authorization posted as a manifest.
   4. Require `instance` and `destination` to match the receiver's configuration.
   5. Require `sequence` to be strictly greater than the stored authorization's sequence.
 
-  There is no step for age. An authorization above the stored sequence is admitted however old its
-  `checked` time is, and however far the clocks disagree. A stored authorization that cannot be read
-  fails step 5 with an error, never as sequence 0, so no replay is admitted over it.
+  Admission checks no age window. An authorization above the stored sequence is admitted regardless
+  of how old its `checked` time is or how far the clocks disagree. If the stored authorization
+  cannot be read, step 5 fails with an error rather than treating the stored sequence as 0, so no
+  replay is admitted over it.
 
-- **Storing (`Store.Authorize`):** The receiver takes `authorization.lock` and checks the sequence
-  again, then writes the signed note to `<payload>/authorization` durably: a temporary file, synced,
-  renamed over the old one, and the directory synced. It takes no activation lock, reads no graph,
-  checks no repository, and runs no sweep, so a stalled upload or commit does not hold it up. The
-  reply is sent once the note is on disk.
+- **Storing (`Store.Authorize`):** The receiver takes `authorization.lock`, checks the sequence
+  again, and writes the signed note to `<payload>/authorization` durably (syncing a temporary file,
+  renaming it over the old one, and syncing the directory). It takes no activation lock, reads no
+  graph, checks no repository, and runs no sweep, so a stalled upload or commit never holds it up.
+  The receiver replies once the note is on disk.
 
 | Request                                                  | Reply                                                                                                                                                                                                                                                                                                      |
 | :------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /web-export/v2/authorization` with the signed note | `200` and `valley-web-authorized/v1`: the `sequence` stored, `active` (the served export's `sequence` and content `digest`, or `null`), and `missing` (projects of the active export the authorization names whose repositories the receiver deleted when an earlier authorization withdrew them, or `[]`) |
 
-- **Withdrawal:** A project the stored authorization does not name is hidden from the next request.
-  After replying, the receiver deletes the project's repository from the active generation, once no
-  reader holds the generation (`Store.Prune`). It tries again, with a pause that doubles to five
-  seconds, for up to five minutes, and logs a prune it could not finish; the next authorization,
-  activation or start of the receiver tries again. `export.json` keeps its signed bytes, so it still
-  holds the withdrawn project's plan text until a later activation replaces the generation and the
-  old one is deleted. Naming the project again lists it in `missing`, and the next content upload
-  sends its bundle again.
-- **Refusals:** As for the upload, with the same codes. `replayed` carries the stored sequence as
-  `high_water`.
+- **Withdrawal:** A project omitted from the stored authorization is hidden starting with the next
+  request. After replying, the receiver deletes the project's repository from the active generation
+  once no reader holds the generation (`Store.Prune`). It retries with a backoff that doubles up to
+  five seconds for up to five minutes, and logs any prune it could not finish. The next
+  authorization, activation, or receiver start tries again. `export.json` keeps its signed bytes, so
+  it still holds the withdrawn project's plan text until a later activation replaces the generation
+  and deletes the old one. If a later authorization names the project again, the reply lists it in
+  `missing`, and the next content upload sends its bundle again.
+- **Refusals:** Uses the same refusal format and codes as the upload. `replayed` carries the stored
+  sequence as `high_water`.
 
 #### Web export upload
 
@@ -2289,9 +2292,9 @@ reply schemas, and checks for each step, and `valley-web-receive` serves them.
 | 2    | `PUT /web-export/v2/<sequence>/<sha256>` for each needed body, with its bytes | `204` once the body has been verified and staged                                                                                                                                                                                    |
 | 3    | `POST /web-export/v2/<sequence>/commit` with an empty body                    | `200` and `valley-web-committed/v2`: the `sequence` activated                                                                                                                                                                       |
 
-- **Named projects:** The inventory needs a bundle only for a project the stored authorization
-  names, and a commit builds a repository only for such a project. With no stored authorization, no
-  bundle is needed and no repository is built.
+- **Named projects:** The inventory requests a bundle only for a project that the stored
+  authorization names, and a commit builds a repository only for such a project. When no
+  authorization is stored, the inventory requests no bundle and a commit builds no repository.
 - **Held repositories:** When the receiver's active generation still holds a project's repository at
   the manifest's `source_tip`, the inventory lists that project in `holds` and omits its bundle from
   `needs`. On commit, the new generation copies `refs/heads/main` from the held repository
@@ -2390,33 +2393,35 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **Before a pass:** The publisher reads `--host` and checks its groups and placements with
   `export.CheckNames` (see [Groups and web URLs](./architecture.md#groups-and-web-urls)). If the
   declaration fails any check, the publisher exits with status `1` before taking the lock.
-- **The policy path:** Every pass starts with the policy path, the only writer of authorizations. In
-  order, it:
+- **The policy path:** Every pass starts with the policy path, which is the only writer of
+  authorizations. In order, it:
   1. takes an exclusive `flock(2)` lock on `<state>/authorization.lock`;
-  2. reads the export key, or makes one on the first start;
-  3. fetches the instance repository and reads the read grants as steps 3 and 4 below describe, into
-     its own caches under `$XDG_CACHE_HOME/valley-web-publish/policy/`;
-  4. for each project in a group that a read grant to `anyone` covers, reads `main` from the
-     project's repository beside `--instance-repo` and its `policy/read` there;
-  5. allocates the next sequence from `<state>/authorization-sequence`, written durably before it is
-     used, and signs an authorization that names each project anyone may read;
-  6. writes it to `<state>/authorization`, releases the lock, and posts it to the receiver.
+  2. reads the export key, or creates one on first start;
+  3. fetches the instance repository and reads the read grants (as steps 3 and 4 of the content pass
+     describe) into its own caches under `$XDG_CACHE_HOME/valley-web-publish/policy/`;
+  4. for each project in a group that a read grant to `anyone` covers, reads `main` and
+     `policy/read` from the project's repository beside `--instance-repo`;
+  5. allocates the next sequence from `<state>/authorization-sequence` (written durably before use)
+     and signs an authorization naming each project `anyone` may read;
+  6. writes the authorization to `<state>/authorization`, releases the lock, and posts it to the
+     receiver.
 
   The policy path runs no `valley` command and reads no plan, knot, or bundle, so no project's graph
-  holds it up. A project whose `main` or `policy/read` cannot be read keeps what the last
-  authorization gave it, while a grant to `anyone` still covers it, and never more. The check is
-  then incomplete: its `checked` time is the last complete check's, it is still signed and sent, and
-  the pass then fails before any content work. An instance or registry that cannot be read fails the
-  policy path, and nothing is signed. With `--policy-only` the pass ends after the policy path, and
-  takes no other lock.
+  holds it up. When a project's `main` or `policy/read` cannot be read, the project keeps the access
+  the last authorization gave it as long as a grant to `anyone` still covers it, and never gains
+  access. That check is incomplete: the authorization keeps the `checked` time of the last complete
+  check, the publisher still signs and sends it, and the pass then fails before doing any content
+  work. If the instance repository or registry cannot be read, the policy path fails and signs
+  nothing. With `--policy-only`, the pass ends after the policy path and takes no other lock.
 
-- **Sending the authorization:** A failure in transit, a status with no refusal, or `unreadable` is
-  retried with the same authorization, after 2 seconds and then twice as long each time, five
-  attempts in all. A `replayed` refusal means the receiver holds a newer authorization, as after the
-  publisher's state is restored from an older backup. The policy path then checks the policy again
-  and signs the result above the refusal's `high_water`, three times at most; it never sends an
-  authorization signed before. A `404` means the receiver is older than the publisher, and the pass
-  fails saying to upgrade the edge first. Any other refusal fails the pass.
+- **Sending the authorization:** On a failure in transit, a status with no refusal, or `unreadable`,
+  the publisher retries sending the same authorization (pausing 2 seconds and doubling the pause
+  each time, for up to five attempts). A `replayed` refusal means the receiver holds a newer
+  authorization, such as after the publisher's state is restored from an older backup. The policy
+  path then rechecks the policy and signs a new authorization above the refusal's `high_water` (up
+  to three times), never resending an earlier authorization. A `404` means the receiver is older
+  than the publisher, and the pass fails with instructions to upgrade the edge first. Any other
+  refusal fails the pass.
 - **The content pass:** In order, the content pass:
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
   2. checks the state and the caches against `--max-storage`;
@@ -2535,14 +2540,14 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   A pass that fails on a bound sends and writes nothing.
 
 - **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends no content when the
-  last acknowledgement names the same receiver, destination, and digest, is less than `--recheck`
-  old, and the receiver's reply to the authorization gives the same digest as `active` and an empty
-  `missing`. Otherwise it posts a manifest. When the inventory's `active.digest` is the export's
-  digest and `needs` names no bundle, the pass stops after step 1 of the upload. Either way, the
-  acknowledgement records what the receiver replied: the inventory's active sequence, or the
-  committed sequence. An upload that was attempted and refused records nothing. A receiver that lost
-  its state says so in its reply to the authorization, and is sent the whole export in the same
-  pass.
+  last acknowledgement names the same receiver, destination, and digest, is newer than `--recheck`,
+  and the receiver's reply to the authorization reports the same `active` digest and an empty
+  `missing` list. Otherwise, the pass posts a manifest. When the inventory's `active.digest` matches
+  the export's digest and `needs` lists no bundle, the pass stops after step 1 of the upload. Either
+  way, the acknowledgement records the sequence the receiver reported (the inventory's active
+  sequence or the committed sequence). A refused upload attempt records nothing. When a receiver has
+  lost its state, its authorization reply reports `active` as `null`, and the pass uploads the full
+  export.
 - **Sequence:** A manifest's sequence is the clock in Unix nanoseconds when it is signed. It must be
   greater than the greatest sequence the receiver is known to have accepted: the acknowledged one,
   or the `high_water` of a `replayed` refusal. When the clock is behind that mark by at most two
@@ -2567,8 +2572,8 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **`--out`:** The pass writes what it would send to `<dir>`: `authorization` (the signed
   authorization), `manifest` (the signed manifest), `export.json`, and `bundles/<project>.bundle`.
   It writes them in a temporary directory beside `<dir>` and renames it into place, so a reader
-  never sees part of it. A pass with `--out` signs with the same key and does not read or write the
-  acknowledgement. Its authorization takes a sequence from the counter.
+  never sees a partial directory. A pass with `--out` signs with the same key, allocates a sequence
+  from the authorization counter, and neither reads nor writes the acknowledgement.
 - **State directory:**
 
   ```text
@@ -2583,8 +2588,9 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
                                   digest, sequence, and when the receiver replied
   ```
 
-  A counter that cannot be read fails the pass; it is never taken for zero. A counter lost with the
-  state directory starts again at one, and the receiver's first `replayed` refusal raises it.
+  An unreadable counter fails the pass rather than resetting to zero. If the state directory is
+  lost, the counter starts at 1, and the receiver's first `replayed` refusal advances it above the
+  receiver's `high_water`.
 
   The key is made under a temporary name and renamed into place, so a start that is killed leaves no
   key, and the next start makes one. Every pass compares the key's verifier line with
@@ -2607,9 +2613,9 @@ valley-web-receive --state /var/lib/valley-web/store --listen 192.0.2.10:8081 \
 
 - **Flags:**
   - `--state FILE` (required): The store's descriptor file. When `FILE` does not exist,
-    `export.OpenStore` creates it and the payload directory `v2/` beside it. It completes any
+    `export.OpenStore` creates it and the payload directory `v2/` beside it, and completes any
     activation interrupted by a crash (see [Web export receiver state](#web-export-receiver-state)).
-    A directory is refused. The receiver is the store's only writer.
+    It refuses a directory. The receiver is the store's only writer.
   - `--listen ADDR` (required): TCP listen address. Port `0` picks a free port.
   - `--instance NAME`, `--destination NAME` (required): Instance name and destination name required
     in every manifest.
@@ -2657,9 +2663,10 @@ valley-web-receive --state /var/lib/valley-web/store --listen 192.0.2.10:8081 \
 | `/web-export/v2/<sequence>/commit`   | `POST` | 3, the commit     |
 
 `<sequence>` is a positive decimal integer with no leading zero, and `<sha256>` is 64 lowercase hex
-digits. Any path under `/web-export/v1/` answers `410` with `unsupported-version`, whose message
-says to upgrade `valley-web-publish`. Any other path answers `404` with an empty body, and any other
-method on one of these paths answers `405` with an `Allow` header and an empty body.
+digits. Any path under `/web-export/v1/` answers `410` with `unsupported-version` and a message
+instructing the caller to upgrade `valley-web-publish`. Any other path answers `404` with an empty
+body, and any other method on one of these paths answers `405` with an `Allow` header and an empty
+body.
 
 - **Limits:**
 
@@ -2676,14 +2683,15 @@ method on one of these paths answers `405` with an `Allow` header and an empty b
 | An idle connection                         | 1 minute     |
 
 An upload request beyond 4 running at once, or an authorization request beyond 2, answers `503` with
-`Retry-After: 5` and an empty body. The two are counted apart, so uploads that hold every upload
-slot leave room for an authorization. A body upload while another request is already staging the
-same body of the same upload answers the same. A connection beyond 32 open at once waits in the
-listen queue. Unauthenticated requests take no request slot. `OPTIONS *` is handled like any other
-request, answering `401` without the token and `404` with it. A manifest or commit request waiting
-for the store lock stops waiting when its time limit expires or its client disconnects. Any internal
-failure that is not a refusal answers `500` with an empty body; the publisher retries both `500` and
-`503` as failures in transit.
+`Retry-After: 5` and an empty body. Upload and authorization slots are counted separately, so
+uploads that fill all 4 upload slots still leave room for an authorization. A body upload arriving
+while another request is already staging the same body of the same upload also answers `503` with
+`Retry-After: 5`. A connection beyond 32 open at once waits in the listen queue. Unauthenticated
+requests take no request slot. `OPTIONS *` is handled like any other request, answering `401`
+without the token and `404` with it. A manifest or commit request waiting for the store lock stops
+waiting when its time limit expires or its client disconnects. Any internal failure that is not a
+refusal answers `500` with an empty body; the publisher retries both `500` and `503` as failures in
+transit.
 
 - **The staged upload:** The receiver tracks the newest staged upload in memory. A body or commit
   request for a newer sequence is refused as `no-manifest`, and one for an older sequence is refused
@@ -2711,9 +2719,9 @@ failure that is not a refusal answers `500` with an empty body; the publisher re
 
 #### Web export receiver state
 
-The receiver keeps every accepted export as a generation in one store (`export.OpenStore`). The
-store's entry point is a descriptor file, which both programs are given as `--state`, and its
-payloads are in the directory `v2/` beside it:
+The receiver keeps every accepted export as a generation in one store (`export.OpenStore`). Both
+programs take the store's descriptor file as `--state`, and the store keeps its payloads in `v2/`
+beside the descriptor:
 
 ```text
 <dir>/store                       the descriptor: one line, the-valley/web-store/v2
@@ -2731,20 +2739,20 @@ payloads are in the directory `v2/` beside it:
 <dir>/v2/trash/                   generations and repositories renamed away before deletion
 ```
 
-- **The descriptor:** `OpenStore` refuses a `--state` that is a directory, and a file that does not
-  hold `the-valley/web-store/v2`. When the descriptor does not exist, it creates the payload
-  directory first and writes the descriptor last, durably. `OpenReadOnly` refuses the same, and
-  requires both to exist. Binaries of the first store layout take a directory as `--state`:
-  `valley-web` from that layout exits `1` saying the descriptor is not a directory, and
-  `valley-web-receive` exits `1` when it cannot make a directory there. Given the descriptor's
-  directory or `v2/` instead, they find no `active` symlink and no `exports/`, and serve nothing. A
-  generation keeps a repository only of a project the authorization named when it was built, and a
-  first-layout reader reads no authorization, so no rollback can read the store's private content as
-  public.
-- **Retiring the first layout:** When `OpenStore` creates a descriptor in a directory that holds the
-  first layout's `active` symlink, it deletes `active` and `high-water` and syncs the directory, so
-  a first-layout binary started there again serves nothing. It then deletes `exports/`, `staging/`,
-  `trash/` and `lock`, and reports that the layout was retired.
+- **The descriptor:** `OpenStore` refuses a `--state` path that is a directory or a file whose
+  contents differ from `the-valley/web-store/v2`. When the descriptor does not exist, `OpenStore`
+  creates `v2/` first and writes the descriptor last, durably. `OpenReadOnly` enforces the same
+  checks and requires both the descriptor and `v2/` to exist. Binaries from the first store layout
+  expect a directory for `--state`: a first-layout `valley-web` exits `1` reporting that the
+  descriptor is not a directory, and a first-layout `valley-web-receive` exits `1` when it cannot
+  create a directory there. If pointed at the parent directory or `v2/` instead, first-layout
+  binaries find no `active` symlink and no `exports/` directory, so they serve nothing. In addition,
+  each generation holds repositories only for projects that the authorization named when the
+  generation was built, so a rollback cannot expose unauthorized repositories.
+- **Retiring the first layout:** When `OpenStore` creates a descriptor in a directory that contains
+  the first layout's `active` symlink, it deletes `active` and `high-water` first and syncs the
+  directory, so a first-layout binary started there again serves nothing. It then deletes
+  `exports/`, `staging/`, `trash/`, and `lock`, and reports that the first layout was retired.
 
 - **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<dir>/v2/lock`, `Activate`
   runs these steps in order:
@@ -2754,25 +2762,26 @@ payloads are in the directory `v2/` beside it:
   2. Move `export.json` from `bodies/<sha256>` to `<staging>/<sequence>/export.json`, set its mode
      to `0644`, and check it against the manifest with `Manifest.CheckExport`. If `CheckExport`
      fails, remove `export.json` from staging so `Inventory` lists it as needed again.
-  3. Build `repos/<project>.git` for each project the stored authorization names and not already in
-     `repos/`, and remove a staged repository of any other project. It removes any leftover
-     `tmp/<project>.git`, then builds the repository in `tmp/<project>.git` from the staged bundle
-     with `AcceptBundle` or from the active generation's repository at the same `source_tip` with
-     `CarryRepo`. It sets the file and directory modes in `tmp/<project>.git` (see **Modes** below),
-     syncs every file and directory to disk, and renames the repository to `repos/<project>.git`. If
-     `AcceptBundle` fails, the staged bundle is removed from `bodies/` so `Inventory` lists it as
-     needed again. A build interrupted by a crash stays in `tmp/` and is rebuilt on the next commit.
+  3. Build `repos/<project>.git` for each project named in the stored authorization that is not
+     already in `repos/`, and remove any staged repository for any other project. For each project
+     to build, it removes any leftover `tmp/<project>.git`, then builds the repository in
+     `tmp/<project>.git` from the staged bundle with `AcceptBundle` or from the active generation's
+     repository at the same `source_tip` with `CarryRepo`. It sets the file and directory modes in
+     `tmp/<project>.git` (see **Modes** below), syncs every file and directory to disk, and renames
+     the repository to `repos/<project>.git`. If `AcceptBundle` fails, the staged bundle is removed
+     from `bodies/` so `Inventory` lists it as needed again. A build interrupted by a crash stays in
+     `tmp/` and is rebuilt on the next commit.
   4. Stop any in-flight body writers for the upload (`Store.Writer`) and wait until each has closed
      and removed its partial file. Remove `bodies/` and `tmp/`, and verify that the staging
-     directory holds only `export.json` and `repos/`, with a repository of each named project and no
-     other, each holding `refs/heads/main` at its `source_tip`.
+     directory holds only `export.json` and `repos/`, with a repository at `refs/heads/main` =
+     `source_tip` for each project named in the authorization and no others.
   5. Set the mode of `repos/` and the staging directory to `0755`. Sync `export.json`, `repos/`, and
      the staging directory, rename `<staging>/<sequence>` to `generations/<sequence>`, and sync
      `generations/` and `staging/`.
   6. Write `<sequence>\n` durably to `high-water`.
   7. Swap `current` by renaming a new symlink (`generations/<sequence>`) over it.
-  8. Sync `v2/`, sweep inactive generations that no reader holds, staging directories with
-     `sequence <= high-water`, and `trash/`, and prune the repositories of projects the
+  8. Sync `v2/`, sweep inactive generations that no reader holds, sweep staging directories with
+     `sequence <= high-water` and `trash/`, and prune the repositories of any projects that the
      authorization withdrew while the commit ran.
 - **Durability:** Every file and directory of a generation is synced to disk before `high-water`
   names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
@@ -2784,15 +2793,16 @@ payloads are in the directory `v2/` beside it:
     `0700`.
   - `v2/` and `generations/` have mode `0755`. Inside each generation, every directory has mode
     `0755` and every file has mode `0644`, or `0444` when git wrote the file read-only.
-  - The descriptor, `high-water` and `authorization` have mode `0644`, whatever the umask. The store
-    creates `trash/` with mode `0755`, the locks with mode `0644`, and each staged body with mode
-    `0600`. The receiver's umask can narrow these creation modes.
-  - `Activate` keeps a repository that an upload's `repos/` already holds as it is. Each repository
-    that the receiver builds gets the generation modes before it enters `repos/`. A repository that
-    an earlier build of the receiver staged keeps the modes that build gave it. Whether any upload
-    holds such a repository is a `deployment choice`.
-  - The mode of the descriptor's directory is a `deployment choice`: `OpenStore` creates the
-    directory if needed and leaves its mode unchanged. It decides who can reach the store.
+  - The descriptor, `high-water`, and `authorization` have mode `0644` regardless of the umask. The
+    store creates `trash/` with mode `0755`, the locks with mode `0644`, and each staged body with
+    mode `0600`. The receiver's umask can narrow these creation modes.
+  - `Activate` leaves any repository already in an upload's `repos/` unchanged. Each repository that
+    the receiver builds gets the generation modes before it enters `repos/`. A repository staged by
+    an earlier build of the receiver keeps the modes that build gave it. Whether any upload holds
+    such a repository is a `deployment choice`.
+  - The mode of the descriptor's parent directory is a `deployment choice`: `OpenStore` creates the
+    directory if needed and leaves its mode unchanged. That directory's mode decides who can reach
+    the store.
 - **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves
   `current` and holds a shared `flock(2)` (`LOCK_SH`) on `generations/<sequence>` until the caller
   releases it (`export.ErrNoExport` if no export has been activated yet). Because a request serves
@@ -2809,10 +2819,10 @@ payloads are in the directory `v2/` beside it:
     `sequence <= high-water`.
   - A crash after `high-water` is written and before `current` is swapped is finished by the next
     `OpenStore`. Before swapping `current` to `generations/<high-water>`, `OpenStore` checks that
-    generation: `export.json` must pass `export.Decode`, each project the stored authorization names
-    must have a repository, and each repository must pass `git fsck` and hold `refs/heads/main` at
-    its `source_tip` and no other ref. If the check passes, `OpenStore` swaps `current` to that
-    generation and syncs `v2/`.
+    generation: `export.json` must pass `export.Decode`, each project named in the stored
+    authorization must have a repository, and each repository must pass `git fsck` and hold
+    `refs/heads/main` at its `source_tip` and no other ref. If the check passes, `OpenStore` swaps
+    `current` to that generation and syncs `v2/`.
   - If the generation fails the check, `OpenStore` passes the error to `report` and does not
     activate the generation. The previous generation keeps serving, the sweep deletes the damaged
     generation, and the publisher's next manifest replaces it.
@@ -2829,33 +2839,36 @@ payloads are in the directory `v2/` beside it:
 
 #### Upgrading the edge and the host
 
-The store and the protocol of this release are new versions, and nothing of the first versions is
-read. The upgrade starts the edge on a new, empty store, and the publisher sends everything again on
-its next pass. Upgrade in this order:
+This release uses a v2 store layout and upload protocol and reads nothing from the first version.
+Upgrading starts the edge on a new, empty store, and the publisher uploads the full export on its
+next pass. Upgrade in this order:
 
-1. **The edge first.** Upgrade `valley-web-receive` and `valley-web`, and give both
-   `--state <dir>/store`, where `<dir>` is the state directory they were given before. The receiver
-   module does this. On its first start the receiver creates the descriptor and `v2/`, and deletes
-   the first layout's state from `<dir>`, `active` first. Until the host is upgraded, the edge
-   serves nothing: every page says "Nothing published yet", and the host's publisher of the first
-   protocol fails each pass with `unsupported-version`.
-2. **Then the host.** Upgrade `valley-web-publish`. Its next pass sends an authorization and then
-   the whole export, since the receiver's reply says it serves nothing. To publish at once, start a
-   pass: `systemctl start valley-web-publish.service`.
+1. **The edge first.** Upgrade `valley-web-receive` and `valley-web`, passing `--state <dir>/store`
+   to both, where `<dir>` is the state directory. The receiver NixOS module sets this path
+   automatically. On its first start, the receiver creates the descriptor and `v2/`, and deletes the
+   first layout's state from `<dir>` (`active` first). Until the host is upgraded, the edge serves
+   nothing (every page shows "Nothing published yet") and the old publisher on the host fails each
+   pass with `unsupported-version`.
+2. **Then the host.** Upgrade `valley-web-publish`. On its next pass, the publisher sends an
+   authorization and then uploads the full export, because the receiver's authorization reply
+   reports no active export. To publish immediately, run
+   `systemctl start valley-web-publish.service`.
 
-Upgrading the host first fails each pass at its authorization: the receiver of the first protocol
-answers `404`, and the pass says to upgrade the edge first. The edge keeps serving what it served.
+If the host is upgraded before the edge, each pass fails when sending its authorization: the old
+receiver answers `404`, and the publisher reports that the edge must be upgraded first. The edge
+continues serving its existing export until upgraded.
 
-A rollback of the edge to binaries of the first layout serves nothing from the store: they refuse
-the descriptor, and find no first-layout state beside it. A rollback needs the first layout's state
-directory, which the upgrade deleted, so the first-protocol publisher then sends everything again.
+Rolling the edge back to first-layout binaries serves nothing from the v2 store: those binaries
+refuse the descriptor file and find no first-layout state beside it. Because the upgrade deleted the
+first-layout state, a rolled-back deployment serves nothing until a first-protocol publisher uploads
+a full export to a first-layout directory.
 
 #### Web server (`valley-web`)
 
 `valley-web` serves the active export in a receiver's store to anonymous readers over HTTP, as the
 stored authorization allows. It serves the plan page, one page per knot, and a source browser over
-the `main` of each project the authorization lets `anyone` read. Package `server` of the `web`
-module ([`web/server/`](../web/server/)) implements the HTTP handler, and
+`main` for each project the authorization lets `anyone` read. Package `server` of the `web` module
+([`web/server/`](../web/server/)) implements the HTTP handler, and
 [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
 `valley-web` package.
 
@@ -2866,8 +2879,8 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 - **Flags:** Both flags are required.
   - `--state FILE` names the receiver's existing store descriptor. `valley-web` opens the store
     read-only with `export.OpenReadOnly` (see
-    [Reading the state directory](./architecture.md#reading-the-state-directory)). A directory is
-    refused.
+    [Reading the state directory](./architecture.md#reading-the-state-directory)). It refuses a
+    directory.
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
   logs runtime errors on `stderr`. On `SIGINT` or `SIGTERM`, it stops accepting new requests and
@@ -2907,18 +2920,19 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   route (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
 - **Authorization on every request:** Each request reads `v2/authorization` when it arrives, and
-  parses it again only when its bytes changed. It serves only the projects that authorization lets
-  `anyone` read under the identity the export gives them. Once its response is rendered, the request
-  reads the authorization again, before the first byte is written, a redirect's too. When the bytes
-  differ, the response is dropped and rendered again under the new authorization, three renders at
-  most, and then the request answers `503`. A missing, unreadable or invalid authorization serves no
-  project: every route answers `503` with the page "Nothing published yet". A response already being
-  written when an authorization is stored is not stopped.
-- **One project-view filter:** Every view is built through one filter, which takes the export, the
-  authorization and the reader, and gives the projects the reader may read. Each request's reader is
-  `anyone`. The plan page, the navigation, the groups, the references between projects, and every
-  alias and former-name redirect are built from what it gives. A project it leaves out answers as
-  one that does not exist, and a group with no project it gives has no alias.
+  re-parses it only when its bytes have changed. It serves only the projects that the authorization
+  lets `anyone` read under the identity in the export. Once the response is rendered, the request
+  reads the authorization again before writing the first byte (including for redirects). If the
+  authorization bytes changed, the server discards the rendered response and renders it again under
+  the new authorization (up to three renders total, after which the request answers `503`). A
+  missing, unreadable, or invalid authorization serves no project: every route answers `503` with
+  the page "Nothing published yet". A response whose write has already started when a new
+  authorization is stored continues to completion.
+- **One project-view filter:** Every view is built through a single filter that takes the export,
+  the authorization, and the reader (`anyone`), and returns the projects that reader may read. The
+  server builds the plan page, navigation, groups, cross-project references, and all alias and
+  former-name redirects from that filtered list. Any project excluded by the filter answers `404` as
+  if it did not exist, and any group with no remaining project has no alias.
 - **One generation per request:** Each request opens the active generation once with `Store.Open`
   and renders its entire response from that generation. It releases the generation once rendering
   finishes, before writing the response. Activating a new export during a request does not change
@@ -2926,9 +2940,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   it. Before the first activation, every route answers `503`.
 - **One read per generation:** The server reads and decodes each generation's `export.json` once,
   even when many requests wait for it at the same time. It caches the newest generation it has read
-  and builds the plan page's structure once for that generation and authorization. A new
-  authorization builds the structure again from the cached export. A request opens its generation on
-  disk only after the server has read that generation.
+  and builds the plan page's structure once for that generation and authorization. When the
+  authorization changes, the server rebuilds that structure from the cached export. A request opens
+  its generation on disk only after the server has read that generation.
   - Each read runs in its own worker. The worker opens the active generation, holds it while reading
     `export.json`, and releases it when the read finishes. A request waiting for a read holds no
     generation.
@@ -2958,11 +2972,11 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   unclaimed, unblocked outcome or bug. The page's single inline script runs the milestone filters.
   Without the script, every knot shows and the trees still open and close.
 
-- **Freshness:** Every page shows the export's `collected` time and, apart from it, when the policy
-  was last checked: the authorization's `checked` time and its age when the request is served. A
-  page is marked `stale` when that check is more than five minutes old (`server.StaleAfter`). Every
-  pass sends an authorization, so a pass that finds nothing changed still advances the check. A
-  recent check does not make old content new: the `collected` time says how old the content is.
+- **Freshness:** Every page shows the export's `collected` time alongside when the policy was last
+  checked (the authorization's `checked` time and its age when the request is served). A page is
+  marked `stale` when that policy check is more than five minutes old (`server.StaleAfter`). Every
+  pass sends an authorization, so a pass that finds no content changes still advances the policy
+  check time. The `collected` time continues to show the age of the exported content.
 - **Knot page:** A knot page shows the knot's type, status, state, and fields, the chain of parents
   above it, and links to the knots that block it, the knots it blocks, and its children. The parent
   chain names the nearest 32 parents (`server.MaxPlanDepth`) and marks any parents above them with
@@ -3085,9 +3099,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   - The "Busy" (`503`), "Page too large" (`500`) and "Not found" (`404`) pages are rendered once
     when the server starts. They show no export data and take none of the 64 MiB budget.
 - **Access:** Every project route checks that the stored authorization lets `anyone` read the
-  project, under the identity the export gives it, and that the project has a `group`. Every `404`
-  serves the same page, byte for byte, whether the project is hidden or missing, the knot or path
-  does not exist, or the commit is not served.
+  project under the identity in the export, and that the project has a `group`. Every `404` serves
+  the same page, byte for byte, whether the project is hidden or missing, the knot or path does not
+  exist, or the commit is not served.
 - **Not found:** The `404` page is titled "Not found" and shows a box of preformatted text in the
   server's stylesheet. Its last line, "Return to the source", links to `/`. The page omits
   navigation, the export age, and the site name:

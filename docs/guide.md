@@ -838,10 +838,9 @@ docker run -d --name valley-web --user valley-web \
 
 A new volume inherits the owner and permissions of `/var/lib/valley-web` from the image: the
 receiver's user with mode `0750`. `valley-web` reads the volume through the shared group. Both
-containers are given the store's descriptor, `/var/lib/valley-web/store`, which the receiver creates
-on its first start. Upgrading from a release whose `--state` was the directory itself follows
-[Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host): the edge first,
-then the host.
+containers take the store descriptor `/var/lib/valley-web/store`, which the receiver creates on its
+first start. When upgrading from a release where `--state` was a directory, upgrade the edge before
+the host (see [Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host)).
 
 Give each container its own memory limit. When a container reaches `--memory`, the kernel reclaims
 memory or kills a process inside that container alone. Setting `--memory-swap` equal to `--memory`
@@ -863,11 +862,11 @@ proxy that terminates TLS, or over a private network. On the next pass, the publ
 `the receiver stored authorization <n>`, then `the receiver activated sequence <n>`, and
 `valley-web` serves the export.
 
-To take a project off the web at once, withdraw its grant or its `policy/read`, and start a pass:
-`sudo systemctl start valley-web-publish`. The pass sends its authorization before any content work,
-and the edge stops serving the project at the next request, even when the content work then stalls
-or fails. `valley-web-publish --policy-only`, run with the unit's other flags, sends the
-authorization alone.
+To take a project off the web at once, withdraw its grant or its `policy/read` and start a pass:
+`sudo systemctl start valley-web-publish`. The pass sends its authorization before doing any content
+work. The edge stops serving the project at the next request, even if the content work stalls or
+fails. Running `valley-web-publish --policy-only` with the unit's other flags sends only the
+authorization.
 
 ## Contributing to the-valley
 

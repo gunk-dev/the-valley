@@ -99,7 +99,7 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
 
 One pass of the web publisher: check who may read each project and send
 the receiver a signed authorization, then read the valley's public
-projects and upload them to the receiver at URL, or write both to DIR.
+projects and upload them to the receiver at URL (or write both to DIR).
 
   --instance-repo URL  absolute local path to the instance repository
                        (used as origin of the publisher's cached bare
@@ -127,15 +127,17 @@ projects and upload them to the receiver at URL, or write both to DIR.
                        line of 32 to 256 visible ASCII characters, the
                        same file the receiver's --token-file names;
                        required with --receiver
-  --out DIR            write the export to DIR, which must not exist or be
-                       empty, instead of uploading it: authorization,
-                       manifest, export.json and bundles/<project>.bundle
+  --out DIR            write the authorization and export to DIR, which
+                       must not exist or must be empty, instead of
+                       uploading: authorization, manifest, export.json,
+                       and bundles/<project>.bundle
   --principals FILE    the display mapping: a JSON object from each
                        principal's name to the name an export shows; a
                        name it does not map is shown as contributor
-  --state DIR          the key, its verifier line, the locks, the
-                       authorization counter, the last authorization
-                       signed and the last acknowledgement (default
+  --state DIR          state directory holding the key, its verifier line,
+                       the locks, the authorization counter, the last
+                       signed authorization, and the last acknowledgement
+                       (default
                        ${XDG_STATE_HOME:-$HOME/.local/state}/valley/web-publish)
   --read-schema FILE   schema/read.cue (default $VALLEY_READ_SCHEMA)
   --identity-schema FILE
@@ -148,14 +150,14 @@ projects and upload them to the receiver at URL, or write both to DIR.
                        holds no registry, so every project is private
   --registry-dir DIR   the identity registry's directory in that commit
                        (default identity)
-  --recheck DURATION   how long an acknowledgement is trusted: a pass whose
-                       digest the receiver acknowledged less than this ago,
-                       and that the receiver still serves whole, uploads no
-                       content (default 1h)
-  --policy-only        check the policy and send the authorization alone:
-                       no plan, knot or bundle is read, and the content
-                       pass's lock is not taken, so a stalled content pass
-                       does not hold it up; needs --receiver
+  --recheck DURATION   how long an acknowledgement is trusted: a pass skips
+                       uploading content when the receiver acknowledged the
+                       same digest within DURATION and still serves it in
+                       full (default 1h)
+  --policy-only        run only the policy path: check the policy and send
+                       the authorization without reading plans, knots, or
+                       bundles or taking the content lock; requires
+                       --receiver
   --max-bundles SIZE   the most the bundles of one export may hold
                        together; a bundle is written only into what it
                        leaves, and a pass past it sends nothing
@@ -266,7 +268,7 @@ func parseArgs(args []string) (config, error) {
 	case (c.receiver == "") != (c.token == ""):
 		return c, errors.New("--receiver-token goes with --receiver, and --receiver needs it")
 	case c.policyOnly && c.receiver == "":
-		return c, errors.New("--policy-only sends an authorization, so it needs --receiver")
+		return c, errors.New("--policy-only requires --receiver")
 	case !readaccess.ValidRef(c.registryRef):
 		return c, fmt.Errorf("--registry-ref %q is not a full ref name: it opens with refs/, and git check-ref-format accepts it", c.registryRef)
 	case c.readSchema == "" || c.idSchema == "":

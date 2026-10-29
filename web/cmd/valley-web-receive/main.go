@@ -53,11 +53,10 @@ Receive signed authorizations and web export uploads from
 valley-web-publish into a store that valley-web serves.
 
   --state FILE         the store's descriptor file, such as
-                       /var/lib/valley-web/store; the receiver creates it,
-                       and the payload directory v2 beside it, when FILE
-                       does not exist, and is the store's only writer; a
-                       directory, as the first store layout used, is
-                       refused
+                       /var/lib/valley-web/store; when FILE does not
+                       exist, the receiver creates it and the payload
+                       directory v2 beside it; the receiver is the store's
+                       only writer, and refuses a directory
   --listen ADDR        TCP address to listen on, such as 127.0.0.1:8081;
                        port 0 picks a free port
   --instance NAME      instance name required in every manifest

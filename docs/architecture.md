@@ -3048,17 +3048,18 @@ operator, publish nothing, and `valley-web` serves every reader anonymously.
 
 For each exported project, the export and its git bundle carry the project's reader view: every knot
 and comment in its plan graph, its ready changes, and `main` with its commit history (see
-[Web export](./reference.md#web-export-the-valleyweb-exportv2)). The export says nothing of who may
-read it. A separate signed authorization does, and the edge serves what the authorization allows
-(see [The authorization stream](#the-authorization-stream)). `valley-web-publish` can write both to
-`--out` or send them over HTTP to a receiver URL. `valley-web-receive` receives the upload into its
-store, staging it with `Store.Stage` and activating it with `Store.Activate` (`web/export/store.go`;
-see [The receiver](#the-receiver)). `valley-web` serves only `GET` and `HEAD` from the store
+[Web export](./reference.md#web-export-the-valleyweb-exportv2)). The export records no reader
+access. A separate signed authorization names who may read each project, and the edge serves only
+what that authorization allows (see [The authorization stream](#the-authorization-stream)).
+`valley-web-publish` can write the authorization and the export to `--out` or send them over HTTP to
+a receiver URL. `valley-web-receive` receives the upload into its store, staging it with
+`Store.Stage` and activating it with `Store.Activate` (`web/export/store.go`; see
+[The receiver](#the-receiver)). `valley-web` serves only `GET` and `HEAD` from the store
 (`web/server/server.go`). A missing or invalid registry makes every project private, so the pass
 authorizes no project and builds an empty export. A missing or invalid `policy/read` makes that
-project private. A failure to read the instance repository or the schemas aborts the pass before it
-signs anything. A failure to read a project selected by a grant to `anyone` makes the policy check
-incomplete: the authorization is sent, and the pass then fails before its content work.
+project private. If the pass cannot read the instance repository or the schemas, it aborts before
+signing anything. If it cannot read a project selected by a grant to `anyone`, the policy check is
+incomplete: the pass sends the authorization and then fails before building or uploading an export.
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
 (`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
@@ -3070,61 +3071,68 @@ pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wir
 
 ### The authorization stream
 
-Who may read what at the edge travels in its own signed document, the authorization, apart from the
-content (`implemented`; formats in
-[Web authorization](./reference.md#web-authorization-the-valleyweb-authorizationv1)). The two are
-two streams over one key, one receiver and one store. Each has its own sequence, its own lock on the
-publisher and on the receiver, and its own admission rule.
+Read access at the edge travels in a separate signed document, the authorization, independent of the
+content export (`implemented`; see
+[Web authorization](./reference.md#web-authorization-the-valleyweb-authorizationv1) for the format).
+Authorizations and content exports are two streams that share one signing key, one receiver, and one
+store. Each stream has its own sequence, its own locks on the publisher and the receiver, and its
+own admission rules.
 
-- **One writer.** The publisher's policy path is the only code that signs an authorization
-  (`web/cmd/valley-web-publish/policy.go`). Every pass runs it before any content work, and
-  `--policy-only` runs it alone. Under `<state>/authorization.lock` it reads the instance's read
-  grants and each selected project's `policy/read`, allocates the next sequence, and signs. One lock
-  covers the check, the allocation and the signing, so of two authorizations the one with the
-  greater sequence always reflects the later check. The policy path sends the authorization outside
-  the lock.
-- **A counter, not a clock.** The authorization sequence comes from
-  `<state>/authorization-sequence`, written durably before it is used. It reads no clock, so a clock
-  stepped back never orders an authorization before an earlier one. The receiver admits an
-  authorization by its sequence alone and never refuses one for its age: a valid narrowing above the
-  stored sequence always lands. A delayed or replayed authorization at or below the stored sequence
-  is refused. When the receiver holds a newer one, as after the publisher's state is restored from
-  an older backup, the policy path checks the policy again and signs the current result above the
-  receiver's sequence. It never sends an authorization it signed earlier.
-- **No content grants access.** A content manifest names each project's publication identity, its
-  tips and its bundle, and no reader. The receiver builds a generation's repositories only for the
-  projects the stored authorization names, and `valley-web` serves a project only while the stored
-  authorization names it with the same identity. So a content upload, however late and whatever its
-  sequence, can neither grant access nor restore a withdrawn project.
-- **Stored without the content lock.** The receiver stores an authorization under its own lock, with
-  its own request slots, and runs no repository check, graph read or sweep for it
-  (`web/export/authorize.go`). A stalled upload or a long commit does not hold up a withdrawal. The
-  reply means the authorization is on disk.
-- **Held on every request.** `valley-web` reads the stored authorization on every request, and reads
-  it again once the response is rendered, before the first byte is written. A response rendered
-  under an authorization that has since been replaced is rendered again. So the next request after
-  the receiver replies is held to the new authorization, with no restart. A response already being
-  written is not stopped, and may finish. A missing or invalid authorization serves no project.
-- **Withdrawal.** A project the authorization stops naming is hidden from the next request. The
-  receiver then deletes its repository from the active generation, once no reader holds the
-  generation, and builds none in later activations. The signed `export.json` keeps its bytes: it
-  holds the withdrawn project's plan text until a later activation replaces the generation and the
-  old one is deleted. Deletion is retried by the next authorization, activation or start of the
-  receiver, and never delays the reply.
-- **Liveness.** Every pass sends an authorization, even when nothing changed, and its `checked` time
-  is when the policy was last checked in full. The pages show it as "Policy last checked …", apart
-  from the content's collection time, and mark the pages stale only when that check is old. An
-  incomplete check sends its authorization with the previous `checked` time, so it does not advance
-  the label. A recent check says the publisher reaches the edge; it does not say the content is new.
+- **Single writer.** Only the publisher's policy path signs authorizations
+  (`web/cmd/valley-web-publish/policy.go`). Every pass runs the policy path before any content work,
+  and `--policy-only` runs the policy path alone. While holding `<state>/authorization.lock`, the
+  policy path reads the instance's read grants and each selected project's `policy/read`, allocates
+  the next sequence number, and signs the authorization. Holding one lock across the check,
+  allocation, and signing guarantees that an authorization with a larger sequence number always
+  comes from a later policy check. The policy path releases the lock before sending the
+  authorization to the receiver.
+- **Monotonic sequence counter.** The authorization sequence comes from a counter in
+  `<state>/authorization-sequence`, which the publisher syncs to disk before using it. Because the
+  counter never reads a clock, a backward clock jump cannot give a new authorization an earlier
+  sequence number. The receiver admits an authorization by its sequence number alone and ignores its
+  age, so a valid withdrawal with a higher sequence number is always accepted. The receiver refuses
+  any delayed or replayed authorization whose sequence number is at or below the stored sequence. If
+  the receiver already holds a higher sequence number — for example, after the publisher's state is
+  restored from an older backup — the policy path re-evaluates the policy and signs a new
+  authorization above the receiver's sequence number instead of resending an earlier signature.
+- **Content uploads confer no access.** A content manifest records each project's publication
+  identity, ref tips, and bundle digest, without any reader list. The receiver builds repositories
+  in a generation only for projects named in the stored authorization, and `valley-web` serves a
+  project only while the stored authorization names that project and its publication identity. A
+  delayed content upload, whatever its sequence number, cannot grant access or restore a withdrawn
+  project.
+- **Independent receiver lock and slots.** The receiver stores an authorization under a dedicated
+  lock and request-slot pool without running repository checks, plan-graph reads, or generation
+  sweeps (`web/export/authorize.go`). A stalled content upload or a long commit cannot delay a
+  withdrawal. When the receiver replies `200`, the authorization is already synced to disk.
+- **Checked on every request.** `valley-web` reads the stored authorization at the start of every
+  request and checks it again after rendering the response, before writing the first byte. If a new
+  authorization arrived while the response was rendering, `valley-web` discards the response and
+  renders it again. Every request that arrives after the receiver replies uses the new authorization
+  without restarting `valley-web`. Responses that have already started writing to the connection
+  finish normally. When the authorization is missing or invalid, `valley-web` serves no projects.
+- **Withdrawal and repository pruning.** When a new authorization omits a project, `valley-web`
+  hides that project starting with the next request. Once no reader holds the active generation, the
+  receiver deletes the project's git repository from that generation and omits it from future
+  activations. The signed `export.json` file remains unchanged on disk, so the withdrawn project's
+  plan text stays in the active generation until a later activation replaces and deletes that
+  generation. Repository deletion runs in the background and retries on the next authorization,
+  activation, or receiver startup without delaying the authorization reply.
+- **Policy-check freshness.** Every pass sends an authorization, even when no content changed, and
+  records in `checked` the time of the last complete policy check. Web pages display that timestamp
+  as "Policy last checked …" alongside the export's collection time, and mark a page stale only when
+  the policy check is old. An incomplete policy check reuses the previous authorization's `checked`
+  time so the timestamp on the page does not advance. A recent `checked` time shows that the
+  publisher can reach the edge, while `collected` shows the age of the exported content.
 
 Checked by `web-unit` (`TestVerifyAuthorizationSteps`,
 `TestStoreAuthorizesWhileTheActivationLockIsHeld`, `TestStorePrunesAWithdrawnRepository`,
-`TestTheAuthorizationSequenceIsDurable` and `TestUploadSkipsAnUnchangedDigest`), by
+`TestTheAuthorizationSequenceIsDurable`, and `TestUploadSkipsAnUnchangedDigest`), by
 `web-receiver-unit` (`TestAnAuthorizationIsAdmittedBySequence` and
 `TestASaturatedUploadLeavesValleyWebServing`), by `web-server-unit`
 (`TestAuthorizationIsReadOnEveryRequest` and `TestAResponseIsHeldToTheAuthorizationWhenWritten`),
 and by `web-push-e2e`, which withdraws a project with `--policy-only` while a content upload is
-stalled on the receiver's activation lock, and checks that the stalled upload restores nothing.
+stalled on the receiver's activation lock and verifies that the stalled upload restores nothing.
 
 ### One pass, one instance
 
@@ -3160,28 +3168,29 @@ for up to three attempts in total. If all three attempts are inconsistent, the p
 
 ## The web server
 
-`valley-web` serves a receiver's store over HTTP to anonymous readers, as the stored authorization
-allows: the plan page, each knot page, and a source browser for the `main` branch of each project
-anyone may read, all under the project's group (`web/server/`, `web/cmd/valley-web/`). It builds
-every view through one project-view filter, which takes the reader; each request's reader is
-`anyone`. It runs alongside the receiver as a separate process (see [The receiver](#the-receiver)).
-Its flags, routes, and limits are in
+`valley-web` serves a receiver's store over HTTP to anonymous readers (`web/server/`,
+`web/cmd/valley-web/`). For each project that the stored authorization allows `anyone` to read, it
+serves the plan page, each knot page, and a source browser for `main` under the project's group. It
+builds every view through a single project-view filter parameterized by the reader, passing `anyone`
+for every request. `valley-web` runs alongside the receiver as a separate process (see
+[The receiver](#the-receiver)). Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
 
-`valley-web` only reads the receiver's store. Both programs are given the store's descriptor file,
-and its payloads are in `v2/` beside it. `valley-web` opens the store with `export.OpenReadOnly`,
-which creates no files and takes only the shared `flock(2)` lock that each request holds on the
-generation it opens (`web/export/store.go`). Recovering an interrupted activation, sweeping old
-generations and pruning withdrawn repositories are left to the receiver when it opens the store with
-`export.OpenStore`. Until the receiver finishes an interrupted activation, `valley-web` continues to
-serve the generation that `current` points to.
+`valley-web` only reads the receiver's store. Both programs take the path to the store's descriptor
+file, and the store's payloads live in the `v2/` directory beside that file. `valley-web` opens the
+store with `export.OpenReadOnly`, which creates no files and takes only a shared `flock(2)` lock on
+the generation opened for a request (`web/export/store.go`). When the receiver opens the store with
+`export.OpenStore`, it recovers any interrupted activation, sweeps old generations, and prunes
+withdrawn repositories. Until the receiver finishes an interrupted activation, `valley-web`
+continues to serve the generation that `current` points to.
 
-The descriptor is a file because binaries of the first store layout took a directory as their state
-and refuse a file. The payload directory holds no `active` symlink and no `exports/`, where those
-binaries served from, so given the descriptor's directory or `v2/` they serve nothing. A rollback of
-the edge to them serves nothing from the store, and no reader of the first layout reads the
+The store's entry point is a regular file so that binaries built for the v1 store layout, which
+required a directory path for `--state`, refuse to open it. The `v2/` payload directory also omits
+the `active` symlink and `exports/` directory that v1 binaries read, so pointing a v1 binary at the
+parent directory or at `v2/` serves nothing. Rolling the edge back to v1 binaries therefore serves
+no content from a v2 store, and no v1 binary ever reads the store without checking the
 authorization.
 
 Because `valley-web` writes nothing to the state directory, it can run as a separate Unix user with
@@ -3189,9 +3198,9 @@ read-only access. The receiver keeps each staged upload private to its own user 
 and explicitly sets world-readable modes on `v2/`, `generations/`, the descriptor, the
 authorization, and every directory and file of an activated generation regardless of its umask
 (`web/export/store.go`; see [Web export receiver state](./reference.md#web-export-receiver-state)
-for the file modes). The mode of the descriptor's directory is a **deployment choice**. The receiver
-creates the directory if it does not exist and leaves its mode unchanged, and the deployment grants
-the server's user read and search access to it, for example through its group.
+for the file modes). The mode of the descriptor's parent directory is a **deployment choice**. The
+receiver creates that directory if it does not exist and leaves its mode unchanged, and the
+deployment grants the server's user read and search access to it, for example through its group.
 
 Every `git` command that `valley-web` runs names the repository with `--git-dir`
 (`web/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
@@ -3501,8 +3510,8 @@ usage (`web/cmd/valley-web-receive/main.go`, `web/cmd/valley-web-receive/receive
 `web/export/store.go`; see
 [Web export receiver (`valley-web-receive`)](./reference.md#web-export-receiver-valley-web-receive)):
 
-- **Requests.** At most 4 upload requests and 2 authorization requests run at once, counted apart,
-  so saturated uploads leave room for an authorization. Any additional authenticated request
+- **Requests.** At most 4 upload requests and 2 authorization requests run at once, in separate
+  pools so saturated uploads leave room for an authorization. Any additional authenticated request
   receives `503` with a `Retry-After` header and no refusal body, and the publisher retries it after
   a pause. Unauthenticated requests take no request slot. Once a request's headers arrive, a
   per-step time limit bounds connection reads and writes as well as store operations: 1 minute for a

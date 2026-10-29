@@ -33,11 +33,11 @@ const usage = `usage: valley-web --state FILE --listen ADDR
 
 Serve the active export of a web export receiver's store to anonymous
 readers, as the store's authorization allows: the plan page, each knot,
-and a source browser over the main of each project anyone may read.
+and a source browser over main for each project anyone may read.
 
-  --state FILE   the receiver's store descriptor, which must exist, such
-                 as /var/lib/valley-web/store; valley-web only reads the
-                 store, and writes nothing there
+  --state FILE   the receiver's existing store descriptor, such as
+                 /var/lib/valley-web/store; valley-web opens the store
+                 read-only and writes nothing there
   --listen ADDR  the TCP address to listen on, such as 127.0.0.1:8080;
                  port 0 picks a free port
 

@@ -281,7 +281,7 @@ func (rv *receiver) prune() {
 			case <-time.After(pause):
 				pause = min(2*pause, 5*time.Second)
 			case <-ctx.Done():
-				rv.log.Printf("deleting withdrawn repositories: readers held the active generation for %v; the next authorization or activation tries again", pruneTimeout)
+				rv.log.Printf("deleting withdrawn repositories: readers held the active generation for %v; will retry on the next authorization or activation", pruneTimeout)
 				return
 			}
 		}

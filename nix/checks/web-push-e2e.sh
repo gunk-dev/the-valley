@@ -270,7 +270,7 @@ commit valley "grant app again"
 publish --receiver "$receiver" --receiver-token token > /dev/null
 serves /tools/app app-readme-text
 (cd work/site && valley knot new outcome "Withdrawn while stalled" > /dev/null)
-flock edge/v2/lock sleep 300 &
+flock -o edge/v2/lock sleep 300 &
 holder=$!
 pids+=("$holder")
 publish --receiver "$receiver" --receiver-token token > stalled.out 2> stalled.err &
@@ -323,7 +323,7 @@ serves /tools/app app-readme-text
 registry "{site: \"${id[site]}\"}" > work/valley/identity/registry.cue
 commit valley "withdraw app again"
 publish --receiver "$receiver" --receiver-token token > pass.out
-grep -q "body site" pass.out || fail "the pass did not send site's bundle again: $(cat pass.out)"
+grep -q "^valley-web-publish: sent .*site; the receiver activated" pass.out || fail "the pass did not send site's bundle again: $(cat pass.out)"
 serves /tools/site site-readme-text
 gone /tools/app
 

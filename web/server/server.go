@@ -280,8 +280,11 @@ type Server struct {
 	loading   func(export.Generation)
 	rendering func(name string)
 	// checked is called once a request has rendered its response, before
-	// it reads the authorization again.
-	checked func()
+	// it reads the authorization again. starting is called once that read
+	// found the authorization unchanged, with the serving lock held, before
+	// the response's headers are written.
+	checked  func()
+	starting func()
 }
 
 // New is a Server over c's store.
@@ -426,15 +429,32 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if s.checked != nil {
 			s.checked()
 		}
+		// The last read and the response's headers happen under the
+		// serving lock, shared, and the receiver renames a new
+		// authorization into place under it, exclusively. A response
+		// whose headers are written after the receiver replies was
+		// checked against the new authorization.
+		release, err := s.store.HoldServing()
+		if err != nil {
+			q.drop()
+			q.s.log(fmt.Errorf("taking the serving lock: %w", err))
+			q.busy()
+			q.write(func() {})
+			return
+		}
 		if s.readAuthorization().same(q.auth) {
-			q.write()
+			if s.starting != nil {
+				s.starting()
+			}
+			q.write(release)
 			q.drop()
 			return
 		}
+		release()
 		q.drop()
 		if render == maxRenders {
 			q.busy()
-			q.write()
+			q.write(func() {})
 			return
 		}
 	}
@@ -976,7 +996,11 @@ func (q *request) redirect(url string) { q.location = url }
 // failed or timed out. A permanent redirect names its location as it was
 // made, with no cleaning, so the path it redirects to is the one the
 // reader sent under another name.
-func (q *request) write() {
+//
+// released is called once the headers are written, and before the body is,
+// or at once when there is nothing to write.
+func (q *request) write(released func()) {
+	defer released()
 	switch {
 	case q.location != "" && q.permanent:
 		q.w.Header().Set("Location", q.location)
@@ -988,6 +1012,7 @@ func (q *request) write() {
 		h.Set("Content-Type", q.ctype)
 		h.Set("Content-Length", strconv.Itoa(q.body.n))
 		q.w.WriteHeader(q.status)
+		released()
 		for _, p := range q.body.pieces {
 			if _, err := q.w.Write(p); err != nil {
 				return

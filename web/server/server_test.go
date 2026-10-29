@@ -2805,3 +2805,59 @@ func TestAResponseIsHeldToTheAuthorizationWhenWritten(t *testing.T) {
 		})
 	}
 }
+
+// headerClock is a response recorder that notes when the headers were
+// written.
+type headerClock struct {
+	*httptest.ResponseRecorder
+	at time.Time
+}
+
+func (h *headerClock) WriteHeader(status int) {
+	h.at = time.Now()
+	h.ResponseRecorder.WriteHeader(status)
+}
+
+// A withdrawal stored between a response's last read of the authorization
+// and its headers waits for the headers: Authorize renames the record
+// under the serving lock, which the response holds shared until its
+// headers are written. So the response the old authorization allowed is
+// one whose headers were written before the withdrawal returned, and the
+// next request is refused.
+func TestAWithdrawalWaitsForAResponseItsCheckAdmitted(t *testing.T) {
+	h := newHarness(t)
+	a, _, err := h.store.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := exporttest.Authorization(a.Sequence + 1)
+	signed := exporttest.SignAuthorization(t, withdrawal)
+	stored := make(chan time.Time, 1)
+	h.srv.starting = func() {
+		h.srv.starting = nil
+		go func() {
+			if err := h.store.Authorize(context.Background(), withdrawal, signed); err != nil {
+				t.Error(err)
+			}
+			stored <- time.Now()
+		}()
+		select {
+		case at := <-stored:
+			t.Error("the withdrawal was stored while a response held the serving lock")
+			stored <- at
+		case <-time.After(200 * time.Millisecond):
+		}
+	}
+	w := &headerClock{ResponseRecorder: httptest.NewRecorder()}
+	h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/knots/oc-a000002", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("the response admitted before the withdrawal answered %d", w.Code)
+	}
+	at := <-stored
+	if !at.After(w.at) {
+		t.Errorf("the withdrawal returned at %v, before the response's headers at %v", at, w.at)
+	}
+	if w := h.get("/tools/app/knots/oc-a000002"); w.Code != http.StatusNotFound {
+		t.Errorf("after the withdrawal returned the next request answered %d, want 404", w.Code)
+	}
+}

@@ -8,7 +8,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // Holdings are the active export, by its sequence and its digest, or nil
@@ -111,7 +113,8 @@ func (s *Store) AuthorizationHighWater() (int64, error) {
 // refuses a sequence not greater than the stored one's as replayed, and a
 // basis other than the stored one's sequence as stale-basis, and then
 // replaces the stored authorization durably. Once Authorize returns
-// nil, every request a server reads the authorization for is held to it.
+// nil, every response a server starts writing is held to it: the rename
+// happens under the serving lock, exclusively.
 //
 // Authorize deletes nothing. Prune deletes the repositories it withdrew.
 func (s *Store) Authorize(ctx context.Context, a *Authorization, signed []byte) error {
@@ -133,7 +136,67 @@ func (s *Store) Authorize(ctx context.Context, a *Authorization, signed []byte) 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return writeDurably(s.path("authorization"), signed)
+	return writeDurablyHeld(s.path("authorization"), signed, func() (func(), error) {
+		return s.holdServing(ctx, syscall.LOCK_EX)
+	})
+}
+
+// servingLock is the file a server and Authorize coordinate through. A
+// server holds it shared from its last read of the authorization until it
+// has written a response's headers. Authorize holds it exclusively while
+// it renames the new authorization into place, and returns only after it
+// releases it. So a response whose headers are written after Authorize
+// returns was checked against the new authorization.
+const servingLock = "serving.lock"
+
+// HoldServing takes the serving lock shared, for a server's last read of
+// the authorization and the response it then starts. Authorize holds it
+// exclusively for a rename alone, so the wait is short. A store opened
+// read-only takes it too: the lock file is opened read-only.
+func (s *Store) HoldServing() (release func(), err error) {
+	return s.holdServing(context.Background(), syscall.LOCK_SH)
+}
+
+// holdServing takes the serving lock as how says, waiting for it until
+// ctx is done.
+func (s *Store) holdServing(ctx context.Context, how int) (func(), error) {
+	flags := os.O_RDONLY
+	if how == syscall.LOCK_EX {
+		flags = os.O_RDWR
+	}
+	f, err := os.OpenFile(s.path(servingLock), flags, 0)
+	if err != nil {
+		return nil, err
+	}
+	for pause := time.Millisecond; ; pause = min(2*pause, 50*time.Millisecond) {
+		err := flock(f, how|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			f.Close()
+			return nil, err
+		}
+		select {
+		case <-time.After(pause):
+		case <-ctx.Done():
+			f.Close()
+			return nil, fmt.Errorf("waiting for %s: %w", s.path(servingLock), ctx.Err())
+		}
+	}
+	var once sync.Once
+	return func() { once.Do(func() { f.Close() }) }, nil
+}
+
+// touch makes the file at path if it does not exist, and gives it mode
+// 0644 whatever the umask.
+func touch(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Chmod(0o644)
 }
 
 // Missing are the projects of the active export that the stored

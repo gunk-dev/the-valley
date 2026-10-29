@@ -244,11 +244,14 @@ func OpenStore(path string, report func(error)) (*Store, error) {
 	}
 	// The payload directory and generations/ are readable by every user
 	// who can reach them, whatever the umask; the descriptor's directory
-	// decides who can.
+	// decides who can. So is serving.lock, which a server opens read-only.
 	for _, d := range []string{dir, s.path("generations")} {
 		if err := os.Chmod(d, 0o755); err != nil {
 			return nil, err
 		}
+	}
+	if err := touch(s.path(servingLock)); err != nil {
+		return nil, err
 	}
 	if err := os.Chmod(s.path("staging"), 0o700); err != nil {
 		return nil, err
@@ -1465,6 +1468,13 @@ func flock(f *os.File, how int) error {
 // beside it, mode 0644 whatever the umask, synced, renamed over it, and
 // the directory synced.
 func writeDurably(path string, data []byte) error {
+	return writeDurablyHeld(path, data, nil)
+}
+
+// writeDurablyHeld is writeDurably, holding what hold takes, when it is
+// not nil, around the rename alone: hold is taken once the temporary file
+// is synced, and released before the directory is synced.
+func writeDurablyHeld(path string, data []byte, hold func() (func(), error)) error {
 	tmp := path + "." + random()
 	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
@@ -1480,9 +1490,14 @@ func writeDurably(path string, data []byte) error {
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
+	release := func() {}
+	if err == nil && hold != nil {
+		release, err = hold()
+	}
 	if err == nil {
 		err = rename(tmp, path)
 	}
+	release()
 	if err != nil {
 		os.Remove(tmp)
 		return err

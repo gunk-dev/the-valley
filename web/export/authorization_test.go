@@ -394,9 +394,10 @@ func firstLayout(t *testing.T, dir string) {
 }
 
 // A retirement stopped before any of its steps, as by a crash, is
-// finished by the next start, whatever of the first layout is left: the
-// next start finds it by any of its names. A process holding the first
-// layout's lock stops the retirement before it deletes anything.
+// recorded in the payload directory, and the next start finishes it from
+// that record, whatever of the first layout is left, then removes the
+// record. A process holding the first layout's lock stops the retirement
+// before it records or deletes anything.
 func TestRetiringTheFirstLayoutResumes(t *testing.T) {
 	steps := []string{"active", "high-water", "exports", "staging", "trash", "lock"}
 	for _, step := range steps {
@@ -418,12 +419,18 @@ func TestRetiringTheFirstLayoutResumes(t *testing.T) {
 			if _, err := os.Lstat(filepath.Join(dir, step)); err != nil {
 				t.Errorf("the retirement stopped at %s deleted it: %v", step, err)
 			}
+			if _, err := os.Stat(filepath.Join(dir, "v2", "retiring")); err != nil {
+				t.Errorf("the retirement stopped at %s is not recorded: %v", step, err)
+			}
 			var r reports
 			if _, err := export.OpenStore(filepath.Join(dir, "store"), r.report); err != nil {
 				t.Fatal(err)
 			}
 			if got := entries(t, dir); strings.Join(got, " ") != "store v2" {
 				t.Errorf("after the retirement resumed the directory holds %v", got)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "v2", "retiring")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("after the retirement resumed it is still recorded: %v", err)
 			}
 			if errs := r.all(); len(errs) != 1 || !strings.Contains(errs[0].Error(), "retired") {
 				t.Errorf("the store reported %v, want the retired layout", errs)
@@ -450,4 +457,44 @@ func TestRetiringTheFirstLayoutResumes(t *testing.T) {
 			t.Errorf("a refused retirement left %v", got)
 		}
 	})
+}
+
+// A new store made beside files that only share names with the first
+// layout deletes none of them, then or on a later start: an exports/
+// directory, a lock, an active symlink that points elsewhere and a
+// high-water file that holds no sequence are no proof of the first layout.
+// A retirement in progress is recorded in the payload directory until it
+// finishes.
+func TestANewStoreKeepsWhatOnlySharesTheFirstLayoutsNames(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "exports", "photos"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, data := range map[string]string{"exports/photos/one.jpg": "jpeg", "lock": "pid 7\n", "high-water": "full\n"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("../elsewhere", filepath.Join(dir, "active")); err != nil {
+		t.Fatal(err)
+	}
+	want := "active exports high-water lock store v2"
+	for start := 1; start <= 2; start++ {
+		var r reports
+		if _, err := export.OpenStore(filepath.Join(dir, "store"), r.report); err != nil {
+			t.Fatal(err)
+		}
+		if got := entries(t, dir); strings.Join(got, " ") != want {
+			t.Errorf("after start %d the directory holds %v, want %s", start, got, want)
+		}
+		if data, err := os.ReadFile(filepath.Join(dir, "exports", "photos", "one.jpg")); err != nil || string(data) != "jpeg" {
+			t.Errorf("after start %d exports/photos/one.jpg holds %q, %v", start, data, err)
+		}
+		if errs := r.all(); len(errs) != 0 {
+			t.Errorf("start %d reported %v", start, errs)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "v2", "retiring")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("after start %d a retirement is recorded: %v", start, err)
+		}
+	}
 }

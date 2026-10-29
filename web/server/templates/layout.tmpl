@@ -31,6 +31,7 @@
     <span class="eyebrow">Source</span><span class="mono">{{.Short}}</span>
     {{- if .AtTip}}<span class="chip">main's published tip</span>{{else}}<a href="{{.TipURL}}">main's published tip</a>{{end}}
     <a href="{{.LogURL}}">history</a>
+    {{- block "source-download" .}}{{end}}
   </div>
   <nav class="crumbs" aria-label="Path">
     {{- range $i, $c := .Crumbs}}{{if $i}}<span class="muted">/</span>{{end}}{{if .URL}}<a href="{{.URL}}">{{.Text}}</a>{{else}}<span>{{.Text}}</span>{{end}}{{end -}}

@@ -3189,11 +3189,11 @@ for up to three attempts in total. If all three attempts are inconsistent, the p
 
 `valley-web` serves a receiver's store over HTTP to anonymous readers (`web/server/`,
 `web/cmd/valley-web/`). For each project that the stored authorization allows `anyone` to read, it
-serves the plan page, each knot page, and a source browser for `main` under the project's group. It
-builds every view through a single project-view filter parameterized by the reader, passing `anyone`
-for every request. `valley-web` runs alongside the receiver as a separate process (see
-[The receiver](#the-receiver)). Its flags, routes, and limits are in
-[Web server (`valley-web`)](./reference.md#web-server-valley-web).
+serves the plan page, each knot page, and a source browser for `main` under the project's group,
+including a gzipped tar archive for each reachable commit. It builds every view through a single
+project-view filter parameterized by the reader, passing `anyone` for every request. `valley-web`
+runs alongside the receiver as a separate process (see [The receiver](#the-receiver)). Its flags,
+routes, and limits are in [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
 
@@ -3358,9 +3358,9 @@ the plan page, a knot page, and a directory page still succeed.
 
 ### A source request's git work
 
-At most 8 source requests (tree, file, or log) may run `git` at once (`server.MaxGit`). To keep a
-slow `git` command or export load from holding a slot for the full 15-second request timeout, a
-source request may hold its `git` slot for at most 5 seconds from when it takes the slot
+At most 8 source requests (tree, file, log, or archive) may run `git` at once (`server.MaxGit`). To
+keep a slow `git` command or export load from holding a slot for the full 15-second request timeout,
+a source request may hold its `git` slot for at most 5 seconds from when it takes the slot
 (`web/server/server.go`). That 5-second limit covers both waiting for the generation's export to be
 read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
 `git`, releases the slot, and answers `503`. When `git` finishes in time, the request releases its
@@ -3441,6 +3441,93 @@ Checked by `web-server-unit`:
 
 Also checked by `web-unit` (`TestAcceptBundle` and `TestReachable`), which test the commit-graph and
 both object formats.
+
+### Source archives
+
+A reader can download a commit's tree as a gzipped tar archive at
+`/<group>/<project>/source/archive/<commit>.tar.gz` (`web/server/archive.go`; see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web) for routes, headers, and limits).
+Every directory page links to the archive for its commit.
+
+The archive covers the same source as the file pages: the tree of a commit that the project's
+published `main` reaches, and none of the history. It is not limited to what a file page shows. It
+also holds binary files, and files larger than the 1 MiB a file page shows (`server.MaxFile`).
+
+`/<group>/<project>/source/archive/main.tar.gz` redirects with `302` to the archive of the commit at
+`main`'s tip, using the same headers as `/<group>/<project>/source/`. The redirect is temporary
+because `main` moves. A script or agent can fetch `main.tar.gz` with `curl -L` to download the
+current tip directly. `main` is the only name the route accepts in place of a commit ID; any other
+ref name, `HEAD`, or an abbreviated ID answers `404`. Because the redirect reads only the export's
+`source_tip`, it runs no `git` command and takes no `git` slot, just like
+`/<group>/<project>/source/`.
+
+Both archive routes use the same project lookup, reachability check, and authorization check as the
+other source routes (`web/server/source.go`). A project that the authorization excludes answers
+`404` on both routes, matching its tree page.
+
+The server writes the tar archive itself, in Go, from the commit's tree. It lists the tree with
+`git ls-tree -r -t -l -z`, and reads every file's content with one `git cat-file --batch` process.
+Both commands run through the `export` package's `git` helpers, in the same isolated environment as
+every other source request. Neither command reads git attributes, so the archive does not apply
+`export-ignore` or `export-subst`. The archive is the commit's tree byte for byte.
+
+Every entry is placed under one directory named from the project's web name and the commit's first
+12 hex digits. The entries follow the tree's order, and each directory comes before what it holds.
+
+- A regular file has mode `0644`, or `0755` when git records it as executable (`100755`).
+- A symbolic link is a tar symbolic link whose target is the link's content in git. The server never
+  follows it.
+- A submodule is an empty directory.
+- Every entry carries the commit's committer time as its modification time, uid and gid 0, and empty
+  user and group names.
+- Go's tar writer chooses USTAR or PAX for each header, whichever the header needs.
+
+The server compresses the tar stream in process with Go's `compress/gzip` at a fixed compression
+level, with an empty file name and zero modification time in the gzip header. The archive's bytes do
+not depend on the time of the request, the repository's refs, its git configuration, or attributes.
+The tar paths include the project's web name. So a commit produces the same archive bytes on every
+request to the same build under the same web name.
+
+The server checks the tree's listing before it reads any file. It refuses an archive whose files add
+up to more than 32 MiB before compression (`server.MaxArchiveInput`). It also refuses one whose tree
+holds more than 10,000 entries (`server.MaxArchiveEntries`), or whose listing is longer than 4 MiB
+(`server.MaxRead`). A refused archive answers `500` with the "Page too large" page.
+
+The server then streams each file from `git` through the tar and gzip writers into the response
+body. The body uses the same response budget (`server.MaxBuffered`) and 8 MiB response limit
+(`server.MaxResponse`) as HTML pages. So the server holds the compressed archive in memory, and
+never a whole file. It builds the archive while holding the request's `git` slot (within the
+5-second `git` timeout), releases the slot once the archive is built, and re-checks the stored
+authorization before writing the first byte. A compressed archive that exceeds 8 MiB is discarded
+and answers `500` with the "Page too large" page. Archive responses keep `Cache-Control: no-cache`
+because the authorization can change while a commit's archive URL stays the same.
+
+Checked by `web-server-unit`:
+
+- `TestSourceArchive` compares the archive's entries, in order, against the commit's tree, with
+  their modes, times, and contents. It checks that two requests return identical bytes, verifies the
+  headers and the link on directory pages, and checks the `404` response for invalid or unreachable
+  commit names and for projects excluded by the authorization.
+- `TestArchiveAppliesNoAttributes` commits a `.gitattributes` that sets `export-subst` and
+  `export-ignore`, and a file that holds `$Format:%ar$`. The archive holds every file, and that file
+  verbatim. The test then moves a ref, and adds attributes and git configuration to the repository,
+  and the archive keeps the same bytes.
+- `TestArchiveLinksAndSubmodules` checks a symbolic link, a submodule, an executable file, and the
+  PAX format for a long name and a long link target.
+- `TestArchiveInputBound` checks that a tree whose files pass 32 MiB, and a tree of more than 10,000
+  entries, answer the "Page too large" page and hold none of the response budget.
+  `TestArchiveTooLarge` checks an archive whose compressed bytes exceed a shortened `maxResponse`
+  bound.
+- `TestArchiveStreamsIntoTheBody` serves a 24 MiB file that compresses to less than 256 KiB. Once
+  the response is rendered, it holds only the budget pieces that the compressed body fills.
+- `TestArchiveOfMainsTip` checks the redirect's status, `Location`, and headers against
+  `/<group>/<project>/source/`. It verifies that the redirect takes no `git` slot and follows `main`
+  when `main` advances, and checks that `HEAD.tar.gz` and a branch name answer `404`.
+- `TestHiddenProjectAnswersLikeMissing` checks the redirect for a project excluded by the
+  authorization.
+
+`web-push-e2e` downloads an archive from `valley-web`, lists it with `tar`, and fetches
+`main.tar.gz` with `curl -L` to verify that it returns the same bytes.
 
 ### Unpublished blockers
 

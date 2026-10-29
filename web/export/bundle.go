@@ -293,10 +293,16 @@ func Git(ctx context.Context, repo string, limit int64, args ...string) ([]byte,
 // git's own failure only if read reached the end of the output: a git
 // stopped early is not held to how it exited.
 func GitStream(ctx context.Context, repo string, limit int64, read func(io.Reader) error, args ...string) error {
+	return GitStreamInput(ctx, repo, nil, limit, read, args...)
+}
+
+// GitStreamInput runs git as GitStream does, with stdin as git's standard
+// input. A nil stdin gives git no input, as GitStream does.
+func GitStreamInput(ctx context.Context, repo string, stdin []byte, limit int64, read func(io.Reader) error, args ...string) error {
 	if len(args) == 0 {
 		return errors.New("git needs a command")
 	}
-	return run(command(ctx, "", append([]string{"--git-dir=" + repo}, args...)...), args[0], nil, limit, read)
+	return run(command(ctx, "", append([]string{"--git-dir=" + repo}, args...)...), args[0], stdin, limit, read)
 }
 
 // run starts cmd, with stdin as its standard input when it is not nil,

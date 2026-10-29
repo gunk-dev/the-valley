@@ -193,6 +193,34 @@ serves "/tools/app/knots/$knot" "Open the edge"
 [ "$(get /tools/homepage/source/)" = "308 /tools/site/source/" ] ||
   fail "the former name homepage answered $(get /tools/homepage/source/)"
 
+# A reader downloads app's source from the link on its tree page: a
+# gzipped tar archive of main's tip that lists main's files and
+# directories, each under one directory named for the project and the
+# commit.
+serves /tools/app app-readme-text
+tip=$(git -C work/app rev-parse HEAD)
+grep -qF "href=\"/tools/app/source/archive/$tip.tar.gz\">Download .tar.gz<" "$TMPDIR/body" ||
+  fail "app's tree page does not link the archive of main's tip"
+status=$(curl -sS --max-time 10 -o app.tar.gz -w '%{http_code} %header{content-type}' "http://$web/tools/app/source/archive/$tip.tar.gz")
+[ "$status" = "200 application/gzip" ] || fail "valley-web answered app's archive with $status"
+prefix=app-${tip:0:12}/
+tar -tzf app.tar.gz | LC_ALL=C sort > listed
+{
+  echo "$prefix"
+  git -C work/app ls-tree -r -t --format='%(objecttype) %(path)' HEAD |
+    sed -e "s|^tree \(.*\)|$prefix\1/|" -e "s|^blob \(.*\)|$prefix\1|"
+} | LC_ALL=C sort > want
+cmp -s listed want || fail "app's archive lists $(cat listed), not $(cat want)"
+
+# main.tar.gz is one address for the archive of main's tip, wherever main
+# is: a temporary redirect to that archive, which curl -L follows to the
+# same bytes.
+[ "$(get /tools/app/source/archive/main.tar.gz)" = "302 /tools/app/source/archive/$tip.tar.gz" ] ||
+  fail "app's main.tar.gz answered $(get /tools/app/source/archive/main.tar.gz)"
+status=$(curl -sS --max-time 10 --max-redirs 3 -L -o main.tar.gz -w '%{http_code} %header{content-type}' "http://$web/tools/app/source/archive/main.tar.gz")
+[ "$status" = "200 application/gzip" ] || fail "valley-web answered app's main.tar.gz with $status"
+cmp -s main.tar.gz app.tar.gz || fail "app's main.tar.gz is not the archive of main's tip"
+
 # The pages say when the policy was last checked, apart from when the
 # plan was collected. A pass that finds nothing changed sends no content,
 # and still sends an authorization, signed again with a later sequence and

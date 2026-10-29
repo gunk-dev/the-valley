@@ -111,8 +111,7 @@ func (q *request) page(status int, name, title string, content any) {
 	case errors.Is(err, errNoBudget):
 		q.busy()
 	case errors.Is(err, errTooLarge):
-		q.s.log(fmt.Errorf("rendering %q: the page is larger than %d bytes", q.r.URL.EscapedPath(), q.s.maxResponse))
-		q.static(http.StatusInternalServerError, htmlType, tooLargePage)
+		q.tooLarge()
 	case q.ctx.Err() != nil:
 		q.fail(fmt.Errorf("rendering %s: %w", name, err))
 	default:
@@ -122,6 +121,13 @@ func (q *request) page(status int, name, title string, content any) {
 }
 
 const htmlType = "text/html; charset=utf-8"
+
+// tooLarge logs a response that would pass the server's maxResponse, and
+// answers with the short page that says the page is too large.
+func (q *request) tooLarge() {
+	q.s.log(fmt.Errorf("rendering %q: the page is larger than %d bytes", q.r.URL.EscapedPath(), q.s.maxResponse))
+	q.static(http.StatusInternalServerError, htmlType, tooLargePage)
+}
 
 // static answers with a response made once, when the server starts. It
 // shows no export, and takes nothing from the budget.

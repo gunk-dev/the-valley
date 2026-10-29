@@ -1,7 +1,8 @@
 // Package server is the web UI's read side. It serves the active export
 // of a receiver's store to anonymous readers, as the store's authorization
 // allows: the plan page, each knot, and a source browser over the main of
-// each project the authorization lets anyone read.
+// each project the authorization lets anyone read. The source browser also
+// serves a gzipped tar archive of each reachable commit.
 //
 // # Snapshots
 //
@@ -49,11 +50,19 @@
 // a reader that reads slowly holds neither. It keeps its response until
 // the response is written.
 //
-// A response's body is at most MaxResponse bytes. A page that would pass
-// it stops rendering there, and the request answers with a short page
-// that says the page is too large. Rendered responses take their memory
-// from a budget of MaxBuffered bytes, which they give back once they are
-// written. A request that finds the budget spent answers 503.
+// A response's body is at most MaxResponse bytes. A page or archive that
+// exceeds MaxResponse stops there, and the request answers with a short
+// page saying the page is too large. The server builds an archive in full
+// into the response body while holding the request's git slot. It writes
+// the tar itself from the commit's tree, applying no git attribute, and
+// streams each file through tar and gzip into the body, so it never holds
+// a whole file. An archive whose files add up to more than
+// MaxArchiveInput, or whose tree holds more than MaxArchiveEntries
+// entries, is refused with the same short page before any file is read.
+// Rendered
+// responses take their memory from a budget of MaxBuffered bytes, which
+// they give back once they are written. A request that finds the budget
+// spent answers 503.
 //
 // Responses larger than SmallPage hold at most MaxLarge of the budget
 // between them, counting their first SmallPage bytes. So readers that
@@ -66,17 +75,19 @@
 // The server answers GET and HEAD alone. A project's pages are under its
 // group's name and its own web name, which need not be its identifier:
 //
-//	/                                                 the plan page
-//	/<group>/<project>/                               a redirect to the tree at main's tip
-//	/<group>/<project>/knots/<id>                     one knot, with its body and comments
-//	/<group>/<project>/source/                        a redirect to the tree at main's tip
-//	/<group>/<project>/source/tree/<commit>/<path>    a directory and its README
-//	/<group>/<project>/source/blob/<commit>/<path>    a file
-//	/<group>/<project>/source/log/<commit>            the history that ends at a commit
-//	/<group>/<project>/source/log/<commit>?from=…     an older page of that history
-//	/<group>/<former name>/…                          a permanent redirect
-//	/<alias>/…                                        a permanent redirect
-//	/-/...                                            the server's own paths
+//	/                                                   the plan page
+//	/<group>/<project>/                                 a redirect to the tree at main's tip
+//	/<group>/<project>/knots/<id>                       one knot, with its body and comments
+//	/<group>/<project>/source/                          a redirect to the tree at main's tip
+//	/<group>/<project>/source/tree/<commit>/<path>      a directory and its README
+//	/<group>/<project>/source/blob/<commit>/<path>      a file
+//	/<group>/<project>/source/log/<commit>              the history that ends at a commit
+//	/<group>/<project>/source/log/<commit>?from=…       an older page of that history
+//	/<group>/<project>/source/archive/<commit>.tar.gz   the commit's tree as a gzipped tar archive
+//	/<group>/<project>/source/archive/main.tar.gz       a redirect to the archive of main's tip
+//	/<group>/<former name>/…                            a permanent redirect
+//	/<alias>/…                                          a permanent redirect
+//	/-/...                                              the server's own paths
 //
 // A group's alias redirects to the same path under the group's name, a
 // project's former name to the same path under its web name, and a
@@ -90,11 +101,11 @@
 // refuses an export whose group names and aliases collide, or whose
 // projects' web names and former names collide within a group.
 //
-// Every source link names its group and project, a full commit ID and a
-// path. A commit is served only when export.Reachable finds it reachable
-// from the project's published source tip, and a path is resolved one
-// tree entry at a time from that commit's tree, so no other object can be
-// named.
+// Every source link names its group and project, a full commit ID, and a
+// path, or a full commit ID alone for an archive. A commit is served only
+// when export.Reachable finds it reachable from the project's published
+// source tip, and a path is resolved one tree entry at a time from that
+// commit's tree, so no other object can be named.
 //
 // # Access
 //
@@ -120,8 +131,10 @@
 // read from the export or a repository is escaped. Each response carries
 // a strict Content-Security-Policy: default-src 'self', and one inline
 // stylesheet and one inline script admitted by their SHA-256 hashes. No
-// repository file is served as itself: a file is shown as escaped text,
-// and a binary file or one larger than MaxFile is not shown at all.
+// page serves a repository file as raw content: a file is shown as escaped
+// text, and a binary file or one larger than MaxFile is not shown at all.
+// Raw repository files are served only inside a gzipped tar archive sent
+// as an attachment.
 package server
 
 import (
@@ -162,6 +175,16 @@ const (
 	// listing: a directory's entries, or a page of history. git is
 	// stopped once it prints more.
 	MaxRead = 4 << 20
+	// MaxArchiveInput is the most bytes of files an archive holds before
+	// it is gzipped: the sizes of the files and symbolic links in its
+	// commit's tree, added up. An archive of a larger tree is refused
+	// before any file is read.
+	MaxArchiveInput = 32 << 20
+	// MaxArchiveEntries is the most entries an archive holds: its
+	// files, symbolic links, directories and submodules together. An
+	// archive of a tree that holds more is refused as one that passes
+	// MaxArchiveInput is.
+	MaxArchiveEntries = 10_000
 	// MaxDepth is the most path segments a source route takes.
 	MaxDepth = 64
 	// MaxPlanDepth is the most levels of knots a milestone's tree
@@ -402,11 +425,14 @@ type request struct {
 	// The response: a status and a page, or a redirect. It is written
 	// once the request has given back its generation and git slot, and
 	// the page's pieces are given back to the budget once it is written.
-	status    int
-	ctype     string
-	body      *body
-	location  string
-	permanent bool
+	// disposition is the Content-Disposition of an archive, and "" for
+	// any other response.
+	status      int
+	ctype       string
+	disposition string
+	body        *body
+	location    string
+	permanent   bool
 }
 
 // ServeHTTP reads the stored authorization, renders the response under
@@ -531,13 +557,16 @@ func (q *request) serve() {
 }
 
 // runsGit reports whether a path is a source route that reads a
-// repository: a tree, a file or a log of something that may be a group's
-// project. It reads the path's shape alone, before the export is read, so
-// a path through a group's alias that has the shape takes a git slot too,
-// and gives it back when it redirects.
+// repository: a tree, a file, a log or an archive of something that may be
+// a group's project. The redirect to the archive of main's tip reads none,
+// as the redirect to the tree at main's tip reads none. runsGit reads the
+// path's shape alone, before the export is read, so a path through a
+// group's alias that has the shape takes a git slot too, and gives it back
+// when it redirects.
 func runsGit(parts []string) bool {
 	return len(parts) >= 4 && export.ValidName(parts[0]) && export.ValidName(parts[1]) && parts[2] == "source" &&
-		(parts[3] == "tree" || parts[3] == "blob" || parts[3] == "log")
+		(parts[3] == "tree" || parts[3] == "blob" || parts[3] == "log" ||
+			parts[3] == "archive" && !(len(parts) == 5 && parts[4] == tipArchive))
 }
 
 // giveSlot gives back the request's git slot, when it holds one.
@@ -997,7 +1026,7 @@ func (q *request) busy() {
 // of it is written.
 func (q *request) discard() {
 	q.drop()
-	q.status, q.body, q.location, q.permanent = 0, nil, "", false
+	q.status, q.disposition, q.body, q.location, q.permanent = 0, "", nil, "", false
 }
 
 // redirect answers with a redirect to url.
@@ -1022,6 +1051,9 @@ func (q *request) write(released func()) {
 	case q.status != 0:
 		h := q.w.Header()
 		h.Set("Content-Type", q.ctype)
+		if q.disposition != "" {
+			h.Set("Content-Disposition", q.disposition)
+		}
 		h.Set("Content-Length", strconv.Itoa(q.body.n))
 		q.w.WriteHeader(q.status)
 		released()

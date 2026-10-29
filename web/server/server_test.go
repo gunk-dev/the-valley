@@ -1,8 +1,10 @@
 package server
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -18,6 +20,7 @@ import (
 	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -446,6 +449,8 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 		"/source/tree/" + siteTip + "/",
 		"/source/blob/" + siteTip + "/README.md",
 		"/source/log/" + siteTip,
+		"/source/archive/" + siteTip + ".tar.gz",
+		"/source/archive/main.tar.gz",
 		"/source/tree/" + siteTip + "/no/such/path/",
 		"/source/anything",
 	} {
@@ -752,7 +757,11 @@ func TestUnreachableCommitIsRefused(t *testing.T) {
 	notFound := h.get("/tools/app/knots/oc-fffffff").Body.String()
 
 	for _, commit := range []string{side, tree, readme, tip[:12], "main", "HEAD", strings.Repeat("0", 40), tip + "~1"} {
-		for _, route := range []string{"/tools/app/source/tree/%s/", "/tools/app/source/blob/%s/README.md", "/tools/app/source/log/%s"} {
+		for _, route := range []string{"/tools/app/source/tree/%s/", "/tools/app/source/blob/%s/README.md", "/tools/app/source/log/%s",
+			"/tools/app/source/archive/%s.tar.gz"} {
+			if commit == "main" && strings.HasPrefix(route, "/tools/app/source/archive/") {
+				continue // main.tar.gz redirects to the archive of main's tip
+			}
 			target := fmt.Sprintf(route, commit)
 			w := h.get(target)
 			if w.Code != http.StatusNotFound || w.Body.String() != notFound {
@@ -804,7 +813,7 @@ func TestSourceBrowser(t *testing.T) {
 	}
 
 	links := regexp.MustCompile(`href="(/[^"]*/source/[^"]*)"`)
-	named := regexp.MustCompile(`^/tools/app/source/(tree|blob|log)/[0-9a-f]{40}(/|$)`)
+	named := regexp.MustCompile(`^/tools/app/source/((tree|blob|log)/[0-9a-f]{40}(/|$)|archive/[0-9a-f]{40}\.tar\.gz$)`)
 	for _, page := range []string{root, file, log} {
 		for _, m := range links.FindAllStringSubmatch(page, -1) {
 			if !named.MatchString(m[1]) {
@@ -828,7 +837,434 @@ func TestSourceBrowser(t *testing.T) {
 	}
 }
 
-// file is one file a test commits: its mode, path and content.
+// A tree page links the archive of its commit. The archive holds that
+// commit's files and directories, and only those, in the tree's order,
+// under one directory named for the project and the commit. Every entry
+// carries the commit's time, and the same commit gives the same bytes.
+// It carries every header a page carries, and its own. A name that is no
+// full ID of a commit main reaches, or a path of another shape, answers the
+// one 404, and a project the authorization does not name answers as its
+// tree page does.
+func TestSourceArchive(t *testing.T) {
+	h := newHarness(t)
+	repo, _ := h.active().Repo("app")
+	tip := h.tip()
+	parent := git(t, repo, nil, "rev-parse", tip+"~1")
+	at := func(commit string) string { return "/tools/app/source/archive/" + commit + ".tar.gz" }
+
+	for _, dir := range []string{tip + "/", tip + "/docs/", parent + "/"} {
+		if page := h.page("/tools/app/source/tree/" + dir); !strings.Contains(page, `<a href="`+at(dir[:40])+`">Download .tar.gz</a>`) {
+			t.Errorf("the tree page at %s does not link its commit's archive", dir)
+		}
+	}
+
+	for _, commit := range []string{tip, parent} {
+		w := h.get(at(commit))
+		if w.Code != http.StatusOK {
+			t.Fatalf("GET %s answered %d:\n%s", at(commit), w.Code, w.Body)
+		}
+		want := http.Header{}
+		setHeaders(want)
+		want.Set("Content-Type", "application/gzip")
+		want.Set("Content-Disposition", `attachment; filename="app-`+commit[:12]+`.tar.gz"`)
+		want.Set("Content-Length", strconv.Itoa(w.Body.Len()))
+		if fmt.Sprint(w.Header()) != fmt.Sprint(want) {
+			t.Errorf("the archive of %s answered with the headers\n%v\nnot\n%v", commit, w.Header(), want)
+		}
+		if head := h.do("HEAD", at(commit)); head.Code != http.StatusOK || fmt.Sprint(head.Header()) != fmt.Sprint(want) {
+			t.Errorf("HEAD %s answered %d with the headers\n%v", at(commit), head.Code, head.Header())
+		}
+		if again := h.get(at(commit)); !bytes.Equal(again.Body.Bytes(), w.Body.Bytes()) {
+			t.Errorf("two requests for the archive of %s gave other bytes", commit)
+		}
+		// The archive is its directory, then the commit's tree in git's
+		// order, each entry with its mode and the commit's time, each file
+		// as git holds it, and each header in the USTAR format.
+		when := git(t, repo, nil, "log", "-1", "--format=%ct", commit)
+		dir := "app-" + commit[:12] + "/"
+		describe := func(typ byte, mode int64, name, content string) string {
+			return fmt.Sprintf("%c %o %s %q %q", typ, mode, when, name, content)
+		}
+		tree := []string{describe(tar.TypeDir, 0o755, dir, "")}
+		for _, line := range strings.Split(git(t, repo, nil, "ls-tree", "-r", "-t", commit), "\n") {
+			meta, path, _ := strings.Cut(line, "\t")
+			switch f := strings.Fields(meta); f[0] {
+			case "040000":
+				tree = append(tree, describe(tar.TypeDir, 0o755, dir+path+"/", ""))
+			case "100644":
+				tree = append(tree, describe(tar.TypeReg, 0o644, dir+path, git(t, repo, nil, "cat-file", "blob", f[2])))
+			default:
+				t.Fatalf("the fixture's app holds %q", line)
+			}
+		}
+		var got []string
+		for _, e := range readArchive(t, w.Body.Bytes()) {
+			if e.hdr.Format != tar.FormatUSTAR {
+				t.Errorf("the archive of %s holds %q in the format %v", commit, e.hdr.Name, e.hdr.Format)
+			}
+			got = append(got, fmt.Sprintf("%c %o %d %q %q", e.hdr.Typeflag, e.hdr.Mode, e.hdr.ModTime.Unix(), e.hdr.Name, strings.TrimSpace(e.content)))
+		}
+		if !slices.Equal(got, tree) {
+			t.Errorf("the archive of %s holds\n%s\nnot\n%s", commit, strings.Join(got, "\n"), strings.Join(tree, "\n"))
+		}
+	}
+
+	notFound := h.get("/tools/app/knots/oc-fffffff").Body.String()
+	for _, target := range []string{
+		"/tools/app/source/archive/" + tip,
+		"/tools/app/source/archive/" + tip + ".tar",
+		"/tools/app/source/archive/" + tip + ".zip",
+		"/tools/app/source/archive/" + strings.ToUpper(tip) + ".tar.gz",
+		"/tools/app/source/archive/" + tip + ".tar.gz/",
+		"/tools/app/source/archive/" + tip + ".tar.gz/README.md",
+		"/tools/app/source/archive/" + tip + "/README.md",
+		"/tools/app/source/archive/.tar.gz",
+		"/tools/app/source/archive/",
+		"/tools/app/source/archive",
+	} {
+		if w := h.get(target); w.Code != http.StatusNotFound || w.Body.String() != notFound {
+			t.Errorf("GET %s answered %d, not the one 404", target, w.Code)
+		}
+	}
+
+	a, _, err := h.store.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.authorize(exporttest.Authorization(a.Sequence + 1))
+	archive, tree := h.get(at(tip)), h.get("/tools/app/source/tree/"+tip+"/")
+	if archive.Code != http.StatusNotFound || archive.Code != tree.Code || fmt.Sprint(archive.Header()) != fmt.Sprint(tree.Header()) ||
+		!bytes.Equal(archive.Body.Bytes(), tree.Body.Bytes()) {
+		t.Errorf("withdrawn, the archive answered %d and the tree page %d, or with other headers or bodies", archive.Code, tree.Code)
+	}
+	h.authorize(exporttest.Authorization(a.Sequence+2, "app"))
+	if w := h.get(at(tip)); w.Code != http.StatusOK {
+		t.Errorf("named again, the archive answered %d", w.Code)
+	}
+}
+
+// An archive that would pass MaxResponse answers with the short page that
+// says the page is too large, and none of the archive, and the failure is
+// logged. An archive within the bound is served.
+func TestArchiveTooLarge(t *testing.T) {
+	h := newHarness(t)
+	var logged []string
+	h.srv.log = func(err error) { logged = append(logged, err.Error()) }
+	before := h.tip()
+	var noise []byte
+	for i := 0; len(noise) < 64<<10; i++ {
+		sum := sha256.Sum256([]byte(fmt.Sprint(i)))
+		noise = append(noise, sum[:]...)
+	}
+	tip, bundle := h.commitMain("app: a file gzip cannot shrink\n", file{"100644", "noise.bin", string(noise)})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+
+	h.srv.maxResponse = 32 << 10
+	for _, method := range []string{"GET", "HEAD"} {
+		w := h.do(method, "/tools/app/source/archive/"+tip+".tar.gz")
+		if w.Code != http.StatusInternalServerError || !bytes.Equal(w.Body.Bytes(), tooLargePage) ||
+			w.Header().Get("Content-Type") != htmlType || w.Header().Get("Content-Disposition") != "" {
+			t.Errorf("%s of an archive too large answered %d, %q, %q, with %d bytes", method, w.Code,
+				w.Header().Get("Content-Type"), w.Header().Get("Content-Disposition"), w.Body.Len())
+		}
+		if n, _ := h.srv.holding(); n != 0 {
+			t.Errorf("%s of an archive too large kept %d pieces of the budget", method, n)
+		}
+	}
+	if w := h.get("/tools/app/source/archive/" + before + ".tar.gz"); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/gzip" {
+		t.Errorf("an archive within the bound answered %d, %q", w.Code, w.Header().Get("Content-Type"))
+	}
+	if len(logged) != 2 {
+		t.Errorf("%d failures were logged for 2 archives too large: %q", len(logged), logged)
+	}
+	for _, l := range logged {
+		if !strings.Contains(l, "larger than") {
+			t.Errorf("the server logged %q", l)
+		}
+	}
+}
+
+// An archive is the commit's tree byte for byte. It applies no attribute,
+// from the commit's own .gitattributes or from the repository, so
+// export-subst expands nothing and export-ignore leaves nothing out. One
+// commit gives the same bytes once a ref is moved and attributes and
+// configuration are added to the repository, though each would change an
+// archive that applied attributes.
+func TestArchiveAppliesNoAttributes(t *testing.T) {
+	h := newHarness(t)
+	subst := "$Format:%ar$ $Format:%d$ $Format:%H$\n"
+	attributes := "* export-subst\nignored.txt export-ignore\ndocs export-ignore\n"
+	tip, bundle := h.commitMain("app: attributes an archive does not apply\n",
+		file{"100644", ".gitattributes", attributes},
+		file{"100644", "subst.txt", subst},
+		file{"100644", "ignored.txt", "ignored\n"})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	repo, _ := h.active().Repo("app")
+	at := "/tools/app/source/archive/" + tip + ".tar.gz"
+	first := h.get(at)
+	if first.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d:\n%s", at, first.Code, first.Body)
+	}
+	dir := "app-" + tip[:12] + "/"
+	got := map[string]string{}
+	for _, e := range readArchive(t, first.Body.Bytes()) {
+		got[e.hdr.Name] = e.content
+	}
+	for name, want := range map[string]string{".gitattributes": attributes, "subst.txt": subst, "ignored.txt": "ignored\n", "docs/": ""} {
+		if content, ok := got[dir+name]; !ok || content != want {
+			t.Errorf("the archive holds %s as %q, %v, not %q", name, content, ok, want)
+		}
+	}
+
+	git(t, repo, nil, "branch", "side", tip)
+	git(t, repo, nil, "tag", "v1", tip)
+	if err := os.MkdirAll(filepath.Join(repo, "info"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "info", "attributes"), []byte("* export-ignore\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	git(t, repo, nil, "config", "tar.umask", "0")
+	git(t, repo, nil, "config", "core.autocrlf", "true")
+	h.now = h.now.Add(time.Hour)
+	if again := h.get(at); again.Code != http.StatusOK || !bytes.Equal(again.Body.Bytes(), first.Body.Bytes()) {
+		t.Errorf("with a ref moved, and attributes and configuration added, the archive answered %d with other bytes", again.Code)
+	}
+}
+
+// A symbolic link is a tar symbolic link to its blob's content, and is not
+// followed. A submodule is an empty directory, and an executable file is
+// 0755. A header is in the USTAR format unless its name or target is too
+// long for it, and in the PAX format then.
+func TestArchiveLinksAndSubmodules(t *testing.T) {
+	h := newHarness(t)
+	far := strings.Repeat("deep/", 40) + "target"
+	long := strings.Repeat("n", 120) + ".txt"
+	tip, bundle := h.commitMain("app: links, a submodule and long names\n",
+		file{"120000", "link", "../../etc/passwd"},
+		file{"120000", "far", far},
+		file{"100755", "run.sh", "#!/bin/sh\n"},
+		file{"160000", "vendor/lib", h.tip()},
+		file{"100644", long, "long\n"})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	at := "/tools/app/source/archive/" + tip + ".tar.gz"
+	w := h.get(at)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d:\n%s", at, w.Code, w.Body)
+	}
+	dir := "app-" + tip[:12] + "/"
+	got := map[string]string{}
+	var names []string
+	for _, e := range readArchive(t, w.Body.Bytes()) {
+		got[e.hdr.Name] = fmt.Sprintf("%c %o %d %q %q %v", e.hdr.Typeflag, e.hdr.Mode, e.hdr.Size, e.hdr.Linkname, e.content, e.hdr.Format)
+		names = append(names, e.hdr.Name)
+	}
+	for name, want := range map[string]string{
+		"link":        fmt.Sprintf("%c 777 0 %q \"\" USTAR", tar.TypeSymlink, "../../etc/passwd"),
+		"far":         fmt.Sprintf("%c 777 0 %q \"\" PAX", tar.TypeSymlink, far),
+		"run.sh":      fmt.Sprintf("%c 755 10 \"\" %q USTAR", tar.TypeReg, "#!/bin/sh\n"),
+		"vendor/":     fmt.Sprintf("%c 755 0 \"\" \"\" USTAR", tar.TypeDir),
+		"vendor/lib/": fmt.Sprintf("%c 755 0 \"\" \"\" USTAR", tar.TypeDir),
+		long:          fmt.Sprintf("%c 644 5 \"\" %q PAX", tar.TypeReg, "long\n"),
+	} {
+		if got[dir+name] != want {
+			t.Errorf("the archive holds %s as %s, not %s", name, got[dir+name], want)
+		}
+	}
+	for _, name := range names {
+		if strings.HasPrefix(name, dir+"vendor/lib/") && name != dir+"vendor/lib/" {
+			t.Errorf("the archive holds %s inside the submodule", name)
+		}
+	}
+}
+
+// An archive whose files add up to more than MaxArchiveInput, or whose
+// tree holds more than MaxArchiveEntries entries, is refused from its
+// tree's listing, before any file is read: it answers with the short page
+// that says the page is too large, holds none of the budget, and the
+// refusal is logged. A file is counted once for each path that holds it,
+// as the archive would hold it.
+func TestArchiveInputBound(t *testing.T) {
+	zeros := strings.Repeat("\x00", 1<<20)
+	for _, c := range []struct {
+		name, refused string
+		files         func() []file
+	}{
+		{"files", fmt.Sprintf("its files are larger than %d bytes", MaxArchiveInput), func() (files []file) {
+			for i := range MaxArchiveInput >> 20 {
+				files = append(files, file{"100644", fmt.Sprintf("big/%02d.bin", i), zeros})
+			}
+			return files
+		}},
+		{"entries", fmt.Sprintf("its tree holds more than %d entries", MaxArchiveEntries), func() (files []file) {
+			for i := range MaxArchiveEntries {
+				files = append(files, file{"100644", fmt.Sprintf("many/%05d", i), ""})
+			}
+			return files
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness(t)
+			var logged []string
+			h.srv.log = func(err error) { logged = append(logged, err.Error()) }
+			tip, bundle := h.commitMain("app: a tree too large for an archive\n", c.files()...)
+			h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+			w := h.get("/tools/app/source/archive/" + tip + ".tar.gz")
+			if w.Code != http.StatusInternalServerError || !bytes.Equal(w.Body.Bytes(), tooLargePage) ||
+				w.Header().Get("Content-Type") != htmlType || w.Header().Get("Content-Disposition") != "" {
+				t.Errorf("an archive too large answered %d, %q, %q, with %d bytes", w.Code,
+					w.Header().Get("Content-Type"), w.Header().Get("Content-Disposition"), w.Body.Len())
+			}
+			if n, _ := h.srv.holding(); n != 0 {
+				t.Errorf("an archive too large kept %d pieces of the budget", n)
+			}
+			if len(logged) != 1 || !strings.Contains(logged[0], "larger than the server sends: "+c.refused) {
+				t.Errorf("the server logged %q, not that %s", logged, c.refused)
+			}
+		})
+	}
+}
+
+// A file far larger than MaxResponse that gzip shrinks to little is served
+// whole. The server streams it through tar and gzip into the response
+// body, and holds none of it whole: once the response is rendered, it
+// holds the pieces of the budget that the gzipped archive fills, and no
+// more.
+func TestArchiveStreamsIntoTheBody(t *testing.T) {
+	h := newHarness(t)
+	zeros := strings.Repeat("\x00", 3*MaxResponse)
+	tip, bundle := h.commitMain("app: a large file gzip shrinks\n", file{"100644", "zeros.bin", zeros})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	var held, large int
+	h.srv.checked = func() { held, large = h.srv.holding() }
+	at := "/tools/app/source/archive/" + tip + ".tar.gz"
+	w := h.get(at)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET %s answered %d:\n%s", at, w.Code, w.Body)
+	}
+	if pieces := (w.Body.Len() + pieceSize - 1) / pieceSize; held != pieces || large != 0 || w.Body.Len() > SmallPage {
+		t.Errorf("an archive of %d bytes held %d pieces of the budget and %d of the large budget, not %d and 0",
+			w.Body.Len(), held, large, pieces)
+	}
+	if n, _ := h.srv.holding(); n != 0 {
+		t.Errorf("once written, the archive kept %d pieces of the budget", n)
+	}
+	var content string
+	for _, e := range readArchive(t, w.Body.Bytes()) {
+		if e.hdr.Name == "app-"+tip[:12]+"/zeros.bin" {
+			content = e.content
+		}
+	}
+	if content != zeros {
+		t.Errorf("the archive holds zeros.bin as %d bytes, not %d", len(content), len(zeros))
+	}
+}
+
+// /source/archive/main.tar.gz redirects to the archive of main's tip as
+// /source/ redirects to the tree there: a temporary redirect, with the same
+// headers, that takes no git slot, and that follows main when it moves.
+// main is the one name the route takes in place of a full commit ID: HEAD,
+// another branch's name, or main spelled another way answers the one 404.
+func TestArchiveOfMainsTip(t *testing.T) {
+	h := newHarness(t)
+	repo, _ := h.active().Repo("app")
+	git(t, repo, nil, "branch", "side", h.tip())
+	var admitted atomic.Int32
+	h.srv.admitted = func() { admitted.Add(1) }
+	target := "/tools/app/source/archive/main.tar.gz"
+	redirects := func(tip string) {
+		t.Helper()
+		admitted.Store(0)
+		at := "/tools/app/source/archive/" + tip + ".tar.gz"
+		for _, method := range []string{"GET", "HEAD"} {
+			w, tree := h.do(method, target), h.do(method, "/tools/app/source/")
+			want := tree.Header().Clone()
+			want.Set("Location", at)
+			if w.Code != http.StatusFound || w.Code != tree.Code || fmt.Sprint(w.Header()) != fmt.Sprint(want) {
+				t.Errorf("%s %s answered %d with the headers\n%v\nnot %d with\n%v", method, target, w.Code, w.Header(), tree.Code, want)
+			}
+		}
+		if n := admitted.Load(); n != 0 {
+			t.Errorf("the redirect to the archive of main's tip took a git slot %d times", n)
+		}
+		if w := h.get(at); w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/gzip" {
+			t.Errorf("the redirect leads to %s, which answers %d, %q", at, w.Code, w.Header().Get("Content-Type"))
+		}
+	}
+	redirects(h.tip())
+
+	notFound := h.get("/tools/app/knots/oc-fffffff").Body.String()
+	for _, name := range []string{"HEAD.tar.gz", "side.tar.gz", "MAIN.tar.gz", "main.tar", "main", "main.tar.gz/", "refs/heads/main.tar.gz"} {
+		if w := h.get("/tools/app/source/archive/" + name); w.Code != http.StatusNotFound || w.Body.String() != notFound {
+			t.Errorf("GET /tools/app/source/archive/%s answered %d, not the one 404", name, w.Code)
+		}
+	}
+
+	tip, bundle := h.commitMain("app: main moves on\n", file{"100644", "moved.txt", "moved\n"})
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	redirects(tip)
+}
+
+// archived is one entry of a gzipped tar archive: its header, and what it
+// holds.
+type archived struct {
+	hdr     *tar.Header
+	content string
+}
+
+// readArchive is the entries of a gzipped tar archive, in order. The gzip
+// header must name no file and no time, and every entry must be a file, a
+// symbolic link or a directory, with uid and gid 0 and no user or group
+// name.
+func readArchive(t *testing.T, data []byte) []archived {
+	t.Helper()
+	zr, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zr.Name != "" || !zr.ModTime.IsZero() {
+		t.Errorf("the archive's gzip header names %q at %v", zr.Name, zr.ModTime)
+	}
+	tr := tar.NewReader(zr)
+	var entries []archived
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains([]byte{tar.TypeReg, tar.TypeSymlink, tar.TypeDir}, hdr.Typeflag) ||
+			hdr.Uid != 0 || hdr.Gid != 0 || hdr.Uname != "" || hdr.Gname != "" {
+			t.Errorf("the archive holds %q of type %q, owned by %d:%d, %q:%q", hdr.Name, hdr.Typeflag, hdr.Uid, hdr.Gid, hdr.Uname, hdr.Gname)
+		}
+		content, err := io.ReadAll(tr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries = append(entries, archived{hdr, string(content)})
+	}
+	if _, err := io.Copy(io.Discard, zr); err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+// archiveEntries is the entries of a gzipped tar archive, by name: each
+// file's content, without the white space that ends it, as git trims it,
+// and "" for each directory.
+func archiveEntries(t *testing.T, data []byte) map[string]string {
+	t.Helper()
+	entries := map[string]string{}
+	for _, e := range readArchive(t, data) {
+		entries[e.hdr.Name] = strings.TrimSpace(e.content)
+	}
+	return entries
+}
+
+// file is one file a test commits: its mode, path and content. The
+// content of a submodule, mode 160000, is the ID of its commit.
 type file struct{ mode, path, content string }
 
 // commitMain writes a commit onto the fixture's app main, with message,
@@ -843,7 +1279,7 @@ func (h *harness) commitMain(message string, files ...file) (tip, bundle string)
 	data := func(s string) { fmt.Fprintf(&b, "data %d\n%s\n", len(s), s) }
 	marks := map[string]int{}
 	for _, f := range files {
-		if _, ok := marks[f.content]; !ok {
+		if _, ok := marks[f.content]; !ok && f.mode != "160000" {
 			marks[f.content] = len(marks) + 1
 			fmt.Fprintf(&b, "blob\nmark :%d\n", marks[f.content])
 			data(f.content)
@@ -854,7 +1290,11 @@ func (h *harness) commitMain(message string, files ...file) (tip, bundle string)
 	data(message)
 	fmt.Fprintf(&b, "from %s\n", git(t, repo, nil, "rev-parse", export.MainRef))
 	for _, f := range files {
-		fmt.Fprintf(&b, "M %s :%d %s\n", f.mode, marks[f.content], f.path)
+		if f.mode == "160000" {
+			fmt.Fprintf(&b, "M %s %s %s\n", f.mode, f.content, f.path)
+		} else {
+			fmt.Fprintf(&b, "M %s :%d %s\n", f.mode, marks[f.content], f.path)
+		}
 	}
 	git(t, repo, b.Bytes(), "fast-import", "--quiet")
 	tip = git(t, repo, nil, "rev-parse", export.MainRef)
@@ -1502,6 +1942,16 @@ func TestSHA256CommitIDs(t *testing.T) {
 	}
 	if w := h.get("/tools/app/source/"); w.Header().Get("Location") != "/tools/app/source/tree/"+tip+"/" {
 		t.Errorf("/tools/app/source/ redirects to %q", w.Header().Get("Location"))
+	}
+	w := h.get("/tools/app/source/archive/" + tip + ".tar.gz")
+	if w.Code != http.StatusOK || !strings.Contains(w.Header().Get("Content-Disposition"), `"app-`+tip[:12]+`.tar.gz"`) {
+		t.Errorf("the archive answered %d, %q", w.Code, w.Header().Get("Content-Disposition"))
+	}
+	if _, ok := archiveEntries(t, w.Body.Bytes())["app-"+tip[:12]+"/README.md"]; !ok {
+		t.Error("the archive does not hold README.md under its directory")
+	}
+	if w := h.get("/tools/app/source/archive/" + tip[:40] + ".tar.gz"); w.Code != http.StatusNotFound {
+		t.Errorf("the archive of the tip's first 40 hex digits answered %d", w.Code)
 	}
 }
 

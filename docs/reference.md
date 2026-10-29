@@ -2905,10 +2905,10 @@ first-layout directory.
 
 `valley-web` serves the active export in a receiver's store to anonymous readers over HTTP, as the
 stored authorization allows. It serves the plan page, one page per knot, and a source browser over
-`main` for each project the authorization lets `anyone` read. Package `server` of the `web` module
-([`web/server/`](../web/server/)) implements the HTTP handler, and
-[`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
-`valley-web` package.
+`main` for each project the authorization lets `anyone` read, including a gzipped tar archive for
+each reachable commit. Package `server` of the `web` module ([`web/server/`](../web/server/))
+implements the HTTP handler, and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The
+flake builds it as the `valley-web` package.
 
 ```sh
 valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
@@ -2938,6 +2938,8 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 | `/<group>/<project>/source/blob/<commit>/<path>`        | One file                                                                              |
 | `/<group>/<project>/source/log/<commit>`                | Up to 50 commits of history ending at `<commit>`, newest first                        |
 | `/<group>/<project>/source/log/<commit>?from=<ids>`     | The next older page of that history, starting from the commits in `<ids>`             |
+| `/<group>/<project>/source/archive/<commit>.tar.gz`     | The tree of `<commit>` as a gzipped tar archive, sent as an attachment                |
+| `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                           |
 | `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                            |
 | `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>` |
 | `/-/…`                                                  | Reserved for the server's own routes. Every path under `/-/` answers `404`            |
@@ -3104,6 +3106,45 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     commit stating that older pages follow only its first 128 parents. `git log` still walks every
     parent, so a commit reachable only through later parents may appear on the same page. Commits
     reachable only through later parents may be omitted from older pages.
+- **Source archives:** `/<group>/<project>/source/archive/<commit>.tar.gz` serves the tree of
+  `<commit>` as a gzipped tar archive (see [Source archives](./architecture.md#source-archives)).
+  Every directory page links to its commit's archive as "Download .tar.gz".
+  - Every entry in the archive is under one top-level directory, `<project>-<12 hex digits>/`, named
+    from the project's web `name` and the first 12 hex digits of `<commit>`.
+  - The archive is `<commit>`'s tree byte for byte. The server does not apply the `export-ignore` or
+    `export-subst` attributes, or any other attribute. It holds every file in the tree, including
+    binary files and files larger than the 1 MiB a file page shows (`server.MaxFile`).
+  - `<commit>` follows the rule of every source route: a full object ID of the project's object
+    format that `source_tip` reaches. An abbreviated ID, a ref name, an unreachable commit, a last
+    segment without `.tar.gz`, or any further path segment answers `404`.
+  - `/<group>/<project>/source/archive/main.tar.gz` answers with a `302` redirect to
+    `/<group>/<project>/source/archive/<source_tip>.tar.gz` and the same headers as
+    `/<group>/<project>/source/`. `main` is the only name the route accepts in place of a commit ID;
+    `HEAD`, any other ref name, or an abbreviated ID answers `404`. The redirect takes no `git`
+    slot. A project excluded by the authorization answers `404`.
+  - The server writes the tar in Go from `git ls-tree -r -t -l -z` and one `git cat-file --batch`.
+    Entries follow the tree's order, each directory before what it holds. A file has mode `0644`, or
+    `0755` for git mode `100755`. A symbolic link (`120000`) is a tar symbolic link to its content
+    in git, and is never followed. A submodule (`160000`) is an empty directory. Every entry has the
+    commit's committer time, uid and gid 0, and empty user and group names. Go's tar writer chooses
+    USTAR or PAX for each header, whichever the header needs.
+  - A symbolic link whose target is longer than 4,096 bytes, or holds a NUL byte, makes the archive
+    answer `500`.
+  - The server compresses the tar with Go's `compress/gzip` at a fixed level, with an empty file
+    name and zero modification time in the gzip header. A commit's archive has the same bytes on
+    every request to the same build under the same web name, whatever the time, the repository's
+    refs, git configuration, or attributes.
+  - The response carries `Content-Type: application/gzip` and
+    `Content-Disposition: attachment; filename="<project>-<12 hex digits>.tar.gz"`, in addition to
+    every header listed under **Rendering and headers** (including `Cache-Control: no-cache`).
+  - Before it reads any file, the server refuses an archive whose files add up to more than 32 MiB
+    (`server.MaxArchiveInput`), whose tree holds more than 10,000 entries
+    (`server.MaxArchiveEntries`), or whose listing is longer than 4 MiB (`server.MaxRead`). A
+    refused archive answers `500` with the "Page too large" page.
+  - The server streams the files through tar and gzip into the response budget within the 5-second
+    `git` slot timeout, and writes the response once the archive is complete. A compressed archive
+    is at most 8 MiB (`server.MaxResponse`); a larger one answers `500` with the "Page too large"
+    page.
 - **Time:** Every request has a 15-second deadline from when it arrives, covering waiting, running
   `git` commands, and rendering the page. A request that exceeds 15 seconds answers `503` with
   `Retry-After: 5`. Within that deadline, a source request may hold its `git` slot for at most 5
@@ -3112,13 +3153,14 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   `503` with `Retry-After: 5`.
 - **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
   check runs before the request opens a generation.
-  - A tree, file, or log request needs a `git` slot. At most 8 such requests hold a `git` slot at
-    once (`server.MaxGit`), and at most 16 more wait for a slot to open (`server.MaxWaiting`). The
-    server checks whether the request path has the shape `/<name>/<name>/source/(tree|blob|log)/…`
-    before reading the export. A request with that shape under a group alias or a project's former
-    name also takes a `git` slot and releases it when redirecting. When all 8 slots and 16 waiting
-    places are full, any request with that path shape answers `503` immediately with
-    `Retry-After: 5`.
+  - A tree, file, log, or archive request needs a `git` slot. At most 8 such requests hold a `git`
+    slot at once (`server.MaxGit`), and at most 16 more wait for a slot to open
+    (`server.MaxWaiting`). The server checks whether the request path has the shape
+    `/<name>/<name>/source/(tree|blob|log|archive)/…` before reading the export. The one exception
+    is `/<name>/<name>/source/archive/main.tar.gz`, which only redirects and takes no slot. A
+    request with that shape under a group alias or a project's former name also takes a `git` slot
+    and releases it when redirecting. When all 8 slots and 16 waiting places are full, any request
+    with that path shape answers `503` immediately with `Retry-After: 5`.
   - A source request releases its `git` slot before rendering HTML, and every request releases its
     generation before writing the response to the client (see
     [Slow readers](./architecture.md#slow-readers)).
@@ -3127,9 +3169,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.
 - **Response size and memory:** Every page is rendered in full before the server writes the
   response.
-  - A page is at most 8 MiB (`server.MaxResponse`) on any route. A page that would exceed 8 MiB
-    stops rendering at that bound. The server logs the failure and answers `500` with a short page
-    titled "Page too large".
+  - A page or an archive is at most 8 MiB (`server.MaxResponse`) on any route. A response that
+    exceeds 8 MiB stops at that bound. The server logs the failure and answers `500` with a short
+    page titled "Page too large".
   - The server holds at most 64 MiB of rendered responses at once (`server.MaxBuffered`). A response
     claims this budget in 64 KiB chunks as it renders and releases them once the response has been
     written. A slow reader holds its response's share of the budget until the write finishes.
@@ -3166,8 +3208,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 
 - **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
   escapes every value from the export or a repository. The stylesheet and the plan page's script are
-  embedded in the binary and inlined into the page; nothing else is loaded. No route serves a
-  repository file as raw content. Every response carries these headers:
+  embedded in the binary and inlined into the page; nothing else is loaded. No page serves a
+  repository file as raw content; raw repository files are served only inside a source archive,
+  which is gzipped and sent as an attachment. Every response carries these headers:
   - `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
     `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and

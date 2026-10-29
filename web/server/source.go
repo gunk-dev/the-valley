@@ -67,6 +67,9 @@ func (q *request) source(project string, rest []string) {
 	case len(rest) == 0 || len(rest) == 1 && rest[0] == "":
 		q.redirect(treeURL(q.idx.bases[p.Name], p.SourceTip, nil))
 		return
+	case len(rest) == 2 && rest[0] == "archive" && rest[1] == tipArchive:
+		q.redirect(archiveURL(q.idx.bases[p.Name], p.SourceTip))
+		return
 	case len(rest) >= 2 && rest[0] == "tree":
 		path := rest[2:]
 		if n := len(path); n > 0 && path[n-1] == "" {
@@ -86,6 +89,13 @@ func (q *request) source(project string, rest []string) {
 		view = func(ctx context.Context) error { return q.file(ctx, p, repo, rest[1], path) }
 	case len(rest) == 2 && rest[0] == "log":
 		view = func(ctx context.Context) error { return q.log(ctx, p, repo, rest[1]) }
+	case len(rest) == 2 && rest[0] == "archive":
+		commit, ok := strings.CutSuffix(rest[1], archiveSuffix)
+		if !ok {
+			q.notFound()
+			return
+		}
+		view = func(ctx context.Context) error { return q.archive(ctx, p, repo, commit) }
 	default:
 		q.notFound()
 		return
@@ -348,9 +358,11 @@ type dirPage struct {
 	AtTip   bool
 	TipURL  string
 	LogURL  string
-	Crumbs  []link
-	Entries []dirEntry
-	Omitted int
+	// ArchiveURL is the commit's archive, which the page links to.
+	ArchiveURL string
+	Crumbs     []link
+	Entries    []dirEntry
+	Omitted    int
 	// Partial is set when the directory is larger than a page reads,
 	// and only its start is listed.
 	Partial bool
@@ -412,7 +424,8 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 	}
 	page := dirPage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
 		TipURL: treeURL(q.idx.bases[p.Name], p.SourceTip, nil), LogURL: logURL(q.idx.bases[p.Name], commit),
-		Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path), Omitted: read - len(entries), Partial: !complete}
+		ArchiveURL: archiveURL(q.idx.bases[p.Name], commit), Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path),
+		Omitted: read - len(entries), Partial: !complete}
 	for _, c := range entries {
 		at := append(append([]string{}, path...), c.Name)
 		d := dirEntry{Name: oneLine(c.Name)}

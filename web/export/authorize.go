@@ -108,8 +108,9 @@ func (s *Store) AuthorizationHighWater() (int64, error) {
 // signed note is signed. It takes the authorization lock, waiting for it
 // until ctx is done, and never the activation lock, so a stalled upload,
 // commit or repository check does not hold it up. Under the lock it
-// refuses a sequence not greater than the stored one's as replayed, and
-// then replaces the stored authorization durably. Once Authorize returns
+// refuses a sequence not greater than the stored one's as replayed, and a
+// basis other than the stored one's sequence as stale-basis, and then
+// replaces the stored authorization durably. Once Authorize returns
 // nil, every request a server reads the authorization for is held to it.
 //
 // Authorize deletes nothing. Prune deletes the repositories it withdrew.
@@ -126,10 +127,8 @@ func (s *Store) Authorize(ctx context.Context, a *Authorization, signed []byte) 
 	if err != nil {
 		return err
 	}
-	if a.Sequence <= hw {
-		e := refuse(CodeReplayed, "the authorization's sequence %d is not greater than %d, the stored authorization's", a.Sequence, hw)
-		e.HighWater = hw
-		return e
+	if err := a.admissible(hw); err != nil {
+		return err
 	}
 	if err := ctx.Err(); err != nil {
 		return err

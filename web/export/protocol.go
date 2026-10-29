@@ -111,7 +111,8 @@ type ErrorReply struct {
 	Schema  string `json:"schema"`
 	Code    Code   `json:"error"`
 	Message string `json:"message"`
-	// HighWater is the greatest sequence accepted, given with replayed.
+	// HighWater is the greatest sequence accepted, given with replayed
+	// and stale-basis.
 	HighWater int64 `json:"high_water,omitempty"`
 	// Needs are the bodies still needed, given with incomplete.
 	Needs []Need `json:"needs,omitempty"`
@@ -171,6 +172,12 @@ const (
 	CodeBadBundle Code = "bad-bundle"
 	// CodeIncomplete: a commit before every needed body has verified.
 	CodeIncomplete Code = "incomplete"
+	// CodeStaleBasis: an authorization whose basis is not the stored
+	// authorization's sequence. It keeps access the publisher could not
+	// check again, from a record of the receiver's state that is out of
+	// date. HighWater is the stored sequence, and the publisher checks the
+	// policy again and keeps nothing it could not check.
+	CodeStaleBasis Code = "stale-basis"
 	// CodeUnsupportedVersion: a request under LegacyPrefix, from a
 	// publisher older than the receiver's protocol.
 	CodeUnsupportedVersion Code = "unsupported-version"
@@ -187,7 +194,7 @@ func (c Code) Status() int {
 		return http.StatusUnsupportedMediaType
 	case CodeBadSignature, CodeWrongInstance, CodeWrongDestination, CodeOutOfWindow:
 		return http.StatusForbidden
-	case CodeReplayed, CodeSuperseded, CodeIncomplete:
+	case CodeReplayed, CodeStaleBasis, CodeSuperseded, CodeIncomplete:
 		return http.StatusConflict
 	case CodeNoManifest, CodeNotDeclared:
 		return http.StatusNotFound
@@ -203,7 +210,7 @@ func (c Code) Status() int {
 type Error struct {
 	Code    Code
 	Message string
-	// HighWater is set with CodeReplayed.
+	// HighWater is set with CodeReplayed and CodeStaleBasis.
 	HighWater int64
 	// Needs is set with CodeIncomplete.
 	Needs []Need

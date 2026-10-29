@@ -21,7 +21,8 @@ import (
 //	                        sequence allocated and its authorization signed
 //	authorization-sequence  the greatest sequence an authorization was
 //	                        signed with
-//	authorization           the last authorization signed, as a signed note
+//	authorization           the last authorization the receiver said it
+//	                        stored, as a signed note
 const (
 	authorizationLockFile     = "authorization.lock"
 	authorizationSequenceFile = "authorization-sequence"
@@ -44,16 +45,24 @@ var errIncomplete = errors.New("the policy check is incomplete")
 // signed authorization is written with the export.
 //
 // A receiver that holds a newer authorization refuses this one as
-// replayed. The policy path then checks the policy again, and signs the
-// current result above the receiver's sequence. It never sends an
-// authorization it signed earlier.
+// replayed, and one that holds another than its basis refuses it as
+// stale-basis. Either says the publisher's record of the receiver is out
+// of date, as after its state is restored from an older backup. The
+// policy path then checks the policy again, signs the current result above
+// the receiver's sequence, and keeps no access it could not check: it
+// knows nothing it can trust of what the receiver serves. It never sends
+// an authorization it signed earlier.
+//
+// Once the receiver stores an authorization, it is recorded as the last
+// one acknowledged, which the next incomplete check may keep access from.
 //
 // The reply is nil with --out. An incomplete check is sent, and authorize
 // then returns an error that wraps errIncomplete.
 func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, error) {
 	var floor int64
+	trusted := true
 	for attempt := 1; ; attempt++ {
-		c, err := p.signPolicy(ctx, floor)
+		c, err := p.signPolicy(ctx, floor, trusted)
 		if err != nil {
 			return nil, err
 		}
@@ -64,17 +73,40 @@ func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, 
 		}
 		reply, err := p.sendAuthorization(ctx, a, c.signed)
 		var refusal *export.Error
-		if errors.As(err, &refusal) && refusal.Code == export.CodeReplayed && attempt < authorizeAttempts {
-			p.warn("the receiver already holds authorization %d (this pass signed %d); rechecking the policy and signing above %d", refusal.HighWater, a.Sequence, refusal.HighWater)
-			floor = refusal.HighWater
+		if errors.As(err, &refusal) && (refusal.Code == export.CodeReplayed || refusal.Code == export.CodeStaleBasis) && attempt < authorizeAttempts {
+			p.warn("the receiver holds authorization %d, and refused %d as %s; rechecking the policy, keeping no access it cannot check, and signing above %d",
+				refusal.HighWater, a.Sequence, refusal.Code, refusal.HighWater)
+			floor, trusted = refusal.HighWater, false
 			continue
 		}
 		if err != nil {
 			return nil, err
 		}
+		if err := p.recordAuthorization(a, c.signed); err != nil {
+			return nil, err
+		}
 		p.say("the receiver stored authorization %d: %s", a.Sequence, describe(a))
 		return reply, c.incomplete
 	}
+}
+
+// recordAuthorization records an authorization the receiver said it
+// stored, under the authorization lock, unless a greater one is recorded
+// already.
+func (p *publisher) recordAuthorization(a *export.Authorization, signed []byte) error {
+	unlock, err := lockFile(filepath.Join(p.cfg.state, authorizationLockFile))
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	last, err := p.lastAcknowledged()
+	if err != nil {
+		return err
+	}
+	if last != nil && last.Sequence >= a.Sequence {
+		return nil
+	}
+	return writeDurable(filepath.Join(p.cfg.state, authorizationFile), signed, 0o600)
 }
 
 // describe is what an authorization lets anyone read, for messages.
@@ -91,8 +123,10 @@ func describe(a *export.Authorization) string {
 // that wraps errIncomplete. A signed check also has its authorization and
 // the signed note.
 type policyCheck struct {
-	projects      []export.AuthorizedProject
-	incomplete    error
+	projects   []export.AuthorizedProject
+	incomplete error
+	// kept is set when a project keeps access it could not check.
+	kept          bool
 	authorization *export.Authorization
 	signed        []byte
 }
@@ -100,8 +134,11 @@ type policyCheck struct {
 // signPolicy reads the policy and signs an authorization for it, holding
 // the authorization lock throughout, so of two authorizations the one with
 // the greater sequence always reflects the later check. The sequence is
-// greater than floor and than every sequence signed before.
-func (p *publisher) signPolicy(ctx context.Context, floor int64) (policyCheck, error) {
+// greater than floor and than every sequence signed before. When trusted
+// is set, a project whose policy cannot be read may keep the access the
+// last acknowledged authorization gave it, and the authorization then
+// names that one as its basis.
+func (p *publisher) signPolicy(ctx context.Context, floor int64, trusted bool) (policyCheck, error) {
 	unlock, err := lockFile(filepath.Join(p.cfg.state, authorizationLockFile))
 	if err != nil {
 		return policyCheck{}, err
@@ -110,11 +147,15 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64) (policyCheck, e
 	if p.key, err = p.loadKey(); err != nil {
 		return policyCheck{}, err
 	}
-	prev, err := p.lastAuthorization()
+	prev, err := p.lastAcknowledged()
 	if err != nil {
 		return policyCheck{}, err
 	}
-	c, err := p.checkPolicy(ctx, prev)
+	keepFrom := prev
+	if !trusted {
+		keepFrom = nil
+	}
+	c, err := p.checkPolicy(ctx, keepFrom)
 	if err != nil {
 		return policyCheck{}, err
 	}
@@ -133,10 +174,10 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64) (policyCheck, e
 	}
 	c.authorization = &export.Authorization{Instance: p.cfg.instance, Destination: p.cfg.destination,
 		Sequence: seq, Checked: checked, Projects: c.projects}
-	if c.signed, err = c.authorization.Sign(p.signer, p.key); err != nil {
-		return policyCheck{}, err
+	if c.kept {
+		c.authorization.Basis = keepFrom.Sequence
 	}
-	if err := writeDurable(filepath.Join(p.cfg.state, authorizationFile), c.signed, 0o600); err != nil {
+	if c.signed, err = c.authorization.Sign(p.signer, p.key); err != nil {
 		return policyCheck{}, err
 	}
 	return c, nil
@@ -151,10 +192,11 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64) (policyCheck, e
 // A project is authorized for anyone when a pass would publish it: a read
 // grant to anyone covers it, the host declaration places it in a group,
 // and its policy/read lets anyone read it. A project whose policy cannot
-// be read keeps what the previous authorization gave it, as long as the
-// grants still cover it, and never more; the check is then incomplete. An
-// instance or registry that cannot be read fails the check, and nothing is
-// signed.
+// be read keeps what prev gave it, as long as the grants still cover it,
+// and never more; the check is then incomplete. prev is the authorization
+// the receiver last said it stored, or nil when that is not known, and
+// then nothing is kept. An instance or registry that cannot be read fails
+// the check, and nothing is signed.
 func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization) (policyCheck, error) {
 	q := *p
 	q.origin = filepath.Join(p.cache, "policy", "origin.git")
@@ -180,8 +222,9 @@ func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization)
 		if err != nil {
 			failed = append(failed, err)
 			if old, ok := prev.Project(name); ok && grants.Covers(readaccess.Anyone, name, old.Identity) {
-				p.warn("%s: could not read its policy; keeping the access from authorization %d", name, prev.Sequence)
+				p.warn("%s: could not read its policy; keeping the access from authorization %d, if the receiver still holds it", name, prev.Sequence)
 				c.projects = append(c.projects, export.AuthorizedProject{Name: name, Identity: old.Identity, Readers: []string{export.Anyone}})
+				c.kept = true
 			}
 			continue
 		}
@@ -195,9 +238,9 @@ func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization)
 	return c, nil
 }
 
-// lastAuthorization is the authorization the policy path signed last, or
-// nil for none.
-func (p *publisher) lastAuthorization() (*export.Authorization, error) {
+// lastAcknowledged is the authorization the receiver last said it stored,
+// or nil for none.
+func (p *publisher) lastAcknowledged() (*export.Authorization, error) {
 	data, err := os.ReadFile(filepath.Join(p.cfg.state, authorizationFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil

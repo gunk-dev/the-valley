@@ -49,12 +49,23 @@ const (
 // age. Checked is when the publisher last finished a policy check in full;
 // pages show it, and nothing decides access by it. A project has one or
 // more reader records.
+//
+// An authorization may carry a basis record, basis <sequence>, after the
+// checked record. It names the authorization the receiver must hold for
+// this one to be stored: the publisher writes it when a project keeps
+// access it could not check again, which it keeps only from the
+// authorization the receiver last said it stored. A receiver that holds
+// another refuses it as stale-basis, so access kept from a stale record
+// never reaches the edge.
 type Authorization struct {
 	Instance    string
 	Destination string
 	Sequence    int64
 	Checked     time.Time
-	Projects    []AuthorizedProject
+	// Basis is the sequence of the authorization the receiver must hold,
+	// or 0 for none.
+	Basis    int64
+	Projects []AuthorizedProject
 }
 
 // AuthorizedProject is one project an authorization names: its name, its
@@ -72,6 +83,9 @@ func (a *Authorization) Text() []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "%s\ninstance %s\ndestination %s\nsequence %d\nchecked %s\n",
 		AuthorizationType, a.Instance, a.Destination, a.Sequence, a.Checked.UTC().Format(time.RFC3339))
+	if a.Basis > 0 {
+		fmt.Fprintf(&b, "basis %d\n", a.Basis)
+	}
 	projects := append([]AuthorizedProject{}, a.Projects...)
 	sort.Slice(projects, func(i, j int) bool { return projects[i].Name < projects[j].Name })
 	for _, p := range projects {
@@ -152,7 +166,9 @@ type AuthorizationAdmission struct {
 //  2. open the note with the pinned verifier keys;
 //  3. require the type line, then read the records;
 //  4. require the configured instance and destination;
-//  5. require a sequence greater than the stored authorization's.
+//  5. require a sequence greater than the stored authorization's;
+//  6. require a basis, when it has one, equal to the stored
+//     authorization's sequence.
 //
 // There is no step for its age or its checked time: a valid narrowing
 // above the stored sequence is admitted however old it is, and however far
@@ -179,12 +195,27 @@ func VerifyAuthorization(r io.Reader, a AuthorizationAdmission) (*Authorization,
 	if auth.Destination != a.Destination {
 		return nil, refuse(CodeWrongDestination, "the authorization is for %s, and this receiver is %s", auth.Destination, a.Destination)
 	}
-	if auth.Sequence <= a.HighWater {
-		e := refuse(CodeReplayed, "the authorization's sequence %d is not greater than %d, the stored authorization's", auth.Sequence, a.HighWater)
-		e.HighWater = a.HighWater
-		return nil, e
+	if err := auth.admissible(a.HighWater); err != nil {
+		return nil, err
 	}
 	return auth, nil
+}
+
+// admissible is steps 5 and 6 of VerifyAuthorization against the stored
+// authorization's sequence, hw. Store.Authorize takes them again under its
+// lock.
+func (a *Authorization) admissible(hw int64) error {
+	if a.Sequence <= hw {
+		e := refuse(CodeReplayed, "the authorization's sequence %d is not greater than %d, the stored authorization's", a.Sequence, hw)
+		e.HighWater = hw
+		return e
+	}
+	if a.Basis > 0 && a.Basis != hw {
+		e := refuse(CodeStaleBasis, "the authorization keeps access from authorization %d, and this receiver holds %d", a.Basis, hw)
+		e.HighWater = hw
+		return e
+	}
+	return nil
 }
 
 // ReadStoredAuthorization reads an authorization a receiver stored: the
@@ -218,7 +249,7 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 	if lines[0] != AuthorizationType {
 		return nil, bad("the authorization opens with %q, not %q", lines[0], AuthorizationType)
 	}
-	arity := map[string]int{"instance": 1, "destination": 1, "sequence": 1, "checked": 1, "project": 2, "reader": 2}
+	arity := map[string]int{"instance": 1, "destination": 1, "sequence": 1, "checked": 1, "basis": 1, "project": 2, "reader": 2}
 	a := &Authorization{}
 	seen := map[string]bool{}
 	projects := map[string]*AuthorizedProject{}
@@ -240,7 +271,7 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 			}
 		}
 		switch key {
-		case "instance", "destination", "sequence", "checked":
+		case "instance", "destination", "sequence", "checked", "basis":
 			if seen[key] {
 				return nil, bad("line %d is a second %s record", n, key)
 			}
@@ -262,6 +293,12 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 				return nil, bad("line %d gives sequence %q; a sequence is a positive decimal", n, args[0])
 			}
 			a.Sequence = seq
+		case "basis":
+			basis, ok := decimal(args[0])
+			if !ok || basis == 0 {
+				return nil, bad("line %d gives basis %q; a basis is a positive decimal", n, args[0])
+			}
+			a.Basis = basis
 		case "checked":
 			at, err := time.Parse(time.RFC3339, args[0])
 			if err != nil || at.UTC().Format(time.RFC3339) != args[0] {
@@ -298,6 +335,9 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 		if !seen[key] {
 			return nil, bad("the authorization has no %s record", key)
 		}
+	}
+	if a.Basis >= a.Sequence {
+		return nil, bad("the authorization's basis %d is not less than its sequence %d", a.Basis, a.Sequence)
 	}
 	for name, rs := range readers {
 		p := projects[name]

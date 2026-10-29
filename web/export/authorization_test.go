@@ -286,3 +286,37 @@ func TestStoreDescriptorRetiresTheFirstLayout(t *testing.T) {
 		t.Errorf("OpenReadOnly of the descriptor gave %v", err)
 	}
 }
+
+// An authorization with a basis is admitted only while the stored
+// authorization is the one it names, by VerifyAuthorization and again by
+// Store.Authorize under its lock, and its basis is less than its sequence.
+func TestAnAuthorizationWithABasisNeedsItStored(t *testing.T) {
+	based := func(seq, basis int64) *export.Authorization {
+		a := exporttest.Authorization(seq, "app")
+		a.Basis = basis
+		return a
+	}
+	if _, err := export.VerifyAuthorization(bytes.NewReader(exporttest.SignAuthorization(t, based(9, 4))), authorizationAdmission(4)); err != nil {
+		t.Errorf("an authorization on the stored basis was refused: %v", err)
+	}
+	_, err := export.VerifyAuthorization(bytes.NewReader(exporttest.SignAuthorization(t, based(9, 3))), authorizationAdmission(4))
+	wantCode(t, err, export.CodeStaleBasis)
+	var e *export.Error
+	if errors.As(err, &e) && e.HighWater != 4 {
+		t.Errorf("the stale-basis refusal gives high water %d, want 4", e.HighWater)
+	}
+	_, err = export.ParseAuthorization(based(4, 4).Text())
+	wantCode(t, err, export.CodeBadManifest)
+
+	s := openStore(t, payload(t))
+	stored, _, err := s.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stale := based(stored.Sequence+5, stored.Sequence+1)
+	wantCode(t, s.Authorize(context.Background(), stale, exporttest.SignAuthorization(t, stale)), export.CodeStaleBasis)
+	current := based(stored.Sequence+5, stored.Sequence)
+	if err := s.Authorize(context.Background(), current, exporttest.SignAuthorization(t, current)); err != nil {
+		t.Errorf("Authorize refused an authorization on the stored basis: %v", err)
+	}
+}

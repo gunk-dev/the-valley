@@ -185,3 +185,41 @@ func TestTheAuthorizationCounterSurvivesFailedWrites(t *testing.T) {
 		allocate()
 	}
 }
+
+// A receiver that lost its state, as when its volume is replaced, holds no
+// authorization. With app's policy unreadable, the pass keeps app's access
+// on the basis of the authorization the receiver acknowledged before, and
+// the receiver refuses it as stale-basis. The retry keeps nothing it could
+// not check, and publishes the grant it could read: anyone may read site.
+func TestAReceiverThatLostItsStateGetsTheReadableGrants(t *testing.T) {
+	v := newValley(t)
+	rv := newReceiver(t, v)
+	v.declare("site", policy("site", "anyone"))
+	v.publish(rv.flags()...)
+	before, _, err := rv.store.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !before.Allows(export.Anyone, "app", identities["app"]) || !before.Allows(export.Anyone, "site", identities["site"]) {
+		t.Fatalf("the first authorization names %+v, want app and site", before.Projects)
+	}
+
+	rv.replaceStore()
+	app := filepath.Join(v.srv, "app.git")
+	if err := os.Rename(app, app+".moved"); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Rename(app+".moved", app)
+	_, stderr, err := v.tryPublish(nil, rv.flags()...)
+	if !errors.Is(err, errIncomplete) {
+		t.Fatalf("the pass gave %v, want an incomplete check", err)
+	}
+	mustSay(t, "the pass to a receiver that lost its state", stderr, "as "+string(export.CodeStaleBasis))
+	got, _, err := rv.store.Authorization()
+	if err != nil {
+		t.Fatalf("the receiver that lost its state stored no authorization: %v", err)
+	}
+	if !got.Allows(export.Anyone, "site", identities["site"]) || got.Allows(export.Anyone, "app", identities["app"]) || got.Basis != 0 {
+		t.Errorf("the receiver that lost its state holds %+v on basis %d; want site alone, on no basis", got.Projects, got.Basis)
+	}
+}

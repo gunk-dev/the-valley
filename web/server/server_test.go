@@ -2861,3 +2861,119 @@ func TestAWithdrawalWaitsForAResponseItsCheckAdmitted(t *testing.T) {
 		t.Errorf("after the withdrawal returned the next request answered %d, want 404", w.Code)
 	}
 }
+
+// holdEnv names the serving lock TestHoldTheServingLock holds, when the
+// test binary runs as that helper.
+const holdEnv = "VALLEY_WEB_SERVER_TEST_HOLD"
+
+// TestHoldTheServingLock is a process of its own when holdEnv is set: it
+// holds the serving lock exclusively, as a receiver renaming an
+// authorization does, says so on stdout, and holds it until its stdin
+// closes.
+func TestHoldTheServingLock(t *testing.T) {
+	path := os.Getenv(holdEnv)
+	if path == "" {
+		t.Skip("a helper process of TestAServingLockWaitEndsWithTheRequest")
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	fmt.Println("held")
+	io.Copy(io.Discard, os.Stdin)
+}
+
+// lockProbe is a response writer that notes when the headers were
+// written, and whether the serving lock was free when the body was.
+type lockProbe struct {
+	*httptest.ResponseRecorder
+	lock          string
+	wrote         bool
+	freeAtBody    bool
+	bodyAttempted bool
+}
+
+func (p *lockProbe) WriteHeader(status int) {
+	p.wrote = true
+	p.ResponseRecorder.WriteHeader(status)
+}
+
+func (p *lockProbe) Write(b []byte) (int, error) {
+	if !p.bodyAttempted {
+		p.bodyAttempted = true
+		if f, err := os.OpenFile(p.lock, os.O_RDWR, 0); err == nil {
+			if syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil {
+				p.freeAtBody = true
+			}
+			f.Close()
+		}
+	}
+	return p.ResponseRecorder.Write(b)
+}
+
+// A request waits for the serving lock only until its deadline, or until
+// its reader goes away. While another process holds the lock
+// exclusively, a request whose deadline passes answers 503 and writes
+// nothing it rendered, and one whose reader goes away writes nothing at
+// all. With the lock free, a page and a redirect write their bodies after
+// the lock is let go.
+func TestAServingLockWaitEndsWithTheRequest(t *testing.T) {
+	h := newHarness(t)
+	lock := filepath.Join(h.store.Dir(), "serving.lock")
+	for _, path := range []string{"/tools/app/knots/oc-a000002", "/tools/app/"} {
+		w := &lockProbe{ResponseRecorder: httptest.NewRecorder(), lock: lock}
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if !w.bodyAttempted || !w.freeAtBody {
+			t.Errorf("GET %s wrote its body with the serving lock held (body written: %v)", path, w.bodyAttempted)
+		}
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHoldTheServingLock$")
+	cmd.Env = append(os.Environ(), holdEnv+"="+lock)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		stdin.Close()
+		cmd.Wait()
+	}()
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || line != "held\n" {
+		t.Fatalf("the helper said %q, %v", line, err)
+	}
+
+	h.srv.timeout = 300 * time.Millisecond
+	began := time.Now()
+	w := &lockProbe{ResponseRecorder: httptest.NewRecorder(), lock: lock}
+	h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/", nil))
+	if took := time.Since(began); took > 3*time.Second {
+		t.Errorf("a request waited %v for a held serving lock, past its deadline", took)
+	}
+	if w.Code != http.StatusServiceUnavailable || w.Header().Get("Location") != "" || strings.Contains(w.Body.String(), "oc-a000002") {
+		t.Errorf("a request past its deadline answered %d, to %q:\n%s", w.Code, w.Header().Get("Location"), w.Body)
+	}
+
+	h.srv.timeout = time.Minute
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	began = time.Now()
+	w = &lockProbe{ResponseRecorder: httptest.NewRecorder(), lock: lock}
+	h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/knots/oc-a000002", nil).WithContext(ctx))
+	if took := time.Since(began); took > 3*time.Second {
+		t.Errorf("a request whose reader went away waited %v for a held serving lock", took)
+	}
+	if w.wrote || w.bodyAttempted {
+		t.Errorf("a request whose reader went away wrote a response: %d\n%s", w.Code, w.Body)
+	}
+}

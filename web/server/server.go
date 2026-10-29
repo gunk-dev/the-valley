@@ -433,11 +433,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// serving lock, shared, and the receiver renames a new
 		// authorization into place under it, exclusively. A response
 		// whose headers are written after the receiver replies was
-		// checked against the new authorization.
-		release, err := s.store.HoldServing()
+		// checked against the new authorization. The wait ends with the
+		// request's deadline, or when its reader goes away, and then
+		// nothing rendered is written: busy answers 503, or nothing to a
+		// reader that went away.
+		release, err := s.store.HoldServing(ctx)
 		if err != nil {
-			q.drop()
-			q.s.log(fmt.Errorf("taking the serving lock: %w", err))
+			q.discard()
+			if ctx.Err() == nil {
+				q.s.log(fmt.Errorf("taking the serving lock: %w", err))
+			}
 			q.busy()
 			q.write(func() {})
 			return
@@ -451,7 +456,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		release()
-		q.drop()
+		q.discard()
 		if render == maxRenders {
 			q.busy()
 			q.write(func() {})
@@ -988,6 +993,13 @@ func (q *request) busy() {
 	q.static(http.StatusServiceUnavailable, htmlType, busyPage)
 }
 
+// discard drops the rendered response, a page or a redirect, so that none
+// of it is written.
+func (q *request) discard() {
+	q.drop()
+	q.status, q.body, q.location, q.permanent = 0, nil, "", false
+}
+
 // redirect answers with a redirect to url.
 func (q *request) redirect(url string) { q.location = url }
 
@@ -1006,7 +1018,7 @@ func (q *request) write(released func()) {
 		q.w.Header().Set("Location", q.location)
 		q.w.WriteHeader(http.StatusPermanentRedirect)
 	case q.location != "":
-		http.Redirect(q.w, q.r, q.location, http.StatusFound)
+		http.Redirect(releasing{q.w, released}, q.r, q.location, http.StatusFound)
 	case q.status != 0:
 		h := q.w.Header()
 		h.Set("Content-Type", q.ctype)
@@ -1019,6 +1031,19 @@ func (q *request) write(released func()) {
 			}
 		}
 	}
+}
+
+// releasing is a response writer that calls released once the headers are
+// written, before any of the body is, so http.Redirect writes its short
+// body after the serving lock is let go, as every other response does.
+type releasing struct {
+	http.ResponseWriter
+	released func()
+}
+
+func (w releasing) WriteHeader(status int) {
+	w.ResponseWriter.WriteHeader(status)
+	w.released()
 }
 
 // setHeaders sets the headers every response carries.

@@ -151,10 +151,13 @@ const servingLock = "serving.lock"
 
 // HoldServing takes the serving lock shared, for a server's last read of
 // the authorization and the response it then starts. Authorize holds it
-// exclusively for a rename alone, so the wait is short. A store opened
-// read-only takes it too: the lock file is opened read-only.
-func (s *Store) HoldServing() (release func(), err error) {
-	return s.holdServing(context.Background(), syscall.LOCK_SH)
+// exclusively for a rename alone, so the wait is short, but a receiver
+// stopped while it holds it would hold it for as long as it stays
+// stopped: HoldServing waits only until ctx is done, and then fails with
+// ctx's error. A store opened read-only takes it too: the lock file is
+// opened read-only.
+func (s *Store) HoldServing(ctx context.Context) (release func(), err error) {
+	return s.holdServing(ctx, syscall.LOCK_SH)
 }
 
 // holdServing takes the serving lock as how says, waiting for it until

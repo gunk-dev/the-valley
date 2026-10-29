@@ -8,5 +8,4 @@ var (
 	RemoveAll = &removeAll
 
 	PruneSelected = &pruneSelected
-	RetireStep    = &retireStep
 )

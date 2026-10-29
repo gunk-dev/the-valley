@@ -173,9 +173,10 @@ in
         The state directory, under /var/lib: the receiver's, mode 0750,
         and readable by valley-web through the valley-web group. It holds
         the store's descriptor, `store`, and its payloads, `v2/`. On its
-        first start the receiver makes a new store there, and removes the
-        first store layout's state if it finds it; the publisher's next
-        pass sends everything again.
+        first start the receiver makes a new store there, and the
+        publisher's next pass sends everything again. The receiver writes
+        nothing else there: state of the first store layout is left for
+        the operator to delete by hand.
       '';
     };
 

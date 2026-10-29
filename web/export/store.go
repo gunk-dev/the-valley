@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -197,11 +196,10 @@ func (st Staging) tmp() string { return filepath.Join(st.Dir, "tmp") }
 
 // OpenStore opens the store whose descriptor is at path, creating the
 // descriptor and the payload directory when path does not exist. path
-// that is a directory, as the first layout's state was, is refused. A new
-// store made over the first layout's state retires it (see
-// retireFirstLayout), so a binary of the first layout started there again
-// serves nothing, and a later start finishes a retirement a crash
-// stopped. Nothing else in the descriptor's directory is touched.
+// that is a directory, as the first layout's state was, is refused before
+// anything is created. It writes nothing outside the descriptor and the
+// payload directory: state of the first layout beside the descriptor is
+// left for the operator to delete.
 // OpenStore finishes an activation a crash interrupted after high-water
 // was written, deletes what no activation can use, and deletes the
 // repositories the stored authorization withdrew. If it cannot finish
@@ -239,8 +237,10 @@ func OpenStore(path string, report func(error)) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return nil, err
 	}
-	if err := retireFirstLayout(abs, missing, report); err != nil {
-		return nil, err
+	if missing {
+		if err := createDescriptor(abs); err != nil {
+			return nil, err
+		}
 	}
 	dir := payloadDir(abs)
 	s := &Store{dir: dir, report: report, turn: make(chan struct{}, 1), authTurn: make(chan struct{}, 1)}
@@ -311,184 +311,6 @@ func createDescriptor(path string) error {
 		return err
 	}
 	return writeDurably(path, []byte(StoreDescriptor+"\n"))
-}
-
-// firstLayout are the names the first layout keeps in its state
-// directory, in the order retireFirstLayout deletes them: active first,
-// so a binary of that layout serves nothing once it is gone, and lock
-// last.
-var firstLayout = []string{"active", "high-water", "exports", "staging", "trash", "lock"}
-
-// retiringFile is the record, in the payload directory, of a retirement
-// of the first layout that has not finished: the names of firstLayout it
-// deletes, one per line.
-const retiringFile = "retiring"
-
-// retireStep, when it is set, is called before retireFirstLayout deletes
-// each name, and an error it returns stops the retirement there, as a
-// crash would. A test sets it.
-var retireStep func(name string) error
-
-// retireFirstLayout opens the descriptor at path, the first layout's
-// state beside it retired. It deletes only what it has proven is the
-// first layout's, and records that proof durably before it deletes
-// anything:
-//
-//   - When the descriptor is missing, and the directory holds an active
-//     symlink into exports/ or a high-water file of the first layout's
-//     format, the names of firstLayout the directory then holds are the
-//     first layout's. It records them in the payload directory, then
-//     writes the descriptor, then deletes them.
-//   - On a later start, it finishes a retirement only when that record is
-//     there, deleting what is left of the names it lists, and removes the
-//     record once all are gone.
-//
-// Otherwise it deletes nothing, so a new store made beside unrelated files
-// that share a name with the first layout's leaves them be. Before it
-// records or deletes anything, it takes the first layout's lock, which
-// that layout's receiver held for every activation, and fails while
-// another process holds it. Each step deletes whatever is left of its
-// name, so a retirement a crash stopped at any step is finished by the
-// next start.
-func retireFirstLayout(path string, missing bool, report func(error)) error {
-	dir, record := filepath.Dir(path), filepath.Join(payloadDir(path), retiringFile)
-	names, pending, err := readRetiring(record)
-	if err != nil {
-		return err
-	}
-	if !pending && missing {
-		if names, err = provenFirstLayout(dir); err != nil {
-			return err
-		}
-	}
-	if len(names) == 0 {
-		if missing {
-			return createDescriptor(path)
-		}
-		return nil
-	}
-	unlock, err := lockFirstLayout(dir, names)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if !pending {
-		if err := os.MkdirAll(payloadDir(path), 0o755); err != nil {
-			return err
-		}
-		if err := writeDurably(record, []byte(strings.Join(names, "\n")+"\n")); err != nil {
-			return err
-		}
-	}
-	if missing {
-		if err := createDescriptor(path); err != nil {
-			return err
-		}
-	}
-	for _, name := range names {
-		if retireStep != nil {
-			if err := retireStep(name); err != nil {
-				return fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err)
-			}
-		}
-		if err := os.RemoveAll(filepath.Join(dir, name)); err != nil {
-			return fmt.Errorf("retiring the first layout's %s: %w", filepath.Join(dir, name), err)
-		}
-		if name == "active" {
-			if err := syncPath(dir); err != nil {
-				return err
-			}
-		}
-	}
-	if err := syncPath(dir); err != nil {
-		return err
-	}
-	if err := os.Remove(record); err != nil {
-		return err
-	}
-	if err := syncPath(payloadDir(path)); err != nil {
-		return err
-	}
-	report(fmt.Errorf("%s held state of the first store layout, which is retired; the publisher's next pass sends everything again", dir))
-	return nil
-}
-
-// readRetiring reads the record of a retirement still to finish. pending
-// is false when there is none. A record that names anything but the
-// first layout's names is an error, and nothing is deleted.
-func readRetiring(record string) (names []string, pending bool, err error) {
-	data, err := os.ReadFile(record)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, false, nil
-	}
-	if err != nil {
-		return nil, false, err
-	}
-	for _, name := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
-		if !slices.Contains(firstLayout, name) {
-			return nil, false, fmt.Errorf("%s names %q, which is not of the first store layout; nothing is retired", record, name)
-		}
-		names = append(names, name)
-	}
-	return names, true, nil
-}
-
-// provenFirstLayout are the names of firstLayout that dir holds, in
-// firstLayout's order, when dir holds the first layout: an active symlink
-// to exports/<sequence>, or a high-water file holding a sequence and a
-// newline, as that layout wrote them. Without either, there are none.
-func provenFirstLayout(dir string) ([]string, error) {
-	proven := false
-	if target, err := os.Readlink(filepath.Join(dir, "active")); err == nil {
-		seq, ok := strings.CutPrefix(target, "exports/")
-		_, valid := decimal(seq)
-		proven = ok && valid
-	}
-	if info, err := os.Lstat(filepath.Join(dir, "high-water")); !proven && err == nil && info.Mode().IsRegular() && info.Size() <= 21 {
-		data, err := os.ReadFile(filepath.Join(dir, "high-water"))
-		if err != nil {
-			return nil, err
-		}
-		seq, ok := strings.CutSuffix(string(data), "\n")
-		n, valid := decimal(seq)
-		proven = ok && valid && n > 0
-	}
-	if !proven {
-		return nil, nil
-	}
-	var names []string
-	for _, name := range firstLayout {
-		if _, err := os.Lstat(filepath.Join(dir, name)); err == nil {
-			names = append(names, name)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return nil, err
-		}
-	}
-	return names, nil
-}
-
-// lockFirstLayout takes the first layout's lock, when names hold it and it
-// is there still, and fails while another process holds it.
-func lockFirstLayout(dir string, names []string) (func(), error) {
-	if !slices.Contains(names, "lock") {
-		return func() {}, nil
-	}
-	path := filepath.Join(dir, "lock")
-	f, err := os.OpenFile(path, os.O_RDWR, 0)
-	if errors.Is(err, fs.ErrNotExist) {
-		return func() {}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := flock(f, syscall.LOCK_EX|syscall.LOCK_NB); errors.Is(err, syscall.EWOULDBLOCK) {
-		f.Close()
-		return nil, fmt.Errorf("%s holds state of the first store layout, and another process holds its lock, %s; stop the receiver of the first layout, then start this one again", dir, path)
-	} else if err != nil {
-		f.Close()
-		return nil, err
-	}
-	return func() { f.Close() }, nil
 }
 
 // OpenReadOnly opens the store whose descriptor is at path for reading

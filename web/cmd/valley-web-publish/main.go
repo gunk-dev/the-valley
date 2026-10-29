@@ -17,7 +17,11 @@
 // and signs an authorization that names each project anyone may read. It
 // then sends the authorization to the receiver, outside the lock. It reads
 // no plan and no knot, so no project's graph holds up a withdrawal. With
-// --policy-only the pass ends there, and takes no other lock.
+// --policy-only the pass ends there, and takes no other lock but the
+// links lock. With --links, the authorization also carries a binding for
+// each active read link in the credential file, which the pass reads under
+// the links lock beside it, inside the authorization lock (link.go); the
+// link command issues, lists and revokes them.
 //
 // The content pass then runs, in order:
 //
@@ -94,8 +98,9 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
                           [--state DIR] [--read-schema FILE]
                           [--identity-schema FILE] [--registry-ref REF]
                           [--registry-dir DIR] [--recheck DURATION]
-                          [--policy-only]
+                          [--policy-only] [--links FILE]
                           [--max-bundles SIZE] [--max-storage SIZE]
+       valley-web-publish link (issue | list | revoke) ...
 
 One pass of the web publisher: check who may read each project and send
 the receiver a signed authorization, then read the valley's public
@@ -158,6 +163,14 @@ projects and upload them to the receiver at URL (or write both to DIR).
                        the authorization without reading plans, knots, or
                        bundles or taking the content lock; requires
                        --receiver
+  --links FILE         the credential file valley-web-publish link writes,
+                       not named lock; read each time the pass signs,
+                       under the links lock, the file named lock beside
+                       it: the authorization carries a binding for each
+                       active link in it; a missing or empty FILE holds
+                       none; a lock the pass cannot take within a minute,
+                       or a FILE it cannot read, sends an authorization
+                       with none and fails the pass
   --max-bundles SIZE   the most the bundles of one export may hold
                        together; a bundle is written only into what it
                        leaves, and a pass past it sends nothing
@@ -171,6 +184,8 @@ projects and upload them to the receiver at URL (or write both to DIR).
 A SIZE is a number of bytes, or a number with K, M, G or T for KiB, MiB,
 GiB or TiB.
 
+valley-web-publish link --help describes the link command.
+
 The cache is $XDG_CACHE_HOME (default $HOME/.cache): the valley CLI's
 clones under valley/, the publisher's repositories, mirrors and bundles
 under valley-web-publish/.`
@@ -180,6 +195,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "link" {
+		return runLink(ctx, args[1:], stdout, stderr)
+	}
 	cfg, err := parseArgs(args)
 	if errors.Is(err, flag.ErrHelp) {
 		fmt.Fprintln(stdout, usage)
@@ -217,6 +235,7 @@ type config struct {
 	registryDir  string
 	recheck      time.Duration
 	policyOnly   bool
+	links        string
 	maxBundles   byteSize
 	maxStorage   byteSize
 }
@@ -240,6 +259,7 @@ func parseArgs(args []string) (config, error) {
 	fs.StringVar(&c.registryDir, "registry-dir", "identity", "")
 	fs.DurationVar(&c.recheck, "recheck", time.Hour, "")
 	fs.BoolVar(&c.policyOnly, "policy-only", false, "")
+	fs.StringVar(&c.links, "links", "", "")
 	fs.Var(&c.maxBundles, "max-bundles", "")
 	fs.Var(&c.maxStorage, "max-storage", "")
 	if err := fs.Parse(args); err != nil {
@@ -275,6 +295,8 @@ func parseArgs(args []string) (config, error) {
 		return c, errors.New("no schema: give --read-schema and --identity-schema, or set VALLEY_READ_SCHEMA and VALLEY_IDENTITY_SCHEMA")
 	case c.recheck < 0:
 		return c, errors.New("--recheck is negative; give a duration of zero or more")
+	case c.links != "" && filepath.Base(c.links) == linksLockFile:
+		return c, fmt.Errorf("--links may not name a file %s: the links lock has that name", linksLockFile)
 	}
 	if c.receiver != "" {
 		if err := checkReceiver(c.receiver); err != nil {

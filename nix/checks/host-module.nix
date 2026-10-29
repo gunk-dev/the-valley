@@ -89,6 +89,24 @@ let
       }
     ];
   };
+  # The publisher on a host whose declaration asks for a backup.
+  backupWebPublisherHost = webPublisherHost.extendModules {
+    modules = [
+      {
+        services.valley.config = lib.mkForce (
+          pkgs.runCommand "protected-with-backup.cue" { } ''
+            cat ${../../examples/hosts/protected.cue} > $out
+            printf '\nbackup: target: "restic-sftp"\n' >> $out
+          ''
+        );
+        services.valley.backup = {
+          repositoryFile = "/run/agenix/valley-restic-repo";
+          passwordFile = "/run/agenix/valley-restic-password";
+          knownHostsFile = "/var/lib/valley-backup/known_hosts";
+        };
+      }
+    ];
+  };
   # The publisher reading the registry at a ref the instance repository's
   # protection does not cover.
   unprotectedRegistryWebPublisherHost = webPublisherHost.extendModules {
@@ -731,7 +749,8 @@ let
   # The web publisher (nix/web-publisher.nix). Off, it renders nothing.
   # On, one pass is a oneshot on a five-minute timer whose first pass waits
   # five minutes after the timer starts, and which no switch starts or
-  # restarts. It runs as a dynamic user in the git group, with an empty
+  # restarts. It runs as the dynamic user valley-web-publish, which the
+  # policy path's unit shares, in the git group, with an empty
   # safe.directory entry that resets the system's and the user's, then an
   # exact entry for each repository the host serves and no wildcard, the
   # repositories read-only, nothing writable but its state and cache, and
@@ -744,7 +763,65 @@ let
   # storage.
   webPublisherRenderedWithoutEnable =
     webPublisherOffHost.config.systemd.services ? valley-web-publish
-    || webPublisherOffHost.config.systemd.timers ? valley-web-publish;
+    || webPublisherOffHost.config.systemd.services ? valley-web-publish-policy
+    || webPublisherOffHost.config.systemd.timers ? valley-web-publish
+    || lib.any (p: (p.name or "") == "valley-web-link") webPublisherOffHost.config.environment.systemPackages;
+
+  # The read links: the policy path's own unit, the same pass with
+  # --policy-only in the same sandbox, as the same dynamic user, so the two
+  # share their state and cache directories, and with the same
+  # credentials; the
+  # credential file read live by both through a static group, root's to
+  # write, under the links lock tmpfiles makes beside it, which only root
+  # can make or replace; the operator's wrapper, with the unit's
+  # safe.directory entries, passing issue alone the flags for reading the
+  # registry, and starting the policy pass after every issue or revoke,
+  # and once more while a link is pending; and the backup holding the
+  # file's directory and the publisher's durable state beside the data
+  # directory.
+  webPublisherLinksMisrendered =
+    let
+      units = webPublisherHost.config.systemd.services;
+      pass = units.valley-web-publish.serviceConfig;
+      policy = units.valley-web-publish-policy.serviceConfig or { };
+      wrapper = lib.findFirst (
+        p: (p.name or "") == "valley-web-link"
+      ) null webPublisherHost.config.environment.systemPackages;
+    in
+    lib.filter (x: x != null) (lib.imap0 (i: c: if c then i else null) [
+      (!(units ? valley-web-publish-policy))
+      (lib.any (u: u.DynamicUser or null != true || u.User or null != "valley-web-publish" || u.Group or null != "valley-web-publish") [
+        pass
+        policy
+      ])
+      (policy.ExecStart or null != "${pass.ExecStart} --policy-only")
+      (removeAttrs policy [ "ExecStart" ] != removeAttrs pass [ "ExecStart" ])
+      (units.valley-web-publish-policy.environment != units.valley-web-publish.environment)
+      (!(lib.hasSuffix " --links /var/lib/valley-web-links/links" pass.ExecStart))
+      (!(lib.all (r: builtins.elem r webPublisherHost.config.systemd.tmpfiles.rules) [
+      "d /var/lib/valley-web-links 0750 root valley-web-links -"
+      "f /var/lib/valley-web-links/links 0640 root valley-web-links -"
+      "f /var/lib/valley-web-links/lock 0640 root valley-web-links -"
+    ]))
+      (!(webPublisherHost.config.users.groups ? valley-web-links))
+      (wrapper == null)
+      (!(lib.hasInfix "valley-web-publish link \"$@\" --links /var/lib/valley-web-links/links \\\n    --state /var/lib/valley-web-publish\n}" wrapper.text or ""))
+      (!(lib.hasInfix "issue)\n    link \"$@\" --instance-repo /srv/git/sealed.git" wrapper.text or ""))
+      (!(lib.hasInfix "revoke) link \"$@\" ;;" wrapper.text or ""))
+      (!(lib.all (e: lib.hasInfix e wrapper.text or "") [
+      "ulimit -c 0\n"
+      "export GIT_CONFIG_COUNT=5\n"
+      "export GIT_CONFIG_VALUE_0=''\n"
+      "export GIT_CONFIG_VALUE_4=/srv/git/sealed.git\n"
+      "systemctl start valley-web-publish-policy.service"
+      "deliver\nif ! link list --check > /dev/null 2>&1; then\n  deliver\nfi\nif link list --check > /dev/null; then"
+    ]))
+      (backupWebPublisherHost.config.services.restic.backups.valley.paths or [ ] != [
+      "/srv/git"
+      "/var/lib/valley-web-links"
+      "/var/lib/private/valley-web-publish"
+    ])
+    ]);
 
   webPublisherMisrendered =
     let
@@ -766,8 +843,12 @@ let
     in
     service.Type or null != "oneshot"
     || service.DynamicUser or null != true
-    || service ? User
-    || service.SupplementaryGroups or [ ] != [ "git" ]
+    || service.User or null != "valley-web-publish"
+    || service.Group or null != "valley-web-publish"
+    || service.SupplementaryGroups or [ ] != [
+      "git"
+      "valley-web-links"
+    ]
     || env.GIT_CONFIG_COUNT or null != toString (lib.length repos + 1)
     || entries != map (r: {
       key = "safe.directory";
@@ -952,6 +1033,8 @@ in
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then
       throw "valley module-eval: the web publisher must be a oneshot on a five-minute timer whose first pass waits five minutes and which no switch starts, run as a dynamic user in the git group with an empty safe.directory entry and then one exact entry per served repository, the repositories read-only, only its state and cache writable, the host's keys inaccessible and its memory capped with no swap, reading the instance repository and naming the host, the receiver, its token as a credential, the destination, the display mapping, the bounds on its bundles and storage, and the identity registry's directory"
+    else if webPublisherLinksMisrendered != [ ] then
+      throw "${builtins.toJSON webPublisherLinksMisrendered} valley module-eval: the web publisher's read links must be read live by each pass through the valley-web-links group from a file only root writes, under a links lock tmpfiles makes beside it, with a policy-only unit in the same sandbox that valley-web-link starts after every issue or revoke and once more while a link is pending, the wrapper trusting the unit's repositories and dumping no core, and the backup must hold the credential file's directory and the publisher's state"
     else if webReceiverRenderedWithoutEnable then
       throw "valley module-eval: web receiver machinery rendered for a host that imports its module and never enabled it"
     else if webReceiverMisrendered then

@@ -79,7 +79,9 @@
 #   web-publisher-e2e.nix
 #                    web-publisher-e2e — the web publisher's sandbox in
 #                    a NixOS machine: the unit the module renders, with a
-#                    probe in place of the publisher
+#                    probe in place of the publisher, and the read links'
+#                    wrapper run as root, delivering through the policy
+#                    unit to a receiver
 #
 # Fixtures live with the thing they are fixtures of: host declarations,
 # attestations, events, graphs and policies under examples/, attestation

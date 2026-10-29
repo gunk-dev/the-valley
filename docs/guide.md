@@ -872,6 +872,67 @@ work. The edge stops serving the project at the next request, even if the conten
 fails. Running `valley-web-publish --policy-only` with the unit's other flags sends only the
 authorization.
 
+### Issue and revoke read links
+
+A read link lets one person read, at the edge, what one registry principal may read there. Run these
+commands as root on the valley host.
+
+```bash
+valley-web-link issue --principal alice --note laptop
+```
+
+The command prints the link once, such as
+`https://example.org/-/redeem#lk-0123456789abcdef.<secret>`. Send it to its holder over a private
+channel. The host keeps no copy of the secret. The command refuses a principal who may read no
+project at the destination.
+
+The principal needs an edge-read grant in the registry and a project whose `policy/read` names it. A
+reader who signs nothing may hold no keys, as long as every grant it holds is an edge read.
+
+```bash
+valley-web-link list
+valley-web-link revoke lk-0123456789abcdef
+valley-web-link revoke --principal alice
+valley-web-link revoke --all
+```
+
+After every issue or revoke, the command starts a policy pass and reports every link whose delivery
+is still `pending`. If a link is pending after that pass, it starts the pass once more. `enforced`
+means the receiver acknowledged an authorization that reflects the link's current state. If a link
+is still `pending`, the command exits 1. A revoked link still works at the edge until a pass
+delivers the revocation. Check `journalctl -u valley-web-publish-policy`, then run the same command
+again: a repeated `revoke` retries the delivery.
+
+A command that changes links waits for a policy pass that is reading the links and signing, for up
+to a minute, and says so while it waits. If the wait runs out, the command exits 1 having changed
+nothing. Run it again.
+
+Restoring the valley host from a backup restores the read links as they were at the backup. A link
+revoked after the backup works again once the next pass delivers it. To cut off every link after a
+restore, revoke them all, then issue new links to the people who should keep access:
+
+```bash
+valley-web-link revoke --all
+valley-web-link issue --principal alice --note laptop
+```
+
+Do the same after the edge loses its state.
+
+Revoked links stay in the credential file until you prune them:
+
+```bash
+valley-web-link prune
+```
+
+`prune` removes every revoked link whose revocation is `enforced`, and keeps those still `pending`.
+It starts no policy pass, since the edge already refuses every link it removes. The file holds at
+most 1 MiB. `issue` refuses once the file would come within 64 KiB of that, and says to prune.
+`revoke` is never refused for the file's size.
+
+To pause a principal's access without revoking links, set or shorten its `expires` in the registry.
+Its links stop working after the next policy pass past that day, and extending the date restores
+them.
+
 ## Contributing to the-valley
 
 Contributors work in a checkout of this repository. Read [AGENTS.md](../AGENTS.md) before editing.

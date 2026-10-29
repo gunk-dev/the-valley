@@ -782,8 +782,8 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
     - `--policy-only`: Run only the policy path: check the policy, sign an authorization, and send
-      it. It reads no plan, knot, or bundle and takes only the authorization lock, so a stalled
-      content pass never holds it up. Requires `--receiver`.
+      it. It reads no plan, knot, or bundle and takes only the authorization lock, and with
+      `--links` the links lock, so a stalled content pass never holds it up. Requires `--receiver`.
     - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
     - `--max-storage <size>`: The most the state directory and the caches may hold (default `16G`).
     - A `<size>` is a number of bytes, or a number followed by `K`, `M`, `G`, or `T` for KiB, MiB,
@@ -2268,6 +2268,7 @@ checked 2026-10-29T01:03:00Z
 basis 41
 project app 9da6809f038df92138c131cd16bed76d
 reader app anyone
+binding lk-0123456789abcdef alice 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7
 
 — valley-host/web-export e7kLV5lThaGSbsBUVC2cJ8I1vn6XJWS9+L0wwWmdRAYL827G/au5kE5OidGXMH+ofpnTprs+o4GgPNuTwqOexf8zrgw=
 ```
@@ -2288,12 +2289,19 @@ reader app anyone
     has at least one reader. The publisher writes only the reader `anyone`, for each project that
     `anyone` may read and that the host declaration places in a group. Named readers are
     `not built`.
+  - `binding <id> <principal> <verifier>`: One active read link (see
+    [Web read links](#web-read-links)). `<id>` is the credential ID, `lk-` and 16 lowercase hex
+    digits. `<principal>` is the registry principal the link identifies, never `anyone`.
+    `<verifier>` is the lowercase hex SHA-256 of the link's 32 secret bytes. A credential with no
+    binding is revoked. The edge does not read bindings yet (`not built`).
 - **Grammar rules (`export.ParseAuthorization`, `Authorization.Text`):** `instance`, `destination`,
   `sequence`, and `checked` appear once each, and `basis` at most once. Each project appears once,
   each reader of a project appears once, and every `reader` record names a project that has a
   `project` record. Names and principals follow the project-name rule. `ParseAuthorization` accepts
   records in any order; `Authorization.Text` writes them in the order shown above, with projects
-  sorted by name and readers sorted.
+  sorted by name and readers sorted, and bindings after them sorted by ID. Each credential ID
+  appears in at most one binding, and an authorization carries at most 1,000 bindings
+  (`export.MaxBindings`).
 - **Admission (`export.VerifyAuthorization`):** The receiver admits an authorization in six separate
   steps, in this exact order:
   1. Read at most 256 KiB (`MaxAuthorization`), and refuse a longer one as `too-large`.
@@ -2334,6 +2342,138 @@ reader app anyone
   in `missing`, and the next content upload sends its bundle again.
 - **Refusals:** Uses the same refusal format and codes as the upload. `replayed` and `stale-basis`
   carry the stored sequence as `high_water`.
+
+#### Web read links
+
+A read link is a bearer credential for reading at the edge. It identifies one registry principal,
+and it authorizes what that principal may read there and nothing more (`implemented` on the host;
+redemption on the edge is `not built`).
+
+```text
+valley-web-link issue --principal alice --note laptop
+valley-web-link list
+valley-web-link revoke lk-0123456789abcdef
+valley-web-link revoke --principal alice
+valley-web-link revoke --all
+valley-web-link prune
+```
+
+- **The wrapper (`valley-web-link`, `deployment choice`):** The web publisher module installs it.
+  The operator runs it as root. It runs `valley-web-publish link` with the module's paths, sets
+  `ulimit -c 0`, and gives git the unit's exact `safe.directory` entries, as root owns no
+  repository. After every `issue` or `revoke`, whether or not it changed anything, it starts
+  `valley-web-publish-policy.service`, a oneshot that runs the publisher's pass with `--policy-only`
+  in the same sandbox as `valley-web-publish.service`. It then runs `link list --check` over every
+  credential. A policy pass that was already running when the command started may have signed before
+  the change, and `systemctl start` returns when that pass ends. So while a credential is still
+  `pending`, the wrapper starts the policy pass and runs the check once more. It never repeats the
+  change. It prints each credential still `pending`, and exits 1 while any is. Running a `revoke`
+  again therefore retries its delivery. It runs `list` and `prune` alone, as root, and starts no
+  pass.
+- **`valley-web-publish link issue --principal NAME [--note TEXT]`:** Reads the registry and the
+  projects' `policy/read` the way a policy pass does, into a temporary cache it removes. It refuses
+  unless the principal may read at least one project at `--destination` that the host declaration
+  places in a group. It also refuses when the file it would write is larger than 1 MiB less 64 KiB
+  (`linksHeadroom`), with a message to run `prune`. It then makes its process non-dumpable
+  (`prctl(PR_SET_DUMPABLE, 0)`), generates the secret, adds a credential to the file, and prints the
+  link once on stdout. The note is at most 100 characters, with no control characters.
+- **`valley-web-publish link list [--check] [ID...]`:** Shows each credential's ID, principal, state
+  (`active` or `revoked`), delivery, issue time and note. It reads the publisher's state and never
+  contacts the edge, and it does not know whether a link was redeemed. Delivery is one of:
+  - `enforced`: the receiver acknowledged an authorization that carried the links of the revision
+    that set the credential's state, or of a later revision.
+  - `pending`: the receiver has acknowledged no such authorization, or the publisher has no delivery
+    record.
+
+  With `--check`, it exits 1 when a credential it shows is `pending`.
+
+- **`valley-web-publish link revoke (ID | --principal NAME | --all)`:** Records a revocation time on
+  each matching active credential. A revocation is permanent. It does not change the registry. It
+  writes the file only when it revoked a credential. A revoke is never refused for the file's size:
+  the 64 KiB `issue` leaves free fits a revocation of all 1,000 active credentials, each adding at
+  most 59 bytes.
+- **`valley-web-publish link prune`:** Removes each revoked credential whose revocation is
+  `enforced`, and keeps each one still `pending`. It writes the file at the next revision when it
+  removes any. Removing a record loses nothing: the edge accepts only a credential the stored
+  authorization binds, so an absent credential is as revoked as a revoked one. An ID is 64 random
+  bits, and `issue` makes none the file holds.
+- **Flags:** `--links FILE` (required) is the credential file. It may not be named `lock`.
+  `--state DIR` is the publisher's state directory, whose delivery record every verb reads.
+  `--instance-repo`, `--destination` and `--host` are required for `issue`, and `issue` alone
+  accepts them, `--registry-ref`, `--registry-dir` and the schemas.
+- **The link:** `https://<destination>/-/redeem#<id>.<secret>`. `<destination>` is the publisher's
+  `--destination`. `<secret>` is 32 random bytes from `crypto/rand`, in base64url without padding,
+  43 characters. The part after `#` stays in the browser and is not sent in the request line.
+- **The credential file (`--links`):** JSON, read strictly: unknown or misspelled keys, repeated
+  keys, a repeated ID, a malformed field, or more than 1,000 active credentials fail it. A missing
+  or empty file holds no credentials. Reads and writes hold it to 1 MiB (`maxLinksFile`). Every
+  change takes the links lock, then reads the file, writes a temporary file, syncs it, and renames
+  it over the file. The file is mode 0640, in the group of its directory. The module keeps it at
+  `/var/lib/valley-web-links/links`, owned by root and the group `valley-web-links`, in a directory
+  of mode 0750 with the same owners (`deployment choice`). The verifiers are not secret, since the
+  edge holds them too. The file needs integrity, and only root can write it.
+
+  ```json
+  {
+    "revision": 4,
+    "links": [
+      {
+        "id": "lk-0123456789abcdef",
+        "principal": "alice",
+        "note": "laptop",
+        "verifier": "3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7",
+        "issued": "2026-10-29T12:00:00Z",
+        "revoked": "2026-10-30T08:00:00Z",
+        "changed": 4
+      }
+    ]
+  }
+  ```
+
+  `verifier` is the lowercase hex SHA-256 of the 32 secret bytes. A 256-bit random secret needs no
+  slow hash. `revoked` is absent while the credential is active. `changed` is the file's revision
+  that set the credential's current state: the revision its issue wrote, or its revocation. The file
+  never holds a secret.
+
+- **The links lock (`lock` beside `FILE`):** An exclusive `flock` on the file named `lock` in the
+  credential file's directory. A change (`issue`, `revoke`, `prune`) holds it alone, and takes no
+  lock in `--state`. A pass takes it inside the authorization lock, just before it reads the file,
+  and holds it until it has signed. Each waits at most 60 seconds for it and says on stderr that it
+  is waiting. A change then fails without writing. A pass then signs and sends an authorization with
+  no bindings, and fails. The lock is opened with `O_NOFOLLOW` and `O_NONBLOCK`, so a symbolic link
+  or a FIFO there is refused without following or blocking. Anything but a regular file owned by
+  root, or by the user who runs the command, is refused. A missing lock is made, mode 0640. The
+  module's tmpfiles makes it, owned by root and the group `valley-web-links`, mode 0640, so the
+  publisher can open and lock it but can make, replace or remove nothing in the directory
+  (`deployment choice`).
+- **The revision only moves forward:** Every change writes revision one more than the greater of the
+  file's revision and the greatest revision a pass has signed from, which the publisher records in
+  its state. So a change to a file restored from an older copy still writes past every revision
+  already signed.
+- **In the pass (`--links FILE` on `valley-web-publish`):** Each time the pass signs an
+  authorization, the first attempt and every retry after a refusal, it reads the file under the
+  links lock, after it checks the policy and immediately before it signs. Every change to the file
+  holds the same lock, so once a revoke has finished, no pass signs the revoked credential. The pass
+  signs one `binding` record for each active credential into every authorization it signs, one that
+  keeps access because a project's policy could not be read included. Under the module the pass
+  reads the file directly, through the group `valley-web-links`. A file that cannot be read or does
+  not parse fails the pass closed: the pass signs and sends an authorization with no bindings, then
+  exits non-zero and says why. A missing or empty file holds no credentials, and the pass succeeds.
+  So does a missing directory, where the pass takes no lock. A pass that can sign nothing, such as
+  when the instance repository cannot be read, delivers nothing, and a revocation waits for the next
+  pass that signs. Bindings never appear in a content manifest or in the export.
+- **Delivery record (`links-delivery` in `--state`):** The greatest credential file revision a pass
+  has signed from, written under the links lock before the authorization is signed. Also the
+  sequence of the last authorization the receiver acknowledged, and the file revision whose links it
+  carried, or 0 when it carried none read from a file. The pass and every verb read it without
+  following a symbolic link or waiting on a FIFO, and refuses anything but a regular file of at most
+  4 KiB.
+- **Restore:** Restoring the host from a backup restores the credential file and the publisher's
+  state as they were at the backup. The next pass carries the restored file's links, so a credential
+  revoked after the backup is active again. To cut off every link after a restore, run
+  `valley-web-link revoke --all`, then issue new links. After the edge loses its state, also run
+  `valley-web-link revoke --all` and issue new links. What the edge does after losing its state is
+  `not built`.
 
 #### Web export upload
 

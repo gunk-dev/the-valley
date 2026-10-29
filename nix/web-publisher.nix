@@ -13,7 +13,9 @@
 # write the repositories, and the files that hold the host's mirror,
 # backup and signing keys are made inaccessible to it. The receiver's
 # token is a file outside the Nix store, which systemd reads and hands to
-# the unit as a credential. The unit may connect to the addresses
+# the unit as a credential. The read links' credential file is readable
+# through a group of its own, and each pass reads it live as it signs,
+# under the links lock beside it, which only root can make or replace. The unit may connect to the addresses
 # allowedAddresses lists and to no other, and it checks before each pass
 # that this filter is in force.
 {
@@ -107,7 +109,153 @@ let
     "--max-storage ${cfg.maxStorage}"
     "--registry-ref ${lib.escapeShellArg host.identity.ref}"
     "--registry-dir ${lib.escapeShellArg host.identity.directory}"
+    "--links ${lib.escapeShellArg (toString cfg.linksFile)}"
   ];
+
+  linksDir = dirOf (toString cfg.linksFile);
+
+  # The group the passes read the credential file through. Root alone
+  # writes the file.
+  linksGroup = "valley-web-links";
+
+  # The operator's command for read links, run as root. It runs the
+  # publisher's link command with the module's paths, and git with the
+  # unit's exact safe.directory entries, as root owns no repository. After
+  # an issue or a revoke, whether or not it changed anything, it starts a
+  # policy-only pass, then checks for a link the receiver does not yet hold
+  # the state of. A pass already running when the command started may have
+  # signed before the change, and systemctl start then returns once that
+  # pass ends. So while a link is pending, the command starts the pass and
+  # checks once more. It never repeats the change. It reports every link
+  # still pending, and exits 1 while one is. So running a revoke again
+  # retries its delivery. list and prune start no pass: prune removes only
+  # revocations a pass delivered.
+  # No core dump is written, so none holds an issued link's secret.
+  linkCommand = pkgs.writeShellApplication {
+    name = "valley-web-link";
+    runtimeInputs = [
+      cfg.package
+      pkgs.coreutils
+      pkgs.systemd
+    ];
+    text = ''
+      ulimit -c 0
+      ${lib.concatStringsSep "\n" (lib.mapAttrsToList (k: v: "export ${k}=${lib.escapeShellArg v}") safeDirectories)}
+      link() {
+        valley-web-publish link "$@" --links ${lib.escapeShellArg (toString cfg.linksFile)} \
+          --state ${lib.escapeShellArg (toString cfg.stateDir)}
+      }
+      case "''${1:-}" in
+        issue)
+          link "$@" --instance-repo ${lib.escapeShellArg instanceRepo} \
+            --destination ${lib.escapeShellArg cfg.destination} --host ${configJSON} \
+            --registry-ref ${lib.escapeShellArg host.identity.ref} \
+            --registry-dir ${lib.escapeShellArg host.identity.directory}
+          ;;
+        revoke) link "$@" ;;
+        *) link "$@"; exit ;;
+      esac
+      deliver() {
+        systemctl start valley-web-publish-policy.service ||
+          echo "valley-web-link: the policy pass failed; see journalctl -u valley-web-publish-policy" >&2
+      }
+      deliver
+      if ! link list --check > /dev/null 2>&1; then
+        deliver
+      fi
+      if link list --check > /dev/null; then
+        echo "valley-web-link: the receiver holds every link's current state" >&2
+      else
+        echo "valley-web-link: the edge does not yet hold every change; see journalctl -u valley-web-publish-policy, then run the command again to retry the delivery" >&2
+        exit 1
+      fi
+    '';
+  };
+
+  # One unit of the publisher: a pass, or its policy path alone.
+  pass =
+    { description, execStart }:
+    {
+      inherit description;
+    after = [
+      "network-online.target"
+      "valley-init.service"
+    ];
+    wants = [ "network-online.target" ];
+    restartIfChanged = false;
+    unitConfig.RequiresMountsFor = toString host.dataDir;
+    # Go's own resolver would query /etc/resolv.conf's nameserver from
+    # inside the unit, where the filter denies it. The C library's asks
+    # nscd over a Unix socket, which resolves outside the unit.
+    environment = safeDirectories // {
+      HOME = toString cfg.stateDir;
+      XDG_CACHE_HOME = cacheDir;
+      GODEBUG = "netdns=cgo";
+    };
+    serviceConfig = {
+      Type = "oneshot";
+      # Run in the unit's cgroup, under its filter, before each pass.
+      ExecStartPre = "${lib.getExe egressCheck} ${canary.address} ${canary.port}";
+      ExecStart = execStart;
+      # A pass that hangs is ended, and the timer starts the next. One
+      # that outgrows its memory is ended too.
+      TimeoutStartSec = "1h";
+      MemoryMax = cfg.memoryMax;
+      MemorySwapMax = "0";
+      # Both units share the state and cache directories, so they run as
+      # one dynamic user: systemd gives units that name the same User one
+      # UID, and never changes the directories' owner under a running
+      # pass when the other starts.
+      DynamicUser = true;
+      User = "valley-web-publish";
+      Group = "valley-web-publish";
+      SupplementaryGroups = [
+        host.group
+        linksGroup
+      ];
+      StateDirectory = stateName;
+      StateDirectoryMode = "0700";
+      CacheDirectory = stateName;
+      CacheDirectoryMode = "0700";
+      WorkingDirectory = toString cfg.stateDir;
+      LoadCredential = [ "receiver-token:${cfg.receiverTokenFile}" ];
+      # ProtectSystem=strict leaves the whole filesystem read-only but
+      # the state and cache directories, which systemd exempts. So the
+      # repositories, readable through the git group, are read-only,
+      # and named here so a reader of the unit sees it. A repository
+      # valley-init has not made yet is skipped (the leading -).
+      ProtectSystem = "strict";
+      ReadOnlyPaths = map (p: "-${p}") repositories;
+      InaccessiblePaths = map (p: "-${p}") keys;
+      ProtectHome = true;
+      PrivateTmp = true;
+      PrivateDevices = true;
+      NoNewPrivileges = true;
+      ProtectClock = true;
+      ProtectHostname = true;
+      ProtectKernelLogs = true;
+      ProtectKernelModules = true;
+      ProtectKernelTunables = true;
+      ProtectControlGroups = true;
+      ProtectProc = "invisible";
+      # A pass connects to the receiver and to nothing else.
+      IPAddressDeny = "any";
+      IPAddressAllow = cfg.allowedAddresses;
+      RestrictAddressFamilies = [
+        "AF_INET"
+        "AF_INET6"
+        "AF_UNIX"
+      ];
+      RestrictNamespaces = true;
+      RestrictRealtime = true;
+      RestrictSUIDSGID = true;
+      LockPersonality = true;
+      CapabilityBoundingSet = "";
+      SystemCallArchitectures = "native";
+      SystemCallFilter = [ "@system-service" ];
+      UMask = "0077";
+    };
+    };
 
   size = lib.types.strMatching "[1-9][0-9]*[KMGT]?";
 
@@ -287,6 +435,23 @@ in
       '';
     };
 
+    linksFile = lib.mkOption {
+      type = lib.types.strMatching "/[^%]*[^/%]";
+      default = "/var/lib/valley-web-links/links";
+      description = ''
+        The read links' credential file, which `valley-web-link` writes as
+        root: one record per link, with its verifier and never its secret.
+        It is mode 0640, owned by root and the group `valley-web-links`,
+        in a directory of mode 0750 with the same owners, outside every
+        repository, cache and export. Each pass reads it through that
+        group as it signs an authorization, under the links lock, the file
+        `lock` in the same directory, owned by root and the same group,
+        mode 0640. It carries the active links to the edge. The verifiers are not
+        secret, as the edge holds them too: the file needs integrity, and
+        only root can write it.
+      '';
+    };
+
     memoryMax = lib.mkOption {
       type = size;
       default = "1G";
@@ -359,78 +524,33 @@ in
     # it: nothing wants the service, and a changed unit is not restarted.
     # The publisher's own lock serializes a pass started by hand with the
     # timer's.
-    systemd.services.valley-web-publish = {
+    systemd.services.valley-web-publish = pass {
       description = "One pass of the valley web publisher";
-      after = [
-        "network-online.target"
-        "valley-init.service"
-      ];
-      wants = [ "network-online.target" ];
-      restartIfChanged = false;
-      unitConfig.RequiresMountsFor = toString host.dataDir;
-      # Go's own resolver would query /etc/resolv.conf's nameserver from
-      # inside the unit, where the filter denies it. The C library's asks
-      # nscd over a Unix socket, which resolves outside the unit.
-      environment = safeDirectories // {
-        HOME = toString cfg.stateDir;
-        XDG_CACHE_HOME = cacheDir;
-        GODEBUG = "netdns=cgo";
-      };
-      serviceConfig = {
-        Type = "oneshot";
-        # Run in the unit's cgroup, under its filter, before each pass.
-        ExecStartPre = "${lib.getExe egressCheck} ${canary.address} ${canary.port}";
-        ExecStart = command;
-        # A pass that hangs is ended, and the timer starts the next. One
-        # that outgrows its memory is ended too.
-        TimeoutStartSec = "1h";
-        MemoryMax = cfg.memoryMax;
-        MemorySwapMax = "0";
-        DynamicUser = true;
-        SupplementaryGroups = [ host.group ];
-        StateDirectory = stateName;
-        StateDirectoryMode = "0700";
-        CacheDirectory = stateName;
-        CacheDirectoryMode = "0700";
-        WorkingDirectory = toString cfg.stateDir;
-        LoadCredential = [ "receiver-token:${cfg.receiverTokenFile}" ];
-        # ProtectSystem=strict leaves the whole filesystem read-only but
-        # the state and cache directories, which systemd exempts. So the
-        # repositories, readable through the git group, are read-only,
-        # and named here so a reader of the unit sees it. A repository
-        # valley-init has not made yet is skipped (the leading -).
-        ProtectSystem = "strict";
-        ReadOnlyPaths = map (p: "-${p}") repositories;
-        InaccessiblePaths = map (p: "-${p}") keys;
-        ProtectHome = true;
-        PrivateTmp = true;
-        PrivateDevices = true;
-        NoNewPrivileges = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        ProtectKernelLogs = true;
-        ProtectKernelModules = true;
-        ProtectKernelTunables = true;
-        ProtectControlGroups = true;
-        ProtectProc = "invisible";
-        # A pass connects to the receiver and to nothing else.
-        IPAddressDeny = "any";
-        IPAddressAllow = cfg.allowedAddresses;
-        RestrictAddressFamilies = [
-          "AF_INET"
-          "AF_INET6"
-          "AF_UNIX"
-        ];
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
-        CapabilityBoundingSet = "";
-        SystemCallArchitectures = "native";
-        SystemCallFilter = [ "@system-service" ];
-        UMask = "0077";
-      };
+      execStart = command;
     };
+
+    # The policy path alone, which valley-web-link starts after an issue or
+    # a revoke: it sends the authorization, with the current read links,
+    # and reads no plan and no bundle, so a stalled content pass does not
+    # hold it up.
+    systemd.services.valley-web-publish-policy = pass {
+      description = "The valley web publisher's policy path";
+      execStart = "${command} --policy-only";
+    };
+
+    # The credential file's directory, an empty file, which holds no
+    # links, and the links lock beside it, which a pass opens and locks
+    # through the group. The link command writes the file in its
+    # directory's group. Only root can make, replace or remove anything in
+    # the directory.
+    users.groups.${linksGroup} = { };
+    systemd.tmpfiles.rules = [
+      "d ${linksDir} 0750 root ${linksGroup} -"
+      "f ${toString cfg.linksFile} 0640 root ${linksGroup} -"
+      "f ${linksDir}/lock 0640 root ${linksGroup} -"
+    ];
+
+    environment.systemPackages = [ linkCommand ];
 
     # The first pass starts five minutes after the timer starts, and each
     # later pass five minutes after the last one ended. These are delays

@@ -40,10 +40,16 @@ import "strings"
 	// registry holds the top of that chain and never its links.
 	kind: "human" | "machine" | "service"
 
-	// The keys that prove possession, at least one. A bearer secret — a
-	// credential whose possession is the entire proof — is not a key and has
-	// no place here (dcr-b87f6e8).
-	keys: [#Key, ...#Key]
+	// The keys that prove possession. A bearer secret — a credential whose
+	// possession is the entire proof — is not a key and has no place here
+	// (dcr-b87f6e8). A principal may hold no key only when every grant it
+	// holds is at an edge-read boundary (readScopes): such a reader signs,
+	// pushes, approves and governs nothing, and reads through the read
+	// links the host issues, whose verifiers live in protected host state
+	// outside every repository. docs/security.md, "Bearer read
+	// credentials", records that decision, which supersedes dcr-b87f6e8's
+	// ban on bearer secrets for these read credentials alone.
+	keys: [...#Key]
 
 	// What this principal may do, keyed by grant name. The name is instance
 	// content; what makes a grant real is the boundary it names.
@@ -291,7 +297,8 @@ externalGovernance: {
 // whose read scope does not fit. An edge read boundary names its
 // destination, and no other boundary names one. A grant at an edge read
 // boundary names the projects it covers, and no other grant names any.
-// anyone holds grants at edge read boundaries alone. Each boundary or grant
+// anyone holds grants at edge read boundaries alone, and so does a
+// principal with no keys. Each boundary or grant
 // that breaks a rule lands here as a sentinel string against a `bool` and
 // fails vet naming it.
 readScopes: [string]: bool
@@ -310,6 +317,11 @@ readScopes: {
 		}
 		if boundaries[g.boundary].kind != "edge-read" && g.projects != _|_ {
 			"\(pn).\(gn)": "INVALID: only a grant at an edge-read boundary names projects"
+		}
+	}
+	for pn, p in principals if len(p.keys) == 0 for gn, g in p.grants {
+		if boundaries[g.boundary].kind != "edge-read" {
+			"\(pn).\(gn)": "INVALID: a principal with no keys holds read grants alone, at edge-read boundaries"
 		}
 	}
 	if anyone != _|_ for gn, g in anyone.grants {

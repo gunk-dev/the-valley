@@ -23,6 +23,11 @@ import (
 //	                        signed with
 //	authorization           the last authorization the receiver said it
 //	                        stored, as a signed note
+//	links-delivery          the greatest credential file revision signed
+//	                        from, written under the links lock beside the
+//	                        credential file, and the revision the last
+//	                        stored authorization carried the links of
+//	                        (link.go)
 const (
 	authorizationLockFile     = "authorization.lock"
 	authorizationSequenceFile = "authorization-sequence"
@@ -57,7 +62,9 @@ var errIncomplete = errors.New("the policy check is incomplete")
 // one acknowledged, which the next incomplete check may keep access from.
 //
 // The reply is nil with --out. An incomplete check is sent, and authorize
-// then returns an error that wraps errIncomplete.
+// then returns an error that wraps errIncomplete. So is an authorization
+// signed with no bindings because the links lock could not be taken or the
+// credential file could not be read, and authorize then returns that error.
 func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, error) {
 	var floor int64
 	trusted := true
@@ -67,9 +74,10 @@ func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, 
 			return nil, err
 		}
 		a := c.authorization
+		failed := errors.Join(c.incomplete, c.links.err)
 		if p.cfg.out != "" {
 			p.signedAuthorization = c.signed
-			return nil, c.incomplete
+			return nil, failed
 		}
 		reply, err := p.sendAuthorization(ctx, a, c.signed)
 		var refusal *export.Error
@@ -82,18 +90,18 @@ func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, 
 		if err != nil {
 			return nil, err
 		}
-		if err := p.recordAuthorization(a, c.signed); err != nil {
+		if err := p.recordAuthorization(a, c.signed, c.links.revision); err != nil {
 			return nil, err
 		}
 		p.say("the receiver stored authorization %d: %s", a.Sequence, describe(a))
-		return reply, c.incomplete
+		return reply, failed
 	}
 }
 
 // recordAuthorization records an authorization the receiver said it
-// stored, under the authorization lock, unless a greater one is recorded
-// already.
-func (p *publisher) recordAuthorization(a *export.Authorization, signed []byte) error {
+// stored, and the credential file revision it carried the read links of,
+// under the authorization lock, unless a greater one is recorded already.
+func (p *publisher) recordAuthorization(a *export.Authorization, signed []byte, revision int64) error {
 	unlock, err := lockFile(filepath.Join(p.cfg.state, authorizationLockFile))
 	if err != nil {
 		return err
@@ -106,7 +114,10 @@ func (p *publisher) recordAuthorization(a *export.Authorization, signed []byte) 
 	if last != nil && last.Sequence >= a.Sequence {
 		return nil
 	}
-	return writeDurable(filepath.Join(p.cfg.state, authorizationFile), signed, 0o600)
+	if err := writeDurable(filepath.Join(p.cfg.state, authorizationFile), signed, 0o600); err != nil {
+		return err
+	}
+	return p.recordDelivery(a, revision)
 }
 
 // describe is what an authorization lets anyone read, for messages.
@@ -115,7 +126,11 @@ func describe(a *export.Authorization) string {
 	for _, proj := range a.Projects {
 		names = append(names, proj.Name)
 	}
-	return "anyone may read " + listNames(names)
+	s := "anyone may read " + listNames(names)
+	if len(a.Bindings) > 0 {
+		s += fmt.Sprintf("; %d read links", len(a.Bindings))
+	}
+	return s
 }
 
 // policyCheck is what one check of the policy found: the projects it
@@ -126,7 +141,9 @@ type policyCheck struct {
 	projects   []export.AuthorizedProject
 	incomplete error
 	// kept is set when a project keeps access it could not check.
-	kept          bool
+	kept bool
+	// links is what the check read of the read links.
+	links         linkRead
 	authorization *export.Authorization
 	signed        []byte
 }
@@ -137,7 +154,12 @@ type policyCheck struct {
 // greater than floor and than every sequence signed before. When trusted
 // is set, a project whose policy cannot be read may keep the access the
 // last acknowledged authorization gave it, and the authorization then
-// names that one as its basis.
+// names that one as its basis. The read links are read last, after the
+// check, under the links lock, which is held until the authorization is
+// signed, and every authorization it signs carries them, one that keeps
+// access included. Every change to the credential file holds the links
+// lock, so none lands between that read and the signature. The lock order
+// is the authorization lock, then the links lock.
 func (p *publisher) signPolicy(ctx context.Context, floor int64, trusted bool) (policyCheck, error) {
 	unlock, err := lockFile(filepath.Join(p.cfg.state, authorizationLockFile))
 	if err != nil {
@@ -177,7 +199,12 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64, trusted bool) (
 	if c.kept {
 		c.authorization.Basis = keepFrom.Sequence
 	}
-	if c.signed, err = c.authorization.Sign(p.signer, p.key); err != nil {
+	unlockLinks, links := p.readBindings()
+	c.links = links
+	c.authorization.Bindings = c.links.bindings
+	c.signed, err = c.authorization.Sign(p.signer, p.key)
+	unlockLinks()
+	if err != nil {
 		return policyCheck{}, err
 	}
 	return c, nil
@@ -289,7 +316,13 @@ func (p *publisher) nextSequence(floor int64) (int64, error) {
 // writeDurable is writeFile, with the directory synced after the rename,
 // so the file survives a crash once it returns.
 func writeDurable(path string, data []byte, mode os.FileMode) error {
-	if err := writeFile(path, data, mode); err != nil {
+	return writeDurableGroup(path, data, mode, -1)
+}
+
+// writeDurableGroup is writeDurable, with the file's group set to gid
+// unless gid is -1.
+func writeDurableGroup(path string, data []byte, mode os.FileMode, gid int) error {
+	if err := writeFileGroup(path, data, mode, gid); err != nil {
 		return err
 	}
 	d, err := os.Open(filepath.Dir(path))

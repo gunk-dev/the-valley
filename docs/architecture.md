@@ -3239,6 +3239,66 @@ different graph tip than the plan. When that happens, the pass re-reads the plan
 while reusing the instance commit, project list, and read grants fetched at the start of the pass,
 for up to three attempts in total. If all three attempts are inconsistent, the pass fails.
 
+### Read links
+
+A read link is a bearer credential that lets its holder read what one registry principal may read at
+the edge. The host issues and revokes links, and carries their verifiers to the edge in the
+authorization (`implemented`). The edge does not redeem them yet (`not built`).
+
+- **The credential file:** `valley-web-publish link`, run as root through the `valley-web-link`
+  wrapper, writes one record per link to a file outside every repository, cache and export. A record
+  holds the link's ID, principal, note, verifier, issue time, revocation time and the file revision
+  that set its state. The verifier is the SHA-256 of the link's 32-byte secret. The secret itself is
+  printed once and kept nowhere. Root alone writes the file. The publisher reads it through the
+  group `valley-web-links`: the verifiers are not secret, since the edge holds them too, so the file
+  needs integrity and not confidentiality (`deployment choice`).
+- **Bindings in the authorization:** Every time a pass signs an authorization, it holds the
+  authorization lock from before it checks the policy until it has signed. After the policy check,
+  it takes the links lock as well, reads the file, signs, and then releases the links lock. It signs
+  one `binding` record per active link. A revoked link has no binding, and absence is revocation. A
+  file that cannot be read sends an authorization with no bindings and fails the pass.
+- **One links lock serializes changes and passes:** The links lock is the file `lock` in the
+  credential file's directory. `issue`, `revoke` and `prune` hold it while they read and write the
+  file, and take no lock in the publisher's state. A pass holds it from its read of the file until
+  it has signed. So once a revoke has finished, no pass signs the revoked link. A pass takes the
+  authorization lock first and the links lock second, and a change takes the links lock alone, so
+  the two never wait for each other in a cycle. A change does not wait for a policy check, only for
+  a pass that is reading the file and signing. Each side waits at most 60 seconds. A change then
+  fails and leaves the file unchanged. A pass then signs no bindings and fails, so a withdrawal
+  still reaches the edge (`implemented`).
+- **Root follows no path the publisher controls:** Under the module the change runs as root
+  (`deployment choice`). The credential file's directory is root's, mode 0750, and tmpfiles makes
+  the lock in it, owned by root and the group `valley-web-links`, mode 0640. The publisher opens and
+  locks it through that group, and can make, replace or remove nothing there (`deployment choice`).
+  A change opens the lock without following a symbolic link or waiting on a FIFO, and refuses
+  anything but a regular file owned by root. It changes the owner of nothing. The one file it reads
+  in the publisher's state, the delivery record, it reads the same way (`implemented`).
+- **The revision moves forward:** Every change writes a revision one past the greater of the file's
+  revision and the greatest one a pass has signed from. So a change to a file restored from an older
+  copy still writes past every revision already signed.
+- **A restore restores the links:** A pass signs the credential file as it finds it. Restoring the
+  host from a backup therefore restores the links as they were at the backup, and a link revoked
+  after the backup is active again after the next pass. `valley-web-link revoke --all` cuts every
+  link off ([security.md](./security.md#bearer-read-credentials)).
+- **The file stays readable:** Reads and writes hold the file to 1 MiB. `issue` refuses to write it
+  within 64 KiB of that limit, which always fits a revocation of every active link, so a revoke is
+  never refused for size. `link prune` removes the revoked links whose revocation is enforced. A
+  link absent from the file is as revoked as one recorded revoked, since the edge accepts only a
+  link the stored authorization binds.
+- **Why verifiers:** The edge receives verifiers and never secrets. A copy of the edge's store, or
+  of the authorization, lets no one read: a verifier cannot be turned back into the link.
+- **Delivery:** After every issue or revoke, the wrapper starts a policy-only pass. That pass takes
+  the authorization lock and the links lock alone, so a stalled content upload does not hold up a
+  revocation. The publisher records the file revision whose links the last acknowledged
+  authorization carried. `link list` reports a link as `enforced` only when that revision is at
+  least the one that set the link's state, and as `pending` otherwise. A pass already running when
+  the change was made may have signed before it, so while a link is pending the wrapper starts the
+  policy pass once more. It never repeats the change. The wrapper exits non-zero while a link is
+  still pending, and running a revoke again retries the delivery.
+- **Backup:** When the publisher is enabled, the host backup holds the credential file's directory
+  and the publisher's state under `/var/lib/private`: its export key, its authorization counter and
+  its delivery record (`deployment choice`).
+
 ## The web server
 
 `valley-web` serves a receiver's store over HTTP to anonymous readers (`web/server/`,

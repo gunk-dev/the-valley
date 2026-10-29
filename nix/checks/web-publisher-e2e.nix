@@ -15,23 +15,103 @@
 # the C library resolves a host name through nscd from a DNS server on a
 # disallowed address, while a UDP datagram sent directly from the unit to
 # that DNS server fails with EPERM.
+#
+# The read links' wrapper, valley-web-link, runs as root against
+# repositories the git user owns, though root's git trusts none of them
+# without the wrapper's entries. tmpfiles makes the links lock beside the
+# credential file, root's, and root refuses one it does not own. The
+# wrapper issues a link for a keyless principal into a credential file only
+# root writes and the publisher's group reads, and, with no receiver
+# listening, says the link is pending and exits 1. A
+# revoke of every link fails its delivery the same way; once a receiver
+# listens, the same revoke again delivers it, and a link issued then
+# reaches the receiver, read by the policy unit through its group.
+#
+# The two publisher units run as one dynamic user. A policy pass started
+# while a content pass holds the state and cache directories they share
+# succeeds, with the content pass's UID, and the content pass still owns
+# and writes them after it.
 {
   pkgs,
   lib,
   self,
+  packages,
   ...
 }:
 let
   declaration = pkgs.writeText "valley-web-publisher-e2e.cue" ''
     package valley
 
+    groups: core: name: "tools"
     projects: {
       // The instance repository, whose main the host module requires
       // protected.
       "valley": protection: refs: ["refs/heads/main"]
-      "app": {}
+      "app": group: "core"
     }
   '';
+
+  # The instance's main: an identity registry granting alice, who holds
+  # no key, an edge read of every project at example.org, and app's
+  # policy/read, which lets alice read it.
+  registry = pkgs.writeText "registry.cue" ''
+    package identity
+
+    boundaries: {
+    	registry: kind: "registry"
+    	web: {kind: "edge-read", destination: "example.org"}
+    }
+    genesis: "operator"
+    principals: operator: {
+    	kind: "human"
+    	keys: [{class: "ssh-ed25519", bound: "hardware", public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEDVqaZm+1Xx4noNlTYckB32kUMMUnS8eN74T/Luxo+L"}]
+    	grants: govern: boundary: "registry"
+    }
+    principals: alice: {kind: "human", keys: [], grants: read: {boundary: "web", projects: "all"}}
+    anyone: grants: read: {boundary: "web", projects: {app: "9da6809f038df92138c131cd16bed76d"}}
+  '';
+  appRead = pkgs.writeText "read.cue" ''
+    package read
+
+    project: "app"
+    identity: "9da6809f038df92138c131cd16bed76d"
+    readers: {anyone: true, alice: true}
+  '';
+  # Commits the files to a repository's main as the git user, by a fetch
+  # into the bare repository, which runs no hook.
+  seed = pkgs.writeShellApplication {
+    name = "seed";
+    runtimeInputs = [
+      pkgs.git
+      pkgs.coreutils
+    ];
+    text = ''
+      work=$(mktemp -d)
+      git -C "$work" init --quiet
+      git -C "$work" config user.name operator
+      git -C "$work" config user.email operator@example.org
+      mkdir -p "$work/policy/instance" "$work/policy/read" "$work/identity"
+      echo 'package verification' > "$work/policy/instance/floor.cue"
+      cp ${registry} "$work/identity/registry.cue"
+      git -C "$work" add --all
+      git -C "$work" commit --quiet -m "the instance"
+      git -C /srv/git/valley.git fetch --quiet "$work" +HEAD:refs/heads/main
+      list=$(printf 'app\nvalley\n' | git -C /srv/git/valley.git hash-object -w --stdin)
+      git -C /srv/git/valley.git update-ref refs/the-valley/projects "$list"
+      rm -rf "$work"
+      work=$(mktemp -d)
+      git -C "$work" init --quiet
+      git -C "$work" config user.name operator
+      git -C "$work" config user.email operator@example.org
+      mkdir -p "$work/policy/read"
+      cp ${appRead} "$work/policy/read/read.cue"
+      echo /srv/git/valley.git > "$work/policy/valley"
+      git -C "$work" add --all
+      git -C "$work" commit --quiet -m "app"
+      git -C /srv/git/app.git fetch --quiet "$work" +HEAD:refs/heads/main
+      rm -rf "$work"
+    '';
+  };
 
   # What the unit runs in place of the publisher. Each check is one claim
   # about the sandbox, and the probe says which one failed.
@@ -50,6 +130,23 @@ let
         echo "probe: $*" >&2
         exit 1
       }
+      # With /run/probe-hold, the probe is a content pass that holds its
+      # state and cache directories until the file is removed, then checks
+      # it still owns them and writes them.
+      if [ -e /run/probe-hold ]; then
+        touch "$STATE_DIRECTORY/holding" "$CACHE_DIRECTORY/holding"
+        for _ in $(seq 1200); do
+          [ -e /run/probe-hold ] || break
+          sleep 0.1
+        done
+        [ ! -e /run/probe-hold ] || fail "the probe was not let go"
+        owners=$(stat -L -c %u "$STATE_DIRECTORY" "$CACHE_DIRECTORY" | sort -u)
+        test "$owners" = "$(id -u)" || fail "the state or cache directory is owned by $owners, not by the probe's $(id -u)"
+        rm "$STATE_DIRECTORY/holding" "$CACHE_DIRECTORY/holding" || fail "the state or cache directory could not be written after the policy pass"
+        touch "$STATE_DIRECTORY/held" "$CACHE_DIRECTORY/held" || fail "the state or cache directory could not be written after the policy pass"
+        echo "probe: held its state"
+        exit 0
+      fi
       git -C /srv/git/app.git rev-parse --git-dir > /dev/null ||
         fail "a repository the host serves could not be read"
       if git -C /srv/git/stray.git rev-parse --git-dir 2> "$STATE_DIRECTORY/stray"; then
@@ -242,7 +339,7 @@ in
       deny = [line for line in shown.splitlines() if line.startswith("IPAddressDeny=")]
       assert deny and sorted(deny[0].removeprefix("IPAddressDeny=").split()) == ["0.0.0.0/0", "::/0"], "the unit does not deny every other address"
 
-      host.succeed("runuser -u git -- sh -c 'tree=$(git -C /srv/git/app.git mktree < /dev/null); tip=$(echo initial | git -C /srv/git/app.git -c user.name=operator -c user.email=operator@example.org commit-tree \"$tree\"); git -C /srv/git/app.git update-ref refs/heads/main \"$tip\"'")
+      host.succeed("runuser -u git -- ${lib.getExe seed}")
 
       host.succeed("systemctl start valley-web-publish.service")
       journal = host.succeed("journalctl -u valley-web-publish.service --no-pager")
@@ -252,6 +349,78 @@ in
       assert "probe: confined" in journal, "the probe did not finish"
       host.succeed("test -e /var/lib/valley-web-publish/written")
       host.fail("test -e /srv/git/app.git/probe")
+
+      # Read links. Root's git refuses the git user's repositories once
+      # the system's trust is reset, as the wrapper's entries reset it.
+      refused = host.fail("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0= git -C /srv/git/valley.git rev-parse HEAD 2>&1")
+      assert "dubious ownership" in refused, f"root's git refused the instance for another reason: {refused}"
+      assert host.succeed("stat -c '%U:%G %a %F' /var/lib/valley-web-links /var/lib/valley-web-links/links /var/lib/valley-web-links/lock") == "root:valley-web-links 750 directory\nroot:valley-web-links 640 regular empty file\nroot:valley-web-links 640 regular empty file\n", "the credential file's or the links lock's owners, modes or types are wrong"
+
+      # Root refuses a links lock it does not own, and changes nothing.
+      host.succeed("chown nobody /var/lib/valley-web-links/lock")
+      status, refused = host.execute("valley-web-link revoke --all 2>&1")
+      print(refused)
+      assert status == 1 and "/var/lib/valley-web-links/lock is owned by UID" in refused, "root took a links lock it does not own"
+      host.succeed("test ! -s /var/lib/valley-web-links/links")
+      host.succeed("chown root /var/lib/valley-web-links/lock")
+
+      # With no receiver listening, an issue as root writes the link and
+      # prints it once, and the delivery fails: the link is pending. The
+      # test never prints the link.
+      status, _ = host.execute("valley-web-link issue --principal alice --note vm > /root/link 2> /root/issue.err")
+      issued = host.succeed("cat /root/issue.err")
+      print(issued)
+      assert status == 1, f"an undelivered issue exited {status}"
+      assert "dubious ownership" not in issued, "root's git refused a repository through the wrapper"
+      host.succeed("grep -Eqx 'https://example\\.org/-/redeem#lk-[0-9a-f]{16}\\.[A-Za-z0-9_-]{43}' /root/link")
+      assert ": issued here; the edge does not accept it until a pass delivers it" in issued, "the issue did not report the link pending"
+      assert host.succeed("stat -c '%U:%G %a' /var/lib/valley-web-links/links") == "root:valley-web-links 640\n", "the link command wrote the credential file with other owners or another mode"
+      host.fail("valley-web-link list --check")
+
+      # A revoke of every link whose delivery fails exits 1; once a
+      # receiver listens, the same revoke again delivers it.
+      status, revoked = host.execute("valley-web-link revoke --all 2>&1")
+      print(revoked)
+      assert status == 1 and "revoked here; the edge may accept it" in revoked, "an undelivered revoke --all did not report the revocation pending"
+      host.succeed(
+          "install -d -m 0700 /var/lib/receiver",
+          "systemd-run --unit=receiver ${lib.getExe' packages.valley-web-receive "valley-web-receive"} --state /var/lib/receiver/store --listen 192.0.2.1:80 --instance host --destination example.org --verifiers /var/lib/valley-web-publish/verifier --token-file /run/keys/web-receiver-token",
+      )
+      host.wait_until_succeeds("ss -Htln | grep -q '192.0.2.1:80 '", timeout=30)
+      retried = host.succeed("valley-web-link revoke --all 2>&1")
+      print(retried)
+      assert "the receiver holds every link's current state" in retried, "a repeated revoke --all did not deliver"
+      host.fail("grep -q '^binding ' /var/lib/receiver/v2/authorization")
+
+      # A link issued now reaches the receiver: the policy unit reads the
+      # credential file through its group as it signs.
+      host.succeed("valley-web-link issue --principal alice > /root/link")
+      lk = host.succeed("sed 's/.*#\\(lk-[0-9a-f]*\\)\\..*/\\1/' /root/link").strip()
+      host.succeed(f"grep -Eq '^binding {lk} alice [0-9a-f]{{64}}$' /var/lib/receiver/v2/authorization")
+
+      # Both units run as one dynamic user. A policy pass while a content
+      # pass holds the state and cache directories succeeds, with the
+      # content pass's UID, and the content pass then finds them its own,
+      # as the unit sees them, writes them, and ends.
+      users = host.succeed("systemctl show -p User --value valley-web-publish.service valley-web-publish-policy.service")
+      assert users.split() == ["valley-web-publish", "valley-web-publish"], f"the units run as {users.split()}"
+      host.succeed("touch /run/probe-hold")
+      host.succeed("systemctl start --no-block valley-web-publish.service")
+      host.wait_until_succeeds("test -e /var/lib/private/valley-web-publish/holding", timeout=60)
+      probe_uid = host.succeed("stat -c %u /proc/$(systemctl show -p MainPID --value valley-web-publish.service)").strip()
+      since = host.succeed("date +%s").strip()
+      host.succeed("valley-web-link revoke --all")
+      host.fail(f"grep -q '^binding {lk} ' /var/lib/receiver/v2/authorization")
+      policy_uids = host.succeed(f"journalctl _SYSTEMD_UNIT=valley-web-publish-policy.service --since=@{since} -o export | sed -n 's/^_UID=//p' | sort -u").split()
+      assert policy_uids == [probe_uid], f"the policy pass ran as UID {policy_uids}, and the content pass as {probe_uid}"
+      host.succeed("systemctl show -p ActiveState --value valley-web-publish.service | grep -qx activating")
+      host.succeed("rm /run/probe-hold")
+      host.wait_until_succeeds("systemctl show -p ActiveState --value valley-web-publish.service | grep -Eqx 'inactive|failed'", timeout=60)
+      journal = host.succeed("journalctl -u valley-web-publish.service --no-pager")
+      print(journal)
+      result = host.succeed("systemctl show -p Result --value valley-web-publish.service").strip()
+      assert result == "success" and "probe: held its state" in journal, f"the content pass that held its state ended with {result}"
+      host.succeed("test -e /var/lib/private/valley-web-publish/held -a -e /var/cache/private/valley-web-publish/held")
     '';
   };
 }

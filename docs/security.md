@@ -417,13 +417,15 @@ only manifests that open under a verifier line it pins. Pinning that verifier li
 **deployment choice**. On NixOS, the state directory belongs to the unit with mode `0700`
 (`implemented`, `nix/web-publisher.nix`).
 
-**The pass runs confined.** On NixOS, the publisher's unit runs as a dynamic user in the `git` group
-(`implemented`, `nix/web-publisher.nix`). The host repositories are mounted read-only, and the host
-filesystem is read-only except for the unit's state and cache directories and its private temporary
-directories. The `git` user's SSH identity and the host's signing, mirror, and backup keys are
-mounted inaccessible. The unit's `safe.directory` list names only the repositories the host
-declares. The unit can still read the host's other repositories through the filesystem. The full
-filesystem sandbox is **not built**.
+**The pass runs confined.** On NixOS, the publisher's two units, the pass and the policy path alone,
+run as one dynamic user, `valley-web-publish`, in the `git` group (`implemented`,
+`nix/web-publisher.nix`). They share the state and cache directories, so the shared user keeps one
+unit's start from changing the directories' owner under the other's running pass. The host
+repositories are mounted read-only, and the host filesystem is read-only except for the unit's state
+and cache directories and its private temporary directories. The `git` user's SSH identity and the
+host's signing, mirror, and backup keys are mounted inaccessible. The unit's `safe.directory` list
+names only the repositories the host declares. The unit can still read the host's other repositories
+through the filesystem. The full filesystem sandbox is **not built**.
 
 **The pass connects only to allowed IP addresses.** The unit denies all IP traffic
 (`IPAddressDeny=any`) and allows only the addresses in
@@ -568,6 +570,42 @@ with its authorization removed serves no project. `module-eval` verifies the cre
 both modules render and rejects a token path in the Nix store. `web-publisher-e2e` verifies in a
 NixOS VM that the publisher's unit receives the token as a credential while the token file on disk
 stays readable by root alone.
+
+## Bearer read credentials
+
+The project accepts bearer read credentials for reading at an `edge-read` boundary. A read link, and
+the browser session it becomes, identifies one registry principal. Its authority is that principal's
+effective read grants, which need both the project's consent and an instance grant.
+
+- **No project scope:** A credential is bound to its principal only. What it reads changes as that
+  principal's grants and the projects' consents change.
+- **Lifetime:** A link secret works once (`not built`: the edge enforces it). A session has no
+  expiry on the edge, and each authorized request renews its cookie (`not built`).
+- **Revocation:** The host can revoke one credential, every credential of a principal, or a read
+  grant (`implemented` on the host). Revocation reaches the edge with the next authorization the
+  receiver stores. Each pass reads the credential file as it signs, and carries the links the file
+  holds then (`implemented`). A revoke holds the links lock, which a pass holds from its read of the
+  file until it has signed, so once a revoke has finished, no pass signs the revoked link
+  (`implemented`). The lock lives in the credential file's root-owned directory, and root follows no
+  path the publisher controls to take it (`deployment choice`). A registry expiry removes the
+  principal's grants on the first policy pass after the date. Extending the date restores access
+  through the same unrevoked credentials.
+- **Restore:** Restoring the valley host from a backup restores its read links as they were when the
+  backup was taken. A link revoked after the backup is active again once the next pass delivers the
+  restored file (`implemented`). The project accepts this: going back to a backup restores the
+  access of that time. To cut off every link after a restore, the operator runs
+  `valley-web-link revoke --all`. After a loss of the edge's state, the operator revokes every link
+  and issues new ones.
+- **Limits:** These credentials never authorize push, approval, restacking, registry governance or
+  credential enrollment. Passkeys stay the route to anything beyond reading. A principal with no
+  keys may hold edge-read grants alone (`schema/identity.cue`, `implemented`).
+- **No edge-local emergency stop:** The edge's only access state is what the host signs.
+- **Placement:** For these read credentials alone, this decision supersedes dcr-b87f6e8's bans on
+  bearer secrets, its short-session rule and its bearer-expiry rule. Principals and grants stay in
+  the registry. Credential verifiers live in protected host state outside every repository: a
+  credential file only root writes, never a secret (`implemented`). The secret of a new link never
+  reaches a core dump: the link command makes its process non-dumpable, and the wrapper sets
+  `ulimit -c 0` (`implemented`).
 
 ## Secrets
 

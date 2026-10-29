@@ -2728,7 +2728,23 @@ in
         initialize = true;
         repositoryFile = cfg.backup.repositoryFile;
         passwordFile = cfg.backup.passwordFile;
-        paths = [ cfg.dataDir ];
+        # With the web publisher, the backup also holds the read links'
+        # credential file's directory and the publisher's durable state:
+        # its export key, its authorization counter and its record of what
+        # the receiver holds. Under DynamicUser that state lives under
+        # /var/lib/private.
+        paths = [
+          cfg.dataDir
+        ]
+        ++ lib.optionals (config.services.valley.webPublisher.enable or false) (
+          let
+            web = config.services.valley.webPublisher;
+          in
+          [
+            (dirOf (toString web.linksFile))
+            "/var/lib/private/${lib.removePrefix "/var/lib/" (toString web.stateDir)}"
+          ]
+        );
         # The schema admits only the restic-sftp target today; a second
         # target would grow a dispatch here. The service runs as root:
         # authenticate with the supplied identity and only the pinned

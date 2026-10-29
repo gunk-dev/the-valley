@@ -118,6 +118,12 @@ func makeKey(path string) ([]byte, error) {
 // writeFile writes data to path whole or not at all: to a temporary file
 // beside it, synced, then renamed over it.
 func writeFile(path string, data []byte, mode os.FileMode) error {
+	return writeFileGroup(path, data, mode, -1)
+}
+
+// writeFileGroup is writeFile, with the file's group set to gid before it
+// is renamed into place, unless gid is -1.
+func writeFileGroup(path string, data []byte, mode os.FileMode, gid int) error {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".new-")
 	if err != nil {
 		return err
@@ -126,6 +132,12 @@ func writeFile(path string, data []byte, mode os.FileMode) error {
 	if _, err := f.Write(data); err != nil {
 		f.Close()
 		return err
+	}
+	if gid != -1 {
+		if err := f.Chown(-1, gid); err != nil {
+			f.Close()
+			return err
+		}
 	}
 	if err := f.Chmod(mode); err != nil {
 		f.Close()

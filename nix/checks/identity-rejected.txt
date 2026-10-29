@@ -21,6 +21,7 @@ anyone-as-principal	principals.anyone
 genesis-is-anyone	genesis: invalid value "anyone"
 read-grant-without-projects	readScopes."root.read"
 push-grant-with-projects	readScopes."root.push"
+keyless-principal-pushes	readScopes."alice.push"
 edge-read-without-destination	readScopes.web
 read-scope-unsafe-project	principals.root.grants.read.projects
 push-boundary-with-destination	readScopes.push

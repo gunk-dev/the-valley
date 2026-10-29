@@ -83,8 +83,18 @@ gone() {
 publish() {
   timeout -k 10 "${within:-300}" valley-web-publish --instance-repo "$TMPDIR/srv/valley.git" \
     --instance valley-host --destination example.org --host "$TMPDIR/host.json" \
-    --state "$TMPDIR/publisher" --principals "$TMPDIR/principals.json" "$@"
+    --state "$TMPDIR/publisher" --principals "$TMPDIR/principals.json" --links "$TMPDIR/links/links" "$@"
 }
+# The link command, with the flags each verb reads; issued PRINCIPAL
+# issues a link and prints its ID alone.
+link() {
+  valley-web-publish link "$@" --links "$TMPDIR/links/links" --state "$TMPDIR/publisher"
+}
+issue_link() {
+  link issue "$@" --instance-repo "$TMPDIR/srv/valley.git" --destination example.org --host "$TMPDIR/host.json"
+}
+issued() { issue_link --principal "$1" 2> /dev/null | sed 's/.*#\(lk-[0-9a-f]*\)\..*/\1/'; }
+bindings() { grep -c '^binding ' edge/v2/authorization || true; }
 
 commit() {
   git -C "work/$1" add --all
@@ -121,6 +131,7 @@ principals: operator: {
 		read: {boundary: "web", projects: "all"}
 	}
 }
+principals: alice: {kind: "human", keys: [], grants: read: {boundary: "web", projects: "all"}}
 anyone: grants: read: {boundary: "web", projects: $1}
 EOF
 }
@@ -145,7 +156,7 @@ for name in app site; do
   mkdir -p "work/$name/policy/read"
   echo "$TMPDIR/srv/valley.git" > "work/$name/policy/valley"
   printf '# %s\n\n%s-readme-text\n' "$name" "$name" > "work/$name/README.md"
-  read_policy "$name" 'anyone: true, operator: true' > "work/$name/policy/read/read.cue"
+  read_policy "$name" 'anyone: true, operator: true, alice: true' > "work/$name/policy/read/read.cue"
   commit "$name" "the first commit"
 done
 knot=$(cd work/app && valley knot new outcome "Open the edge" --json | jq -r .knot.id)
@@ -242,6 +253,28 @@ grep -q "nothing has changed since; nothing is sent" pass.out || fail "an unchan
   fail "an unchanged pass changed export.json"
 serves / "Policy last checked $(shown "$(checked_of edge/v2/authorization)")"
 
+# A read link: issued only to a principal the registry grants an edge
+# read that a project consents to, here alice, who holds no key. The host
+# keeps its verifier, and the next pass carries it to the edge.
+mkdir -m 750 links
+if issue_link --principal bob > bob.out 2> bob.err; then fail "a link was issued to bob, whom the registry does not name"; fi
+grep -q "grants bob no edge read" bob.err || fail "issuing to bob failed for another reason: $(cat bob.err)"
+url=$(issue_link --principal alice --note laptop 2> issue.err)
+[[ $url =~ ^https://example\.org/-/redeem#(lk-[0-9a-f]{16})\.([A-Za-z0-9_-]{43})$ ]] ||
+  fail "issue printed ${#url} characters, not one link: $(cat issue.err)"
+lk=${BASH_REMATCH[1]} secret=${BASH_REMATCH[2]}
+link list > list.out
+grep -Eq "^$lk +alice +active +pending" list.out || fail "an undelivered link is not pending: $(cat list.out)"
+publish --receiver "$receiver" --receiver-token token > pass.out
+verifier=$(printf '%s=' "$secret" | tr '_-' '/+' | base64 -d | sha256sum | cut -d' ' -f1)
+grep -Eqx "binding $lk alice $verifier" edge/v2/authorization ||
+  fail "the stored authorization does not bind $lk to alice by the secret's SHA-256: $(grep binding edge/v2/authorization)"
+link list > list.out
+grep -Eq "^$lk +alice +active +enforced +[0-9TZ:-]+ +laptop$" list.out || fail "a delivered link is not enforced: $(cat list.out)"
+if grep -rqF "$secret" publisher edge links first ./*.out ./*.err ./*.log; then
+  fail "the link's secret is in the publisher's state, the edge, the credential file, an export or a log"
+fi
+
 # An authorization the receiver stored already is refused as replayed,
 # and one whose text was changed is refused for its signature, whatever
 # its sequence.
@@ -312,6 +345,10 @@ grep -q "^valley-web-publish: public: app, site" stalled.out || fail "the stalle
 sleep 1
 registry "{app: \"${id[app]}\"}" > work/valley/identity/registry.cue
 commit valley "withdraw site"
+link revoke "$lk" > /dev/null
+if link list --check "$lk" > /dev/null 2> check.err; then fail "an undelivered revocation is not pending"; fi
+grep -q "$lk: revoked here; the edge may accept it until a pass delivers the revocation" check.err ||
+  fail "list --check did not say the revocation is pending: $(cat check.err)"
 within=40 publish --receiver "$receiver" --receiver-token token --policy-only > policy.out ||
   fail "a --policy-only pass failed while content was stalled"
 grep -q "anyone may read app$" policy.out || fail "the --policy-only pass did not withdraw site: $(cat policy.out)"
@@ -319,6 +356,9 @@ if grep -q "the receiver activated" policy.out; then fail "the --policy-only pas
 gone /tools/site
 gone /tools/homepage
 serves /tools/app app-readme-text
+if grep -q "^binding $lk " edge/v2/authorization; then fail "the --policy-only pass did not revoke $lk"; fi
+link list --check "$lk" > list.out || fail "a delivered revocation is still pending"
+grep -Eq "^$lk +alice +revoked +enforced" list.out || fail "a delivered revocation is not enforced: $(cat list.out)"
 kill -0 "$stalled" 2> /dev/null || fail "the stalled pass did not stall: $(cat stalled.out stalled.err)"
 stop "$holder"
 wait "$stalled" || fail "the stalled pass failed once its upload went on: $(cat stalled.err)"
@@ -334,6 +374,169 @@ done
 [ -e edge/v2/current/repos/app.git ] || fail "the receiver deleted the repository of app"
 [ "$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)" = "$digest" ] ||
   fail "the withdrawal changed the signed export.json"
+
+# Revoking a principal's links, and then every link, reaches the edge
+# through a policy pass the same way.
+issued alice > /dev/null
+issued alice > /dev/null
+kept=$(issued operator)
+publish --receiver "$receiver" --receiver-token token --policy-only > /dev/null
+[ "$(bindings)" = 3 ] || fail "the authorization carries $(bindings) bindings, want 3"
+link revoke --principal alice > /dev/null
+publish --receiver "$receiver" --receiver-token token --policy-only > /dev/null
+[ "$(bindings)" = 1 ] && grep -Eq "^binding $kept operator " edge/v2/authorization ||
+  fail "revoking alice's links left $(grep binding edge/v2/authorization)"
+link revoke --all > /dev/null
+publish --receiver "$receiver" --receiver-token token --policy-only > /dev/null
+[ "$(bindings)" = 0 ] || fail "revoking every link left $(bindings) bindings"
+link list --check > /dev/null || fail "a delivered revocation of every link is still pending"
+
+policy() { publish --receiver "$receiver" --receiver-token token --policy-only "$@"; }
+
+# A pass holds the links lock, the file lock beside the credential file,
+# from just before it reads the file until it has signed. Every change to
+# the file holds the same lock. Here a pass pauses holding it: the
+# credential file is a FIFO, which the pass waits to read. A revoke
+# meanwhile waits, and writes nothing, until the pass has signed, so the
+# paused pass signs the link as active. The revocation is pending until
+# the next pass, the one the wrapper starts after a revoke, signs no
+# binding for the link and the receiver acknowledges it.
+paused_lk=$(issued alice)
+policy > /dev/null
+grep -q "^binding $paused_lk " edge/v2/authorization || fail "the pass did not deliver $paused_lk"
+# A revoke while a pass is checking the policy does not wait for the
+# check: the pass holds only the authorization lock then.
+mkdir pause
+mkfifo pause/read.cue
+VALLEY_READ_SCHEMA="$TMPDIR/pause/read.cue" policy > checking.out 2> checking.err &
+checking=$!
+for _ in $(seq 300); do
+  flock -n publisher/authorization.lock true || break
+  kill -0 "$checking" 2> /dev/null || fail "the pass ended before its policy check: $(cat checking.out checking.err)"
+  sleep 0.1
+done
+if flock -n publisher/authorization.lock true; then fail "the pass did not take the authorization lock"; fi
+early=$(issued alice)
+link revoke "$early" > early.out 2> early.err || fail "a revoke while a pass checks the policy failed: $(cat early.err)"
+if grep -q waiting early.err; then fail "a revoke waited for a pass that was checking the policy: $(cat early.err)"; fi
+cp "$readSchema" pause/read.regular
+timeout 30 bash -c 'exec 3> pause/read.cue && mv -f pause/read.regular pause/read.cue && cat "$1" >&3' _ "$readSchema" ||
+  fail "the pass checking the policy did not read its schema"
+wait "$checking" || fail "the pass checking the policy failed: $(cat checking.err)"
+if grep -q "^binding $early " edge/v2/authorization; then fail "a pass signed $early, revoked while it checked the policy"; fi
+# Now the pause inside the links lock. The FIFO is linked at the credential
+# file's name, and keeps a second name for the test to write it through.
+cp links/links pause/links.regular
+cp links/links pause/links.content
+mkfifo pause/links.fifo
+ln -f pause/links.fifo links/links
+policy > paused.out 2> paused.err &
+paused=$!
+for _ in $(seq 600); do
+  flock -n links/lock true || break
+  kill -0 "$paused" 2> /dev/null || fail "the paused pass ended before it read the credential file: $(cat paused.out paused.err)"
+  sleep 0.1
+done
+if flock -n links/lock true; then fail "the paused pass did not take the links lock"; fi
+link revoke "$paused_lk" > revoke.out 2> revoke.err &
+revoking=$!
+for _ in $(seq 300); do
+  grep -q "waiting up to 1m0s for the policy pass or the change that holds the links lock" revoke.err && break
+  kill -0 "$revoking" 2> /dev/null || fail "the revoke did not wait for the paused pass: $(cat revoke.out revoke.err)"
+  sleep 0.1
+done
+grep -q "waiting up to 1m0s for the policy pass or the change that holds the links lock" revoke.err ||
+  fail "the revoke did not say it waits for the paused pass: $(cat revoke.err)"
+sleep 1
+kill -0 "$revoking" 2> /dev/null || fail "the revoke ended while a pass held the links lock: $(cat revoke.out revoke.err)"
+[ -p links/links ] || fail "the revoke wrote the credential file while a pass held the links lock"
+# Let the pass go on: once it has opened the FIFO, the regular file takes
+# its place for the revoke, and the pass reads the file through the FIFO.
+timeout 30 bash -c 'exec 3> pause/links.fifo && mv -f pause/links.regular links/links && cat pause/links.content >&3' ||
+  fail "the paused pass did not read the credential file"
+wait "$paused" || fail "the paused pass failed: $(cat paused.err)"
+wait "$revoking" || fail "the revoke failed: $(cat revoke.err)"
+grep -q "^revoked $paused_lk " revoke.out || fail "the revoke did not revoke $paused_lk: $(cat revoke.out)"
+grep -q "^binding $paused_lk " edge/v2/authorization || fail "the paused pass did not sign $paused_lk, active as it signed"
+if link list --check "$paused_lk" > list.out 2> check.err; then fail "a revocation no pass has delivered is not pending: $(cat list.out)"; fi
+grep -Eq "^$paused_lk +alice +revoked +pending" list.out || fail "a revocation no pass has delivered is not pending: $(cat list.out)"
+policy > /dev/null
+if grep -q "^binding $paused_lk " edge/v2/authorization; then fail "the pass after the revoke signed the revoked $paused_lk"; fi
+link list --check "$paused_lk" > list.out || fail "a delivered revocation is still pending: $(cat list.out)"
+grep -Eq "^$paused_lk +alice +revoked +enforced" list.out || fail "a delivered revocation is not enforced: $(cat list.out)"
+
+# A lost acknowledgement: the receiver stored an authorization carrying a
+# link, and the publisher never recorded it. A revocation after that is
+# pending, never enforced, until a pass delivers it.
+cp publisher/links-delivery delivery.before
+cp publisher/authorization authorization.before
+lost=$(issued alice)
+policy > /dev/null
+grep -q "^binding $lost " edge/v2/authorization || fail "the pass did not deliver $lost"
+cp delivery.before publisher/links-delivery
+cp authorization.before publisher/authorization
+link revoke "$lost" > /dev/null
+if link list --check "$lost" > list.out 2> check.err; then fail "a revocation after a lost acknowledgement is not pending: $(cat list.out)"; fi
+grep -Eq "^$lost +alice +revoked +pending" list.out || fail "a revocation after a lost acknowledgement is not pending: $(cat list.out)"
+policy > /dev/null
+link list --check "$lost" > list.out || fail "a delivered revocation is still pending: $(cat list.out)"
+
+# A missing credential file holds no links, and the pass succeeds. A
+# corrupt one sends an authorization with no bindings, and fails the pass.
+kept=$(issued alice)
+mv links/links links.kept
+policy > /dev/null || fail "a pass with no credential file failed"
+[ "$(bindings)" = 0 ] || fail "a pass with no credential file sent $(bindings) bindings"
+echo '{' > links/links
+if policy > /dev/null 2> corrupt.err; then fail "a pass with a corrupt credential file succeeded"; fi
+grep -q "is not a credential file" corrupt.err || fail "a pass with a corrupt credential file failed for another reason: $(cat corrupt.err)"
+[ "$(bindings)" = 0 ] || fail "a corrupt credential file sent $(bindings) bindings"
+mv links.kept links/links
+policy > /dev/null
+grep -q "^binding $kept " edge/v2/authorization || fail "the credential file put back did not deliver $kept"
+
+# A credential file restored from an older copy holds a link revoked
+# since. A pass signs the file as it is, so the link is active at the edge
+# again. The next change writes past every revision a pass signed from,
+# and revoke --all cuts every link off.
+cp links/links links.older
+link revoke "$kept" > /dev/null
+policy > /dev/null
+signed=$(jq .signed publisher/links-delivery)
+cp links.older links/links
+policy > /dev/null 2> older.err || fail "a pass from an older credential file failed: $(cat older.err)"
+grep -q "^binding $kept " edge/v2/authorization || fail "a pass from an older credential file did not deliver the $kept it holds"
+link revoke --all > /dev/null
+[ "$(jq .revision links/links)" = $((signed + 1)) ] ||
+  fail "revoke --all on an older credential file wrote revision $(jq .revision links/links), not $((signed + 1))"
+policy > /dev/null
+[ "$(bindings)" = 0 ] || fail "revoke --all on an older credential file left $(bindings) bindings"
+link list --check > /dev/null || fail "after revoke --all a link is pending"
+
+# A host restore: the credential file and the publisher's state come back
+# from one older backup, after a pass delivered a revocation. The pass
+# after the restore signs above the authorization the receiver holds, and
+# the links are as they were at the backup: the revoked link is active
+# again. revoke --all then cuts every link off.
+restored=$(issued alice)
+policy > /dev/null
+cp -a publisher backup.publisher
+cp links/links backup.links
+link revoke "$restored" > /dev/null
+policy > /dev/null
+if grep -q "^binding $restored " edge/v2/authorization; then fail "the pass did not revoke $restored"; fi
+rm -rf publisher
+cp -a backup.publisher publisher
+cp backup.links links/links
+policy > restored.out 2> restored.err || fail "a pass after a host restore failed: $(cat restored.err)"
+grep -q "refused [0-9]* as replayed" restored.err || fail "the restored counter was not refused as replayed: $(cat restored.err)"
+grep -q "^binding $restored " edge/v2/authorization || fail "a host restore did not restore $restored as it was at the backup"
+serves /tools/app app-readme-text
+link list --check "$restored" > list.out || fail "the restored link is pending after a pass: $(cat list.out)"
+link revoke --all > /dev/null
+policy > /dev/null
+[ "$(bindings)" = 0 ] || fail "revoke --all after a host restore left $(bindings) bindings"
+link list --check > /dev/null || fail "after revoke --all a link is pending"
 
 # A store whose authorization is removed serves no project, though
 # valley-web has the export indexed already; once it is back, it serves.

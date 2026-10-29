@@ -42,6 +42,7 @@ const (
 //	checked 2026-10-29T01:03:00Z
 //	project app 9da6809f038df92138c131cd16bed76d
 //	reader app anyone
+//	binding lk-0123456789abcdef alice 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261a9a923d3bb23adc8b7
 //
 // The sequence is the publisher's own counter, independent of any clock:
 // each authorization it signs has a sequence greater than every one before.
@@ -57,6 +58,11 @@ const (
 // authorization the receiver last said it stored. A receiver that holds
 // another refuses it as stale-basis, so access kept from a stale record
 // never reaches the edge.
+//
+// A binding record carries one active read link the host issued: its
+// credential ID, the principal it identifies and its verifier (Binding).
+// A credential with no binding is revoked. The authorization never
+// carries a link's secret.
 type Authorization struct {
 	Instance    string
 	Destination string
@@ -66,6 +72,43 @@ type Authorization struct {
 	// or 0 for none.
 	Basis    int64
 	Projects []AuthorizedProject
+	// Bindings are the active read links, sorted by ID.
+	Bindings []Binding
+}
+
+// Binding is one active read link an authorization carries. ID is the
+// credential's ID, lk- and 16 lowercase hex digits. Principal is the one
+// registry principal it identifies, never anyone. Verifier is the
+// lowercase hex SHA-256 of the link's 32 secret bytes.
+type Binding struct {
+	ID        string
+	Principal string
+	Verifier  string
+}
+
+// MaxBindings is the most bindings an authorization carries, which keeps
+// it well inside MaxAuthorization.
+const MaxBindings = 1000
+
+// ValidLinkID reports whether s is a read link's credential ID: lk- and 16
+// lowercase hex digits.
+func ValidLinkID(s string) bool {
+	return len(s) == 19 && strings.HasPrefix(s, "lk-") && lowerHex(s[3:])
+}
+
+// ValidVerifier reports whether s is a link verifier: 64 lowercase hex
+// digits.
+func ValidVerifier(s string) bool {
+	return len(s) == 64 && lowerHex(s)
+}
+
+func lowerHex(s string) bool {
+	for _, c := range []byte(s) {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f') {
+			return false
+		}
+	}
+	return s != ""
 }
 
 // AuthorizedProject is one project an authorization names: its name, its
@@ -78,7 +121,7 @@ type AuthorizedProject struct {
 
 // Text is the authorization's text: the type line, the instance,
 // destination, sequence and checked records, then each project's records
-// in name order, its readers sorted.
+// in name order, its readers sorted, then the bindings in ID order.
 func (a *Authorization) Text() []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "%s\ninstance %s\ndestination %s\nsequence %d\nchecked %s\n",
@@ -95,6 +138,11 @@ func (a *Authorization) Text() []byte {
 		for _, r := range readers {
 			fmt.Fprintf(&b, "reader %s %s\n", p.Name, r)
 		}
+	}
+	bindings := append([]Binding{}, a.Bindings...)
+	sort.Slice(bindings, func(i, j int) bool { return bindings[i].ID < bindings[j].ID })
+	for _, l := range bindings {
+		fmt.Fprintf(&b, "binding %s %s %s\n", l.ID, l.Principal, l.Verifier)
 	}
 	return b.Bytes()
 }
@@ -238,7 +286,8 @@ func ReadStoredAuthorization(signed []byte) (*Authorization, error) {
 // record after it is a keyword and exactly its fields. The instance,
 // destination, sequence and checked records appear once each, a project at
 // most once, and every project has one or more readers, each named once.
-// A reader record names a project that has a project record. Records may
+// A reader record names a project that has a project record. A binding
+// names each credential ID once, at most MaxBindings of them. Records may
 // come in any order; Text writes them in one.
 func ParseAuthorization(text []byte) (*Authorization, error) {
 	bad := func(format string, args ...any) error { return refuse(CodeBadManifest, format, args...) }
@@ -249,11 +298,12 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 	if lines[0] != AuthorizationType {
 		return nil, bad("the authorization opens with %q, not %q", lines[0], AuthorizationType)
 	}
-	arity := map[string]int{"instance": 1, "destination": 1, "sequence": 1, "checked": 1, "basis": 1, "project": 2, "reader": 2}
+	arity := map[string]int{"instance": 1, "destination": 1, "sequence": 1, "checked": 1, "basis": 1, "project": 2, "reader": 2, "binding": 3}
 	a := &Authorization{}
 	seen := map[string]bool{}
 	projects := map[string]*AuthorizedProject{}
 	readers := map[string]map[string]bool{}
+	bindings := map[string]bool{}
 	for i, line := range lines[1:] {
 		n := i + 2
 		fields := strings.Split(line, " ")
@@ -329,6 +379,22 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 				readers[name] = map[string]bool{}
 			}
 			readers[name][reader] = true
+		case "binding":
+			id, principal, verifier := args[0], args[1], args[2]
+			switch {
+			case !ValidLinkID(id):
+				return nil, bad("line %d gives credential ID %q, which is not lk- and 16 lowercase hex digits", n, id)
+			case !ValidName(principal) || principal == Anyone:
+				return nil, bad("line %d binds %s to %q, which is not a principal", n, id, principal)
+			case !ValidVerifier(verifier):
+				return nil, bad("line %d gives %s the verifier %q, which is not 64 lowercase hex digits", n, id, verifier)
+			case bindings[id]:
+				return nil, bad("line %d binds %s a second time", n, id)
+			case len(bindings) == MaxBindings:
+				return nil, bad("line %d is a binding past the most an authorization carries, %d", n, MaxBindings)
+			}
+			bindings[id] = true
+			a.Bindings = append(a.Bindings, Binding{ID: id, Principal: principal, Verifier: verifier})
 		}
 	}
 	for _, key := range []string{"instance", "destination", "sequence", "checked"} {
@@ -339,6 +405,7 @@ func ParseAuthorization(text []byte) (*Authorization, error) {
 	if a.Basis >= a.Sequence {
 		return nil, bad("the authorization's basis %d is not less than its sequence %d", a.Basis, a.Sequence)
 	}
+	sort.Slice(a.Bindings, func(i, j int) bool { return a.Bindings[i].ID < a.Bindings[j].ID })
 	for name, rs := range readers {
 		p := projects[name]
 		if p == nil {

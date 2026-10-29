@@ -28,7 +28,14 @@
 #      the stored authorization serves no project. Granting the project
 #      again sends its bundle again.
 #   4. Both servers preserve the active export across a restart.
-#   5. When the receiver is stopped, valley-web continues serving, a
+#   5. Read links: issued only to a principal who may read a project,
+#      carried to the edge as bindings, and revoked by the next pass. A
+#      revoke does not wait for a pass checking the policy. It waits for
+#      a pass paused holding the links lock, and the pass after it signs
+#      no binding for the revoked link. A host
+#      restore restores the links as they were at the backup, and
+#      revoke --all then cuts every link off.
+#   6. When the receiver is stopped, valley-web continues serving, a
 #      pass fails because it cannot send its authorization, and the next
 #      pass after the receiver restarts signs a new authorization, with a
 #      later sequence, that applies the withdrawal.
@@ -55,5 +62,6 @@
       packages.valley-web
     ];
     schema = ../../schema/valley.cue;
+    readSchema = ../../schema/read.cue;
   } (builtins.readFile ./web-push-e2e.sh);
 }

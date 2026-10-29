@@ -295,6 +295,34 @@ func TestAnyoneRestrictions(t *testing.T) {
 	}
 }
 
+// A principal with no keys is a reader alone: the registry is valid while
+// every grant it holds is an edge read, and it reads under that grant. A
+// keyless principal that also holds a push, a registry or any other grant
+// makes the registry invalid, so it consents to nothing.
+func TestAKeylessPrincipalOnlyReads(t *testing.T) {
+	r := newRepo(t)
+	keyless := strings.Replace(reader("alice", `"all"`), "keys: [{class: \"ssh-ed25519\", bound: \"hardware\", public: \""+key+"\"}]", "keys: []", 1)
+	g, err := r.grants(registry(keyless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	consent, err := r.consent(appPolicy("alice: true"), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !g.May("alice", consent) {
+		t.Errorf("a keyless reader with a grant and a consent may not read app")
+	}
+	for what, grant := range map[string]string{
+		"a push grant":     `push: boundary: "push"`,
+		"a registry grant": `govern: boundary: "registry"`,
+	} {
+		more := strings.Replace(keyless, "grants: read:", "grants: "+grant+"\n\tgrants: read:", 1)
+		_, err := r.grants(registry(more))
+		mustInvalid(t, "a keyless principal holding "+what, err)
+	}
+}
+
 // A policy is for the project it names, and an explicit grant is for the
 // identity it names. A policy read from another project, or a project
 // whose identity is not the grant's, is not read.

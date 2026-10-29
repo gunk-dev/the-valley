@@ -2,7 +2,8 @@
 # (*.test), and for a module whose root is a main package, the binary
 # named for it. attest/ and integrator/ ignore their own binary. In
 # status/ the binary is valley-go. In knot/, go build ./cmd/knotcheck
-# leaves knotcheck.
+# leaves knotcheck. In web/, go build in a command directory leaves that
+# command's binary.
 /attest/*.test
 /change/*.test
 /delta/*.test
@@ -20,6 +21,9 @@
 /valleyhook/valleyhook
 /valleyhook/*.test
 /web/**/*.test
+/web/cmd/valley-web/valley-web
+/web/cmd/valley-web-publish/valley-web-publish
+/web/cmd/valley-web-receive/valley-web-receive
 
 # The links nix build leaves in the working directory without --no-link.
 /result

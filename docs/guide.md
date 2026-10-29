@@ -825,7 +825,7 @@ docker run -d --name valley-web-receive --user valley-web-receive \
   --memory 2g --memory-swap 2g \
   -v valley-web:/var/lib/valley-web -v /etc/valley-web:/etc/valley-web:ro \
   -p 192.0.2.10:8081:8081 valley-web:<tag> \
-  valley-web-receive --state /var/lib/valley-web --listen :8081 \
+  valley-web-receive --state /var/lib/valley-web/store --listen :8081 \
   --instance valley-host --destination example.org \
   --verifiers /etc/valley-web/verifiers --token-file /etc/valley-web/token
 
@@ -833,11 +833,15 @@ docker run -d --name valley-web --user valley-web \
   --memory 1g --memory-swap 1g \
   -v valley-web:/var/lib/valley-web:ro \
   -p 127.0.0.1:8080:8080 valley-web:<tag> \
-  valley-web --state /var/lib/valley-web --listen :8080
+  valley-web --state /var/lib/valley-web/store --listen :8080
 ```
 
 A new volume inherits the owner and permissions of `/var/lib/valley-web` from the image: the
-receiver's user with mode `0750`. `valley-web` reads the volume through the shared group.
+receiver's user with mode `0750`. `valley-web` reads the volume through the shared group. Both
+containers are given the store's descriptor, `/var/lib/valley-web/store`, which the receiver creates
+on its first start. Upgrading from a release whose `--state` was the directory itself follows
+[Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host): the edge first,
+then the host.
 
 Give each container its own memory limit. When a container reaches `--memory`, the kernel reclaims
 memory or kills a process inside that container alone. Setting `--memory-swap` equal to `--memory`
@@ -856,7 +860,14 @@ state directory (`/var/lib/valley-web` by default).
 
 Because every upload request carries the token, reach the receiver over HTTPS, through a reverse
 proxy that terminates TLS, or over a private network. On the next pass, the publisher prints
-`the receiver activated sequence <n>` and `valley-web` serves the export.
+`the receiver stored authorization <n>`, then `the receiver activated sequence <n>`, and
+`valley-web` serves the export.
+
+To take a project off the web at once, withdraw its grant or its `policy/read`, and start a pass:
+`sudo systemctl start valley-web-publish`. The pass sends its authorization before any content work,
+and the edge stops serving the project at the next request, even when the content work then stalls
+or fails. `valley-web-publish --policy-only`, run with the unit's other flags, sends the
+authorization alone.
 
 ## Contributing to the-valley
 

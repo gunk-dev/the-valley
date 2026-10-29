@@ -314,14 +314,16 @@ Which principals each project's policy names and which grants the registry decla
 
 **What reaches the edge.** A publisher pass includes in its export and bundles only the projects
 that both consents captured in that pass authorize `anyone` to read at the destination
-(`implemented`, `web/cmd/valley-web-publish/valley.go`). Projects not authorized for `anyone` in
-that pass are omitted from the export and bundles it builds. For each exported project, the export
-and bundle hold the project's reader view in plaintext: every knot and comment in its plan graph,
-its ready changes, and `main` with its history. Once an export is sent to an edge, that edge is the
-security boundary for what it holds: its administrators, and any process with access to its storage,
-can read all of it. Activating a newer export changes which generation the edge serves. It does not
-guarantee that an older generation is deleted: the edge's store keeps a generation that a reader
-still holds, or whose deletion failed, until a later sweep removes it (`implemented`,
+(`implemented`, `web/cmd/valley-web-publish/valley.go`). What the edge serves of them is decided by
+a separate signed authorization, not by the export (see
+[The authorization decides what is served](#the-edges-receiver)). Projects not authorized for
+`anyone` in that pass are omitted from the export and bundles it builds. For each exported project,
+the export and bundle hold the project's reader view in plaintext: every knot and comment in its
+plan graph, its ready changes, and `main` with its history. Once an export is sent to an edge, that
+edge is the security boundary for what it holds: its administrators, and any process with access to
+its storage, can read all of it. Activating a newer export changes which generation the edge serves.
+It does not guarantee that an older generation is deleted: the edge's store keeps a generation that
+a reader still holds, or whose deletion failed, until a later sweep removes it (`implemented`,
 `web/export/store.go`). So withdrawing a project from what the edge serves is not deleting it from
 the edge's storage. A read grant at an `edge-read` boundary is consent to send a project's reader
 view to the destination that boundary names.
@@ -363,20 +365,20 @@ shell gates pushes and leaves fetching open. An admitted key without a principal
 principal: its session leaves `VALLEY_PRINCIPAL` unset. It is not `anyone`, which applies only to
 unauthenticated edge reads.
 
-**Withdrawal.** When either consent for `anyone` is withdrawn, the next publisher pass omits the
-project from the export it builds. `valley-web-publish` uploads that export, and
-`valley-web-receive` activates it with `Store.Activate`, which replaces the active generation
-(`implemented`, `web/cmd/valley-web-receive/`, `web/export/store.go`). `valley-web` then serves the
-new generation, without the project (`implemented`, checked by `TestPublishesToTheRealReceiver` in
-`web-unit`). A pass reads the instance repository and every project selected by a read grant to
-`anyone`; if any of those cannot be read, the pass sends nothing, so a withdrawal waits until they
-can be read. Projects not selected by a grant to `anyone` are not read and do not block publication
-or withdrawal (`implemented`, `web/cmd/valley-web-publish/read_test.go`). There is no serving
-expiry: while the valley host cannot reach the edge, the edge keeps serving what it has. Reaching
-the edge again does not by itself complete a withdrawal. A withdrawal takes effect at the edge only
-when the edge activates an export that reflects it. An upload can still fail after the host reaches
-the edge again. The pass then fails, and the withdrawal waits for a later pass whose export the edge
-activates (`web/cmd/valley-web-publish/upload.go`). Unbuilt parts of read access are listed in
+**Withdrawal.** When either consent for `anyone` is withdrawn, the next pass's policy path signs an
+authorization that does not name the project, and sends it before any content work (`implemented`,
+`web/cmd/valley-web-publish/policy.go`). The receiver stores it without waiting for any upload or
+commit, and `valley-web` serves the project to no request after that (`implemented`,
+`web/export/authorize.go`, `web/server/server.go`). The policy path reads the instance repository,
+the registry, and the `main` and `policy/read` of each project a grant to `anyone` selects, and no
+plan or knot, so no project's graph holds up a withdrawal. A selected project whose policy cannot be
+read keeps what the last authorization gave it, never more, and the other projects' withdrawals
+still land. Projects not selected by a grant to `anyone` are not read (`implemented`,
+`web/cmd/valley-web-publish/read_test.go`). An instance repository or registry that cannot be read
+signs nothing, and the withdrawal waits for a pass that can read them. There is no serving expiry:
+while the valley host cannot reach the edge, the edge keeps serving what it has. Once the host
+reaches the edge again, the next pass checks the policy again and signs a new authorization, which
+lands whether or not its content upload does. Unbuilt parts of read access are listed in
 [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
 
 Checks: `readaccess-unit` reads both consents from real commits under the real schemas, including
@@ -467,13 +469,37 @@ unit to that DNS server fail with `EPERM`.
 active generation (see [The receiver](./architecture.md#the-receiver)). Two independent checks guard
 an upload.
 
-**The manifest's signature decides what the edge serves.** The receiver stages a manifest only when
-it opens under a pinned verifier, names the receiver's instance and destination, and carries a
-sequence newer than any accepted sequence (`implemented`, `web/export/manifest.go`). It keeps only
-bodies whose size and SHA-256 the manifest declares, and activates a generation only when every
-bundle passes acceptance (`implemented`, `web/export/body.go`, `web/export/bundle.go`). Only a
-holder of the publisher's export key can authorize content for the edge to serve. The bearer token
-grants upload access alone.
+**The authorization decides what is served.** The receiver stores an authorization only when it
+opens under a pinned verifier, has the authorization's type line, names the receiver's instance and
+destination, and carries a sequence greater than the stored one's (`implemented`,
+`web/export/authorization.go`). It never refuses one for its age, so no clock fault holds up a
+narrowing. `valley-web` reads the stored authorization on every request, and again before the first
+byte of each response, and serves a project only while it names the project with the export's
+identity for it (`implemented`, `web/server/server.go`). A missing or invalid authorization serves
+no project. A content manifest names no reader, the receiver builds a repository only for a project
+the authorization names, and content never repairs or replaces the authorization, so no content
+upload, however late, grants or restores access (`implemented`, `web/export/store.go`). The
+guarantee starts with the request after the receiver replies: a response already being written is
+not stopped.
+
+**A withdrawn project's plaintext stays until it is replaced.** After a withdrawal, the receiver
+deletes the project's repository once no reader holds the active generation (`implemented`,
+`web/export/authorize.go`). The signed `export.json` keeps its bytes, so the project's plan text
+stays on the edge's disk until a later activation replaces the generation and the old one is
+deleted. Withdrawal hides a project from readers. It is not complete deletion from the edge.
+
+**The manifest's signature decides what content the edge holds.** The receiver stages a manifest
+only when it opens under a pinned verifier, names the receiver's instance and destination, and
+carries a sequence newer than any accepted sequence (`implemented`, `web/export/manifest.go`). It
+keeps only bodies whose size and SHA-256 the manifest declares, and activates a generation only when
+every bundle passes acceptance (`implemented`, `web/export/body.go`, `web/export/bundle.go`). Only a
+holder of the publisher's export key can put content or an authorization on the edge. The bearer
+token grants upload access alone.
+
+**A rollback of the edge serves nothing.** The store's entry point is a descriptor file, which
+binaries of the first store layout refuse, and its payloads are under names those binaries never
+read (`implemented`, `web/export/store.go`). Neither a rolled-back binary nor a missing
+authorization can serve the store's content.
 
 **The token decides who may use the receiver.** Every request must carry the bearer token in its
 `Authorization` header. The receiver checks the header before reading the request body and refuses
@@ -496,25 +522,32 @@ carries the token. Whether the publisher reaches the receiver over HTTPS, throug
 reverse proxy, or over a private network is a **deployment choice**. Sending requests over plain
 HTTP across an untrusted network exposes the token to anyone who can read that network.
 
-**`valley-web` has read-only access to the state directory.** It opens the state directory read-only
-and writes nothing there (`implemented`, `web/export/store.go`). On NixOS its unit mounts the state
-directory read-only (`implemented`, `nix/web-receiver.nix`). The unit's only writable paths are
-temporary: its private `/tmp` and `/var/tmp` from `PrivateTmp` (hidden from other units and removed
-when the unit stops) and `/dev/shm` from `PrivateDevices` (`implemented`, `nix/web-receiver.nix`).
-Those temporary paths are separate from the state directory, and the receiver ignores them. A fault
-in `valley-web`, which handles requests from arbitrary readers, reaches neither the staging area nor
-the token.
+**`valley-web` has read-only access to the store.** It opens the store read-only and writes nothing
+there (`implemented`, `web/export/store.go`). On NixOS its unit mounts the state directory read-only
+(`implemented`, `nix/web-receiver.nix`). The unit's only writable paths are temporary: its private
+`/tmp` and `/var/tmp` from `PrivateTmp` (hidden from other units and removed when the unit stops)
+and `/dev/shm` from `PrivateDevices` (`implemented`, `nix/web-receiver.nix`). Those temporary paths
+are separate from the state directory, and the receiver ignores them. A fault in `valley-web`, which
+handles requests from arbitrary readers, reaches neither the staging area nor the token.
 
 Checks: `web-receiver-unit` verifies that the receiver refuses requests with no token, a wrong
 token, a non-Bearer scheme, or two `Authorization` headers before staging anything
 (`TestAnUnauthenticatedRequestIsRefused`), answers `OPTIONS *` with a withheld body immediately on
 every connection without reading the body (`TestOptionsStarHoldsNoConnection`), and refuses stale,
 future-dated, foreign-key, and foreign-destination manifests
-(`TestAManifestIsAdmittedOnlyWhenFresh`). `web-unit` (`TestPublishesToTheRealReceiver`) verifies
-that a pass with a wrong token is refused while the edge keeps serving the active export.
-`module-eval` verifies the credentials and users both modules render and rejects a token path in the
-Nix store. `web-publisher-e2e` verifies in a NixOS VM that the publisher's unit receives the token
-as a credential while the token file on disk stays readable by root alone.
+(`TestAManifestIsAdmittedOnlyWhenFresh`). It verifies that an authorization dated long ago is stored
+by its sequence, that the same one again is refused as replayed, and that a request of the first
+protocol is refused (`TestAnAuthorizationIsAdmittedBySequence`). `web-unit`
+(`TestPublishesToTheRealReceiver`) verifies that a pass with a wrong token is refused while the edge
+keeps serving the active export, and (`TestStoreDescriptorRetiresTheFirstLayout`) that both store
+openers refuse a directory. `web-server-unit` verifies that a withdrawal is served at the next
+request, and that a response rendered while the authorization changed is rendered again
+(`TestAuthorizationIsReadOnEveryRequest`, `TestAResponseIsHeldToTheAuthorizationWhenWritten`).
+`web-push-e2e` withdraws a project with `--policy-only` while an upload is stalled, and checks that
+the stalled upload restores nothing and that a store with its authorization removed serves no
+project. `module-eval` verifies the credentials and users both modules render and rejects a token
+path in the Nix store. `web-publisher-e2e` verifies in a NixOS VM that the publisher's unit receives
+the token as a credential while the token file on disk stays readable by root alone.
 
 ## Secrets
 
@@ -579,9 +612,12 @@ themselves when to deploy.
 - **Every admitted key can fetch every repository.** Read grants govern web exports alone. Any SSH
   key sshd admits for the git user, including an agent's key, can fetch any project on the valley
   host.
-- **A withdrawal waits on reading the instance and every selected project.** A project leaves the
-  edge only when a new export is built and activated. A pass that cannot read the instance
-  repository or any project selected by a read grant to `anyone` sends no export.
+- **A withdrawal waits on reading the instance and the registry.** A pass that cannot read the
+  instance repository or its registry signs no authorization, and the edge keeps serving what it
+  has. A selected project whose own policy cannot be read keeps the access the last authorization
+  gave it until a pass can read it.
+- **A withdrawn project's plan text stays on the edge's disk.** The signed `export.json` keeps a
+  withdrawn project's knots and comments until a later activation replaces the generation.
 - **The receiver's token is a shared secret.** The publisher and the receiver share one bearer
   token, and every upload request carries it. Anyone holding the token can fill the receiver's
   request slots and staging area up to its caps, delaying uploads while the flood lasts. Plain HTTP

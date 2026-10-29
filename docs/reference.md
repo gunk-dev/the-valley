@@ -736,7 +736,7 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   `git`, `cue`, and `valley`, with `VALLEY_READ_SCHEMA` set to `schema/read.cue` and
   `VALLEY_IDENTITY_SCHEMA` set to `schema/identity.cue`. On a host, `services.valley.webPublisher`
   runs it on a timer (see [The web publisher's options](#the-web-publishers-options)).
-  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> --host <file> (--receiver <url> --receiver-token <file> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--max-bundles <size>] [--max-storage <size>]`
+  - `valley-web-publish --instance-repo <url> --instance <name> --destination <name> --host <file> (--receiver <url> --receiver-token <file> | --out <dir>) [--principals <file>] [--state <dir>] [--read-schema <file>] [--identity-schema <file>] [--registry-ref <ref>] [--registry-dir <dir>] [--recheck <duration>] [--policy-only] [--max-bundles <size>] [--max-storage <size>]`
     - `--instance-repo <url>`: An absolute local path to the instance repository. It is the `origin`
       of the publisher's own bare repository, and the CLI discovers projects and signers through it.
       Its `main` must hold `policy/instance` and no `policy/valley`. `<url>` must hold no `#`, no
@@ -760,8 +760,8 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       upload request's `Authorization` header. The file must contain one line of 32 to 256 visible
       ASCII characters, matching the receiver's `--token-file`. Required with `--receiver` and
       refused with `--out`.
-    - `--out <dir>`: Write the export to `<dir>` instead of uploading it. `<dir>` must not exist or
-      must be empty. Exactly one of `--receiver` and `--out` is given.
+    - `--out <dir>`: Write the authorization and the export to `<dir>` instead of sending them.
+      `<dir>` must not exist or must be empty. Exactly one of `--receiver` and `--out` is given.
     - `--principals <file>`: The display mapping, a JSON object from each principal's name to the
       name an export shows. Without it, every principal is shown as `contributor`.
     - `--state <dir>`: The state directory (default
@@ -780,14 +780,21 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `--registry-dir <dir>`: The identity registry's directory in that commit (default `identity`).
     - `--recheck <duration>`: How long an acknowledgement from the receiver is trusted (default
       `1h`).
+    - `--policy-only`: Run the policy path alone: check the policy, sign an authorization, and send
+      it. No plan, knot, or bundle is read, and the content pass's lock is not taken, so a stalled
+      content pass does not hold it up. Requires `--receiver`.
     - `--max-bundles <size>`: The most the bundles of one export may hold together (default `1G`).
     - `--max-storage <size>`: The most the state directory and the caches may hold (default `16G`).
     - A `<size>` is a number of bytes, or a number followed by `K`, `M`, `G`, or `T` for KiB, MiB,
       GiB, or TiB.
-  - Prints `valley-web-publish: public: <projects>; private: <projects>` on every pass, then one
-    line for what it did. Warnings go to `stderr`, and so does what the CLI prints there.
-  - Exits `0` when the pass uploaded the export, found nothing to send, or wrote `--out`. It exits
-    `1` when the pass failed, and `2` for invalid flags. A pass that fails sends and writes nothing.
+  - Prints
+    `valley-web-publish: the receiver stored authorization <sequence>: anyone may read <projects>`
+    once the receiver stores the pass's authorization. A content pass then prints
+    `valley-web-publish: public: <projects>; private: <projects>`, then one line for what it did.
+    Warnings go to `stderr`, and so does what the CLI prints there.
+  - Exits `0` when the pass sent its authorization and uploaded the export, found no content to
+    send, or wrote `--out`. It exits `1` when the pass failed, and `2` for invalid flags. A pass
+    that fails in its content pass has sent its authorization already; it sends no content.
 - **`valley-read-coverage`**
   ([`readaccess/cmd/valley-read-coverage/main.go`](../readaccess/cmd/valley-read-coverage/main.go)):
   Evaluates the two read-access consents for `<principal>` at `<destination>` and lists each project
@@ -1103,7 +1110,7 @@ services.valley.webReceiver = {
 | `tokenFile`                                    | (required)              | Runtime path (outside the Nix store) to the bearer token file. Loaded by the receiver unit as credential `token` and passed as `--token-file`. |
 | `listen`                                       | (required)              | TCP listen address for `valley-web-receive`, reached by the publisher.                                                                         |
 | `webListen`                                    | (required)              | TCP listen address for `valley-web`, reached by readers or a reverse proxy.                                                                    |
-| `stateDir`                                     | `"/var/lib/valley-web"` | Shared state directory under `/var/lib`.                                                                                                       |
+| `stateDir`                                     | `"/var/lib/valley-web"` | Shared state directory under `/var/lib`. Both units are given its descriptor, `<stateDir>/store`, as `--state`.                                |
 | `maxBody`, `maxUpload`, `maxStorage`           | `"1G"`, `"2G"`, `"8G"`  | Size limits passed to `valley-web-receive` as `--max-body`, `--max-upload`, and `--max-storage`.                                               |
 | `receiverMemoryMax`, `webMemoryMax`            | `"2G"`, `"1G"`          | Per-unit `MemoryMax` (with `MemorySwapMax=0`) for `valley-web-receive.service` and `valley-web.service`.                                       |
 
@@ -1988,35 +1995,38 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     (`{ "by": <string>, "at": <rfc3339>, "age_seconds": <int64>, "stale": <bool, true when age > 24h> }`,
     `omitempty`).
 
-### Web export (`the-valley/web-export/v1`)
+### Web export (`the-valley/web-export/v2`)
 
 A web export is the snapshot a valley host sends to a read-only web server for public projects. It
 consists of `export.json`, one git bundle of `main` for each exported project, and a signed manifest
-that authenticates both. A publisher on the valley host pushes the export over HTTP to a receiver on
-the web server, and the web server never connects back to the host. Package `export` of the `web`
-module ([`web/export/`](../web/export/)) implements the types, the verification checks below, and
-the receiver's state directory. `valley-web-publish` is the publisher,
+that authenticates both. A second signed document, the
+[authorization](#web-authorization-the-valleyweb-authorizationv1), says who may read which project.
+The export carries no reader and no visibility, so no content upload can grant or restore access. A
+publisher on the valley host pushes both over HTTP to a receiver on the web server, and the web
+server never connects back to the host. Package `export` of the `web` module
+([`web/export/`](../web/export/)) implements the types, the verification checks below, and the
+receiver's store. `valley-web-publish` is the publisher,
 [`valley-web-receive`](#web-export-receiver-valley-web-receive) is the receiver, and the web server,
-[`valley-web`](#web-server-valley-web), reads the receiver's state directory with the package.
+[`valley-web`](#web-server-valley-web), reads the receiver's store with the package.
 
-#### `export.json` (`valley-web-export/v1`)
+#### `export.json` (`valley-web-export/v2`)
 
 `export.Build` builds `export.json` from the valley CLI's JSON output and the publisher's
 configuration. It reads `valley plan --all --json`, `valley pending --all --json`, and
 `valley knot show --project <project> <id> --json` for every knot in every public project. The
-publisher also gives it each project's visibility, each public project's `main` commit
-(`source_tip`), and a display mapping for principal names. `Export.Encode` writes the export as
-compact JSON ending with a newline.
+publisher also gives it each exported project's publication identity, each exported project's `main`
+commit (`source_tip`), and a display mapping for principal names. `Export.Encode` writes the export
+as compact JSON ending with a newline.
 
 ```json
 {
-  "schema": "valley-web-export/v1",
+  "schema": "valley-web-export/v2",
   "collected": "2026-10-25T12:00:00Z",
   "groups": [{ "group": "core", "name": "tools", "aliases": ["t"] }],
   "projects": [
     {
       "project": "app",
-      "visibility": "public",
+      "identity": "9da6809f038df92138c131cd16bed76d",
       "group": "core",
       "aliases": ["app"],
       "graph_tip": "3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49",
@@ -2031,13 +2041,12 @@ compact JSON ending with a newline.
 }
 ```
 
-- **What is exported:** Visibility is set per project. A project is exported only when its
-  visibility is `public`, the only visibility value in v1. Projects omitted from the visibility map
-  are not exported. The publisher includes a project in the map when both consents authorize
+- **What is exported:** `export.Build` exports the projects its `Identities` map names, each with
+  the publication identity given. The publisher names a project when both consents authorize
   `anyone` to read it at the destination (see [Read policy](#read-policy-schemareadcue)) and the
   host declaration places it in a group. Every knot and every comment of an exported project is
-  included.
-- **Top-level fields:** `schema` (`"valley-web-export/v1"`), `collected` (`string`, the plan's
+  included. Whether a server shows the project is the authorization's to say, not the export's.
+- **Top-level fields:** `schema` (`"valley-web-export/v2"`), `collected` (`string`, the plan's
   `now`), `groups`, and `projects` (sorted by project name).
 - **`groups[]` fields:** The groups of the exported projects, sorted by identifier. Only groups with
   at least one exported project are included. `groups` is omitted when empty.
@@ -2113,19 +2122,20 @@ compact JSON ending with a newline.
   its field name in exact case (without ASCII or Unicode case folding), and duplicate keys in one
   object are refused. An array or object for a scalar field is refused before its contents are read,
   and arrays or objects nested more than 1000 levels deep (`exactjson.MaxDepth`) are refused. It
-  requires `schema` to be `"valley-web-export/v1"`, projects to appear once in ascending name order
-  with valid project names and `public` visibility, and knot IDs to be valid and unique within each
-  project. Groups must appear once in ascending identifier order, and every group must be referenced
-  by at least one project. Every group a project names must appear in `groups`. A project with a
-  `group` must have a web `name`, and a project with `name`, `former_names`, or `aliases` must have
-  a `group`. Every group identifier, group name, web name, former name, and alias must follow the
-  project-name rule. Group names, group aliases, and project aliases must be distinct from one
-  another and from `-`, ignoring ASCII case. Within each group, project web names and former names
-  must be distinct from one another, ignoring ASCII case. An export without `groups` is valid when
-  no project names a group. Each project's `source_tip`, non-empty `graph_tip`, and each change's
-  `version.head` must be a 40- or 64-hex lowercase object ID. Every knot's `title`, `body`,
-  `source`, `created_by`, and `owner`, and every comment's `body`, `author`, `edited`, and
-  `edited_by`, must be valid UTF-8 with no control characters other than `\n` and `\t`.
+  requires `schema` to be `"valley-web-export/v2"`, projects to appear once in ascending name order
+  with valid project names and an `identity` of 32 lowercase hex digits, and knot IDs to be valid
+  and unique within each project. Groups must appear once in ascending identifier order, and every
+  group must be referenced by at least one project. Every group a project names must appear in
+  `groups`. A project with a `group` must have a web `name`, and a project with `name`,
+  `former_names`, or `aliases` must have a `group`. Every group identifier, group name, web name,
+  former name, and alias must follow the project-name rule. Group names, group aliases, and project
+  aliases must be distinct from one another and from `-`, ignoring ASCII case. Within each group,
+  project web names and former names must be distinct from one another, ignoring ASCII case. An
+  export without `groups` is valid when no project names a group. Each project's `source_tip`,
+  non-empty `graph_tip`, and each change's `version.head` must be a 40- or 64-hex lowercase object
+  ID. Every knot's `title`, `body`, `source`, `created_by`, and `owner`, and every comment's `body`,
+  `author`, `edited`, and `edited_by`, must be valid UTF-8 with no control characters other than
+  `\n` and `\t`.
 - **Content digest (`Export.Digest`):** `Export.Digest` is the 64-hex SHA-256 of the export's JSON
   with `collected` cleared and each claim's `age_seconds` and `stale` zeroed. Those fields change
   with the clock rather than with the valley, so two exports of the same valley state have the same
@@ -2137,25 +2147,26 @@ The manifest is a [signed note](#signed-notes-and-attestation-statement-the-vall
 signed by the publisher's export key:
 
 ```text
-the-valley/web-export/v1
+the-valley/web-export/v2
 instance valley-host
 destination example.org
 sequence 1792929630000000000
 file export.json 2a841dd0581200e7ecc0443fe0a39ab502cd884c09f9232bc372ca108a0e2a99 5108
-project app public 3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49 ff4ea8a16ee7db8ebda8169da1ce9d6cc2a2ede1
+project app 9da6809f038df92138c131cd16bed76d 3f6a0c1d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49 ff4ea8a16ee7db8ebda8169da1ce9d6cc2a2ede1
 bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 — valley-host/web-export e7kLV5lThaGSbsBUVC2cJ8I1vn6XJWS9+L0wwWmdRAYL827G/au5kE5OidGXMH+ofpnTprs+o4GgPNuTwqOexf8zrgw=
 ```
 
-- **Records:** Line 1 is `the-valley/web-export/v1`. Each remaining line in the note body is a
+- **Records:** Line 1 is `the-valley/web-export/v2`. Each remaining line in the note body is a
   keyword and its fields, separated by single spaces:
   - `instance <name>`: Name of the valley instance that signed the manifest.
   - `destination <name>`: Name of the target receiver, matching the receiver's configuration.
   - `sequence <decimal>`: Signing time in Unix nanoseconds. There is no separate sequence counter.
   - `file export.json <sha256> <size>`: SHA-256 digest and byte size of `export.json`.
-  - `project <name> public <graph-tip> <source-tip>` and `bundle <name> <sha256> <size>`: One pair
-    for each exported project. A project with no plan graph writes `-` for `<graph-tip>`.
+  - `project <name> <identity> <graph-tip> <source-tip>` and `bundle <name> <sha256> <size>`: One
+    pair for each exported project. `<identity>` is the project's publication identity, 32 lowercase
+    hex digits. A project with no plan graph writes `-` for `<graph-tip>`. No record names a reader.
 - **Grammar rules (`export.ParseManifest`, `Manifest.Text`):** `instance`, `destination`,
   `sequence`, and `file` appear once each. Each exported project has one `project` record and one
   `bundle` record; no project may appear twice, and no `bundle` record may name a project without a
@@ -2171,7 +2182,7 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
      is too long. It accepts at most 64 KiB (`MaxManifest = 65,536` bytes) and refuses a longer one
      as `too-large`.
   2. Open the signed note under the receiver's pinned verifier keys.
-  3. Check the `the-valley/web-export/v1` header line and parse the records.
+  3. Check the `the-valley/web-export/v2` header line and parse the records.
   4. Require `instance` and `destination` to match the receiver's configured instance and
      destination.
   5. Require `sequence` to be strictly greater than the receiver's `high-water` mark.
@@ -2183,7 +2194,77 @@ bundle app fffb1ae32f18c72dae5ee91ed0bcd14f5462cc10900db4d1cf7abc480975443b 1133
 
 - **Agreement (`Manifest.CheckExport`):** `Manifest.CheckExport` checks that `export.json` has the
   SHA-256 and byte size declared in the `file` record, passes `export.Decode`, and lists the same
-  projects as the manifest with the same `visibility`, `graph_tip`, and `source_tip`.
+  projects as the manifest with the same `identity`, `graph_tip`, and `source_tip`.
+
+#### Web authorization (`the-valley/web-authorization/v1`)
+
+An authorization is a signed note that says who may read which project at one destination. The
+publisher's policy path is its only writer, and it signs with the same export key as content
+manifests. The receiver stores the newest one it admits, and `valley-web` serves a project only
+while the stored authorization names it, by name and identity, with a reader the request is
+(`implemented`).
+
+```text
+the-valley/web-authorization/v1
+instance valley-host
+destination example.org
+sequence 42
+checked 2026-10-29T01:03:00Z
+project app 9da6809f038df92138c131cd16bed76d
+reader app anyone
+
+— valley-host/web-export e7kLV5lThaGSbsBUVC2cJ8I1vn6XJWS9+L0wwWmdRAYL827G/au5kE5OidGXMH+ofpnTprs+o4GgPNuTwqOexf8zrgw=
+```
+
+- **Records:** Line 1 is `the-valley/web-authorization/v1`. Each remaining line in the note body is
+  a keyword and its fields, separated by single spaces:
+  - `instance <name>` and `destination <name>`: As in the manifest.
+  - `sequence <decimal>`: The publisher's authorization counter. It reads no clock. Each
+    authorization the publisher signs has a greater sequence than every one before.
+  - `checked <time>`: When the publisher last finished a check of the policy in full, in RFC 3339,
+    UTC, to the second. Pages show it. Nothing decides access by it.
+  - `project <name> <identity>`: One project the authorization names, with its publication identity.
+  - `reader <name> <principal>`: One effective reader of the project `<name>`. Every project has one
+    reader or more. The publisher writes only the reader `anyone`, for each project anyone may read
+    and that the host declaration places in a group. Named readers are `not built`.
+- **Grammar rules (`export.ParseAuthorization`, `Authorization.Text`):** `instance`, `destination`,
+  `sequence`, and `checked` appear once each. A project appears once, a reader of a project once,
+  and a `reader` record names a project that has a `project` record. Names and principals follow the
+  project-name rule. `ParseAuthorization` accepts records in any order; `Authorization.Text` writes
+  them in the order shown above, with projects sorted by name and readers sorted.
+- **Admission (`export.VerifyAuthorization`):** The receiver admits an authorization in five
+  separate steps, in this exact order:
+  1. Read at most 256 KiB (`MaxAuthorization`), and refuse a longer one as `too-large`.
+  2. Open the signed note under the receiver's pinned verifier keys.
+  3. Check the `the-valley/web-authorization/v1` header line and parse the records. A content
+     manifest fails here as `bad-manifest`, and so does an authorization posted as a manifest.
+  4. Require `instance` and `destination` to match the receiver's configuration.
+  5. Require `sequence` to be strictly greater than the stored authorization's sequence.
+
+  There is no step for age. An authorization above the stored sequence is admitted however old its
+  `checked` time is, and however far the clocks disagree. A stored authorization that cannot be read
+  fails step 5 with an error, never as sequence 0, so no replay is admitted over it.
+
+- **Storing (`Store.Authorize`):** The receiver takes `authorization.lock` and checks the sequence
+  again, then writes the signed note to `<payload>/authorization` durably: a temporary file, synced,
+  renamed over the old one, and the directory synced. It takes no activation lock, reads no graph,
+  checks no repository, and runs no sweep, so a stalled upload or commit does not hold it up. The
+  reply is sent once the note is on disk.
+
+| Request                                                  | Reply                                                                                                                                                                                                                                                                                                      |
+| :------------------------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /web-export/v2/authorization` with the signed note | `200` and `valley-web-authorized/v1`: the `sequence` stored, `active` (the served export's `sequence` and content `digest`, or `null`), and `missing` (projects of the active export the authorization names whose repositories the receiver deleted when an earlier authorization withdrew them, or `[]`) |
+
+- **Withdrawal:** A project the stored authorization does not name is hidden from the next request.
+  After replying, the receiver deletes the project's repository from the active generation, once no
+  reader holds the generation (`Store.Prune`). It tries again, with a pause that doubles to five
+  seconds, for up to five minutes, and logs a prune it could not finish; the next authorization,
+  activation or start of the receiver tries again. `export.json` keeps its signed bytes, so it still
+  holds the withdrawn project's plan text until a later activation replaces the generation and the
+  old one is deleted. Naming the project again lists it in `missing`, and the next content upload
+  sends its bundle again.
+- **Refusals:** As for the upload, with the same codes. `replayed` carries the stored sequence as
+  `high_water`.
 
 #### Web export upload
 
@@ -2192,11 +2273,11 @@ upload is two requests plus one `PUT` for each needed body. Package `export` def
 reply schemas, and checks for each step, and `valley-web-receive` serves them.
 
 - **The token:** Every request carries `Authorization: Bearer <token>` with the receiver's
-  configured token (`export.Authorization`). If a request does not carry that exact header, the
+  configured token (`export.BearerHeader`). If a request does not carry that exact header, the
   receiver refuses it before reading the body with status `401`, `WWW-Authenticate: Bearer`, and
-  refusal code `unauthenticated` (`export.Authorized`). Both the publisher and the receiver read the
-  token file with `export.ReadToken`, which requires one line of 32 to 256 visible ASCII characters
-  (`0x21` to `0x7e`) with an optional trailing newline.
+  refusal code `unauthenticated` (`export.CarriesToken`). Both the publisher and the receiver read
+  the token file with `export.ReadToken`, which requires one line of 32 to 256 visible ASCII
+  characters (`0x21` to `0x7e`) with an optional trailing newline.
 - **Caps at step 1:** After `export.VerifyManifest` admits a manifest, `Manifest.CheckSizes` refuses
   it as `too-large` when any declared body exceeds the receiver's single-body cap or when the unique
   declared bodies together exceed the receiver's upload cap. A body declared twice under one SHA-256
@@ -2204,11 +2285,14 @@ reply schemas, and checks for each step, and `valley-web-receive` serves them.
 
 | Step | Request                                                                       | Reply                                                                                                                                                                                                                               |
 | :--- | :---------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1    | `POST /web-export/v1/manifest` with the signed manifest                       | `200` and `valley-web-inventory/v1`: `active` (the served export's `sequence` and content `digest`, or `null`), `holds` (each project's `source_tip` with a verified repository), and `needs` (bodies to send, `export.json` first) |
-| 2    | `PUT /web-export/v1/<sequence>/<sha256>` for each needed body, with its bytes | `204` once the body has been verified and staged                                                                                                                                                                                    |
-| 3    | `POST /web-export/v1/<sequence>/commit` with an empty body                    | `200` and `valley-web-committed/v1`: the `sequence` activated                                                                                                                                                                       |
+| 1    | `POST /web-export/v2/manifest` with the signed manifest                       | `200` and `valley-web-inventory/v2`: `active` (the served export's `sequence` and content `digest`, or `null`), `holds` (each project's `source_tip` with a verified repository), and `needs` (bodies to send, `export.json` first) |
+| 2    | `PUT /web-export/v2/<sequence>/<sha256>` for each needed body, with its bytes | `204` once the body has been verified and staged                                                                                                                                                                                    |
+| 3    | `POST /web-export/v2/<sequence>/commit` with an empty body                    | `200` and `valley-web-committed/v2`: the `sequence` activated                                                                                                                                                                       |
 
-- **Held repositories:** When the receiver's active export already holds a project's repository at
+- **Named projects:** The inventory needs a bundle only for a project the stored authorization
+  names, and a commit builds a repository only for such a project. With no stored authorization, no
+  bundle is needed and no repository is built.
+- **Held repositories:** When the receiver's active generation still holds a project's repository at
   the manifest's `source_tip`, the inventory lists that project in `holds` and omits its bundle from
   `needs`. On commit, the new generation copies `refs/heads/main` from the held repository
   (`export.CarryRepo`). If `active.digest` matches the publisher's `Export.Digest` and `needs`
@@ -2253,13 +2337,13 @@ reply schemas, and checks for each step, and `valley-web-receive` serves them.
   confirms that it is a commit reachable from `source_tip` and that its object ID has the same
   length as `source_tip`.
 - **Commit outcome:** A commit has succeeded once `Store.Activate` has written the upload's sequence
-  to `high-water` and swapped the `active` symlink to the new generation. The receiver then replies
-  `200` with `valley-web-committed/v1`. A later failure while syncing the swap to disk or deleting
+  to `high-water` and swapped the `current` symlink to the new generation. The receiver then replies
+  `200` with `valley-web-committed/v2`. A later failure while syncing the swap to disk or deleting
   old generations, stale staging directories, and `trash/` does not change the `200` reply. `Store`
   passes that failure to the `report` callback given to `export.OpenStore` for the receiver to log.
   The next sweep retries failed deletions, but it does not retry a failed directory sync. Recovery
-  at `OpenStore` returns at once when `active` already names the `high-water` generation. It
-  restores the swap after a crash only when the two differ. A commit that fails before `active` is
+  at `OpenStore` returns at once when `current` already names the `high-water` generation. It
+  restores the swap after a crash only when the two differ. A commit that fails before `current` is
   swapped leaves the previous export active. If it failed after `high-water` was written, its
   sequence is accepted, and retrying the commit is refused as `replayed`. The publisher's next
   manifest, signed later, replaces the upload.
@@ -2268,26 +2352,27 @@ reply schemas, and checks for each step, and `valley-web-receive` serves them.
   `{ "schema": "valley-web-error/v1", "error": <code>, "message": <string>, "high_water" (with replayed), "needs" (with incomplete) }`.
   The `error` code is stable for programs to act on; `message` is human-readable text.
 
-| Code                | HTTP  | Step | Meaning                                                                                                   |
-| :------------------ | :---- | :--- | :-------------------------------------------------------------------------------------------------------- |
-| `unauthenticated`   | `401` | 1-3  | The request does not carry the receiver's token.                                                          |
-| `too-large`         | `413` | 1, 2 | A manifest over 64 KiB, a body declared larger than the receiver's cap, or bodies over its upload cap.    |
-| `bad-signature`     | `403` | 1    | The manifest does not open under the pinned key.                                                          |
-| `bad-manifest`      | `400` | 1    | The manifest's text is not a valid manifest.                                                              |
-| `wrong-instance`    | `403` | 1    | The manifest is from another instance.                                                                    |
-| `wrong-destination` | `403` | 1    | The manifest is for another receiver.                                                                     |
-| `replayed`          | `409` | 1, 3 | The sequence is not greater than the high-water mark. The publisher waits for its clock to pass the mark. |
-| `out-of-window`     | `403` | 1    | The manifest was signed more than three days ago, or more than a minute ahead.                            |
-| `superseded`        | `409` | 1-3  | A newer manifest is staged.                                                                               |
-| `no-manifest`       | `404` | 2, 3 | Nothing is staged for the sequence.                                                                       |
-| `not-declared`      | `404` | 2    | The manifest declares no body with that hash.                                                             |
-| `content-encoding`  | `415` | 2    | The body was sent with a `Content-Encoding`.                                                              |
-| `size-mismatch`     | `400` | 2    | The body's size is not the declared size.                                                                 |
-| `hash-mismatch`     | `422` | 2, 3 | The body's SHA-256 is not the declared one.                                                               |
-| `unreadable`        | `400` | 1, 2 | The request body could not be read.                                                                       |
-| `incomplete`        | `409` | 3    | A needed body has not verified; `needs` lists what is still needed.                                       |
-| `bad-export`        | `422` | 3    | `export.json` is not a valid export, or disagrees with the manifest.                                      |
-| `bad-bundle`        | `422` | 3    | A bundle fails acceptance.                                                                                |
+| Code                  | HTTP  | Step | Meaning                                                                                                   |
+| :-------------------- | :---- | :--- | :-------------------------------------------------------------------------------------------------------- |
+| `unauthenticated`     | `401` | 1-3  | The request does not carry the receiver's token.                                                          |
+| `too-large`           | `413` | 1, 2 | A manifest over 64 KiB, a body declared larger than the receiver's cap, or bodies over its upload cap.    |
+| `bad-signature`       | `403` | 1    | The manifest does not open under the pinned key.                                                          |
+| `bad-manifest`        | `400` | 1    | The manifest's text is not a valid manifest.                                                              |
+| `wrong-instance`      | `403` | 1    | The manifest is from another instance.                                                                    |
+| `wrong-destination`   | `403` | 1    | The manifest is for another receiver.                                                                     |
+| `replayed`            | `409` | 1, 3 | The sequence is not greater than the high-water mark. The publisher waits for its clock to pass the mark. |
+| `out-of-window`       | `403` | 1    | The manifest was signed more than three days ago, or more than a minute ahead.                            |
+| `superseded`          | `409` | 1-3  | A newer manifest is staged.                                                                               |
+| `no-manifest`         | `404` | 2, 3 | Nothing is staged for the sequence.                                                                       |
+| `not-declared`        | `404` | 2    | The manifest declares no body with that hash.                                                             |
+| `content-encoding`    | `415` | 2    | The body was sent with a `Content-Encoding`.                                                              |
+| `size-mismatch`       | `400` | 2    | The body's size is not the declared size.                                                                 |
+| `hash-mismatch`       | `422` | 2, 3 | The body's SHA-256 is not the declared one.                                                               |
+| `unreadable`          | `400` | 1, 2 | The request body could not be read.                                                                       |
+| `incomplete`          | `409` | 3    | A needed body has not verified; `needs` lists what is still needed.                                       |
+| `bad-export`          | `422` | 3    | `export.json` is not a valid export, or disagrees with the manifest.                                      |
+| `bad-bundle`          | `422` | 3    | A bundle fails acceptance.                                                                                |
+| `unsupported-version` | `410` | any  | A request under `/web-export/v1/`, from a publisher older than the receiver.                              |
 
 A refused upload leaves the active export as it was.
 
@@ -2305,10 +2390,36 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 - **Before a pass:** The publisher reads `--host` and checks its groups and placements with
   `export.CheckNames` (see [Groups and web URLs](./architecture.md#groups-and-web-urls)). If the
   declaration fails any check, the publisher exits with status `1` before taking the lock.
-- **A pass:** In order, the pass:
+- **The policy path:** Every pass starts with the policy path, the only writer of authorizations. In
+  order, it:
+  1. takes an exclusive `flock(2)` lock on `<state>/authorization.lock`;
+  2. reads the export key, or makes one on the first start;
+  3. fetches the instance repository and reads the read grants as steps 3 and 4 below describe, into
+     its own caches under `$XDG_CACHE_HOME/valley-web-publish/policy/`;
+  4. for each project in a group that a read grant to `anyone` covers, reads `main` from the
+     project's repository beside `--instance-repo` and its `policy/read` there;
+  5. allocates the next sequence from `<state>/authorization-sequence`, written durably before it is
+     used, and signs an authorization that names each project anyone may read;
+  6. writes it to `<state>/authorization`, releases the lock, and posts it to the receiver.
+
+  The policy path runs no `valley` command and reads no plan, knot, or bundle, so no project's graph
+  holds it up. A project whose `main` or `policy/read` cannot be read keeps what the last
+  authorization gave it, while a grant to `anyone` still covers it, and never more. The check is
+  then incomplete: its `checked` time is the last complete check's, it is still signed and sent, and
+  the pass then fails before any content work. An instance or registry that cannot be read fails the
+  policy path, and nothing is signed. With `--policy-only` the pass ends after the policy path, and
+  takes no other lock.
+
+- **Sending the authorization:** A failure in transit, a status with no refusal, or `unreadable` is
+  retried with the same authorization, after 2 seconds and then twice as long each time, five
+  attempts in all. A `replayed` refusal means the receiver holds a newer authorization, as after the
+  publisher's state is restored from an older backup. The policy path then checks the policy again
+  and signs the result above the refusal's `high_water`, three times at most; it never sends an
+  authorization signed before. A `404` means the receiver is older than the publisher, and the pass
+  fails saying to upgrade the edge first. Any other refusal fails the pass.
+- **The content pass:** In order, the content pass:
   1. takes an exclusive `flock(2)` lock on `<state>/lock`, waiting for a pass that holds it;
-  2. reads the export key, or makes one on the first start, and checks the state and the caches
-     against `--max-storage`;
+  2. checks the state and the caches against `--max-storage`;
   3. fetches the instance repository's `main`, `refs/the-valley/projects` and `--registry-ref` into
      the publisher's own bare repository, `$XDG_CACHE_HOME/valley-web-publish/origin.git`, whose
      `origin` is `--instance-repo`. It fetches them once for the whole pass. It requires that `main`
@@ -2423,14 +2534,15 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
 
   A pass that fails on a bound sends and writes nothing.
 
-- **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends nothing when the
-  last acknowledgement names the same receiver, destination, and digest, and is less than
-  `--recheck` old. Otherwise it posts a manifest. When the inventory's `active.digest` is the
-  export's digest and `needs` names no bundle, the pass stops after step 1 of the upload. Either
-  way, the acknowledgement records what the receiver replied: the inventory's active sequence, or
-  the committed sequence. An upload that was attempted and refused records nothing. A receiver that
-  lost its state is sent the whole export at the first pass after the acknowledgement passes
-  `--recheck`.
+- **Skipping an unchanged export:** The pass computes `Export.Digest`. It sends no content when the
+  last acknowledgement names the same receiver, destination, and digest, is less than `--recheck`
+  old, and the receiver's reply to the authorization gives the same digest as `active` and an empty
+  `missing`. Otherwise it posts a manifest. When the inventory's `active.digest` is the export's
+  digest and `needs` names no bundle, the pass stops after step 1 of the upload. Either way, the
+  acknowledgement records what the receiver replied: the inventory's active sequence, or the
+  committed sequence. An upload that was attempted and refused records nothing. A receiver that lost
+  its state says so in its reply to the authorization, and is sent the whole export in the same
+  pass.
 - **Sequence:** A manifest's sequence is the clock in Unix nanoseconds when it is signed. It must be
   greater than the greatest sequence the receiver is known to have accepted: the acknowledged one,
   or the `high_water` of a `replayed` refusal. When the clock is behind that mark by at most two
@@ -2452,19 +2564,27 @@ valley-web-publish --instance-repo /srv/git/valley.git --instance valley-host \
   variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`), and refuses HTTP redirects. A manifest post
   times out after 2 minutes, and a body upload or commit times out after 30 minutes. Any response
   body over 1 MiB fails the request.
-- **`--out`:** The pass writes the upload's content to `<dir>`: `manifest` (the signed manifest),
-  `export.json`, and `bundles/<project>.bundle`. It writes them in a temporary directory beside
-  `<dir>` and renames it into place, so a reader never sees part of it. A pass with `--out` signs
-  with the same key and does not read or write the acknowledgement.
+- **`--out`:** The pass writes what it would send to `<dir>`: `authorization` (the signed
+  authorization), `manifest` (the signed manifest), `export.json`, and `bundles/<project>.bundle`.
+  It writes them in a temporary directory beside `<dir>` and renames it into place, so a reader
+  never sees part of it. A pass with `--out` signs with the same key and does not read or write the
+  acknowledgement. Its authorization takes a sequence from the counter.
 - **State directory:**
 
   ```text
-  <state>/lock           flock(2) lock held for the whole of a pass
-  <state>/key            the export key: Ed25519, PKCS #8 in PEM, mode 0400
-  <state>/verifier       the key's verifier line, <instance>/web-export+<hash>+<base64>
-  <state>/acknowledged   valley-web-publish-acknowledged/v1: receiver, destination, digest,
-                         sequence, and when the receiver replied
+  <state>/lock                    flock(2) lock held for the whole of a content pass
+  <state>/authorization.lock      flock(2) lock held while the policy path checks the
+                                  policy, allocates a sequence and signs
+  <state>/authorization-sequence  the greatest authorization sequence allocated, in decimal
+  <state>/authorization           the last authorization signed, as its signed note
+  <state>/key                     the export key: Ed25519, PKCS #8 in PEM, mode 0400
+  <state>/verifier                the key's verifier line, <instance>/web-export+<hash>+<base64>
+  <state>/acknowledged            valley-web-publish-acknowledged/v1: receiver, destination,
+                                  digest, sequence, and when the receiver replied
   ```
+
+  A counter that cannot be read fails the pass; it is never taken for zero. A counter lost with the
+  state directory starts again at one, and the receiver's first `replayed` refusal raises it.
 
   The key is made under a temporary name and renamed into place, so a start that is killed leaves no
   key, and the next start makes one. Every pass compares the key's verifier line with
@@ -2480,16 +2600,16 @@ uploads from `valley-web-publish` into a state directory using the three-step pr
 builds it as the `valley-web-receive` package with its `git` binary path fixed at build time.
 
 ```sh
-valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
+valley-web-receive --state /var/lib/valley-web/store --listen 192.0.2.10:8081 \
   --instance valley-host --destination example.org \
   --verifiers /etc/valley-web/verifiers --token-file /run/keys/valley-web-receiver-token
 ```
 
 - **Flags:**
-  - `--state DIR` (required): State directory. `export.OpenStore` creates the directory layout if
-    missing and completes any activation interrupted by a crash (see
-    [Web export receiver state](#web-export-receiver-state)). The receiver is the directory's only
-    writer.
+  - `--state FILE` (required): The store's descriptor file. When `FILE` does not exist,
+    `export.OpenStore` creates it and the payload directory `v2/` beside it. It completes any
+    activation interrupted by a crash (see [Web export receiver state](#web-export-receiver-state)).
+    A directory is refused. The receiver is the store's only writer.
   - `--listen ADDR` (required): TCP listen address. Port `0` picks a free port.
   - `--instance NAME`, `--destination NAME` (required): Instance name and destination name required
     in every manifest.
@@ -2527,37 +2647,43 @@ valley-web-receive --state /var/lib/valley-web --listen 192.0.2.10:8081 \
   `1` on a runtime failure, and `2` on invalid flags. `--help` prints usage on `stderr` and exits
   `0`.
 - **Routes:** The receiver checks the bearer token first on every request. Authenticated requests
-  use three routes:
+  use four routes:
 
-| Route                                | Method | Step            |
-| :----------------------------------- | :----- | :-------------- |
-| `/web-export/v1/manifest`            | `POST` | 1, the manifest |
-| `/web-export/v1/<sequence>/<sha256>` | `PUT`  | 2, one body     |
-| `/web-export/v1/<sequence>/commit`   | `POST` | 3, the commit   |
+| Route                                | Method | Step              |
+| :----------------------------------- | :----- | :---------------- |
+| `/web-export/v2/authorization`       | `POST` | the authorization |
+| `/web-export/v2/manifest`            | `POST` | 1, the manifest   |
+| `/web-export/v2/<sequence>/<sha256>` | `PUT`  | 2, one body       |
+| `/web-export/v2/<sequence>/commit`   | `POST` | 3, the commit     |
 
 `<sequence>` is a positive decimal integer with no leading zero, and `<sha256>` is 64 lowercase hex
-digits. Any other path answers `404` with an empty body, and any other method on one of these paths
-answers `405` with an `Allow` header and an empty body.
+digits. Any path under `/web-export/v1/` answers `410` with `unsupported-version`, whose message
+says to upgrade `valley-web-publish`. Any other path answers `404` with an empty body, and any other
+method on one of these paths answers `405` with an `Allow` header and an empty body.
 
 - **Limits:**
 
-| Limit                                     | Value        |
-| :---------------------------------------- | :----------- |
-| Authenticated requests running at once    | 4            |
-| Connections open at once                  | 32           |
-| Request headers: time to arrive, and size | 10 s, 16 KiB |
-| A manifest request, from its headers      | 1 minute     |
-| A body request, from its headers          | 30 minutes   |
-| A commit request, from its headers        | 30 minutes   |
-| An idle connection                        | 1 minute     |
+| Limit                                      | Value        |
+| :----------------------------------------- | :----------- |
+| Upload requests running at once            | 4            |
+| Authorization requests running at once     | 2            |
+| An authorization request, from its headers | 30 seconds   |
+| Connections open at once                   | 32           |
+| Request headers: time to arrive, and size  | 10 s, 16 KiB |
+| A manifest request, from its headers       | 1 minute     |
+| A body request, from its headers           | 30 minutes   |
+| A commit request, from its headers         | 30 minutes   |
+| An idle connection                         | 1 minute     |
 
-An authenticated request beyond 4 running at once answers `503` with `Retry-After: 5` and an empty
-body, as does a body upload while another request is already staging the same body of the same
-upload. A connection beyond 32 open at once waits in the listen queue. Unauthenticated requests take
-no request slot. `OPTIONS *` is handled like any other request, answering `401` without the token
-and `404` with it. A manifest or commit request waiting for the store lock stops waiting when its
-time limit expires or its client disconnects. Any internal failure that is not a refusal answers
-`500` with an empty body; the publisher retries both `500` and `503` as failures in transit.
+An upload request beyond 4 running at once, or an authorization request beyond 2, answers `503` with
+`Retry-After: 5` and an empty body. The two are counted apart, so uploads that hold every upload
+slot leave room for an authorization. A body upload while another request is already staging the
+same body of the same upload answers the same. A connection beyond 32 open at once waits in the
+listen queue. Unauthenticated requests take no request slot. `OPTIONS *` is handled like any other
+request, answering `401` without the token and `404` with it. A manifest or commit request waiting
+for the store lock stops waiting when its time limit expires or its client disconnects. Any internal
+failure that is not a refusal answers `500` with an empty body; the publisher retries both `500` and
+`503` as failures in transit.
 
 - **The staged upload:** The receiver tracks the newest staged upload in memory. A body or commit
   request for a newer sequence is refused as `no-manifest`, and one for an older sequence is refused
@@ -2585,23 +2711,42 @@ time limit expires or its client disconnects. Any internal failure that is not a
 
 #### Web export receiver state
 
-The receiver keeps every accepted export as an immutable generation in one state directory
-(`export.OpenStore`):
+The receiver keeps every accepted export as a generation in one store (`export.OpenStore`). The
+store's entry point is a descriptor file, which both programs are given as `--state`, and its
+payloads are in the directory `v2/` beside it:
 
 ```text
-<state>/lock                   flock(2) lock serialising Stage, Activate, and OpenStore
-<state>/high-water             the greatest sequence accepted
-<state>/active                 symlink to exports/<sequence>
-<state>/exports/<sequence>/    one generation: export.json and repos/<project>.git
-<state>/staging/<sequence>/    one upload until it is committed:
-    bodies/<sha256>            verified bodies written by StageBody
-    export.json                moved from bodies/ during Activate
-    tmp/<project>.git          a repository being built
-    repos/<project>.git        a repository once accepted and synced
-<state>/trash/                 generations renamed away before deletion
+<dir>/store                       the descriptor: one line, the-valley/web-store/v2
+<dir>/v2/lock                     flock(2) lock serialising Stage, Activate, Prune and OpenStore
+<dir>/v2/authorization.lock       flock(2) lock serialising Authorize
+<dir>/v2/authorization            the newest authorization admitted, as its signed note
+<dir>/v2/high-water               the greatest content sequence accepted
+<dir>/v2/current                  symlink to generations/<sequence>
+<dir>/v2/generations/<sequence>/  one generation: export.json and repos/<project>.git
+<dir>/v2/staging/<sequence>/      one upload until it is committed:
+    bodies/<sha256>               verified bodies written by StageBody
+    export.json                   moved from bodies/ during Activate
+    tmp/<project>.git             a repository being built
+    repos/<project>.git           a repository once accepted and synced
+<dir>/v2/trash/                   generations and repositories renamed away before deletion
 ```
 
-- **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<state>/lock`, `Activate`
+- **The descriptor:** `OpenStore` refuses a `--state` that is a directory, and a file that does not
+  hold `the-valley/web-store/v2`. When the descriptor does not exist, it creates the payload
+  directory first and writes the descriptor last, durably. `OpenReadOnly` refuses the same, and
+  requires both to exist. Binaries of the first store layout take a directory as `--state`:
+  `valley-web` from that layout exits `1` saying the descriptor is not a directory, and
+  `valley-web-receive` exits `1` when it cannot make a directory there. Given the descriptor's
+  directory or `v2/` instead, they find no `active` symlink and no `exports/`, and serve nothing. A
+  generation keeps a repository only of a project the authorization named when it was built, and a
+  first-layout reader reads no authorization, so no rollback can read the store's private content as
+  public.
+- **Retiring the first layout:** When `OpenStore` creates a descriptor in a directory that holds the
+  first layout's `active` symlink, it deletes `active` and `high-water` and syncs the directory, so
+  a first-layout binary started there again serves nothing. It then deletes `exports/`, `staging/`,
+  `trash/` and `lock`, and reports that the layout was retired.
+
+- **Activation (`Store.Activate`):** Holding an exclusive `flock(2)` on `<dir>/v2/lock`, `Activate`
   runs these steps in order:
   1. Refuse the upload if its `sequence` is not greater than `high-water` (`replayed`), if a newer
      manifest is staged (`superseded`), or if any needed body is missing (`incomplete`, with
@@ -2609,7 +2754,8 @@ The receiver keeps every accepted export as an immutable generation in one state
   2. Move `export.json` from `bodies/<sha256>` to `<staging>/<sequence>/export.json`, set its mode
      to `0644`, and check it against the manifest with `Manifest.CheckExport`. If `CheckExport`
      fails, remove `export.json` from staging so `Inventory` lists it as needed again.
-  3. Build `repos/<project>.git` for each project not already in `repos/`. It removes any leftover
+  3. Build `repos/<project>.git` for each project the stored authorization names and not already in
+     `repos/`, and remove a staged repository of any other project. It removes any leftover
      `tmp/<project>.git`, then builds the repository in `tmp/<project>.git` from the staged bundle
      with `AcceptBundle` or from the active generation's repository at the same `source_tip` with
      `CarryRepo`. It sets the file and directory modes in `tmp/<project>.git` (see **Modes** below),
@@ -2618,15 +2764,16 @@ The receiver keeps every accepted export as an immutable generation in one state
      needed again. A build interrupted by a crash stays in `tmp/` and is rebuilt on the next commit.
   4. Stop any in-flight body writers for the upload (`Store.Writer`) and wait until each has closed
      and removed its partial file. Remove `bodies/` and `tmp/`, and verify that the staging
-     directory holds only `export.json` and `repos/`, with each project's repository holding
-     `refs/heads/main` at its `source_tip`.
+     directory holds only `export.json` and `repos/`, with a repository of each named project and no
+     other, each holding `refs/heads/main` at its `source_tip`.
   5. Set the mode of `repos/` and the staging directory to `0755`. Sync `export.json`, `repos/`, and
-     the staging directory, rename `<staging>/<sequence>` to `exports/<sequence>`, and sync
-     `exports/` and `staging/`.
+     the staging directory, rename `<staging>/<sequence>` to `generations/<sequence>`, and sync
+     `generations/` and `staging/`.
   6. Write `<sequence>\n` durably to `high-water`.
-  7. Swap `active` by renaming a new symlink (`exports/<sequence>`) over it.
-  8. Sync `<state>` and sweep inactive generations that no reader holds, staging directories with
-     `sequence <= high-water`, and `trash/`.
+  7. Swap `current` by renaming a new symlink (`generations/<sequence>`) over it.
+  8. Sync `v2/`, sweep inactive generations that no reader holds, staging directories with
+     `sequence <= high-water`, and `trash/`, and prune the repositories of projects the
+     authorization withdrew while the commit ran.
 - **Durability:** Every file and directory of a generation is synced to disk before `high-water`
   names its sequence. Git's `core.fsync=all` syncs what `git fetch` writes, but not the files
   `git init` creates beforehand, so `Activate` recursively syncs each repository before renaming it
@@ -2635,33 +2782,37 @@ The receiver keeps every accepted export as an immutable generation in one state
   umask (see [Reading the state directory](./architecture.md#reading-the-state-directory)).
   - `staging/`, each upload directory inside it, and the upload's `bodies/` and `repos/` have mode
     `0700`.
-  - `exports/` has mode `0755`. Inside each generation, every directory has mode `0755` and every
-    file has mode `0644`, or `0444` when git wrote the file read-only.
-  - The store creates `trash/` with mode `0755`, `lock` and `high-water` with mode `0644`, and each
-    staged body with mode `0600`. The receiver's umask can narrow these creation modes.
+  - `v2/` and `generations/` have mode `0755`. Inside each generation, every directory has mode
+    `0755` and every file has mode `0644`, or `0444` when git wrote the file read-only.
+  - The descriptor, `high-water` and `authorization` have mode `0644`, whatever the umask. The store
+    creates `trash/` with mode `0755`, the locks with mode `0644`, and each staged body with mode
+    `0600`. The receiver's umask can narrow these creation modes.
   - `Activate` keeps a repository that an upload's `repos/` already holds as it is. Each repository
     that the receiver builds gets the generation modes before it enters `repos/`. A repository that
     an earlier build of the receiver staged keeps the modes that build gave it. Whether any upload
     holds such a repository is a `deployment choice`.
-  - The state directory's own mode is a `deployment choice`: `OpenStore` creates the directory if
-    needed and leaves its mode unchanged.
-- **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves `active`
-  and holds a shared `flock(2)` (`LOCK_SH`) on `exports/<sequence>` until the caller releases it
-  (`export.ErrNoExport` if no export has been activated yet). Because a request serves everything
-  from that single opened generation, a concurrent activation never mixes two generations in one
-  response. An old generation is deleted only when a sweep can acquire a non-blocking exclusive
-  `flock(2)` (`LOCK_EX | LOCK_NB`) on its directory, which fails while any reader holds it. Under
-  that exclusive lock, the sweep renames the generation into `trash/` before removing its files.
-- **Recovery (`export.OpenStore`):** When `OpenStore` opens `<state>`, it locks `<state>/lock`,
-  recovers any interrupted activation, and sweeps leftover directories:
-  - A crash before `high-water` is written leaves the previous generation at `active`, and the next
+  - The mode of the descriptor's directory is a `deployment choice`: `OpenStore` creates the
+    directory if needed and leaves its mode unchanged. It decides who can reach the store.
+- **Reading (`Store.Open`):** A reader calls `Store.Open` once per request. `Open` resolves
+  `current` and holds a shared `flock(2)` (`LOCK_SH`) on `generations/<sequence>` until the caller
+  releases it (`export.ErrNoExport` if no export has been activated yet). Because a request serves
+  everything from that single opened generation, a concurrent activation never mixes two generations
+  in one response. An old generation is deleted only when a sweep can acquire a non-blocking
+  exclusive `flock(2)` (`LOCK_EX | LOCK_NB`) on its directory, which fails while any reader holds
+  it. Under that exclusive lock, the sweep renames the generation into `trash/` before removing its
+  files. `Store.Prune` takes the same exclusive lock on the active generation before it renames a
+  withdrawn project's repository into `trash/`.
+- **Recovery (`export.OpenStore`):** When `OpenStore` opens the store, it locks `v2/lock`, recovers
+  any interrupted activation, sweeps leftover directories, and prunes withdrawn repositories:
+  - A crash before `high-water` is written leaves the previous generation at `current`, and the next
     `OpenStore` deletes the unactivated generation and any staging directory with
     `sequence <= high-water`.
-  - A crash after `high-water` is written and before `active` is swapped is finished by the next
-    `OpenStore`. Before swapping `active` to `exports/<high-water>`, `OpenStore` checks that
-    generation: `export.json` must pass `export.Decode`, and each project's repository must pass
-    `git fsck` and hold `refs/heads/main` at its `source_tip` and no other ref. If the check passes,
-    `OpenStore` swaps `active` to that generation and syncs `<state>`.
+  - A crash after `high-water` is written and before `current` is swapped is finished by the next
+    `OpenStore`. Before swapping `current` to `generations/<high-water>`, `OpenStore` checks that
+    generation: `export.json` must pass `export.Decode`, each project the stored authorization names
+    must have a repository, and each repository must pass `git fsck` and hold `refs/heads/main` at
+    its `source_tip` and no other ref. If the check passes, `OpenStore` swaps `current` to that
+    generation and syncs `v2/`.
   - If the generation fails the check, `OpenStore` passes the error to `report` and does not
     activate the generation. The previous generation keeps serving, the sweep deletes the damaged
     generation, and the publisher's next manifest replaces it.
@@ -2676,22 +2827,47 @@ The receiver keeps every accepted export as an immutable generation in one state
   the bundles, the signed manifest, and its verifier key, so tests for the publisher, the receiver,
   and the web server share the same bytes.
 
+#### Upgrading the edge and the host
+
+The store and the protocol of this release are new versions, and nothing of the first versions is
+read. The upgrade starts the edge on a new, empty store, and the publisher sends everything again on
+its next pass. Upgrade in this order:
+
+1. **The edge first.** Upgrade `valley-web-receive` and `valley-web`, and give both
+   `--state <dir>/store`, where `<dir>` is the state directory they were given before. The receiver
+   module does this. On its first start the receiver creates the descriptor and `v2/`, and deletes
+   the first layout's state from `<dir>`, `active` first. Until the host is upgraded, the edge
+   serves nothing: every page says "Nothing published yet", and the host's publisher of the first
+   protocol fails each pass with `unsupported-version`.
+2. **Then the host.** Upgrade `valley-web-publish`. Its next pass sends an authorization and then
+   the whole export, since the receiver's reply says it serves nothing. To publish at once, start a
+   pass: `systemctl start valley-web-publish.service`.
+
+Upgrading the host first fails each pass at its authorization: the receiver of the first protocol
+answers `404`, and the pass says to upgrade the edge first. The edge keeps serving what it served.
+
+A rollback of the edge to binaries of the first layout serves nothing from the store: they refuse
+the descriptor, and find no first-layout state beside it. A rollback needs the first layout's state
+directory, which the upgrade deleted, so the first-protocol publisher then sends everything again.
+
 #### Web server (`valley-web`)
 
-`valley-web` serves the active export in a receiver's state directory to anonymous readers over
-HTTP. It serves the plan page, one page per knot, and a source browser over each public project's
-`main`. Package `server` of the `web` module ([`web/server/`](../web/server/)) implements the HTTP
-handler, and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as
-the `valley-web` package.
+`valley-web` serves the active export in a receiver's store to anonymous readers over HTTP, as the
+stored authorization allows. It serves the plan page, one page per knot, and a source browser over
+the `main` of each project the authorization lets `anyone` read. Package `server` of the `web`
+module ([`web/server/`](../web/server/)) implements the HTTP handler, and
+[`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
+`valley-web` package.
 
 ```sh
-valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
+valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 ```
 
 - **Flags:** Both flags are required.
-  - `--state DIR` names the receiver's existing state directory. `valley-web` opens it read-only
-    with `export.OpenReadOnly` (see
-    [Reading the state directory](./architecture.md#reading-the-state-directory)).
+  - `--state FILE` names the receiver's existing store descriptor. `valley-web` opens the store
+    read-only with `export.OpenReadOnly` (see
+    [Reading the state directory](./architecture.md#reading-the-state-directory)). A directory is
+    refused.
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
   logs runtime errors on `stderr`. On `SIGINT` or `SIGTERM`, it stops accepting new requests and
@@ -2730,6 +2906,19 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   a project may be named `source`, `knots`, `web-export`, or `robots.txt` and is served on every
   route (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
+- **Authorization on every request:** Each request reads `v2/authorization` when it arrives, and
+  parses it again only when its bytes changed. It serves only the projects that authorization lets
+  `anyone` read under the identity the export gives them. Once its response is rendered, the request
+  reads the authorization again, before the first byte is written, a redirect's too. When the bytes
+  differ, the response is dropped and rendered again under the new authorization, three renders at
+  most, and then the request answers `503`. A missing, unreadable or invalid authorization serves no
+  project: every route answers `503` with the page "Nothing published yet". A response already being
+  written when an authorization is stored is not stopped.
+- **One project-view filter:** Every view is built through one filter, which takes the export, the
+  authorization and the reader, and gives the projects the reader may read. Each request's reader is
+  `anyone`. The plan page, the navigation, the groups, the references between projects, and every
+  alias and former-name redirect are built from what it gives. A project it leaves out answers as
+  one that does not exist, and a group with no project it gives has no alias.
 - **One generation per request:** Each request opens the active generation once with `Store.Open`
   and renders its entire response from that generation. It releases the generation once rendering
   finishes, before writing the response. Activating a new export during a request does not change
@@ -2737,7 +2926,8 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   it. Before the first activation, every route answers `503`.
 - **One read per generation:** The server reads and decodes each generation's `export.json` once,
   even when many requests wait for it at the same time. It caches the newest generation it has read
-  and builds the plan page's structure once for that generation. A request opens its generation on
+  and builds the plan page's structure once for that generation and authorization. A new
+  authorization builds the structure again from the cached export. A request opens its generation on
   disk only after the server has read that generation.
   - Each read runs in its own worker. The worker opens the active generation, holds it while reading
     `export.json`, and releases it when the read finishes. A request waiting for a read holds no
@@ -2768,9 +2958,11 @@ valley-web --state /var/lib/valley-web --listen 127.0.0.1:8080
   unclaimed, unblocked outcome or bug. The page's single inline script runs the milestone filters.
   Without the script, every knot shows and the trees still open and close.
 
-- **Freshness:** Every page shows the export's `collected` time and its age when the request is
-  served. A page marks the export `stale` when it is more than five minutes old
-  (`server.StaleAfter`).
+- **Freshness:** Every page shows the export's `collected` time and, apart from it, when the policy
+  was last checked: the authorization's `checked` time and its age when the request is served. A
+  page is marked `stale` when that check is more than five minutes old (`server.StaleAfter`). Every
+  pass sends an authorization, so a pass that finds nothing changed still advances the check. A
+  recent check does not make old content new: the `collected` time says how old the content is.
 - **Knot page:** A knot page shows the knot's type, status, state, and fields, the chain of parents
   above it, and links to the knots that block it, the knots it blocks, and its children. The parent
   chain names the nearest 32 parents (`server.MaxPlanDepth`) and marks any parents above them with

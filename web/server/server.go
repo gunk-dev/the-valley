@@ -43,6 +43,15 @@
 // back before it renders its page. A source request that runs out of
 // that time answers 503.
 //
+// A source request that shows Markdown renders it after its git commands,
+// and at most MaxRendering render at once. A request waits for a
+// rendering slot while it still holds its git slot, within its gitTimeout,
+// and gives the git slot back once it has one. So the requests that hold
+// a file's text while they wait to render are among the MaxGit. The
+// memory rendering takes grows with the file and not with the page, and
+// one render allocates less than 128 MiB (package markdown), so the
+// renders at once allocate at most MaxRendering times that.
+//
 // # Responses
 //
 // A response is rendered whole before it is written. A request gives back
@@ -135,6 +144,16 @@
 // text, and a binary file or one larger than MaxFile is not shown at all.
 // Raw repository files are served only inside a gzipped tar archive sent
 // as an attachment.
+//
+// A Markdown file, and a directory's Markdown README, is rendered by
+// package markdown, and ?plain=1 shows the file as escaped text. The
+// renderer writes only its own fixed set of elements and attributes, and
+// escapes every byte it takes from the file, raw HTML included. It
+// writes a link only for an http, https or mailto destination, or for a
+// relative one resolved to a page of the source browser at the same
+// commit, and no img, script, form or style attribute. So rendered
+// Markdown is no active content, and the policy above admits it as it
+// is.
 package server
 
 import (
@@ -210,6 +229,9 @@ const (
 	// MaxGit to finish. A source request that finds every slot taken
 	// and MaxWaiting waiting answers 503 at once.
 	MaxWaiting = 16
+	// MaxRendering is the most source requests that render Markdown at
+	// once.
+	MaxRendering = 2
 	// requestTimeout bounds a request from when it arrives: its wait for
 	// a git slot or for its generation's export to be read, its git
 	// commands and its rendering.
@@ -270,6 +292,9 @@ type Server struct {
 	// waiting one for each source request waiting for a slot.
 	slots   chan struct{}
 	waiting chan struct{}
+	// renders holds a token for each source request rendering
+	// Markdown.
+	renders chan struct{}
 	// loaders holds a token for each load's worker, and loadWaiting one
 	// for each request waiting for a load.
 	loaders     chan struct{}
@@ -315,6 +340,7 @@ func New(c Config) *Server {
 	s := &Server{store: c.Store, now: c.Now, log: c.Log,
 		timeout: requestTimeout, gitTime: gitTimeout, maxResponse: MaxResponse,
 		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
+		renders: make(chan struct{}, MaxRendering),
 		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
 		loads: map[*load]struct{}{}}
 	if s.now == nil {

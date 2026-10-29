@@ -188,6 +188,18 @@ a push while that record does not match the running configuration (`nix/valley-h
 | A stranger reaching the receiver    | The receiver refuses the request as `unauthenticated` before reading the request body, without taking a request slot. A connection flood can still delay uploads while `valley-web` keeps serving (see [The edge's receiver](#the-edges-receiver)). |
 | A stolen receiver token             | The holder can spend the receiver's capacity up to its caps. Serving a new export still requires a manifest signed by the export key (see [The edge's receiver](#the-edges-receiver)).                                                              |
 
+Rendered Markdown adds no active content to the edge's origin (**implemented**). `valley-web`
+renders a Markdown file with package `web/markdown`, which writes only its own fixed set of elements
+and attributes: headings, paragraphs, emphasis, code, quotes, lists, tables and links. It escapes
+every byte of text and every attribute value it takes from the file, and shows raw HTML as text. A
+link is written only for an `http` or `https` destination that names a host, a `mailto` destination,
+or a relative one resolved inside the source browser. A destination that holds a backslash anywhere
+is refused, whether the file writes it as a backslash, an escape or an entity. A browser may read a
+backslash as a slash, so the renderer cannot tell where such a destination's path or host starts. An
+image is a link, never an `img` element. No `style` attribute is written, so the
+Content-Security-Policy is unchanged but for the stylesheet's hash. The package's fuzz test holds
+its output to that set.
+
 ## Refs are read by their exact names
 
 Each program listed below reads a ref by its exact name (`implemented`). `git rev-parse`, and every

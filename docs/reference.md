@@ -3259,6 +3259,37 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     MiB and notes that the listing is partial. Below the listing, the page shows the directory's
     README: `README.md`, `README`, or `README.txt` in that order, or else the first file named
     `readme` in any case with any extension.
+  - A Markdown file, one whose name ends in `.md` or `.markdown` in any case, renders as a document,
+    and so does a directory's Markdown README. Each heading has an `id` made by GitHub's rule and a
+    self-link. A heading whose text gives an empty `id` by that rule, such as `# !!!`, has no `id`
+    and no self-link. A document with at least four headings at levels 2 to 4 starts with a
+    collapsible Contents list. A relative link goes to the target's page at the same commit, with
+    its fragment kept. The file page links to `?plain=1`, which shows the file as plain text, as
+    below, and links back to the rendered view. On any other file, `?plain=1` changes nothing.
+  - A link in a document is written only for an `http` or `https` destination that names a host
+    (`https://…`), a `mailto` destination, or a relative one. Any other destination renders as the
+    link's text, such as `https://`, which names no host. So does any destination that holds a
+    backslash, such as `http\x/../y`, whether the file writes the backslash as itself, as the escape
+    `\\` or as the entity `&#92;`.
+  - A rendered document is at most 2 MiB (`server.MaxShown`). A document that would be larger shows
+    the blocks that fit, and the page notes that only its start is shown. In a document, block
+    quotes and list items nest at most 32 deep (`markdown.MaxDepth`), and so do emphasis,
+    strikethrough, links, images and autolinks within a block. Deeper, a quote's or an item's marker
+    and emphasis's delimiters render as text, and a link, an image or an autolink renders as its
+    text alone. A table has at most 64 columns (`markdown.MaxTableColumns`), and a document's tables
+    hold at most 100,000 cells between them (`markdown.MaxTableCells`). Rows past that limit render
+    as a paragraph.
+  - A document holds at most 65,536 blocks (`markdown.MaxBlocks`), counting quotes, lists and list
+    items. The line that would pass that limit, and the input after it, render as one block of
+    preformatted text. A document's inline content takes at most 262,144 nodes
+    (`markdown.MaxInlineNodes`): one for each run of text, code span, line break, run of `*`, `_` or
+    `~`, bracket and autolink, and one for each emphasis or link they make. The block that passes
+    that limit, and every block after it, renders as its escaped text alone. Within a block, at most
+    4,096 `[` or `![` wait for their `]`, and a `[` past that is text. A link label holds at most
+    999 characters. A render looks up at most 4 MiB of labels, and a reference past that renders as
+    text. One render allocates less than 128 MiB.
+  - A blob route whose path names a directory redirects (302) to the tree route at the same commit
+    and path. A tree route whose path names a file redirects (302) to the blob route.
   - A file page shows the file as escaped text with numbered lines, each with an anchor `#L<n>`. It
     shows at most 10,000 lines (`server.MaxLines`). It stops at the line that would take the escaped
     text and row markup past 2 MiB (`server.MaxShown`). When the file is longer, the page says "The
@@ -3356,6 +3387,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   - A source request releases its `git` slot before rendering HTML, and every request releases its
     generation before writing the response to the client (see
     [Slow readers](./architecture.md#slow-readers)).
+  - At most 2 source requests render Markdown at once (`server.MaxRendering`). A request waits for a
+    rendering slot while it still holds its `git` slot, within the same 5 seconds, and releases the
+    `git` slot once it has one. Rendering stops when the request's 15 seconds run out.
   - Any request whose generation the server has not read yet must wait for the read before opening a
     generation. At most 64 requests wait for export reads at once (`server.MaxLoadWaiting`). A
     request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.

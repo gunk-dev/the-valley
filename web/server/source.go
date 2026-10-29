@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"maps"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"the-valley/web/export"
+	"the-valley/web/markdown"
 )
 
 // treeURL is the directory at path in commit, under the base of its
@@ -383,6 +385,117 @@ type readme struct {
 	Notice string
 	// Partial is set when the README is longer than a page shows.
 	Partial bool
+	// Doc is the README rendered, when it is Markdown.
+	Doc *document
+}
+
+// document is a Markdown file rendered, and the contents list of a long
+// one.
+type document struct {
+	HTML     template.HTML
+	Contents []contentsEntry
+}
+
+type contentsEntry struct {
+	Text  string
+	URL   string
+	Level int
+}
+
+// isMarkdown reports whether a file's name says it is Markdown: it ends
+// in .md or .markdown, in any case.
+func isMarkdown(name string) bool {
+	n := strings.ToLower(name)
+	return strings.HasSuffix(n, ".md") || strings.HasSuffix(n, ".markdown")
+}
+
+// markdown renders text, a file of dir in commit, with its relative links
+// resolved within the project's source at that commit. A document with
+// at least four headings at levels 2 to 4 gets a contents list of them.
+// The rendered document is at most MaxShown bytes, the most a page spends
+// on a file's text, and cut is set when it holds only the start of text.
+//
+// It waits for a rendering slot while it holds its git slot, and gives
+// the git slot back once it has one: rendering runs no git. It renders
+// under the request's context.
+func (q *request) markdown(text, project, commit string, dir []string) (d *document, cut bool, err error) {
+	wait := q.ctx
+	if q.git != nil {
+		wait = q.git
+	}
+	select {
+	case q.s.renders <- struct{}{}:
+	case <-wait.Done():
+		return nil, false, fmt.Errorf("waiting to render Markdown: %w", wait.Err())
+	}
+	defer func() { <-q.s.renders }()
+	q.giveSlot()
+	doc, err := markdown.Render(q.ctx, []byte(text), markdown.Options{
+		Resolve: resolver(q.idx.bases[project], commit, dir), MaxOutput: MaxShown})
+	if err != nil {
+		return nil, false, fmt.Errorf("rendering Markdown: %w", err)
+	}
+	d = &document{HTML: doc.HTML}
+	for _, h := range doc.Headings {
+		if h.Level >= 2 && h.Level <= 4 && h.ID != "" {
+			d.Contents = append(d.Contents, contentsEntry{oneLine(h.Text), "#" + (&url.URL{Fragment: h.ID}).EscapedFragment(), h.Level})
+		}
+	}
+	if len(d.Contents) < 4 {
+		d.Contents = nil
+	}
+	return d, doc.Truncated, nil
+}
+
+// resolver resolves a relative link of a document in dir, in commit, to
+// the page of its target at the same commit. A path that starts with /
+// starts at the repository's root. A fragment is kept, and a link that is
+// a fragment alone stays one. A path that climbs above the root, or that
+// is no path a source route takes, is refused. The resolver runs no git:
+// a link to a directory goes to the blob route, which redirects it to
+// the tree route, and one that ends in / goes to the tree route.
+func resolver(base, commit string, dir []string) func(string) (string, bool) {
+	return func(dest string) (string, bool) {
+		rest, frag, hasFrag := strings.Cut(dest, "#")
+		if hasFrag {
+			f, err := url.PathUnescape(frag)
+			if err != nil {
+				return "", false
+			}
+			frag = "#" + (&url.URL{Fragment: f}).EscapedFragment()
+		}
+		rest, _, _ = strings.Cut(rest, "?")
+		if rest == "" {
+			return frag, hasFrag
+		}
+		path := slices.Clone(dir)
+		if strings.HasPrefix(rest, "/") {
+			path, rest = nil, rest[1:]
+		}
+		segs := strings.Split(rest, "/")
+		for i, seg := range segs {
+			seg, err := url.PathUnescape(seg)
+			switch {
+			case err != nil:
+				return "", false
+			case seg == "" && i == len(segs)-1, seg == ".":
+			case seg == "..":
+				if len(path) == 0 {
+					return "", false
+				}
+				path = path[:len(path)-1]
+			default:
+				path = append(path, seg)
+			}
+		}
+		if !validPath(path) {
+			return "", false
+		}
+		if len(path) == 0 || strings.HasSuffix(rest, "/") {
+			return treeURL(base, commit, path) + frag, true
+		}
+		return blobURL(base, commit, path) + frag, true
+	}
 }
 
 func (q *request) dir(ctx context.Context, p *export.Project, repo, commit string, path []string) error {
@@ -392,6 +505,10 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 		return nil
 	}
 	e, ok, err := resolve(ctx, repo, root, path)
+	if err == nil && ok && e.Type == "blob" && len(path) > 0 {
+		q.redirect(blobURL(q.idx.bases[p.Name], commit, path)) // a file, named as a directory
+		return nil
+	}
 	if err != nil || !ok || e.Type != "tree" {
 		q.missing(err)
 		return nil
@@ -456,6 +573,14 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 		at := append(append([]string{}, path...), rm.Name)
 		page.Readme = &readme{Name: oneLine(rm.Name), URL: blobURL(q.idx.bases[p.Name], commit, at),
 			Text: strings.Join(lines, "\n"), Notice: notice, Partial: partial}
+		if notice == "" && isMarkdown(rm.Name) {
+			doc, cut, err := q.markdown(page.Readme.Text, p.Name, commit, path)
+			if err != nil {
+				return err
+			}
+			page.Readme.Doc = doc
+			page.Readme.Partial = page.Readme.Partial || cut
+		}
 	}
 	title := p.Name + " at " + commit[:12]
 	if len(path) > 0 {
@@ -503,6 +628,11 @@ type filePage struct {
 	// page shows.
 	Partial string
 	Notice  string
+	// Doc is the file rendered, when it is Markdown and shown so. Plain
+	// and Rendered link the file's two views, when it has two.
+	Doc      *document
+	Plain    string
+	Rendered string
 }
 
 func (q *request) file(ctx context.Context, p *export.Project, repo, commit string, path []string) error {
@@ -512,6 +642,10 @@ func (q *request) file(ctx context.Context, p *export.Project, repo, commit stri
 		return nil
 	}
 	e, ok, err := resolve(ctx, repo, root, path)
+	if err == nil && ok && e.Type == "tree" {
+		q.redirect(treeURL(q.idx.bases[p.Name], commit, path)) // a directory, named as a file
+		return nil
+	}
 	if err != nil || !ok || e.Type != "blob" {
 		q.missing(err)
 		return nil
@@ -525,10 +659,31 @@ func (q *request) file(ctx context.Context, p *export.Project, repo, commit stri
 		Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path), Name: oneLine(path[len(path)-1]),
 		Size: size(e.Size), Notice: notice}
 	if notice == "" {
-		lines, total, partial := excerpt(text, rowCost)
-		page.Lines = lines
+		md := isMarkdown(path[len(path)-1])
+		plain := !md || q.r.URL.Query().Get("plain") == "1"
+		cost := rowCost
+		if !plain {
+			cost = 1
+		}
+		lines, total, partial := excerpt(text, cost)
 		if partial {
 			page.Partial = fmt.Sprintf("This file is longer than a page shows. The page stops at line %d of %d.", len(lines), total)
+		}
+		here := blobURL(q.idx.bases[p.Name], commit, path)
+		switch {
+		case plain && md:
+			page.Lines, page.Rendered = lines, here
+		case plain:
+			page.Lines = lines
+		default:
+			doc, cut, err := q.markdown(strings.Join(lines, "\n"), p.Name, commit, path[:len(path)-1])
+			if err != nil {
+				return err
+			}
+			page.Doc, page.Plain = doc, here+"?plain=1"
+			if cut {
+				page.Partial = "This file is longer than a page shows, and only its start is shown."
+			}
 		}
 	}
 	q.page(http.StatusOK, "blob", strings.Join(path, "/")+" · "+p.Name+" at "+commit[:12], page)

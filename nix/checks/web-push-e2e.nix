@@ -10,6 +10,9 @@
 #      projects to valley-web-receive, which makes the store's descriptor
 #      and its v2 payload directory, and valley-web serves them at their
 #      group URLs and redirects a short alias and a former name with 308.
+#      A project's Markdown README renders with an id on its heading and
+#      its relative link rewritten to the target's page at the same
+#      commit.
 #      The pages say when the policy was last checked, and a pass with
 #      nothing changed sends no content but a newly signed authorization,
 #      whose later check the pages show, while export.json keeps its

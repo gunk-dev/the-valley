@@ -45,7 +45,14 @@
   # with its bearer token, a real valley-web serves the activated export, a
   # pass with a wrong token fails as unauthenticated while the edge keeps
   # serving, and a pass after withdrawing anyone's grant removes the project
-  # from the edge. go vet runs after the tests.
+  # from the edge. The Markdown renderer: CommonMark and GFM examples for
+  # each construct it reads, hostile HTML, schemes and attribute values
+  # rendered inert, its fuzz target's seeds held to the fixed tag set,
+  # adversarial inputs of 1 MiB rendered within a time bound and an
+  # allocation ceiling, a document cut at its output bound into whole
+  # HTML, a done context stopping it, and the repository's README.md and
+  # docs/ rendered with every link between them naming a heading. go vet
+  # runs after the tests.
   web-unit = packages.web.unit;
 
   # Read access, which the publisher reads its consents through: both

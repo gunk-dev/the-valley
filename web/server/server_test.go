@@ -796,13 +796,13 @@ func TestSourceBrowser(t *testing.T) {
 	if docs < 0 || src < 0 || readme < 0 || readme < src || src < docs {
 		t.Errorf("the root does not list docs/ and src/ before README.md:\n%s", root)
 	}
-	if !strings.Contains(root, `<pre class="text"># app`) {
+	if !strings.Contains(root, `<h1 id="app">app <a class="anchor" href="#app">#</a></h1>`) {
 		t.Error("the root does not show its README")
 	}
 	if dir := h.page("/tools/app/source/tree/" + tip + "/docs/"); !strings.Contains(dir, ">guide.md<") {
 		t.Error("docs/ does not list guide.md")
 	}
-	file := h.page("/tools/app/source/blob/" + tip + "/docs/guide.md")
+	file := h.page("/tools/app/source/blob/" + tip + "/docs/guide.md?plain=1")
 	if !strings.Contains(file, `<tr id="L1"><td class="ln"><a href="#L1">1</a></td><td class="src"># Guide</td></tr>`) {
 		t.Errorf("the file is not shown line by line:\n%s", file)
 	}
@@ -823,8 +823,6 @@ func TestSourceBrowser(t *testing.T) {
 	}
 
 	for _, target := range []string{
-		"/tools/app/source/tree/" + tip + "/README.md/",
-		"/tools/app/source/blob/" + tip + "/docs",
 		"/tools/app/source/blob/" + tip + "/docs/guide.md/",
 		"/tools/app/source/blob/" + tip + "/docs/../README.md",
 		"/tools/app/source/blob/" + tip + "/docs%2Fguide.md",
@@ -1261,6 +1259,87 @@ func archiveEntries(t *testing.T, data []byte) map[string]string {
 		entries[e.hdr.Name] = strings.TrimSpace(e.content)
 	}
 	return entries
+}
+
+// Markdown files and READMEs render as documents: headings with anchors,
+// a contents list for a long one, and relative links kept inside the
+// source browser at the same commit. ?plain=1 shows the escaped text, and
+// a path that names the other kind of entry redirects to its route.
+// Hostile Markdown arrives inert. A document that renders larger than
+// MaxShown shows its start, with a notice.
+func TestMarkdownPages(t *testing.T) {
+	h := newHarness(t)
+	large := "# Large\n\n[a]: https://example.org/" + strings.Repeat("x", 4000) + "\n\n" + strings.Repeat("[a]\n\n", 600)
+	tip, bundle := h.commitMain("docs: a long document\n",
+		file{"100644", "large/README.md", large}, file{"100644", "docs/large.md", large},
+		file{"100644", "docs/long.md", "# Long\n\n## One\n\nSee [the guide](guide.md#guide), [the README](../README.md),\n" +
+			"[src](/src/), [docs](../docs), [here](#two), [above](../../x.md) and [js](javascript:alert(1)).\n\n" +
+			"## Two\n\n### Three\n\n## Four\n\n| a | b |\n|---|--:|\n| 1 | 2 |\n"},
+		file{"100644", "docs/hostile.MD", "<script>alert(1)</script>\n\n<svg onload=alert(2)><form action=x><input></form>\n\n" +
+			"[x](javascript:alert(3)) [y](data:text/html,z) <img src=x onerror=alert(4)>\n"},
+	)
+	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
+	base := "/tools/app/source/"
+	long := h.page(base + "blob/" + tip + "/docs/long.md")
+	for _, want := range []string{
+		`<h2 id="one">One <a class="anchor" href="#one">#</a></h2>`,
+		`<details class="contents"><summary>Contents</summary><ul><li class="level2"><a href="#one">One</a></li>`,
+		`<li class="level3"><a href="#three">Three</a></li>`,
+		`<a href="` + base + `blob/` + tip + `/docs/guide.md#guide">the guide</a>`,
+		`<a href="` + base + `blob/` + tip + `/README.md">the README</a>`,
+		`<a href="` + base + `tree/` + tip + `/src/">src</a>`,
+		`<a href="` + base + `blob/` + tip + `/docs">docs</a>`,
+		`<a href="#two">here</a>`, ` above and js.`,
+		`<th class="right">b</th>`,
+		`<a href="` + base + `blob/` + tip + `/docs/long.md?plain=1">Plain text</a>`,
+	} {
+		if !strings.Contains(long, want) {
+			t.Errorf("the rendered document lacks %s:\n%s", want, long)
+		}
+	}
+	plain := h.page(base + "blob/" + tip + "/docs/long.md?plain=1")
+	if !strings.Contains(plain, `<tr id="L1"><td class="ln"><a href="#L1">1</a></td><td class="src"># Long</td></tr>`) ||
+		!strings.Contains(plain, `<a href="`+base+`blob/`+tip+`/docs/long.md">Rendered</a>`) || strings.Contains(plain, "<h2") {
+		t.Errorf("?plain=1 does not show the text line by line:\n%s", plain)
+	}
+	tree := h.page(base + "tree/" + tip + "/")
+	if !strings.Contains(tree, `<h2 id="README">`) || !strings.Contains(tree, `<div class="markdown"><h1 id="app">`) {
+		t.Errorf("the root does not render its README:\n%s", tree)
+	}
+	for from, to := range map[string]string{
+		base + "blob/" + tip + "/docs":         base + "tree/" + tip + "/docs/",
+		base + "tree/" + tip + "/README.md/":   base + "blob/" + tip + "/README.md",
+		base + "tree/" + tip + "/docs/long.md": base + "blob/" + tip + "/docs/long.md",
+	} {
+		if w := h.get(from); w.Code != http.StatusFound || w.Header().Get("Location") != to {
+			t.Errorf("GET %s answered %d to %q", from, w.Code, w.Header().Get("Location"))
+		}
+	}
+	at := base + "blob/" + tip + "/docs/hostile.MD"
+	page := h.page(at)
+	for _, active := range []string{"<script", "<svg", "<form", "<input", "<img", "javascript:", "data:", "style="} {
+		if strings.Contains(page, active) {
+			t.Errorf("GET %s holds %q", at, active)
+		}
+	}
+	for _, want := range []string{"<p>&lt;script&gt;alert(1)&lt;/script&gt;</p>", "&lt;svg onload=alert(2)&gt;", "<p>x y &lt;img"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("GET %s does not show %q:\n%s", at, want, page)
+		}
+	}
+	if w := h.get(at); w.Header().Get("Content-Security-Policy") != csp {
+		t.Errorf("a rendered page answered with policy %q", w.Header().Get("Content-Security-Policy"))
+	}
+	for target, notice := range map[string]string{
+		base + "tree/" + tip + "/large/":        "This README is longer than a page shows, and only its start is shown.",
+		base + "blob/" + tip + "/docs/large.md": "This file is longer than a page shows, and only its start is shown.",
+	} {
+		page := h.page(target)
+		if !strings.Contains(page, notice) || !strings.Contains(page, `<h1 id="large">`) ||
+			strings.Count(page, "example.org/xxx") >= 600 || len(page) > MaxShown+64<<10 {
+			t.Errorf("GET %s does not show the start of a large document with its notice:\n%.2000s", target, page)
+		}
+	}
 }
 
 // file is one file a test commits: its mode, path and content. The

@@ -136,9 +136,9 @@ anyone: grants: read: {boundary: "web", projects: $1}
 EOF
 }
 
-# 1. The instance and its two projects, each with its own README, and both
-# readable by anyone, in the group tools. app has the short alias a, and
-# site the former name homepage.
+# 1. The instance and its two projects, each with its own Markdown README,
+# which links its read policy, and both readable by anyone, in the group
+# tools. app has the short alias a, and site the former name homepage.
 for name in valley app site; do
   git init --quiet --bare "srv/$name.git"
   git init --quiet "work/$name"
@@ -155,7 +155,7 @@ git -C srv/valley.git update-ref refs/the-valley/projects "$projects"
 for name in app site; do
   mkdir -p "work/$name/policy/read"
   echo "$TMPDIR/srv/valley.git" > "work/$name/policy/valley"
-  printf '# %s\n\n%s-readme-text\n' "$name" "$name" > "work/$name/README.md"
+  printf '# %s\n\n%s-readme-text, under [its read policy](policy/read/read.cue).\n' "$name" "$name" > "work/$name/README.md"
   read_policy "$name" 'anyone: true, operator: true, alice: true' > "work/$name/policy/read/read.cue"
   commit "$name" "the first commit"
 done
@@ -197,6 +197,12 @@ test -f edge/store && test -d edge/v2/generations && test -f edge/v2/authorizati
   fail "the receiver did not make the store's descriptor, generations and authorization"
 serve
 serves /tools/app app-readme-text
+# The README renders as Markdown: its heading has an id, and its relative
+# link goes to the file's page at the same commit.
+app_tip=$(git -C srv/app.git rev-parse main)
+serves "/tools/app/source/tree/$app_tip/" '<h1 id="app">app <a class="anchor" href="#app">#</a></h1>'
+grep -qF "<a href=\"/tools/app/source/blob/$app_tip/policy/read/read.cue\">its read policy</a>" "$TMPDIR/body" ||
+  fail "app's README does not link its read policy at $app_tip: $(grep -F readme-text "$TMPDIR/body")"
 serves /tools/site site-readme-text
 serves "/tools/app/knots/$knot" "Open the edge"
 [ "$(get "/a/knots/$knot?x=1")" = "308 /tools/app/knots/$knot?x=1" ] ||

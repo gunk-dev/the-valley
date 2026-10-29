@@ -52,6 +52,9 @@ rec {
   # check (nix/checks/), so its tests run in that check and in no package
   # build.
   #
+  # A file the tests read is in unit's source though it is prose, so a test
+  # may read the repository's documents.
+  #
   # excluded names files of dir that neither the build nor the tests read:
   # files only a flake check reads, or the part of a shared module that
   # another package builds and tests.
@@ -74,13 +77,10 @@ rec {
       build = lib.fileset.difference (lib.fileset.unions ([ dir ] ++ modules)) (
         lib.fileset.unions ([ unread goTests ] ++ excluded ++ testReads)
       );
-      withTests = lib.fileset.difference (lib.fileset.unions (
-        [
-          build
-          (lib.fileset.intersection goTests dir)
-        ]
-        ++ testReads
-      )) (lib.fileset.unions ([ unread ] ++ excluded));
+      withTests = lib.fileset.union (lib.fileset.difference (lib.fileset.unions [
+        build
+        (lib.fileset.intersection goTests dir)
+      ]) (lib.fileset.unions ([ unread ] ++ excluded))) (lib.fileset.unions testReads);
     in
     pkgs.buildGoModule (
       finalAttrs:
@@ -449,7 +449,8 @@ rec {
   # ssh-keygen makes, which the CLI verifies with attest. Each test's host
   # declaration is exported by cue under schema/valley.cue, as the module
   # exports the host's. go vet runs after them. The fixture's expected
-  # export (export/exporttest/testdata/) is read by the tests alone. Go,
+  # export (export/exporttest/testdata/) is read by the tests alone, and so
+  # are README.md and docs/, whose links package markdown's tests resolve. Go,
   # standard library only, so no module is fetched.
   web = goModule {
     pname = "valley-web-module";
@@ -469,6 +470,8 @@ rec {
     tests = {
       reads = [
         ../web/export/exporttest/testdata
+        ../README.md
+        ../docs
         ../bin/valley
         ../schema/read.cue
         ../schema/identity.cue

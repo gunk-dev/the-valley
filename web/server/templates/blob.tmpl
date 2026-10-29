@@ -2,14 +2,18 @@
 <h1>{{.Name}}</h1>
 {{template "source-head" .}}
 <div class="card">
-  <div class="muted">{{.Size}}</div>
+  <div class="muted">{{.Size}}{{with .Plain}} · <a href="{{.}}">Plain text</a>{{end}}{{with .Rendered}} · <a href="{{.}}">Rendered</a>{{end}}</div>
   {{- if .Notice}}
   <p class="notice">{{.Notice}}</p>
   {{- else}}
   {{- with .Partial}}
   <p class="notice">{{.}}</p>
   {{- end}}
+  {{- with .Doc}}
+  {{template "document" .}}
+  {{- else}}
   <div class="code"><table class="code"><tbody>{{range $i, $line := .Lines}}<tr id="L{{inc $i}}"><td class="ln"><a href="#L{{inc $i}}">{{inc $i}}</a></td><td class="src">{{$line}}</td></tr>{{end}}</tbody></table></div>
+  {{- end}}
   {{- end}}
 </div>
 {{end}}

@@ -18,9 +18,9 @@
   {{- end}}
 </div>
 {{- with .Readme}}
-<section class="panel" aria-labelledby="readme-h">
-  <h2 id="readme-h"><a href="{{.URL}}">{{.Name}}</a></h2>
-  <div class="card">{{if .Notice}}<p class="notice">{{.Notice}}</p>{{else}}{{if .Partial}}<p class="notice">This README is longer than a page shows, and only its start is shown.</p>{{end}}<pre class="text">{{.Text}}</pre>{{end}}</div>
+<section class="panel" aria-labelledby="README">
+  <h2 id="README"><a href="{{.URL}}">{{.Name}}</a></h2>
+  <div class="card">{{if .Notice}}<p class="notice">{{.Notice}}</p>{{else}}{{if .Partial}}<p class="notice">This README is longer than a page shows, and only its start is shown.</p>{{end}}{{with .Doc}}{{template "document" .}}{{else}}<pre class="text">{{.Text}}</pre>{{end}}{{end}}</div>
 </section>
 {{- end}}
 {{end}}

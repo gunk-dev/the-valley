@@ -3306,8 +3306,12 @@ authorization (`implemented`). The edge does not redeem them yet (`not built`).
 serves the plan page, each knot page, and a source browser for `main` under the project's group,
 including a gzipped tar archive for each reachable commit. It builds every view through a single
 project-view filter parameterized by the reader, passing `anyone` for every request. `valley-web`
-runs alongside the receiver as a separate process (see [The receiver](#the-receiver)). Its flags,
-routes, and limits are in [Web server (`valley-web`)](./reference.md#web-server-valley-web).
+runs alongside the receiver as a separate process (see [The receiver](#the-receiver)). It renders
+Markdown files and READMEs as documents with its own renderer, package `web/markdown`, which uses
+the standard library alone. The renderer writes only a fixed set of elements and attributes, and
+shows raw HTML as text. A relative link in a document is resolved to the target's page at the same
+commit with no git call. Its flags, routes, and limits are in
+[Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Reading the state directory
 
@@ -3479,6 +3483,35 @@ a source request may hold its `git` slot for at most 5 seconds from when it take
 read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
 `git`, releases the slot, and answers `503`. When `git` finishes in time, the request releases its
 `git` slot before rendering HTML, so page rendering holds no `git` slot (`web/server/render.go`).
+
+Rendering Markdown takes memory that grows with the file, not with the page: the renderer parses the
+whole document before it writes anything. The renderer caps what it builds (`web/markdown`). A
+document holds at most 65,536 blocks (`markdown.MaxBlocks`), counting quotes, lists and list items.
+Its inline content takes at most 262,144 nodes (`markdown.MaxInlineNodes`). Within a block, at most
+4,096 brackets wait for their `]`. Past each cap, the rest of the document renders as escaped text.
+To match a reference such as `[label]`, the renderer copies the label. A render copies at most 4 MiB
+of labels, and past that a reference renders as text. So one render of a file of up to 1 MiB
+allocates less than 128 MiB in all when `MaxOutput` is set, as the server always sets it
+(**implemented**). `MaxOutput` zero means unlimited output.
+
+Checked by `web-unit` (`TestAllocation`). It renders each input of the renderer's adversarial suite
+at 1 MiB, measures the bytes allocated and the heap's peak with `runtime.ReadMemStats`, and fails if
+either passes 128 MiB. Some inputs nest emphasis or links, or repeat a reference, and are built to
+stay under the inline cap. Each of them is measured a second time, padded to 1 MiB with the content
+that allocates most. The most any input allocates is 69 MiB: a paragraph past the inline cap
+followed by empty headings past the block cap. `TestRepositoryDocs` checks that each of the
+repository's documents, the largest among them `docs/reference.md`, renders whole and takes less
+than a quarter of each cap.
+
+At most 2 source requests render Markdown at once (`server.MaxRendering`). Two renders allocate at
+most 256 MiB, and rendered responses hold at most 64 MiB (`server.MaxBuffered`; see
+[Slow readers](#slow-readers)). Together that is 320 MiB, well under the 1 GiB `MemoryMax` that
+`valley-web` has by default (`webMemoryMax`, a **deployment choice**). The server's other memory,
+such as the exports it has read and the `git` processes it runs, is separate and not counted in
+these 320 MiB. A request waits for a rendering slot while it still holds its `git` slot, and
+releases the `git` slot once it has one (`web/server/source.go`). The requests that hold a file's
+text while waiting to render are therefore among the 8 that hold a `git` slot. The renderer stops
+once its output would pass 2 MiB, or once the request's context ends (`web/markdown`).
 
 Each source route also bounds the work it asks `git` to do (`web/server/source.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web) for the limits). When resolving a

@@ -38,3 +38,8 @@
   </nav>
 </header>
 {{end}}
+
+{{define "document"}}
+{{- with .Contents}}<details class="contents"><summary>Contents</summary><ul>{{range .}}<li class="level{{.Level}}"><a href="{{.URL}}">{{.Text}}</a></li>{{end}}</ul></details>{{end}}
+<div class="markdown">{{.HTML}}</div>
+{{- end}}

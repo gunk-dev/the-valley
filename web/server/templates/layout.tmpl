@@ -28,7 +28,7 @@
 {{define "source-head"}}
 <header class="knot-head">
   <div class="meta">
-    <span class="eyebrow">Source</span><span class="mono">{{.Short}}</span>
+    <span class="eyebrow">source</span><span class="mono">{{.Short}}</span>
     {{- if .AtTip}}<span class="chip">main's published tip</span>{{else}}<a href="{{.TipURL}}">main's published tip</a>{{end}}
     <a href="{{.LogURL}}">history</a>
     {{- block "source-download" .}}{{end}}

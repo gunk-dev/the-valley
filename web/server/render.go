@@ -51,8 +51,8 @@ func parsePages(names ...string) map[string]*template.Template {
 }
 
 // layout is what every page shares: its title, the inline stylesheet, the
-// script on the plan page alone, the links to the plan and to each
-// project's source, and the export's age.
+// script on the knots page alone, the links to the knots page and to
+// each project's source, and the export's age.
 type layout struct {
 	Title   string
 	Style   template.CSS
@@ -89,7 +89,7 @@ func (q *request) page(status int, name, title string, content any) {
 		data.Script = template.JS(planJS)
 	}
 	if q.e != nil {
-		data.Nav = append(data.Nav, link{"Plan", "/"})
+		data.Nav = append(data.Nav, link{"knots", knotsURL})
 		for _, name := range q.idx.public {
 			p := q.idx.projects[name]
 			data.Nav = append(data.Nav, link{name + " source", treeURL(q.idx.bases[name], p.SourceTip, nil)})
@@ -148,7 +148,7 @@ func (q *request) drop() {
 // The responses made once: three pages, and the text that answers a page
 // that failed to render. The not-found page is the one every 404 answers
 // with. It shows the box of text the operator chose, whose last line
-// links to the plan, and it names no site, no project and nothing of the
+// links to /, and it names no site, no project and nothing of the
 // request.
 var (
 	busyPage = staticPage("error", "Busy", errorPage{

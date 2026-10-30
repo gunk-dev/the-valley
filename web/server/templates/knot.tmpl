@@ -1,5 +1,5 @@
 {{define "content"}}
-<nav class="trail" aria-label="Where this knot sits"><a href="/">Plan</a>{{if .TrailCut}}<span>›</span><span>…</span>{{end}}{{range .Trail}}<span>›</span><a href="{{.URL}}">{{.Title}}</a>{{end}}</nav>
+<nav class="trail" aria-label="Where this knot sits"><a href="/-/knots">knots</a>{{if .TrailCut}}<span>›</span><span>…</span>{{end}}{{range .Trail}}<span>›</span><a href="{{.URL}}">{{.Title}}</a>{{end}}</nav>
 <header class="knot-head">
   <div class="meta">{{template "glyph" .Knot.State}}<span class="mono">{{.Knot.Project}}:{{.Knot.ID}}</span><span class="chip quiet">{{.Type}}</span><span class="chip quiet">{{.Status}}</span></div>
   <h1>{{.Knot.Title}}</h1>

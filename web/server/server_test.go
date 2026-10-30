@@ -234,7 +234,7 @@ func section(t *testing.T, page, from, to string) string {
 // shows how old the export is.
 func TestPlanPage(t *testing.T) {
 	h := newHarness(t)
-	page := h.page("/")
+	page := h.page("/-/knots")
 
 	at := -1
 	for _, heading := range []string{">Waiting on you<", ">In flight<", ">Paths<", ">Milestones<"} {
@@ -290,7 +290,7 @@ func TestPlanPage(t *testing.T) {
 	}
 
 	h.now = exporttest.Collected.Add(6 * time.Minute)
-	page = h.page("/")
+	page = h.page("/-/knots")
 	if !strings.Contains(page, `Collected 2026-10-25 12:00 UTC. Policy last checked 2026-10-25 12:00 UTC, 6 minutes ago <span class="chip stale">stale</span>`) {
 		t.Error("a policy check six minutes old is not marked stale")
 	}
@@ -329,7 +329,7 @@ func TestWaitsOnChip(t *testing.T) {
 					}
 				}
 			})
-			page := h.page("/")
+			page := h.page("/-/knots")
 			if !strings.Contains(page, chip(c.want)) {
 				t.Errorf("the plan page does not show %q:\n%s", chip(c.want), section(t, page, `id="ms-h"`, "</body>"))
 			}
@@ -501,7 +501,7 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 			tip := h.tip()
 			base := "/" + name + "/" + name
 			tree := base + "/source/tree/" + tip + "/"
-			if plan := h.page("/"); !strings.Contains(plan, `href="`+base+`/knots/oc-a000002"`) {
+			if plan := h.page("/-/knots"); !strings.Contains(plan, `href="`+base+`/knots/oc-a000002"`) {
 				t.Errorf("the plan page does not link %s's knots", name)
 			}
 			for _, target := range []string{
@@ -528,6 +528,78 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// / lands on source: it redirects to the tree, at its published tip, of
+// the first project the reader may see, in the export's order, and to the
+// knots page when the reader may see none. The knots page is /-/knots,
+// the one page under /-/, and its title, its heading and its link in the
+// navigation say knots, as the knot page's trail and the error page's
+// link do. HEAD answers each as GET does.
+func TestLandingAndTheKnotsPage(t *testing.T) {
+	h := newHarness(t)
+	h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{"site": h.f.Bundles["app"]}, func(e *export.Export) {
+		site := e.Projects[0]
+		site.Name, site.Group, site.WebName, site.FormerNames, site.Aliases = "site", "web", "site", nil, nil
+		e.Projects = append(e.Projects, site)
+		e.Groups = append(e.Groups, export.Group{ID: "web", Name: "docs"})
+	})
+	tip := h.tip()
+	lands := func(want string) {
+		t.Helper()
+		for _, method := range []string{"GET", "HEAD"} {
+			if w := h.do(method, "/"); w.Code != http.StatusFound || w.Header().Get("Location") != want {
+				t.Errorf("%s / answered %d to %q, not a redirect to %s", method, w.Code, w.Header().Get("Location"), want)
+			}
+		}
+	}
+	lands("/tools/app/source/tree/" + tip + "/")
+
+	w := h.get("/-/knots")
+	page := w.Body.String()
+	for _, want := range []string{
+		"<title>knots</title>", "<h1>knots</h1>",
+		`<nav class="site" aria-label="Pages"><a href="/-/knots">knots</a><a href="/tools/app/source/tree/` + tip + `/">app source</a><a href="/docs/site/source/tree/` + tip + `/">site source</a>`,
+	} {
+		if w.Code != http.StatusOK || !strings.Contains(page, want) {
+			t.Errorf("/-/knots answered %d without %q", w.Code, want)
+		}
+	}
+	if head := h.do("HEAD", "/-/knots"); head.Code != http.StatusOK || fmt.Sprint(head.Header()) != fmt.Sprint(w.Header()) {
+		t.Errorf("HEAD /-/knots answered %d with the headers\n%v\nnot\n%v", head.Code, head.Header(), w.Header())
+	}
+	if page := h.page("/tools/app/knots/oc-a000002"); !strings.Contains(page, `<nav class="trail" aria-label="Where this knot sits"><a href="/-/knots">knots</a>`) {
+		t.Error("the knot page's trail does not start at the knots page")
+	}
+	if page := h.page("/tools/app/source/tree/" + tip + "/"); !strings.Contains(page, `<span class="eyebrow">source</span>`) {
+		t.Error("the source page's eyebrow does not read source")
+	}
+	if !bytes.Contains(busyPage, []byte(`<p><a href="/-/knots">knots</a></p>`)) {
+		t.Error("the error page does not link the knots page")
+	}
+	for _, target := range []string{"/-", "/-/", "/-/knots/", "/-/knots/oc-a000002", "/-/Knots", "/-/plan", "/-/knots/x"} {
+		for _, method := range []string{"GET", "HEAD"} {
+			if w := h.do(method, target); w.Code != http.StatusNotFound {
+				t.Errorf("%s %s answered %d, not 404", method, target, w.Code)
+			}
+		}
+	}
+
+	a, _, err := h.store.Authorization()
+	if err != nil {
+		t.Fatal(err)
+	}
+	only := exporttest.Authorization(a.Sequence + 1)
+	only.Projects = []export.AuthorizedProject{{Name: "site", Identity: exporttest.Identities["app"], Readers: []string{export.Anyone}}}
+	h.authorize(only)
+	lands("/docs/site/source/tree/" + tip + "/")
+
+	h.authorize(exporttest.Authorization(a.Sequence + 2))
+	lands("/-/knots")
+	empty := h.page("/-/knots")
+	if !strings.Contains(empty, "<h1>knots</h1>") || strings.Contains(empty, " source</a>") || strings.Contains(empty, "/tools/app") {
+		t.Errorf("with no project to see, the knots page is not its empty state:\n%s", empty)
 	}
 }
 
@@ -609,7 +681,7 @@ func TestTwoGroupsEachHoldAnApp(t *testing.T) {
 		t.Errorf("/docs/app is not site:\n%s", page)
 	}
 	h.page("/docs/app/source/tree/" + tip + "/")
-	plan := h.page("/")
+	plan := h.page("/-/knots")
 	for _, link := range []string{`href="/tools/app/knots/oc-a000002"`, `href="/docs/app/knots/oc-a000002"`} {
 		if !strings.Contains(plan, link) {
 			t.Errorf("the plan page does not hold %s", link)
@@ -1916,7 +1988,7 @@ func TestGitSlotBoundCoversTheLoad(t *testing.T) {
 	plan := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		w := httptest.NewRecorder()
-		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/-/knots", nil))
 		plan <- w
 	}()
 	eventually(t, "the plan waits for the export to be read", func() bool { return len(h.srv.loaders) == 1 })
@@ -1953,7 +2025,7 @@ func TestGitSlotBoundCoversTheLoad(t *testing.T) {
 // request is served, and the first is served in full once it renders.
 func TestRenderingHoldsNoGitSlot(t *testing.T) {
 	h := newHarness(t)
-	h.page("/")
+	h.page("/-/knots")
 	h.srv.gitTime = 300 * time.Millisecond
 	rendering, hold := make(chan struct{}), make(chan struct{})
 	var first atomic.Bool
@@ -2115,7 +2187,7 @@ func TestDeepPlan(t *testing.T) {
 		}
 	})
 
-	page := h.page("/")
+	page := h.page("/-/knots")
 	if want := fmt.Sprintf("%d of %d done", 0, len(chain)-1+3); !strings.Contains(page, want) {
 		t.Errorf("the chain's milestone does not count every knot under it as %q", want)
 	}
@@ -2147,7 +2219,7 @@ func TestDeepPlan(t *testing.T) {
 	h.srv.mu.Lock()
 	plan := h.srv.cached.idx.plan
 	h.srv.mu.Unlock()
-	h.page("/")
+	h.page("/-/knots")
 	h.srv.mu.Lock()
 	again := h.srv.cached.idx.plan
 	h.srv.mu.Unlock()
@@ -2173,6 +2245,7 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 	h := newHarness(t)
 	for _, c := range []struct{ method, target string }{
 		{"GET", "/"},
+		{"GET", "/-/knots"},
 		{"GET", "/tools/app/knots/oc-a000002"},
 		{"GET", "/tools/app/source/"},
 		{"GET", "/tools/app/source/tree/" + h.tip() + "/"},
@@ -2180,6 +2253,7 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 		{"GET", "/no/such/page"},
 		{"POST", "/"},
 		{"HEAD", "/"},
+		{"HEAD", "/-/knots"},
 	} {
 		w := h.do(c.method, c.target)
 		got := w.Header().Get("Content-Security-Policy")
@@ -2198,7 +2272,7 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 		}
 	}
 
-	page := h.page("/")
+	page := h.page("/-/knots")
 	inline := func(tag string) string {
 		t.Helper()
 		m := regexp.MustCompile(`(?s)<`+tag+`>(.*?)</`+tag+`>`).FindAllStringSubmatch(page, -1)
@@ -2418,7 +2492,7 @@ func TestSourceAdmission(t *testing.T) {
 	if w := h.get("/app/source/tree/" + h.tip() + "/"); w.Code != http.StatusPermanentRedirect {
 		t.Errorf("a project's short alias answered %d while the server is saturated", w.Code)
 	}
-	h.page("/") // a page that runs no git is served still
+	h.page("/-/knots") // a page that runs no git is served still
 
 	tip, bundle := h.commitMain("app: a commit while the server is saturated\n", file{"100644", "saturated.txt", "saturated\n"})
 	h.publishMain(exporttest.SignedAt.Add(time.Minute), tip, bundle)
@@ -2630,7 +2704,7 @@ func TestPageTooLarge(t *testing.T) {
 	h.page(at + "docs/")
 	h.tooLarge("/tools/app/source/log/" + tip)
 	h.page("/tools/app/source/log/" + git(t, h.f.Repos["app"], nil, "rev-parse", tip+"~8"))
-	h.tooLarge("/")
+	h.tooLarge("/-/knots")
 
 	if len(logged) != 5 {
 		t.Errorf("%d failures were logged for 5 pages too large: %q", len(logged), logged)
@@ -2828,10 +2902,10 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	}
 
 	first := h.active()
-	firstServed := serve(httptest.NewRequest("GET", "/", nil))
+	firstServed := serve(httptest.NewRequest("GET", "/-/knots", nil))
 	eventually(t, "the first generation is read", func() bool { return loaded(first) == 1 })
 	second := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
-	secondServed := serve(httptest.NewRequest("GET", "/", nil))
+	secondServed := serve(httptest.NewRequest("GET", "/-/knots", nil))
 	eventually(t, "both loader slots are taken", func() bool { return loaded(second) == 1 })
 
 	// A request that runs no git runs out of time waiting, and answers
@@ -2853,7 +2927,7 @@ func TestExportLoadWaitsEnd(t *testing.T) {
 	fourth := h.publish(exporttest.SignedAt.Add(3*time.Minute), nil, renamed("Readers browse the fourth plan"))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	gone := serve(httptest.NewRequest("GET", "/", nil).WithContext(ctx))
+	gone := serve(httptest.NewRequest("GET", "/-/knots", nil).WithContext(ctx))
 	eventually(t, "a request waits for the fourth generation", func() bool { return len(h.srv.loadWaiting) == 3 })
 	cancel()
 	select {
@@ -3027,7 +3101,7 @@ func TestLoadFlood(t *testing.T) {
 		for range n {
 			go func() {
 				w := httptest.NewRecorder()
-				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+				h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/-/knots", nil))
 				served <- w
 			}()
 		}
@@ -3084,12 +3158,12 @@ func TestLoadFlood(t *testing.T) {
 // answers 503, and the server logs it.
 func TestRenderingIsWithinTheDeadline(t *testing.T) {
 	h := newHarness(t)
-	h.page("/")
+	h.page("/-/knots")
 	h.srv.timeout = 50 * time.Millisecond
 	var logged []string
 	h.srv.log = func(err error) { logged = append(logged, err.Error()) }
 	h.srv.opened = func(export.Generation) { time.Sleep(100 * time.Millisecond) }
-	if w := h.get("/"); w.Code != http.StatusServiceUnavailable || !bytes.Equal(w.Body.Bytes(), busyPage) {
+	if w := h.get("/-/knots"); w.Code != http.StatusServiceUnavailable || !bytes.Equal(w.Body.Bytes(), busyPage) {
 		t.Errorf("a request that ran out of time before it rendered answered %d", w.Code)
 	}
 	if len(logged) != 1 || !strings.Contains(logged[0], "rendering plan: context deadline exceeded") {
@@ -3289,7 +3363,7 @@ func TestAuthorizationIsReadOnEveryRequest(t *testing.T) {
 			t.Errorf("after the withdrawal GET %s answered %d, want 404", path, w.Code)
 		}
 	}
-	if page := h.page("/"); strings.Contains(page, "/tools/app") {
+	if page := h.page("/-/knots"); strings.Contains(page, "/tools/app") {
 		t.Error("after the withdrawal the plan page links app")
 	}
 	h.authorize(exporttest.Authorization(a.Sequence+2, "app"))

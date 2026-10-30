@@ -252,14 +252,14 @@ func rank(state string) int {
 	return len(stateRank)
 }
 
-// plan serves the plan page: the generation's structure, and what is in
-// flight as of the request.
+// plan serves the knots page, /-/knots: the generation's structure, and
+// what is in flight as of the request.
 func (q *request) plan() {
 	p := *q.idx.plan
 	for _, name := range q.idx.public {
 		p.InFlight = append(p.InFlight, q.inFlight(q.idx.projects[name])...)
 	}
-	q.page(http.StatusOK, "plan", "Plan", p)
+	q.page(http.StatusOK, "plan", "knots", p)
 }
 
 // planPage is the plan page's structure, without what is in flight.

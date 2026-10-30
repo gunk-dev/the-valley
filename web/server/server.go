@@ -1,6 +1,6 @@
 // Package server is the web UI's read side. It serves the active export
 // of a receiver's store to anonymous readers, as the store's authorization
-// allows: the plan page, each knot, and a source browser over the main of
+// allows: the knots page, each knot, and a source browser over the main of
 // each project the authorization lets anyone read. The source browser also
 // serves a gzipped tar archive of each reachable commit.
 //
@@ -76,15 +76,16 @@
 // Responses larger than SmallPage hold at most MaxLarge of the budget
 // between them, counting their first SmallPage bytes. So readers that
 // never read large pages hold at most MaxLarge, however many there are,
-// and the rest of the budget is always there for small pages: the plan,
-// most knots, and most directories and files.
+// and the rest of the budget is always there for small pages: the knots
+// page, most knots, and most directories and files.
 //
 // # Routes
 //
 // The server answers GET and HEAD alone. A project's pages are under its
 // group's name and its own web name, which need not be its identifier:
 //
-//	/                                                   the plan page
+//	/                                                   a redirect to the first project's tree at main's tip
+//	/-/knots                                            the knots page
 //	/<group>/<project>/                                 a redirect to the tree at main's tip
 //	/<group>/<project>/knots/<id>                       one knot, with its body and comments
 //	/<group>/<project>/source/                          a redirect to the tree at main's tip
@@ -105,8 +106,11 @@
 //
 // Every path but / and those under /-/ starts with a group's name or an
 // alias. No name starts with "-", so no group's path is ever one of the
-// server's own, whatever paths the server adds there. It serves no page
-// under /-/, and answers each path there with the one 404. Package export
+// server's own, whatever paths the server adds there. Under /-/ it serves
+// the knots page alone, and answers every other path there with the one
+// 404. / redirects to the tree at main's published tip of the first
+// project the reader may see, in the export's order, and to the knots
+// page when the reader may see none. Package export
 // refuses an export whose group names and aliases collide, or whose
 // projects' web names and former names collide within a group.
 //
@@ -909,6 +913,8 @@ func (q *request) route(parts []string, ok bool) {
 	case !ok:
 		q.notFound()
 	case len(parts) == 1 && parts[0] == "":
+		q.landing()
+	case len(parts) == 2 && parts[0] == own && parts[1] == "knots":
 		q.plan()
 	case parts[0] == own:
 		q.notFound()
@@ -965,6 +971,21 @@ func (q *request) moved(to string, n int) {
 // own is the first segment of the server's own paths, /-/. No group's
 // name, and no alias, can be it, or start with it.
 const own = "-"
+
+// knotsURL is the knots page's path, the one page the server serves
+// under /-/.
+const knotsURL = "/" + own + "/knots"
+
+// landing answers / with a redirect to the page of the first project the
+// reader may see, in the index's order: the tree at its published tip.
+// With no project to see, it redirects to the knots page.
+func (q *request) landing() {
+	if len(q.idx.public) == 0 {
+		q.redirect(knotsURL)
+		return
+	}
+	q.home(q.idx.public[0])
+}
 
 // home answers /<group>/<project>/, and /<group>/<project>, with a
 // redirect to the project's page: the tree at its published tip, with its

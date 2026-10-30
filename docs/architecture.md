@@ -3304,13 +3304,15 @@ authorization (`implemented`). The edge does not redeem them yet (`not built`).
 `valley-web` serves a receiver's store over HTTP (`web/server/`, `web/cmd/valley-web/`). It builds
 each response for one reader (see [Each reader's view](#each-readers-view)). For each project that
 reader may see, it serves the knots page, each knot page, and a source browser for `main` under the
-project's group, including a gzipped tar archive for each reachable commit. `valley-web` reads every
-request as `anyone` (`implemented`), and no production path names another reader. `valley-web` runs
-alongside the receiver as a separate process (see [The receiver](#the-receiver)). It renders
-Markdown files and READMEs as documents with its own renderer, package `web/markdown`, which uses
-the standard library alone. The renderer writes only a fixed set of elements and attributes, and
-shows raw HTML as text. A relative link in a document is resolved to the target's page at the same
-commit with no git call. Its flags, routes, and limits are in
+project's group, including a gzipped tar archive for each reachable commit. When started with
+`--origin`, `valley-web` serves a request that carries a valid session cookie as that session's
+principal, and serves every other request as `anyone` (`implemented`; see
+[Readers' sessions](#readers-sessions)). Without `--origin`, it serves every request as `anyone`.
+`valley-web` runs alongside the receiver as a separate process (see [The receiver](#the-receiver)).
+It renders Markdown files and READMEs as documents with its own renderer, package `web/markdown`,
+which uses the standard library alone. The renderer writes only a fixed set of elements and
+attributes, and shows raw HTML as text. A relative link in a document is resolved to the target's
+page at the same commit with no git call. Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
 
 ### Each reader's view
@@ -3539,6 +3541,119 @@ Checked by `web-server-unit`:
 - `TestSourceAdmission` checks that redirects, missing pages, and hidden projects take no `git` slot
   when all `git` slots are full.
 
+### Readers' sessions
+
+A reader signs in by redeeming a read link once to receive a session cookie (see
+[Reader sessions](./reference.md#reader-sessions) for the routes and formats). `valley-web` tracks
+redeemed links and active sessions in its browser state (`web/readerstate`), stored in `browser/`
+beside the store descriptor (`implemented`). For each redeemed link, the browser state permanently
+records the binding under which the link was redeemed, along with the SHA-256 hash of its session
+token until the reader signs out.
+
+**One owner.** Only one `valley-web` process may open a `browser/` directory at a time. At startup,
+`valley-web` acquires an exclusive `flock(2)` lock on `browser/owner.lock` and holds it until exit;
+a second process pointed at the same directory refuses to start. `valley-web` also refuses to start
+if `browser/` is accessible to any other user. Because a single process owns `browser/`, it can keep
+the decoded state in memory knowing no other process modifies the files on disk. The deployment
+provisions `browser/` owned by `valley-web`'s user with mode `0700`; neither `valley-web` nor the
+receiver creates that directory or changes its owner.
+
+**Reads.** A request resolves its session under a read lock on the in-memory snapshot, without
+taking a `flock(2)` lock or re-parsing `browser/state`. Waiting for the read lock stops if the
+request's deadline expires or the client disconnects. Under the read lock, `valley-web` runs one
+`lstat(2)` on `browser/state` to verify that the file on disk still matches the file it last read or
+wrote. If `browser/state` is missing, replaced, or modified, `valley-web` marks the browser state
+unavailable until the process restarts and never falls back to an earlier snapshot. While the
+browser state is unavailable, requests carrying the session cookie answer `503` and requests without
+the cookie are served as `anyone`.
+
+**Transactions.** Redemption and logout acquire three locks in fixed order and release them in
+reverse order:
+
+1. The in-memory snapshot's write lock.
+2. The transaction file lock (`flock(2)` on `browser/lock`).
+3. The receiver's serving lock (`v2/serving.lock`, shared), under which the transaction re-reads the
+   stored authorization.
+
+A transaction never acquires a browser-state lock while holding `v2/serving.lock`. Waiting for any
+lock stops if the request's deadline expires or the client disconnects. The transaction checks the
+request context after acquiring each lock and checks again after encoding the new state document,
+immediately before creating `browser/state.new`. If the deadline has expired at any of those checks,
+the transaction aborts without writing anything, so a timed-out redemption consumes no link and a
+timed-out logout ends no session.
+
+Once a transaction creates `browser/state.new`, it runs to completion. It writes the full next
+document to `state.new`, syncs `state.new`, renames it over `state`, and syncs `browser/`. Only
+after the directory sync succeeds does `valley-web` update the in-memory snapshot and send `204`
+with `Set-Cookie`. If any step from writing `state.new` through syncing `browser/` fails, the
+outcome is uncertain, and `valley-web` marks the browser state unavailable until the process
+restarts. Because redemption marks the link consumed and records its session hash in a single
+transaction, at most one concurrent redemption of the same link can commit. A crash before the
+rename leaves the old `state` in place, so the link can still be redeemed on retry; a crash after
+the rename leaves the link consumed even if the `204` response never reached the browser. At
+startup, `valley-web` removes any leftover `state.new` without reading it, and syncs `state` and
+`browser/` after loading `state` into memory.
+
+**Initializing `browser/state`.** When `browser/state` does not exist yet, `valley-web` creates an
+empty `browser/state` only when `v2/authorization` is present, parses cleanly, and contains no
+`binding` records. If `v2/authorization` is missing, unreadable, or binds any link, `valley-web`
+leaves `browser/state` uncreated. Initialization takes the same three locks as a transaction,
+re-reads `v2/authorization` under the shared `v2/serving.lock`, and holds `v2/serving.lock` until
+the empty `browser/state` is synced on disk. Because the receiver needs an exclusive lock on
+`v2/serving.lock` to rename a new authorization into place, no authorization carrying a binding can
+land between that check and the commit. `valley-web` attempts initialization at startup and on every
+request while `browser/state` is missing, so it creates the file as soon as an authorization with no
+bindings arrives, without a restart. Any link bound before `browser/state` exists can never be
+redeemed; the operator must revoke all links so the edge initializes `browser/state`, and then issue
+new links.
+
+**Requests.** A `POST` to `/-/redeem` or `/-/logout` executes once under the request's 15-second
+deadline and never reads the export. A `GET` or `HEAD` request resolves its session under the
+browser state's read lock when it arrives and renders the page as that session's principal. Before
+writing response headers, the server's final check acquires the browser state's read lock and then
+the shared `v2/serving.lock`, re-reads the authorization, and resolves the session again. If either
+the authorization or the session changed during rendering, the server discards the response and
+renders again, up to three renders in total. If the request's deadline has expired by that final
+check, the server answers `503` without renewing the cookie. Otherwise, while still holding both
+locks, the server attaches the renewed `Set-Cookie` header and writes the response headers, then
+releases both locks before writing the body. Any logout or revocation that commits before the final
+check takes effect on that response; one that commits after the headers are written takes effect on
+the next request.
+
+**Boundaries.** The stored authorization alone decides which projects a session's principal may
+read; the browser state cannot grant access beyond that authorization. No authorization can make a
+redeemed link redeemable again. A session remains valid only while the stored authorization binds
+its credential ID to the exact principal and verifier under which the link was redeemed, so
+re-binding the same credential ID to another principal or secret does not carry the session over.
+The receiver's `Store.Authorize` never takes a browser-state lock, so a full or unavailable browser
+state never delays storing a new authorization or revocation. Rolling `browser/state` back to an
+older, internally valid copy is not detected.
+
+Checked by:
+
+- `web-server-unit`, which runs the browser-state unit tests (`web/readerstate/`) and the server's
+  session tests (`web/server/session_test.go`): single-use redemption, identical `403` refusals, the
+  `POST` header and body contract, cookie parsing and exact binding checks, the reader pages'
+  `Content-Security-Policy`, unavailable and full states, initializing `browser/state` and its race
+  against a new binding, concurrent redemptions, deadlines expiring while waiting on a stalled write
+  or encoding a transaction, and revocation or logout during page, archive, or redirect rendering.
+- `web-reader-state-crash`, which kills `valley-web` or injects filesystem errors at each step of
+  redemption, logout, and initial state creation, then restarts `valley-web` on the resulting
+  directory (`web/cmd/valley-web/crash_test.go`). It verifies that logout never answers `204` before
+  its change is durable on disk, and that an initial state creation interrupted before its rename,
+  followed by an authorization with link bindings leaves `browser/state` uncreated on restart.
+- `web-reader-browser-e2e`, which drives `/-/redeem` in headless Chromium behind a TLS proxy in the
+  build sandbox (`web/cmd/valley-web/browser_test.go`). It also spoils two redemption responses to
+  verify that the page reports an unknown outcome and queries `/-/session` on retry before signing
+  any session out.
+- `web-push-e2e`, which redeems a link issued by the packaged publisher and exercises server
+  restarts, link revocation, logout, and recovery from a missing or corrupted `browser/state`.
+- `web-receiver-unit`, which uploads a signed export with private projects through the real receiver
+  to the packaged `valley-web` (`web/cmd/valley-web-receive/readers_test.go`). It verifies that two
+  named principals and `anyone` each see the knots, source pages, and archives of their authorized
+  projects alone, receive `404` for the rest, and lose access on the next request after a grant is
+  withdrawn.
+
 ### Reading the state directory
 
 `valley-web` only reads the receiver's store. Both programs take the path to the store's descriptor
@@ -3559,14 +3674,16 @@ store, and no v1 binary ever reads the store without checking the authorization.
 nothing outside the descriptor and `v2/`: state of the v1 layout beside the descriptor, which held
 public projects only, stays until the operator deletes it by hand.
 
-Because `valley-web` writes nothing to the state directory, it can run as a separate Unix user with
-read-only access. The receiver keeps each staged upload private to its own user until activation,
-and explicitly sets world-readable modes on `v2/`, `generations/`, the descriptor, the
-authorization, and every directory and file of an activated generation regardless of its umask
-(`web/export/store.go`; see [Web export receiver state](./reference.md#web-export-receiver-state)
-for the file modes). The mode of the descriptor's parent directory is a **deployment choice**. The
-receiver creates that directory if it does not exist and leaves its mode unchanged, and the
-deployment grants the server's user read and search access to it, for example through its group.
+Because `valley-web` writes nothing to the receiver's store, it can run as a separate Unix user with
+read-only access to the store. The one place it writes is its own browser state in `browser/` beside
+the descriptor (see [Readers' sessions](#readers-sessions)). The receiver keeps each staged upload
+private to its own user until activation, and explicitly sets world-readable modes on `v2/`,
+`generations/`, the descriptor, the authorization, and every directory and file of an activated
+generation regardless of its umask (`web/export/store.go`; see
+[Web export receiver state](./reference.md#web-export-receiver-state) for the file modes). The mode
+of the descriptor's parent directory is a **deployment choice**. The receiver creates that directory
+if it does not exist and leaves its mode unchanged, and the deployment grants the server's user read
+and search access to it, for example through its group.
 
 Every `git` command that `valley-web` runs names the repository with `--git-dir`
 (`web/export/bundle.go`). Passing `--git-dir` lets `git` read a repository owned by the receiver's
@@ -3944,7 +4061,7 @@ serves the activated export from that directory. The receiver's flags, routes, a
 
 `valley-web-receive` and `valley-web` run as separate processes that share only the state directory.
 The receiver opens the directory with `export.OpenStore` and is its only writer. `valley-web` opens
-it with `export.OpenReadOnly` and writes nothing (see
+it with `export.OpenReadOnly` and writes nothing to the store (see
 [Reading the state directory](#reading-the-state-directory)). Because the store coordinates access
 with `flock(2)` locks across processes, activating a new export never deletes a generation that an
 in-flight `valley-web` request still holds (`web/export/store.go`).
@@ -3956,9 +4073,9 @@ three ways:
   listens on the address the publisher reaches, and `valley-web` listens on the address readers
   reach. When uploads saturate the receiver, it answers additional upload requests with `503` while
   `valley-web` continues serving within its own limits.
-- **Separate users.** `valley-web` handles requests from anonymous readers. Its user has read-only
-  access to the state directory and no access to the receiver token, so a fault in `valley-web`
-  cannot modify the stored export or expose the token.
+- **Separate users.** `valley-web` handles requests from any reader. Its user has read-only access
+  to the state directory and no access to the receiver token, so a fault in `valley-web` cannot
+  modify the stored export or expose the token.
 - **Separate memory.** Each process's memory limit is a **deployment choice**. A limit covers both
   the Go process and the `git` commands it spawns. On NixOS, the receiver module sets `MemoryMax`
   with no swap on each service unit, from its `receiverMemoryMax` and `webMemoryMax` options, which
@@ -4069,23 +4186,31 @@ On NixOS, `services.valley.webReceiver` runs two systemd units, `valley-web-rece
 `valley-web` (`nix/web-receiver.nix`). They run as users `valley-web-receive` and `valley-web`, both
 in group `valley-web`. The receiver unit owns the state directory (`/var/lib/valley-web` by default)
 with mode `0750`, so `valley-web` reads it through the shared group, while `valley-web`'s unit
-mounts the state directory read-only. The receiver unit reads the token file as a systemd credential
-from a path outside the Nix store. Aside from the receiver's state directory, the only writable
-paths in either unit are temporary: each unit's private `/tmp` and `/var/tmp` from `PrivateTmp`
-(invisible to other units and removed by systemd when the unit stops) and the host's `/dev/shm` from
-`PrivateDevices`. Neither unit requires the other. `valley-web` starts after the receiver and keeps
-serving while the receiver restarts. Each unit has its own `MemoryMax` with no swap.
+mounts the state directory read-only. When `origin` is set, systemd-tmpfiles creates the state
+directory owned by `valley-web-receive` (mode `0750`) and `<stateDir>/browser` inside it owned by
+`valley-web` (mode `0700`). `valley-web`'s unit can write only `<stateDir>/browser`, and the
+receiver's unit cannot access `<stateDir>/browser`. Because systemd-tmpfiles gives the state
+directory the owner that `StateDirectory` on `valley-web-receive.service` expects, systemd does not
+recursively chown `<stateDir>/browser` when starting the receiver. The receiver unit reads the token
+file as a systemd credential from a path outside the Nix store. Aside from those two directories,
+the only writable paths in either unit are temporary: each unit's private `/tmp` and `/var/tmp` from
+`PrivateTmp` (invisible to other units and removed by systemd when the unit stops) and the host's
+`/dev/shm` from `PrivateDevices`. Neither unit requires the other. `valley-web` starts after the
+receiver and keeps serving while the receiver restarts. Each unit has its own `MemoryMax` with no
+swap.
 
 On a host that does not run NixOS, the `valley-web-image` package builds a container image with Nix
 (`nix/packages.nix`). It contains `valley-web`, `valley-web-receive`, and the `git` binary both run.
 Its `/etc/passwd` and `/etc/group` define users `valley-web-receive` (uid 990) and `valley-web` (uid
 991), both in group `valley-web` (gid 990). Its volume directory, `/var/lib/valley-web`, is owned by
-the receiver's user with mode `0750`. The image defaults to user `valley-web` and defines no
-entrypoint or default command. An edge runs two containers from this image over one shared volume:
-the receiver as `valley-web-receive` with the volume writable, and `valley-web` as `valley-web` with
-the volume read-only (see [Run the web edge](./guide.md#run-the-web-edge)). How an edge runs the
-containers, where they listen, how the token reaches them, and each container's memory and swap
-limits are **deployment choices**.
+the receiver's user with mode `0750` and contains `browser/`, owned by `valley-web` with mode
+`0700`. The image defaults to user `valley-web` and defines no entrypoint or default command. An
+edge runs two containers from this image sharing the state volume: the receiver runs as
+`valley-web-receive` with the state volume writable, and `valley-web` runs as `valley-web` with the
+state volume read-only and a second writable volume mounted at `/var/lib/valley-web/browser` (see
+[Run the web edge](./guide.md#run-the-web-edge)). How an edge runs the containers, where they
+listen, how the token reaches them, and each container's memory and swap limits are **deployment
+choices**.
 
 Checked by:
 

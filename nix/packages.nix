@@ -463,6 +463,7 @@ rec {
     ];
     excluded = [
       ../web/server
+      ../web/readerstate
       ../web/cmd/valley-web
       ../web/cmd/valley-web-receive
     ];
@@ -555,7 +556,8 @@ rec {
 
   # The web UI's server (web/server/) and its command, valley-web
   # (web/cmd/valley-web/), which serves the active export of a receiver's
-  # state directory to anonymous readers. It reads the export and the
+  # state directory to its readers, and keeps their sessions in the
+  # browser state (web/readerstate/). It reads the export and the
   # state directory with package export, so its source is the web
   # module, less the fixture's expected export, which only web's tests
   # read. Package export reads export.json with ../exactjson, so its
@@ -563,8 +565,10 @@ rec {
   # reads through and the server does not, it reads the go.mod alone,
   # which go reads to resolve the module. The git it reads repositories
   # with is fixed at build time, the way valleyhook's is. Its tests run the real program over the shared
-  # fixture and real git, and go vet runs after them. Go, standard library
-  # only, so no module is fetched.
+  # fixture and real git, and go vet runs after them. The crash tests and
+  # the browser test are skipped there: web-reader-state-crash and
+  # web-reader-browser-e2e (nix/checks/) run them from the same tests.
+  # Go, standard library only, so no module is fetched.
   valley-web = goModule {
     pname = "valley-web";
     dir = ../web;
@@ -585,11 +589,13 @@ rec {
     tests = {
       subPackages = [
         "server"
+        "readerstate"
         "cmd/valley-web"
       ];
+      checkFlags = [ "-skip=^(TestCrash|TestBrowser)" ];
       nativeCheckInputs = [ pkgs.git ];
       postCheck = ''
-        go vet ./server/... ./cmd/valley-web/...
+        go vet ./server/... ./readerstate/... ./cmd/valley-web/...
       '';
     };
     meta.mainProgram = "valley-web";
@@ -619,6 +625,7 @@ rec {
       ../web/cmd/valley-web-publish
       ../web/cmd/valley-web
       ../web/server
+      ../web/readerstate
     ];
     subPackages = [ "cmd/valley-web-receive" ];
     preBuild = readsGoMod;
@@ -644,9 +651,10 @@ rec {
   # the directory, and valley-web as valley-web, which reads it. The image
   # names both users in its /etc/passwd, and holds the state directory,
   # owned by the receiver and readable by the group alone, so a volume
-  # mounted there starts with that owner and mode. It runs as valley-web
-  # unless it is told otherwise, and starts no program of its own: each
-  # container names its command.
+  # mounted there starts with that owner and mode. In it, browser/ is
+  # valley-web's alone, mode 0700: the browser state, the one place
+  # valley-web writes. It runs as valley-web unless it is told otherwise,
+  # and starts no program of its own: each container names its command.
   edgeUsers = {
     receiver = {
       name = "valley-web-receive";
@@ -672,9 +680,11 @@ rec {
       })
     ];
     fakeRootCommands = ''
-      mkdir -p var/lib/valley-web tmp
+      mkdir -p var/lib/valley-web/browser tmp
       chown ${toString edgeUsers.receiver.uid}:${toString edgeUsers.gid} var/lib/valley-web
       chmod 0750 var/lib/valley-web
+      chown ${toString edgeUsers.web.uid}:${toString edgeUsers.gid} var/lib/valley-web/browser
+      chmod 0700 var/lib/valley-web/browser
       chmod 1777 tmp
     '';
     config = {

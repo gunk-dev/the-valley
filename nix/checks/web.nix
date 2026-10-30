@@ -1,6 +1,7 @@
 # The web UI (web/): the shared export contract, the publisher, the
 # receiver, and the web server. Each check but web-image runs the unit
-# test derivation defined in nix/packages.nix. web-image is a
+# test derivation defined in nix/packages.nix, or, for
+# web-reader-state-crash, the crash tests of valley-web's. web-image is a
 # runCommand that unpacks the container image.
 {
   pkgs,
@@ -34,7 +35,8 @@
   # one whose git check was interrupted, and injected sweep and swap
   # failures are reported separately from the commit; Stage and Activate
   # wait for a held store lock only until their context expires, leaving
-  # staging and the active generation unchanged on cancellation; a
+  # staging and the active generation unchanged on cancellation; the
+  # serving lock refused, though free, under a done context; a
   # manifest's capacity sweep stops once its context is done, leaving the
   # rest of the trash and releasing the lock; and an activation that
   # exceeds MaxStorage is refused, with the repository whose build passed
@@ -152,17 +154,82 @@
   # MaxLarge, their pages' starts counted, with a large page it has no
   # room for answering 503 while the plan, a knot and a directory still
   # render; and valley-web run as a process of its own, serving and
-  # stopping on SIGTERM, and serving every page from a read-only state
+  # stopping on SIGTERM, non-dumpable with --origin and dumpable without
+  # it, and serving every page from a read-only state
   # directory that the receiver wrote under umask 0077, with the test
-  # simulating another owner, since it cannot change users. go vet runs
-  # after the tests.
+  # simulating another owner, since it cannot change users. Readers'
+  # sessions: a link redeemed once into a session that renews its
+  # host-only cookie on every response its last check admits, 404s
+  # alike for a hidden and a missing project, and is refused beside a
+  # valid session before anything is consumed; every refused link
+  # answering one fixed 403; a reader post holding to its origin, media
+  # type, header, size and strict JSON object, a redemption's credential
+  # a string, or answering 403; the
+  # session cookie counted across every Cookie header, with two of it,
+  # a malformed, unknown, signed-out or revoked one, or one whose link
+  # is bound to another principal or verifier, read as anyone;
+  # /-/session naming the link of a valid session alone, and answering
+  # GET and HEAD alone; the reader pages, which render with nothing
+  # published, under their own
+  # policy, the one that admits the reader script and lets it connect to
+  # this origin; a changed browser state answering 503 to a request that
+  # carries the cookie and serving anyone; no state made under an
+  # authorization that binds a link, a binding stored while it is made
+  # waiting for it, and the state made once a request reads one that
+  # binds none; a full state refusing a redemption and taking a logout;
+  # concurrent redemptions of one link with one winner; a redemption
+  # queued behind a slow one stopping at its deadline and consuming
+  # nothing, a GET and a redemption behind a stalled first state or
+  # logout answering 503 at their deadline, a transaction whose context
+  # is done once it holds a lock changing nothing, and a response whose
+  # deadline passes at its last check answering 503, unrenewed; a
+  # revocation or a logout while a page, a Markdown page, an archive, a
+  # knot or a redirect renders answering that response as anyone's,
+  # unrenewed; and
+  # the browser state itself (web/readerstate/), opened only by its one
+  # owner, over a directory its user alone may reach, refusing a link
+  # files, a FIFO, an open mode and a document it cannot read, failing
+  # at each step of a transaction into an unavailable state, changing
+  # nothing when a deadline passes while a transaction encodes, and
+  # promoting no abandoned state.new. go vet runs after the tests.
   web-server-unit = packages.valley-web.unit;
+
+  # The browser state's transactions in valley-web run as a process of
+  # its own over a real store: a redemption, a logout, and the making of
+  # the state, killed with SIGKILL at each step of its transaction, from
+  # encoding the next document to publishing the new snapshot, and failed
+  # at each, then run again. Before the rename, a killed redemption's link
+  # redeems once on the restart; from it, the link is consumed; a failed one
+  # leaves the state unavailable, a cookie answered 503 and anyone served,
+  # until the restart. A logout is never acknowledged before its commit:
+  # before the rename its session holds after the restart, and from it
+  # the token works no more. The making of the state interrupted before
+  # its rename, with links bound before the restart, makes no state on
+  # the restart, and redemption stays closed. A redemption whose 204
+  # reached the reader keeps its session through a crash right after it,
+  # and a logout whose 204 did keeps its token dead. No link redeems
+  # twice, and no log or state holds a link's secret or a session's
+  # token. A second
+  # valley-web over the same browser state refuses to start, as does one
+  # with no browser directory, an open one, or an origin that is not an
+  # HTTPS origin.
+  web-reader-state-crash = packages.valley-web.unit.overrideAttrs {
+    pname = "valley-web-reader-state-crash";
+    subPackages = [ "cmd/valley-web" ];
+    checkFlags = [ "-run=^TestCrash" ];
+    postCheck = "";
+  };
 
   # The receiver binary, valley-web-receive, run as a subprocess over the
   # shared fixture's signed export and real git. A three-step upload
   # activates an export that a separate valley-web process serves from the
   # same state directory, and re-posting the manifest or commit is refused
-  # as replayed. Manifests with no token, a wrong token, a non-Bearer
+  # as replayed. A private export, with app anyone's, site alice's alone
+  # and docs bob's alone, goes through the receiver to a valley-web that
+  # signs readers in: alice and bob each redeem a link the authorization
+  # binds, and each, and anyone, is served the knots, source and archives
+  # of what they may read, with every other project 404, until a
+  # withdrawal of alice's grant takes site from her next request. Manifests with no token, a wrong token, a non-Bearer
   # scheme, or two Authorization headers, and a body, a commit and an
   # unused path with no token, are refused as unauthenticated without
   # staging anything. Stale, future-dated, foreign-key, and
@@ -201,7 +268,9 @@
   # valley-web-receive, valley-web, and their shared valley-web group;
   # /var/lib/valley-web is the sole declared volume and is owned by
   # valley-web-receive:valley-web with mode 0750; and the image defaults to
-  # user valley-web with no default entrypoint or command.
+  # user valley-web with no default entrypoint or command. Inside the
+  # volume, /var/lib/valley-web/browser is valley-web:valley-web, mode
+  # 0700: the browser state's directory.
   web-image = pkgs.runCommand "valley-web-image" {
     nativeBuildInputs = [ pkgs.jq ];
     image = packages.valley-web-image;

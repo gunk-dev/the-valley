@@ -736,11 +736,12 @@ Use your configured `dataDir` if it differs.
 
 ### Run the web edge
 
-The web edge is a read-only web server for projects that `anyone` may read. The publisher on the
-valley host pushes signed exports to the edge over HTTP, and the edge never connects back to the
-valley host. On the edge, `valley-web-receive` receives uploads into a state directory and
-`valley-web` serves them. They run as two processes under two Unix users over that shared state
-directory (see [The receiver](./architecture.md#the-receiver)).
+The web edge is a read-only web server for projects that `anyone` may read. Readers can also sign in
+at the edge with read links. The publisher on the valley host pushes signed exports to the edge over
+HTTP, and the edge never connects back to the valley host. On the edge, `valley-web-receive`
+receives uploads into a state directory and `valley-web` serves them. They run as two processes
+under two Unix users over that shared state directory (see
+[The receiver](./architecture.md#the-receiver)).
 
 Generate a shared bearer token and install the same file on both hosts outside the Nix store,
 readable by root alone:
@@ -801,8 +802,17 @@ services.valley.webReceiver = {
   tokenFile = "/run/keys/valley-web-receiver-token";
   listen = "192.0.2.10:8081";
   webListen = "127.0.0.1:8080";
+  origin = "https://example.org";
 };
 ```
+
+Set `origin` to the public HTTPS origin that browsers send for the edge: `https://` and a lowercase
+host, plus a port when the port is not `443`. When `origin` is set, readers can sign in with read
+links (see [Issue and revoke read links](#issue-and-revoke-read-links)), and `valley-web` stores
+their sessions in `/var/lib/valley-web/browser`. The module creates that directory with owner
+`valley-web` and mode `0700`, and `valley-web` cannot write anywhere else. When `origin` is unset,
+`valley-web` serves every request as `anyone`. Serve the origin over HTTPS, because the session
+cookie has the `Secure` attribute and browsers store it only over HTTPS.
 
 On an edge host that does not run NixOS, build and load the container image from a checkout of
 the-valley:
@@ -830,17 +840,31 @@ docker run -d --name valley-web-receive --user valley-web-receive \
   --verifiers /etc/valley-web/verifiers --token-file /etc/valley-web/token
 
 docker run -d --name valley-web --user valley-web \
-  --memory 1g --memory-swap 1g \
-  -v valley-web:/var/lib/valley-web:ro \
+  --memory 1g --memory-swap 1g --ulimit core=0 \
+  -v valley-web:/var/lib/valley-web:ro -v valley-web-browser:/var/lib/valley-web/browser \
   -p 127.0.0.1:8080:8080 valley-web:<tag> \
-  valley-web --state /var/lib/valley-web/store --listen :8080
+  valley-web --state /var/lib/valley-web/store --listen :8080 --origin https://example.org
 ```
 
-A new volume inherits the owner and permissions of `/var/lib/valley-web` from the image: the
-receiver's user with mode `0750`. `valley-web` reads the volume through the shared group. Both
-containers take the store descriptor `/var/lib/valley-web/store`, which the receiver creates on its
-first start. When upgrading from a release where `--state` was a directory, stop the old receiver,
-start the new one, and upgrade the host after the edge (see
+A new `valley-web` volume inherits the owner and permissions of `/var/lib/valley-web` from the
+image: the receiver's user with mode `0750`. `valley-web` reads that volume through the shared
+group. The second volume, `valley-web-browser`, holds the browser state and is the only directory
+`valley-web` writes. A new volume mounted at `/var/lib/valley-web/browser` inherits its owner and
+permissions from the image: `valley-web`'s user (uid 991, gid 990) with mode `0700`. The receiver's
+container does not mount `valley-web-browser`. `valley-web` holds link secrets and session tokens in
+memory; it marks its own process non-dumpable, and `--ulimit core=0` disables core dumps for the
+container as well. If an existing `valley-web` volume lacks a `browser/` directory for the mount
+point, create it once on the host before starting `valley-web`:
+
+```sh
+sudo install -d -m 0700 -o 991 -g 990 "$(docker volume inspect -f '{{.Mountpoint}}' valley-web)/browser"
+```
+
+A bind mount used in place of either volume needs the same owner and mode. Omit
+`-v valley-web-browser:…` and `--origin` to serve `anyone` alone. Both containers take the store
+descriptor `/var/lib/valley-web/store`, which the receiver creates on its first start. When
+upgrading from a release where `--state` was a directory, stop the old receiver, start the new one,
+and upgrade the host after the edge (see
 [Upgrading the edge and the host](./reference.md#upgrading-the-edge-and-the-host)). Then delete the
 first layout's state from the volume by hand: `active`, `high-water`, `exports/`, `staging/`,
 `trash/` and `lock`, beside the descriptor. Leaving them is harmless, because the first layout held
@@ -886,6 +910,14 @@ The command prints the link once, such as
 channel. The host keeps no copy of the secret. The command refuses a principal who may read no
 project at the destination.
 
+After the next pass delivers the link to the edge, the holder opens it in a browser and clicks
+**Continue as reader**. That redeems the link once and starts a session in the browser. To switch to
+a new link in a browser that is already signed in, open the new link and click **Sign out and
+continue with this link**. Clicking **Sign out** in the navigation ends the session, and signing in
+again requires a new link. If the page cannot tell whether the server used the link, click the
+button again to retry. If the earlier attempt started a session, the retry continues to `/`; if the
+server reports that the link cannot be used, issue a new link.
+
 The principal needs an edge-read grant in the registry and a project whose `policy/read` names it. A
 reader who signs nothing may hold no keys, as long as every grant it holds is an edge read.
 
@@ -916,7 +948,21 @@ valley-web-link revoke --all
 valley-web-link issue --principal alice --note laptop
 ```
 
-Do the same after the edge loses its state.
+`valley-web` creates `browser/state` only when the stored authorization has no link bindings. Any
+link issued before `browser/state` exists cannot be redeemed. Follow these steps when enabling
+reader sign-in for the first time, or after the edge loses `browser/state` or its whole state
+directory:
+
+1. Run `valley-web-link revoke --all` to revoke every link and deliver an authorization with no
+   bindings.
+2. Confirm that `browser/state` exists in the edge's state directory. `valley-web` creates it when
+   it starts or on the first request after that authorization arrives.
+3. Issue new links.
+
+If `valley-web` logs that the browser state is unavailable, it serves requests without a session
+cookie as `anyone` and answers `503` to requests that carry the session cookie. `valley-web` never
+overwrites an unreadable `browser/state`. To recover, run `valley-web-link revoke --all`, stop
+`valley-web`, remove `browser/state`, start `valley-web` again, and issue new links.
 
 Revoked links stay in the credential file until you prune them:
 

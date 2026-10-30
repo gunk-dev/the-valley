@@ -26,6 +26,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -201,6 +202,87 @@ func (f *Fixture) Sign(t testing.TB, m *export.Manifest) []byte {
 		t.Fatal(err)
 	}
 	return signed
+}
+
+// The publication identities Private gives site, which New does not
+// export, and docs, a copy of site.
+const (
+	SiteIdentity = "273d5668702918ea7ae079de374db96b"
+	DocsIdentity = "5b1e0c7a9f3d2e4c6a8b0d1f3e5c7a92"
+)
+
+// Private is the fixture's valley exported as for an edge where named
+// readers read projects anyone may not: app, site, and docs, a copy of
+// site under an identity of its own, in a group of its own, pages. Each of
+// site's knots has a body naming it. The export carries no visibility, so
+// an authorization alone says who may read which. Its manifest is signed
+// at SignedAt, and its Dir is not made.
+func (f *Fixture) Private(t testing.TB) *Fixture {
+	t.Helper()
+	var plan struct {
+		Projects []struct {
+			Project string `json:"project"`
+			Tip     string `json:"tip"`
+			Knots   []struct {
+				ID string `json:"id"`
+			} `json:"knots"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(f.Inputs.Plan, &plan); err != nil {
+		t.Fatal(err)
+	}
+	in := f.Inputs
+	in.Identities = map[string]string{"app": Identities["app"], "site": SiteIdentity}
+	in.SourceTips = map[string]string{"app": f.Inputs.SourceTips["app"],
+		"site": strings.TrimSpace(string(git(t, f.Repos["site"], nil, "rev-parse", "refs/heads/main")))}
+	in.Details = append([][]byte(nil), f.Inputs.Details...)
+	for _, p := range plan.Projects {
+		if p.Project != "site" {
+			continue
+		}
+		for _, k := range p.Knots {
+			detail, err := json.Marshal(map[string]any{"schema": "valley-knot/v1", "project": "site", "tip": p.Tip,
+				"knot": map[string]any{"id": k.ID, "body": "What site says of " + k.ID + ".\n", "comments": []any{}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			in.Details = append(in.Details, detail)
+		}
+	}
+	e, err := export.Build(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range e.Projects {
+		if p.Name == "site" {
+			docs := p
+			docs.Name, docs.Identity, docs.Group, docs.WebName = "docs", DocsIdentity, "web", "docs"
+			docs.FormerNames, docs.Aliases = []string{"old-docs"}, []string{"d"}
+			e.Projects = append(e.Projects, docs)
+			break
+		}
+	}
+	sort.Slice(e.Projects, func(i, j int) bool { return e.Projects[i].Name < e.Projects[j].Name })
+	e.Groups = append(e.Groups, export.Group{ID: "web", Name: "pages", Aliases: []string{"p"}})
+	data, err := e.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	site := filepath.Join(t.TempDir(), "site.bundle")
+	git(t, f.Repos["site"], nil, "bundle", "create", "--quiet", site, "main")
+	p := &Fixture{Inputs: in, Repos: f.Repos, Export: e, ExportJSON: data,
+		Bundles: map[string]string{"app": f.Bundles["app"], "site": site, "docs": site}}
+	bodies := map[string]export.Body{}
+	for name, path := range p.Bundles {
+		if bodies[name], err = export.FileBody(name, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.Manifest, err = export.NewManifest(Instance, Destination, SignedAt.UnixNano(), e, data, bodies); err != nil {
+		t.Fatal(err)
+	}
+	p.Signed = p.Sign(t, p.Manifest)
+	return p
 }
 
 // StorePath is the path of a new store's descriptor, in a directory of

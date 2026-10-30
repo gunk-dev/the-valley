@@ -3,12 +3,14 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"fmt"
 	"io"
 	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -20,12 +22,14 @@ import (
 
 // The test binary is valley-web when VALLEY_WEB_TEST_MAIN is set, so the
 // tests run the real program as a process of its own. It runs the git
-// VALLEY_WEB_TEST_GIT names, when that is set.
+// VALLEY_WEB_TEST_GIT names, when that is set, and the browser state's
+// transactions meet the fault VALLEY_WEB_TEST_FAULT names (faultOf).
 func TestMain(m *testing.M) {
 	if os.Getenv("VALLEY_WEB_TEST_MAIN") == "1" {
 		if git := os.Getenv("VALLEY_WEB_TEST_GIT"); git != "" {
 			export.GitProgram = git
 		}
+		readerOptions.Fault = faultOf(os.Getenv("VALLEY_WEB_TEST_FAULT"))
 		main()
 		os.Exit(0)
 	}
@@ -145,6 +149,35 @@ func TestServesTheStateDirectory(t *testing.T) {
 		}
 	case <-time.After(30 * time.Second):
 		t.Fatal("valley-web did not stop within 30 seconds of SIGTERM")
+	}
+}
+
+// valley-web with --origin makes itself non-dumpable before it listens,
+// so no link a reader posts and no session token reaches a core dump. The
+// kernel shows it in /proc: a non-dumpable process's files there are
+// root's, not its user's. valley-web without --origin stays dumpable, so
+// the check is valley-web's, not the sandbox's.
+func TestReadersMakeItNonDumpable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("a process is made non-dumpable on Linux alone")
+	}
+	dumpable := func(pid int) bool {
+		t.Helper()
+		info, err := os.Stat(fmt.Sprintf("/proc/%d/status", pid))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return int(info.Sys().(*syscall.Stat_t).Uid) == os.Getuid()
+	}
+	e := newReaderEdge(t)
+	if dumpable(e.serve("").cmd.Process.Pid) {
+		t.Error("valley-web with --origin is dumpable")
+	}
+	_, state := uploaded(t)
+	plain := valleyWeb("--state", state, "--listen", "127.0.0.1:0")
+	start(t, plain)
+	if !dumpable(plain.Process.Pid) {
+		t.Error("valley-web without --origin is not dumpable")
 	}
 }
 

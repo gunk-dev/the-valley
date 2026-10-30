@@ -492,8 +492,9 @@ func (e *edge) staged() []string {
 }
 
 // valleyWeb starts the real valley-web over the edge's state directory,
-// and returns where it listens.
-func (e *edge) valleyWeb() string {
+// with the flags given after --state and --listen, and returns where it
+// listens.
+func (e *edge) valleyWeb(more ...string) string {
 	e.t.Helper()
 	bin := os.Getenv("VALLEY_WEB")
 	if bin == "" {
@@ -502,7 +503,7 @@ func (e *edge) valleyWeb() string {
 		}
 		e.t.Skip("VALLEY_WEB names no valley-web; the nix check provides one")
 	}
-	return start(e.t, command(bin, "--state", e.store, "--listen", "127.0.0.1:0"), "valley-web").addr
+	return start(e.t, command(bin, append([]string{"--state", e.store, "--listen", "127.0.0.1:0"}, more...)...), "valley-web").addr
 }
 
 // serves checks that valley-web at addr answers every page of the

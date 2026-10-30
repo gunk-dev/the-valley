@@ -3,9 +3,14 @@
 # over one store in one state directory.
 #
 # The receiver takes the publisher's authorizations and uploads, and is
-# the store's one writer. valley-web serves the activated export to
-# anonymous readers, as the stored authorization allows, and only reads
-# the store. Both are given the store's descriptor, <stateDir>/store; its
+# the store's one writer. valley-web serves the activated export to its
+# readers, as the stored authorization allows, and only reads the store.
+# With an origin set, valley-web also signs readers in with the host's
+# read links, and writes their sessions to <stateDir>/browser, its own
+# directory, mode 0700, and the one place it writes. tmpfiles makes that
+# directory, and the state directory above it as the receiver's, so the
+# receiver's StateDirectory finds its owner as it expects and changes no
+# owner beneath it. The receiver's unit cannot reach browser/. Both are given the store's descriptor, <stateDir>/store; its
 # payloads are in <stateDir>/v2 (web/export/store.go). Each runs as a user of its own, both in
 # the valley-web group. The directory is the receiver's, mode 0750, so
 # valley-web reads it through the group, and the receiver keeps its
@@ -52,11 +57,19 @@ let
     "--max-storage ${cfg.maxStorage}"
   ];
 
-  webCommand = lib.concatStringsSep " " [
-    (lib.getExe cfg.webPackage)
-    "--state ${lib.escapeShellArg storeFile}"
-    "--listen ${lib.escapeShellArg cfg.webListen}"
-  ];
+  webCommand = lib.concatStringsSep " " (
+    [
+      (lib.getExe cfg.webPackage)
+      "--state ${lib.escapeShellArg storeFile}"
+      "--listen ${lib.escapeShellArg cfg.webListen}"
+    ]
+    ++ lib.optional readers "--origin ${lib.escapeShellArg cfg.origin}"
+  );
+
+  # Whether valley-web signs readers in, and the directory it keeps their
+  # sessions in.
+  readers = cfg.origin != null;
+  browserDir = "${stateDir}/browser";
 
   # What both units are held to. ProtectSystem=strict leaves the whole
   # filesystem read-only but the receiver's state directory, which systemd
@@ -154,6 +167,21 @@ in
       description = ''
         The TCP address the receiver listens on, which the publisher
         reaches. Every request to it must carry the token.
+      '';
+    };
+
+    origin = lib.mkOption {
+      type = lib.types.nullOr (lib.types.strMatching "https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?");
+      default = null;
+      example = "https://example.org";
+      description = ''
+        The public HTTPS origin readers reach valley-web at, as a browser
+        sends it in an Origin header: a scheme and a host, with a port only
+        when it is not 443 (`--origin`). With it, readers sign in with the
+        valley host's read links, and valley-web keeps their sessions in
+        `browser/` in {option}`services.valley.webReceiver.stateDir`,
+        which the module makes as valley-web's alone, mode 0700. With
+        none, every request is read as anyone.
       '';
     };
 
@@ -256,6 +284,13 @@ in
       }
     ];
 
+    # The state directory as the receiver's unit makes it, and browser/
+    # in it as valley-web's, before either unit starts.
+    systemd.tmpfiles.rules = lib.mkIf readers [
+      "d ${stateDir} 0750 valley-web-receive valley-web -"
+      "d ${browserDir} 0700 valley-web valley-web -"
+    ];
+
     users.groups.valley-web = { };
     users.users.valley-web-receive = {
       isSystemUser = true;
@@ -281,14 +316,17 @@ in
         WorkingDirectory = stateDir;
         LoadCredential = [ "token:${cfg.tokenFile}" ];
         MemoryMax = cfg.receiverMemoryMax;
-      };
+      }
+      // lib.optionalAttrs readers { InaccessiblePaths = [ "-${browserDir}" ]; };
     };
 
-    # valley-web starts after the receiver, which makes the state
-    # directory, and needs nothing else of it. It writes nothing: the
-    # state directory is read-only to it, as is everything else. A state
-    # directory not made yet is skipped (the leading -), and valley-web
-    # fails and is restarted until it is there.
+    # valley-web starts after the receiver, which makes the store, and
+    # needs nothing else of it. The state directory is read-only to it, as
+    # is everything else but browser/, which it writes when it signs
+    # readers in. A state directory not made yet is skipped (the leading
+    # -), and valley-web fails and is restarted until it is there. When it
+    # signs readers in it holds their links and session tokens in memory,
+    # so it makes itself non-dumpable, and its unit takes no core dump.
     systemd.services.valley-web = {
       description = "valley-web, serving the web export receiver's state directory";
       wantedBy = [ "multi-user.target" ];
@@ -302,6 +340,10 @@ in
         Group = "valley-web";
         ReadOnlyPaths = [ "-${stateDir}" ];
         MemoryMax = cfg.webMemoryMax;
+      }
+      // lib.optionalAttrs readers {
+        ReadWritePaths = [ browserDir ];
+        LimitCORE = 0;
       };
     };
   };

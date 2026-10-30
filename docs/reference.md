@@ -1113,6 +1113,7 @@ services.valley.webReceiver = {
 | `tokenFile`                                    | (required)              | Runtime path (outside the Nix store) to the bearer token file. Loaded by the receiver unit as credential `token` and passed as `--token-file`. |
 | `listen`                                       | (required)              | TCP listen address for `valley-web-receive`, reached by the publisher.                                                                         |
 | `webListen`                                    | (required)              | TCP listen address for `valley-web`, reached by readers or a reverse proxy.                                                                    |
+| `origin`                                       | `null`                  | Public HTTPS origin passed to `valley-web` as `--origin`. When set, readers sign in with read links, and the module provisions `browser/`.     |
 | `stateDir`                                     | `"/var/lib/valley-web"` | Shared state directory under `/var/lib`. Both units take its descriptor, `<stateDir>/store`, as `--state`.                                     |
 | `maxBody`, `maxUpload`, `maxStorage`           | `"1G"`, `"2G"`, `"8G"`  | Size limits passed to `valley-web-receive` as `--max-body`, `--max-upload`, and `--max-storage`.                                               |
 | `receiverMemoryMax`, `webMemoryMax`            | `"2G"`, `"1G"`          | Per-unit `MemoryMax` (with `MemorySwapMax=0`) for `valley-web-receive.service` and `valley-web.service`.                                       |
@@ -1125,12 +1126,18 @@ services.valley.webReceiver = {
 - **The state directory:** `valley-web-receive.service` owns the state directory (`StateDirectory`)
   with mode `0750` and group `valley-web`, so `valley-web` reads it through the group.
   `valley-web.service` lists the state directory in `ReadOnlyPaths`.
+- **The browser state:** When `origin` is set, systemd-tmpfiles creates the state directory as
+  `valley-web-receive:valley-web` with mode `0750` and `<stateDir>/browser` as
+  `valley-web:valley-web` with mode `0700` before either unit starts. `valley-web.service` lists
+  `<stateDir>/browser` in `ReadWritePaths`, and `valley-web-receive.service` lists it in
+  `InaccessiblePaths`. `valley-web.service` also sets `LimitCORE=0` to disable core dumps.
 - **The sandbox:** Both units run with `ProtectSystem=strict`, `PrivateTmp`, `PrivateDevices`,
   `NoNewPrivileges`, no capabilities, `@system-service` system calls, and `UMask=0077`. Each unit
   can write to its private `/tmp` and `/var/tmp` (created by `PrivateTmp` and removed by systemd
   when the unit stops) and to the host's `/dev/shm` (kept writable by `PrivateDevices`). Aside from
-  those temporary paths, `valley-web.service` has no writable paths and `valley-web-receive.service`
-  can write only to the state directory.
+  those temporary paths, `valley-web.service` can write only to `<stateDir>/browser` when `origin`
+  is set, and nowhere when `origin` is unset. `valley-web-receive.service` can write only to the
+  state directory outside `browser/`.
 
 `module-eval` checks the rendered unit settings, users, modes, credentials, ordering, and limits
 without running the units.
@@ -2293,7 +2300,9 @@ binding lk-0123456789abcdef alice 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261
     [Web read links](#web-read-links)). `<id>` is the credential ID, `lk-` and 16 lowercase hex
     digits. `<principal>` is the registry principal the link identifies, never `anyone`.
     `<verifier>` is the lowercase hex SHA-256 of the link's 32 secret bytes. A credential with no
-    binding is revoked. The edge does not read bindings yet (`not built`).
+    binding is revoked. `valley-web` redeems a link only while an authorization binds it, and keeps
+    a session valid only while the stored binding matches the principal and verifier the link was
+    redeemed under (see [Reader sessions](#reader-sessions)).
 - **Grammar rules (`export.ParseAuthorization`, `Authorization.Text`):** `instance`, `destination`,
   `sequence`, and `checked` appear once each, and `basis` at most once. Each project appears once,
   each reader of a project appears once, and every `reader` record names a project that has a
@@ -2346,8 +2355,8 @@ binding lk-0123456789abcdef alice 3a6eb0790f39ac87c94f3856b2dd2c5d110e6811602261
 #### Web read links
 
 A read link is a bearer credential for reading at the edge. It identifies one registry principal,
-and it authorizes what that principal may read there and nothing more (`implemented` on the host;
-redemption on the edge is `not built`).
+and it authorizes what that principal may read there and nothing more (`implemented`). The edge
+redeems each read link once and starts a browser session (see [Reader sessions](#reader-sessions)).
 
 ```text
 valley-web-link issue --principal alice --note laptop
@@ -3098,45 +3107,58 @@ first-layout directory.
 `valley-web` serves the active export in a receiver's store over HTTP, as the stored authorization
 allows. It serves the knots page, one page per knot, and a source browser over `main` for each
 project the request's reader may read, including a gzipped tar archive for each reachable commit.
-`valley-web` reads every request as `anyone`. Package `server` of the `web` module
-([`web/server/`](../web/server/)) implements the HTTP handler, and
-[`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
+When started with `--origin`, `valley-web` serves a request that carries a valid session cookie as
+that session's principal, and serves every other request as `anyone` (see
+[Reader sessions](#reader-sessions)). Without `--origin`, it serves every request as `anyone`.
+Package `server` of the `web` module ([`web/server/`](../web/server/)) implements the HTTP handler,
+and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
 `valley-web` package.
 
 ```sh
-valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
+valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin https://example.org
 ```
 
-- **Flags:** Both flags are required.
+- **Flags:** `--state` and `--listen` are required.
   - `--state FILE` names the receiver's existing store descriptor. `valley-web` opens the store
     read-only with `export.OpenReadOnly` (see
     [Reading the state directory](./architecture.md#reading-the-state-directory)). It refuses a
     directory.
   - `--listen ADDR` sets the TCP address to listen on. Port `0` picks a free port.
+  - `--origin URL` sets the public HTTPS origin readers reach, formatted as a browser sends it in an
+    `Origin` header: `https://`, a lowercase host, and a port only when the port is not `443`. Any
+    other `--origin` value exits `2`. Every `POST` to a reader page must carry this `Origin` header.
+    Before opening the browser state, `valley-web` marks its process non-dumpable with
+    `prctl(PR_SET_DUMPABLE, 0)` and refuses to start if that call fails (such as outside Linux). It
+    then opens `browser/` beside the store descriptor, and refuses to start if that directory is
+    missing, is a symbolic link, is owned by another user, grants any group or other permissions, or
+    is locked by another running `valley-web`.
 - **Running:** Once listening, `valley-web` prints `valley-web: listening on <addr>` on `stderr`. It
   logs runtime errors on `stderr`. On `SIGINT` or `SIGTERM`, it stops accepting new requests and
   gives in-flight requests up to 5 seconds to finish. It exits `0` after a clean stop and `1` on a
   runtime failure. On invalid flags, it prints usage on `stderr` and exits `2`. `--help` prints
   usage on `stderr` and exits `0`.
 - **Routes:** The server answers `GET` and `HEAD`. Any other method answers `405` with
-  `Allow: GET, HEAD`.
+  `Allow: GET, HEAD`. When `--origin` is set, `/-/redeem` and `/-/logout` also answer `POST`, and
+  their `405` responses carry `Allow: GET, HEAD, POST`. `/-/session` answers only `GET` and `HEAD`.
 
-| Route                                                   | Page                                                                                  |
-| :------------------------------------------------------ | :------------------------------------------------------------------------------------ |
-| `/`                                                     | `302` redirect to the first visible project's root tree, or to `/-/knots`             |
-| `/-/knots`                                              | The knots page                                                                        |
-| `/<group>/<project>/` and `/<group>/<project>`          | `302` redirect to the root tree at the project's `source_tip`                         |
-| `/<group>/<project>/knots/<id>`                         | One knot                                                                              |
-| `/<group>/<project>/source/`                            | `302` redirect to the root tree at the project's `source_tip`                         |
-| `/<group>/<project>/source/tree/<commit>/<path>/`       | One directory and its README                                                          |
-| `/<group>/<project>/source/blob/<commit>/<path>`        | One file                                                                              |
-| `/<group>/<project>/source/log/<commit>`                | Up to 50 commits of history ending at `<commit>`, newest first                        |
-| `/<group>/<project>/source/log/<commit>?from=<ids>`     | The next older page of that history, starting from the commits in `<ids>`             |
-| `/<group>/<project>/source/archive/<commit>.tar.gz`     | The tree of `<commit>` as a gzipped tar archive, sent as an attachment                |
-| `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                           |
-| `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                            |
-| `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>` |
-| `/-/…`                                                  | The server's own routes: `/-/knots` alone. Every other path under `/-/` answers `404` |
+| Route                                                   | Page                                                                                                            |
+| :------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------- |
+| `/`                                                     | `302` redirect to the first visible project's root tree, or to `/-/knots`                                       |
+| `/-/knots`                                              | The knots page                                                                                                  |
+| `/<group>/<project>/` and `/<group>/<project>`          | `302` redirect to the root tree at the project's `source_tip`                                                   |
+| `/<group>/<project>/knots/<id>`                         | One knot                                                                                                        |
+| `/<group>/<project>/source/`                            | `302` redirect to the root tree at the project's `source_tip`                                                   |
+| `/<group>/<project>/source/tree/<commit>/<path>/`       | One directory and its README                                                                                    |
+| `/<group>/<project>/source/blob/<commit>/<path>`        | One file                                                                                                        |
+| `/<group>/<project>/source/log/<commit>`                | Up to 50 commits of history ending at `<commit>`, newest first                                                  |
+| `/<group>/<project>/source/log/<commit>?from=<ids>`     | The next older page of that history, starting from the commits in `<ids>`                                       |
+| `/<group>/<project>/source/archive/<commit>.tar.gz`     | The tree of `<commit>` as a gzipped tar archive, sent as an attachment                                          |
+| `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                                                     |
+| `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                                                      |
+| `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>`                           |
+| `/-/redeem` and `/-/logout`                             | Reader sign-in and sign-out pages, served only when `--origin` is set (see [Reader sessions](#reader-sessions)) |
+| `/-/session`                                            | JSON reporting the credential ID of the current session's link, served only when `--origin` is set              |
+| `/-/…`                                                  | The server's own routes: `/-/knots` and the reader routes. Every other path under `/-/` answers `404`           |
 
 - **Groups:** `<group>` is the group's `name` in the export, and `<project>` is the project's web
   `name` in the export. Routes match the group's `name` and the project's web `name` rather than
@@ -3499,13 +3521,15 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   ```
 
 - **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
-  escapes every value from the export or a repository. The stylesheet and the knots page's script
-  are embedded in the binary and inlined into the page; nothing else is loaded. No page serves a
-  repository file as raw content; raw repository files are served only inside a source archive,
-  which is gzipped and sent as an attachment. Every response, including redirects, error pages,
-  `HEAD` responses and archives, carries these headers:
+  escapes every value from the export or a repository. The stylesheet, the knots page's script and
+  the reader pages' script are embedded in the binary and inlined into the page; nothing else is
+  loaded. No page serves a repository file as raw content; raw repository files are served only
+  inside a source archive, which is gzipped and sent as an attachment. Every response, including
+  redirects, error pages, `HEAD` responses and archives, carries these headers:
   - On `/-/knots`:
     `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  - On `/-/redeem` and `/-/logout`, with `--origin`:
+    `Content-Security-Policy: default-src 'self'; script-src 'sha256-<reader script hash>'; style-src 'sha256-<stylesheet hash>'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - On every other path:
     `Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'sha256-<stylesheet hash>'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
@@ -3520,6 +3544,119 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   be read, runs `git`, or renders the page. The server does not log a request refused at admission,
   a request whose time runs out while waiting for a `git` slot, or a request refused because the 64
   MiB response budget is full.
+
+#### Reader sessions
+
+A reader signs in by opening a read link issued on the valley host. When started with `--origin`,
+`valley-web` redeems the link once into a session cookie for the link's principal (`implemented`,
+[`web/server/reader.go`](../web/server/reader.go), [`web/readerstate/`](../web/readerstate/)).
+Because the publisher exports only projects that `anyone` may read, a signed-in session sees the
+same projects as `anyone` until exporting projects for named readers is built.
+
+```text
+https://example.org/-/redeem#lk-0123456789abcdef.<secret>
+```
+
+- **The redeem page, `/-/redeem`:** `GET` and `HEAD` render this page whether or not an export is
+  published. On load, its script copies the URL fragment after `#` into memory and clears the
+  fragment from the address bar with `history.replaceState`. It sends nothing until the reader
+  clicks. Without a valid session, the page shows **Continue as reader**. With a valid session, it
+  shows **Sign out and continue with this link**, which posts to `/-/logout` and then to
+  `/-/redeem`. Clicking the button sends one attempt and disables the button while the request is in
+  flight. On `204`, the browser navigates to `/`.
+  - **An unknown outcome:** If the response never arrives, or has a status other than `204`, `403`,
+    or `409`, the page cannot tell whether the server redeemed the link. It keeps the link in
+    memory, explains that the link may already be used and that a refused retry requires a new link,
+    and re-enables the button so the reader can retry.
+  - **A retry:** After an unknown outcome, the next click first reads `GET /-/session`. If the
+    browser holds a session for this link, the earlier attempt succeeded, and the page navigates to
+    `/` without sending another `POST`. If the browser holds no session, the retry skips
+    `POST /-/logout` and posts only to `/-/redeem`, so it never ends a session that the earlier
+    attempt started. If the browser holds a session from a different link, the retry signs that
+    session out before redeeming this link.
+- **The logout page, `/-/logout`:** For a reader with a valid session, every page with navigation
+  links to `/-/logout`, and `/-/logout` shows a **Sign out** button. If the response to **Sign out**
+  never arrives or is not `204`, the page reports that it cannot tell whether the reader was signed
+  out and lets the reader retry. Retrying is safe because `POST /-/logout` without a valid session
+  also answers `204`.
+- **The session endpoint, `/-/session`:** `GET` and `HEAD` answer `200` with `application/json`.
+  `HEAD` has no body. The body of a `GET` response is `{"link":"lk-0123456789abcdef"}` with the
+  credential ID of the request's valid session, or `{"link":""}` when the request carries no valid
+  session. The credential ID carries no secret and cannot redeem a link. Like every other `GET` or
+  `HEAD` response, `/-/session` renews a valid session's cookie.
+- **Redemption:** `POST /-/redeem` takes `{"credential":"<id>.<secret>"}`. The `credential` field is
+  required and must be a string; `{}`, `null`, or any other value violates the `POST` contract below
+  and answers `403` with `This request is refused.`
+  - `204` with `Set-Cookie`: the server consumes the link and starts its session in one durable
+    transaction.
+  - `403` with `This link cannot be used. Request another link.`: the credential is malformed,
+    unknown, revoked, already redeemed, or has the wrong secret. All of these cases return the same
+    response.
+  - `409`: the request already carries a valid session. The link is not consumed.
+  - `503`: the browser state is unavailable, adding the redemption would exceed the 32 MiB state
+    limit, or the request's 15-second deadline expired before the transaction began writing
+    `state.new`; in the latter two cases the link is not consumed.
+- **Logout:** `POST /-/logout` takes `{}`.
+  - `204` with an empty `Set-Cookie` (`Max-Age=0`): the server removes the session's token hash from
+    the browser state while keeping the link marked as redeemed. A request without a valid session
+    also answers `204` and clears the cookie.
+  - `503`: the browser state is unavailable, or the request's 15-second deadline expired before the
+    transaction began writing `state.new` (leaving the session active).
+- **Every reader `POST`:** A `POST` to `/-/redeem` or `/-/logout` must carry:
+  - one `Origin` header, equal to `--origin`;
+  - one `Content-Type` header, `application/json` (optionally with `charset=utf-8` in any case, and
+    no other parameters);
+  - one `X-Valley-Reader` header, equal to `1`;
+  - no `Content-Encoding` header and no URL query (including a bare `?`); and
+  - a body of at most 1 KiB containing a single JSON object with exact key names, no duplicate or
+    unknown keys, and no trailing data. Any `POST` that fails these checks answers `403` with
+    `This request is refused.` Responses never carry CORS headers.
+- **The link:** `<id>` is `lk-` followed by 16 lowercase hex digits. `<secret>` is 32 bytes in
+  canonical unpadded base64url. The server compares the SHA-256 of the decoded secret with the
+  binding's verifier in constant time.
+- **The cookie:**
+  `Set-Cookie: __Host-valley-reader=<token>; Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000`.
+  `<token>` is `<id>.<random>`, where `<random>` is 32 bytes from `crypto/rand` in canonical
+  unpadded base64url. The browser state stores only the SHA-256 of the full token. Logout sets the
+  same cookie with an empty value and `Max-Age=0`.
+- **Sessions:** A token is valid while the browser state holds its hash and the stored authorization
+  binds its link to the principal and verifier under which the link was redeemed. A request that
+  carries the cookie more than once, or carries a malformed, unknown, signed-out, or revoked token,
+  is served as `anyone` without renewing the cookie. A request that carries the cookie while the
+  browser state is unavailable answers `503`. A request without the cookie is always served as
+  `anyone`.
+- **Renewal:** Every `GET` and `HEAD` response for a valid session, including `404` and error pages,
+  sends `Set-Cookie` again with `Max-Age=2592000` after the final check confirms the session is
+  still valid. If the request's 15-second deadline has expired by the final check, the server
+  answers `503` without `Set-Cookie`. Renewal extends how long the browser keeps the cookie; the
+  server stores no expiry timestamp.
+- **The final check before writing headers:** After rendering a `GET` or `HEAD` response, the server
+  re-checks both the stored authorization and the request's session before writing headers. If
+  either changed while the page was rendering, the server discards the rendered response and renders
+  again, up to three renders in total.
+
+The browser state lives in `browser/` beside the store's descriptor:
+
+| File         | Purpose                                                                  |
+| :----------- | :----------------------------------------------------------------------- |
+| `owner.lock` | `flock(2)` lock held by the single `valley-web` process for its lifetime |
+| `lock`       | `flock(2)` lock held during each state transaction                       |
+| `state`      | Committed state file (`the-valley/web-reader-state/v1`)                  |
+| `state.new`  | Temporary file written during a transaction and removed on startup       |
+
+```text
+the-valley/web-reader-state/v1
+link lk-0123456789abcdef alice <verifier> <SHA-256 of the session token, or ->
+```
+
+- **Records:** `state` contains one `link` line per redeemed link, sorted by credential ID. Each
+  line records the credential ID, principal, and verifier under which the link was redeemed,
+  followed by the lowercase hex SHA-256 of the active session token or `-` after logout. Link
+  records are never deleted.
+- **Limits:** `state` is at most 32 MiB (`readerstate.MaxState`). A redemption that would exceed 32
+  MiB answers `503` and leaves the link unconsumed.
+- **Modes:** Every file in `browser/` has mode `0600`. `valley-web` refuses symbolic links,
+  non-regular files, and any `state` file that grants group or other permissions.
 
 ---
 

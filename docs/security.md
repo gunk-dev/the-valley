@@ -322,9 +322,10 @@ key (`implemented`, `readaccess/access.go`).
 - **A named principal**, including the operator, is evaluated by the same two-consent rule in
   `readaccess/`. `valley-web` builds each response from the projects its reader may see: those the
   stored authorization lets `anyone` read, together with those it lets the reader's principal read
-  (`implemented`, `web/server/plan.go`). However, named grants publish nothing and `valley-web`
-  authenticates no reader, so it reads every request as `anyone` (**not built**). At the edge a
-  named principal can read only what `anyone` may read.
+  (`implemented`, `web/server/plan.go`). When started with `--origin`, `valley-web` serves a request
+  that carries a valid session cookie as that session's principal (`implemented`). However, the
+  publisher exports only what `anyone` may read, so at the edge a named principal still reads only
+  what `anyone` may read. Exporting a project that only named readers may read is **not built**.
 - **Membership, push access, approval and restacking** grant no read access at the edge.
 
 Which principals each project's policy names and which grants the registry declares are a
@@ -592,11 +593,38 @@ HTTP across an untrusted network exposes the token to anyone who can read that n
 
 **`valley-web` has read-only access to the store.** It opens the store read-only and writes nothing
 there (`implemented`, `web/export/store.go`). On NixOS its unit mounts the state directory read-only
-(`implemented`, `nix/web-receiver.nix`). The unit's only writable paths are temporary: its private
-`/tmp` and `/var/tmp` from `PrivateTmp` (hidden from other units and removed when the unit stops)
-and `/dev/shm` from `PrivateDevices` (`implemented`, `nix/web-receiver.nix`). Those temporary paths
-are separate from the state directory, and the receiver ignores them. A fault in `valley-web`, which
+(`implemented`, `nix/web-receiver.nix`). Its other writable paths are temporary: its private `/tmp`
+and `/var/tmp` from `PrivateTmp` (hidden from other units and removed when the unit stops) and
+`/dev/shm` from `PrivateDevices` (`implemented`, `nix/web-receiver.nix`). Those temporary paths are
+separate from the state directory, and the receiver ignores them. A fault in `valley-web`, which
 handles requests from arbitrary readers, reaches neither the staging area nor the token.
+
+**`valley-web` writes one directory of its own: the browser state.** When `--origin` is set,
+`valley-web` writes `browser/` inside the state directory and writes nothing else (`implemented`,
+`web/readerstate/`). On NixOS, `valley-web.service` can write only `<stateDir>/browser` (besides its
+temporary paths), and `valley-web-receive.service` cannot access `<stateDir>/browser`
+(`deployment choice`, `nix/web-receiver.nix`). `browser/` stores each redeemed link's credential ID,
+the principal and verifier it was redeemed under, and the SHA-256 hash of its session token. It
+never stores a link secret or a raw session token. With write access to `browser/`, a faulty or
+compromised `valley-web` can do these things and no more:
+
+- It can sign readers out, refuse to redeem a link, or make every session unusable.
+- It can make a link redeemable again by deleting its record from `browser/state`, but only while
+  the host's signed authorization still binds that link.
+- It cannot grant any session more access than the stored authorization allows for that session's
+  principal. It cannot modify the authorization, an export, or a repository, and it cannot read the
+  receiver's token.
+
+Because `valley-web` already has read access to the entire store, a fault in `valley-web` could
+already serve anything in the store. Writing `browser/` adds no read access beyond that.
+
+**Link secrets and session tokens stay in `valley-web`'s memory.** A redemption `POST` carries a
+link's secret, and every authenticated request carries a session token. When started with
+`--origin`, `valley-web` marks its process non-dumpable before opening `browser/` or listening, and
+refuses to start if it cannot (`implemented`, `web/nodump/`). That prevents core dumps and stops
+other processes running as the same user from reading `valley-web`'s memory through `ptrace` or
+`/proc`. On NixOS, `valley-web.service` also sets `LimitCORE=0` (`deployment choice`,
+`nix/web-receiver.nix`).
 
 Checks: `web-receiver-unit` verifies that the receiver refuses requests with no token, a wrong
 token, a non-Bearer scheme, or two `Authorization` headers before staging anything
@@ -633,8 +661,19 @@ effective read grants, which need both the project's consent and an instance gra
 
 - **No project scope:** A credential is bound to its principal only. What it reads changes as that
   principal's grants and the projects' consents change.
-- **Lifetime:** A link secret works once (`not built`: the edge enforces it). A session has no
-  expiry on the edge, and each authorized request renews its cookie (`not built`).
+- **Lifetime:** A link secret works once: the edge permanently records each redemption, and no
+  authorization can reset it (`implemented`, `web/readerstate/`). A session has no server-side
+  expiry on the edge, and every `GET` or `HEAD` response that passes the final session check renews
+  the browser cookie for 30 days (`implemented`). The cookie uses the `__Host-` prefix with
+  `Secure`, `HttpOnly`, and `SameSite=Lax`. Like the link it came from, a copied session token
+  grants its principal's read access for as long as the session remains valid.
+- **Sessions follow the host:** A session remains valid only while the host's signed authorization
+  binds its link to the principal and verifier under which the link was redeemed (`implemented`).
+  Revoking a link ends its session as soon as the receiver stores the next authorization. If a later
+  authorization restores that exact binding (for example after restoring the valley host from a
+  backup), the session becomes valid again unless the reader signed out. Losing every read grant
+  leaves the session reading only what `anyone` may read. Signing out permanently removes the
+  session token's hash from the edge.
 - **Revocation:** The host can revoke one credential, every credential of a principal, or a read
   grant (`implemented` on the host). Revocation reaches the edge with the next authorization the
   receiver stores. Each pass reads the credential file as it signs, and carries the links the file
@@ -650,6 +689,14 @@ effective read grants, which need both the project's consent and an instance gra
   access of that time. To cut off every link after a restore, the operator runs
   `valley-web-link revoke --all`. After a loss of the edge's state, the operator revokes every link
   and issues new ones.
+- **Edge state:** The edge creates an initial empty `browser/state` only when the stored
+  authorization contains no link bindings (`implemented`). Before `browser/state` is first created,
+  or after the edge loses `browser/state` or its whole volume, no link that the host had already
+  bound can be redeemed, so no already-used link becomes redeemable again. If `browser/state` cannot
+  be read, the edge leaves the file untouched and serves only `anyone` until the operator removes it
+  and re-initializes the state. Restoring an older, valid copy of `browser/state` onto the edge is
+  not detected: links redeemed after that backup was taken can be redeemed again while the host
+  still binds them.
 - **Limits:** These credentials never authorize push, approval, restacking, registry governance or
   credential enrollment. Passkeys stay the route to anything beyond reading. A principal with no
   keys may hold edge-read grants alone (`schema/identity.cue`, `implemented`).
@@ -659,7 +706,8 @@ effective read grants, which need both the project's consent and an instance gra
   the registry. Credential verifiers live in protected host state outside every repository: a
   credential file only root writes, never a secret (`implemented`). The secret of a new link never
   reaches a core dump: the link command makes its process non-dumpable, and the wrapper sets
-  `ulimit -c 0` (`implemented`).
+  `ulimit -c 0` (`implemented`). At the edge, `valley-web` also marks itself non-dumpable, so posted
+  link secrets and session tokens never reach a core dump either.
 
 ## Secrets
 
@@ -730,6 +778,9 @@ themselves when to deploy.
   authorization gives it until a pass can read it.
 - **A withdrawn project's plan text stays on the edge's disk.** The signed `export.json` keeps a
   withdrawn project's knots and comments until a later activation replaces the generation.
+- **A session's token is a bearer secret.** Anyone who copies a reader's session cookie can read as
+  that reader until the reader signs out or the host revokes the link. The edge enforces no
+  server-side session expiry.
 - **The receiver's token is a shared secret.** The publisher and the receiver share one bearer
   token, and every upload request carries it. Anyone holding the token can fill the receiver's
   request slots and staging area up to its caps, delaying uploads while the flood lasts. Plain HTTP

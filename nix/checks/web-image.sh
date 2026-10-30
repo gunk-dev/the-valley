@@ -31,6 +31,8 @@ inside() {
 }
 grep -Eq '^drwxr-x--- 990/990 .* (\./)?var/lib/valley-web/?$' listing ||
   fail "the state directory is not the receiver's, mode 0750: $(grep 'var/lib/valley-web' listing)"
+grep -Eq '^drwx------ 991/990 .* (\./)?var/lib/valley-web/browser/?$' listing ||
+  fail "the browser state's directory is not valley-web's alone, mode 0700: $(grep 'var/lib/valley-web/browser' listing)"
 grep -qx 'valley-web-receive:x:990:990:valley-web-receive:/var/empty:/bin/false' "$(inside /etc/passwd)" ||
   fail "/etc/passwd does not name the receiver's user"
 grep -qx 'valley-web:x:991:990:valley-web:/var/empty:/bin/false' "$(inside /etc/passwd)" ||
@@ -45,5 +47,5 @@ for program in valley-web valley-web-receive; do
   [ -n "$git" ] || fail "$program names no git"
   [ -x "root$git" ] || fail "$program runs $git, which the image does not hold"
 done
-echo "web-image: the image holds both programs, the git they run, their users and the state directory"
+echo "web-image: the image holds both programs, the git they run, their users, the state directory and the browser state's directory"
 touch "$out"

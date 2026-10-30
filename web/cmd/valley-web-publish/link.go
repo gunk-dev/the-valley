@@ -24,6 +24,7 @@ import (
 	"the-valley/exactjson"
 	"the-valley/readaccess"
 	"the-valley/web/export"
+	"the-valley/web/nodump"
 )
 
 const linkUsage = `usage: valley-web-publish link issue --principal NAME [--note TEXT] FLAGS
@@ -694,7 +695,7 @@ func issueLink(ctx context.Context, c linkConfig, stdout, stderr io.Writer) erro
 	case len(f.active()) >= export.MaxBindings:
 		return fmt.Errorf("%d links are active, the most an authorization carries; revoke one first", export.MaxBindings)
 	}
-	if err := noCoreDump(); err != nil {
+	if err := nodump.Set(); err != nil {
 		return fmt.Errorf("could not keep the secret out of a core dump: %w", err)
 	}
 	var id string

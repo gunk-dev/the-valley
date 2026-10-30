@@ -179,14 +179,24 @@ publish --out first > /dev/null
 test -s publisher/verifier || fail "the first pass made no verifier line"
 echo edge-token-0123456789abcdef0123456789 > token
 echo another-token-0123456789abcdef0123456 > wrong
+# valley-web signs readers in at the origin https://example.org, and keeps
+# their sessions in edge/browser, which the deployment makes for it alone.
+# Before the receiver makes its store, valley-web cannot open it and
+# exits, for its service to start it again.
+mkdir -p edge
+mkdir -m 700 edge/browser
+if valley-web --state edge/store --listen 127.0.0.1:0 --origin https://example.org 2> early.log; then
+  fail "valley-web started before the receiver made its store"
+fi
 receive() {
   start valley-web-receive receive.log valley-web-receive --state edge/store --listen 127.0.0.1:0 \
     --instance valley-host --destination example.org --verifiers publisher/verifier --token-file token
   receiver_pid=$pid receiver=http://$addr
 }
 serve() {
-  start valley-web web.log valley-web --state edge/store --listen 127.0.0.1:0
+  start valley-web web.log valley-web --state edge/store --listen 127.0.0.1:0 --origin https://example.org
   web_pid=$pid web=$addr
+  cat web.log >> web.logs
 }
 receive
 publish --receiver "$receiver" --receiver-token token > pass.out
@@ -197,6 +207,11 @@ test -f edge/store && test -d edge/v2/generations && test -f edge/v2/authorizati
   fail "the receiver did not make the store's descriptor, generations and authorization"
 serve
 serves /tools/app app-readme-text
+# valley-web made its browser state when it started, under authorization
+# 2, which binds no link, and the state holds no link yet.
+[ "$(cat edge/browser/state)" = the-valley/web-reader-state/v1 ] ||
+  fail "valley-web did not make an empty browser state: $(cat edge/browser/state)"
+[ "$(stat -c %a edge/browser/state)" = 600 ] || fail "the browser state is mode $(stat -c %a edge/browser/state)"
 # The README renders as Markdown: its heading has an id, and its relative
 # link goes to the file's page at the same commit.
 app_tip=$(git -C srv/app.git rev-parse main)
@@ -570,6 +585,134 @@ link revoke --all > /dev/null
 policy > /dev/null
 [ "$(bindings)" = 0 ] || fail "revoke --all after a host restore left $(bindings) bindings"
 link list --check > /dev/null || fail "after revoke --all a link is pending"
+
+# Readers sign in, as a reader page's script asks: each request is a
+# POST from the origin, of JSON, with X-Valley-Reader: 1. A link the host
+# issues redeems once, into a session whose cookie each response renews,
+# an archive's too. Of eight concurrent redemptions of one link, one wins.
+# A session survives both servers' restarts, ends at logout, and ends at
+# the pass that delivers its link's revocation. A second valley-web over
+# the same browser state refuses to start. Neither a link's secret nor a
+# session's token reaches a log or the browser state.
+reader_post() {
+  curl -sS --max-time 10 -o "$TMPDIR/reply" -D "$TMPDIR/reply.headers" -w '%{http_code}' \
+    -H 'Origin: https://example.org' -H 'Content-Type: application/json' -H 'X-Valley-Reader: 1' \
+    -H "Cookie: __Host-valley-reader=${3:-}" --data-binary "$2" "http://$web$1"
+}
+redeem() { reader_post /-/redeem "{\"credential\":\"$1\"}" "${2:-}"; }
+token_of() { tr -d '\r' < "$TMPDIR/reply.headers" | sed -n 's/^Set-Cookie: __Host-valley-reader=\([^;]*\);.*/\1/p'; }
+as_reader() {
+  curl -sS --max-time 10 -o "$TMPDIR/body" -D "$TMPDIR/headers" -w '%{http_code}' \
+    -H "Cookie: __Host-valley-reader=$1" "http://$web$2"
+}
+renewed() {
+  tr -d '\r' < "$TMPDIR/headers" |
+    grep -qx "Set-Cookie: __Host-valley-reader=$1; Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=2592000"
+}
+# redact FILE: the file for a failure's message, with each credential and
+# session token in it cut to its credential ID.
+redact() { sed -E 's/(lk-[0-9a-f]{16})\.[A-Za-z0-9_-]{43}/\1.<redacted>/g' "$1"; }
+# new_link PRINCIPAL: a link issued and delivered; its credential.
+new_link() {
+  local url
+  url=$(issue_link --principal "$1" 2> /dev/null)
+  policy > /dev/null
+  echo "${url#*#}" | tee -a secrets
+}
+cred=$(new_link alice)
+[ "$(redeem "$cred")" = 204 ] || fail "a host-issued link did not redeem: $(cat reply)"
+token=$(token_of)
+echo "$token" >> secrets
+[[ $token =~ ^${cred%%.*}\.[A-Za-z0-9_-]{43}$ ]] || fail "the redemption set no session token: $(redact reply.headers)"
+[ "$(redeem "$cred")" = 403 ] && [ "$(cat reply)" = "This link cannot be used. Request another link." ] ||
+  fail "a redeemed link redeemed again: $(cat reply)"
+[ "$(as_reader "$token" /tools/app)" = 302 ] && renewed "$token" || fail "a session was not renewed on a redirect"
+[ "$(as_reader "$token" /tools/nosuch/)" = 404 ] && renewed "$token" || fail "a session was not renewed on a 404"
+[ "$(as_reader "$token" /-/knots)" = 200 ] && grep -qF '<a href="/-/logout">Sign out</a>' body ||
+  fail "a session's knots page does not link to Sign out"
+if get /-/knots > /dev/null && grep -qF 'Sign out' body; then fail "anyone's knots page links to Sign out"; fi
+archive=$(get /tools/app/source/archive/main.tar.gz)
+archive=${archive#302 }
+curl -sS --max-time 10 -o anonymous.tar.gz "http://$web$archive"
+[ "$(as_reader "$token" "$archive")" = 200 ] && renewed "$token" && cmp -s body anonymous.tar.gz ||
+  fail "a session's download of app's archive differs, or was not renewed"
+tr -d '\r' < headers | grep -qx 'Cache-Control: private, no-store' && tr -d '\r' < headers | grep -qx 'Content-Type: application/gzip' &&
+  tr -d '\r' < headers | grep -q '^Content-Disposition: attachment' || fail "a session's archive lost its headers: $(redact headers)"
+race=$(new_link alice)
+racers=()
+for i in $(seq 8); do
+  curl -sS --max-time 10 -o /dev/null -w '%{http_code}\n' -H 'Origin: https://example.org' \
+    -H 'Content-Type: application/json' -H 'X-Valley-Reader: 1' --data-binary "{\"credential\":\"$race\"}" \
+    "http://$web/-/redeem" > "race.$i" &
+  racers+=("$!")
+done
+wait "${racers[@]}"
+[ "$(cat race.* | grep -c '^204$')" = 1 ] && [ "$(cat race.* | grep -c '^403$')" = 7 ] ||
+  fail "eight concurrent redemptions of one link answered $(cat race.* | tr '\n' ' ')"
+stop "$web_pid"
+stop "$receiver_pid"
+receive
+serve
+[ "$(as_reader "$token" /tools/app)" = 302 ] && renewed "$token" || fail "a session did not survive both servers' restarts"
+if valley-web --state edge/store --listen 127.0.0.1:0 --origin https://example.org 2> second.log; then
+  fail "a second valley-web started over the same browser state"
+fi
+grep -q "another process owns the browser state" second.log || fail "a second valley-web failed for another reason: $(cat second.log)"
+[ "$(reader_post /-/logout '{}' "$token")" = 204 ] &&
+  tr -d '\r' < reply.headers | grep -qx 'Set-Cookie: __Host-valley-reader=; Secure; HttpOnly; Path=/; SameSite=Lax; Max-Age=0' ||
+  fail "logout did not clear the cookie: $(redact reply.headers)"
+[ "$(as_reader "$token" /tools/app)" = 302 ] && ! renewed "$token" || fail "a signed-out session is still renewed"
+[ "$(reader_post /-/logout '{}' "$token")" = 204 ] || fail "a second logout failed"
+revoked=$(new_link alice)
+[ "$(redeem "$revoked")" = 204 ] || fail "a third link did not redeem"
+revoked_token=$(token_of)
+echo "$revoked_token" >> secrets
+link revoke "${revoked%%.*}" > /dev/null
+policy > /dev/null
+[ "$(as_reader "$revoked_token" /tools/app)" = 302 ] && ! renewed "$revoked_token" ||
+  fail "the session of a revoked link is still renewed"
+
+# A lost browser state is never made again under an authorization that
+# binds a link: redemption and requests with a cookie answer 503, and
+# anyone is served. The guide's recovery revokes every link, delivers an
+# authorization that binds none, which the next request makes the state
+# under, and issues new links.
+pending=$(new_link alice)
+stop "$web_pid"
+mv edge/browser/state lost.state
+serve
+[ "$(redeem "$pending")" = 503 ] || fail "with its browser state lost, a redemption answered $(cat reply)"
+[ "$(as_reader "$revoked_token" /tools/app)" = 503 ] || fail "with its browser state lost, a request with a cookie was served"
+[ "$(get /tools/app | cut -d' ' -f1)" = 302 ] || fail "with its browser state lost, anyone was not served"
+[ ! -e edge/browser/state ] || fail "valley-web made a browser state under an authorization that binds a link"
+link revoke --all > /dev/null
+policy > /dev/null
+get /-/knots > /dev/null
+[ "$(cat edge/browser/state)" = the-valley/web-reader-state/v1 ] || fail "no empty browser state was made once no link was bound"
+[ "$(redeem "$(new_link alice)")" = 204 ] || fail "a new link did not redeem after the recovery: $(cat reply)"
+recovered=$(token_of)
+echo "$recovered" >> secrets
+# A browser state that cannot be read is never replaced: anyone is served,
+# and a request with a cookie answers 503, until the operator delivers an
+# authorization that binds no link, removes the state while valley-web is
+# stopped, and starts it.
+stop "$web_pid"
+echo garbage > edge/browser/state
+serve
+grep -q "the browser state is unavailable" web.log || fail "valley-web did not say its browser state is unavailable: $(cat web.log)"
+[ "$(as_reader "$recovered" /tools/app)" = 503 ] || fail "with its browser state unreadable, a request with a cookie was served"
+[ "$(get /-/knots | cut -c1-3)" = 200 ] || fail "with its browser state unreadable, anyone was not served"
+[ "$(cat edge/browser/state)" = garbage ] || fail "valley-web replaced a browser state it could not read"
+link revoke --all > /dev/null
+policy > /dev/null
+stop "$web_pid"
+rm edge/browser/state
+serve
+[ "$(cat edge/browser/state)" = the-valley/web-reader-state/v1 ] || fail "valley-web did not make the browser state again"
+if grep -rqFf secrets --exclude=secrets --exclude=reply.headers --exclude=headers --exclude='race.*' \
+  ./*.log web.logs edge/browser links publisher; then
+  fail "a link's secret or a session's token is in a log, the browser state, the credential file or the publisher's state"
+fi
 
 # A store whose authorization is removed serves no project, though
 # valley-web has the export indexed already; once it is back, it serves.

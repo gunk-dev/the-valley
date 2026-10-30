@@ -46,6 +46,21 @@
 #      pass fails because it cannot send its authorization, and the next
 #      pass after the receiver restarts signs a new authorization, with a
 #      later sequence, that applies the withdrawal.
+#   7. Readers sign in at the origin valley-web is given, with its browser
+#      state in a directory the test makes for it. valley-web started
+#      before the receiver made its store exits, and one started under
+#      an authorization that binds no link makes an empty state. A link
+#      the host issues redeems once, into a session renewed on a
+#      redirect, a 404, a page and an archive, whose bytes match
+#      anyone's download; of eight concurrent redemptions of one link one
+#      wins; the session survives both servers' restarts, ends at logout,
+#      and ends at the pass that delivers its link's revocation; a second
+#      valley-web over the same browser state refuses to start. A lost
+#      state is not made again while a link is bound, with redemption and
+#      cookies answered 503 and anyone served, until every link is
+#      revoked and a pass delivers that; an unreadable state is kept as it
+#      is until the operator removes it. No log, no browser state and no
+#      host state holds a link's secret or a session's token.
 #
 # The check runs inside the Nix build sandbox as a single user. The
 # separation between the receiver's user and valley-web's user is

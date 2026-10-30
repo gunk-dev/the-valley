@@ -41,6 +41,11 @@ type harness struct {
 	store *export.Store
 	srv   *Server
 	now   time.Time
+	// browser is the browser state's directory, once withReaders gives
+	// the server one, and kept what that server logged.
+	browser string
+	logMu   sync.Mutex
+	kept    []string
 }
 
 // newHarness serves the fixture's export, two minutes after it was

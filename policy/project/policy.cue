@@ -48,6 +48,8 @@ project: {
 		"sigverify-e2e",
 		"web-unit",
 		"web-server-unit",
+		"web-reader-state-crash",
+		"web-reader-browser-e2e",
 		"web-receiver-unit",
 		"readaccess-unit",
 		"rebase-unit",
@@ -91,14 +93,16 @@ project: {
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
 	// publish-e2e, worker-e2e, restack-host-e2e and web-publisher-e2e boot
-	// NixOS machines.
+	// NixOS machines. web-reader-browser-e2e boots no machine, but its
+	// closure holds Chromium, and it runs a browser in about 2 GiB.
 	// Every other check here takes seconds once its packages are built.
-	checks: "integrator-e2e": cost:    "slow"
-	checks: "ssh-e2e": cost:           "slow"
-	checks: "publish-e2e": cost:       "slow"
-	checks: "worker-e2e": cost:        "slow"
-	checks: "restack-host-e2e": cost:  "slow"
-	checks: "web-publisher-e2e": cost: "slow"
+	checks: "integrator-e2e": cost:         "slow"
+	checks: "ssh-e2e": cost:                "slow"
+	checks: "publish-e2e": cost:            "slow"
+	checks: "worker-e2e": cost:             "slow"
+	checks: "restack-host-e2e": cost:       "slow"
+	checks: "web-publisher-e2e": cost:      "slow"
+	checks: "web-reader-browser-e2e": cost: "slow"
 
 	// Each class below is one part of the tree and the checks that read it.
 	// A path in two classes requires both sets. A Go module's unit check is
@@ -239,18 +243,46 @@ project: {
 	}
 
 	// The web UI's module: the export contract, its shared fixture, the
-	// publisher, the server, and the receiver. The publisher's tests also
-	// read each project's policy/read and the instance's registry under the
-	// read and identity schemas. web-push-e2e runs the three programs as
-	// they ship. Changes require all four checks.
+	// publisher, the server and its browser state, and the receiver. The
+	// publisher's tests also read each project's policy/read and the
+	// instance's registry under the read and identity schemas.
+	// web-push-e2e runs the three programs as they ship, and
+	// web-reader-state-crash kills valley-web inside its browser state's
+	// transactions. Changes require all five checks.
 	classes: web: {
-		paths: "web/**":               true
-		paths: "schema/read.cue":      true
-		paths: "schema/identity.cue":  true
-		requires: "web-unit":          true
-		requires: "web-server-unit":   true
-		requires: "web-receiver-unit": true
-		requires: "web-push-e2e":      true
+		paths: "web/**":                    true
+		paths: "schema/read.cue":           true
+		paths: "schema/identity.cue":       true
+		requires: "web-unit":               true
+		requires: "web-server-unit":        true
+		requires: "web-reader-state-crash": true
+		requires: "web-receiver-unit":      true
+		requires: "web-push-e2e":           true
+	}
+
+	// What a browser engine runs or is served by on a reader page:
+	// web-reader-browser-e2e runs the packaged valley-web under headless
+	// Chromium. So it is required for the reader script and pages, the
+	// layout and the stylesheet whose hash every policy carries, the
+	// rendering and its policies, the dispatch and headers in server.go,
+	// the reader handlers, the command that sets up the browser state, the
+	// check's own test, and the packaging that builds the binary and its
+	// assets. Its definition is its own class's, check-<name> below. The
+	// publisher, package export, archives and the projection of the graph
+	// are not here: a change to them alone needs no browser.
+	classes: "reader-browser": {
+		paths: "web/server/assets/reader.js":        true
+		paths: "web/server/assets/style.css":        true
+		paths: "web/server/templates/redeem.tmpl":   true
+		paths: "web/server/templates/logout.tmpl":   true
+		paths: "web/server/templates/layout.tmpl":   true
+		paths: "web/server/render.go":               true
+		paths: "web/server/server.go":               true
+		paths: "web/server/reader.go":               true
+		paths: "web/cmd/valley-web/main.go":         true
+		paths: "web/cmd/valley-web/browser_test.go": true
+		paths: "nix/packages.nix":                   true
+		requires: "web-reader-browser-e2e":          true
 	}
 
 	// Read access: the two consents a reader needs, the evaluator that
@@ -467,7 +499,7 @@ project: {
 		"integrator.nix": ["integrator-unit", "integrator-e2e"]
 		"signers.nix": ["signers-e2e"]
 		"sigverify.nix": ["sigverify-unit", "sigverify-e2e"]
-		"web.nix": ["web-unit", "web-server-unit", "web-receiver-unit", "web-image", "readaccess-unit"]
+		"web.nix": ["web-unit", "web-server-unit", "web-reader-state-crash", "web-receiver-unit", "web-image", "readaccess-unit"]
 		"schema.nix": ["cue-vet", "attest-schema", "identity-schema"]
 		"knowledge.nix": ["knowledge-lint-consumer", "knowledge-lint-rejects", "prose-format"]
 		"hooks.nix": ["valleyhook-unit", "change-unit", "mirror-e2e", "protect-e2e", "init-e2e", "bus-e2e"]

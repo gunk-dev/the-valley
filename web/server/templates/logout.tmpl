@@ -1,0 +1,12 @@
+{{define "content"}}
+<header class="top">
+  <div>
+    <h1>Sign out</h1>
+    <p class="muted">{{if .Session}}Signing out ends this browser's session. The read link that started it cannot be used again.{{else}}This browser is not signed in.{{end}}</p>
+  </div>
+</header>
+<div class="card" id="reader" data-page="logout" data-session="{{if .Session}}1{{else}}0{{end}}">
+  <p class="notice" id="r-unknown" hidden>This browser cannot tell whether you were signed out. Try again.</p>
+  <p class="controls">{{if .Session}}<button type="button" id="r-logout" hidden>Sign out</button> {{end}}<a href="/">Return to the source</a></p>
+</div>
+{{end}}

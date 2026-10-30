@@ -1,0 +1,17 @@
+{{define "content"}}
+<header class="top">
+  <div>
+    <h1>Continue as reader</h1>
+    <p class="muted">This read link signs this browser in as the reader it was issued for. It works once, so do not share it.</p>
+  </div>
+</header>
+<div class="card" id="reader" data-page="redeem" data-session="{{if .Session}}1{{else}}0{{end}}">
+  <p id="r-switching"{{if not .Session}} hidden{{end}}>This browser is already signed in. Sign out first to use this link instead.</p>
+  <p class="notice" id="r-missing" hidden>This page needs the full link you were sent, including the part after #. Open the full link again.</p>
+  <p class="notice" id="r-refused" hidden>This link cannot be used. Request another link.</p>
+  <p class="notice" id="r-other" hidden>This browser is already signed in as a reader. Click below to sign out and use this link instead.</p>
+  <p class="notice" id="r-unknown" hidden>This browser cannot tell whether the server used your link. Your link may already be used. It is kept on this page, so you can try again. If the server says the link cannot be used, request another link.</p>
+  <p class="controls"><button type="button" id="r-redeem" hidden>Continue as reader</button><button type="button" id="r-switch" hidden>Sign out and continue with this link</button></p>
+</div>
+<noscript><p class="notice">This page needs JavaScript to send your link.</p></noscript>
+{{end}}

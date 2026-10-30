@@ -154,14 +154,16 @@ const servingLock = "serving.lock"
 // exclusively for a rename alone, so the wait is short, but a receiver
 // stopped while it holds it would hold it for as long as it stays
 // stopped: HoldServing waits only until ctx is done, and then fails with
-// ctx's error. A store opened read-only takes it too: the lock file is
-// opened read-only.
+// ctx's error. It fails so too when ctx is done by the time it takes the
+// lock, and gives the lock back, so nothing is started past a deadline. A
+// store opened read-only takes it too: the lock file is opened read-only.
 func (s *Store) HoldServing(ctx context.Context) (release func(), err error) {
 	return s.holdServing(ctx, syscall.LOCK_SH)
 }
 
 // holdServing takes the serving lock as how says, waiting for it until
-// ctx is done.
+// ctx is done. A ctx done once the lock is taken gives the lock back and
+// fails, so neither a rename nor a response's headers follow it.
 func (s *Store) holdServing(ctx context.Context, how int) (func(), error) {
 	flags := os.O_RDONLY
 	if how == syscall.LOCK_EX {
@@ -186,6 +188,10 @@ func (s *Store) holdServing(ctx context.Context, how int) (func(), error) {
 			f.Close()
 			return nil, fmt.Errorf("waiting for %s: %w", s.path(servingLock), ctx.Err())
 		}
+	}
+	if err := ctx.Err(); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("holding %s: %w", s.path(servingLock), err)
 	}
 	var once sync.Once
 	return func() { once.Do(func() { f.Close() }) }, nil

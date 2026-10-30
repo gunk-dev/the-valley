@@ -241,9 +241,10 @@ principal read access to that project, or to all projects, at the edge. **`anyon
 who presents no credential. It has its own entry in the registry with only read grants and no SSH
 key, whereas an untagged SSH key in `authorizedKeys` pushes as an anonymous pusher. A project is
 **public** at an edge when both consents authorize `anyone` to read it there. The consent evaluator
-treats the operator the same as any other named principal (`implemented`). However, the web
-publisher exports only what `anyone` may read, and `valley-web` serves all readers anonymously;
-named grants publish nothing, and serving named readers at the edge is **not built** (see
+treats the operator the same as any other named principal (`implemented`). A reader can sign in at
+the edge with a read link, and `valley-web` serves that reader's requests as the link's principal
+(`implemented`). However, the web publisher exports only what `anyone` may read, so named grants
+publish nothing, and exporting projects for named readers is **not built** (see
 [Read access](./architecture.md#read-access)).
 
 _How Nix and CUE realize this:_ To manage principals and grants as reviewed changes in the instance

@@ -245,6 +245,7 @@ import (
 	"time"
 
 	"the-valley/web/export"
+	"the-valley/web/readerstate"
 )
 
 // StaleAfter is how old an export may be before its pages mark it stale.
@@ -367,13 +368,22 @@ type Config struct {
 	// Log is told of each failure a reader sees only as an error page.
 	// Nil logs with the standard logger.
 	Log func(error)
+	// Readers is the browser state, which holds the read links redeemed
+	// here and their sessions, and Origin the public HTTPS origin, such
+	// as https://example.org, that a reader page's POST must come from.
+	// With no Readers, every request is read as anyone, and the server
+	// has no reader pages.
+	Readers *readerstate.State
+	Origin  string
 }
 
 // Server is the read side's HTTP handler.
 type Server struct {
-	store *export.Store
-	now   func() time.Time
-	log   func(error)
+	store   *export.Store
+	now     func() time.Time
+	log     func(error)
+	readers *readerstate.State
+	origin  string
 	// timeout is requestTimeout, gitTime is gitTimeout, and maxResponse
 	// is MaxResponse. A test shortens any of them.
 	timeout     time.Duration
@@ -430,9 +440,8 @@ type Server struct {
 	freed    chan struct{}
 	used     uint64
 
-	// reader, when set, names the principal each request is read as.
-	// Nil reads every request as anyone, as valley-web does. Tests name
-	// readers with it.
+	// reader, when set, names the principal each request is read as, in
+	// place of its session. Tests name readers with it.
 	reader func(*http.Request) string
 
 	// The test hooks. viewed is called once a request has its view,
@@ -461,7 +470,7 @@ type Server struct {
 
 // New is a Server over c's store.
 func New(c Config) *Server {
-	s := &Server{store: c.Store, now: c.Now, log: c.Log,
+	s := &Server{store: c.Store, now: c.Now, log: c.Log, readers: c.Readers, origin: c.Origin,
 		timeout: requestTimeout, gitTime: gitTimeout, maxResponse: MaxResponse,
 		renders:    make(chan struct{}, MaxRendering),
 		anonLoader: make(chan struct{}, 1), loaders: make(chan struct{}, MaxLoads-1),
@@ -630,8 +639,12 @@ type request struct {
 	// false for a path whose segments do not unescape.
 	parts []string
 	ok    bool
-	// reader is the principal the request is read as.
+	// reader is the principal the request is read as, and sess the
+	// session it carries, which names it. rpage is the reader page the
+	// path names, or "".
 	reader string
+	sess   session
+	rpage  string
 	// ctx is the context the request waits and renders under. It ends
 	// at the request's deadline, or when its reader goes away. git is
 	// the context a source request holds its git slot under: it runs git
@@ -664,42 +677,66 @@ type request struct {
 	permanent   bool
 }
 
-// ServeHTTP reads the stored authorization, renders the response under
-// it, and reads it again before the first byte is written. A response the
-// authorization changed under is not written: the request is rendered
-// again under the new one, at most maxRenders times in all, and then
-// answers 503. So every response, a redirect and an error page too, is
-// one the authorization stored when it is written allows.
+// ServeHTTP answers a POST to a reader page once, with no rendering
+// (post). Every other request it reads under the stored authorization and
+// the session the request carries, renders its response, and reads both
+// again before the first byte is written. A response the authorization or
+// the session changed under is not written: the request is rendered again
+// under the new ones, at most maxRenders times in all, and then answers
+// 503. So every response, a redirect and an error page too, is one the
+// authorization stored when it is written allows its reader. A response
+// whose reader has a valid session renews the session's cookie, only once
+// that last check found it valid.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
 	parts, ok := segments(r.URL.EscapedPath())
+	rpage := s.readerPageOf(parts, ok)
 	policy := policyFor(parts, ok)
-	reader := export.Anyone
-	if s.reader != nil {
-		reader = s.reader(r)
+	if rpage != "" {
+		policy = readerPolicy
+		if r.Method == http.MethodPost && posted(rpage) {
+			setHeaders(w.Header(), policy)
+			s.post(ctx, w, r, rpage)
+			return
+		}
 	}
+	carried, token := carriedCookie(r)
 	for render := 1; ; render++ {
 		h := w.Header()
 		for k := range h {
 			delete(h, k)
 		}
 		setHeaders(h, policy)
-		q := &request{s: s, w: w, r: r, parts: parts, ok: ok, reader: reader, ctx: ctx, now: s.now(),
+		q := &request{s: s, w: w, r: r, parts: parts, ok: ok, rpage: rpage, ctx: ctx, now: s.now(),
 			auth: s.readAuthorization()}
+		s.prepare(ctx, q.auth)
+		q.sess = s.resolve(ctx, carried, token, q.auth.a)
+		q.reader = q.sess.reader
+		if s.reader != nil {
+			q.reader = s.reader(r)
+		}
 		q.serve()
 		if s.checked != nil {
 			s.checked()
 		}
 		// The last read and the response's headers happen under the
-		// serving lock, shared, and the receiver renames a new
-		// authorization into place under it, exclusively. A response
-		// whose headers are written after the receiver replies was
-		// checked against the new authorization. The wait ends with the
-		// request's deadline, or when its reader goes away, and then
-		// nothing rendered is written: busy answers 503, or nothing to a
-		// reader that went away.
-		release, err := s.store.HoldServing(ctx)
+		// browser state's read lock and the serving lock, shared, in that
+		// order. The receiver renames a new authorization into place under
+		// the serving lock, exclusively, and a logout replaces the browser
+		// state under its write lock. So a response whose headers are
+		// written after the receiver replies, or after a logout answers,
+		// was checked against what they stored. The wait for either lock
+		// ends with the request's deadline, or when its reader goes away,
+		// and then nothing rendered is written: busy answers 503, or
+		// nothing to a reader that went away, and no session is renewed.
+		state, done, err := s.readState(ctx)
+		var release func()
+		if err == nil {
+			if release, err = s.store.HoldServing(ctx); err != nil {
+				done()
+			}
+		}
 		if err != nil {
 			q.discard()
 			if ctx.Err() == nil {
@@ -709,15 +746,30 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			q.write(func() {})
 			return
 		}
-		if s.readAuthorization().same(q.auth) {
+		auth := s.readAuthorization()
+		if auth.same(q.auth) && s.sessionOf(state, carried, token, auth.a).same(q.sess) {
 			if s.starting != nil {
 				s.starting()
 			}
-			q.write(release)
+			// A response whose deadline passed by its last check is not
+			// written, and renews no session.
+			if ctx.Err() != nil {
+				release()
+				done()
+				q.discard()
+				q.busy()
+				q.write(func() {})
+				return
+			}
+			if q.sess.valid {
+				h.Set("Set-Cookie", sessionCookie(q.sess.token))
+			}
+			q.write(sync.OnceFunc(func() { release(); done() }))
 			q.drop()
 			return
 		}
 		release()
+		done()
 		q.discard()
 		if render == maxRenders {
 			q.busy()
@@ -739,10 +791,22 @@ const maxRenders = 3
 // view once it has rendered, before serve returns.
 func (q *request) serve() {
 	if q.r.Method != http.MethodGet && q.r.Method != http.MethodHead {
-		q.w.Header().Set("Allow", "GET, HEAD")
+		allow, text := "GET, HEAD", "This server answers GET and HEAD alone."
+		if posted(q.rpage) {
+			allow, text = "GET, HEAD, POST", "This page answers GET, HEAD and POST alone."
+		}
+		q.w.Header().Set("Allow", allow)
 		q.page(http.StatusMethodNotAllowed, "error", "Method not allowed", errorPage{
-			Heading: "Method not allowed", Text: "This server answers GET and HEAD alone.",
+			Heading: "Method not allowed", Text: text,
 		})
+		return
+	}
+	if q.sess.unavailable {
+		q.unavailablePage()
+		return
+	}
+	if q.rpage != "" {
+		q.readerPage()
 		return
 	}
 	if q.auth.a == nil {

@@ -149,6 +149,26 @@ func TestStoreAuthorizesWhileTheActivationLockIsHeld(t *testing.T) {
 	}
 }
 
+// The serving lock is never held under a context that is done: a server
+// whose deadline passed takes it, gives it back and fails, though it is
+// free, so it writes no response's headers past its deadline.
+func TestTheServingLockIsNotHeldPastADeadline(t *testing.T) {
+	s := openStore(t, payload(t))
+	done, cancel := context.WithCancel(context.Background())
+	cancel()
+	if release, err := s.HoldServing(done); !errors.Is(err, context.Canceled) {
+		if err == nil {
+			release()
+		}
+		t.Errorf("HoldServing under a done context gave %v", err)
+	}
+	release, err := s.HoldServing(context.Background())
+	if err != nil {
+		t.Fatalf("the serving lock was not given back: %v", err)
+	}
+	release()
+}
+
 // A store with no authorization builds no repository and needs no bundle,
 // and a stored authorization that cannot be read is no high-water mark of
 // zero: nothing is stored over it.

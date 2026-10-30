@@ -172,6 +172,10 @@ let
       }
     ];
   };
+  # The receiver and valley-web with readers signing in at an origin.
+  webReaderHost = webReceiverHost.extendModules {
+    modules = [ { services.valley.webReceiver.origin = "https://example.org"; } ];
+  };
   # The receiver with its token in the Nix store, and with no verifier.
   storeTokenWebReceiverHost = webReceiverHost.extendModules {
     modules = [
@@ -212,6 +216,7 @@ let
     ++ webPublisherHost.config.assertions
     ++ webPublisherOffHost.config.assertions
     ++ webReceiverHost.config.assertions
+    ++ webReaderHost.config.assertions
     ++ webReceiverOffHost.config.assertions
   );
 
@@ -943,7 +948,30 @@ let
     || web.serviceConfig.ReadOnlyPaths or [ ] != [ "-/var/lib/valley-web" ]
     || web.serviceConfig.MemoryMax or null != "1G"
     || !(builtins.elem "valley-web-receive.service" web.after)
-    || !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080" web.serviceConfig.ExecStart);
+    || !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080" web.serviceConfig.ExecStart)
+    || receive.serviceConfig ? InaccessiblePaths
+    || lib.any (lib.hasInfix "/var/lib/valley-web") cfg.systemd.tmpfiles.rules;
+
+  # With an origin, valley-web signs readers in: it takes --origin, and may
+  # write browser/ in the state directory alone, which tmpfiles makes as
+  # its own, mode 0700, under the state directory made as the receiver's.
+  # Its unit takes no core dump. The receiver's unit cannot reach browser/.
+  webReaderMisrendered =
+    let
+      cfg = webReaderHost.config;
+      receive = cfg.systemd.services.valley-web-receive.serviceConfig;
+      web = cfg.systemd.services.valley-web.serviceConfig;
+    in
+    !(lib.hasSuffix "/bin/valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin https://example.org" web.ExecStart)
+    || web.ReadOnlyPaths or [ ] != [ "-/var/lib/valley-web" ]
+    || web.ReadWritePaths or [ ] != [ "/var/lib/valley-web/browser" ]
+    || web.LimitCORE or null != 0
+    || receive.InaccessiblePaths or [ ] != [ "-/var/lib/valley-web/browser" ]
+    || receive.StateDirectory or null != "valley-web"
+    || !(lib.all (r: builtins.elem r cfg.systemd.tmpfiles.rules) [
+      "d /var/lib/valley-web 0750 valley-web-receive valley-web -"
+      "d /var/lib/valley-web/browser 0700 valley-web valley-web -"
+    ]);
 in
 {
   module-eval =
@@ -1039,6 +1067,8 @@ in
       throw "valley module-eval: web receiver machinery rendered for a host that imports its module and never enabled it"
     else if webReceiverMisrendered then
       throw "valley module-eval: the web receiver and valley-web must be two confined units started at boot, restarted on failure and requiring nothing of each other, as two users of the valley-web group, the receiver owning the state directory at 0750 with its token as a credential, its pinned verifiers, its caps and its own memory cap, and valley-web after it with the state directory read-only, no credential and a memory cap of its own"
+    else if webReaderMisrendered then
+      throw "valley module-eval: with an origin, valley-web must take --origin, take no core dump, and write the state directory's browser/ alone, which tmpfiles makes as its own at 0700 under the receiver's state directory at 0750, and the receiver's unit must not reach browser/"
     else
       pkgs.runCommand "valley-module-eval" {
         initScript = host.config.systemd.services.valley-init.script;

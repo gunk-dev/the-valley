@@ -44,12 +44,17 @@
 #   sigverify.nix    sigverify-unit, sigverify-e2e — the security-key
 #                    signature verifier against real ssh-keygen, real git
 #                    and OpenSSH's software authenticator
-#   web.nix          web-unit, web-server-unit, web-receiver-unit,
-#                    web-image, readaccess-unit — the web UI's export
-#                    contract (projection, manifest, upload checks, and
-#                    receiver state directory), the valley-web server, the
+#   web.nix          web-unit, web-server-unit, web-reader-state-crash,
+#                    web-receiver-unit, web-image, readaccess-unit — the
+#                    web UI's export contract (projection, manifest, upload
+#                    checks, and receiver state directory), the valley-web
+#                    server and its browser state, that state's
+#                    transactions killed and failed at each step, the
 #                    valley-web-receive receiver, the edge container image,
 #                    and the two read-access consents and coverage report
+#   web-reader-browser-e2e.nix
+#                    web-reader-browser-e2e — the reader page in headless
+#                    Chromium in the build sandbox, behind a TLS proxy
 #   web-push-e2e.nix web-push-e2e — the push path end to end over the
 #                    shipped publisher, receiver, valley-web and CLI,
 #                    with real git
@@ -164,6 +169,7 @@ import ./checks/host-module.nix args
 // import ./checks/sigverify.nix args
 // import ./checks/web.nix args
 // import ./checks/web-push-e2e.nix args
+// import ./checks/web-reader-browser-e2e.nix args
 // import ./checks/cli.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args

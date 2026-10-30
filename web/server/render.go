@@ -15,8 +15,9 @@ import (
 	"time"
 )
 
-// The pages' templates, and the one stylesheet and one script they carry
-// inline. Nothing else is served: no font, image or script is fetched.
+// The pages' templates, the one stylesheet they carry inline, and the two
+// scripts: the knots page's, and the reader pages'. Nothing else is
+// served: no font, image or script is fetched.
 var (
 	//go:embed templates/*.tmpl
 	templateFiles embed.FS
@@ -24,26 +25,32 @@ var (
 	styleCSS string
 	//go:embed assets/plan.js
 	planJS string
+	//go:embed assets/reader.js
+	readerJS string
 )
 
 // The Content-Security-Policy of each route. Every policy admits the
 // inline stylesheet by its SHA-256 hash, fetches nothing from another
-// origin, opens no connection from a script, and takes no plugin, base
-// URL, form submission or frame. The knots page's policy admits its one
-// inline script by its hash; every other route's admits no script at all.
-// An error page answers with its route's policy.
+// origin, and takes no plugin, base URL, form submission or frame. The
+// knots page's policy admits its one inline script by its hash, and the
+// reader pages' theirs, which alone may connect, to this origin only.
+// Every other route's admits no script at all, and no route but the
+// reader pages lets a script connect. An error page answers with its
+// route's policy.
 var (
-	knotsPolicy   = policy("script-src " + inlineHash(planJS))
-	contentPolicy = policy("script-src 'none'")
+	knotsPolicy   = policy("script-src "+inlineHash(planJS), "connect-src 'none'")
+	readerPolicy  = policy("script-src "+inlineHash(readerJS), "connect-src 'self'")
+	contentPolicy = policy("script-src 'none'", "connect-src 'none'")
 )
 
-func policy(scripts string) string {
+func policy(scripts, connect string) string {
 	return "default-src 'self'; " + scripts + "; style-src " + inlineHash(styleCSS) +
-		"; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+		"; " + connect + "; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
 }
 
 // policyFor is the policy of the route a path's segments name: the knots
-// page's for /-/knots, and every other route's for the rest.
+// page's for /-/knots, and every other route's for the rest. ServeHTTP
+// gives the reader pages theirs.
 func policyFor(parts []string, ok bool) string {
 	if ok && isKnotsPage(parts) {
 		return knotsPolicy
@@ -56,7 +63,7 @@ func inlineHash(s string) string {
 	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 }
 
-var pages = parsePages("plan", "knot", "tree", "blob", "log", "error", "notfound")
+var pages = parsePages("plan", "knot", "tree", "blob", "log", "error", "notfound", redeemPage, logoutPage)
 
 // parsePages parses each page's template over the shared layout.
 func parsePages(names ...string) map[string]*template.Template {
@@ -70,8 +77,9 @@ func parsePages(names ...string) map[string]*template.Template {
 }
 
 // layout is what every page shares: its title, the inline stylesheet, the
-// script on the knots page alone, the links to the knots page and to
-// each project's source, and the export's age.
+// script of the knots page or of a reader page, the links to the knots
+// page, to each project's source and, for a reader with a valid session,
+// to sign out, and the export's age.
 type layout struct {
 	Title   string
 	Style   template.CSS
@@ -104,8 +112,11 @@ type link struct {
 func (q *request) page(status int, name, title string, content any) {
 	q.giveSlot()
 	data := layout{Title: title, Style: template.CSS(styleCSS), Content: content}
-	if name == "plan" {
+	switch name {
+	case "plan":
 		data.Script = template.JS(planJS)
+	case redeemPage, logoutPage:
+		data.Script = template.JS(readerJS)
 	}
 	if q.e != nil {
 		data.Nav = append(data.Nav, link{"knots", knotsURL})
@@ -114,6 +125,11 @@ func (q *request) page(status int, name, title string, content any) {
 			data.Nav = append(data.Nav, link{name + " source", treeURL(q.idx.bases[name], p.SourceTip, nil)})
 		}
 		data.Fresh = freshnessOf(q.e.Collected, q.auth.a.Checked, q.now)
+	}
+	// The session's link is the request's own, and never reaches an
+	// index: it is added here, for each page.
+	if q.sess.valid {
+		data.Nav = append(data.Nav, link{"Sign out", logoutURL})
 	}
 	q.drop()
 	if q.s.rendering != nil {
@@ -164,7 +180,7 @@ func (q *request) drop() {
 	}
 }
 
-// The responses made once: three pages, and the text that answers a page
+// The responses made once: four pages, and the text that answers a page
 // that failed to render. The not-found page is the one every 404 answers
 // with. It shows the box of text the operator chose, whose last line
 // links to /, and it names no site, no project and nothing of the
@@ -176,8 +192,11 @@ var (
 	tooLargePage = staticPage("error", "Page too large", errorPage{
 		Heading: "Page too large", Text: "This page is larger than the server sends.",
 	})
-	notFoundPage = staticPage("notfound", "Not found", nil)
-	notRendered  = []byte("The server could not render this page.\n")
+	notFoundPage    = staticPage("notfound", "Not found", nil)
+	unavailableHTML = staticPage("error", "Unavailable", errorPage{
+		Heading: "Sign-in unavailable", Text: "This server cannot check sign-ins right now. Try again later.",
+	})
+	notRendered = []byte("The server could not render this page.\n")
 )
 
 func staticPage(name, title string, content any) []byte {

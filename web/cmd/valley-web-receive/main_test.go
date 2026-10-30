@@ -512,6 +512,7 @@ func (e *edge) serves(addr string) {
 	tip := e.f.Export.Projects[0].SourceTip
 	for target, status := range map[string]int{
 		"/":                             http.StatusOK,
+		"/-/knots":                      http.StatusOK,
 		"/app/knots/oc-a000002":         http.StatusOK,
 		"/app/source/tree/" + tip + "/": http.StatusOK,
 		"/app/source/log/" + tip:        http.StatusOK,

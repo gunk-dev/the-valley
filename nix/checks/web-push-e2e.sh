@@ -204,6 +204,8 @@ serves "/tools/app/source/tree/$app_tip/" '<h1 id="app">app <a class="anchor" hr
 grep -qF "<a href=\"/tools/app/source/blob/$app_tip/policy/read/read.cue\">its read policy</a>" "$TMPDIR/body" ||
   fail "app's README does not link its read policy at $app_tip: $(grep -F readme-text "$TMPDIR/body")"
 serves /tools/site site-readme-text
+# / lands on the source of the first project published, app, at its tip.
+[ "$(get /)" = "302 /tools/app/source/tree/$app_tip/" ] || fail "/ answered $(get /)"
 serves "/tools/app/knots/$knot" "Open the edge"
 [ "$(get "/a/knots/$knot?x=1")" = "308 /tools/app/knots/$knot?x=1" ] ||
   fail "the alias a answered $(get "/a/knots/$knot?x=1")"
@@ -246,8 +248,8 @@ cmp -s main.tar.gz app.tar.gz || fail "app's main.tar.gz is not the archive of m
 checked_of() { sed -n 's/^checked //p' "$1"; }
 sequence_of() { sed -n 's/^sequence //p' "$1"; }
 shown() { date -u -d "$1" '+%Y-%m-%d %H:%M UTC'; }
-serves / "Policy last checked $(shown "$(checked_of edge/v2/authorization)")"
-grep -qF "Collected " "$TMPDIR/body" || fail "the plan page does not say when the plan was collected"
+serves /-/knots "Policy last checked $(shown "$(checked_of edge/v2/authorization)")"
+grep -qF "Collected " "$TMPDIR/body" || fail "the knots page does not say when the plan was collected"
 digest=$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)
 before=$(checked_of edge/v2/authorization)
 sleep 1.1
@@ -257,7 +259,7 @@ grep -q "nothing has changed since; nothing is sent" pass.out || fail "an unchan
 [ "$(checked_of edge/v2/authorization)" != "$before" ] || fail "an unchanged pass did not advance the policy check from $before"
 [ "$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)" = "$digest" ] ||
   fail "an unchanged pass changed export.json"
-serves / "Policy last checked $(shown "$(checked_of edge/v2/authorization)")"
+serves /-/knots "Policy last checked $(shown "$(checked_of edge/v2/authorization)")"
 
 # A read link: issued only to a principal the registry grants an edge
 # read that a project consents to, here alice, who holds no key. The host

@@ -109,8 +109,8 @@ func TestPublishesToTheRealReceiver(t *testing.T) {
 	}
 	addr := listening(t, "valley-web", exec.Command(web, "--state", state, "--listen", "127.0.0.1:0"))
 	milestone := "/app/knots/" + v.knots["milestone"]
-	if status, body := page(t, addr, "/"); status != http.StatusOK || !strings.Contains(body, "Publish the plan") {
-		t.Errorf("valley-web answered / with %d, and no milestone of app:\n%s", status, body)
+	if status, body := page(t, addr, "/-/knots"); status != http.StatusOK || !strings.Contains(body, "Publish the plan") {
+		t.Errorf("valley-web answered /-/knots with %d, and no milestone of app:\n%s", status, body)
 	}
 	if status, _ := page(t, addr, milestone); status != http.StatusOK {
 		t.Errorf("valley-web answered %s with %d, want 200", milestone, status)

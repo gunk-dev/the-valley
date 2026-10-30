@@ -98,6 +98,7 @@ func routes(f *exporttest.Fixture) map[string]int {
 	tip := f.Export.Projects[0].SourceTip
 	return map[string]int{
 		"/":                             http.StatusOK,
+		"/-/knots":                      http.StatusOK,
 		"/app/knots/oc-a000002":         http.StatusOK,
 		"/app/source/tree/" + tip + "/": http.StatusOK,
 		"/app/source/blob/" + tip + "/docs/guide.md": http.StatusOK,

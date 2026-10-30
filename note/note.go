@@ -262,6 +262,12 @@ func SignatureLine(text []byte, name string, priv ed25519.PrivateKey) string {
 	return Mark + name + " " + base64.StdEncoding.EncodeToString(blob) + "\n"
 }
 
+// SignedSize is how many bytes Sign writes for text signed by a key
+// called name: the text, the blank line, and the signature line.
+func SignedSize(text []byte, name string) int {
+	return len(text) + 1 + len(Mark) + len(name) + 1 + base64.StdEncoding.EncodedLen(signatureSize) + 1
+}
+
 // Sign writes a note: the text, a blank line, and one signature line. What
 // it writes is held to what Split reads, so a note this package signs is
 // one it opens.

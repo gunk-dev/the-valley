@@ -6,8 +6,11 @@
 //
 // # Readers and views
 //
-// Every request is read as one principal, its reader. valley-web reads
-// every request as anyone. A request's view is built from the projects
+// Every request is read as one principal, its reader. Started with
+// --origin, valley-web reads a request that carries a valid session as
+// the session's principal, and every other request as anyone. A request
+// that carries a session cookie while the browser state cannot be read
+// is answered as unavailable. A request's view is built from the projects
 // its reader may see: those the authorization lets anyone read, and those
 // it lets the reader read (visible). Each of those projects is copied for
 // the reader, with what it says of other projects' knots taken out

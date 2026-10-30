@@ -30,11 +30,11 @@ The parts are:
 - `valley-worker`, the check worker, which builds and publishes pure check evidence for ready
   changes before approval (`status/worker.go`);
 - `valley-web-publish`, `valley-web-receive`, `valley-web`, and the web export (`web/`). The
-  publisher builds a signed export of the projects `anyone` may read and uploads it; a valley host
-  can run it on a timer. `valley-web-receive` receives the uploads into a state directory, where
-  `web/export` stages and activates them. `valley-web` serves the active export's plan, knots, and
-  `main` source over HTTP (`GET` and `HEAD`). An edge runs the receiver and `valley-web` side by
-  side from a NixOS module or a container image;
+  publisher builds a signed export of the projects that have an effective reader and uploads it; a
+  valley host can run it on a timer. `valley-web-receive` receives the uploads into a state
+  directory, where `web/export` stages and activates them. `valley-web` serves the active export's
+  plan, knots, and `main` source over HTTP (`GET` and `HEAD`). An edge runs the receiver and
+  `valley-web` side by side from a NixOS module or a container image;
 - read access, which reads and evaluates the two consents for reading a project (`readaccess/`);
 - `valley-restacker`, the restacker, which rebases ready changes onto `main` as its own principal,
   one controller for each project a host lists (`restack/`);
@@ -3001,10 +3001,10 @@ exit status is 1.
 
 `readaccess/` evaluates whether a principal is authorized to read a project at a destination
 (`readaccess/`, `schema/read.cue`, `schema/identity.cue`). Authorization requires two consents, one
-from the project and one from the instance. Both consents must match (`implemented`). Today, only
-grants to `anyone` affect what is published: `valley-web-publish` exports only projects authorized
-for `anyone`, `valley-web` serves all requests anonymously, and grants to named principals publish
-nothing (`web/cmd/valley-web-publish/valley.go`, `web/server/server.go`).
+from the project and one from the instance. Both consents must match (`implemented`).
+`valley-web-publish` exports every project that has an authorized reader at its destination, whether
+`anyone` or a named principal. Its authorization names each project's readers (see
+[What reaches the edge](#what-reaches-the-edge)).
 
 - **The project's consent** lives in `policy/read/*.cue` on the project's `main`. It declares the
   project's name, its 32-character hex publication identity, and the set of principals in `readers`.
@@ -3018,8 +3018,8 @@ nothing (`web/cmd/valley-web-publish/valley.go`, `web/server/server.go`).
 top-level entry with no keys, no external identity, and no expiry. `anyone` can hold grants only at
 `edge-read` boundaries, cannot be the `genesis` entry, and cannot be a principal name under
 `principals`. A project is public at a destination when both consents authorize `anyone` there. An
-SSH key admitted without a principal tag pushes as no principal: its session leaves
-`VALLEY_PRINCIPAL` unset. It is not `anyone`, which applies only to unauthenticated edge reads.
+SSH key admitted without a principal tag pushes as no principal (`VALLEY_PRINCIPAL` stays unset),
+whereas `anyone` applies only to unauthenticated edge reads.
 
 Each project has a single reader set. A read grant covers a whole project; there are no grants for
 individual refs, knots, or files. Instance membership, push access, approval grants, and restack
@@ -3032,8 +3032,7 @@ the project. An instance can grant the operator `projects: "all"` while each pro
 operator in its own `policy/read` (**deployment choice**). The starter policy for a new project,
 `examples/policy/read/new-project/read.cue`, names only `operator`. `valley-read-coverage` reports
 which projects lack either consent for a given principal without modifying anything
-(`readaccess/cmd/valley-read-coverage/`). Because named grants publish nothing and `valley-web`
-serves anonymously, a named principal at the edge can read only what `anyone` may read.
+(`readaccess/cmd/valley-read-coverage/`).
 
 A grant for a specific project binds both the project's name and its publication identity. If a new
 project reuses an old project's name with a different identity, the old grant does not cover it. A
@@ -3090,38 +3089,58 @@ both consents match (`readaccess/access.go`).
 
 ### What reaches the edge
 
-`valley-web-publish` includes in an export only the projects that `anyone` may read at
-`--destination` and that have a web URL (`web/cmd/valley-web-publish/valley.go`). It reads the
-registry's grants for `--destination` first. It then reads `policy/read` only for the projects
-selected by a grant to `anyone` (either named in the grant or covered by `projects: "all"`) that the
-host declaration places in a group. It exports a project when the project's policy names `anyone`
-and a grant to `anyone` covers the project's identity. A project with no group has no web URL and
-stays private; when a grant to `anyone` selects it, the pass logs a warning on `stderr` (see
-[Groups and web URLs](#groups-and-web-urls)). Read grants to named principals, including the
-operator, publish nothing, and `valley-web` serves every reader anonymously.
+`valley-web-publish` exports every project that has an effective reader at `--destination` and a web
+URL (`implemented`, `web/cmd/valley-web-publish/valley.go`). An effective reader is a principal that
+the project's `policy/read` names and that a read grant at `--destination` covers for the project,
+including `anyone` (`Grants.Readers`). The pass reads the registry's grants for `--destination`
+first. It then reads `policy/read` only for the projects that the host declaration places in a group
+and that some principal's grant selects, either by naming the project or with `projects: "all"`. A
+project with no group has no web URL and is not exported. When a grant names such a project, the
+pass logs a warning on `stderr` (see [Groups and web URLs](#groups-and-web-urls)). A project with no
+effective reader is not exported either.
 
-For each exported project, the export and its git bundle carry the project's reader view: every knot
-and comment in its plan graph, its ready changes, and `main` with its commit history (see
+The policy path signs an authorization that names each exported project with its effective readers
+(`implemented`, `web/cmd/valley-web-publish/policy.go`). `anyone` is among them only when the
+project's policy names `anyone` and a grant to `anyone` covers the project's identity. The content
+pass exports the same projects into one shared export for all readers of the edge. For each exported
+project, the export and its git bundle carry the project's reader view: every knot and comment in
+its plan graph, its ready changes, and `main` with its commit history (see
 [Web export](./reference.md#web-export-the-valleyweb-exportv2)). The export records no reader
-access. A separate signed authorization names who may read each project, and the edge serves only
-what that authorization allows (see [The authorization stream](#the-authorization-stream)).
+access; the separate signed authorization names who may read each project, and the edge serves only
+what that authorization allows (see [The authorization stream](#the-authorization-stream)). A
+project leaves the edge when it loses its last effective reader. Removing one of several effective
+readers drops that reader from the project's authorization and leaves the project on the edge for
+the others.
+
+When building `export.json`, the publisher strips derived details about projects that are not
+exported (`implemented`, `web/export/project.go`). A reference to a project that is not exported
+keeps its identifying reference fields but loses its title, status, and other resolved details,
+while a reference to an exported project keeps those details. The export's own projection is a
+storage boundary. At request time, `valley-web` strips the derived details of any exported project
+that the requesting reader may not see (see [Each reader's view](#each-readers-view)).
+
 `valley-web-publish` can write the authorization and the export to `--out` or send them over HTTP to
 a receiver URL. `valley-web-receive` receives the upload into its store, staging it with
 `Store.Stage` and activating it with `Store.Activate` (`web/export/store.go`; see
 [The receiver](#the-receiver)). `valley-web` serves only `GET` and `HEAD` from the store
-(`web/server/server.go`). A missing or invalid registry makes every project private, so the pass
-authorizes no project and builds an empty export. A missing or invalid `policy/read` makes that
-project private. If the pass cannot read the instance repository or the schemas, it aborts before
-signing anything. If it cannot read a project selected by a grant to `anyone`, the policy check is
-incomplete: the pass sends the authorization and then fails before building or uploading an export.
+(`web/server/server.go`). A missing or invalid registry grants nothing, so the pass authorizes no
+project and builds an empty export. A missing or invalid `policy/read` consents to nothing, so that
+project is not exported. If the pass cannot read the instance repository or the schemas, it aborts
+before signing anything. If it cannot read a selected project, the policy check is incomplete: the
+pass sends the authorization and then fails before building or uploading an export.
 
 Checked by `readaccess-unit`, which reads both consents from real commits under the real schemas
 (`readaccess/read_test.go`, and `TestCoverage` in `readaccess/cmd/valley-read-coverage/main_test.go`
-for `valley-read-coverage`), by `web-unit` (`TestVisibilityNeedsBothConsents`,
-`TestAGrantSpelledAnotherWayIsRefused` and `TestPrivateSentinelsNeverLeave`), by `cue-vet` and
-`identity-schema`, which test both schemas against rejected examples, and by `identity-e2e`, which
-compiles the example registry containing read grants and `anyone` against golden files. Unbuilt
-pieces are listed under [Not deployed or not wired yet](#not-deployed-or-not-wired-yet).
+for `valley-read-coverage`), by `web-unit` (`TestVisibilityNeedsBothConsents`, which checks each
+authorization's readers, `TestAProjectMadePrivateLeavesTheReceiver`,
+`TestAGrantSpelledAnotherWayIsRefused` and `TestPrivateSentinelsNeverLeave`), by `web-server-unit`
+(`TestThePublishersOutputServesEachReader`, over the real publisher's output, which injects each
+reader's principal and uses no link or session), by `web-push-e2e`, which exports a project two
+named readers may read, keeps one with no effective reader off the edge, and signs a named reader in
+with a link to read that project, by `cue-vet` and `identity-schema`, which test both schemas
+against rejected examples, and by `identity-e2e`, which compiles the example registry containing
+read grants and `anyone` against golden files. Unbuilt pieces are listed under
+[Not deployed or not wired yet](#not-deployed-or-not-wired-yet).
 
 ### The authorization stream
 
@@ -3152,12 +3171,15 @@ own admission rules.
   higher sequence alone does not make a check fresh, so the retry keeps no access that it could not
   check.
 - **Kept access needs the receiver's agreement.** When a project's policy cannot be read, the policy
-  path keeps the access that the last authorization the receiver acknowledged gave the project, and
-  names that authorization's sequence as the new one's `basis`. The receiver stores an authorization
-  with a basis only while it holds exactly that one, and refuses it as `stale-basis` otherwise
-  (`web/export/authorization.go`). After a `replayed` or `stale-basis` refusal, the publisher's
-  record is out of date, and the retry keeps nothing it could not check. So a record restored from
-  an old backup cannot sign a withdrawn grant above the receiver's withdrawal.
+  path starts from the readers and publication identity that the last acknowledged authorization
+  recorded for that project. It keeps only the readers that a current grant still covers for that
+  identity, and it adds no reader without reading the project's consent. It names the acknowledged
+  authorization's sequence as the new authorization's `basis`. The receiver stores an authorization
+  with a `basis` only while its stored authorization has that exact sequence, and refuses it as
+  `stale-basis` otherwise (`web/export/authorization.go`). After a `replayed` or `stale-basis`
+  refusal, the publisher's record is out of date, and the retry keeps nothing it could not check. A
+  publisher state restored from an old backup therefore cannot sign a withdrawn grant above the
+  receiver's withdrawal.
 - **Content uploads confer no access.** A content manifest records each project's publication
   identity, ref tips, and bundle digest, without any reader list. The receiver builds repositories
   in a generation only for projects named in the stored authorization, and `valley-web` serves a
@@ -3170,24 +3192,25 @@ own admission rules.
   withdrawal. When the receiver replies `200`, the authorization is already synced to disk.
 - **Checked on every request.** `valley-web` reads the stored authorization at the start of every
   request and checks it again after rendering the response. If a new authorization arrived while the
-  response was rendering, `valley-web` discards the response and renders it again. The last check
-  and the response's headers happen under `serving.lock`, held shared, and the receiver renames a
-  new authorization into place under the same lock, held exclusively, and replies only after it
-  releases it (`web/export/authorize.go`, `web/server/server.go`). So a response whose headers are
-  written after the receiver replies was checked against the new authorization, without restarting
-  `valley-web`. Responses whose headers were written before finish normally. A request waits for
-  `serving.lock` only until its deadline, or until its reader goes away, so a receiver stopped while
-  it holds the lock makes requests answer `503` and writes nothing they rendered. When the
-  authorization is missing or invalid, `valley-web` serves no projects.
-- **Withdrawal and repository pruning.** When a new authorization omits a project, `valley-web`
-  hides that project starting with the next request. Once no reader holds the active generation, the
-  receiver deletes the project's git repository from that generation and omits it from future
-  activations. The signed `export.json` file remains unchanged on disk, so the withdrawn project's
-  plan text stays in the active generation until a later activation replaces and deletes that
-  generation. Repository deletion runs in the background and retries on the next authorization,
-  activation, or receiver startup without delaying the authorization reply. A prune decides what to
-  delete, and renames it away, under the authorization lock, after reading the authorization again
-  there, so it never deletes a repository that an acknowledged authorization names again.
+  response was rendering, `valley-web` discards the response and renders it again. `valley-web`
+  holds `serving.lock` shared across that last check and writing the response headers. The receiver
+  takes `serving.lock` exclusively to rename a new authorization into place and replies only after
+  releasing the lock (`web/export/authorize.go`, `web/server/server.go`). So a response whose
+  headers are written after the receiver replies was checked against the new authorization, without
+  restarting `valley-web`. Responses whose headers were written before finish normally. A request
+  waits for `serving.lock` only until its deadline, or until its reader goes away, so a receiver
+  stopped while it holds the lock makes requests answer `503` and writes nothing they rendered. When
+  the authorization is missing or invalid, `valley-web` serves no projects.
+- **Withdrawal and repository pruning.** A new authorization omits a project once the project has no
+  effective reader left. `valley-web` then hides that project starting with the next request. Once
+  no reader holds the active generation, the receiver deletes the project's git repository from that
+  generation and omits it from future activations. The signed `export.json` file remains unchanged
+  on disk, so the withdrawn project's plan text stays in the active generation until a later
+  activation replaces and deletes that generation. Repository deletion runs in the background and
+  retries on the next authorization, activation, or receiver startup without delaying the
+  authorization reply. Under the authorization lock, each prune reads the stored authorization
+  again, decides what to delete, and renames those repositories away, so a prune never deletes a
+  repository that an acknowledged authorization names again.
 - **Policy-check freshness.** Every pass sends an authorization, even when no content changed, and
   records in `checked` the time of the last complete policy check. Web pages display that timestamp
   as "Policy last checked …" alongside the export's collection time, and mark a page stale only when
@@ -3204,8 +3227,12 @@ Checked by `web-unit` (`TestVerifyAuthorizationSteps`, `TestAnAuthorizationWithA
 `TestASaturatedUploadLeavesValleyWebServing`), by `web-server-unit`
 (`TestAuthorizationIsReadOnEveryRequest`, `TestAResponseIsHeldToTheAuthorizationWhenWritten`,
 `TestAWithdrawalWaitsForAResponseItsCheckAdmitted` and `TestAServingLockWaitEndsWithTheRequest`),
-and by `web-push-e2e`, which withdraws a project with `--policy-only` while a content upload is
-stalled on the receiver's activation lock and verifies that the stalled upload restores nothing.
+and by `web-push-e2e`. That check uses `--policy-only` to withdraw both a public project and a
+project readable only by named principals while a content upload is stalled on the receiver's
+activation lock, and verifies that the stalled upload restores neither project's authorization or
+repository. It also verifies that a policy check that cannot read a project's policy keeps only the
+stored readers that a current grant still covers, and that removing one of two effective readers
+leaves the project on the edge for the remaining reader.
 
 ### One pass, one instance
 
@@ -3243,15 +3270,16 @@ for up to three attempts in total. If all three attempts are inconsistent, the p
 
 A read link is a bearer credential that lets its holder read what one registry principal may read at
 the edge. The host issues and revokes links, and carries their verifiers to the edge in the
-authorization (`implemented`). The edge does not redeem them yet (`not built`).
+authorization (`implemented`). When started with `--origin`, `valley-web` redeems each link once
+into a session for the link's principal (`implemented`; see [Readers' sessions](#readers-sessions)).
 
 - **The credential file:** `valley-web-publish link`, run as root through the `valley-web-link`
   wrapper, writes one record per link to a file outside every repository, cache and export. A record
   holds the link's ID, principal, note, verifier, issue time, revocation time and the file revision
   that set its state. The verifier is the SHA-256 of the link's 32-byte secret. The secret itself is
-  printed once and kept nowhere. Root alone writes the file. The publisher reads it through the
-  group `valley-web-links`: the verifiers are not secret, since the edge holds them too, so the file
-  needs integrity and not confidentiality (`deployment choice`).
+  printed once and kept nowhere. Because the edge also holds the verifiers, the credential file
+  requires integrity rather than confidentiality: root alone writes it, and the publisher reads it
+  through the group `valley-web-links` (`deployment choice`).
 - **Bindings in the authorization:** Every time a pass signs an authorization, it holds the
   authorization lock from before it checks the policy until it has signed. After the policy check,
   it takes the links lock as well, reads the file, signs, and then releases the links lock. It signs
@@ -3263,16 +3291,17 @@ authorization (`implemented`). The edge does not redeem them yet (`not built`).
   it has signed. So once a revoke has finished, no pass signs the revoked link. A pass takes the
   authorization lock first and the links lock second, and a change takes the links lock alone, so
   the two never wait for each other in a cycle. A change does not wait for a policy check, only for
-  a pass that is reading the file and signing. Each side waits at most 60 seconds. A change then
-  fails and leaves the file unchanged. A pass then signs no bindings and fails, so a withdrawal
-  still reaches the edge (`implemented`).
-- **Root follows no path the publisher controls:** Under the module the change runs as root
-  (`deployment choice`). The credential file's directory is root's, mode 0750, and tmpfiles makes
-  the lock in it, owned by root and the group `valley-web-links`, mode 0640. The publisher opens and
-  locks it through that group, and can make, replace or remove nothing there (`deployment choice`).
-  A change opens the lock without following a symbolic link or waiting on a FIFO, and refuses
-  anything but a regular file owned by root. It changes the owner of nothing. The one file it reads
-  in the publisher's state, the delivery record, it reads the same way (`implemented`).
+  a pass that is reading the file and signing. Each side waits at most 60 seconds. If the wait runs
+  out, a change fails and leaves the file unchanged, whereas a pass signs an authorization with no
+  bindings and fails so that any withdrawal still reaches the edge (`implemented`).
+- **Root follows no path the publisher controls:** Under the module, link commands run as root
+  (`deployment choice`). Root owns the credential file's directory with mode 0750, and tmpfiles
+  creates `lock` inside it, owned by root and the group `valley-web-links`, mode 0640. The publisher
+  opens and locks `lock` through that group, and can make, replace or remove nothing there
+  (`deployment choice`). Link commands open the lock without following a symbolic link or waiting on
+  a FIFO, refuse anything but a regular file owned by root, and change the owner of nothing. The
+  delivery record is the one file they read in the publisher's state, and they read it with the same
+  checks (`implemented`).
 - **The revision moves forward:** Every change writes a revision one past the greater of the file's
   revision and the greatest one a pass has signed from. So a change to a file restored from an older
   copy still writes past every revision already signed.
@@ -3647,7 +3676,10 @@ Checked by:
   verify that the page reports an unknown outcome and queries `/-/session` on retry before signing
   any session out.
 - `web-push-e2e`, which redeems a link issued by the packaged publisher and exercises server
-  restarts, link revocation, logout, and recovery from a missing or corrupted `browser/state`.
+  restarts, link revocation, logout, and recovery from a missing or corrupted `browser/state`. It
+  also redeems a link of a named reader of a project that `anyone` may not read. The session reads
+  that project's tree page, knot, archive and knots page, and gets `404` for its tree page once a
+  pass delivers the link's revocation.
 - `web-receiver-unit`, which uploads a signed export with private projects through the real receiver
   to the packaged `valley-web` (`web/cmd/valley-web-receive/readers_test.go`). It verifies that two
   named principals and `anyone` each see the knots, source pages, and archives of their authorized
@@ -3756,11 +3788,11 @@ rules (`implemented`):
 3. `export.Validate` runs `export.CheckNames` when the publisher encodes `export.json` and when the
    receiver or `valley-web` decodes it (`web/export/export.go`).
 
-`export.json` includes only the groups that contain at least one public project, along with each
-public project's group, web name, former names, and short aliases (`web/export/project.go`). Groups
-that contain only private projects, as well as the web names, former names, and aliases of private
-projects, are omitted. An export that omits `groups` and per-project `group` fields still decodes,
-and `valley-web` serves none of its projects because they have no group URL.
+`export.json` includes only the groups that contain at least one exported project, along with each
+exported project's group, web name, former names, and short aliases (`web/export/project.go`).
+Groups that contain no exported project, as well as the web names, former names, and aliases of
+projects that are not exported, are omitted. An export that omits `groups` and per-project `group`
+fields still decodes, and `valley-web` serves none of its projects because they have no group URL.
 
 `valley-web` responds to requests under a group alias, a project short alias, or a project former
 name with a `308` permanent redirect. A group alias redirects to the same path under the group's
@@ -4041,7 +4073,7 @@ on" chip then includes "a knot in an unpublished project" alongside any blockers
 In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
 reference. When a knot names a single hidden blocker, a reader of `export.json` can tell from
 `waiting_on_hidden` whether that reference remains a blocker. The field is present while it does,
-and absent once the hidden knot has a terminal status, even when a public blocker keeps the knot
+and absent once the hidden knot has a terminal status, even when an exported blocker keeps the knot
 `blocked`. The export permits this inference.
 
 Checked by `web-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set on
@@ -4332,8 +4364,8 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
 | The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
 | The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
-| Named readers at the edge                    | `readaccess/` evaluates read grants for named principals, and `valley-web` builds each view for one reader. Named grants publish nothing, and `valley-web` reads every request as `anyone`, with no credentials or sessions.                                                       |
-| Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps the access the receiver's current authorization gives it.              |
+| Named readers at the edge                    | `valley-web-publish` exports each project a named principal may read, with that principal in its authorization. `valley-web` signs readers in and serves each session as its principal only when started with `--origin`. Whether an edge sets an origin is a deployment choice.   |
+| Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps its stored readers that a grant still covers.                          |
 | Filesystem sandbox for the web publisher     | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                |
 | Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |
 | Read grants over ssh                         | sshd lets every admitted key fetch every repository (`valleyhook/shell.go`). Read grants govern only web exports.                                                                                                                                                                  |

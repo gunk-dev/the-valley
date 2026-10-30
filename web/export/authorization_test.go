@@ -5,8 +5,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -104,6 +107,149 @@ func TestParseAuthorizationRefuses(t *testing.T) {
 			_, err := export.ParseAuthorization([]byte(bad))
 			wantCode(t, err, export.CodeBadManifest)
 		})
+	}
+}
+
+// Sign signs nothing a receiver would refuse for its size: SignedSize is
+// what it writes, and one byte over MaxAuthorization is refused as too
+// large, before any signature.
+func TestSignRefusesAnAuthorizationOverTheLimit(t *testing.T) {
+	a := exporttest.Authorization(1, "app")
+	signed, err := a.Sign(exporttest.SignerName, exporttest.Key())
+	if err != nil || len(signed) != a.SignedSize(exporttest.SignerName) {
+		t.Fatalf("signed %d bytes, %v; SignedSize says %d", len(signed), err, a.SignedSize(exporttest.SignerName))
+	}
+	// Each reader record of app is "reader app " and a 9-character name:
+	// 21 bytes.
+	p := &a.Projects[0]
+	for i := 0; a.SignedSize(exporttest.SignerName) < export.MaxAuthorization; i++ {
+		p.Readers = append(p.Readers, fmt.Sprintf("r%08d", i))
+	}
+	for a.SignedSize(exporttest.SignerName) > export.MaxAuthorization {
+		p.Readers = p.Readers[:len(p.Readers)-1]
+	}
+	pad := export.MaxAuthorization - a.SignedSize(exporttest.SignerName)
+	a.Instance += strings.Repeat("x", pad)
+	if signed, err := a.Sign(exporttest.SignerName, exporttest.Key()); err != nil || len(signed) != export.MaxAuthorization {
+		t.Fatalf("an authorization of exactly %d bytes signed as %d bytes, %v", export.MaxAuthorization, len(signed), err)
+	}
+	a.Instance += "x"
+	_, err = a.Sign(exporttest.SignerName, exporttest.Key())
+	wantCode(t, err, export.CodeTooLarge)
+}
+
+// The bounded fallback is the last acknowledged authorization less every
+// access the current check no longer gives, and never more. Here the
+// check withdraws anyone and the operator from app and adds bob, gives
+// site a new publication identity, withdraws docs, adds notes, reissues
+// the operator's link under its ID with a new verifier, and adds a link.
+// The fallback keeps app for alice alone, and alice's link, under the
+// check's sequence, checked time and basis.
+func TestNarrowKeepsOnlyWhatBothAllow(t *testing.T) {
+	hex := func(c string) string { return strings.Repeat(c, 64) }
+	prev := &export.Authorization{Instance: exporttest.Instance, Destination: exporttest.Destination, Sequence: 5,
+		Checked: exporttest.Collected,
+		Projects: []export.AuthorizedProject{
+			{Name: "app", Identity: strings.Repeat("1", 32), Readers: []string{"alice", "anyone", "operator"}},
+			{Name: "docs", Identity: strings.Repeat("3", 32), Readers: []string{"alice"}},
+			{Name: "site", Identity: strings.Repeat("2", 32), Readers: []string{"anyone"}},
+		},
+		Bindings: []export.Binding{
+			{ID: "lk-0000000000000001", Principal: "alice", Verifier: hex("a")},
+			{ID: "lk-0000000000000002", Principal: "operator", Verifier: hex("b")},
+		}}
+	cur := &export.Authorization{Instance: exporttest.Instance, Destination: exporttest.Destination, Sequence: 9,
+		Checked: exporttest.SignedAt, Basis: 5,
+		Projects: []export.AuthorizedProject{
+			{Name: "app", Identity: strings.Repeat("1", 32), Readers: []string{"alice", "bob"}},
+			{Name: "notes", Identity: strings.Repeat("4", 32), Readers: []string{"carol"}},
+			{Name: "site", Identity: strings.Repeat("5", 32), Readers: []string{"anyone"}},
+		},
+		Bindings: []export.Binding{
+			{ID: "lk-0000000000000001", Principal: "alice", Verifier: hex("a")},
+			{ID: "lk-0000000000000002", Principal: "operator", Verifier: hex("c")},
+			{ID: "lk-0000000000000003", Principal: "bob", Verifier: hex("d")},
+		}}
+	n := export.Narrow(prev, cur)
+	want := &export.Authorization{Instance: exporttest.Instance, Destination: exporttest.Destination, Sequence: 9,
+		Checked: exporttest.SignedAt, Basis: 5,
+		Projects: []export.AuthorizedProject{{Name: "app", Identity: strings.Repeat("1", 32), Readers: []string{"alice"}}},
+		Bindings: []export.Binding{{ID: "lk-0000000000000001", Principal: "alice", Verifier: hex("a")}}}
+	if !bytes.Equal(n.Text(), want.Text()) {
+		t.Fatalf("the fallback is\n%s\nwant\n%s", n.Text(), want.Text())
+	}
+	for _, p := range append(append([]export.AuthorizedProject{}, prev.Projects...), cur.Projects...) {
+		for _, r := range append([]string{"anyone", "alice", "bob", "carol", "operator"}, p.Readers...) {
+			if n.Allows(r, p.Name, p.Identity) && !(prev.Allows(r, p.Name, p.Identity) && cur.Allows(r, p.Name, p.Identity)) {
+				t.Errorf("the fallback lets %s read %s under %s, which prev and cur do not both allow", r, p.Name, p.Identity)
+			}
+		}
+	}
+	if empty := export.Narrow(nil, cur); len(empty.Projects) != 0 || len(empty.Bindings) != 0 || empty.Sequence != 9 {
+		t.Errorf("the fallback from no acknowledged authorization is\n%s", empty.Text())
+	}
+
+	// However far its sequence and basis grow, the fallback of an
+	// authorization the check still allows in full is within FallbackRoom
+	// of it.
+	cur = &export.Authorization{Instance: prev.Instance, Destination: prev.Destination, Sequence: math.MaxInt64,
+		Checked: prev.Checked, Basis: math.MaxInt64 - 1, Projects: prev.Projects, Bindings: prev.Bindings}
+	grown := export.Narrow(prev, cur).SignedSize(exporttest.SignerName) - prev.SignedSize(exporttest.SignerName)
+	if grown > export.FallbackRoom {
+		t.Errorf("the fallback is %d bytes larger than the authorization it narrows, more than FallbackRoom, %d", grown, export.FallbackRoom)
+	}
+}
+
+// Fit restricts an authorization over the limit one access at a time, in
+// its order, and stops at the first step that fits. docs, kept on the
+// basis, goes first, whole, and the basis with it. Then a reader at a
+// time goes, the last by sort of the project with the most readers left,
+// app before site when they have as many, so each project goes with its
+// last reader. Then the bindings go in ID order, and at last nothing is
+// granted. An authorization that fits is returned as it is.
+func TestFitDropsAccessInItsOrder(t *testing.T) {
+	hex := func(c string) string { return strings.Repeat(c, 64) }
+	ids := map[string]string{"app": strings.Repeat("1", 32), "site": strings.Repeat("2", 32), "docs": strings.Repeat("3", 32)}
+	// state is the authorization with the basis, the last links of the
+	// bindings in ID order, and the projects given, each name:readers.
+	state := func(basis int64, links int, projects ...string) *export.Authorization {
+		a := &export.Authorization{Instance: exporttest.Instance, Destination: exporttest.Destination, Sequence: 9,
+			Checked: exporttest.SignedAt, Basis: basis}
+		for _, p := range projects {
+			name, readers, _ := strings.Cut(p, ":")
+			a.Projects = append(a.Projects, export.AuthorizedProject{Name: name, Identity: ids[name], Readers: strings.Split(readers, ",")})
+		}
+		bindings := []export.Binding{
+			{ID: "lk-0000000000000001", Principal: "bob", Verifier: hex("b")},
+			{ID: "lk-0000000000000002", Principal: "alice", Verifier: hex("a")},
+		}
+		a.Bindings = bindings[len(bindings)-links:]
+		return a
+	}
+	a := state(4, 2, "app:alice,anyone,bob", "docs:carol", "site:carol,dave")
+	slices.Reverse(a.Bindings)
+	steps := []*export.Authorization{
+		state(0, 2, "app:alice,anyone,bob", "site:carol,dave"),
+		state(0, 2, "app:alice,anyone", "site:carol,dave"),
+		state(0, 2, "app:alice", "site:carol,dave"),
+		state(0, 2, "app:alice", "site:carol"),
+		state(0, 2, "site:carol"),
+		state(0, 2),
+		state(0, 1),
+		state(0, 0),
+	}
+	onBasis := []string{"docs"}
+	if got := export.Fit(a, onBasis, exporttest.SignerName, a.SignedSize(exporttest.SignerName)); got != a {
+		t.Errorf("an authorization that fits became\n%s", got.Text())
+	}
+	for i, want := range steps {
+		got := export.Fit(a, onBasis, exporttest.SignerName, want.SignedSize(exporttest.SignerName))
+		if !bytes.Equal(got.Text(), want.Text()) {
+			t.Errorf("step %d of the restriction is\n%s\nwant\n%s", i+1, got.Text(), want.Text())
+		}
+	}
+	if got := export.Fit(a, onBasis, exporttest.SignerName, 1); !bytes.Equal(got.Text(), steps[len(steps)-1].Text()) {
+		t.Errorf("under a limit nothing fits, the restriction is\n%s\nwant the authorization that grants nothing", got.Text())
 	}
 }
 

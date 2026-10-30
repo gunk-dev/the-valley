@@ -356,8 +356,8 @@ func (e *Export) ValidateContext(ctx context.Context) error {
 
 // checkGroups holds the export's groups and the places of its projects,
 // which are in project order already, to CheckNames, and each group to
-// having a project, so an export names no group that only private projects
-// belong to. It checks ctx before each project and each group.
+// having a project, so an export names no group that only unexported
+// projects belong to. It checks ctx before each project and each group.
 func (e *Export) checkGroups(ctx context.Context) error {
 	var placed []Placed
 	named := map[string]bool{}

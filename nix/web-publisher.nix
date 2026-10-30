@@ -1,6 +1,7 @@
 # The web publisher (web/cmd/valley-web-publish): a oneshot on a timer
-# that reads this host's public projects and pushes signed exports to a web
-# receiver, which never connects back.
+# that reads each of this host's projects some reader may read at the
+# edge, and pushes signed exports to a web receiver, which never connects
+# back.
 #
 # A module of its own beside the host module (valley-host.nix), which it
 # needs: it reads that module's options for the repositories the host
@@ -327,11 +328,12 @@ in
 {
   options.services.valley.webPublisher = {
     enable = lib.mkEnableOption ''
-      the valley web publisher: a timer that uploads this host's public
-      projects, as signed exports, to a web receiver. A project is public
-      when its own policy/read lets anyone read it, a read grant to
-      anyone in the identity registry covers it at the destination, and
-      the host declaration places it in a group, which its web URLs open
+      the valley web publisher: a timer that uploads this host's
+      projects, as signed exports, to a web receiver. A project is
+      exported when it has an effective reader, a principal, anyone
+      included, that its own policy/read names and a read grant in the
+      identity registry covers it for at the destination, and when the
+      host declaration places it in a group, which its web URLs open
       with. The
       registry is read where the identity compiler reads it: in
       {option}`services.valley.identity.directory` at the instance
@@ -348,7 +350,7 @@ in
         The receiver's name, which every manifest is signed for. The
         receiver admits only manifests that name it. It is also the
         destination of the registry's edge read boundary whose read grants
-        decide what anyone may read there.
+        decide who may read each project there.
       '';
     };
 
@@ -467,7 +469,7 @@ in
       default = "1G";
       description = ''
         The most the bundles of one export may hold together. Each bundle
-        carries a public project's whole history on main. A bundle is
+        carries an exported project's whole history on main. A bundle is
         written only into what this leaves, and a pass past it sends
         nothing (`--max-bundles`).
       '';
@@ -478,8 +480,8 @@ in
       default = "16G";
       description = ''
         The most the state and cache directories may hold. The cache holds
-        a clone and a mirror of each project a read grant to anyone names,
-        and a bundle of each public one. A pass checks it before it fetches and once it
+        a clone and a mirror of each project a read grant names, and a
+        bundle of each exported one. A pass checks it before it fetches and once it
         has read the valley, and writes a bundle only into what it leaves.
         A pass past it sends nothing (`--max-storage`).
       '';

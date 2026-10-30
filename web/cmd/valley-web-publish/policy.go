@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -43,6 +44,11 @@ const authorizeAttempts = 3
 // project. Its authorization was still signed and sent.
 var errIncomplete = errors.New("the policy check is incomplete")
 
+// errOverflow is the error of a policy check whose authorization is too
+// large to sign in full. Its bounded fallback was signed and sent in its
+// place, and the access only the full one gives is pending.
+var errOverflow = errors.New("the authorization is too large to send")
+
 // authorize is the policy path: the only writer of authorizations. Under
 // the authorization lock it reads the policy, allocates the next sequence
 // from the durable counter, and signs the authorization. It then sends it
@@ -61,40 +67,83 @@ var errIncomplete = errors.New("the policy check is incomplete")
 // Once the receiver stores an authorization, it is recorded as the last
 // one acknowledged, which the next incomplete check may keep access from.
 //
+// Growth never blocks a restriction. A check whose authorization would be
+// larger than the limit, less export.FallbackRoom, signs and sends its
+// bounded fallback instead (fallBack): the last authorization the
+// receiver acknowledged, less every access this check no longer gives,
+// and restricted further when that is over the limit too, so every
+// withdrawal and revocation still reaches the edge.
+//
 // The reply is nil with --out. An incomplete check is sent, and authorize
-// then returns an error that wraps errIncomplete. So is an authorization
-// signed with no bindings because the links lock could not be taken or the
-// credential file could not be read, and authorize then returns that error.
+// then returns an error that wraps errIncomplete. So is a fallback, with
+// an error that wraps errOverflow, and an authorization signed with no
+// bindings because the links lock could not be taken or the credential
+// file could not be read, with that error. A send that fails returns its
+// error joined with those. Every attempt that signs a fallback prints what
+// is pending and what the fallback dropped, whether or not it was sent or
+// stored. When the receiver refuses a fallback and the policy path tries
+// again, that fallback's overflow is joined into every failure a later
+// attempt returns, a check that cannot be read included, so the pass's
+// error still names the access it left pending and dropped.
 func (p *publisher) authorize(ctx context.Context) (*export.AuthorizationReply, error) {
 	var floor int64
 	trusted := true
+	// refused is the overflow of each fallback the receiver refused.
+	var refused []error
+	carry := func(err error) error {
+		if err == nil {
+			return nil
+		}
+		return errors.Join(append([]error{err}, refused...)...)
+	}
 	for attempt := 1; ; attempt++ {
 		c, err := p.signPolicy(ctx, floor, trusted)
 		if err != nil {
-			return nil, err
+			return nil, carry(err)
 		}
 		a := c.authorization
-		failed := errors.Join(c.incomplete, c.links.err)
+		failed := errors.Join(c.incomplete, c.overflow, c.links.err)
 		if p.cfg.out != "" {
 			p.signedAuthorization = c.signed
+			p.sayOverflow(c)
 			return nil, failed
 		}
 		reply, err := p.sendAuthorization(ctx, a, c.signed)
 		var refusal *export.Error
 		if errors.As(err, &refusal) && (refusal.Code == export.CodeReplayed || refusal.Code == export.CodeStaleBasis) && attempt < authorizeAttempts {
+			p.sayOverflow(c)
+			if c.overflow != nil {
+				refused = append(refused, fmt.Errorf("the receiver refused authorization %d as %s: %w", a.Sequence, refusal.Code, c.overflow))
+			}
 			p.warn("the receiver holds authorization %d, and refused %d as %s; rechecking the policy, keeping no access it cannot check, and signing above %d",
 				refusal.HighWater, a.Sequence, refusal.Code, refusal.HighWater)
 			floor, trusted = refusal.HighWater, false
 			continue
 		}
 		if err != nil {
-			return nil, err
+			p.sayOverflow(c)
+			return nil, carry(errors.Join(err, failed))
 		}
-		if err := p.recordAuthorization(a, c.signed, c.links.revision); err != nil {
-			return nil, err
+		if err := p.recordAuthorization(a, c.signed, c.revision); err != nil {
+			p.sayOverflow(c)
+			return nil, carry(errors.Join(err, failed))
 		}
 		p.say("the receiver stored authorization %d: %s", a.Sequence, describe(a))
-		return reply, failed
+		p.sayOverflow(c)
+		return reply, carry(failed)
+	}
+}
+
+// sayOverflow prints, when the check signed its bounded fallback, the
+// access that is pending and, when the fallback was itself over the
+// limit, the access it dropped to fit.
+func (p *publisher) sayOverflow(c policyCheck) {
+	if c.overflow == nil {
+		return
+	}
+	p.say("pending: %s", c.pending)
+	if c.dropped != "" {
+		p.say("dropped: %s", c.dropped)
 	}
 }
 
@@ -120,13 +169,17 @@ func (p *publisher) recordAuthorization(a *export.Authorization, signed []byte, 
 	return p.recordDelivery(a, revision)
 }
 
-// describe is what an authorization lets anyone read, for messages.
+// describe is who an authorization lets read each project, for messages:
+// "app to anyone, operator; site to alice".
 func describe(a *export.Authorization) string {
-	var names []string
+	var each []string
 	for _, proj := range a.Projects {
-		names = append(names, proj.Name)
+		each = append(each, proj.Name+" to "+strings.Join(proj.Readers, ", "))
 	}
-	s := "anyone may read " + listNames(names)
+	s := "no project may be read"
+	if len(each) > 0 {
+		s = strings.Join(each, "; ")
+	}
 	if len(a.Bindings) > 0 {
 		s += fmt.Sprintf("; %d read links", len(a.Bindings))
 	}
@@ -140,12 +193,24 @@ func describe(a *export.Authorization) string {
 type policyCheck struct {
 	projects   []export.AuthorizedProject
 	incomplete error
-	// kept is set when a project keeps access it could not check.
-	kept bool
+	// kept names the projects whose policy the check could not read, and
+	// that keep access on the authorization's basis.
+	kept []string
 	// links is what the check read of the read links.
-	links         linkRead
+	links linkRead
+	// overflow, which wraps errOverflow, is set when the authorization is
+	// the bounded fallback. pending then says what access the full one
+	// gives and the fallback, narrowed from the last acknowledged one,
+	// does not. dropped, when that fallback was over the limit too, says
+	// what access the restriction to fit took from it.
+	overflow      error
+	pending       string
+	dropped       string
 	authorization *export.Authorization
 	signed        []byte
+	// revision is the credential file revision the authorization carries
+	// the links of, or 0 for none read from the file.
+	revision int64
 }
 
 // signPolicy reads the policy and signs an authorization for it, holding
@@ -196,12 +261,15 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64, trusted bool) (
 	}
 	c.authorization = &export.Authorization{Instance: p.cfg.instance, Destination: p.cfg.destination,
 		Sequence: seq, Checked: checked, Projects: c.projects}
-	if c.kept {
+	if len(c.kept) > 0 {
 		c.authorization.Basis = keepFrom.Sequence
 	}
 	unlockLinks, links := p.readBindings()
-	c.links = links
+	c.links, c.revision = links, links.revision
 	c.authorization.Bindings = c.links.bindings
+	if size := c.authorization.SignedSize(p.signer); size > p.limit-export.FallbackRoom {
+		p.fallBack(&c, prev, size)
+	}
 	c.signed, err = c.authorization.Sign(p.signer, p.key)
 	unlockLinks()
 	if err != nil {
@@ -210,20 +278,107 @@ func (p *publisher) signPolicy(ctx context.Context, floor int64, trusted bool) (
 	return c, nil
 }
 
+// fallBack puts in place of the check's authorization, which would be
+// size bytes signed, its bounded fallback: prev, the authorization the
+// receiver last said it stored, less every access the check no longer
+// gives (export.Narrow). It keeps the authorization's sequence, which
+// nothing was signed with, its checked time and its basis, so the
+// receiver admits it as it would the full one, and what it keeps of prev
+// is within what the check gives.
+//
+// The fallback is measured, never assumed to fit. One narrowed from an
+// authorization this publisher signed in full fits, as that left
+// export.FallbackRoom. One narrowed from an authorization the receiver
+// admitted without that room, whose sequence has grown a digit or that
+// adds a basis, can be over the limit. It is then restricted further
+// until it fits (export.Fit): first the projects kept on the basis, then
+// readers, the largest project first, then read links, and at last it
+// grants nothing. Every step only removes access, so the restriction is
+// always safe, and the access it drops is reported beside what is
+// pending.
+//
+// The fallback carries only the read links prev and the check both carry.
+// Its delivery is recorded as the revision prev carried the links of, so a
+// link issued since stays pending; a revocation since is recorded pending
+// too, though the fallback delivers it. A fallback that drops a read link
+// to fit is recorded as carrying none from the file, so every link is
+// pending until an authorization fits.
+func (p *publisher) fallBack(c *policyCheck, prev *export.Authorization, size int) {
+	full := c.authorization
+	narrowed := export.Narrow(prev, full)
+	c.authorization = export.Fit(narrowed, c.kept, p.signer, p.limit)
+	c.revision = 0
+	if d := c.links.delivered; prev != nil && c.links.err == nil && d.Sequence == prev.Sequence &&
+		len(c.authorization.Bindings) == len(narrowed.Bindings) {
+		c.revision = min(d.Revision, c.links.revision)
+	}
+	c.pending = withheld(full, narrowed)
+	from := "no authorization, as the receiver has acknowledged none"
+	if prev != nil {
+		from = fmt.Sprintf("authorization %d, the last the receiver acknowledged", prev.Sequence)
+	}
+	msg := fmt.Sprintf("authorization %d would be %d bytes signed, more than the %d a pass signs in full: a receiver reads at most %d, and a pass leaves %d of room; "+
+		"its bounded fallback was signed in its place, from %s, less every access this check no longer gives, adding none",
+		full.Sequence, size, p.limit-export.FallbackRoom, p.limit, export.FallbackRoom, from)
+	if c.authorization != narrowed {
+		c.dropped = withheld(narrowed, c.authorization)
+		msg += fmt.Sprintf("; that fallback would be %d bytes signed, over the %d a receiver reads too, so to fit it also drops %s",
+			narrowed.SignedSize(p.signer), p.limit, c.dropped)
+	}
+	c.overflow = fmt.Errorf("%w: %s; pending until an authorization fits: %s", errOverflow, msg, c.pending)
+}
+
+// withheld is what full gives and sent does not, for messages: "app to
+// bob; site to 1200 readers; 3 read links".
+func withheld(full, sent *export.Authorization) string {
+	var each []string
+	for _, proj := range full.Projects {
+		var readers []string
+		for _, r := range proj.Readers {
+			if !sent.Allows(r, proj.Name, proj.Identity) {
+				readers = append(readers, r)
+			}
+		}
+		switch {
+		case len(readers) == 0:
+		case len(readers) > 4:
+			each = append(each, fmt.Sprintf("%s to %d readers", proj.Name, len(readers)))
+		default:
+			each = append(each, proj.Name+" to "+strings.Join(readers, ", "))
+		}
+	}
+	links := 0
+	for _, b := range full.Bindings {
+		if !slices.Contains(sent.Bindings, b) {
+			links++
+		}
+	}
+	if links > 0 {
+		each = append(each, fmt.Sprintf("%d read links", links))
+	}
+	if len(each) == 0 {
+		return "no access"
+	}
+	return strings.Join(each, "; ")
+}
+
 // checkPolicy reads who may read each project at the destination: the
 // instance's read grants, and each selected project's own policy/read. It
 // reads no plan, no knot and no listing of the CLI, so no project's graph
 // can fail it. It reads into caches of its own, under policy/ in the
 // publisher's cache, so a content pass running beside it is not disturbed.
 //
-// A project is authorized for anyone when a pass would publish it: a read
-// grant to anyone covers it, the host declaration places it in a group,
-// and its policy/read lets anyone read it. A project whose policy cannot
-// be read keeps what prev gave it, as long as the grants still cover it,
-// and never more; the check is then incomplete. prev is the authorization
-// the receiver last said it stored, or nil when that is not known, and
-// then nothing is kept. An instance or registry that cannot be read fails
-// the check, and nothing is signed.
+// A project is authorized when a pass would export it: the host
+// declaration places it in a group, and it has an effective reader, a
+// principal its policy/read names and a read grant covers. The
+// authorization names each of its effective readers, anyone among them
+// only when both consents let anyone read it. A project whose policy
+// cannot be read keeps those of the readers prev gave it that the grants
+// still cover, under prev's publication identity, and never another; the
+// check is then incomplete. prev is the authorization the receiver last
+// said it stored, or nil when that is not known, and then nothing is
+// kept. An instance or registry that cannot be read fails the check, and
+// nothing is signed.
 func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization) (policyCheck, error) {
 	q := *p
 	q.origin = filepath.Join(p.cache, "policy", "origin.git")
@@ -245,24 +400,43 @@ func (p *publisher) checkPolicy(ctx context.Context, prev *export.Authorization)
 		if !q.selects(grants, name) {
 			continue
 		}
-		read, err := q.readableByAnyone(ctx, name, q.projectURL(name), grants)
+		read, err := q.readConsent(ctx, name, q.projectURL(name), grants)
 		if err != nil {
 			failed = append(failed, err)
-			if old, ok := prev.Project(name); ok && grants.Covers(readaccess.Anyone, name, old.Identity) {
-				p.warn("%s: could not read its policy; keeping the access from authorization %d, if the receiver still holds it", name, prev.Sequence)
-				c.projects = append(c.projects, export.AuthorizedProject{Name: name, Identity: old.Identity, Readers: []string{export.Anyone}})
-				c.kept = true
+			if kept, ok := stillCovered(prev, grants, name); ok {
+				p.warn("%s: could not read its policy; keeping the access authorization %d gave %s, if the receiver still holds it",
+					name, prev.Sequence, strings.Join(kept.Readers, ", "))
+				c.projects = append(c.projects, kept)
+				c.kept = append(c.kept, name)
 			}
 			continue
 		}
-		if read.public {
-			c.projects = append(c.projects, export.AuthorizedProject{Name: name, Identity: read.consent.Identity, Readers: []string{export.Anyone}})
+		if len(read.readers) > 0 {
+			c.projects = append(c.projects, export.AuthorizedProject{Name: name, Identity: read.consent.Identity, Readers: read.readers})
 		}
 	}
 	if len(failed) > 0 {
 		c.incomplete = fmt.Errorf("%w: %w", errIncomplete, errors.Join(failed...))
 	}
 	return c, nil
+}
+
+// stillCovered is what prev authorized of the project that the grants
+// still cover: the project under prev's publication identity, with those
+// of prev's readers a grant covers it for. It is false when prev does not
+// name the project, or the grants cover none of its readers.
+func stillCovered(prev *export.Authorization, grants readaccess.Grants, name string) (export.AuthorizedProject, bool) {
+	old, ok := prev.Project(name)
+	if !ok {
+		return export.AuthorizedProject{}, false
+	}
+	kept := export.AuthorizedProject{Name: name, Identity: old.Identity}
+	for _, r := range old.Readers {
+		if grants.Covers(r, name, old.Identity) {
+			kept.Readers = append(kept.Readers, r)
+		}
+	}
+	return kept, len(kept.Readers) > 0
 }
 
 // lastAcknowledged is the authorization the receiver last said it stored,

@@ -431,12 +431,13 @@ func writeDelivery(state string, d linkDelivery) error {
 
 // linkRead is what a policy pass read of the read links: the bindings
 // its authorization carries, the credential file revision they were read
-// from, or 0 when they reflect no file, and, when the pass is to fail,
-// why.
+// from, or 0 when they reflect no file, the delivery record as it read
+// it, and, when the pass is to fail, why.
 type linkRead struct {
-	bindings []export.Binding
-	revision int64
-	err      error
+	bindings  []export.Binding
+	revision  int64
+	delivered linkDelivery
+	err       error
 }
 
 // readBindings reads the read links an authorization carries, under the
@@ -482,7 +483,7 @@ func (p *publisher) readBindings() (func(), linkRead) {
 			return unlock, p.noLinks(err)
 		}
 	}
-	r := linkRead{revision: f.Revision}
+	r := linkRead{revision: f.Revision, delivered: d}
 	for _, l := range f.active() {
 		r.bindings = append(r.bindings, export.Binding{ID: l.ID, Principal: l.Principal, Verifier: l.Verifier})
 	}

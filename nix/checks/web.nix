@@ -109,7 +109,13 @@
   # response, the knots page's admitting its inline stylesheet and script
   # by their hashes and every other route's no script, with every
   # response private and unstored, carrying no ETag and never answered
-  # 304; anyone and two named readers, over signed fixtures holding
+  # 304; the real publisher's signed output, admitted as a receiver
+  # admits it, serving anyone and an ungranted reader its public project
+  # alone and each of two named readers its own private project, with
+  # the export's and each reader's projection of the derived fields and
+  # edges of knots blocked in either private project and in an unexported
+  # one, and no page naming a private project to a reader who may not see
+  # it; anyone and two named readers, over signed fixtures holding
   # private projects, each served on every route, alias, landing,
   # reference, Markdown page and archive from the union of what anyone
   # and their principal may read, under the project's publication

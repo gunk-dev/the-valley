@@ -565,8 +565,9 @@ rec {
   # reads through and the server does not, it reads the go.mod alone,
   # which go reads to resolve the module. The git it reads repositories
   # with is fixed at build time, the way valleyhook's is. Its tests run the real program over the shared
-  # fixture and real git, and go vet runs after them. The crash tests and
-  # the browser test are skipped there: web-reader-state-crash and
+  # fixture and real git, and the server over the real publisher's output
+  # (web-published), and go vet runs after them. The crash tests and the
+  # browser test are skipped there: web-reader-state-crash and
   # web-reader-browser-e2e (nix/checks/) run them from the same tests.
   # Go, standard library only, so no module is fetched.
   valley-web = goModule {
@@ -594,12 +595,38 @@ rec {
       ];
       checkFlags = [ "-skip=^(TestCrash|TestBrowser)" ];
       nativeCheckInputs = [ pkgs.git ];
+      # A test that cannot find the publisher's output fails rather than
+      # skipping.
+      preCheck = ''
+        export VALLEY_TEST_TOOLS=required
+        export VALLEY_WEB_PUBLISHED=${web-published}
+      '';
       postCheck = ''
         go vet ./server/... ./readerstate/... ./cmd/valley-web/...
       '';
     };
     meta.mainProgram = "valley-web";
   };
+
+  # The real publisher's signed output over a small valley with a public
+  # project, two private projects each one named reader may read, and a
+  # project with no effective reader, written with --out by the packaged publisher and CLI
+  # (nix/checks/web-published.sh). valley-web's tests read it, so the
+  # server is tested against what the publisher writes. It is no check of
+  # its own.
+  web-published =
+    pkgs.runCommand "valley-web-published"
+      {
+        nativeBuildInputs = [
+          pkgs.git
+          pkgs.cue
+          pkgs.jq
+          valley-script
+          valley-web-publish
+        ];
+        schema = ../schema/valley.cue;
+      }
+      (builtins.readFile ./checks/web-published.sh);
 
   # The web export receiver, valley-web-receive (web/cmd/valley-web-receive/),
   # which takes the publisher's uploads into a state directory that

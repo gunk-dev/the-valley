@@ -235,17 +235,18 @@ integration requests, or knots. A **grant** is a capability assigned to a princi
   `restack` are a **deployment choice**).
 
 A **read grant** is the instance's consent for a principal to read a project at an edge, the web
-server a valley host publishes to. Evaluating read access takes two consents (`implemented`). The
+server a valley host publishes to. Evaluating read access takes two consents (`implemented`): the
 project's own `policy/read` names the principal as a reader, and the instance's registry grants the
 principal read access to that project, or to all projects, at the edge. **`anyone`** is the reader
 who presents no credential. It has its own entry in the registry with only read grants and no SSH
-key, whereas an untagged SSH key in `authorizedKeys` pushes as an anonymous pusher. A project is
-**public** at an edge when both consents authorize `anyone` to read it there. The consent evaluator
-treats the operator the same as any other named principal (`implemented`). A reader can sign in at
-the edge with a read link, and `valley-web` serves that reader's requests as the link's principal
-(`implemented`). However, the web publisher exports only what `anyone` may read, so named grants
-publish nothing, and exporting projects for named readers is **not built** (see
-[Read access](./architecture.md#read-access)).
+key, whereas an untagged SSH key in `authorizedKeys` pushes as an anonymous pusher. A project's
+**effective readers** at an edge are the principals that both consents authorize there, including
+`anyone`, and a project is **public** at an edge when both consents authorize `anyone` to read it
+there. The consent evaluator treats the operator the same as any other named principal
+(`implemented`). The web publisher exports every project with an effective reader, and its
+authorization names each project's effective readers (`implemented`). A reader can sign in at the
+edge with a read link, and `valley-web` serves that reader's requests as the link's principal
+(`implemented`; see [Read access](./architecture.md#read-access)).
 
 _How Nix and CUE realize this:_ To manage principals and grants as reviewed changes in the instance
 repository rather than only through NixOS rebuilds, a host can enable

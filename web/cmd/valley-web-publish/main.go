@@ -1,7 +1,8 @@
-// valley-web-publish publishes a valley host's public projects to a web
-// receiver: the projects anyone may read there. One run is one pass. It reads the valley through the CLI's JSON
-// commands, projects what it read onto the public export (package export),
-// signs a manifest for it, and uploads it by the protocol package export
+// valley-web-publish publishes a valley host's projects to a web receiver:
+// each project some reader may read there, anyone or a named principal.
+// One run is one pass. It reads the valley through the CLI's JSON
+// commands, projects what it read onto the export (package export), signs
+// a manifest for it, and uploads it by the protocol package export
 // defines. The receiver never connects to the host; its replies are all the
 // publisher hears from it.
 //
@@ -14,7 +15,8 @@
 // reads the export key, or makes one on the first start; reads the
 // instance's read grants and each selected project's policy/read, into
 // caches of its own; allocates the next sequence from a durable counter;
-// and signs an authorization that names each project anyone may read. It
+// and signs an authorization that names each project with its effective
+// readers. It
 // then sends the authorization to the receiver, outside the lock. It reads
 // no plan and no knot, so no project's graph holds up a withdrawal. With
 // --policy-only the pass ends there, and takes no other lock but the
@@ -34,43 +36,43 @@
 //     origin it is, once for the whole pass, refuse a main that carries
 //     policy/valley, and read the read grants at --destination from the
 //     identity registry at the --registry-ref it fetched;
-//  4. prepare the valley CLI's clone of each project a read grant to
-//     anyone names and that is in a group, and of no other, so the CLI
-//     reads no other project;
+//  4. prepare the valley CLI's clone of each project a read grant of some
+//     principal could cover and that is in a group, and of no other, so
+//     the CLI reads no other project;
 //  5. run valley plan --all --json and valley pending --all --json in the
 //     pointer repository, whose main names the instance repository at
 //     policy/valley, so they discover the projects and the signers through
 //     the instance repository's own publications and never read its main;
 //     and hold both listings to the project list it fetched. A project no
 //     grant names has no clone, so both list it as one they could not
-//     read, and the pass keeps it private;
+//     read, and the pass does not export it;
 //  6. for each of those projects, fetch main into a mirror under the
 //     cache and read the project's own policy/read there;
 //  7. run valley knot show --project P <id> --json for every knot of every
-//     public project, in the publisher's repository, and build the export
+//     exported project, in the publisher's repository, and build the export
 //     with export.Build, reading again when the inputs were read at
 //     different graph tips; then hold the state and the caches to
 //     --max-storage again;
-//  8. bundle each public project's main, writing each bundle only into
+//  8. bundle each exported project's main, writing each bundle only into
 //     what --max-bundles and --max-storage leave;
 //  9. upload it, unless the receiver acknowledged the same content digest
 //     less than --recheck ago and its reply to the authorization says it
 //     serves that digest with every repository the authorization names,
 //     or write it to --out instead.
 //
-// The export carries no visibility: a project is exported when anyone may
-// read it, and the authorization alone says who may. A project is public
-// when anyone may read it and it has a web URL: its
-// own policy/read names anyone (schema/read.cue), a read grant to anyone at
-// the destination covers it (schema/identity.cue), and the host declaration
-// places it in a group. Package readaccess reads and evaluates the two
-// consents. The export carries each public project's group and short
-// aliases, and the groups public projects belong to. A policy or registry
-// that is missing, or that its schema refuses, consents to nothing, so the
-// project is private. A project a grant names
-// that cannot be read fails the pass, which then sends nothing: an export
-// without it would take it off the web. A project no grant names is
-// private whether or not it can be read.
+// The export carries no visibility: a project is exported when it has an
+// effective reader and a web URL, and the authorization alone says who may
+// read it. An effective reader is a principal, anyone included, that the
+// project's own policy/read names (schema/read.cue) and that a read grant
+// at the destination covers the project for (schema/identity.cue). A web
+// URL is a group the host declaration places the project in. Package
+// readaccess reads and evaluates the two consents. The export carries each
+// exported project's group and short aliases, and the groups exported
+// projects belong to. A policy or registry that is missing, or that its
+// schema refuses, consents to nothing, so the project is not exported. A
+// project the pass selects that cannot be read fails the pass, which then
+// sends nothing: an export without it would take it off the web. A
+// project no grant names is not exported whether or not it can be read.
 package main
 
 import (
@@ -103,8 +105,8 @@ const usage = `usage: valley-web-publish --instance-repo URL --instance NAME --d
        valley-web-publish link (issue | list | revoke) ...
 
 One pass of the web publisher: check who may read each project and send
-the receiver a signed authorization, then read the valley's public
-projects and upload them to the receiver at URL (or write both to DIR).
+the receiver a signed authorization, then read every project some reader
+may read and upload them to the receiver at URL (or write both to DIR).
 
   --instance-repo URL  absolute local path to the instance repository
                        (used as origin of the publisher's cached bare
@@ -117,12 +119,12 @@ projects and upload them to the receiver at URL (or write both to DIR).
                        key's signing name, NAME/web-export
   --destination NAME   the receiver the manifest is for, and the destination
                        of the edge read boundary whose read grants decide
-                       what anyone may read there
+                       who may read each project there
   --host FILE          JSON host declaration from cue export under
                        schema/valley.cue, defining groups and each
                        project's group, web name, former names, and
                        aliases; colliding names are refused, and a
-                       project in no group is private
+                       project in no group is not exported
   --receiver URL       the receiver's base URL, http or https; uploads
                        connect directly to URL and ignore HTTP_PROXY,
                        HTTPS_PROXY, and all other proxy settings
@@ -152,7 +154,7 @@ projects and upload them to the receiver at URL (or write both to DIR).
                        reads it: a full ref name (default refs/heads/main);
                        a pass reads the registry at the one commit it
                        fetched, and an instance repository with no REF
-                       holds no registry, so every project is private
+                       holds no registry, so no project is exported
   --registry-dir DIR   the identity registry's directory in that commit
                        (default identity)
   --recheck DURATION   how long an acknowledgement is trusted: a pass skips
@@ -372,6 +374,10 @@ type publisher struct {
 	// access reads the two consents to read access.
 	access readaccess.Reader
 
+	// limit is the most bytes of a signed authorization the policy path
+	// sends: export.MaxAuthorization, the most a receiver reads.
+	limit int
+
 	client *http.Client
 	now    func() time.Time
 	sleep  func(context.Context, time.Duration) error
@@ -413,6 +419,7 @@ func newPublisher(cfg config, stdout, stderr io.Writer) (*publisher, error) {
 		token:      token,
 		signer:     cfg.instance + "/web-export",
 		access:     readaccess.Reader{ReadSchema: cfg.readSchema, IdentitySchema: cfg.idSchema, CueTimeout: cueTimeout},
+		limit:      export.MaxAuthorization,
 		client:     newClient(),
 		now:        time.Now,
 		sleep:      sleepContext,
@@ -466,14 +473,14 @@ func (p *publisher) pass(ctx context.Context) error {
 	return p.upload(ctx, read, digest, ack)
 }
 
-// sayVisibility says which projects this pass exports, and which it keeps
-// private.
+// sayVisibility says which projects this pass exports, and which it does
+// not.
 func (p *publisher) sayVisibility(r *reading) {
-	var public []string
+	var exported []string
 	for _, proj := range r.export.Projects {
-		public = append(public, proj.Name)
+		exported = append(exported, proj.Name)
 	}
-	p.say("public: %s; private: %s", listNames(public), listNames(r.private))
+	p.say("exported: %s; not exported: %s", listNames(exported), listNames(r.unexported))
 }
 
 func (p *publisher) say(format string, args ...any) {

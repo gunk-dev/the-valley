@@ -32,19 +32,22 @@ type Inputs struct {
 	// Pending is `valley pending --all --json`.
 	Pending []byte
 	// Details are `valley knot show --project P <id> --json`, one for
-	// every knot of every public project.
+	// every knot of every exported project.
 	Details [][]byte
 	// Identities are the publication identities of the projects to
-	// export, by project. A project it does not name is not exported.
+	// export, by project: every project with an effective reader at the
+	// destination, whoever that reader is. A project it does not name is
+	// not exported, and is not on the edge.
 	Identities map[string]string
-	// SourceTips are each public project's main.
+	// SourceTips are each exported project's main.
 	SourceTips map[string]string
 	// Principals is the display mapping principal names pass through.
 	Principals Principals
 	// Groups are the instance's groups, in identifier order, and
 	// Placements where the instance places each project on the web, by
-	// project, as the instance declares them. Every public project has a
-	// group. The export carries the groups of its public projects alone.
+	// project, as the instance declares them. Every exported project has
+	// a group. The export carries the groups of its exported projects
+	// alone.
 	Groups     []Group
 	Placements map[string]Placement
 }
@@ -184,20 +187,26 @@ type (
 // across projects.
 type detailKey struct{ project, id string }
 
-// Build projects the valley's JSON onto the public export. It is a pure
-// function of its inputs. It exports each project whose visibility is
-// public, and everything of it an anonymous reader may see: every knot,
-// with its body and comments, and the changes ready for approval, each
-// with its active version alone. It leaves out what is not the reader's:
-// the plan's operator sections, drafts, branches, older versions,
-// repository URLs, error text and the file each knot is stored in. A
-// reference to a project that is not exported keeps only the reference,
-// and every principal name passes through the display mapping.
+// Build projects the valley's JSON onto the export. It is a pure function
+// of its inputs. It exports each project Identities names, which is every
+// project on this edge, and everything of it a reader of the project may
+// see: every knot, with its body and comments, and the changes ready for
+// approval, each with its active version alone. It leaves out what is no
+// reader's: the plan's operator sections, drafts, branches, older
+// versions, repository URLs, error text and the file each knot is stored
+// in. Every principal name passes through the display mapping.
 //
-// A public project whose plan or pending listing could not be read, whose
-// knot lacks its detail, or whose detail was read at another graph tip
-// fails the projection, so a partial export is never published. The last
-// of these is ErrInconsistent.
+// The export is one for every reader of the edge, and says nothing of who
+// may read which project. So its projection is the storage boundary's: a
+// reference to a project that is not exported keeps only the reference,
+// and a reference to an exported project keeps what the plan says of it.
+// The server takes out, for each reader, what the references say of the
+// exported projects that reader may not read.
+//
+// An exported project whose plan or pending listing could not be read,
+// whose knot lacks its detail, or whose detail was read at another graph
+// tip fails the projection, so a partial export is never published. The
+// last of these is ErrInconsistent.
 func Build(in Inputs) (*Export, error) {
 	if err := in.Principals.check(); err != nil {
 		return nil, err
@@ -394,7 +403,7 @@ func project(name string, p planProject, r pendingRepo, details map[detailKey]de
 }
 
 // exportedGroups are the groups the exported projects belong to, in
-// identifier order, as groups are: a group no public project belongs to
+// identifier order, as groups are: a group no exported project belongs to
 // is not exported.
 func exportedGroups(projects []Project, groups []Group) ([]Group, error) {
 	used := map[string]bool{}

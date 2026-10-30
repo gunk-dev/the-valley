@@ -41,20 +41,20 @@ const (
 )
 
 // reading is what a pass read: the export, each exported project's mirror,
-// and the projects it keeps private.
+// and the projects it does not export.
 type reading struct {
-	export  *export.Export
-	json    []byte
-	mirrors map[string]string
-	private []string
+	export     *export.Export
+	json       []byte
+	mirrors    map[string]string
+	unexported []string
 }
 
 // collect reads the valley and builds the export. It fetches the instance
 // repository once, and every read of the pass reads the instance at that
 // fetch. It reads the read grants first, at the registry commit it fetched,
-// and prepares the CLI's clones of the projects a grant to anyone names
-// alone: the CLI can make no other clone, so it reads no other project,
-// and one that cannot be read fails no pass. Each knot's detail is read
+// and prepares the CLI's clones of the projects it selects alone: the CLI
+// can make no other clone, so it reads no other project, and one that
+// cannot be read fails no pass. Each knot's detail is read
 // after the plan, so a write to the graph in between makes the two
 // disagree; export.Build says so with ErrInconsistent, and collect reads
 // everything again.
@@ -74,8 +74,8 @@ func (p *publisher) collect(ctx context.Context) (*reading, error) {
 	for _, name := range inst.projects {
 		if p.selects(grants, name) {
 			selected = append(selected, name)
-		} else if grants.Selects(readaccess.Anyone, name) {
-			p.warn("%s: a read grant to anyone names it, and it is in no group, so it has no web URL and is private", name)
+		} else if namedByGrant(grants, name) {
+			p.warn("%s: a read grant names it, and it is in no group, so it has no web URL and is not exported", name)
 		}
 	}
 	if err := p.prepareCLICaches(ctx, selected); err != nil {
@@ -122,11 +122,11 @@ type (
 
 // readGrants reads the read grants at the destination from the identity
 // registry at the commit fetchInstance fetched of --registry-ref. A
-// registry that is missing or invalid grants nothing, so every project is
-// private. One that cannot be read ends the pass.
+// registry that is missing or invalid grants nothing, so no project is
+// exported. One that cannot be read ends the pass.
 func (p *publisher) readGrants(ctx context.Context, inst instanceRead) (readaccess.Grants, error) {
 	if inst.registry == "" {
-		p.warn("the instance repository holds no %s, so it has no identity registry, and every project is private", p.cfg.registryRef)
+		p.warn("the instance repository holds no %s, so it has no identity registry, and no project is exported", p.cfg.registryRef)
 		return nil, nil
 	}
 	grants, err := p.access.Grants(ctx, p.origin, inst.registry, p.cfg.registryDir, p.cfg.destination, p.now())
@@ -135,7 +135,7 @@ func (p *publisher) readGrants(ctx context.Context, inst instanceRead) (readacce
 	case errors.Is(err, readaccess.ErrMissing):
 		return nil, nil
 	case errors.As(err, &bad):
-		p.warn("the instance's identity registry at %s is not valid, so every project is private: %v", short(inst.registry), err)
+		p.warn("the instance's identity registry at %s is not valid, so no project is exported: %v", short(inst.registry), err)
 		return nil, nil
 	case err != nil:
 		return nil, fmt.Errorf("could not read the instance's identity registry at %s: %w", short(inst.registry), err)
@@ -144,12 +144,13 @@ func (p *publisher) readGrants(ctx context.Context, inst instanceRead) (readacce
 }
 
 // read is one read of the valley, with the instance as fetchInstance read
-// it and the grants readGrants read. A project is public when anyone may
-// read it at the destination, by the read grants in the instance's
-// registry and the project's own policy/read. It is private when no grant
-// to anyone names it, and when its policy/read is missing, invalid, or
-// does not let anyone read it. Any other failure to read a project a grant
-// names ends the pass: an export without it would take it off the web.
+// it and the grants readGrants read. A project is exported when it has an
+// effective reader at the destination: a principal its own policy/read
+// names and a read grant in the instance's registry covers, anyone
+// included. It is not exported when the pass does not select it, and when
+// its policy/read is missing, invalid, or names no principal a grant
+// covers. Any other failure to read a project the pass selects ends the
+// pass: an export without it would take it off the web.
 func (p *publisher) read(ctx context.Context, inst instanceRead, grants readaccess.Grants) (*reading, error) {
 	planJSON, err := p.valley(ctx, p.pointer, "plan", "--all", "--json")
 	if err != nil {
@@ -208,12 +209,12 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 			if repo.URL == "" {
 				return nil, fmt.Errorf("%s: the pending listing gives no URL to read it from", name)
 			}
-			if read, err = p.readableByAnyone(ctx, name, repo.URL, grants); err != nil {
+			if read, err = p.readConsent(ctx, name, repo.URL, grants); err != nil {
 				return nil, err
 			}
 		}
-		if !read.public {
-			r.private = append(r.private, name)
+		if len(read.readers) == 0 {
+			r.unexported = append(r.unexported, name)
 			continue
 		}
 		in.Identities[name] = read.consent.Identity
@@ -226,7 +227,7 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 			in.Details = append(in.Details, detail)
 		}
 	}
-	sort.Strings(r.private)
+	sort.Strings(r.unexported)
 	if r.export, err = export.Build(in); err != nil {
 		return nil, err
 	}
@@ -236,11 +237,33 @@ func (p *publisher) read(ctx context.Context, inst instanceRead, grants readacce
 	return r, nil
 }
 
-// selects reports whether a pass reads the project: a read grant to anyone
-// could cover it, and the host declaration places it in a group, so it
-// has a web URL. A pass reads no other project's policy/read.
+// selects reports whether a pass reads the project: a read grant of some
+// principal, anyone included, could cover it, and the host declaration
+// places it in a group, so it has a web URL. A pass reads no other
+// project's policy/read.
 func (p *publisher) selects(grants readaccess.Grants, name string) bool {
-	return grants.Selects(readaccess.Anyone, name) && p.places.placements[name].Group != ""
+	if p.places.placements[name].Group == "" {
+		return false
+	}
+	for principal := range grants {
+		if grants.Selects(principal, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// namedByGrant reports whether a read grant names the project, rather
+// than covering every project.
+func namedByGrant(grants readaccess.Grants, name string) bool {
+	for _, scopes := range grants {
+		for _, s := range scopes {
+			if _, named := s.Projects[name]; named {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // listNames is a list of projects for a message.
@@ -251,24 +274,24 @@ func listNames(list []string) string {
 	return strings.Join(list, ", ")
 }
 
-// consentRead is what readableByAnyone read of a project: whether it is
-// public, and for a public project its consent, main's tip and the mirror
-// main was fetched into.
+// consentRead is what readConsent read of a project: its effective
+// readers, and for a project with any, its consent, main's tip and the
+// mirror main was fetched into.
 type consentRead struct {
-	public      bool
+	readers     []string
 	consent     readaccess.Consent
 	tip, mirror string
 }
 
-// readableByAnyone decides whether a project a read grant to anyone names
-// is public: its own policy/read on main, read from the repository at url,
-// lets anyone read it, under that grant. A project with no main, or whose
-// policy/read is missing, invalid or does not let anyone read it, is
-// private, and an invalid policy is said. A project that cannot be read
-// is an error.
-func (p *publisher) readableByAnyone(ctx context.Context, name, url string, grants readaccess.Grants) (consentRead, error) {
+// readConsent reads who may read a project the pass selects: the
+// principals its own policy/read on main, read from the repository at url,
+// names that a read grant covers (readaccess.Grants.Readers). A project
+// with no main, or whose policy/read is missing or invalid, has no reader,
+// and an invalid policy is said. A project that cannot be read is an
+// error.
+func (p *publisher) readConsent(ctx context.Context, name, url string, grants readaccess.Grants) (consentRead, error) {
 	if !export.ValidName(name) {
-		p.warn("%q is not a project name, so it is private", name)
+		p.warn("%q is not a project name, so it is not exported", name)
 		return consentRead{}, nil
 	}
 	mirror, tip, err := p.fetchMain(ctx, name, url)
@@ -284,14 +307,16 @@ func (p *publisher) readableByAnyone(ctx context.Context, name, url string, gran
 	case errors.Is(err, readaccess.ErrMissing):
 		return consentRead{}, nil
 	case errors.As(err, &bad):
-		p.warn("%s: its policy/read at %s is not valid, so it is private: %v", name, short(tip), err)
+		p.warn("%s: its policy/read at %s is not valid, so it is not exported: %v", name, short(tip), err)
 		return consentRead{}, nil
 	case err != nil:
 		return consentRead{}, fmt.Errorf("%s: could not read its policy/read at %s: %w", name, short(tip), err)
-	case !grants.May(readaccess.Anyone, consent):
+	}
+	readers := grants.Readers(consent)
+	if len(readers) == 0 {
 		return consentRead{}, nil
 	}
-	return consentRead{public: true, consent: consent, tip: tip, mirror: mirror}, nil
+	return consentRead{readers: readers, consent: consent, tip: tip, mirror: mirror}, nil
 }
 
 // preparePointer makes the repository valley plan and valley pending run

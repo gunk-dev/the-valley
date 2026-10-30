@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -17,8 +18,20 @@ const (
 	AuthorizationType = "the-valley/web-authorization/v1"
 
 	// MaxAuthorization is the most bytes of a signed authorization a
-	// receiver reads, and a server reads of the stored one.
+	// receiver reads, and a server reads of the stored one. Sign signs
+	// nothing larger.
 	MaxAuthorization = 256 << 10
+
+	// FallbackRoom is the room a publisher leaves under MaxAuthorization
+	// when it signs an authorization in full, so that a fallback narrowed
+	// from it (Narrow) fits with nothing more dropped. The fallback's
+	// records are some of that authorization's, under the same instance
+	// and destination. Only two of its records can be longer: its
+	// sequence, by at most 18 digits, and a basis record it may add, at
+	// most 26 bytes. The room is no guarantee: a receiver may hold an
+	// authorization signed without it. So a publisher measures every
+	// fallback, and restricts one over the limit further (Fit).
+	FallbackRoom = 64
 
 	// Anyone is the reader every visitor is, signed in or not.
 	Anyone = "anyone"
@@ -148,14 +161,162 @@ func (a *Authorization) Text() []byte {
 }
 
 // Sign is the authorization signed as a note by the publisher's export
-// key. It is checked against ParseAuthorization first, so the publisher
-// never signs what a receiver would refuse to read.
+// key, called name. It is checked against ParseAuthorization and its size
+// against MaxAuthorization first, so the publisher never signs what a
+// receiver would refuse to read. One too large is refused with
+// CodeTooLarge.
 func (a *Authorization) Sign(name string, key ed25519.PrivateKey) ([]byte, error) {
 	text := a.Text()
 	if _, err := ParseAuthorization(text); err != nil {
 		return nil, err
 	}
+	if n := note.SignedSize(text, name); n > MaxAuthorization {
+		return nil, refuse(CodeTooLarge, "authorization %d would be %d bytes signed, and a receiver reads at most %d", a.Sequence, n, MaxAuthorization)
+	}
 	return note.Sign(text, name, key)
+}
+
+// SignedSize is how many bytes Sign writes for the authorization signed by
+// the key called name.
+func (a *Authorization) SignedSize(name string) int {
+	return note.SignedSize(a.Text(), name)
+}
+
+// Narrow is the bounded fallback a publisher sends when cur is too large
+// to sign: prev, the last authorization the receiver acknowledged, less
+// every access cur does not give. It keeps each of prev's projects that
+// cur names under the same publication identity, with those of its
+// readers cur names for it, and each of prev's bindings that cur carries
+// unchanged. It takes cur's instance, destination, sequence, checked time
+// and basis. It adds nothing prev does not give, so it is never larger
+// than prev but for its sequence and basis records (FallbackRoom). A nil
+// prev gives an authorization that names no project and carries no
+// binding.
+func Narrow(prev, cur *Authorization) *Authorization {
+	n := &Authorization{Instance: cur.Instance, Destination: cur.Destination,
+		Sequence: cur.Sequence, Checked: cur.Checked, Basis: cur.Basis}
+	if prev == nil {
+		return n
+	}
+	for _, old := range prev.Projects {
+		now, ok := cur.Project(old.Name)
+		if !ok || now.Identity != old.Identity {
+			continue
+		}
+		kept := AuthorizedProject{Name: old.Name, Identity: old.Identity}
+		for _, r := range old.Readers {
+			if slices.Contains(now.Readers, r) {
+				kept.Readers = append(kept.Readers, r)
+			}
+		}
+		if len(kept.Readers) > 0 {
+			n.Projects = append(n.Projects, kept)
+		}
+	}
+	for _, b := range prev.Bindings {
+		if slices.Contains(cur.Bindings, b) {
+			n.Bindings = append(n.Bindings, b)
+		}
+	}
+	return n
+}
+
+// Fit is a restricted until it is at most limit bytes signed by the key
+// called name. A publisher sends it in place of a bounded fallback that is
+// itself over the limit. onBasis names the projects a keeps only on its
+// basis, as when their policy could not be read. Fit returns a when a
+// fits. Otherwise it drops access one step at a time, in this order, and
+// stops at the first step after which the authorization, measured, fits:
+//
+//  1. each project kept on the basis, whole, in name order;
+//  2. each reader of the other projects, one at a time: the reader that
+//     sorts last, of the project with the most readers left, the first
+//     by name of those with as many, so a project goes with its last
+//     reader;
+//  3. each binding, in ID order.
+//
+// The basis record stays only while a project kept on it does. Every step
+// only removes access, so Fit allows nothing a does not. After the last
+// step it grants nothing: no project, no binding and no basis, a few
+// hundred bytes for any instance and destination name, which always fits
+// within MaxAuthorization.
+func Fit(a *Authorization, onBasis []string, name string, limit int) *Authorization {
+	if a.SignedSize(name) <= limit {
+		return a
+	}
+	// A cut is one step: a project, whole, when reader is empty; one
+	// reader of a project; or one binding, by its ID.
+	type cut struct{ project, reader, binding string }
+	projects := slices.Clone(a.Projects)
+	slices.SortFunc(projects, func(x, y AuthorizedProject) int { return strings.Compare(x.Name, y.Name) })
+	var cuts []cut
+	for _, p := range projects {
+		if slices.Contains(onBasis, p.Name) {
+			cuts = append(cuts, cut{project: p.Name})
+		}
+	}
+	// A project's reader at index i goes when the project has i+1 readers
+	// left, so the readers go in descending index; the projects are in
+	// name order, and the stable sort keeps them so among equal indexes.
+	type indexed struct {
+		cut
+		i int
+	}
+	var readers []indexed
+	for _, p := range projects {
+		if slices.Contains(onBasis, p.Name) {
+			continue
+		}
+		for i, r := range slices.Sorted(slices.Values(p.Readers)) {
+			readers = append(readers, indexed{cut{project: p.Name, reader: r}, i})
+		}
+	}
+	slices.SortStableFunc(readers, func(x, y indexed) int { return y.i - x.i })
+	for _, r := range readers {
+		cuts = append(cuts, r.cut)
+	}
+	bindings := slices.Clone(a.Bindings)
+	slices.SortFunc(bindings, func(x, y Binding) int { return strings.Compare(x.ID, y.ID) })
+	for _, b := range bindings {
+		cuts = append(cuts, cut{binding: b.ID})
+	}
+
+	// without is a less its first k cuts. Each cut only removes records,
+	// so its size falls as k grows, and the first k that fits is found
+	// by measuring a few of them.
+	without := func(k int) *Authorization {
+		gone := map[cut]bool{}
+		for _, c := range cuts[:k] {
+			gone[c] = true
+		}
+		n := &Authorization{Instance: a.Instance, Destination: a.Destination, Sequence: a.Sequence, Checked: a.Checked}
+		for _, p := range a.Projects {
+			if gone[cut{project: p.Name}] {
+				continue
+			}
+			kept := AuthorizedProject{Name: p.Name, Identity: p.Identity}
+			for _, r := range p.Readers {
+				if !gone[cut{project: p.Name, reader: r}] {
+					kept.Readers = append(kept.Readers, r)
+				}
+			}
+			if len(kept.Readers) == 0 {
+				continue
+			}
+			n.Projects = append(n.Projects, kept)
+			if slices.Contains(onBasis, p.Name) {
+				n.Basis = a.Basis
+			}
+		}
+		for _, b := range a.Bindings {
+			if !gone[cut{binding: b.ID}] {
+				n.Bindings = append(n.Bindings, b)
+			}
+		}
+		return n
+	}
+	k := sort.Search(len(cuts)+1, func(k int) bool { return without(k).SignedSize(name) <= limit })
+	return without(min(k, len(cuts)))
 }
 
 // Allows reports whether the authorization lets reader read the project

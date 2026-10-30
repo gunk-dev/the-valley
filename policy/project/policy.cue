@@ -285,6 +285,14 @@ project: {
 		requires: "web-reader-browser-e2e":          true
 	}
 
+	// The real publisher's output that web-server-unit serves:
+	// nix/checks/web-published.sh runs the publisher and the CLI as they
+	// ship, and the server's tests read what it writes.
+	classes: "web-published": {
+		paths: "nix/checks/web-published.sh": true
+		requires: "web-server-unit":          true
+	}
+
 	// Read access: the two consents a reader needs, the evaluator that
 	// intersects them, and the coverage report. readaccess-unit reads both
 	// schemas, so a change to either requires it, and the web publisher

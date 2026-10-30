@@ -277,7 +277,7 @@ func policy(project string, readers ...string) string {
 // grant writes the instance's identity registry, whose read grant to anyone
 // at the destination covers the projects given, and pushes it to main. An
 // empty scope removes the registry. The registry's genesis entry, the
-// operator, governs it and reads every project.
+// operator, governs it and holds a read grant to every project.
 func (v *testValley) grant(projects string) {
 	v.t.Helper()
 	v.grantIn("valley", projects)
@@ -295,8 +295,15 @@ func (v *testValley) grantIn(instance, projects string) {
 }
 
 // registryText is the instance's identity registry whose read grant to
-// anyone at the destination covers the projects given.
+// anyone at the destination covers the projects given, and whose
+// operator's read grant covers every project.
 func registryText(projects string) string {
+	return registryFor(projects, `"all"`)
+}
+
+// registryFor is the instance's identity registry whose read grants at the
+// destination cover the projects given: anyone's, and the operator's.
+func registryFor(anyone, operator string) string {
 	return `package identity
 
 boundaries: {
@@ -309,10 +316,10 @@ principals: operator: {
 	keys: [{class: "ssh-ed25519", bound: "hardware", public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForARejectedFixtureAAAAAAAAAAA"}]
 	grants: {
 		govern: boundary: "registry"
-		read: {boundary: "web", projects: "all"}
+		read: {boundary: "web", projects: ` + operator + `}
 	}
 }
-anyone: grants: read: {boundary: "web", projects: ` + projects + `}
+anyone: grants: read: {boundary: "web", projects: ` + anyone + `}
 `
 }
 
@@ -520,12 +527,14 @@ func TestOutIsAnExportTheStoreActivates(t *testing.T) {
 	}
 }
 
-// A project is public only when anyone may read it: its own policy/read
-// names anyone, and the registry's read grant to anyone covers it by its
-// identity. A missing policy, an invalid one, one that does not name anyone,
-// and a grant that does not cover the project each keep it private, and
-// the old policy/web is never read. The operator's grant to every project
-// publishes nothing: the edge serves anyone alone.
+// A project is exported when it has an effective reader: a principal its
+// own policy/read names, and a read grant in the registry covers by the
+// project's identity, anyone or a named principal. The authorization names
+// each exported project with those readers. A missing policy, an invalid
+// one, one that names no principal a grant covers, and grants that cover
+// none of the principals it names each keep it off the edge, and the old
+// policy/web is never read. The operator's grant to every project exports
+// each project whose policy/read names the operator.
 func TestVisibilityNeedsBothConsents(t *testing.T) {
 	v := newValley(t)
 	steps := []struct {
@@ -533,42 +542,52 @@ func TestVisibilityNeedsBothConsents(t *testing.T) {
 		change  func()
 		public  []string
 		private []string
+		// readers is who the authorization lets read each project, as
+		// the pass describes it.
+		readers string
 		warns   string
 	}{
-		{"site has no policy/read", func() {}, []string{"app"}, []string{"site", "valley"}, ""},
+		{"site has no policy/read", func() {}, []string{"app"}, []string{"site", "valley"},
+			"app to anyone, operator", ""},
 		{"site lets the operator alone read it", func() { v.declare("site", policy("site", "operator")) },
-			[]string{"app"}, []string{"site", "valley"}, ""},
+			[]string{"app", "site"}, []string{"valley"}, "app to anyone, operator; site to operator", ""},
+		{"site lets alice alone read it, whom no grant names", func() { v.declare("site", policy("site", "alice")) },
+			[]string{"app"}, []string{"site", "valley"}, "app to anyone, operator", ""},
 		{"site lets no one read it", func() { v.declare("site", policy("site")) },
-			[]string{"app"}, []string{"site", "valley"}, ""},
+			[]string{"app"}, []string{"site", "valley"}, "app to anyone, operator", ""},
 		{"site lets anyone read it", func() { v.declare("site", policy("site", "anyone")) },
-			[]string{"app", "site"}, []string{"valley"}, ""},
+			[]string{"app", "site"}, []string{"valley"}, "app to anyone, operator; site to anyone", ""},
 		{"the instance's grant to anyone no longer covers site", func() {
 			v.grant(`{app: "` + identities["app"] + `"}`)
-		}, []string{"app"}, []string{"site", "valley"}, ""},
+		}, []string{"app"}, []string{"site", "valley"}, "app to anyone, operator", ""},
 		{"the instance's grant to anyone covers every project", func() { v.grant(`"all"`) },
-			[]string{"app", "site"}, []string{"valley"}, ""},
+			[]string{"app", "site"}, []string{"valley"}, "app to anyone, operator; site to anyone", ""},
 		{"the instance's grant to anyone covers no project", func() { v.grant(`{}`) },
-			[]string{}, []string{"app", "site", "valley"}, ""},
+			[]string{"app"}, []string{"site", "valley"}, "app to operator", ""},
 		{"the instance's grant to anyone covers app under another identity", func() {
 			v.grant(`{app: "` + identities["site"] + `", site: "` + identities["site"] + `"}`)
-		}, []string{"site"}, []string{"app", "valley"}, ""},
+		}, []string{"app", "site"}, []string{"valley"}, "app to operator; site to anyone", ""},
+		{"no grant covers app's readers", func() {
+			v.write(filepath.Join(v.work["valley"], "identity", "registry.cue"), registryFor(`{site: "`+identities["site"]+`"}`, `{}`))
+			v.commit("valley", "valley: grant site alone")
+		}, []string{"site"}, []string{"app", "valley"}, "site to anyone", ""},
 		{"app's policy is invalid", func() {
 			v.grant(anyoneReadsAppAndSite)
 			v.declare("app", `project: "app"
 identity: "`+identities["app"]+`"
 reader: {anyone: true}`)
-		}, []string{"site"}, []string{"app", "valley"}, "app: its policy/read at"},
+		}, []string{"site"}, []string{"app", "valley"}, "site to anyone", "app: its policy/read at"},
 		{"app's policy is site's", func() { v.declare("app", policy("site", "anyone")) },
-			[]string{"site"}, []string{"app", "valley"}, `policy/read is for the project "site", and was read from "app"`},
+			[]string{"site"}, []string{"app", "valley"}, "site to anyone", `policy/read is for the project "site", and was read from "app"`},
 		{"app declares itself public in the old policy/web alone", func() {
 			v.declare("app", "")
 			v.write(filepath.Join(v.work["app"], "policy", "web", "web.cue"), "package web\n\nproject: visibility: \"public\"\n")
 			v.commit("app", "app: the old declaration")
-		}, []string{"site"}, []string{"app", "valley"}, ""},
+		}, []string{"site"}, []string{"app", "valley"}, "site to anyone", ""},
 		{"app lets anyone read it again, and the instance drops its registry", func() {
 			v.declare("app", policy("app", "anyone"))
 			v.grant("")
-		}, []string{}, []string{"app", "site", "valley"}, ""},
+		}, []string{}, []string{"app", "site", "valley"}, "no project may be read", ""},
 	}
 	for _, step := range steps {
 		step.change()
@@ -591,11 +610,22 @@ reader: {anyone: true}`)
 			}
 			return strings.Join(names, ", ")
 		}
-		if want := "public: " + list(step.public) + "; private: " + list(step.private); !strings.Contains(stdout, want) {
+		if want := "exported: " + list(step.public) + "; not exported: " + list(step.private); !strings.Contains(stdout, want) {
 			t.Errorf("%s: the pass did not say %q:\n%s", step.what, want, stdout)
 		}
 		if step.warns != "" && !strings.Contains(stderr, step.warns) {
 			t.Errorf("%s: the pass did not warn %q:\n%s", step.what, step.warns, stderr)
+		}
+		signed, err := os.ReadFile(filepath.Join(dir, "authorization"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := export.ReadStoredAuthorization(signed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := describe(a); got != step.readers {
+			t.Errorf("%s: the authorization lets %s read, want %s", step.what, got, step.readers)
 		}
 		exported := false
 		for _, p := range e.Projects {
@@ -683,11 +713,11 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 		public string
 		warns  string
 	}{
-		{"main", nil, "public: app, site; private: valley", ""},
+		{"main", nil, "exported: app, site; not exported: valley", ""},
 		{"refs/heads/registry, where site's grant is revoked", []string{"--registry-ref", "refs/heads/registry"},
-			"public: app; private: site, valley", ""},
+			"exported: app; not exported: site, valley", ""},
 		{"a ref the instance repository does not hold", []string{"--registry-ref", "refs/heads/none"},
-			"public: none; private: app, site, valley", "the instance repository holds no refs/heads/none"},
+			"exported: none; not exported: app, site, valley", "the instance repository holds no refs/heads/none"},
 	} {
 		stdout, stderr := v.publish(append([]string{"--out", filepath.Join(t.TempDir(), "export")}, c.more...)...)
 		mustSay(t, c.what, stdout, c.public)
@@ -703,7 +733,7 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 	v.run(work, "git", "push", "--quiet", "origin", ":refs/heads/registry")
 	v.run(work, "git", "push", "--quiet", "origin", "main:refs/heads/refs/heads/registry")
 	stdout, stderr := v.publish("--out", filepath.Join(t.TempDir(), "export"), "--registry-ref", "refs/heads/registry")
-	mustSay(t, "refs/heads/registry gone", stdout, "public: none; private: app, site, valley")
+	mustSay(t, "refs/heads/registry gone", stdout, "exported: none; not exported: app, site, valley")
 	mustSay(t, "refs/heads/registry gone", stderr, "the instance repository holds no refs/heads/registry")
 
 	for _, ref := range []string{"main", "refs/heads/main~1", "refs/heads/../main", "refs/heads/registry.lock", "refs/heads/a b", "refs//main"} {
@@ -714,12 +744,12 @@ func TestTheRegistryIsReadAtItsRef(t *testing.T) {
 	}
 }
 
-// The export carries each public project's group, web name, former names
-// and short aliases, as the host declaration places it, and the groups
-// the public projects belong to. A project's web name is its identifier
-// unless the declaration gives another, and two groups may each hold a
-// project of one web name. A project in no group has no web URL, so it is
-// private, and the pass says why, though anyone may read it.
+// The export carries each exported project's group, web name, former
+// names and short aliases, as the host declaration places it, and the
+// groups the exported projects belong to. A project's web name is its
+// identifier unless the declaration gives another, and two groups may each
+// hold a project of one web name. A project in no group has no web URL, so
+// it is not exported, and the pass says why, though anyone may read it.
 func TestGroupsComeFromTheHostDeclaration(t *testing.T) {
 	v := newValley(t)
 	v.declare("site", policy("site", "anyone"))
@@ -760,8 +790,8 @@ projects: app: {group: "core", aliases: ["app"]}
 projects: site: {}`)
 	dir := filepath.Join(t.TempDir(), "export")
 	stdout, stderr := v.publish("--out", dir)
-	mustSay(t, "site in no group", stdout, "public: app; private: site, valley")
-	mustSay(t, "site in no group", stderr, "site: a read grant to anyone names it, and it is in no group, so it has no web URL and is private")
+	mustSay(t, "site in no group", stdout, "exported: app; not exported: site, valley")
+	mustSay(t, "site in no group", stderr, "site: a read grant names it, and it is in no group, so it has no web URL and is not exported")
 	data, err := os.ReadFile(filepath.Join(dir, export.ExportFile))
 	if err != nil {
 		t.Fatal(err)

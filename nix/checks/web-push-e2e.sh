@@ -108,13 +108,18 @@ declare -A id=(
   [valley]=f83927d5a4ed068cdd02a8cdaa09f26d
   [app]=9da6809f038df92138c131cd16bed76d
   [site]=273d5668702918ea7ae079de374db96b
+  [docs]=5b1e0c7a9f3d2e4c6a8b0d1f3e5c7a92
+  [notes]=8e3b6f1d2a4c7e9b0d5f3a1c6e8b2d47
 )
 read_policy() {
   printf 'package read\n\nproject: "%s"\nidentity: "%s"\nreaders: {%s}\n' "$1" "${id[$1]}" "$2"
 }
-# The instance's registry: the operator governs it, and anyone may read
-# the projects of the scope given at the edge.
+# The instance's registry: the operator governs it. At the edge, anyone
+# may read the projects of the first scope given; alice, who holds no key,
+# those of the second; and the operator those of the third. alice and the
+# operator may read every project when their scope is not given.
 registry() {
+  local alice=${2:-'"all"'} operator=${3:-'"all"'}
   cat << EOF
 package identity
 
@@ -128,18 +133,23 @@ principals: operator: {
 	keys: [{class: "ssh-ed25519", bound: "hardware", public: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyForARejectedFixtureAAAAAAAAAAA"}]
 	grants: {
 		govern: boundary: "registry"
-		read: {boundary: "web", projects: "all"}
+		read: {boundary: "web", projects: $operator}
 	}
 }
-principals: alice: {kind: "human", keys: [], grants: read: {boundary: "web", projects: "all"}}
+principals: alice: {kind: "human", keys: [], grants: read: {boundary: "web", projects: $alice}}
 anyone: grants: read: {boundary: "web", projects: $1}
 EOF
 }
 
-# 1. The instance and its two projects, each with its own Markdown README,
-# which links its read policy, and both readable by anyone, in the group
-# tools. app has the short alias a, and site the former name homepage.
-for name in valley app site; do
+# 1. The instance and four projects in the group tools, each with its own
+# Markdown README, which links its read policy. app and site are public:
+# anyone may read them, and app's policy/read lets alice and the operator
+# read it too. docs is private: its policy/read lets alice and the
+# operator alone read it. notes is private, and has no effective reader:
+# its policy/read lets bob alone read it, and no grant names bob. app has
+# the short alias a, site the former name homepage, and docs the short
+# alias d.
+for name in valley app site docs notes; do
   git init --quiet --bare "srv/$name.git"
   git init --quiet "work/$name"
   git -C "work/$name" remote add origin "$TMPDIR/srv/$name.git"
@@ -150,16 +160,26 @@ echo 'package verification' > work/valley/policy/instance/floor.cue
 read_policy valley 'operator: true' > work/valley/policy/read/read.cue
 registry "{app: \"${id[app]}\", site: \"${id[site]}\"}" > work/valley/identity/registry.cue
 commit valley "the instance"
-projects=$(printf 'app\nsite\nvalley\n' | git -C srv/valley.git hash-object -w --stdin)
+projects=$(printf 'app\ndocs\nnotes\nsite\nvalley\n' | git -C srv/valley.git hash-object -w --stdin)
 git -C srv/valley.git update-ref refs/the-valley/projects "$projects"
-for name in app site; do
+declare -A readers=(
+  [app]='anyone: true, operator: true, alice: true'
+  [site]='anyone: true'
+  [docs]='alice: true, operator: true'
+  [notes]='bob: true'
+)
+for name in app site docs notes; do
   mkdir -p "work/$name/policy/read"
   echo "$TMPDIR/srv/valley.git" > "work/$name/policy/valley"
   printf '# %s\n\n%s-readme-text, under [its read policy](policy/read/read.cue).\n' "$name" "$name" > "work/$name/README.md"
-  read_policy "$name" 'anyone: true, operator: true, alice: true' > "work/$name/policy/read/read.cue"
+  read_policy "$name" "${readers[$name]}" > "work/$name/policy/read/read.cue"
   commit "$name" "the first commit"
 done
 knot=$(cd work/app && valley knot new outcome "Open the edge" --json | jq -r .knot.id)
+declare -A private_knot
+for name in docs notes; do
+  private_knot[$name]=$(cd "work/$name" && valley knot new outcome "$name-knot-text" --json | jq -r .knot.id)
+done
 
 cat > host.cue << 'EOF'
 package valley
@@ -167,6 +187,8 @@ package valley
 groups: core: name: "tools"
 projects: app: {group: "core", aliases: ["a"]}
 projects: site: {group: "core", formerNames: ["homepage"]}
+projects: docs: {group: "core", aliases: ["d"]}
+projects: notes: {group: "core"}
 projects: valley: {}
 EOF
 cue export --out json "$schema" host.cue > host.json
@@ -200,7 +222,7 @@ serve() {
 }
 receive
 publish --receiver "$receiver" --receiver-token token > pass.out
-grep -q "the receiver stored authorization 2: anyone may read app, site" pass.out ||
+grep -q "the receiver stored authorization 2: app to alice, anyone, operator; docs to alice, operator; site to anyone$" pass.out ||
   fail "the pass did not say the receiver stored its authorization: $(cat pass.out)"
 grep -q "the receiver activated sequence" pass.out || fail "the pass did not say the receiver activated it: $(cat pass.out)"
 test -f edge/store && test -d edge/v2/generations && test -f edge/v2/authorization ||
@@ -226,6 +248,38 @@ serves "/tools/app/knots/$knot" "Open the edge"
   fail "the alias a answered $(get "/a/knots/$knot?x=1")"
 [ "$(get /tools/homepage/source/)" = "308 /tools/site/source/" ] ||
   fail "the former name homepage answered $(get /tools/homepage/source/)"
+
+# docs has two effective readers, so it reaches the edge with both in its
+# authorization: the store holds its repository and its knots. notes has
+# none, so nothing of it reaches the edge: no authorization names it, the
+# store holds no repository of it, and no export holds its name or its
+# knots.
+for reader in alice operator; do
+  grep -qx "reader docs $reader" edge/v2/authorization || fail "the authorization does not let $reader read docs"
+done
+grep -qx "project docs ${id[docs]}" edge/v2/authorization && ! grep -q "^reader docs anyone" edge/v2/authorization ||
+  fail "the authorization does not name docs for its named readers alone: $(cat edge/v2/authorization)"
+[ -d edge/v2/current/repos/docs.git ] || fail "the edge holds no repository of docs"
+grep -qF docs-knot-text edge/v2/current/export.json || fail "the edge's export.json does not hold docs' knot"
+if grep -q "notes" edge/v2/authorization; then fail "the authorization names notes, which has no effective reader"; fi
+[ ! -e edge/v2/current/repos/notes.git ] || fail "the edge holds a repository of notes"
+if grep -rqF -e notes-knot-text -e '"project":"notes"' edge; then fail "the edge holds the name or a knot of notes"; fi
+# An anonymous request gets 404 for both private projects on every route:
+# a project page, its source tree, blob, history and archives, a knot, and
+# docs' short alias.
+for name in docs notes; do
+  ptip=$(git -C "srv/$name.git" rev-parse main)
+  for path in "/tools/$name" "/tools/$name/" "/tools/$name/source/" "/tools/$name/source/tree/$ptip/" \
+    "/tools/$name/source/blob/$ptip/README.md" "/tools/$name/source/log/$ptip" \
+    "/tools/$name/source/archive/$ptip.tar.gz" "/tools/$name/source/archive/main.tar.gz" \
+    "/tools/$name/knots/${private_knot[$name]}" /tools/$name/knots/oc-0000000; do
+    gone "$path"
+  done
+done
+gone /d
+gone "/d/knots/${private_knot[docs]}"
+serves /-/knots "Open the edge"
+if grep -qF -e docs-knot-text -e notes-knot-text "$TMPDIR/body"; then fail "the knots page shows anyone a private knot"; fi
 
 # A reader downloads app's source from the link on its tree page: a
 # gzipped tar archive of main's tip that lists main's files and
@@ -355,25 +409,135 @@ grep -q unauthenticated pass.err || fail "a pass with another token failed for a
 serves "/tools/app/knots/$knot" "Open the edge"
 if grep -qF edge-comment-text "$TMPDIR/body"; then fail "the refused pass's comment is served"; fi
 
-# 4. Withdrawing anyone's grant for app takes app off the edge on the
-# next pass, its alias with it, and site stays.
+# 3b. A policy check that cannot read docs keeps, of the readers the
+# stored authorization gave docs, only those a grant still covers, and
+# adds none. Here alice's grant stops covering docs while docs' repository
+# cannot be read: the pass sends an authorization that keeps docs for the
+# operator alone, on the basis of the authorization the receiver holds,
+# and fails as incomplete.
+registry "{app: \"${id[app]}\", site: \"${id[site]}\"}" "{app: \"${id[app]}\"}" > work/valley/identity/registry.cue
+commit valley "alice reads app alone"
+held=$(sequence_of edge/v2/authorization)
+mv srv/docs.git docs.moved
+if publish --receiver "$receiver" --receiver-token token --policy-only > kept.out 2> kept.err; then
+  fail "a pass that could not read docs succeeded"
+fi
+mv docs.moved srv/docs.git
+grep -q "the policy check is incomplete" kept.err || fail "the pass that could not read docs failed for another reason: $(cat kept.err)"
+grep -qx "basis $held" edge/v2/authorization && grep -qx "reader docs operator" edge/v2/authorization ||
+  fail "the incomplete check did not keep docs for the operator on basis $held: $(cat edge/v2/authorization)"
+if grep -q "^reader docs alice" edge/v2/authorization; then fail "the incomplete check kept alice, whose grant no longer covers docs"; fi
+
+# Removing one of docs' two readers keeps docs on the edge for the other.
+# Removing the last withdraws it: the authorization no longer names it,
+# and the receiver deletes its repository, while the signed export.json
+# keeps its bytes.
+publish --receiver "$receiver" --receiver-token token --policy-only > /dev/null
+grep -qx "reader docs operator" edge/v2/authorization && ! grep -q "^reader docs alice" edge/v2/authorization ||
+  fail "with alice's grant removed the authorization does not let the operator alone read docs: $(cat edge/v2/authorization)"
+[ -d edge/v2/current/repos/docs.git ] || fail "removing one of docs' readers deleted its repository"
+digest=$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)
+registry "{app: \"${id[app]}\", site: \"${id[site]}\"}" "{app: \"${id[app]}\"}" "{app: \"${id[app]}\"}" > work/valley/identity/registry.cue
+commit valley "no one reads docs"
+publish --receiver "$receiver" --receiver-token token --policy-only > /dev/null
+if grep -q "^project docs " edge/v2/authorization; then fail "the authorization names docs once it has no reader"; fi
+for _ in $(seq 300); do
+  [ -e edge/v2/current/repos/docs.git ] || break
+  sleep 0.1
+done
+[ ! -e edge/v2/current/repos/docs.git ] || fail "the receiver kept the repository of docs once it had no reader"
+[ "$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)" = "$digest" ] ||
+  fail "withdrawing docs changed the signed export.json"
+gone /d
+# Granting both readers again sends docs' bundle again.
+registry "{app: \"${id[app]}\", site: \"${id[site]}\"}" > work/valley/identity/registry.cue
+commit valley "alice and the operator read every project"
+publish --receiver "$receiver" --receiver-token token > pass.out
+grep -q "^valley-web-publish: sent .*docs.*; the receiver activated" pass.out || fail "the pass did not send docs' bundle again: $(cat pass.out)"
+[ -d edge/v2/current/repos/docs.git ] || fail "the edge holds no repository of docs once it is granted again"
+
+# 4. Withdrawing anyone's grant for app takes app off the edge for
+# anonymous requests on the next pass, its alias with it, and site stays.
+# alice and the operator may still read app, so the edge keeps it for
+# them.
 registry "{site: \"${id[site]}\"}" > work/valley/identity/registry.cue
 commit valley "withdraw app"
 publish --receiver "$receiver" --receiver-token token > /dev/null
 gone /tools/app
 gone /a
 serves /tools/site site-readme-text
+grep -qx "project app ${id[app]}" edge/v2/authorization && ! grep -q "^reader app anyone" edge/v2/authorization ||
+  fail "withdrawing anyone's grant for app did not keep it for its named readers alone: $(cat edge/v2/authorization)"
+[ -d edge/v2/current/repos/app.git ] || fail "withdrawing anyone's grant for app deleted its repository, which its named readers read"
+
+# 4a. Growth never blocks a restriction. One commit to the registry
+# withdraws anyone's grant for site, grants app to anyone again, and
+# grants 1800 new principals, whom app's and docs' policy/read name, and
+# a link is issued to alice. The authorization that gives all of it is
+# over the 256 KiB a receiver reads, so the pass sends its bounded
+# fallback in its place: the stored authorization less every access the
+# check no longer gives. site leaves the edge, its former name with it,
+# and nothing is added: app stays off the edge for anonymous requests,
+# and the new link is pending. The pass fails, naming the overflow. A
+# policy/read file holds at most 64 KiB, so each project's new readers
+# are in three files of 600.
+for name in app docs; do
+  for part in 0 1 2; do
+    {
+      printf 'package read\n\nreaders: {\n'
+      for i in $(seq $((part * 600 + 1)) $((part * 600 + 600))); do printf '\tr%063d: true\n' "$i"; done
+      printf '}\n'
+    } > "work/$name/policy/read/more-$part.cue"
+  done
+  commit "$name" "1800 more readers"
+done
+{
+  registry "{app: \"${id[app]}\"}"
+  for i in $(seq 1800); do
+    printf 'principals: r%063d: {kind: "human", keys: [], grants: read: {boundary: "web", projects: "all"}}\n' "$i"
+  done
+} > work/valley/identity/registry.cue
+commit valley "withdraw site, and grant app and 1800 principals"
+grown=$(issued alice)
+held=$(sequence_of edge/v2/authorization)
+if publish --receiver "$receiver" --receiver-token token > grown.out 2> grown.err; then
+  fail "a pass whose authorization is over the limit succeeded"
+fi
+grep -q "the authorization is too large to send: authorization [0-9]* would be [0-9]* bytes signed" grown.err ||
+  fail "the pass over the limit failed for another reason: $(cat grown.err)"
+grep -q "from authorization $held, the last the receiver acknowledged" grown.err ||
+  fail "the fallback is not signed from authorization $held: $(cat grown.err)"
+grep -q "^valley-web-publish: pending: app to 1801 readers; docs to 1800 readers; 1 read links$" grown.out ||
+  fail "the pass does not say what is pending: $(cat grown.out)"
+[ "$(sequence_of edge/v2/authorization)" -gt "$held" ] || fail "the edge holds no newer authorization than $held"
+[ "$(wc -c < edge/v2/authorization)" -le 262144 ] || fail "the edge stored an authorization over 256 KiB"
+if grep -q "^project site \|^reader app anyone\|^reader [a-z]* r0" edge/v2/authorization; then
+  fail "the fallback gives access the stored authorization did not, or keeps site: $(cat edge/v2/authorization)"
+fi
+grep -qx "reader app operator" edge/v2/authorization && grep -qx "reader docs alice" edge/v2/authorization ||
+  fail "the fallback dropped access the check still gives: $(cat edge/v2/authorization)"
+gone /tools/site
+gone /homepage
+gone /tools/app
+if link list --check "$grown" > list.out 2> check.err; then fail "a link the fallback does not carry is not pending: $(cat list.out)"; fi
+grep -Eq "^$grown +alice +active +pending" list.out || fail "the link issued with the overflow is not pending: $(cat list.out)"
+link revoke "$grown" > /dev/null
+for name in app docs; do
+  rm "work/$name"/policy/read/more-*.cue
+  commit "$name" "the readers again"
+done
 
 # 4b. A withdrawal by authorization alone, while content work is
 # stalled. With app granted again, a new knot changes the export, and a
-# pass reads it, site included, then stalls at its upload: the test holds
-# the receiver's activation lock, as a commit that checks a large
-# repository would. Meanwhile site's grant is withdrawn, and a
-# --policy-only pass takes site off the edge at once: valley-web, not
-# restarted, answers the next request without it. Once the lock is
-# released, the stalled upload, whose content holds site and whose
-# sequence is later, activates and restores nothing. The receiver deletes
-# site's repository, and the active export.json keeps its signed bytes.
+# pass reads it, site and docs included, then stalls at its upload: the
+# test holds the receiver's activation lock, as a commit that checks a
+# large repository would. Meanwhile anyone's grant for site is withdrawn,
+# and so are both grants that cover docs, and a --policy-only pass takes
+# both off the edge at once: valley-web, not restarted, answers the next
+# request without site. Once the lock is released, the stalled upload,
+# whose content holds site and docs and whose sequence is later, activates
+# and restores neither's authorization. The receiver deletes both
+# repositories, and the active export.json keeps its signed bytes.
 registry "{app: \"${id[app]}\", site: \"${id[site]}\"}" > work/valley/identity/registry.cue
 commit valley "grant app again"
 publish --receiver "$receiver" --receiver-token token > /dev/null
@@ -385,21 +549,22 @@ pids+=("$holder")
 publish --receiver "$receiver" --receiver-token token > stalled.out 2> stalled.err &
 stalled=$!
 for _ in $(seq 600); do
-  grep -q "^valley-web-publish: public: app, site" stalled.out && break
+  grep -q "^valley-web-publish: exported: app, docs, site;" stalled.out && break
   kill -0 "$stalled" 2> /dev/null || fail "the stalled pass ended before its upload: $(cat stalled.out stalled.err)"
   sleep 0.1
 done
-grep -q "^valley-web-publish: public: app, site" stalled.out || fail "the stalled pass did not read the valley within a minute"
+grep -q "^valley-web-publish: exported: app, docs, site;" stalled.out || fail "the stalled pass did not read the valley within a minute"
 sleep 1
-registry "{app: \"${id[app]}\"}" > work/valley/identity/registry.cue
-commit valley "withdraw site"
+registry "{app: \"${id[app]}\"}" "{app: \"${id[app]}\"}" "{app: \"${id[app]}\"}" > work/valley/identity/registry.cue
+commit valley "withdraw site and docs"
 link revoke "$lk" > /dev/null
 if link list --check "$lk" > /dev/null 2> check.err; then fail "an undelivered revocation is not pending"; fi
 grep -q "$lk: revoked here; the edge may accept it until a pass delivers the revocation" check.err ||
   fail "list --check did not say the revocation is pending: $(cat check.err)"
 within=40 publish --receiver "$receiver" --receiver-token token --policy-only > policy.out ||
   fail "a --policy-only pass failed while content was stalled"
-grep -q "anyone may read app$" policy.out || fail "the --policy-only pass did not withdraw site: $(cat policy.out)"
+grep -q "the receiver stored authorization [0-9]*: app to alice, anyone, operator$" policy.out ||
+  fail "the --policy-only pass did not withdraw site and docs: $(cat policy.out)"
 if grep -q "the receiver activated" policy.out; then fail "the --policy-only pass sent content"; fi
 gone /tools/site
 gone /tools/homepage
@@ -411,14 +576,19 @@ kill -0 "$stalled" 2> /dev/null || fail "the stalled pass did not stall: $(cat s
 stop "$holder"
 wait "$stalled" || fail "the stalled pass failed once its upload went on: $(cat stalled.err)"
 grep -q "the receiver activated sequence" stalled.out || fail "the stalled pass did not activate its upload: $(cat stalled.out)"
-grep -q '"project":"site"' edge/v2/current/export.json || fail "the stalled upload's export does not hold site"
+for name in site docs; do
+  grep -q "\"project\":\"$name\"" edge/v2/current/export.json || fail "the stalled upload's export does not hold $name"
+  if grep -q "^project $name " edge/v2/authorization; then fail "the stalled upload restored the authorization of $name"; fi
+done
 gone /tools/site
 digest=$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)
 for _ in $(seq 300); do
-  [ -e edge/v2/current/repos/site.git ] || break
+  [ -e edge/v2/current/repos/site.git ] || [ -e edge/v2/current/repos/docs.git ] || break
   sleep 0.1
 done
-[ ! -e edge/v2/current/repos/site.git ] || fail "the receiver kept the repository of site after its withdrawal"
+for name in site docs; do
+  [ ! -e "edge/v2/current/repos/$name.git" ] || fail "the receiver kept the repository of $name after its withdrawal"
+done
 [ -e edge/v2/current/repos/app.git ] || fail "the receiver deleted the repository of app"
 [ "$(sha256sum edge/v2/current/export.json | cut -d' ' -f1)" = "$digest" ] ||
   fail "the withdrawal changed the signed export.json"
@@ -672,6 +842,49 @@ policy > /dev/null
 [ "$(as_reader "$revoked_token" /tools/app)" = 302 ] && ! renewed "$revoked_token" ||
   fail "the session of a revoked link is still renewed"
 
+# A signed-in reader reads a project that only named readers may read.
+# Step 4b took docs off the edge, so a commit grants the operator docs
+# again, and a pass sends docs' bundle back. A session of a link issued to
+# the operator reads docs' tree page with its README, docs' knot, its
+# archive, and the knots page, which lists docs' knot. Anonymous requests
+# for the same pages get 404, and anyone's knots page shows no knot of
+# docs. Once a pass delivers the link's revocation, the session gets 404
+# for docs' tree page, while the operator may still read docs.
+registry "{app: \"${id[app]}\"}" "{app: \"${id[app]}\"}" "{app: \"${id[app]}\", docs: \"${id[docs]}\"}" \
+  > work/valley/identity/registry.cue
+commit valley "the operator reads docs"
+publish --receiver "$receiver" --receiver-token token > pass.out
+grep -q "^valley-web-publish: sent .*docs.*; the receiver activated" pass.out || fail "the pass did not send docs' bundle again: $(cat pass.out)"
+docs_link=$(new_link operator)
+docs_id=${docs_link%%.*}
+grep -qx "reader docs operator" edge/v2/authorization && ! grep -q "^reader docs \(alice\|anyone\)$" edge/v2/authorization &&
+  grep -q "^binding $docs_id operator " edge/v2/authorization ||
+  fail "the authorization does not let the operator alone read docs, or does not bind $docs_id to the operator: $(cat edge/v2/authorization)"
+[ "$(redeem "$docs_link")" = 204 ] || fail "the operator's link did not redeem: $(redact reply)"
+docs_token=$(token_of)
+echo "$docs_token" >> secrets
+docs_tip=$(git -C srv/docs.git rev-parse main)
+docs_tree=/tools/docs/source/tree/$docs_tip/
+docs_knot=/tools/docs/knots/${private_knot[docs]}
+docs_archive=/tools/docs/source/archive/$docs_tip.tar.gz
+[ "$(as_reader "$docs_token" "$docs_tree")" = 200 ] && grep -qF docs-readme-text body ||
+  fail "the operator's session was not served docs' tree page with its README"
+[ "$(as_reader "$docs_token" "$docs_knot")" = 200 ] && grep -qF docs-knot-text body ||
+  fail "the operator's session was not served docs' knot"
+[ "$(as_reader "$docs_token" "$docs_archive")" = 200 ] || fail "the operator's session was not served docs' archive"
+tar -tzf body > docs.listed || fail "the operator's session's archive of docs is not a gzipped tar archive"
+grep -qx "docs-${docs_tip:0:12}/README.md" docs.listed || fail "the operator's session's archive of docs does not hold its README"
+[ "$(as_reader "$docs_token" /-/knots)" = 200 ] && grep -qF docs-knot-text body ||
+  fail "the operator's session's knots page does not list docs' knot"
+for path in "$docs_tree" "$docs_knot" "$docs_archive"; do gone "$path"; done
+[ "$(get /-/knots)" = "200 " ] || fail "anyone's knots page answered $(get /-/knots)"
+if grep -qF docs-knot-text body; then fail "anyone's knots page lists docs' knot"; fi
+link revoke "$docs_id" > /dev/null
+policy > /dev/null
+grep -qx "reader docs operator" edge/v2/authorization && ! grep -q "^binding $docs_id " edge/v2/authorization ||
+  fail "the pass did not revoke $docs_id while the operator still reads docs: $(cat edge/v2/authorization)"
+[ "$(as_reader "$docs_token" "$docs_tree")" = 404 ] || fail "the session of a revoked link was served docs' tree page"
+
 # A lost browser state is never made again under an authorization that
 # binds a link: redemption and requests with a cookie answer 503, and
 # anyone is served. The guide's recovery revokes every link, delivers an
@@ -750,7 +963,7 @@ serves /tools/site site-readme-text
 # site off the edge.
 stop "$receiver_pid"
 serves /tools/site site-readme-text
-read_policy site 'operator: true' > work/site/policy/read/read.cue
+read_policy site '' > work/site/policy/read/read.cue
 commit site "withdraw it"
 status=0
 publish --receiver "$receiver" --receiver-token token > pass.out 2> pass.err || status=$?

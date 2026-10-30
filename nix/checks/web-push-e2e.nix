@@ -4,10 +4,12 @@
 # the packaged valley CLI (valley-script, unstamped so commits alone do
 # not trigger a rebuild), and git.
 #
-# The test creates a valley instance that grants anyone read access to
-# two projects in one group. It verifies that:
-#   1. valley-web-publish sends an authorization and uploads both
-#      projects to valley-web-receive, which makes the store's descriptor
+# The test creates a valley instance with four projects in one group: two
+# that anyone may read, app and site; docs, which two named readers may
+# read, alice and the operator; and notes, which has no effective reader.
+# It verifies that:
+#   1. valley-web-publish sends an authorization and uploads app, site and
+#      docs to valley-web-receive, which makes the store's descriptor
 #      and its v2 payload directory, and valley-web serves them at their
 #      group URLs and redirects a short alias and a former name with 308.
 #      A project's Markdown README renders with an id on its heading and
@@ -22,18 +24,28 @@
 #      whose later check the pages show, while export.json keeps its
 #      bytes. A replayed authorization, a forged one, and a manifest of the
 #      first protocol are refused, and valley-web refuses the directory the
-#      first store layout took as its state.
+#      first store layout took as its state. docs reaches the store, its
+#      authorization naming both its readers; nothing of notes does; and
+#      an anonymous request gets 404 for both on every route.
 #   2. An upload with a wrong token fails as unauthenticated while
 #      valley-web continues serving the previous export.
-#   3. Withdrawing a project's read grant removes the project on the
-#      next pass. A --policy-only pass withdraws a project while a
-#      content upload is stalled on the receiver's activation lock: the
-#      next request to valley-web, not restarted, no longer serves it; the
-#      stalled upload, whose export still holds the project, activates
-#      later and restores nothing; the receiver deletes the project's
-#      repository, and the active export.json keeps its bytes. Removing
-#      the stored authorization serves no project. Granting the project
-#      again sends its bundle again.
+#   3. A policy check that cannot read docs keeps only the readers a
+#      grant still covers, on the basis of the stored authorization, and
+#      fails as incomplete. Removing one of docs' two readers keeps docs;
+#      removing the last withdraws it and deletes its repository while
+#      export.json keeps its bytes. Withdrawing anyone's grant removes a
+#      project from anonymous view on the next pass, and keeps it on the
+#      edge for its named readers. A withdrawal of site that coincides
+#      with growth past the 256 KiB a receiver reads still reaches the
+#      edge, by the bounded fallback, and the pass fails naming the
+#      overflow. A --policy-only pass withdraws site
+#      and docs while a content upload is stalled on the receiver's
+#      activation lock: the next request to valley-web, not restarted, no
+#      longer serves site; the stalled upload, whose export still holds
+#      both, activates later and restores neither's authorization; the
+#      receiver deletes both repositories, and the active export.json
+#      keeps its bytes. Removing the stored authorization serves no
+#      project. Granting a project again sends its bundle again.
 #   4. Both servers preserve the active export across a restart.
 #   5. Read links: issued only to a principal who may read a project,
 #      carried to the edge as bindings, and revoked by the next pass. A

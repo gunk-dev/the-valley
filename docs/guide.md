@@ -736,11 +736,13 @@ Use your configured `dataDir` if it differs.
 
 ### Run the web edge
 
-The web edge is a read-only web server for projects that `anyone` may read. Readers can also sign in
-at the edge with read links. The publisher on the valley host pushes signed exports to the edge over
-HTTP, and the edge never connects back to the valley host. On the edge, `valley-web-receive`
-receives uploads into a state directory and `valley-web` serves them. They run as two processes
-under two Unix users over that shared state directory (see
+The web edge is a read-only web server for the valley's projects. The publisher on the valley host
+pushes signed exports to the edge over HTTP, and the edge never connects back to the valley host. A
+project reaches the edge when a reader's grant and the project's `policy/read` both allow that
+reader — `anyone` or a named principal — to read it there. The edge serves each project only to the
+readers its authorization names, and readers can sign in at the edge with read links. On the edge,
+`valley-web-receive` receives uploads into a state directory and `valley-web` serves them. They run
+as two processes under two Unix users over that shared state directory (see
 [The receiver](./architecture.md#the-receiver)).
 
 Generate a shared bearer token and install the same file on both hosts outside the Nix store,
@@ -890,25 +892,27 @@ proxy that terminates TLS, or over a private network. On the next pass, the publ
 `the receiver stored authorization <n>`, then `the receiver activated sequence <n>`, and
 `valley-web` serves the export.
 
-To take a project off the web at once, withdraw its grant or its `policy/read` and start a pass:
-`sudo systemctl start valley-web-publish`. The pass sends its authorization before doing any content
-work. The edge stops serving the project at the next request, even if the content work stalls or
-fails. Running `valley-web-publish --policy-only` with the unit's other flags sends only the
-authorization.
+To take a project off the web at once, withdraw every reader's grant for it, or remove every reader
+from its `policy/read`, and start a pass: `sudo systemctl start valley-web-publish`. A project stays
+on the edge while any reader may still read it, so removing one reader keeps the project for the
+others. The pass sends its authorization before doing any content work, and the edge stops serving
+the project at the next request, even if the content work stalls or fails. Running
+`valley-web-publish --policy-only` with the unit's other flags sends only the authorization.
 
 ### Issue and revoke read links
 
-A read link lets one person read, at the edge, what one registry principal may read there. Run these
-commands as root on the valley host.
+A read link lets one person read, at the edge, what one registry principal may read there. The
+principal needs an edge-read grant in the registry and a project whose `policy/read` names it. A
+reader who signs nothing may hold no keys, as long as every grant it holds is an edge read. Run
+these commands as root on the valley host:
 
 ```bash
 valley-web-link issue --principal alice --note laptop
 ```
 
-The command prints the link once, such as
-`https://example.org/-/redeem#lk-0123456789abcdef.<secret>`. Send it to its holder over a private
-channel. The host keeps no copy of the secret. The command refuses a principal who may read no
-project at the destination.
+The command refuses a principal who may read no project at the destination. Otherwise, it prints the
+link once, such as `https://example.org/-/redeem#lk-0123456789abcdef.<secret>`. Send it to its
+holder over a private channel. The host keeps no copy of the secret.
 
 After the next pass delivers the link to the edge, the holder opens it in a browser and clicks
 **Continue as reader**. That redeems the link once and starts a session in the browser. To switch to
@@ -917,9 +921,6 @@ continue with this link**. Clicking **Sign out** in the navigation ends the sess
 again requires a new link. If the page cannot tell whether the server used the link, click the
 button again to retry. If the earlier attempt started a session, the retry continues to `/`; if the
 server reports that the link cannot be used, issue a new link.
-
-The principal needs an edge-read grant in the registry and a project whose `policy/read` names it. A
-reader who signs nothing may hold no keys, as long as every grant it holds is an edge read.
 
 ```bash
 valley-web-link list

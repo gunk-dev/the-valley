@@ -280,17 +280,19 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 	}
 
 	// The grants are read before any project is: the CLI's clones are
-	// made for the projects a grant to anyone names, and the CLI can make
-	// no other. So a project no grant names is never read, and one that
-	// cannot be read fails no pass.
+	// made for the projects a grant names, and the CLI can make no other.
+	// So a project no grant names is never read, and one that cannot be
+	// read fails no pass.
 	t.Run("a project no grant names that cannot be read is private", func(t *testing.T) {
 		v := newValley(t)
-		v.grant(`{app: "` + identities["app"] + `"}`)
+		appAlone := `{app: "` + identities["app"] + `"}`
+		v.write(filepath.Join(v.work["valley"], "identity", "registry.cue"), registryFor(appAlone, appAlone))
+		v.commit("valley", "valley: grant app alone")
 		if err := os.Rename(filepath.Join(v.srv, "site.git"), filepath.Join(v.srv, "site.moved")); err != nil {
 			t.Fatal(err)
 		}
 		stdout, _ := v.publish("--out", filepath.Join(t.TempDir(), "export"))
-		mustSay(t, "site cannot be read, and no grant names it", stdout, "public: app; private: site, valley")
+		mustSay(t, "site cannot be read, and no grant names it", stdout, "exported: app; not exported: site, valley")
 		clones, err := filepath.Glob(filepath.Join(v.root, "cache", "valley", "repos", "*-site"))
 		if err != nil || len(clones) != 0 {
 			t.Errorf("the CLI has a clone of site, which no grant names: %v %v", clones, err)
@@ -304,7 +306,7 @@ func TestAProjectThatCannotBeReadFailsThePass(t *testing.T) {
 		v.run("", "git", "-C", filepath.Join(v.srv, "valley.git"), "update-ref", projectsRef, strings.TrimSpace(list))
 		v.grant(`"all"`)
 		stdout, _ := v.publish("--out", filepath.Join(t.TempDir(), "export"))
-		mustSay(t, "a project with no main", stdout, "public: app; private: fresh, site, valley")
+		mustSay(t, "a project with no main", stdout, "exported: app; not exported: fresh, site, valley")
 	})
 }
 
@@ -373,7 +375,7 @@ project: "app"
 identity: "`+identities["app"]+`"
 readers: {for i in list.Range(0, 20000, 1) {"reader-with-a-long-name-for-the-bound-on-cue-output-\(i)": true}}`)
 	stdout, stderr := v.publish("--out", filepath.Join(t.TempDir(), "export"))
-	mustSay(t, "a policy past cue's bound", stdout, "public: none")
+	mustSay(t, "a policy past cue's bound", stdout, "exported: none")
 	mustSay(t, "a policy past cue's bound", stderr, "cue exported more than")
 }
 
@@ -595,13 +597,13 @@ func TestPrivateSentinelsNeverLeave(t *testing.T) {
 	})
 }
 
-// A project that no longer lets anyone read it is gone from the next
-// export the receiver activates: from export.json and from its
-// repositories.
+// A project that loses one of two readers stays on the edge for the other.
+// One that loses its last reader is gone from the next export the
+// receiver activates: from export.json and from its repositories.
 func TestAProjectMadePrivateLeavesTheReceiver(t *testing.T) {
 	v := newValley(t)
 	rv := newReceiver(t, v)
-	v.declare("site", policy("site", "anyone"))
+	v.declare("site", policy("site", "anyone", "operator"))
 	v.publish(rv.flags()...)
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app", "site"}) {
 		t.Fatalf("the receiver serves %v, want app and site", got)
@@ -609,9 +611,16 @@ func TestAProjectMadePrivateLeavesTheReceiver(t *testing.T) {
 
 	v.declare("site", policy("site", "operator"))
 	stdout, _ := v.publish(rv.flags()...)
-	mustSay(t, "site made private", stdout, "public: app; private: site, valley")
+	mustSay(t, "site read by the operator alone", stdout, "site to operator")
+	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app", "site"}) {
+		t.Errorf("the receiver serves %v once anyone may not read site, want app and site", got)
+	}
+
+	v.declare("site", policy("site"))
+	stdout, _ = v.publish(rv.flags()...)
+	mustSay(t, "site made private", stdout, "exported: app; not exported: site, valley")
 	if got := names(rv.active()); !reflect.DeepEqual(got, []string{"app"}) {
-		t.Errorf("the receiver serves %v once site is private, want app alone", got)
+		t.Errorf("the receiver serves %v once no one may read site, want app alone", got)
 	}
 	rv.inActive(func(g export.Generation) {
 		repo, _ := g.Repo("site")

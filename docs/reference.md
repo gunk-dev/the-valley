@@ -3096,7 +3096,7 @@ first-layout directory.
 #### Web server (`valley-web`)
 
 `valley-web` serves the active export in a receiver's store to anonymous readers over HTTP, as the
-stored authorization allows. It serves the plan page, one page per knot, and a source browser over
+stored authorization allows. It serves the knots page, one page per knot, and a source browser over
 `main` for each project the authorization lets `anyone` read, including a gzipped tar archive for
 each reachable commit. Package `server` of the `web` module ([`web/server/`](../web/server/))
 implements the HTTP handler, and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The
@@ -3122,7 +3122,8 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 
 | Route                                                   | Page                                                                                  |
 | :------------------------------------------------------ | :------------------------------------------------------------------------------------ |
-| `/`                                                     | The plan page                                                                         |
+| `/`                                                     | `302` redirect to the first visible project's root tree, or to `/-/knots`             |
+| `/-/knots`                                              | The knots page                                                                        |
 | `/<group>/<project>/` and `/<group>/<project>`          | `302` redirect to the root tree at the project's `source_tip`                         |
 | `/<group>/<project>/knots/<id>`                         | One knot                                                                              |
 | `/<group>/<project>/source/`                            | `302` redirect to the root tree at the project's `source_tip`                         |
@@ -3134,7 +3135,7 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
 | `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                           |
 | `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                            |
 | `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>` |
-| `/-/…`                                                  | Reserved for the server's own routes. Every path under `/-/` answers `404`            |
+| `/-/…`                                                  | The server's own routes: `/-/knots` alone. Every other path under `/-/` answers `404` |
 
 - **Groups:** `<group>` is the group's `name` in the export, and `<project>` is the project's web
   `name` in the export. Routes match the group's `name` and the project's web `name` rather than
@@ -3146,10 +3147,14 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   redirects are permanent (`308`) with no response body. Its `Location` header preserves the
   remainder of the path and the raw query string as sent, including percent-escapes, dot segments,
   and a trailing `?` with an empty query.
-- **Reserved paths:** Every path other than `/` and `/-/…` starts with a group's name or an alias.
-  Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a letter or digit. A group or
-  a project may be named `source`, `knots`, `web-export`, or `robots.txt` and is served on every
-  route (see [Groups and web URLs](./architecture.md#groups-and-web-urls)).
+- **Landing:** `/` redirects to the root tree, at its `source_tip`, of the first project in the
+  export's order that the reader may see. When the reader may see no project, `/` redirects to
+  `/-/knots`.
+- **Reserved paths:** Every path other than `/` and the server's own routes under `/-/` starts with
+  a group's name or an alias. Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a
+  letter or digit. A group or a project may be named `source`, `knots`, `web-export`, or
+  `robots.txt` and is served on every route (see
+  [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
 - **Authorization on every request:** Each request reads `v2/authorization` when it arrives, and
   re-parses it only when its bytes have changed. It serves only the projects that the authorization
@@ -3167,9 +3172,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   `HEAD` answers `503` with the page "Nothing published yet", and any other method answers `405`.
 - **One project-view filter:** Every view is built through a single filter that takes the export,
   the authorization, and the reader (`anyone`), and returns the projects that reader may read. The
-  server builds the plan page, navigation, groups, cross-project references, and all alias and
-  former-name redirects from that filtered list. Any project excluded by the filter answers `404` as
-  if it did not exist, and any group with no remaining project has no alias.
+  server builds the knots page, navigation, groups, cross-project references, the redirect from `/`,
+  and all alias and former-name redirects from that filtered list. Any project excluded by the
+  filter answers `404` as if it did not exist, and any group with no remaining project has no alias.
 - **One generation per request:** Each request opens the active generation once with `Store.Open`
   and renders its entire response from that generation. It releases the generation once rendering
   finishes, before writing the response. Activating a new export during a request does not change
@@ -3177,7 +3182,7 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   it. Before the first activation, every route answers `503`.
 - **One read per generation:** The server reads and decodes each generation's `export.json` once,
   even when many requests wait for it at the same time. It caches the newest generation it has read
-  and builds the plan page's structure once for that generation and authorization. When the
+  and builds the knots page's structure once for that generation and authorization. When the
   authorization changes, the server rebuilds that structure from the cached export. A request opens
   its generation on disk only after the server has read that generation.
   - Each read runs in its own worker. The worker opens the active generation, holds it while reading
@@ -3189,7 +3194,7 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   - A request stops waiting for a read if its reader disconnects or its 15-second deadline runs out.
     When no request is left waiting for a read, the worker stops reading and the server discards the
     unfinished read.
-- **Plan page:** The page shows four sections, in this order:
+- **Knots page:** The page at `/-/knots` shows four sections, in this order:
   1. **Waiting on you:** Always empty. Every reader sees the same public page.
   2. **In flight:** The export's `in_flight` knots, showing who claims each knot and how long ago.
      Beside them, a card titled "Ready changes — order not assessed" lists the export's `changes`.
@@ -3228,7 +3233,7 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   - A `target` that names only an unpublished project is shown as "an unpublished project".
   - A `changes` link `valley:<project>/<change ID>` into an unpublished project is shown as "a
     change in an unpublished project".
-  - On the plan page, a tree row's "waits on" chip lists the published knots in the knot's
+  - On the knots page, a tree row's "waits on" chip lists the published knots in the knot's
     `waiting_on` list. When the knot also waits on knots in unpublished projects
     (`waiting_on_hidden`), the chip ends with "a knot in an unpublished project" once, regardless of
     how many unpublished knots block it. A blocked knot with no published blocker shows "waits on a
@@ -3433,8 +3438,8 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   ```
 
 - **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
-  escapes every value from the export or a repository. The stylesheet and the plan page's script are
-  embedded in the binary and inlined into the page; nothing else is loaded. No page serves a
+  escapes every value from the export or a repository. The stylesheet and the knots page's script
+  are embedded in the binary and inlined into the page; nothing else is loaded. No page serves a
   repository file as raw content; raw repository files are served only inside a source archive,
   which is gzipped and sent as an attachment. Every response carries these headers:
   - `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`

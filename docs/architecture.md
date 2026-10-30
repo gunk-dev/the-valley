@@ -3303,7 +3303,7 @@ authorization (`implemented`). The edge does not redeem them yet (`not built`).
 
 `valley-web` serves a receiver's store over HTTP to anonymous readers (`web/server/`,
 `web/cmd/valley-web/`). For each project that the stored authorization allows `anyone` to read, it
-serves the plan page, each knot page, and a source browser for `main` under the project's group,
+serves the knots page, each knot page, and a source browser for `main` under the project's group,
 including a gzipped tar archive for each reachable commit. It builds every view through a single
 project-view filter parameterized by the reader, passing `anyone` for every request. `valley-web`
 runs alongside the receiver as a separate process (see [The receiver](#the-receiver)). It renders
@@ -3355,9 +3355,10 @@ treats as owned by another user.
 
 Every project on the web belongs to a group. Project URLs begin with the group name followed by the
 project's web name: `/<group>/<project>/…`, such as `/tools/app/knots/<id>`. The root path `/`
-serves the plan page. Because URLs appear in links, commits, and knots, renaming a group or a
-project redirects old URLs only if the old name stays in the group's `aliases` or the project's
-`formerNames`. The lookup index uses only declared names (`implemented`, `web/server/plan.go`).
+redirects to a project's source tree, and the knots page is at `/-/knots`. Because URLs appear in
+links, commits, and knots, renaming a group or a project redirects old URLs only if the old name
+stays in the group's `aliases` or the project's `formerNames`. The lookup index uses only declared
+names (`implemented`, `web/server/plan.go`).
 
 Groups and project placements are declared in `valley.cue` alongside each project's git store,
 mirrors, ref protection, and push grants (`schema/valley.cue`). At build time, the NixOS modules
@@ -3472,7 +3473,7 @@ Checked by `web-server-unit` (`TestSlowReadersShareTheBudget`), which opens stal
 requesting more than 64 MiB in total across three large page sizes: one 64 KiB piece past 256 KiB, 1
 MiB, and 4 MiB. Counting a large response's first 256 KiB against the 48 MiB cap prevents 64 stalled
 1 MiB responses from consuming all 64 MiB. The stalled readers hold at most 48 MiB, and requests for
-the plan page, a knot page, and a directory page still succeed.
+the knots page, a knot page, and a directory page still succeed.
 
 ### A source request's git work
 
@@ -3683,8 +3684,8 @@ a blocker while it names an open knot, a missing knot, or a knot in a graph that
 (`knot/derive.go`). In `export.json`, the export removes every reference into an unpublished project
 from `waiting_on` (`web/export/project.go`). The knot's `state` is unchanged. When the export
 removes at least one reference from a knot's `waiting_on`, it sets `"waiting_on_hidden": true` on
-the knot. The plan page's "waits on" chip then includes "a knot in an unpublished project" alongside
-any public blockers (`web/server/knot.go`; see
+the knot. The knots page's "waits on" chip then includes "a knot in an unpublished project"
+alongside any public blockers (`web/server/knot.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
 In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
@@ -3696,7 +3697,7 @@ and absent once the hidden knot has a terminal status, even when a public blocke
 Checked by `web-unit`, where `TestBuildHidesForeignEdges` checks that `waiting_on_hidden` is set on
 the fixture's knot with a hidden blocker, and `TestWaitingOnHiddenFollowsAHiddenBlocker` checks that
 the field is omitted once that hidden blocker is done. Also checked by `web-server-unit`
-(`TestWaitsOnChip`), which checks that the plan page's chip lists both the public blocker and the
+(`TestWaitsOnChip`), which checks that the knots page's chip lists both the public blocker and the
 unpublished one.
 
 ## The receiver

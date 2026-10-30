@@ -44,7 +44,8 @@ type harness struct {
 }
 
 // newHarness serves the fixture's export, two minutes after it was
-// collected.
+// collected. A request is read as anyone, unless the harness names its
+// reader (as).
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 	f := exporttest.New(t)
@@ -56,6 +57,12 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, f: f, store: store, now: exporttest.Collected.Add(2 * time.Minute)}
 	h.srv = New(Config{Store: store, Now: func() time.Time { return h.now },
 		Log: func(err error) { t.Errorf("the server logged: %v", err) }})
+	h.srv.reader = func(r *http.Request) string {
+		if name, ok := r.Context().Value(readerKey{}).(string); ok {
+			return name
+		}
+		return export.Anyone
+	}
 	return h
 }
 
@@ -86,7 +93,8 @@ func (h *harness) tip() string { return h.f.Export.Projects[0].SourceTip }
 
 // publish activates a new generation, signed at: the fixture's export
 // changed by change, with the bundles given, by project, in place of the
-// fixture's.
+// fixture's. It first stores an authorization that lets anyone read every
+// project of the export, unless the stored one does already.
 func (h *harness) publish(at time.Time, bundles map[string]string, change func(*export.Export)) export.Generation {
 	t := h.t
 	t.Helper()
@@ -96,6 +104,15 @@ func (h *harness) publish(at time.Time, bundles map[string]string, change func(*
 	}
 	change(e)
 	h.authorizeAll(e)
+	return h.publishExport(at, e, bundles)
+}
+
+// publishExport activates a new generation, signed at, of e, with the
+// bundles given, by project, in place of the fixture's. It stores no
+// authorization.
+func (h *harness) publishExport(at time.Time, e *export.Export, bundles map[string]string) export.Generation {
+	t := h.t
+	t.Helper()
 	data, err := e.Encode()
 	if err != nil {
 		t.Fatal(err)
@@ -934,7 +951,7 @@ func TestSourceArchive(t *testing.T) {
 			t.Fatalf("GET %s answered %d:\n%s", at(commit), w.Code, w.Body)
 		}
 		want := http.Header{}
-		setHeaders(want)
+		setHeaders(want, contentPolicy)
 		want.Set("Content-Type", "application/gzip")
 		want.Set("Content-Disposition", `attachment; filename="app-`+commit[:12]+`.tar.gz"`)
 		want.Set("Content-Length", strconv.Itoa(w.Body.Len()))
@@ -1399,7 +1416,7 @@ func TestMarkdownPages(t *testing.T) {
 			t.Errorf("GET %s does not show %q:\n%s", at, want, page)
 		}
 	}
-	if w := h.get(at); w.Header().Get("Content-Security-Policy") != csp {
+	if w := h.get(at); w.Header().Get("Content-Security-Policy") != contentPolicy {
 		t.Errorf("a rendered page answered with policy %q", w.Header().Get("Content-Security-Policy"))
 	}
 	for target, notice := range map[string]string{
@@ -1958,8 +1975,8 @@ func TestSourceGitHasItsOwnBound(t *testing.T) {
 	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
 		t.Errorf("a source request whose git does not finish answered %d after %v", w.Code, took)
 	}
-	if len(h.srv.slots) != 0 {
-		t.Errorf("the request holds %d git slots once it answered", len(h.srv.slots))
+	if h.srv.heldSlots() != 0 {
+		t.Errorf("the request holds %d git slots once it answered", h.srv.heldSlots())
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -1971,52 +1988,43 @@ func TestSourceGitHasItsOwnBound(t *testing.T) {
 	}
 }
 
-// A source request's bound on its git slot runs from when it takes the
-// slot, and covers its wait for its generation's export to be read. A
-// source request whose export is read slowly answers 503 once the bound
-// passes, gives back its slot, and is logged, while a request for the
-// plan, which holds no slot, waits on for the same read and is served.
-func TestGitSlotBoundCoversTheLoad(t *testing.T) {
+// A source request takes its git slot only once it has its view, so its
+// wait for its generation's export to be read holds no slot, and is not
+// held to the bound on holding one: that bound runs from when it takes
+// the slot. A source request whose export is read slowly, past that
+// bound, holds no slot while it waits, and is served in full once the
+// export is read.
+func TestAWaitForAViewHoldsNoGitSlot(t *testing.T) {
 	h := newHarness(t)
-	var mu sync.Mutex
-	var logged []error
-	h.srv.log = func(err error) { mu.Lock(); logged = append(logged, err); mu.Unlock() }
 	h.srv.gitTime = 300 * time.Millisecond
 	hold := make(chan struct{})
 	h.srv.loading = func(export.Generation) { <-hold }
+	var admitted atomic.Int32
+	h.srv.admitted = func() { admitted.Add(1) }
 
-	plan := make(chan *httptest.ResponseRecorder, 1)
+	served := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
 		w := httptest.NewRecorder()
-		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/-/knots", nil))
-		plan <- w
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/source/tree/"+h.tip()+"/", nil))
+		served <- w
 	}()
-	eventually(t, "the plan waits for the export to be read", func() bool { return len(h.srv.loaders) == 1 })
-	start := time.Now()
-	w := h.get("/tools/app/source/tree/" + h.tip() + "/")
-	if took := time.Since(start); w.Code != http.StatusServiceUnavailable || took > 5*time.Second {
-		t.Errorf("a source request whose export is read slowly answered %d after %v", w.Code, took)
+	eventually(t, "the source request waits for the export to be read", func() bool { return h.srv.runningLoads() == 1 })
+	time.Sleep(2 * h.srv.gitTime)
+	if n := h.srv.heldSlots(); n != 0 || admitted.Load() != 0 {
+		t.Errorf("a source request waiting for its export holds %d git slots", n)
 	}
-	if len(h.srv.slots) != 0 {
-		t.Errorf("the request holds %d git slots once it answered", len(h.srv.slots))
-	}
-	mu.Lock()
-	if len(logged) != 1 || !strings.Contains(logged[0].Error(), "the request held its git slot past 300ms") ||
-		!strings.Contains(logged[0].Error(), "export to be read") {
-		t.Errorf("the server logged %v", logged)
-	}
-	mu.Unlock()
-
 	close(hold)
 	select {
-	case w := <-plan:
+	case w := <-served:
 		if w.Code != http.StatusOK {
-			t.Errorf("the plan answered %d once its export was read", w.Code)
+			t.Errorf("a source request that waited past the bound on a git slot for its export answered %d", w.Code)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("the plan was not served once its export was read")
+		t.Fatal("the source request was not served once its export was read")
 	}
-	h.page("/tools/app/source/tree/" + h.tip() + "/")
+	if admitted.Load() != 1 || h.srv.heldSlots() != 0 {
+		t.Errorf("the source request took %d git slots, and %d are held once it answered", admitted.Load(), h.srv.heldSlots())
+	}
 }
 
 // A source request gives back its git slot before it renders its page, so
@@ -2047,8 +2055,8 @@ func TestRenderingHoldsNoGitSlot(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the source request did not render")
 	}
-	if len(h.srv.slots) != 0 {
-		t.Errorf("a source request holds %d git slots while it renders", len(h.srv.slots))
+	if h.srv.heldSlots() != 0 {
+		t.Errorf("a source request holds %d git slots while it renders", h.srv.heldSlots())
 	}
 	h.page("/tools/app/source/blob/" + h.tip() + "/docs/guide.md")
 	time.Sleep(2 * h.srv.gitTime)
@@ -2216,14 +2224,9 @@ func TestDeepPlan(t *testing.T) {
 		t.Errorf("the siblings' path has stages %q", got)
 	}
 
-	h.srv.mu.Lock()
-	plan := h.srv.cached.idx.plan
-	h.srv.mu.Unlock()
+	plan := h.srv.anonymousIndex().plan
 	h.page("/-/knots")
-	h.srv.mu.Lock()
-	again := h.srv.cached.idx.plan
-	h.srv.mu.Unlock()
-	if plan != again {
+	if again := h.srv.anonymousIndex().plan; plan != again {
 		t.Error("the plan page's structure was built again for the same generation")
 	}
 
@@ -2238,38 +2241,68 @@ func TestDeepPlan(t *testing.T) {
 	}
 }
 
-// Every response carries the strict policy, and the policy admits the
-// page's one inline stylesheet and one inline script by their hashes and
-// nothing from another origin.
-func TestEveryResponseCarriesTheCSP(t *testing.T) {
+// Every response carries its route's strict policy and is private and
+// never stored: a page, a redirect, an archive, an error page, a 404 and
+// a HEAD alike, for anyone and for a named reader. The knots page's policy
+// admits its one inline script and stylesheet by their hashes, every other
+// route's admits the stylesheet and no script, and no policy lets a script
+// connect anywhere or fetch from another origin. No response carries an
+// ETag or a Last-Modified, and a conditional request is answered in full.
+func TestEveryResponseCarriesItsRoutesHeaders(t *testing.T) {
 	h := newHarness(t)
-	for _, c := range []struct{ method, target string }{
-		{"GET", "/"},
-		{"GET", "/-/knots"},
-		{"GET", "/tools/app/knots/oc-a000002"},
-		{"GET", "/tools/app/source/"},
-		{"GET", "/tools/app/source/tree/" + h.tip() + "/"},
-		{"GET", "/tools/app/source/blob/" + h.tip() + "/README.md"},
-		{"GET", "/no/such/page"},
-		{"POST", "/"},
-		{"HEAD", "/"},
-		{"HEAD", "/-/knots"},
-	} {
-		w := h.do(c.method, c.target)
-		got := w.Header().Get("Content-Security-Policy")
-		if got != csp || w.Header().Get("X-Content-Type-Options") != "nosniff" {
-			t.Errorf("%s %s answered with policy %q", c.method, c.target, got)
+	h.edge(exporttest.SignedAt.Add(time.Minute), map[string][]string{"app": {export.Anyone}, "site": {"alice"}})
+	tip := h.tip()
+	h.srv.log = func(error) {}
+	for _, reader := range []string{export.Anyone, "alice"} {
+		for _, c := range []struct {
+			method, target string
+			policy         string
+		}{
+			{"GET", "/", contentPolicy},
+			{"GET", "/-/knots", knotsPolicy},
+			{"GET", "/-/%6bnots", knotsPolicy},
+			{"HEAD", "/-/knots", knotsPolicy},
+			{"POST", "/-/knots", knotsPolicy},
+			{"GET", "/-/knots/", contentPolicy},
+			{"GET", "/tools/app/knots/oc-a000002", contentPolicy},
+			{"GET", "/tools/app/source/", contentPolicy},
+			{"GET", "/tools/app/source/tree/" + tip + "/", contentPolicy},
+			{"GET", "/tools/app/source/blob/" + tip + "/README.md", contentPolicy},
+			{"GET", "/tools/app/source/archive/" + tip + ".tar.gz", contentPolicy},
+			{"HEAD", "/tools/app/source/archive/main.tar.gz", contentPolicy},
+			{"GET", "/tools/site/source/tree/" + tip + "/", contentPolicy},
+			{"GET", "/t/app/", contentPolicy},
+			{"GET", "/no/such/page", contentPolicy},
+			{"POST", "/", contentPolicy},
+			{"HEAD", "/", contentPolicy},
+		} {
+			w := h.as(reader, c.method, c.target, http.Header{"If-None-Match": {"*"}, "If-Modified-Since": {"Mon, 01 Jan 2024 00:00:00 GMT"}})
+			got := w.Header()
+			if got.Get("Content-Security-Policy") != c.policy || got.Get("X-Content-Type-Options") != "nosniff" ||
+				got.Get("Cache-Control") != "private, no-store" || got.Get("Vary") != "Cookie" ||
+				got.Get("Referrer-Policy") != "no-referrer" || got.Get("X-Frame-Options") != "DENY" {
+				t.Errorf("%s %s as %s answered with the headers %v", c.method, c.target, reader, got)
+			}
+			if _, tagged := got["Etag"]; tagged || got.Get("Last-Modified") != "" || w.Code == http.StatusNotModified {
+				t.Errorf("%s %s as %s answered %d with an ETag or a Last-Modified", c.method, c.target, reader, w.Code)
+			}
 		}
 	}
-	for _, directive := range []string{"default-src 'self'", "object-src 'none'", "base-uri 'none'", "frame-ancestors 'none'"} {
-		if !strings.Contains(csp, directive) {
-			t.Errorf("the policy lacks %s", directive)
+	for _, policy := range []string{knotsPolicy, contentPolicy} {
+		for _, directive := range []string{"default-src 'self'", "connect-src 'none'", "object-src 'none'", "base-uri 'none'",
+			"form-action 'none'", "frame-ancestors 'none'", "style-src " + inlineHash(styleCSS) + ";"} {
+			if !strings.Contains(policy, directive) {
+				t.Errorf("the policy %q lacks %s", policy, directive)
+			}
+		}
+		for _, loose := range []string{"unsafe-inline", "unsafe-eval", "http", "*", "data:"} {
+			if strings.Contains(policy, loose) {
+				t.Errorf("the policy %q holds %q", policy, loose)
+			}
 		}
 	}
-	for _, loose := range []string{"unsafe-inline", "unsafe-eval", "http", "*", "data:"} {
-		if strings.Contains(csp, loose) {
-			t.Errorf("the policy holds %q", loose)
-		}
+	if !strings.Contains(contentPolicy, "script-src 'none';") || strings.Count(contentPolicy, "sha256-") != 1 {
+		t.Errorf("the content routes' policy admits a script: %q", contentPolicy)
 	}
 
 	page := h.page("/-/knots")
@@ -2282,10 +2315,10 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 		sum := sha256.Sum256([]byte(m[0][1]))
 		return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}
-	if hash := inline("script"); !strings.Contains(csp, "script-src "+hash+";") {
+	if hash := inline("script"); !strings.Contains(knotsPolicy, "script-src "+hash+";") {
 		t.Errorf("the policy does not admit the page's script, %s", hash)
 	}
-	if hash := inline("style"); !strings.Contains(csp, "style-src "+hash+";") {
+	if hash := inline("style"); !strings.Contains(knotsPolicy, "style-src "+hash+";") {
 		t.Errorf("the policy does not admit the page's stylesheet, %s", hash)
 	}
 	for _, external := range []string{"<link", " src=", "@import", "url("} {
@@ -2293,42 +2326,68 @@ func TestEveryResponseCarriesTheCSP(t *testing.T) {
 			t.Errorf("the plan page holds %q", external)
 		}
 	}
+	if knot := h.page("/tools/app/knots/oc-a000002"); strings.Contains(knot, "<script") {
+		t.Error("a knot page carries a script")
+	}
 }
 
-// A request serves everything from the generation it opened, though
-// another activates while it runs, and that generation outlives the
+// A request serves everything from its view, though another generation
+// activates while it runs: a knot page from the view it took, and a
+// source page from the generation it opened, which outlives the
 // activation until the request releases it.
 func TestARequestKeepsItsGeneration(t *testing.T) {
 	h := newHarness(t)
-	paused, resume := make(chan export.Generation), make(chan struct{})
+	paused, resume := make(chan struct{}), make(chan struct{})
 	var once sync.Once
-	h.srv.opened = func(g export.Generation) { once.Do(func() { paused <- g; <-resume }) }
+	h.srv.viewed = func() { once.Do(func() { paused <- struct{}{}; <-resume }) }
 	served := make(chan *httptest.ResponseRecorder)
 	go func() {
 		w := httptest.NewRecorder()
 		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/knots/oc-a000001", nil))
 		served <- w
 	}()
-	old := <-paused
-
-	next := h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
-	if next.Sequence == old.Sequence {
-		t.Fatal("the publish did not activate a new generation")
-	}
-	if _, err := os.Stat(old.Dir); err != nil {
-		t.Fatalf("the generation a request holds was deleted: %v", err)
-	}
+	<-paused
+	h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("Readers browse the second plan"))
 	close(resume)
 	w := <-served
 	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, "Readers browse the app&#39;s plan") || strings.Contains(body, "second plan") {
-		t.Errorf("the request did not serve the generation it opened: %d\n%s", w.Code, body)
+		t.Errorf("the request did not serve the view it took: %d\n%s", w.Code, body)
 	}
 	if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "Readers browse the second plan") {
 		t.Error("the next request does not serve the new generation")
 	}
 
+	old := h.active()
+	first := h.tip()
+	openedAt := make(chan export.Generation)
+	resume = make(chan struct{})
+	once = sync.Once{}
+	h.srv.viewed = nil
+	h.srv.opened = func(g export.Generation) { once.Do(func() { openedAt <- g; <-resume }) }
+	go func() {
+		w := httptest.NewRecorder()
+		h.srv.ServeHTTP(w, httptest.NewRequest("GET", "/tools/app/source/tree/"+first+"/", nil))
+		served <- w
+	}()
+	if g := <-openedAt; g.Sequence != old.Sequence {
+		t.Fatalf("the source request opened generation %d, not %d", g.Sequence, old.Sequence)
+	}
+	tip, bundle := h.commitMain("app: a commit while a request reads\n", file{"100644", "later.txt", "later\n"})
+	h.publishMain(exporttest.SignedAt.Add(2*time.Minute), tip, bundle)
+	if _, err := os.Stat(old.Dir); err != nil {
+		t.Fatalf("the generation a request holds was deleted: %v", err)
+	}
+	close(resume)
+	w = <-served
+	if body := w.Body.String(); w.Code != http.StatusOK || !strings.Contains(body, `<span class="chip">main's published tip</span>`) || strings.Contains(body, tip) {
+		t.Errorf("the source request did not serve the generation it opened: %d\n%s", w.Code, body)
+	}
+	if body := h.page("/tools/app/source/tree/" + first + "/"); !strings.Contains(body, "/tools/app/source/tree/"+tip+"/") {
+		t.Error("the next source request does not serve the new generation")
+	}
+
 	// Released, the old generation goes with the next activation.
-	h.publish(exporttest.SignedAt.Add(2*time.Minute), nil, renamed("Readers browse the third plan"))
+	h.publish(exporttest.SignedAt.Add(3*time.Minute), nil, renamed("Readers browse the third plan"))
 	if _, err := os.Stat(old.Dir); !os.IsNotExist(err) {
 		t.Errorf("the released generation is still on disk: %v", err)
 	}
@@ -2353,8 +2412,8 @@ func renamed(title string) func(*export.Export) {
 // While it is read, a newer generation is read on its own, and at most
 // MaxLoads exports are read at once. A request whose load ends after a
 // newer generation was activated waits for that one, so every request is
-// served the generation active when its snapshot is ready, and an older
-// read that finishes last does not displace the newest snapshot.
+// served the generation active when its export is decoded, and an older
+// read that finishes last does not displace the newest.
 func TestExportLoadsCoalesce(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex
@@ -2379,8 +2438,8 @@ func TestExportLoadsCoalesce(t *testing.T) {
 		defer mu.Unlock()
 		return loads[g.Sequence]
 	}
-	var opens atomic.Int32
-	h.srv.opened = func(export.Generation) { opens.Add(1) }
+	var views atomic.Int32
+	h.srv.viewed = func() { views.Add(1) }
 	get := func(n int) chan *httptest.ResponseRecorder {
 		served := make(chan *httptest.ResponseRecorder, n)
 		for range n {
@@ -2419,8 +2478,8 @@ func TestExportLoadsCoalesce(t *testing.T) {
 	if n := loaded(third); n != 0 {
 		t.Errorf("a third export was read while %d were", MaxLoads)
 	}
-	if n := opens.Load(); n != 0 {
-		t.Errorf("%d requests opened a generation while they waited for its read", n)
+	if n := views.Load(); n != 0 {
+		t.Errorf("%d requests took a view while they waited for its read", n)
 	}
 
 	// The second read ends, and its request finds the third generation
@@ -2444,10 +2503,14 @@ func TestExportLoadsCoalesce(t *testing.T) {
 }
 
 // Source requests past MaxGit wait, MaxWaiting of them, and one more
-// answers 503 at once. A waiting request holds no generation, so an
-// activation while the server is saturated deletes the old generation,
-// and every waiting request serves the new one. A request's time runs
-// from its arrival, so one that waits past it answers 503.
+// answers 503 at once. A route is resolved through the index first, so a
+// redirect, a missing page and a project the reader may not see answer as
+// ever, taking no slot. A waiting request holds no generation, so an
+// activation while the server is saturated deletes the old generation.
+// Every waiting request finds, once it opens one, that its view's
+// generation is no longer active, takes its view again, and serves the
+// new one. A request's time runs from its arrival, so one that waits past
+// it answers 503.
 func TestSourceAdmission(t *testing.T) {
 	h := newHarness(t)
 	// The requests that hold the slots wait for the test, not for git, so
@@ -2475,22 +2538,29 @@ func TestSourceAdmission(t *testing.T) {
 	old := h.active()
 	served := get(MaxGit + MaxWaiting)
 	eventually(t, "every slot is taken and MaxWaiting requests wait", func() bool {
-		return admitted.Load() == MaxGit && len(h.srv.waiting) == MaxWaiting
+		return admitted.Load() == MaxGit && h.srv.waitingForSlots() == MaxWaiting
 	})
 	if w := h.get(target); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
 		t.Errorf("a source request past MaxWaiting answered %d, Retry-After %q", w.Code, w.Header().Get("Retry-After"))
 	}
-	// A path through a group's alias or a project's former name that has
-	// a source route's shape is admitted as one before the export is read,
-	// so it answers 503 too. A project's short alias makes no such shape,
-	// and redirects still.
-	for _, alias := range []string{"/t/app/source/tree/" + h.tip() + "/", "/tools/old-app/source/tree/" + h.tip() + "/"} {
-		if w := h.get(alias); w.Code != http.StatusServiceUnavailable || w.Header().Get("Retry-After") == "" {
-			t.Errorf("GET %s past MaxWaiting answered %d, Retry-After %q", alias, w.Code, w.Header().Get("Retry-After"))
+	// A route is resolved through the index before any slot is taken, so
+	// a redirect, a project's main.tar.gz, a project the reader may not
+	// see and a project that does not exist take none: each answers while
+	// the server is saturated, as it does when it is not.
+	for target, code := range map[string]int{
+		"/t/app/source/tree/" + h.tip() + "/":         http.StatusPermanentRedirect,
+		"/tools/old-app/source/tree/" + h.tip() + "/": http.StatusPermanentRedirect,
+		"/app/source/tree/" + h.tip() + "/":           http.StatusPermanentRedirect,
+		"/tools/app/source/":                          http.StatusFound,
+		"/tools/app/source/archive/main.tar.gz":       http.StatusFound,
+		"/tools/site/source/tree/" + h.tip() + "/":    http.StatusNotFound,
+		"/tools/site/source/archive/main.tar.gz":      http.StatusNotFound,
+		"/tools/nosuch/source/log/" + h.tip():         http.StatusNotFound,
+		"/tools/app/source/tree/" + h.tip() + "/%00/": http.StatusNotFound,
+	} {
+		if w := h.get(target); w.Code != code {
+			t.Errorf("GET %s answered %d while the server is saturated, not %d", target, w.Code, code)
 		}
-	}
-	if w := h.get("/app/source/tree/" + h.tip() + "/"); w.Code != http.StatusPermanentRedirect {
-		t.Errorf("a project's short alias answered %d while the server is saturated", w.Code)
 	}
 	h.page("/-/knots") // a page that runs no git is served still
 
@@ -2505,13 +2575,8 @@ func TestSourceAdmission(t *testing.T) {
 			t.Errorf("a waiting request answered %d, not from the new generation", w.Code)
 		}
 	}
-	// Once a slot is free, the alias's path redirects, and gives the slot
-	// back.
-	if w := h.get("/t/app/source/tree/" + tip + "/"); w.Code != http.StatusPermanentRedirect {
-		t.Errorf("a group's alias answered %d once the server had a slot free", w.Code)
-	}
-	if len(h.srv.slots) != 0 {
-		t.Errorf("a redirect kept %d git slots", len(h.srv.slots))
+	if h.srv.heldSlots() != 0 {
+		t.Errorf("the requests kept %d git slots", h.srv.heldSlots())
 	}
 
 	// A request that waits past its time answers 503. Those that held
@@ -2609,8 +2674,8 @@ func TestSlowReadersHoldNothing(t *testing.T) {
 		}
 	}
 	sl.stall.Store(false)
-	if len(h.srv.slots) != 0 || len(h.srv.waiting) != 0 {
-		t.Errorf("slow readers hold %d git slots, and %d requests wait", len(h.srv.slots), len(h.srv.waiting))
+	if h.srv.heldSlots() != 0 || h.srv.waitingForSlots() != 0 {
+		t.Errorf("slow readers hold %d git slots, and %d requests wait", h.srv.heldSlots(), h.srv.waitingForSlots())
 	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
@@ -3036,12 +3101,12 @@ func TestSlowLoadEndsWithItsRequests(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("the load still reads the export")
 	}
-	eventually(t, "the load ends", func() bool { return len(h.srv.loaders) == 0 })
+	eventually(t, "the load ends", func() bool { return h.srv.runningLoads() == 0 })
 	h.srv.mu.Lock()
-	cached, loads := h.srv.cached, len(h.srv.loads)
+	cached, loads := h.srv.exported, len(h.srv.loads)
 	h.srv.mu.Unlock()
 	if cached != nil || loads != 0 {
-		t.Errorf("a load that stopped left a snapshot %v and %d loads", cached != nil, loads)
+		t.Errorf("a load that stopped left an export %v and %d loads", cached != nil, loads)
 	}
 	// The store reads the active export.json when it takes an upload.
 	if err := os.Remove(old.ExportPath()); err != nil {
@@ -3162,7 +3227,7 @@ func TestRenderingIsWithinTheDeadline(t *testing.T) {
 	h.srv.timeout = 50 * time.Millisecond
 	var logged []string
 	h.srv.log = func(err error) { logged = append(logged, err.Error()) }
-	h.srv.opened = func(export.Generation) { time.Sleep(100 * time.Millisecond) }
+	h.srv.viewed = func() { time.Sleep(100 * time.Millisecond) }
 	if w := h.get("/-/knots"); w.Code != http.StatusServiceUnavailable || !bytes.Equal(w.Body.Bytes(), busyPage) {
 		t.Errorf("a request that ran out of time before it rendered answered %d", w.Code)
 	}
@@ -3206,12 +3271,12 @@ func TestStalledLoadReleasesGeneration(t *testing.T) {
 			if w := h.get("/"); w.Code != http.StatusServiceUnavailable {
 				t.Fatalf("status = %d", w.Code)
 			}
-			eventually(t, "the stalled worker exits", func() bool { return len(h.srv.loaders) == 0 })
+			eventually(t, "the stalled worker exits", func() bool { return h.srv.runningLoads() == 0 })
 			h.srv.mu.Lock()
-			cached := h.srv.cached
+			cached := h.srv.exported
 			h.srv.mu.Unlock()
 			if cached != nil {
-				t.Fatal("stalled load cached a snapshot")
+				t.Fatal("stalled load kept an export")
 			}
 			if err := os.Remove(old.ExportPath()); err != nil {
 				t.Fatal(err)
@@ -3267,16 +3332,17 @@ func (c *cancelInPhase) Err() error {
 	return c.Context.Err()
 }
 
+// A load cancelled while it decodes the export stops, keeps nothing, and
+// gives back its generation and its loader slot.
 func TestProcessingCancellationReleasesGeneration(t *testing.T) {
-	for _, phase := range []string{".decodeValue", "exactjson.(*checker).check", ".(*Export).ValidateContext", ".CheckNames", ".(*Export).checkGroups",
-		".(*index).place", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
+	for _, phase := range []string{".decodeValue", "exactjson.(*checker).check", ".(*Export).ValidateContext", ".CheckNames", ".(*Export).checkGroups"} {
 		t.Run(phase, func(t *testing.T) {
 			h := newHarness(t)
 			old := h.active()
 			base, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			ctx := &cancelInPhase{Context: base, cancel: cancel, phase: phase}
-			l := &load{done: make(chan struct{}), cancel: cancel}
+			l := &load{done: make(chan struct{}), cancel: cancel, token: h.srv.loaders}
 			h.srv.loads[l] = struct{}{}
 			h.srv.loaders <- struct{}{}
 			finished := make(chan struct{})
@@ -3292,7 +3358,7 @@ func TestProcessingCancellationReleasesGeneration(t *testing.T) {
 			if !errors.Is(l.err, context.Canceled) {
 				t.Fatalf("load error = %v", l.err)
 			}
-			if h.srv.cached != nil || len(h.srv.loaders) != 0 || len(h.srv.loads) != 0 {
+			if h.srv.exported != nil || h.srv.runningLoads() != 0 || len(h.srv.loads) != 0 {
 				t.Fatal("cancelled processing retained load state")
 			}
 			h.publish(exporttest.SignedAt.Add(time.Minute), nil, renamed("The second plan"))
@@ -3301,6 +3367,53 @@ func TestProcessingCancellationReleasesGeneration(t *testing.T) {
 			}
 			if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "The second plan") {
 				t.Fatal("loader slot is not reusable")
+			}
+		})
+	}
+}
+
+// A view cancelled while its index is built, in projecting the projects
+// or in any step after, stops, keeps no index, gives back its place, and
+// holds no loader slot.
+func TestIndexCancellationGivesBackItsPlace(t *testing.T) {
+	for _, phase := range []string{".projectForReader", ".(*index).place", ".(*index).planPage", ".(*index).paths", ".(*index).milestones"} {
+		t.Run(phase, func(t *testing.T) {
+			h := newHarness(t)
+			h.page("/-/knots")
+			h.srv.mu.Lock()
+			d := h.srv.exported
+			h.srv.mu.Unlock()
+			base, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ctx := &cancelInPhase{Context: base, cancel: cancel, phase: phase}
+			shown := map[string]bool{"app": true}
+			key := viewKey{seq: d.seq, auth: "another revision", projects: projectsKey(d.e, shown)}
+			v := &view{key: key, e: d.e, shown: shown, pins: [pools]int{namedPool: 1}, holds: [pools]bool{namedPool: true},
+				cancel: cancel, done: make(chan struct{})}
+			h.srv.mu.Lock()
+			h.srv.views[key] = v
+			h.srv.mu.Unlock()
+			finished := make(chan struct{})
+			go func() { h.srv.build(ctx, v); close(finished) }()
+			select {
+			case <-finished:
+			case <-time.After(2 * time.Second):
+				t.Fatal("indexing did not stop")
+			}
+			if ctx.checks < 3 {
+				t.Fatalf("phase was not reached: %d checks", ctx.checks)
+			}
+			if v.idx != nil || !errors.Is(v.err, context.Canceled) {
+				t.Fatalf("a cancelled view holds an index %v, and the error %v", v.idx != nil, v.err)
+			}
+			h.srv.mu.Lock()
+			_, kept := h.srv.views[key]
+			h.srv.mu.Unlock()
+			if kept || h.srv.runningLoads() != 0 {
+				t.Fatal("a cancelled view kept its place, or a loader slot")
+			}
+			if !strings.Contains(h.page("/tools/app/knots/oc-a000001"), "Readers browse the app") {
+				t.Fatal("the server does not serve after a cancelled view")
 			}
 		})
 	}
@@ -3337,6 +3450,46 @@ func TestPlacingStopsWhenCancelled(t *testing.T) {
 		cancel()
 		if idx != nil || !errors.Is(err, context.Canceled) || ctx.checks != at {
 			t.Errorf("cancelled at check %d of %d, newIndex returned %v after %d checks", at, count.checks, err, ctx.checks)
+		}
+	}
+}
+
+// Projecting a reader's projects stops when the build is cancelled,
+// inside the loops over a knot's lists and its edges: it checks before
+// each entry, so a knot with long lists keeps no cancelled build at work.
+func TestProjectionStopsWhenCancelled(t *testing.T) {
+	f := exporttest.New(t)
+	e, err := export.Decode(f.ExportJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := &e.Projects[0].Knots[0]
+	for i := range 100 {
+		ref := fmt.Sprintf("oc-a%06x", i)
+		k.WaitingOn = append(k.WaitingOn, ref)
+		k.Unresolved = append(k.Unresolved, "site:"+ref)
+		k.Edges = append(k.Edges, export.Edge{Field: "blocked_by", Ref: ref, Project: "app", ID: ref, State: export.EdgeResolved})
+	}
+	shown := map[string]bool{"app": true}
+	for _, c := range []struct {
+		phase   string
+		entries int
+	}{{".keep", 200}, {".projectKnot", 300}} {
+		count := &cancelInPhase{Context: context.Background(), phase: c.phase}
+		if _, err := projectForReader(count, e, shown); err != nil {
+			t.Fatal(err)
+		}
+		if count.checks < c.entries {
+			t.Errorf("projecting %d entries checked the context %d times in %s", c.entries, count.checks, c.phase)
+		}
+		for _, at := range []int{1, count.checks / 2, count.checks} {
+			base, cancel := context.WithCancel(context.Background())
+			ctx := &cancelInPhase{Context: base, cancel: cancel, phase: c.phase, at: at}
+			projected, err := projectForReader(ctx, e, shown)
+			cancel()
+			if projected != nil || !errors.Is(err, context.Canceled) || ctx.checks != at {
+				t.Errorf("cancelled at check %d of %d in %s, projecting returned %v after %d checks", at, count.checks, c.phase, err, ctx.checks)
+			}
 		}
 	}
 }

@@ -240,6 +240,31 @@ status=$(curl -sS --max-time 10 --max-redirs 3 -L -o main.tar.gz -w '%{http_code
 [ "$status" = "200 application/gzip" ] || fail "valley-web answered app's main.tar.gz with $status"
 cmp -s main.tar.gz app.tar.gz || fail "app's main.tar.gz is not the archive of main's tip"
 
+# Every response is private and never stored: a page, a redirect, an
+# archive, a 404 and a HEAD alike, even one that asks to be answered 304.
+# None carries an ETag. The knots page's policy admits its one script by
+# its hash; every other route's admits none. No policy lets a script
+# connect anywhere.
+headers() { curl -sS --max-time 10 -o /dev/null -D - -H 'If-None-Match: *' "$@" | tr -d '\r'; }
+for path in / /-/knots "/tools/app/source/tree/$app_tip/" "/tools/app/source/archive/$tip.tar.gz" \
+  /tools/app/source/archive/main.tar.gz "/a/knots/$knot" /tools/nosuch/ /-/nosuch; do
+  for method in GET HEAD; do
+    if [ "$method" = HEAD ]; then got=$(headers -I "http://$web$path"); else got=$(headers "http://$web$path"); fi
+    grep -qx 'Cache-Control: private, no-store' <<< "$got" || fail "$method $path is not private and unstored: $got"
+    grep -qx 'Vary: Cookie' <<< "$got" || fail "$method $path does not vary by cookie: $got"
+    if grep -qi '^etag:' <<< "$got" || grep -q '^HTTP/[0-9.]* 304' <<< "$got"; then
+      fail "$method $path answered with an ETag or 304: $got"
+    fi
+    policy=$(sed -n 's/^Content-Security-Policy: //p' <<< "$got")
+    case $path in
+      /-/knots) script="script-src 'sha256-" ;;
+      *) script="script-src 'none';" ;;
+    esac
+    [[ $policy == *"$script"* && $policy == *"connect-src 'none'"* ]] ||
+      fail "$method $path answered with the policy $policy"
+  done
+done
+
 # The pages say when the policy was last checked, apart from when the
 # plan was collected. A pass that finds nothing changed sends no content,
 # and still sends an authorization, signed again with a later sequence and

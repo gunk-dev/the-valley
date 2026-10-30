@@ -50,28 +50,25 @@ func escapePath(path []string) string {
 }
 
 // source serves the routes under /<group>/<project>/source/. The project is
-// checked first, so everything under a project the export does not hold
-// as public answers as a missing project does. A view runs git under the
-// request's git context, and gives back its git slot once it renders.
-func (q *request) source(project string, rest []string) {
+// checked first, so everything under a project the reader may not see
+// answers as a missing project does. A route that reads the repository is
+// returned, for runGit to run once the request holds a git slot: its view
+// runs git under the request's git context, and gives back its git slot
+// once it renders. Every other route is answered from the index alone.
+func (q *request) source(project string, rest []string) *gitOp {
 	p, ok := q.project(project)
 	if !ok {
 		q.notFound()
-		return
+		return nil
 	}
-	repo, ok := q.g.Repo(p.Name)
-	if !ok {
-		q.notFound()
-		return
-	}
-	var view func(ctx context.Context) error
+	var view func(ctx context.Context, repo string) error
 	switch {
 	case len(rest) == 0 || len(rest) == 1 && rest[0] == "":
 		q.redirect(treeURL(q.idx.bases[p.Name], p.SourceTip, nil))
-		return
+		return nil
 	case len(rest) == 2 && rest[0] == "archive" && rest[1] == tipArchive:
 		q.redirect(archiveURL(q.idx.bases[p.Name], p.SourceTip))
-		return
+		return nil
 	case len(rest) >= 2 && rest[0] == "tree":
 		path := rest[2:]
 		if n := len(path); n > 0 && path[n-1] == "" {
@@ -79,36 +76,30 @@ func (q *request) source(project string, rest []string) {
 		}
 		if !validPath(path) {
 			q.notFound()
-			return
+			return nil
 		}
-		view = func(ctx context.Context) error { return q.dir(ctx, p, repo, rest[1], path) }
+		view = func(ctx context.Context, repo string) error { return q.dir(ctx, p, repo, rest[1], path) }
 	case len(rest) >= 3 && rest[0] == "blob":
 		path := rest[2:]
 		if !validPath(path) {
 			q.notFound()
-			return
+			return nil
 		}
-		view = func(ctx context.Context) error { return q.file(ctx, p, repo, rest[1], path) }
+		view = func(ctx context.Context, repo string) error { return q.file(ctx, p, repo, rest[1], path) }
 	case len(rest) == 2 && rest[0] == "log":
-		view = func(ctx context.Context) error { return q.log(ctx, p, repo, rest[1]) }
+		view = func(ctx context.Context, repo string) error { return q.log(ctx, p, repo, rest[1]) }
 	case len(rest) == 2 && rest[0] == "archive":
 		commit, ok := strings.CutSuffix(rest[1], archiveSuffix)
 		if !ok {
 			q.notFound()
-			return
+			return nil
 		}
-		view = func(ctx context.Context) error { return q.archive(ctx, p, repo, commit) }
+		view = func(ctx context.Context, repo string) error { return q.archive(ctx, p, repo, commit) }
 	default:
 		q.notFound()
-		return
+		return nil
 	}
-	if q.git == nil { // runsGit admits every route that reaches here
-		q.fail(errors.New("a source route was served without a git slot"))
-		return
-	}
-	if err := view(q.git); err != nil {
-		q.fail(err)
-	}
+	return &gitOp{project: p, run: view}
 }
 
 // validPath is a path a source route may name: at most MaxDepth

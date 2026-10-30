@@ -98,13 +98,39 @@
   # reaching every commit; a merge whose parents pass a record of git log
   # shown, first on a page and further down, with its first MaxParents
   # followed; a source request's git slot held for a bound of its own from
-  # admission, through a slow export read and its git, answering 503 and
-  # giving back its slot, and given back before it renders; a SHA-256
+  # admission, through its git, answering 503 and giving back its slot,
+  # taken only once its view is ready, so a slow export read holds none,
+  # and given back before it renders; a SHA-256
   # project served by full commit IDs alone; a file of MaxFile newlines shown to MaxLines;
   # a chain of knots near the graph's limit shown to MaxPlanDepth, with
-  # the plan's structure built once; the policy on every response,
-  # admitting the page's inline stylesheet and script by their hashes; a
-  # request keeping its generation while another activates; an export
+  # the plan's structure built once; each route's policy on every
+  # response, the knots page's admitting its inline stylesheet and script
+  # by their hashes and every other route's no script, with every
+  # response private and unstored, carrying no ETag and never answered
+  # 304; anyone and two named readers, over signed fixtures holding
+  # private projects, each served on every route, alias, landing,
+  # reference, Markdown page and archive from the union of what anyone
+  # and their principal may read, under the project's publication
+  # identity, with what they may not see answering as missing and taking
+  # no git slot; a knot whose one blocker is in a project the reader may
+  # not see, done or open, read the same, field and page, from an export
+  # without that project and one holding it for another reader; the
+  # projection leaving the export unchanged and hiding other projects
+  # from four derived lists and the edges, and stopping inside them when
+  # cancelled; a private project named like a knot ID, the target of a
+  # public knot, named on no page of a reader who may not see it, with
+  # every other reference held to its own field's shapes; readers who
+  # may see the same projects sharing one index; the views of what
+  # anyone may see, and a loader, kept for anonymous requests while
+  # named views fill every other place, with a request that finds no
+  # room holding no loader, git slot or generation, and answering 503 at
+  # its deadline or nothing once its reader goes away; the waiting
+  # places past MaxNamedWaiting kept for anonymous requests, which a new
+  # generation's load serves while named readers fill theirs; a stopped
+  # build keeping its place until its worker ends, so no more than
+  # MaxViews workers build named views; a named reader's Markdown page, archive,
+  # knot and redirect rendered again when their grant is withdrawn while
+  # they render; a request keeping its view and its generation while another activates; an export
   # read once per generation, however many requests wait for it, across
   # activations; a load started only by a request taking a loader slot,
   # with requests that wait for one ending at their deadline or when
@@ -115,7 +141,8 @@
   # MaxLoadWaiting requests waiting and answering the rest 503, with the
   # server's goroutines and open files bounded; source requests past
   # MaxGit and MaxWaiting answering 503, with an activation while they
-  # wait and a deadline that covers the wait; a request held past its
+  # wait and a deadline that covers the wait, while redirects, missing
+  # pages and hidden projects answer as ever; a request held past its
   # deadline before it renders answering 503; a page past MaxResponse on
   # a knot, and past a smaller bound on a file, a directory, a page of
   # history and the plan, answering the one short page that says it is

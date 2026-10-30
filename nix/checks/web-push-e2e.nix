@@ -12,7 +12,11 @@
 #      group URLs and redirects a short alias and a former name with 308.
 #      A project's Markdown README renders with an id on its heading and
 #      its relative link rewritten to the target's page at the same
-#      commit.
+#      commit. Every response, a page, a redirect, an archive and a 404,
+#      for GET and HEAD, is Cache-Control: private, no-store with Vary:
+#      Cookie and no ETag, is never answered 304, and carries its route's
+#      policy: the knots page's admits its script by its hash, every
+#      other route's admits no script, and none lets a script connect.
 #      The pages say when the policy was last checked, and a pass with
 #      nothing changed sends no content but a newly signed authorization,
 #      whose later check the pages show, while export.json keeps its

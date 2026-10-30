@@ -36,8 +36,8 @@ type fact struct {
 }
 
 // reference is one entry of blocked_by: a knot the page links to, a
-// reference it can only name, with what is known of it, or a knot of an
-// unpublished project, which it does not name at all.
+// reference it can only name, with what is known of it, or a knot of a
+// project the reader may not see, which it does not name at all.
 type reference struct {
 	Ref  string
 	Knot *knotLink
@@ -102,11 +102,11 @@ func (q *request) knot(project, id string) {
 		add("Progress", strconv.Itoa(pr.Done)+" of "+strconv.Itoa(pr.Of)+" done", "")
 	}
 	if k.Target != "" {
-		text, url := q.idx.named(p.Name, k.Target)
+		text, url := q.idx.target(k.Target)
 		add("Lands in", text, url)
 	}
 	if k.GraduatedInto != "" {
-		text, url := q.idx.named(p.Name, k.GraduatedInto)
+		text, url := q.idx.graduated(p.Name, k.GraduatedInto)
 		add("Graduated into", text, url)
 	}
 	for _, c := range k.Changes {
@@ -133,23 +133,43 @@ func (q *request) knot(project, id string) {
 	q.page(http.StatusOK, "knot", k.ID+" · "+k.Title, page)
 }
 
-// The words a page shows for a reference into a project the export does
-// not hold as public. They name nothing of what is referred to: not the
-// project, not the knot, and not the reference's text.
+// The words a page shows for a reference into a project the reader may
+// not see, whether the export holds it for another reader or not at all.
+// They name nothing of what is referred to: not the project, not the knot,
+// and not the reference's text. A page shows them too for a value that has
+// none of the shapes its field allows, since such a value names nothing
+// the reader may see.
 const (
 	unpublishedKnot    = "a knot in an unpublished project"
 	unpublishedProject = "an unpublished project"
 	unpublishedChange  = "a change in an unpublished project"
 )
 
-// reference resolves one blocked_by entry of k's. A knot of this project
-// or of another public one is linked. A reference into a project the
-// export does not hold as public is shown as unpublished, with none of
-// its text. Any other reference is named, and said to be missing.
+// knotRef reads ref as a reference to a knot, from a knot of project's: a
+// knot's ID in project's own graph, or <project>:<id> for a knot of
+// another project's, each whole (knot/validate.go). other and id are the
+// project and the ID it names. ok is false for any other text, which names
+// no knot.
+func knotRef(project, ref string) (other, id string, ok bool) {
+	if knot.IsLocalID(ref) {
+		return project, ref, true
+	}
+	if !knot.IsQualifiedID(ref) {
+		return "", "", false
+	}
+	other, id, _ = strings.Cut(ref, ":")
+	return other, id, true
+}
+
+// reference resolves one blocked_by entry of k's, read by knotRef. A knot
+// of this project or of another the reader may see is linked. A reference
+// into a project the index does not hold is shown as unpublished, with
+// none of its text, and so is an entry of neither shape, which names no
+// knot. Any other reference is named, and said to be missing.
 func (q *request) reference(project string, k *export.Knot, ref string) reference {
-	other, id, foreign := strings.Cut(ref, ":")
-	if !foreign {
-		other, id = project, ref
+	other, id, ok := knotRef(project, ref)
+	if !ok {
+		return reference{Note: unpublishedKnot}
 	}
 	if _, ok := q.project(other); !ok {
 		return reference{Note: unpublishedKnot}
@@ -166,66 +186,89 @@ func (q *request) reference(project string, k *export.Knot, ref string) referenc
 	return reference{Ref: ref, Note: "not found"}
 }
 
-// named is how a page names what a target or graduated_into holds, and
-// the page it links to: a knot of a public project, or the tree of a
-// public project's published tip. A reference into a project the export
-// does not hold as public is named only as unpublished, and not linked. A
-// knot of a public project that the export does not hold is named and not
-// linked.
-func (idx *index) named(project, ref string) (text, url string) {
-	other, id, qualified := strings.Cut(ref, ":")
-	switch {
-	case qualified:
-		if _, ok := idx.project(other); !ok {
-			return unpublishedKnot, ""
+// target is how a page names what a knot's target holds, and the page it
+// links to. A target is a project's name, or <project>:<id> for a knot of
+// one, each whole (knot/validate.go). It is never a knot of the knot's own
+// graph, so a project named as a knot's ID is still a project. A project
+// the reader may see is linked to the tree of its published tip. A knot of
+// one is linked to its page, or named and not linked when the index does
+// not hold it. A target into a project the index does not hold is named
+// only as unpublished, and not linked, and so is a target of neither
+// shape.
+func (idx *index) target(ref string) (text, url string) {
+	if knot.IsName(ref) {
+		if p, ok := idx.project(ref); ok {
+			return ref, treeURL(idx.bases[p.Name], p.SourceTip, nil)
 		}
-		if _, ok := idx.knots[other][id]; ok {
-			return ref, knotURL(idx.bases[other], id)
-		}
-		return ref, ""
-	case knot.IsLocalID(ref):
-		if _, ok := idx.knots[project][ref]; ok {
-			return ref, knotURL(idx.bases[project], ref)
-		}
-		return ref, ""
+		return unpublishedProject, ""
 	}
-	if p, ok := idx.project(ref); ok {
-		return ref, treeURL(idx.bases[p.Name], p.SourceTip, nil)
+	if !knot.IsQualifiedID(ref) {
+		return unpublishedProject, ""
 	}
-	return unpublishedProject, ""
+	other, id, _ := strings.Cut(ref, ":")
+	if _, ok := idx.project(other); !ok {
+		return unpublishedKnot, ""
+	}
+	if _, ok := idx.knots[other][id]; ok {
+		return ref, knotURL(idx.bases[other], id)
+	}
+	return ref, ""
 }
 
-// change is how a page names one of a knot's change links. A valley
-// change of a project the export does not hold as public is named only as
-// unpublished.
+// graduated is how a page names what a knot's graduated_into holds, and
+// the page it links to. graduated_into is the ID of an outcome or a
+// question in the knot's own graph (knot/validate.go), which the reader
+// sees, since they see the knot. It is linked when the index holds it, and
+// named and not linked when it does not. Any other value names no knot the
+// reader may see, and is named only as unpublished.
+func (idx *index) graduated(project, ref string) (text, url string) {
+	if !knot.IsLocalID(ref) || !strings.HasPrefix(ref, "oc-") && !strings.HasPrefix(ref, "qn-") {
+		return unpublishedKnot, ""
+	}
+	if _, ok := idx.knots[project][ref]; ok {
+		return ref, knotURL(idx.bases[project], ref)
+	}
+	return ref, ""
+}
+
+// change is how a page names one of a knot's change links. A link is
+// valley:<project>/<change ID>, or a GitHub pull request's URL, each whole
+// (knot/validate.go). A valley link is named only as unpublished unless
+// the index holds its project, and so is a link of neither shape.
 func (idx *index) change(link string) string {
+	if !knot.IsChangeLink(link) {
+		return unpublishedChange
+	}
 	if rest, ok := strings.CutPrefix(link, "valley:"); ok {
-		if project, _, ok := strings.Cut(rest, "/"); ok {
-			if _, public := idx.project(project); !public {
-				return unpublishedChange
-			}
+		project, _, _ := strings.Cut(rest, "/")
+		if _, public := idx.project(project); !public {
+			return unpublishedChange
 		}
 	}
 	return link
 }
 
-// waitsOn is the knots a blocked knot waits on, as a tree row names them:
-// refs, and, when hidden is set, the knots of unpublished projects the
-// export left out of refs. Those, and any of refs into a project the
-// export does not hold as public, are named once, as unpublished, after
+// waitsOn is the knots a blocked knot of project's waits on, as a tree row
+// names them: refs, and, when hidden is set, the knots of projects the
+// reader may not see that the export or the projection left out of refs.
+// Those, any of refs into a project the index does not hold, and any that
+// knotRef does not read as a knot's, are named once, as unpublished, after
 // the others. A blocked knot that waits on nothing refs names waits on
 // something unpublished, so it is named so too, as it is from an export
 // that does not carry waiting_on_hidden.
-func (idx *index) waitsOn(refs []string, hidden bool) string {
+func (idx *index) waitsOn(project string, refs []string, hidden bool) string {
 	var out []string
 	named := false
 	for _, ref := range refs {
 		idx.checkBuild()
-		if other, _, ok := strings.Cut(ref, ":"); ok {
-			if _, public := idx.project(other); !public {
-				hidden = true
-				continue
-			}
+		other, _, ok := knotRef(project, ref)
+		if !ok {
+			hidden = true
+			continue
+		}
+		if _, public := idx.project(other); !public {
+			hidden = true
+			continue
 		}
 		out = append(out, ref)
 		named = true

@@ -3301,17 +3301,243 @@ authorization (`implemented`). The edge does not redeem them yet (`not built`).
 
 ## The web server
 
-`valley-web` serves a receiver's store over HTTP to anonymous readers (`web/server/`,
-`web/cmd/valley-web/`). For each project that the stored authorization allows `anyone` to read, it
-serves the knots page, each knot page, and a source browser for `main` under the project's group,
-including a gzipped tar archive for each reachable commit. It builds every view through a single
-project-view filter parameterized by the reader, passing `anyone` for every request. `valley-web`
-runs alongside the receiver as a separate process (see [The receiver](#the-receiver)). It renders
+`valley-web` serves a receiver's store over HTTP (`web/server/`, `web/cmd/valley-web/`). It builds
+each response for one reader (see [Each reader's view](#each-readers-view)). For each project that
+reader may see, it serves the knots page, each knot page, and a source browser for `main` under the
+project's group, including a gzipped tar archive for each reachable commit. `valley-web` reads every
+request as `anyone` (`implemented`), and no production path names another reader. `valley-web` runs
+alongside the receiver as a separate process (see [The receiver](#the-receiver)). It renders
 Markdown files and READMEs as documents with its own renderer, package `web/markdown`, which uses
 the standard library alone. The renderer writes only a fixed set of elements and attributes, and
 shows raw HTML as text. A relative link in a document is resolved to the target's page at the same
 commit with no git call. Its flags, routes, and limits are in
 [Web server (`valley-web`)](./reference.md#web-server-valley-web).
+
+### Each reader's view
+
+Each request is read as one principal, called its reader. A reader's view is the set of projects
+that reader may see. The server builds every page, link, redirect, and source route from that view.
+
+**Which projects a reader sees.** The filter `visible` selects the projects in a reader's view
+(`implemented`, `web/server/plan.go`). A reader sees a project when two conditions hold: the project
+belongs to one of the export's groups, and the stored authorization allows either `anyone` or the
+reader's principal to read it. `Authorization.Allows` checks one principal at a time against the
+project's name and publication identity (`web/export/authorization.go`). `visible` checks `anyone`
+and the reader's principal and takes the union of both results. A project without a group has no web
+pages.
+
+**What a reader's view holds.** To build a view's lookup index and knots page, `projectForReader`
+copies the projects in the reader's view and each of their knots (`implemented`,
+`web/server/projection.go`). The decoded export stays unchanged, and all views of that generation
+share it. Each copied knot keeps its own fields and the `state` and `ready` values that the host
+derived. Hiding a project never recalculates the host's plan. `projectForReader` removes derived
+information about projects outside the reader's view:
+
+- `waiting_on`, `cleared_by_ending`, `dangling`, and `unresolved` keep only references to knots in
+  projects the reader sees.
+- `waiting_on_hidden` is `true` when the export set it or when `projectForReader` removed a
+  reference from `waiting_on`. It records only that a `waiting_on` reference was hidden, and says
+  neither which knots nor how many.
+- In those four lists, a valid entry is either a knot ID in the knot's own graph or
+  `<project>:<id>`. Any entry that does not match one of those two shapes is also removed, even if
+  it begins with the name of a visible project.
+- In `edges`, an edge into a project the reader sees keeps its exported fields. An edge into any
+  other project becomes a `hidden` edge, and its title, status, and reason are dropped regardless of
+  its exported state.
+
+The authored reference fields — `blocked_by`, `target`, `graduated_into`, and change links — stay
+unchanged in the copied knot. When rendering a page, the server resolves each reference through the
+view's index after checking that the entire value matches a shape allowed for its field
+(`knot/validate.go`, `web/server/knot.go`):
+
+- A `blocked_by` entry (or `waiting_on` entry on the knots page) is a knot ID in the knot's own
+  graph (`knot.IsLocalID`), or `<project>:<id>` (`knot.IsQualifiedID`).
+- A `target` is a project name (`knot.IsName`), or `<project>:<id>` (`knot.IsQualifiedID`). Because
+  a single-segment `target` always names a project rather than a knot in the same graph, a project
+  whose name looks like a knot ID is still checked as a project.
+- `graduated_into` is the ID of an outcome or question in the knot's own graph (`knot.IsLocalID`).
+- A change link is `valley:<project>/<change ID>` or `https://github.com/<owner>/<repo>/pull/<n>`
+  (`knot.IsChangeLink`).
+
+Because the server validates the whole string before looking up a project or showing any text, a
+malformed reference that begins with a visible project name — such as `app:site:oc-b000001` for
+`<project>:<id>` or `valley:app/site/secret` for a change link — fails the shape check.
+
+When a reference names a project outside the reader's view, or fails its field's shape check, the
+page shows a fixed placeholder with no link and none of the reference's text:
+
+- "an unpublished project" for a `target` that names a project or fails the shape check;
+- "a knot in an unpublished project" for `blocked_by`, `waiting_on`, `graduated_into`, or a
+  `<project>:<id>` entry in `target`;
+- "a change in an unpublished project" for a change link.
+
+The server never infers whether a knot is waiting from `blocked_by`, because a blocker listed there
+may already be done. Instead, it uses `waiting_on` and `waiting_on_hidden`. The server needs the
+export's `waiting_on_hidden`, because the edge cannot reconstruct the blocker status of a project
+that `export.json` omits. The export sets the flag when it hides a `waiting_on` reference into an
+omitted project, and `projectForReader` sets it when it hides a `waiting_on` reference that is
+malformed or names a project the reader may not see. Which references `waiting_on` holds is
+described in [Unpublished blockers](#unpublished-blockers). As a result, a knot whose only blocker
+is in a hidden project renders identically whether the export omits that project or includes it for
+another reader. When the blocker is done, neither view shows the knot as waiting. When the blocker
+is open, both views show once that it waits on "a knot in an unpublished project".
+
+A project outside the reader's view adds no navigation link, former name, alias, redirect, target
+title or status, or source route. A group that contains no project in the reader's view has no group
+alias. Any request for a hidden project returns the same static `404` page as a request for a
+project that does not exist.
+
+This filtering applies only to the export's structured fields. Authored prose in a visible project —
+such as a knot body, a comment, a README, or an absolute link — is published as written.
+
+Checked by `web-server-unit`:
+
+- `TestNamedReadersSeeTheirOwnProjects` serves `anyone` and two named readers over signed fixtures
+  that hold private projects across every route, alias, landing redirect, cross-project reference,
+  Markdown page, and archive.
+- `TestVisibilityIsTheUnionUnderThePublicationIdentity` checks that `visible` takes the union of
+  `anyone` and the reader's principal and matches each project's publication identity.
+- `TestAHiddenBlockerReadsAlikeInEitherExport` builds one export without a blocker's project and one
+  holding it for another reader, and compares the projected fields and rendered pages byte for byte
+  with the blocker done and open.
+- `TestProjectionHidesOtherProjects` checks that `projectForReader` strips hidden projects from the
+  derived lists and edges without changing the decoded export.
+- `TestATargetNamesNoProjectTheReaderMayNotSee` gives a public knot a target in a private project
+  whose name looks like a knot ID, checks that no page for an unauthorized reader names it while an
+  authorized reader gets a link to its source, and checks the shape rules for `graduated_into`,
+  `blocked_by`, `waiting_on`, and change links.
+- `TestMalformedReferencesNameNothing` passes values that start with a visible project name yet
+  match none of their field's shapes, checking that `projectForReader` removes them from the four
+  derived lists and that every page shows them as unpublished with none of their text for all
+  readers.
+
+### Requests, loads and indexes
+
+Every request runs through eight steps (`implemented`, `web/server/server.go`):
+
+1. Check the HTTP method, read the stored authorization, and identify the request's reader.
+2. Obtain the active generation's decoded export and the index for the reader's view.
+3. Resolve the request path through that index.
+4. Answer redirects and `404` pages directly from the index without taking a `git` slot.
+5. For a source route that reads a repository, take a `git` slot and then open the generation from
+   which the view was built.
+6. Render the complete response in memory.
+7. Release the generation and unpin the index.
+8. Re-read the authorization under the shared serving lock and write the response headers.
+
+A request holds no generation on disk while waiting for its view or for a `git` slot. If the active
+generation advances before the request opens its generation in step 5, the request releases its
+`git` slot, generation, and index, and starts again from step 2 within its 15-second deadline.
+
+**Decoded exports.** The server caches the decoded `export.json` of the newest generation it has
+read. When a request needs a generation that has not been decoded yet, it waits for a load. Each
+load runs in its own worker, which opens the active generation, reads and decodes `export.json`, and
+releases the generation. Requests waiting for the same generation share one load. If all waiting
+requests leave before the load finishes, the worker cancels the load and discards the partial read.
+
+At most 2 loads run at once (`server.MaxLoads`), using two loader slots: one general slot and one
+slot reserved for anonymous requests. The reserved slot runs a load only while at least one
+anonymous request waits for that load, so loads with only named waiters use the general slot alone.
+When an anonymous request joins a load that is waiting to start, it can start that load on the
+reserved slot, and named readers' requests for the same generation can join it there. If the last
+anonymous waiter leaves a load on the reserved slot while named waiters remain:
+
+- **When the general slot is free:** the load moves to the general slot and continues running, so
+  the named waiters lose no progress.
+- **When the general slot is busy:** the server cancels the load and frees the reserved slot at
+  once. The remaining named waiters wait for the general slot within their own deadlines. The
+  cancelled worker holds no loader slot while it exits at its next cancellation check.
+
+Because a load with only named waiters never holds the reserved slot, an anonymous request never
+waits for a loader behind named readers' loads. Concurrent requests for a generation share one read.
+A read that every waiting request abandons is cancelled, so a later request may read that generation
+again, as it may after the reserved slot's cancellation above.
+
+**Indexes.** Once a generation's export is decoded, the server builds an index for each view it
+serves. An index is keyed by three values: the generation sequence number, the exact revision of the
+authorization (its signed bytes), and the sorted names and publication identities of the view's
+projects. Readers who see the same set of projects share one index, and a named reader who sees no
+more than `anyone` shares the `anyone` index. The reader's identity never enters an index or any
+page rendered from it. Each index is built in its own worker after the export is decoded; that
+worker holds no loader slot, and no load waits for an index build.
+
+Cached and building indexes occupy places in two pools:
+
+- **Anonymous places (2 places):** Reserved for the `anyone` index — one for the current generation
+  and one for a generation replacing it or being replaced. Named readers' requests never take an
+  anonymous place.
+- **Named places (8 places, `server.MaxViews`):** Shared by named readers' requests. Any view that
+  includes projects beyond `anyone` takes a named place. A named reader whose view matches `anyone`
+  serves from the shared `anyone` index object while occupying a named place for it.
+
+A request pins its index from step 2 until rendering finishes in step 7, before the response is
+written. While an index is building or pinned by active requests, it occupies a place in each pool
+that has at least one request waiting for or serving from it. As soon as no requests from one pool
+pin the index, it releases that pool's place if requests from the other pool still pin it. For
+example, when only named readers' requests pin the `anyone` index, it occupies a named place and no
+anonymous place. When the last request unpins an index, the index remains cached in the single pool
+of that last request. An index from an older generation or an older authorization stays counted in
+its pool until the last request using it unpins it, and is then dropped.
+
+To free a place in a full pool, the server evicts only an index that no request is currently
+pinning. If all waiting requests leave an index while it is still building, the server cancels the
+build. The cancelled build keeps its pool place until its worker exits, and no new request can join
+it. As a result, at most 10 workers (2 anonymous and 8 named) can build indexes at once.
+
+When a request must wait for a generation load, an index build, or a free place in its index pool,
+it takes one of 64 view-waiting places (`server.MaxLoadWaiting`) and answers `503` if its 15-second
+deadline expires first. Named readers' requests may take at most 48 of those 64 waiting places
+(`server.MaxNamedWaiting`), including when waiting for the `anyone` index or for a named place to
+hold it. Anonymous requests may take any of the 64 places. A request that finds no waiting place it
+may take — all 64 full for an anonymous request, or 48 named places or all 64 places full for a
+named request — answers `503` at once.
+
+Together, these reservations keep named readers from exhausting resources that anonymous requests
+need. At least 16 waiting places, the reserved loader slot, and the 2 anonymous index places are
+always available to anonymous traffic. The reservations do not isolate CPU or `git`: every other
+limit is shared by all readers, and adding readers does not raise it. When all 8 named index places
+are full, named readers' requests wait while anonymous requests do not, and an anonymous request for
+the current generation always gets the current `anyone` index without waiting on any named reader's
+request. Anonymous requests share their 16 reserved waiting places, reserved loader slot, and 2
+index places among themselves. The limits shared by all readers are 8 `git` slots (`server.MaxGit`),
+2 Markdown rendering slots (`server.MaxRendering`), the 64 MiB response budget
+(`server.MaxBuffered`) with its 48 MiB cap for large responses (`server.MaxLarge`), the 8 MiB
+response size limit (`server.MaxResponse`), and the archive limits (see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web)).
+
+Checked by `web-server-unit`:
+
+- `TestIdenticalViewsShareAnIndex` checks that four readers across two distinct views build two
+  indexes.
+- `TestAnonymousViewsSurviveNamedSaturation` fills every named place with in-progress index builds
+  and verifies that `anyone` is still served, that a new generation loads and indexes meanwhile,
+  that a request waiting for room holds no loader, `git` slot, or generation and answers `503` at
+  its deadline (or nothing if the client disconnects), and that a named reader whose view matches
+  `anyone` still waits for a named place.
+- `TestNamedRequestsTakeNoAnonymousPlace` has a named reader whose view matches `anyone` pin two
+  generations' `anyone` indexes, activates a third generation, and checks that an anonymous request
+  for the knots page is served at once, including when all other named places are full and that
+  named reader's request for the third generation is waiting.
+- `TestAnonymousRequestsKeepTheirWaitingPlaces` fills the 48 named waiting places, checks that the
+  next named request answers `503` at once, and verifies that 16 anonymous requests can still wait
+  for a new generation's load and be served.
+- `TestAnonymousRequestsKeepALoader` checks the reserved loader slot.
+- `TestALoadAnonymousRequestsLeaveMovesToTheOtherLoader` has the sole anonymous waiter leave a load
+  on the reserved loader while a named reader still waits, checking that the load moves to the free
+  general loader, that the reserved loader is immediately free for an anonymous request on a newer
+  generation, and that the first export is read only once.
+- `TestALoadAnonymousRequestsLeaveGivesBackTheKeptLoader` repeats that scenario while the general
+  loader is busy with another named load, checking that the shared load is cancelled, that the
+  reserved loader is freed at once so an anonymous request for a third generation succeeds while
+  both named loads are held, and that the remaining named waiter is served from a second load of its
+  generation once the general loader frees up.
+- `TestIndexCancellationGivesBackItsPlace` cancels an index build at each step, and
+  `TestProjectionStopsWhenCancelled` cancels `projectForReader` inside a knot's lists and edges.
+- `TestAStoppedBuildKeepsItsPlace` cancels a build whose worker continues running, checking that
+  requests for another view and for the same view wait for room and that at most 8 workers build
+  named indexes at once.
+- `TestSourceAdmission` checks that redirects, missing pages, and hidden projects take no `git` slot
+  when all `git` slots are full.
 
 ### Reading the state directory
 
@@ -3427,16 +3653,18 @@ remaining path and raw query string verbatim into `Location`, without path clean
 trailing `?` when the query string is empty. Because `Location` always begins with `/` followed by a
 group name, it stays on the server's origin. When a client resolves dot segments in the redirected
 path, the resulting request lands on another path on the same server and is handled normally.
-Because the server reads only `export.json`, requests for a private project — under its group, an
-unknown group, a short alias, or a former name — return the same `404` response as requests for a
-nonexistent project. The server renders a single static `404` page at startup that includes no data
-from the request or the export (`web/server/render.go`; see
+Requests for a project the reader may not see — under its group, an unknown group, a short alias, or
+a former name — return the same `404` response as requests for a nonexistent project (see
+[Each reader's view](#each-readers-view)). The server renders a single static `404` page at startup
+that includes no data from the request or the export (`web/server/render.go`; see
 [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
-When loading a new generation, `valley-web` decodes `export.json`, validates its names, and builds
-the lookup index for groups, aliases, and former names. Each step checks the load context before
-processing each name, so a cancelled load stops at the next cancellation check and releases its
-generation and loader slot (`web/export/groups.go`, `web/export/export.go`, `web/server/plan.go`).
+When loading a new generation, `valley-web` decodes `export.json` and validates its names. Building
+a reader's index then copies the reader's projects and indexes their groups, aliases, and former
+names. Each step checks its context before processing each name, so a cancelled load stops at the
+next cancellation check and releases its generation and any loader slot it still holds, and a
+cancelled index build stops and releases its place (`web/export/groups.go`, `web/export/export.go`,
+`web/server/projection.go`, `web/server/plan.go`).
 
 Checked by `cue-vet`, which verifies that the eight rejected host declarations report the colliding
 name or missing group and exports two groups that each contain a project named `app`; by `web-unit`
@@ -3477,13 +3705,15 @@ the knots page, a knot page, and a directory page still succeed.
 
 ### A source request's git work
 
-At most 8 source requests (tree, file, log, or archive) may run `git` at once (`server.MaxGit`). To
-keep a slow `git` command or export load from holding a slot for the full 15-second request timeout,
-a source request may hold its `git` slot for at most 5 seconds from when it takes the slot
-(`web/server/server.go`). That 5-second limit covers both waiting for the generation's export to be
-read and running all of the request's `git` commands. When the 5 seconds expire, the server stops
-`git`, releases the slot, and answers `503`. When `git` finishes in time, the request releases its
-`git` slot before rendering HTML, so page rendering holds no `git` slot (`web/server/render.go`).
+At most 8 source requests (tree, file, log, or archive) may run `git` at once (`server.MaxGit`). A
+request takes a `git` slot only after its view is ready and its route is resolved through it (see
+[Requests, loads and indexes](#requests-loads-and-indexes)). Waiting for an export to be read or an
+index to be built therefore uses the request's 15-second deadline and holds no `git` slot. To keep a
+slow `git` command from holding a slot for the full request timeout, a source request may hold its
+`git` slot for at most 5 seconds from when it takes the slot (`web/server/server.go`). That 5-second
+limit covers all of the request's `git` commands. When the 5 seconds expire, the server stops `git`,
+releases the slot, and answers `503`. When `git` finishes in time, the request releases its `git`
+slot before rendering HTML, so page rendering holds no `git` slot (`web/server/render.go`).
 
 Rendering Markdown takes memory that grows with the file, not with the page: the renderer parses the
 whole document before it writes anything. The renderer caps what it builds (`web/markdown`). A
@@ -3576,8 +3806,9 @@ digits. Requiring the exact length of `source_tip` gives each page a single addr
 
 Checked by `web-server-unit`:
 
-- `TestSourceGitHasItsOwnBound`, `TestGitSlotBoundCoversTheLoad`, and `TestRenderingHoldsNoGitSlot`
-  test a `git` command that never finishes, a slow export read, and a slow page render.
+- `TestSourceGitHasItsOwnBound`, `TestAWaitForAViewHoldsNoGitSlot`, and
+  `TestRenderingHoldsNoGitSlot` test a `git` command that never finishes, a slow export read, and a
+  slow page render.
 - `TestResolveSharesOneBudget` resolves a path through two large directories.
 - `TestHistoryAcrossMerges` follows the "Older" links across a two-branch merge that spans multiple
   pages and checks that every commit appears once. `TestWideHistoryStaysReachable` follows every
@@ -3610,8 +3841,8 @@ ref name, `HEAD`, or an abbreviated ID answers `404`. Because the redirect reads
 `/<group>/<project>/source/`.
 
 Both archive routes use the same project lookup, reachability check, and authorization check as the
-other source routes (`web/server/source.go`). A project that the authorization excludes answers
-`404` on both routes, matching its tree page.
+other source routes (`web/server/source.go`). A project the reader may not see answers `404` on both
+routes, matching its tree page, and takes no `git` slot.
 
 The server writes the tar archive itself, in Go, from the commit's tree. It lists the tree with
 `git ls-tree -r -t -l -z`, and reads every file's content with one `git cat-file --batch` process.
@@ -3647,8 +3878,9 @@ body. The body uses the same response budget (`server.MaxBuffered`) and 8 MiB re
 never a whole file. It builds the archive while holding the request's `git` slot (within the
 5-second `git` timeout), releases the slot once the archive is built, and re-checks the stored
 authorization before writing the first byte. A compressed archive that exceeds 8 MiB is discarded
-and answers `500` with the "Page too large" page. Archive responses keep `Cache-Control: no-cache`
-because the authorization can change while a commit's archive URL stays the same.
+and answers `500` with the "Page too large" page. Like every response, an archive carries
+`Cache-Control: private, no-store`, because the authorization can change while a commit's archive
+URL stays the same.
 
 Checked by `web-server-unit`:
 
@@ -3684,9 +3916,10 @@ a blocker while it names an open knot, a missing knot, or a knot in a graph that
 (`knot/derive.go`). In `export.json`, the export removes every reference into an unpublished project
 from `waiting_on` (`web/export/project.go`). The knot's `state` is unchanged. When the export
 removes at least one reference from a knot's `waiting_on`, it sets `"waiting_on_hidden": true` on
-the knot. The knots page's "waits on" chip then includes "a knot in an unpublished project"
-alongside any public blockers (`web/server/knot.go`; see
-[Web server (`valley-web`)](./reference.md#web-server-valley-web)).
+the knot. The server applies the same rule for each reader, stripping references into projects
+outside that reader's view (see [Each reader's view](#each-readers-view)). The knots page's "waits
+on" chip then includes "a knot in an unpublished project" alongside any blockers the reader sees
+(`web/server/knot.go`; see [Web server (`valley-web`)](./reference.md#web-server-valley-web)).
 
 In `export.json`, `blocked_by` and `edges` still keep each hidden blocker's `"<project>:<id>"`
 reference. When a knot names a single hidden blocker, a reader of `export.json` can tell from
@@ -3974,7 +4207,7 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
 | The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
 | The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |
-| Named readers at the edge                    | `readaccess/` evaluates read grants for named principals. Named grants publish nothing, and `valley-web` serves all requests anonymously with no credentials or sessions.                                                                                                          |
+| Named readers at the edge                    | `readaccess/` evaluates read grants for named principals, and `valley-web` builds each view for one reader. Named grants publish nothing, and `valley-web` reads every request as `anyone`, with no credentials or sessions.                                                       |
 | Withdrawal without the instance and registry | The policy path withdraws a project without reading any content, but it signs nothing when it cannot read the instance repository or the identity registry. A project whose own policy cannot be read keeps the access the receiver's current authorization gives it.              |
 | Filesystem sandbox for the web publisher     | The unit's filesystem is read-only and named key paths are hidden, but the unit can read the host's other repositories, not only the declared ones.                                                                                                                                |
 | Clones from the edge                         | `valley-web` serves no git clone route.                                                                                                                                                                                                                                            |

@@ -1,47 +1,107 @@
 // Package server is the web UI's read side. It serves the active export
-// of a receiver's store to anonymous readers, as the store's authorization
+// of a receiver's store to each reader as the store's authorization
 // allows: the knots page, each knot, and a source browser over the main of
-// each project the authorization lets anyone read. The source browser also
-// serves a gzipped tar archive of each reachable commit.
+// each project the reader may read. The source browser also serves a
+// gzipped tar archive of each reachable commit.
 //
-// # Snapshots
+// # Readers and views
 //
-// Every request reads the store's authorization when it arrives, opens
-// the store's active generation once, with export.Store.Open, and renders
-// its whole response from that generation under that authorization. An
-// activation during the request changes nothing the request reads. The
-// server keeps a snapshot of the newest generation it has read under one
-// authorization: the export, decoded, and its index for anyone. A request
-// opens its generation only once the generation has a snapshot under the
-// authorization it read, and every such request serves from the one
-// snapshot. A new authorization indexes the cached export again, and
-// reads no export.json.
+// Every request is read as one principal, its reader. valley-web reads
+// every request as anyone. A request's view is built from the projects
+// its reader may see: those the authorization lets anyone read, and those
+// it lets the reader read (visible). Each of those projects is copied for
+// the reader, with what it says of other projects' knots taken out
+// (projectForReader), and the view's index is built from the copies. So
+// every route, every reference between projects, every alias and every
+// redirect a reader is served is built from that reader's projects alone.
 //
-// A request whose generation has no snapshot yet waits for a load. A load
-// runs in a worker of its own, which opens the active generation, holds
-// it while it reads and indexes the export, and then gives it back. At
-// most MaxLoads workers run at once. The requests that wait for a
-// generation share one load, so each export is read once. A waiting
-// request holds no generation, and stops waiting when its reader goes away
-// or its time runs out. A load stops once no request waits for it, and
-// the server keeps nothing of what it read.
+// # Requests, loads and indexes
+//
+// Every request reads the store's authorization when it arrives, and
+// renders its whole response under it. A request takes, in this order:
+//
+//  1. its reader and its authorization;
+//  2. the active generation's export, decoded, and the index of its view;
+//  3. its route, resolved through that index;
+//  4. a missing page, or a redirect, answered from the index alone;
+//  5. for a source route that reads a repository, a git slot, and then
+//     the generation its view was built from, opened;
+//  6. its whole response, rendered;
+//  7. the generation and the index given back;
+//  8. the authorization read again, and the response's headers written.
+//
+// It holds no generation while it waits for an index or a git slot. When
+// the active generation is another by the time it opens one, it gives
+// back its slot, its generation and its index, and takes its view again,
+// within its time. An activation during the request changes nothing the
+// request reads.
+//
+// The server keeps the newest generation's export it has read, decoded.
+// A request whose generation has no decoded export yet waits for a load.
+// A load runs in a worker of its own, which opens the active generation,
+// holds it while it reads and decodes the export, and then gives it back.
+// At most MaxLoads loads run at once. One of their workers runs a load
+// only while an anonymous request waits for it, so loads that only named
+// readers wait for take one worker at most. When the last anonymous
+// request leaves a load on that worker, the load moves to the other
+// worker if it is free. Otherwise the load is stopped and gives the worker
+// back at once, and its named readers' requests wait for a worker again.
+// The requests that wait for a generation share one read. A waiting
+// request holds no generation, and stops waiting when its reader goes
+// away or its time runs out. A load stops once no request waits for it,
+// and the server keeps nothing of what it read, so a later request may
+// read that generation again, as it may after a load stopped as above.
+//
+// Indexes are kept apart from decoded exports. An index is named by its
+// generation, the authorization's revision, and the sorted names and
+// identities of its view's projects, so readers who may see the same
+// projects share one index, and who they are never reaches it. An index
+// is built once its export is decoded, after the load has given back its
+// worker, in a worker of its own that stops once no request waits for it.
+//
+// Indexes take places of two pools. Anonymous requests have anonymousViews
+// places of their own, for the index of what anyone may see: the current
+// generation's, and the one that replaces or is replaced by it. Named
+// readers' requests share MaxViews places. A named reader who may see no
+// more than anyone serves from the same index as anonymous requests, but
+// takes a named place for it. So an index takes a place in the pool of
+// each kind of request that serves from it or waits for it to be built,
+// and gives back a pool's place once only the other pool's requests pin
+// it. An index no request pins keeps the place of the last request that
+// let it go. An index being built takes its places too. No named
+// reader's request ever keeps an anonymous place: when the named places
+// are full, named readers' requests wait for one, and an anonymous request
+// for the current generation never waits on a named one for its index.
+//
+// An index whose build was stopped keeps its place until its worker ends,
+// and no request joins it, so the workers that build indexes are never
+// more than the places. An index no request serves from may be dropped to
+// make room in its pool, and no other. A request that finds no room in
+// its pool waits for some, and answers 503 at its deadline. No worker
+// waits for an index while it holds a load worker, and no load waits for
+// an index.
 //
 // # Admission
 //
 // Every request's time is bounded from when it arrives: its waits, its
-// git commands and its rendering. A source request runs git, and at most
-// MaxGit run at once. A source request takes one of those slots before
-// it opens a generation, and waits for one only while fewer than
-// MaxWaiting wait. A request waits for a load only while fewer than
-// MaxLoadWaiting wait, and it is admitted among them before it opens
-// anything. A request the server cannot admit, or that runs out of time,
-// answers 503.
+// git commands and its rendering. A source request that reads a
+// repository runs git, and at most MaxGit run at once. A request takes one
+// of those slots once its route is resolved through its index, before it
+// opens a generation, and waits for one only while fewer than MaxWaiting
+// wait. So a project the reader may not see, a project that does not
+// exist, a redirect and a missing page take no slot. A request waits for
+// its view, a load or an index, only while fewer than MaxLoadWaiting wait.
+// A named reader's request waits only while fewer than MaxNamedWaiting
+// named readers' requests wait too. So named readers never take the last
+// MaxLoadWaiting less MaxNamedWaiting places: those are left to anonymous
+// requests, which wait there for a loader and for the anonymous places of
+// indexes, which named readers never take either. A request the server
+// cannot admit, or that runs out of time, answers 503.
 //
 // A source request holds its git slot for gitTimeout at most. That time
-// runs from when it takes the slot, and covers its wait for its
-// generation's export to be read and its git commands. It gives the slot
-// back before it renders its page. A source request that runs out of
-// that time answers 503.
+// runs from when it takes the slot, and covers its git commands. It gives
+// the slot back before it renders its page. A source request that runs
+// out of that time answers 503.
 //
 // A source request that shows Markdown renders it after its git commands,
 // and at most MaxRendering render at once. A request waits for a
@@ -52,12 +112,16 @@
 // one render allocates less than 128 MiB (package markdown), so the
 // renders at once allocate at most MaxRendering times that.
 //
+// Every bound but the indexes' places is shared by every reader: MaxGit,
+// MaxRendering, MaxBuffered, MaxLarge and MaxResponse, and the bounds on
+// an archive. More readers do not make any of them larger.
+//
 // # Responses
 //
 // A response is rendered whole before it is written. A request gives back
-// its git slot before it renders, and its generation before it writes, so
-// a reader that reads slowly holds neither. It keeps its response until
-// the response is written.
+// its git slot before it renders, and its generation and its index before
+// it writes, so a reader that reads slowly holds none of them. It keeps
+// its response until the response is written.
 //
 // A response's body is at most MaxResponse bytes. A page or archive that
 // exceeds MaxResponse stops there, and the request answers with a short
@@ -131,20 +195,22 @@
 // between. A store with no authorization, or one that cannot be read,
 // serves no project: every page says nothing is published.
 //
-// The index a request serves from holds only the projects the
-// authorization lets anyone read, under the identity the export gives
-// them (visible). Every route, every reference between projects, every
-// alias and every redirect is built from that index, so a project the
-// authorization does not name answers exactly as a project that does not
-// exist: every 404 is the same page, made once when the server starts.
+// A project the reader may not see answers exactly as a project that does
+// not exist: every 404 is the same page, made once when the server
+// starts, and a group none of whose projects the reader may see has no
+// alias.
 //
 // # Safety
 //
 // Every page is rendered on the server with html/template, so everything
 // read from the export or a repository is escaped. Each response carries
-// a strict Content-Security-Policy: default-src 'self', and one inline
-// stylesheet and one inline script admitted by their SHA-256 hashes. No
-// page serves a repository file as raw content: a file is shown as escaped
+// its route's strict Content-Security-Policy: default-src 'self', the one
+// inline stylesheet admitted by its SHA-256 hash, no connection from a
+// script, and, on the knots page alone, its one inline script admitted by
+// its hash. Every response, a redirect and an error too, is private and
+// never stored by a cache: Cache-Control: private, no-store, and Vary:
+// Cookie. No response carries an ETag, and none answers 304. No page
+// serves a repository file as raw content: a file is shown as escaped
 // text, and a binary file or one larger than MaxFile is not shown at all.
 // Raw repository files are served only inside a gzipped tar archive sent
 // as an attachment.
@@ -157,7 +223,9 @@
 // relative one resolved to a page of the source browser at the same
 // commit, and no img, script, form or style attribute. So rendered
 // Markdown is no active content, and the policy above admits it as it
-// is.
+// is. What a project's own files and knots say is published as written:
+// the filter takes out what a page says of other projects, never what
+// their authors wrote.
 package server
 
 import (
@@ -237,20 +305,39 @@ const (
 	// once.
 	MaxRendering = 2
 	// requestTimeout bounds a request from when it arrives: its wait for
-	// a git slot or for its generation's export to be read, its git
-	// commands and its rendering.
+	// its view, for a git slot or for a rendering slot, its git commands
+	// and its rendering.
 	requestTimeout = 15 * time.Second
 	// gitTimeout bounds how long a source request holds its git slot,
-	// from when it takes it: its wait for its generation's export to be
-	// read, and its git commands, all of them together. A source request
-	// still holding its slot past it answers 503.
+	// from when it takes it: its git commands, all of them together, and
+	// its wait for a rendering slot. A source request still holding its
+	// slot past it answers 503.
 	gitTimeout = 5 * time.Second
 	// MaxLoads is the most loads that run at once, each in a worker of
-	// its own that reads one generation's export.
+	// its own that reads one generation's export. One of them runs only
+	// while an anonymous request waits for it.
 	MaxLoads = 2
-	// MaxLoadWaiting is the most requests that wait for loads. A request
-	// that would wait while MaxLoadWaiting do answers 503 at once.
+	// MaxLoadWaiting is the most requests that wait for their views: for
+	// a load, or for an index to be built or to have room. A request that
+	// would wait while MaxLoadWaiting do answers 503 at once.
 	MaxLoadWaiting = 64
+	// MaxNamedWaiting is the most of the MaxLoadWaiting places that
+	// requests read as a named reader take. The rest, MaxLoadWaiting less
+	// MaxNamedWaiting, are left to anonymous requests. A named reader's
+	// request that would wait while MaxNamedWaiting named readers'
+	// requests do answers 503 at once.
+	MaxNamedWaiting = 48
+	// MaxViews is how many places the server keeps for the indexes named
+	// readers' requests serve from or wait for: those of views of more
+	// than anyone may see, and that of what anyone may see while a named
+	// reader who may see no more pins it. Those it keeps, those being
+	// built, and those requests serve from count together.
+	MaxViews = 8
+	// anonymousViews is how many places the server keeps for the indexes
+	// anonymous requests serve from or wait for: the current index of
+	// what anyone may see, and the one that replaces or is replaced by it.
+	// No named reader's request takes one.
+	anonymousViews = 2
 	// MaxResponse is the most bytes a response's body takes. A page
 	// that would take more stops rendering, and the request answers with
 	// a short page that says the page is too large.
@@ -292,17 +379,28 @@ type Server struct {
 	timeout     time.Duration
 	gitTime     time.Duration
 	maxResponse int
-	// slots holds a token for each source request running git, and
-	// waiting one for each source request waiting for a slot.
-	slots   chan struct{}
-	waiting chan struct{}
+	// gitMu guards the git slots. running counts the source requests
+	// that hold a slot, and queue holds a channel for each that waits for
+	// one, the longest waiting first. A slot given back while requests
+	// wait passes to the first of them: its channel is closed, and it
+	// leaves queue then, so queue holds only requests that have no slot.
+	gitMu   sync.Mutex
+	running int
+	queue   []chan struct{}
 	// renders holds a token for each source request rendering
 	// Markdown.
 	renders chan struct{}
-	// loaders holds a token for each load's worker, and loadWaiting one
-	// for each request waiting for a load.
-	loaders     chan struct{}
-	loadWaiting chan struct{}
+	// anonLoader holds a token for the load an anonymous request started
+	// on it, and loaders one for each other load. A request that is not
+	// anonymous starts a load only with a token of loaders, and a load
+	// that only named readers' requests still wait for gives anonLoader
+	// back (leave), so anonymous requests always have a worker. loadWaiting
+	// holds one for each request waiting for its view, and namedWaiting
+	// one more for each of those read as a named reader.
+	anonLoader   chan struct{}
+	loaders      chan struct{}
+	loadWaiting  chan struct{}
+	namedWaiting chan struct{}
 	// pieces guards the response budget. held counts the pieces of
 	// responses being rendered or written, of MaxBuffered bytes in pieces
 	// of pieceSize. large counts the pieces of those responses that are
@@ -312,24 +410,46 @@ type Server struct {
 	large  int
 
 	mu sync.Mutex
-	// cached is the newest generation's snapshot read so far, under the
-	// authorization a load read last.
-	cached *snapshot
+	// exported is the newest generation's export decoded so far.
+	exported *decoded
 	// auth is the last valid authorization readAuthorization read.
 	auth authState
 	// loads are the loads a request that waits may still join: those that
-	// have not ended, and that some request waits for.
+	// have not ended, that some request waits for, and that leave has not
+	// dropped.
 	loads map[*load]struct{}
+	// views are the indexes the server holds, by name: built, being
+	// built, or pinned by the requests that serve from them. stopping are
+	// the views whose builds were stopped and whose workers have not
+	// ended: no request takes them, and each keeps its place until its
+	// worker ends. freed is closed, and replaced, whenever a view may have
+	// left a place free. used counts the views requests have taken, and
+	// orders the views by when each was last taken.
+	views    map[viewKey]*view
+	stopping map[*view]struct{}
+	freed    chan struct{}
+	used     uint64
 
-	// The test hooks. opened, when set, is called with each generation a
-	// request opens, before the request reads anything from it. admitted
-	// is called when a source request takes a git slot, before it opens
-	// a generation. loading is called by a load's worker with the
-	// generation it opened, before it reads the generation's export.
-	// rendering is called with a page's name before the page renders.
-	opened    func(export.Generation)
+	// reader, when set, names the principal each request is read as.
+	// Nil reads every request as anyone, as valley-web does. Tests name
+	// readers with it.
+	reader func(*http.Request) string
+
+	// The test hooks. viewed is called once a request has its view,
+	// before it resolves its route. admitted is called when a source
+	// request takes a git slot, before it opens a generation. opened,
+	// when set, is called with each generation a request opens, before
+	// the request reads anything from it. loading is called by a load's
+	// worker with the generation it opened, before it reads the
+	// generation's export. indexing is called by a view's worker before
+	// it builds the view's index, with the worker's context and the
+	// view's name. rendering is called with a page's name before the page
+	// renders.
+	viewed    func()
 	admitted  func()
+	opened    func(export.Generation)
 	loading   func(export.Generation)
+	indexing  func(ctx context.Context, key viewKey)
 	rendering func(name string)
 	// checked is called once a request has rendered its response, before
 	// it reads the authorization again. starting is called once that read
@@ -343,10 +463,11 @@ type Server struct {
 func New(c Config) *Server {
 	s := &Server{store: c.Store, now: c.Now, log: c.Log,
 		timeout: requestTimeout, gitTime: gitTimeout, maxResponse: MaxResponse,
-		slots: make(chan struct{}, MaxGit), waiting: make(chan struct{}, MaxWaiting),
-		renders: make(chan struct{}, MaxRendering),
-		loaders: make(chan struct{}, MaxLoads), loadWaiting: make(chan struct{}, MaxLoadWaiting),
-		loads: map[*load]struct{}{}}
+		renders:    make(chan struct{}, MaxRendering),
+		anonLoader: make(chan struct{}, 1), loaders: make(chan struct{}, MaxLoads-1),
+		loadWaiting: make(chan struct{}, MaxLoadWaiting), namedWaiting: make(chan struct{}, MaxNamedWaiting),
+		loads: map[*load]struct{}{}, views: map[viewKey]*view{}, stopping: map[*view]struct{}{},
+		freed: make(chan struct{})}
 	if s.now == nil {
 		s.now = time.Now
 	}
@@ -356,16 +477,13 @@ func New(c Config) *Server {
 	return s
 }
 
-// snapshot is one generation's export, decoded, and its index under one
-// authorization, for anyone. A generation's export.json never changes once
-// it is active, and its sequence names it, and auth is the stored
-// authorization's signed note the index was built under, so a snapshot
-// serves every request that opens its generation under that authorization.
-type snapshot struct {
-	seq  int64
-	auth authState
-	e    *export.Export
-	idx  *index
+// decoded is one generation's export, decoded. A generation's export.json
+// never changes once it is active, and its sequence names it, so one
+// decoded export serves every request that opens its generation, under
+// any authorization and for any reader.
+type decoded struct {
+	seq int64
+	e   *export.Export
 }
 
 // authState is the stored authorization as one read found it: the signed
@@ -412,38 +530,119 @@ func (s *Server) readAuthorization() authState {
 // for it, and runs in a worker of its own, so a request can stop waiting
 // while the load goes on for the others.
 type load struct {
-	// wants counts the requests that wait for the load. cancel is set once
-	// the load has started, and stops its worker. The worker sets opened
-	// and seq once it has opened a generation. All are guarded by the
-	// server's mu.
+	// wants counts the requests that wait for the load, and anon those of
+	// them that are anonymous. cancel is set once the load has started,
+	// and stops its worker. token is the slot the load holds, anonLoader
+	// or loaders, from when it starts until its worker ends or leave gives
+	// the slot back. The worker sets opened and seq once it has opened a
+	// generation. All are guarded by the server's mu.
 	wants  int
+	anon   int
 	cancel context.CancelFunc
+	token  chan struct{}
 	opened bool
 	seq    int64
-	auth   authState
 	// started is closed once the load starts, and done once its worker
-	// ends. err is the worker's error, set before done is closed.
+	// ends. err is the worker's error, set before done is closed. dropped
+	// is closed when leave stops the load to give back anonLoader while
+	// named readers' requests still wait for it: they wait for another.
 	started chan struct{}
 	done    chan struct{}
+	dropped chan struct{}
 	err     error
 }
 
-// request is one request, the generation it serves from, and the
-// response it renders.
+// viewKey names one index: the generation whose export it is built from,
+// the authorization's revision it is built under, as the signed note's
+// bytes, and its view's projects, each name and identity on a line of its
+// own, in the export's order, which is the names' order. Who the reader is
+// is no part of it.
+type viewKey struct {
+	seq      int64
+	auth     string
+	projects string
+}
+
+// pool is the places views take for one kind of request: anonymous
+// requests', or named readers'.
+type pool int
+
+const (
+	anonymousPool pool = iota
+	namedPool
+	pools
+)
+
+// poolOf is the pool whose places the requests read as reader take.
+func poolOf(reader string) pool {
+	if reader == export.Anyone {
+		return anonymousPool
+	}
+	return namedPool
+}
+
+// size is how many places p holds: anonymousViews for anonymous requests,
+// and MaxViews for named readers'.
+func (p pool) size() int {
+	if p == anonymousPool {
+		return anonymousViews
+	}
+	return MaxViews
+}
+
+// view is one index the server holds, the requests that hold it, and the
+// places it takes.
+type view struct {
+	key viewKey
+	// e is the decoded export the index is built from, and shown its
+	// view's projects.
+	e     *export.Export
+	shown map[string]bool
+	// pins counts the requests that serve from the view or wait for it to
+	// be built, by the pool of each, and holds is set for each pool whose
+	// place the view takes. A view that requests pin takes a place in the
+	// pool of each kind of request that pins it, and in no other. A view
+	// no request pins keeps the one place of the last request that let it
+	// go. used is when a request last took it, and cancel stops the worker
+	// that builds it. All are guarded by the server's mu.
+	pins   [pools]int
+	holds  [pools]bool
+	used   uint64
+	cancel context.CancelFunc
+	// done is closed once the worker ends, and idx is the index then, or
+	// err why there is none.
+	done chan struct{}
+	idx  *index
+	err  error
+}
+
+// pinned reports whether a request pins v. It is called with the
+// server's mu held.
+func (v *view) pinned() bool { return v.pins[anonymousPool]+v.pins[namedPool] > 0 }
+
+// request is one request, the view it serves from, and the response it
+// renders.
 type request struct {
 	s *Server
 	w http.ResponseWriter
 	r *http.Request
+	// parts are the request path's segments, each unescaped, and ok is
+	// false for a path whose segments do not unescape.
+	parts []string
+	ok    bool
+	// reader is the principal the request is read as.
+	reader string
 	// ctx is the context the request waits and renders under. It ends
 	// at the request's deadline, or when its reader goes away. git is
-	// the context a source request holds its git slot under: it waits
-	// for its generation's export and runs git under it. git ends
-	// gitTime after the request takes its slot, or with ctx. slot gives
-	// the slot back.
+	// the context a source request holds its git slot under: it runs git
+	// under it. git ends gitTime after the request takes its slot, or
+	// with ctx. slot gives the slot back.
 	ctx  context.Context
 	git  context.Context
 	slot func()
-	g    export.Generation
+	// view is the view the request serves from, pinned until it renders,
+	// and e and idx are its export and index.
+	view *view
 	e    *export.Export
 	idx  *index
 	now  time.Time
@@ -453,10 +652,10 @@ type request struct {
 	auth authState
 
 	// The response: a status and a page, or a redirect. It is written
-	// once the request has given back its generation and git slot, and
-	// the page's pieces are given back to the budget once it is written.
-	// disposition is the Content-Disposition of an archive, and "" for
-	// any other response.
+	// once the request has given back its generation, its view and its
+	// git slot, and the page's pieces are given back to the budget once
+	// it is written. disposition is the Content-Disposition of an
+	// archive, and "" for any other response.
 	status      int
 	ctype       string
 	disposition string
@@ -474,13 +673,20 @@ type request struct {
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
 	defer cancel()
+	parts, ok := segments(r.URL.EscapedPath())
+	policy := policyFor(parts, ok)
+	reader := export.Anyone
+	if s.reader != nil {
+		reader = s.reader(r)
+	}
 	for render := 1; ; render++ {
 		h := w.Header()
 		for k := range h {
 			delete(h, k)
 		}
-		setHeaders(h)
-		q := &request{s: s, w: w, r: r, ctx: ctx, now: s.now(), auth: s.readAuthorization()}
+		setHeaders(h, policy)
+		q := &request{s: s, w: w, r: r, parts: parts, ok: ok, reader: reader, ctx: ctx, now: s.now(),
+			auth: s.readAuthorization()}
 		q.serve()
 		if s.checked != nil {
 			s.checked()
@@ -525,10 +731,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // authorization keeps changing under it.
 const maxRenders = 3
 
-// serve renders the request's response. A source request is admitted
-// first, and holds its git slot until it renders, or until serve returns
-// when it renders nothing. Every request holds its generation until serve
-// returns.
+// serve renders the request's response, in the order the package comment
+// gives. It takes the request's view, resolves the route through it, and
+// answers from the index alone where it can. A route that reads a
+// repository is admitted to a git slot, holds it until it renders, and
+// holds its generation until it has rendered. The request gives back its
+// view once it has rendered, before serve returns.
 func (q *request) serve() {
 	if q.r.Method != http.MethodGet && q.r.Method != http.MethodHead {
 		q.w.Header().Set("Allow", "GET, HEAD")
@@ -546,57 +754,105 @@ func (q *request) serve() {
 		})
 		return
 	}
-	parts, ok := segments(q.r.URL.EscapedPath())
-	wait := q.ctx
-	if ok && runsGit(parts) {
-		done, admitted := q.s.admit(q.ctx)
-		if !admitted {
+	defer q.release()
+	for {
+		v, err := q.s.viewFor(q.ctx, q.auth, q.reader)
+		switch {
+		case errors.Is(err, export.ErrNoExport):
+			q.nothingPublished()
+			return
+		case errors.Is(err, errLoadsFull):
 			q.busy()
 			return
+		case err != nil:
+			q.fail(err)
+			return
 		}
-		q.slot = done
-		defer q.giveSlot()
-		var cancel context.CancelFunc
-		q.git, cancel = context.WithTimeout(q.ctx, q.s.gitTime)
-		defer cancel()
-		wait = q.git
-		if q.s.admitted != nil {
-			q.s.admitted()
+		q.view, q.e, q.idx = v, v.e, v.idx
+		if q.s.viewed != nil {
+			q.s.viewed()
 		}
+		op := q.route()
+		if op == nil || !q.runGit(op) {
+			return
+		}
+		q.release()
 	}
-	g, snap, release, err := q.s.open(wait, q.auth)
-	defer release()
+}
+
+// nothingPublished answers a request when the store has no active
+// generation.
+func (q *request) nothingPublished() {
+	q.page(http.StatusServiceUnavailable, "error", "Nothing published", errorPage{
+		Heading: "Nothing published yet", Text: "No export has been activated on this server.",
+	})
+}
+
+// release gives back the request's view, when it holds one.
+func (q *request) release() {
+	if q.view != nil {
+		q.s.unpin(q.view, poolOf(q.reader))
+		q.view, q.e, q.idx = nil, nil, nil
+	}
+}
+
+// gitOp is the work of a source route in a repository: the project whose
+// repository it reads, and what it does there, under the request's git
+// context, once the request holds a git slot and its generation.
+type gitOp struct {
+	project *export.Project
+	run     func(ctx context.Context, repo string) error
+}
+
+// runGit admits the request to a git slot, opens the active generation,
+// and runs op in the generation's repository of op's project. again is set
+// when the active generation is no longer the one the request's view was
+// built from: the request has then given back its slot and the generation,
+// and rendered nothing, and takes its view again.
+func (q *request) runGit(op *gitOp) (again bool) {
+	done, admitted := q.s.admit(q.ctx)
+	if !admitted {
+		q.busy()
+		return false
+	}
+	q.slot = done
+	defer q.giveSlot()
+	var cancel context.CancelFunc
+	q.git, cancel = context.WithTimeout(q.ctx, q.s.gitTime)
+	defer cancel()
+	defer func() {
+		if again {
+			q.git = nil
+		}
+	}()
+	if q.s.admitted != nil {
+		q.s.admitted()
+	}
+	g, release, err := q.s.store.Open()
 	switch {
 	case errors.Is(err, export.ErrNoExport):
-		q.page(http.StatusServiceUnavailable, "error", "Nothing published", errorPage{
-			Heading: "Nothing published yet", Text: "No export has been activated on this server.",
-		})
-		return
-	case errors.Is(err, errLoadsFull), errors.Is(err, errAuthorizationChanged):
-		q.busy()
-		return
+		q.nothingPublished()
+		return false
 	case err != nil:
 		q.fail(err)
-		return
+		return false
+	}
+	defer release()
+	if g.Sequence != q.view.key.seq {
+		return true
 	}
 	if q.s.opened != nil {
 		q.s.opened(g)
 	}
-	q.g, q.e, q.idx = g, snap.e, snap.idx
-	q.route(parts, ok)
-}
-
-// runsGit reports whether a path is a source route that reads a
-// repository: a tree, a file, a log or an archive of something that may be
-// a group's project. The redirect to the archive of main's tip reads none,
-// as the redirect to the tree at main's tip reads none. runsGit reads the
-// path's shape alone, before the export is read, so a path through a
-// group's alias that has the shape takes a git slot too, and gives it back
-// when it redirects.
-func runsGit(parts []string) bool {
-	return len(parts) >= 4 && export.ValidName(parts[0]) && export.ValidName(parts[1]) && parts[2] == "source" &&
-		(parts[3] == "tree" || parts[3] == "blob" || parts[3] == "log" ||
-			parts[3] == "archive" && !(len(parts) == 5 && parts[4] == tipArchive))
+	repo, ok := g.Repo(op.project.Name)
+	if !ok {
+		q.notFound()
+		return false
+	}
+	if err := op.run(q.git, repo); err != nil {
+		q.fail(err)
+	}
+	return false
 }
 
 // giveSlot gives back the request's git slot, when it holds one.
@@ -609,146 +865,411 @@ func (q *request) giveSlot() {
 
 // admit takes a git slot for a source request. When every slot is taken,
 // it waits for one until ctx is done, unless MaxWaiting requests wait
-// already. done gives the slot back.
+// already. A request stops counting as waiting when it is given its slot,
+// not when it next runs, so a request that has its slot never takes a
+// waiting place from another. done gives the slot back.
 func (s *Server) admit(ctx context.Context) (done func(), ok bool) {
-	give := func() { <-s.slots }
-	select {
-	case s.slots <- struct{}{}:
-		return give, true
-	default:
+	s.gitMu.Lock()
+	if s.running < MaxGit {
+		s.running++
+		s.gitMu.Unlock()
+		return s.giveGit, true
 	}
-	select {
-	case s.waiting <- struct{}{}:
-	default:
+	if len(s.queue) >= MaxWaiting {
+		s.gitMu.Unlock()
 		return nil, false
 	}
-	defer func() { <-s.waiting }()
+	given := make(chan struct{})
+	s.queue = append(s.queue, given)
+	s.gitMu.Unlock()
 	select {
-	case s.slots <- struct{}{}:
-		return give, true
+	case <-given:
+		return s.giveGit, true
 	case <-ctx.Done():
-		return nil, false
 	}
+	s.gitMu.Lock()
+	for i, c := range s.queue {
+		if c == given {
+			s.queue = append(s.queue[:i], s.queue[i+1:]...)
+			s.gitMu.Unlock()
+			return nil, false
+		}
+	}
+	s.gitMu.Unlock()
+	// The slot was given as ctx ended: pass it on.
+	s.giveGit()
+	return nil, false
 }
 
-// errLoadsFull is open's error for a request that would wait for a load
-// while MaxLoadWaiting requests wait already.
-var errLoadsFull = errors.New("too many requests wait for exports to be read")
+// giveGit gives back a git slot: to the request that has waited longest
+// for one, or to no one when no request waits.
+func (s *Server) giveGit() {
+	s.gitMu.Lock()
+	defer s.gitMu.Unlock()
+	if len(s.queue) == 0 {
+		s.running--
+		return
+	}
+	close(s.queue[0])
+	s.queue = s.queue[1:]
+}
 
-// errAuthorizationChanged is open's error for a request whose
-// authorization was replaced while it waited. ServeHTTP renders it again
-// under the new one.
-var errAuthorizationChanged = errors.New("the stored authorization changed")
+// errLoadsFull is viewFor's error for a request that would wait for its
+// view while MaxLoadWaiting requests wait already, or, for a named
+// reader's request, while MaxNamedWaiting named readers' requests do.
+var errLoadsFull = errors.New("too many requests wait for their views")
 
-// open opens the active generation once its snapshot under auth is
-// cached, and returns both. release gives the generation back.
+// viewFor is the view of the active generation that a request under auth,
+// read as reader, serves from, pinned for the request in reader's pool:
+// unpin gives it back. The view holds the generation's export, decoded,
+// and the index of the projects the reader may see (visible). A named
+// reader who may see no more than anyone has the view of what anyone may
+// see, and pins it in the named readers' pool.
 //
-// A request whose active generation has no snapshot waits for a load,
-// and opens nothing until the load ends. It is admitted among the
-// MaxLoadWaiting requests that may wait before it waits, and it keeps its
-// place until open returns. Once the load ends it looks again, since
-// another generation may have been activated meanwhile.
-func (s *Server) open(ctx context.Context, auth authState) (g export.Generation, snap *snapshot, release func(), err error) {
-	release = func() {}
+// A request whose active generation has no decoded export waits for a
+// load, and one whose view has no index waits for it to be built, or for
+// room for it. It holds no generation while it waits. It is admitted among
+// the MaxLoadWaiting requests that may wait before it first waits, and
+// keeps its place until viewFor returns. A request read as a named reader
+// is admitted only while fewer than MaxNamedWaiting such requests wait, so
+// anonymous requests always have places of their own. Once a load ends it
+// looks again, since another generation may have been activated meanwhile.
+func (s *Server) viewFor(ctx context.Context, auth authState, reader string) (*view, error) {
+	anyone := reader == export.Anyone
+	p := poolOf(reader)
 	waiting := false
 	defer func() {
 		if waiting {
 			<-s.loadWaiting
+			if !anyone {
+				<-s.namedWaiting
+			}
 		}
 	}()
+	wait := func() error {
+		if waiting {
+			return nil
+		}
+		if !anyone {
+			select {
+			case s.namedWaiting <- struct{}{}:
+			default:
+				return errLoadsFull
+			}
+		}
+		select {
+		case s.loadWaiting <- struct{}{}:
+			waiting = true
+			return nil
+		default:
+			if !anyone {
+				<-s.namedWaiting
+			}
+			return errLoadsFull
+		}
+	}
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		seq, err := s.store.Active()
 		if err != nil {
-			return g, nil, release, err
+			return nil, err
 		}
 		s.mu.Lock()
-		snap = s.cached
+		d := s.exported
 		s.mu.Unlock()
-		if snap != nil && snap.seq == seq && snap.auth.same(auth) {
-			g, release, err = s.store.Open()
-			if err != nil || g.Sequence == seq {
-				return g, snap, release, err
+		if d == nil || d.seq < seq {
+			if err := wait(); err != nil {
+				return nil, err
 			}
-			release() // active moved on since it was read
-			release = func() {}
+			if err := s.await(ctx, seq, anyone); err != nil {
+				return nil, err
+			}
 			continue
 		}
-		if !waiting {
+		if d.seq > seq {
+			continue // the active generation moved on since it was read
+		}
+		shown := visible(d.e, auth.a, reader)
+		key := viewKey{seq: seq, auth: string(auth.signed), projects: projectsKey(d.e, shown)}
+		v, freed := s.pin(key, p, d.e, shown)
+		if v == nil {
+			if err := wait(); err != nil {
+				return nil, err
+			}
 			select {
-			case s.loadWaiting <- struct{}{}:
-				waiting = true
-			default:
-				return g, nil, release, errLoadsFull
+			case <-freed:
+				continue
+			case <-ctx.Done():
+				return nil, fmt.Errorf("waiting for room to index generation %d: %w", seq, ctx.Err())
 			}
 		}
-		if err := s.await(ctx, seq, auth); err != nil {
-			return g, nil, release, err
+		select {
+		case <-v.done:
+		default:
+			if err := wait(); err != nil {
+				s.unpin(v, p)
+				return nil, err
+			}
+			select {
+			case <-v.done:
+			case <-ctx.Done():
+				s.unpin(v, p)
+				return nil, fmt.Errorf("waiting for generation %d's index: %w", seq, ctx.Err())
+			}
 		}
-		if !s.readAuthorization().same(auth) {
-			return g, nil, release, errAuthorizationChanged
+		if v.err != nil {
+			s.unpin(v, p)
+			return nil, v.err
 		}
+		return v, nil
 	}
 }
 
-// await waits until a load of generation seq under auth, or of a newer
-// generation, ends, or until ctx is done. It joins a load that will read
-// one of those, since a worker reads whatever generation is active and
-// whatever authorization is stored once it starts, and otherwise makes
-// one.
-//
-// A load starts only once one of its requests takes a loader slot for
-// it. While every slot is taken, each of its requests waits for one, and
-// the first to take one starts the load, so no load is queued that no
-// request waits for. A request that stops waiting leaves the load, and
-// the last to leave stops it.
-func (s *Server) await(ctx context.Context, seq int64, auth authState) error {
+// projectsKey is the part of a view's name that names its projects: the
+// name and identity of each project of e that shown names, in e's order.
+func projectsKey(e *export.Export, shown map[string]bool) string {
+	var b strings.Builder
+	for _, p := range e.Projects {
+		if shown[p.Name] {
+			b.WriteString(p.Name + " " + p.Identity + "\n")
+		}
+	}
+	return b.String()
+}
+
+// pin is the view called key, pinned for one request of pool p: the view
+// the server holds, built or being built, or a new one, which a worker of
+// its own starts to build. The view takes a place of p for the request,
+// unless it holds one already. A view no request pinned gives back the
+// place it kept for another pool. A view whose build was stopped keeps its
+// place until its worker ends, and is never pinned again. When every
+// place of p is taken, room drops the view that keeps one with no request
+// pinning it and was taken longest ago. When every place of p is pinned or
+// stopping, pin is nil, and freed is closed once a place may be free.
+func (s *Server) pin(key viewKey, p pool, e *export.Export, shown map[string]bool) (v *view, freed chan struct{}) {
 	s.mu.Lock()
-	if c := s.cached; c != nil && (c.seq > seq || c.seq == seq && c.auth.same(auth)) {
-		s.mu.Unlock()
-		return nil
+	defer s.mu.Unlock()
+	s.used++
+	v = s.views[key]
+	if (v == nil || !v.holds[p]) && !s.room(p) {
+		return nil, s.freed
 	}
-	var l *load
-	for m := range s.loads {
-		if !m.opened || m.seq > seq || m.seq == seq && m.auth.same(auth) {
-			l = m
-			break
+	if v == nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		v = &view{key: key, e: e, shown: shown, cancel: cancel, done: make(chan struct{})}
+		s.views[key] = v
+		go s.build(ctx, v)
+	} else if !v.pinned() && !v.holds[p] {
+		v.holds = [pools]bool{}
+		s.wake()
+	}
+	v.holds[p] = true
+	v.pins[p]++
+	v.used = s.used
+	return v, nil
+}
+
+// room is whether a view may take one more place of p. When every place of
+// p is taken, it drops the view no request pins that keeps one and was
+// taken longest ago, and is false when there is none: every place of p is
+// held by a view requests of p pin, or by one whose build was stopped. It
+// is called with mu held.
+func (s *Server) room(p pool) bool {
+	taken := 0
+	for o := range s.stopping {
+		if o.holds[p] {
+			taken++
 		}
 	}
-	if l == nil {
-		l = &load{started: make(chan struct{}), done: make(chan struct{})}
-		s.loads[l] = struct{}{}
+	var oldest *view
+	for _, o := range s.views {
+		if !o.holds[p] {
+			continue
+		}
+		taken++
+		if !o.pinned() && (oldest == nil || o.used < oldest.used) {
+			oldest = o
+		}
 	}
-	l.wants++
+	if taken < p.size() {
+		return true
+	}
+	if oldest == nil {
+		return false
+	}
+	delete(s.views, oldest.key)
+	return true
+}
+
+// unpin is a request of pool p that no longer holds v: it has rendered,
+// or stopped waiting. A view that requests of p no longer pin while
+// requests of the other pool do gives back its place of p. A view no
+// request pins keeps its place of p, and is stopped when it is still being
+// built: no request takes it again, and it keeps its place until its
+// worker ends (build). A built view no request pins is dropped when its
+// generation is older than the newest decoded export or the authorization
+// it was built under is no longer the newest read. Its place may then be
+// taken.
+func (s *Server) unpin(v *view, p pool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v.pins[p]--; v.pins[p] > 0 {
+		return
+	}
+	if v.pinned() {
+		v.holds[p] = false
+		s.wake()
+		return
+	}
+	building := v.idx == nil && v.err == nil
+	if building || s.stale(v) {
+		if s.views[v.key] == v {
+			delete(s.views, v.key)
+		}
+		if building {
+			s.stopping[v] = struct{}{}
+		}
+		v.cancel()
+	}
+	s.wake()
+}
+
+// stale reports whether a view serves no request to come: its generation
+// is older than the newest decoded export, or the authorization it was
+// built under is not the newest read. It is called with mu held.
+func (s *Server) stale(v *view) bool {
+	return s.exported != nil && v.key.seq < s.exported.seq || v.key.auth != string(s.auth.signed)
+}
+
+// wake tells the requests that wait for a place that one may be free. It
+// is called with mu held.
+func (s *Server) wake() {
+	close(s.freed)
+	s.freed = make(chan struct{})
+}
+
+// build is v's worker. It builds v's index from v's decoded export, which
+// a load has read already: it holds no loader slot, and waits for none.
+// A view whose build fails, or is stopped, is dropped. A view whose build
+// unpin stopped gives back its place only here, as its worker ends.
+func (s *Server) build(ctx context.Context, v *view) {
+	if s.indexing != nil {
+		s.indexing(ctx, v.key)
+	}
+	idx, err := newIndex(ctx, v.e, v.shown)
+	if err == nil {
+		err = ctx.Err()
+	}
+	s.mu.Lock()
+	if err != nil {
+		v.err = err
+		if s.views[v.key] == v {
+			delete(s.views, v.key)
+		}
+		s.wake()
+	} else {
+		v.idx = idx
+	}
+	if _, stopped := s.stopping[v]; stopped {
+		delete(s.stopping, v)
+		s.wake()
+	}
 	s.mu.Unlock()
-	select {
-	case <-l.started:
-	case s.loaders <- struct{}{}:
-		if !s.start(l) {
-			<-s.loaders
+	v.cancel()
+	close(v.done)
+}
+
+// await waits until a load of generation seq, or of a newer generation,
+// ends, or until ctx is done. It joins a load that will read one of those,
+// since a worker reads whatever generation is active once it starts, and
+// otherwise makes one.
+//
+// A load starts only once one of its requests takes a loader slot for it.
+// While every slot it may take is taken, each of its requests waits for
+// one, and the first to take one starts the load, so no load is queued
+// that no request waits for. An anonymous request may take anonLoader or
+// a slot of loaders, and any other request a slot of loaders alone. A
+// request that stops waiting leaves the load, and the last to leave stops
+// it. When leave drops a load to give back anonLoader, the requests still
+// waiting for it wait for another load.
+func (s *Server) await(ctx context.Context, seq int64, anonymous bool) error {
+	for {
+		s.mu.Lock()
+		if d := s.exported; d != nil && d.seq >= seq {
+			s.mu.Unlock()
+			return nil
 		}
-	case <-ctx.Done():
-		s.leave(l)
-		return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
-	}
-	select {
-	case <-l.done:
-		return l.err
-	case <-ctx.Done():
-		s.leave(l)
-		return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
+		var l *load
+		for m := range s.loads {
+			if !m.opened || m.seq >= seq {
+				l = m
+				break
+			}
+		}
+		if l == nil {
+			l = &load{started: make(chan struct{}), done: make(chan struct{}), dropped: make(chan struct{})}
+			s.loads[l] = struct{}{}
+		}
+		l.wants++
+		if anonymous {
+			l.anon++
+		}
+		s.mu.Unlock()
+		var anon chan struct{}
+		if anonymous {
+			anon = s.anonLoader
+			select {
+			case <-l.started:
+			case anon <- struct{}{}:
+				if !s.start(l, anon) {
+					<-anon
+				}
+			default:
+			}
+		}
+		select {
+		case <-l.started:
+		case anon <- struct{}{}:
+			if !s.start(l, anon) {
+				<-anon
+			}
+		case s.loaders <- struct{}{}:
+			if !s.start(l, s.loaders) {
+				<-s.loaders
+			}
+		case <-ctx.Done():
+			s.leave(l, anonymous)
+			return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
+		}
+		select {
+		case <-l.done:
+			select {
+			case <-l.dropped:
+				continue
+			default:
+				return l.err
+			}
+		case <-l.dropped:
+			continue
+		case <-ctx.Done():
+			s.leave(l, anonymous)
+			return fmt.Errorf("waiting for generation %d's export to be read: %w", seq, ctx.Err())
+		}
 	}
 }
 
-// start starts l's worker, for the request that took a loader slot for
-// it. It is false when another request started it already.
-func (s *Server) start(l *load) bool {
+// start starts l's worker, for the request that took token's slot for it.
+// It is false when another request started it already.
+func (s *Server) start(l *load, token chan struct{}) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if l.cancel != nil {
 		return false
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	l.cancel = cancel
+	l.cancel, l.token = cancel, token
 	close(l.started)
 	go s.run(ctx, l)
 	return true
@@ -756,52 +1277,85 @@ func (s *Server) start(l *load) bool {
 
 // leave is a request that stopped waiting for l. Once no request waits for
 // it, no request may join it, and a load that started is stopped.
-func (s *Server) leave(l *load) {
+//
+// anonLoader runs a load only while an anonymous request waits for it.
+// When the last anonymous request leaves a load that runs on anonLoader
+// while others wait for it, the load takes a free slot of loaders and
+// runs on, so the requests that wait lose nothing. With no slot of
+// loaders free, it is dropped: it is stopped, no request may join it, and
+// those that wait for it wait for another load, within their own time.
+// Either way it gives back anonLoader at once.
+func (s *Server) leave(l *load, anonymous bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if l.wants--; l.wants > 0 {
+	l.wants--
+	if anonymous {
+		l.anon--
+	}
+	if l.wants == 0 {
+		delete(s.loads, l)
+		if l.cancel != nil {
+			l.cancel()
+		}
 		return
 	}
-	delete(s.loads, l)
-	if l.cancel != nil {
-		l.cancel()
+	if l.anon > 0 || l.token != s.anonLoader {
+		return
 	}
+	select {
+	case s.loaders <- struct{}{}:
+		l.token = s.loaders
+	default:
+		delete(s.loads, l)
+		l.cancel()
+		l.token = nil
+		close(l.dropped)
+	}
+	<-s.anonLoader
 }
 
-// run is l's worker. It caches the snapshot it reads when the snapshot's
-// generation is newer than the cached one's, or the same generation under
-// another authorization, so a load of an older generation never displaces
-// a newer. A load that was stopped caches nothing: leave stops it under
-// mu, and run looks under mu. The worker gives back its generation before
-// it ends, and then its loader slot.
+// run is l's worker. It keeps the export it decodes when its generation is
+// newer than the kept one's, so a load of an older generation never
+// displaces a newer, and drops the views of older generations that no
+// request pins, waking the requests that wait for room. A load that was
+// stopped keeps nothing: leave stops it under mu, and run looks under mu.
+// The worker gives back its generation before it ends, and then the
+// loader slot its load holds, if leave has not given it back already. It
+// builds no index.
 func (s *Server) run(ctx context.Context, l *load) {
-	snap, err := s.read(ctx, l)
+	d, err := s.read(ctx, l)
 	s.mu.Lock()
 	delete(s.loads, l)
-	if snap != nil && ctx.Err() == nil && (s.cached == nil || s.cached.seq < snap.seq ||
-		s.cached.seq == snap.seq && !s.cached.auth.same(snap.auth)) {
-		s.cached = snap
+	if d != nil && ctx.Err() == nil && (s.exported == nil || s.exported.seq < d.seq) {
+		s.exported = d
+		for key, v := range s.views {
+			if !v.pinned() && s.stale(v) {
+				delete(s.views, key)
+			}
+		}
+		s.wake()
 	}
 	l.err = err
+	token := l.token
+	l.token = nil
 	s.mu.Unlock()
 	l.cancel()
 	close(l.done)
-	<-s.loaders
+	if token != nil {
+		<-token
+	}
 }
 
-// read opens the active generation for l, reads the stored
-// authorization, and holds the generation while it reads and indexes the
-// generation's export under that authorization. It reads nothing when the
-// generation is cached already under that authorization or another load
-// reads the same, and its waiting requests look again. A generation cached
-// under another authorization is not read again: its export is indexed
-// anew. It stops reading once ctx is done.
-func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) {
+// read opens the active generation for l, and holds the generation while
+// it reads and decodes the generation's export. It reads nothing when the
+// generation's export is decoded already or another load reads the same,
+// and its waiting requests look again. It stops reading once ctx is done.
+func (s *Server) read(ctx context.Context, l *load) (d *decoded, err error) {
 	// Cancellation can close the file during any operation. Report the
 	// context error instead of the resulting descriptor error.
 	defer func() {
 		if stopped := ctx.Err(); stopped != nil {
-			snap, err = nil, stopped
+			d, err = nil, stopped
 		}
 	}()
 	if err := ctx.Err(); err != nil {
@@ -812,29 +1366,17 @@ func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) 
 		return nil, err
 	}
 	defer release()
-	auth := s.readAuthorization()
-	if auth.a == nil {
-		return nil, nil
-	}
 	s.mu.Lock()
-	cached := s.cached
-	read := cached == nil || cached.seq < g.Sequence || cached.seq == g.Sequence && !cached.auth.same(auth)
+	read := s.exported == nil || s.exported.seq < g.Sequence
 	for m := range s.loads {
-		if m != l && m.opened && m.seq == g.Sequence && m.auth.same(auth) {
+		if m != l && m.opened && m.seq == g.Sequence {
 			read = false
 		}
 	}
-	l.opened, l.seq, l.auth = true, g.Sequence, auth
+	l.opened, l.seq = true, g.Sequence
 	s.mu.Unlock()
 	if !read {
 		return nil, nil
-	}
-	if cached != nil && cached.seq == g.Sequence {
-		idx, err := newIndex(ctx, cached.e, visible(cached.e, auth.a, export.Anyone))
-		if err != nil {
-			return nil, err
-		}
-		return &snapshot{seq: g.Sequence, auth: auth, e: cached.e, idx: idx}, nil
 	}
 	if s.loading != nil {
 		s.loading(g)
@@ -866,11 +1408,7 @@ func (s *Server) read(ctx context.Context, l *load) (snap *snapshot, err error) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	idx, err := newIndex(ctx, e, visible(e, auth.a, export.Anyone))
-	if err != nil {
-		return nil, err
-	}
-	return &snapshot{seq: g.Sequence, auth: auth, e: e, idx: idx}, nil
+	return &decoded{seq: g.Sequence, e: e}, nil
 }
 
 // contextReader reads from r until ctx is done.
@@ -904,52 +1442,62 @@ func (c *contextReader) Read(p []byte) (int, error) {
 	}
 }
 
-// route dispatches on the path's segments, each unescaped on its own, so
-// an escaped slash stays inside its segment. ok is false for a path whose
-// segments do not unescape. The first segment is a group's name or an
-// alias, and under a group's name the second is a project's name.
-func (q *request) route(parts []string, ok bool) {
+// route dispatches on the request path's segments, each unescaped on its
+// own, so an escaped slash stays inside its segment, through the request's
+// index. The first segment is a group's name or an alias, and under a
+// group's name the second is a project's name. It answers every route
+// from the index alone, but a source route that reads a repository, whose
+// work it returns for runGit to run.
+func (q *request) route() *gitOp {
+	parts := q.parts
 	switch {
-	case !ok:
+	case !q.ok:
 		q.notFound()
 	case len(parts) == 1 && parts[0] == "":
 		q.landing()
-	case len(parts) == 2 && parts[0] == own && parts[1] == "knots":
+	case isKnotsPage(parts):
 		q.plan()
 	case parts[0] == own:
 		q.notFound()
 	default:
 		if to, ok := q.idx.aliases[parts[0]]; ok {
 			q.moved(to, 1)
-			return
+			return nil
 		}
 		if len(parts) >= 2 {
 			if p := q.idx.groups[parts[0]][parts[1]]; p != nil {
-				q.projectRoute(p.Name, parts[2:])
-				return
+				return q.projectRoute(p.Name, parts[2:])
 			}
 			if to, ok := q.idx.formers[parts[0]][parts[1]]; ok {
 				q.moved(to, 2)
-				return
+				return nil
 			}
 		}
 		q.notFound()
 	}
+	return nil
+}
+
+// isKnotsPage reports whether a path's segments name the knots page,
+// /-/knots.
+func isKnotsPage(parts []string) bool {
+	return len(parts) == 2 && parts[0] == own && parts[1] == "knots"
 }
 
 // projectRoute dispatches on the segments of a path after its group's and
 // its project's names.
-func (q *request) projectRoute(project string, rest []string) {
+func (q *request) projectRoute(project string, rest []string) *gitOp {
 	switch {
 	case len(rest) == 0, len(rest) == 1 && rest[0] == "":
 		q.home(project)
 	case len(rest) == 2 && rest[0] == "knots":
 		q.knot(project, rest[1])
 	case len(rest) >= 1 && rest[0] == "source":
-		q.source(project, rest[1:])
+		return q.source(project, rest[1:])
 	default:
 		q.notFound()
 	}
+	return nil
 }
 
 // moved answers a path under an alias or a former name with a permanent
@@ -1015,8 +1563,8 @@ func segments(escaped string) ([]string, bool) {
 	return parts, true
 }
 
-// project is the export's project called name, when the export holds it
-// as public, in a group. Every route that names a project asks here
+// project is the project called name in the request's index: one the
+// reader may see, in a group. Every route that names a project asks here
 // first, and a project it refuses answers as one that does not exist.
 func (q *request) project(name string) (*export.Project, bool) { return q.idx.project(name) }
 
@@ -1125,13 +1673,17 @@ func (w releasing) WriteHeader(status int) {
 	w.released()
 }
 
-// setHeaders sets the headers every response carries.
-func setHeaders(h http.Header) {
-	h.Set("Content-Security-Policy", csp)
+// setHeaders sets the headers every response carries, with policy, its
+// route's Content-Security-Policy. Every response is the reader's own, so
+// no cache stores it, and none is told it may be reused: no response
+// carries an ETag or a Last-Modified.
+func setHeaders(h http.Header, policy string) {
+	h.Set("Content-Security-Policy", policy)
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "no-referrer")
 	h.Set("Cross-Origin-Opener-Policy", "same-origin")
 	h.Set("Cross-Origin-Resource-Policy", "same-origin")
-	h.Set("Cache-Control", "no-cache")
+	h.Set("Cache-Control", "private, no-store")
+	h.Set("Vary", "Cookie")
 }

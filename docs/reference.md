@@ -3095,12 +3095,13 @@ first-layout directory.
 
 #### Web server (`valley-web`)
 
-`valley-web` serves the active export in a receiver's store to anonymous readers over HTTP, as the
-stored authorization allows. It serves the knots page, one page per knot, and a source browser over
-`main` for each project the authorization lets `anyone` read, including a gzipped tar archive for
-each reachable commit. Package `server` of the `web` module ([`web/server/`](../web/server/))
-implements the HTTP handler, and [`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The
-flake builds it as the `valley-web` package.
+`valley-web` serves the active export in a receiver's store over HTTP, as the stored authorization
+allows. It serves the knots page, one page per knot, and a source browser over `main` for each
+project the request's reader may read, including a gzipped tar archive for each reachable commit.
+`valley-web` reads every request as `anyone`. Package `server` of the `web` module
+([`web/server/`](../web/server/)) implements the HTTP handler, and
+[`web/cmd/valley-web/`](../web/cmd/valley-web/) is the command. The flake builds it as the
+`valley-web` package.
 
 ```sh
 valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
@@ -3147,9 +3148,10 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   redirects are permanent (`308`) with no response body. Its `Location` header preserves the
   remainder of the path and the raw query string as sent, including percent-escapes, dot segments,
   and a trailing `?` with an empty query.
-- **Landing:** `/` redirects to the root tree, at its `source_tip`, of the first project in the
-  export's order that the reader may see. When the reader may see no project, `/` redirects to
-  `/-/knots`.
+- **Landing:** `/` redirects to the root tree at `source_tip` of the first project in the export's
+  order that the reader may see, or to `/-/knots` when the reader may see no project. Because the
+  target depends on the reader's view, the redirect carries the same headers and passes the same
+  final authorization check as any rendered page.
 - **Reserved paths:** Every path other than `/` and the server's own routes under `/-/` starts with
   a group's name or an alias. Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a
   letter or digit. A group or a project may be named `source`, `knots`, `web-export`, or
@@ -3157,45 +3159,81 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   [Groups and web URLs](./architecture.md#groups-and-web-urls)).
 
 - **Authorization on every request:** Each request reads `v2/authorization` when it arrives, and
-  re-parses it only when its bytes have changed. It serves only the projects that the authorization
-  lets `anyone` read under the identity in the export. Once the response is rendered, the request
-  takes `v2/serving.lock` shared, reads the authorization again, and writes the response's headers
-  (including for redirects) before it releases the lock and writes the body. A request waits for the
-  lock only until its 15-second deadline, or until its reader goes away. It then writes nothing it
-  rendered: it answers `503`, or nothing to a reader that went away. If the authorization bytes
-  changed, the server discards the rendered response and renders it again under the new
-  authorization (up to three renders total, after which the request answers `503`). The receiver
-  renames a new authorization into place under the same lock, exclusively, and replies only after it
-  releases it. So a response whose headers are written after the receiver replies was checked
-  against the new authorization. A response whose headers were written before continues to
-  completion. A missing, unreadable, or invalid authorization serves no project: every `GET` and
-  `HEAD` answers `503` with the page "Nothing published yet", and any other method answers `405`.
+  re-parses it only when its bytes have changed. It serves only the projects its reader may see (see
+  **One project-view filter**). Once the response is rendered, the request takes `v2/serving.lock`
+  shared, reads the authorization again, and writes the response's headers (including for redirects)
+  before it releases the lock and writes the body. A request waits for the lock only until its
+  15-second deadline, or until its reader goes away. It then writes nothing it rendered: it answers
+  `503`, or nothing to a reader that went away. If the authorization bytes changed, the server
+  discards the rendered response and renders it again under the new authorization (up to three
+  renders total, after which the request answers `503`). The receiver renames a new authorization
+  into place under the same lock, exclusively, and replies only after it releases it. So a response
+  whose headers are written after the receiver replies was checked against the new authorization. A
+  response whose headers were written before continues to completion. A missing, unreadable, or
+  invalid authorization serves no project: every `GET` and `HEAD` answers `503` with the page
+  "Nothing published yet", and any other method answers `405`.
 - **One project-view filter:** Every view is built through a single filter that takes the export,
-  the authorization, and the reader (`anyone`), and returns the projects that reader may read. The
-  server builds the knots page, navigation, groups, cross-project references, the redirect from `/`,
-  and all alias and former-name redirects from that filtered list. Any project excluded by the
-  filter answers `404` as if it did not exist, and any group with no remaining project has no alias.
-- **One generation per request:** Each request opens the active generation once with `Store.Open`
-  and renders its entire response from that generation. It releases the generation once rendering
-  finishes, before writing the response. Activating a new export during a request does not change
-  that request's response, and a sweep cannot delete the old generation until the request releases
-  it. Before the first activation, every route answers `503`.
-- **One read per generation:** The server reads and decodes each generation's `export.json` once,
-  even when many requests wait for it at the same time. It caches the newest generation it has read
-  and builds the knots page's structure once for that generation and authorization. When the
-  authorization changes, the server rebuilds that structure from the cached export. A request opens
-  its generation on disk only after the server has read that generation.
+  the authorization, and the request's reader, and returns the projects that reader may see. A
+  reader sees a project when it belongs to one of the export's groups and the authorization grants
+  read access to `anyone` or to the reader's own principal under the project's identity in the
+  export. The server copies those projects for the reader, removing derived information about knots
+  in other projects (see [Each reader's view](./architecture.md#each-readers-view)). From those
+  copies it builds the knots page, navigation, groups, cross-project references, the redirect from
+  `/`, all alias and former-name redirects, and the source routes. Any project excluded by the
+  filter answers `404` as if it did not exist and takes no `git` slot. A group with no remaining
+  project has no alias.
+- **One generation per request:** Each request renders its entire response from one generation's
+  export. A source route that reads a repository opens the active generation with `Store.Open` after
+  taking a `git` slot, and releases the generation once rendering finishes, before writing the
+  response. If another generation has become active before `Store.Open`, the request releases its
+  `git` slot, generation, and index, and starts again from the new generation. Activating a new
+  export during a request does not change that request's response, and a sweep cannot delete the old
+  generation until the request releases it. Before the first activation, every route answers `503`.
+- **One read per generation:** Requests waiting for the same generation share one read, and the
+  server keeps the newest generation's decoded `export.json`. A read that every waiting request
+  abandons is cancelled, so a later request may read that generation again, as it may after the
+  reserved slot's cancellation described below. A request opens its generation on disk only after
+  the server has decoded that generation.
   - Each read runs in its own worker. The worker opens the active generation, holds it while reading
-    `export.json`, and releases it when the read finishes. A request waiting for a read holds no
-    generation.
-  - At most 2 read workers run at once (`server.MaxLoads`). A worker starts only when a waiting
-    request takes one of those 2 worker slots. The server never queues a read without a waiting
-    request.
+    and decoding `export.json`, and releases it when the read finishes. A request waiting for a read
+    holds no generation.
+  - At most 2 reads run at once (`server.MaxLoads`), using two worker slots: one general slot and
+    one slot reserved for anonymous requests. A worker starts only when a waiting request takes a
+    worker slot. The server never queues a read without a waiting request.
+  - The reserved slot runs a read only while at least one anonymous request waits for that read, so
+    reads that only named readers wait for use the general slot alone. If the last anonymous request
+    stops waiting for a read on the reserved slot while named readers still wait for it, the read
+    moves to the general slot when that slot is free. When the general slot is busy, the server
+    cancels the read, frees the reserved slot at once, and lets the named readers wait for the
+    general slot within their own deadlines. A stopped worker holds no slot while it exits.
   - A request stops waiting for a read if its reader disconnects or its 15-second deadline runs out.
     When no request is left waiting for a read, the worker stops reading and the server discards the
     unfinished read.
+- **Indexes:** After decoding a generation's export, the server builds an index, including the knots
+  page's structure, for each view it serves: one generation, one revision of the authorization, and
+  one set of projects. Readers who see the same projects share one index. Each index is built in its
+  own worker without holding a loader slot.
+  - Anonymous requests have 2 index places of their own for the `anyone` view: the current
+    generation's index and the one replacing it or being replaced. No named reader's request ever
+    takes an anonymous place.
+  - Named readers' requests share 8 index places (`server.MaxViews`), counting cached, building, and
+    pinned indexes. A named reader who sees no more than `anyone` serves from the same index object
+    as anonymous requests, while occupying a named place for it.
+  - While pinned by active or waiting requests, an index occupies a place in each pool that has
+    requests pinning it, and releases a pool's place as soon as only the other pool's requests pin
+    it. When the last request unpins an index, the index keeps the single place of that last
+    request's pool. The server evicts only an index that no request is currently serving from.
+  - When all 8 named places are full, named readers' requests wait while anonymous requests do not.
+    An anonymous request for the current generation always gets the current `anyone` index without
+    waiting on any named reader's request.
+  - When no request remains waiting for an index that is still building, the server cancels the
+    build. The cancelled build keeps its place until its worker exits, and no new request joins it,
+    so at most 10 workers build indexes at once.
+  - A request waiting for its view's index to build, or for a free place in its pool, waits among
+    the 64 view-waiting places (`server.MaxLoadWaiting`, at most 48 for named readers under
+    `server.MaxNamedWaiting`) and answers `503` once its 15-second deadline runs out.
 - **Knots page:** The page at `/-/knots` shows four sections, in this order:
-  1. **Waiting on you:** Always empty. Every reader sees the same public page.
+  1. **Waiting on you:** Always empty.
   2. **In flight:** The export's `in_flight` knots, showing who claims each knot and how long ago.
      Beside them, a card titled "Ready changes — order not assessed" lists the export's `changes`.
      Each change shows its handle, its active version's title, whether an integration request
@@ -3225,22 +3263,36 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   chain names the nearest 32 parents (`server.MaxPlanDepth`) and marks any parents above them with
   `…`. The body and each comment render as escaped preformatted text. A comment with an `edited`
   timestamp is marked "edited" and shows its `edited` time and `edited_by`.
-- **References into unpublished projects:** A page never shows the name of a project that is not
-  public in the export, or the text of a reference into one. Every such reference is replaced with
-  fixed text and no link:
-  - A `blocked_by` entry, `target`, or `graduated_into` that names a knot in an unpublished project
-    is shown as "a knot in an unpublished project".
-  - A `target` that names only an unpublished project is shown as "an unpublished project".
+- **References into unpublished projects:** A page never shows the name of a project the reader may
+  not see, or the text of a reference into one, whether the export omits that project or holds it
+  for another reader. Every such reference is replaced with fixed text and no link:
+  - A `blocked_by` entry or a `<project>:<id>` entry in `target` that names a knot in an unpublished
+    project is shown as "a knot in an unpublished project".
+  - A `target` that names only an unpublished project is shown as "an unpublished project". A
+    `target` is always a project's name or `<project>:<id>`, never a bare knot ID in the knot's own
+    graph, so a project whose name looks like a knot ID (such as `oc-1234567`) is still treated as a
+    project and hidden the same way.
   - A `changes` link `valley:<project>/<change ID>` into an unpublished project is shown as "a
     change in an unpublished project".
-  - On the knots page, a tree row's "waits on" chip lists the published knots in the knot's
-    `waiting_on` list. When the knot also waits on knots in unpublished projects
-    (`waiting_on_hidden`), the chip ends with "a knot in an unpublished project" once, regardless of
-    how many unpublished knots block it. A blocked knot with no published blocker shows "waits on a
-    knot in an unpublished project" alone.
+  - `graduated_into` is the ID of an outcome or question in the knot's own graph, which the reader
+    sees, and is shown as written.
+  - Before looking up any project, the server checks that the entire reference value matches a shape
+    its field allows. A value that fails this shape check — even one that begins with a visible
+    project name, such as `app:site:oc-b000001` or `valley:app/site/secret` — names no project the
+    reader may see and is shown as unpublished with none of its text: a `target` as "an unpublished
+    project", a `blocked_by` entry, `waiting_on` entry, or `graduated_into` value as "a knot in an
+    unpublished project", and a change link as "a change in an unpublished project". In the reader's
+    copy of the knot, any such entry is removed from `waiting_on`, `cleared_by_ending`, `dangling`,
+    and `unresolved`, and an entry removed from `waiting_on` counts as a hidden blocker.
+  - On the knots page, a tree row's "waits on" chip lists the knots from `waiting_on` that the
+    reader may see. When the knot also waits on knots the reader may not see (`waiting_on_hidden`,
+    or a reference removed from `waiting_on`), the chip ends with "a knot in an unpublished project"
+    once, regardless of how many hidden knots block it. A blocked knot with no blocker the reader
+    may see shows "waits on a knot in an unpublished project" alone.
 
-  A `blocked_by` entry that names a missing knot in a public project still shows its reference text.
-  It is marked "not found in its graph" when its edge is `dangling`, and "not found" otherwise.
+  A `blocked_by` entry that names a missing knot in a project the reader may see still shows its
+  reference text. It is marked "not found in its graph" when its edge is `dangling`, and "not found"
+  otherwise.
 
 - **Source browser:** The server reads each generation's repositories by running `git` subprocesses
   through `export.Git` and `export.GitStream`. It passes `git` only verified object IDs, never text
@@ -3349,7 +3401,7 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     `/<group>/<project>/source/archive/<source_tip>.tar.gz` and the same headers as
     `/<group>/<project>/source/`. `main` is the only name the route accepts in place of a commit ID;
     `HEAD`, any other ref name, or an abbreviated ID answers `404`. The redirect takes no `git`
-    slot. A project excluded by the authorization answers `404`.
+    slot. A project the reader may not see answers `404`.
   - The server writes the tar in Go from `git ls-tree -r -t -l -z` and one `git cat-file --batch`.
     Entries follow the tree's order, each directory before what it holds. A file has mode `0644`, or
     `0755` for git mode `100755`. A symbolic link (`120000`) is a tar symbolic link to its content
@@ -3364,7 +3416,8 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     refs, git configuration, or attributes.
   - The response carries `Content-Type: application/gzip` and
     `Content-Disposition: attachment; filename="<project>-<12 hex digits>.tar.gz"`, in addition to
-    every header listed under **Rendering and headers** (including `Cache-Control: no-cache`).
+    every header listed under **Rendering and headers** (including
+    `Cache-Control: private, no-store`).
   - Before it reads any file, the server refuses an archive whose files add up to more than 32 MiB
     (`server.MaxArchiveInput`), whose tree holds more than 10,000 entries
     (`server.MaxArchiveEntries`), or whose listing is longer than 4 MiB (`server.MaxRead`). A
@@ -3373,31 +3426,40 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     `git` slot timeout, and writes the response once the archive is complete. A compressed archive
     is at most 8 MiB (`server.MaxResponse`); a larger one answers `500` with the "Page too large"
     page.
-- **Time:** Every request has a 15-second deadline from when it arrives, covering waiting, running
-  `git` commands, and rendering the page. A request that exceeds 15 seconds answers `503` with
-  `Retry-After: 5`. Within that deadline, a source request may hold its `git` slot for at most 5
-  seconds, covering its wait for the generation's export to load and all of its `git` commands. If 5
-  seconds pass while the request still holds its `git` slot, the server logs the timeout and answers
-  `503` with `Retry-After: 5`.
+- **Time:** Every request has a 15-second deadline from when it arrives, covering waiting for its
+  view, its `git` slot and a rendering slot, running `git` commands, and rendering the page. A
+  request that exceeds 15 seconds answers `503` with `Retry-After: 5`. Within that deadline, a
+  source request may hold its `git` slot for at most 5 seconds from when it takes it, covering all
+  of its `git` commands. If 5 seconds pass while the request still holds its `git` slot, the server
+  logs the timeout and answers `503` with `Retry-After: 5`.
 - **Admission:** The server bounds how many requests may run `git` or wait at once. Every admission
   check runs before the request opens a generation.
-  - A tree, file, log, or archive request needs a `git` slot. At most 8 such requests hold a `git`
-    slot at once (`server.MaxGit`), and at most 16 more wait for a slot to open
-    (`server.MaxWaiting`). The server checks whether the request path has the shape
-    `/<name>/<name>/source/(tree|blob|log|archive)/…` before reading the export. The one exception
-    is `/<name>/<name>/source/archive/main.tar.gz`, which only redirects and takes no slot. A
-    request with that shape under a group alias or a project's former name also takes a `git` slot
-    and releases it when redirecting. When all 8 slots and 16 waiting places are full, any request
-    with that path shape answers `503` immediately with `Retry-After: 5`.
+  - A tree, file, log, or archive request that reads a repository for a project the reader may see
+    needs a `git` slot. At most 8 such requests hold a `git` slot at once (`server.MaxGit`), and at
+    most 16 more wait in a first-in-first-out queue (`server.MaxWaiting`). A request takes its slot
+    only after its route is resolved through its view's index. Redirects (including
+    `/<group>/<project>/source/archive/main.tar.gz`, aliases, and former names), paths that a source
+    route refuses, and paths of hidden or nonexistent projects are answered from the index alone and
+    take no `git` slot. When all 8 slots and 16 waiting places are full, a request that needs a slot
+    answers `503` immediately with `Retry-After: 5`.
   - A source request releases its `git` slot before rendering HTML, and every request releases its
     generation before writing the response to the client (see
     [Slow readers](./architecture.md#slow-readers)).
   - At most 2 source requests render Markdown at once (`server.MaxRendering`). A request waits for a
     rendering slot while it still holds its `git` slot, within the same 5 seconds, and releases the
     `git` slot once it has one. Rendering stops when the request's 15 seconds run out.
-  - Any request whose generation the server has not read yet must wait for the read before opening a
-    generation. At most 64 requests wait for export reads at once (`server.MaxLoadWaiting`). A
-    request that finds all 64 places full answers `503` immediately with `Retry-After: 5`.
+  - Before opening a generation, any request whose generation is not yet decoded must wait for the
+    read, and any request whose view has no ready index must wait for the index build or for a place
+    in its pool. At most 64 requests wait for their views at once (`server.MaxLoadWaiting`).
+  - Named readers' requests take at most 48 of those 64 waiting places (`server.MaxNamedWaiting`).
+    Anonymous requests may take any of the 64, leaving at least 16 places for anonymous requests
+    regardless of how many named readers wait.
+  - A request that finds no waiting place it may take answers `503` immediately with
+    `Retry-After: 5`: when all 64 places are full for an anonymous request, or when 48 named places
+    or all 64 places are full for a named reader's request.
+  - Every other limit is shared across all readers and does not grow with the number of readers:
+    `git` slots, rendering slots, the response budget and its large-response cap, the 8 MiB response
+    limit, and the archive limits.
 - **Response size and memory:** Every page is rendered in full before the server writes the
   response.
   - A page or an archive is at most 8 MiB (`server.MaxResponse`) on any route. A response that
@@ -3415,10 +3477,9 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
     `Retry-After: 5`.
   - The "Busy" (`503`), "Page too large" (`500`) and "Not found" (`404`) pages are rendered once
     when the server starts. They show no export data and take none of the 64 MiB budget.
-- **Access:** Every project route checks that the stored authorization lets `anyone` read the
-  project under the identity in the export, and that the project has a `group`. Every `404` serves
-  the same page, byte for byte, whether the project is hidden or missing, the knot or path does not
-  exist, or the commit is not served.
+- **Access:** Every project route checks that the request's reader may see the project (see **One
+  project-view filter**). Every `404` serves the same page, byte for byte, whether the project is
+  hidden or missing, the knot or path does not exist, or the commit is not served.
 - **Not found:** The `404` page is titled "Not found" and shows a box of preformatted text in the
   server's stylesheet. Its last line, "Return to the source", links to `/`. The page omits
   navigation, the export age, and the site name:
@@ -3441,11 +3502,18 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080
   escapes every value from the export or a repository. The stylesheet and the knots page's script
   are embedded in the binary and inlined into the page; nothing else is loaded. No page serves a
   repository file as raw content; raw repository files are served only inside a source archive,
-  which is gzipped and sent as an attachment. Every response carries these headers:
-  - `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  which is gzipped and sent as an attachment. Every response, including redirects, error pages,
+  `HEAD` responses and archives, carries these headers:
+  - On `/-/knots`:
+    `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+  - On every other path:
+    `Content-Security-Policy: default-src 'self'; script-src 'none'; style-src 'sha256-<stylesheet hash>'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`,
-    `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and
-    `Cache-Control: no-cache`.
+    `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`,
+    `Cache-Control: private, no-store`, and `Vary: Cookie`.
+
+  No response carries an `ETag` or a `Last-Modified`, and the server never answers `304`.
+
 - **Errors:** When the server cannot read the export or a repository, it logs the error on `stderr`
   and answers `500` with a generic error page that gives no detail. A request that runs out of time
   answers `503`. The timeout is logged when time runs out while the request waits for its export to

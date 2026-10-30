@@ -320,8 +320,11 @@ key (`implemented`, `readaccess/access.go`).
   whose `policy/read` names `anyone` and which a read grant to `anyone` covers at that destination
   (`implemented`).
 - **A named principal**, including the operator, is evaluated by the same two-consent rule in
-  `readaccess/`. However, named grants publish nothing and `valley-web` authenticates no reader
-  (**not built**), so at the edge a named principal can read only what `anyone` may read.
+  `readaccess/`. `valley-web` builds each response from the projects its reader may see: those the
+  stored authorization lets `anyone` read, together with those it lets the reader's principal read
+  (`implemented`, `web/server/plan.go`). However, named grants publish nothing and `valley-web`
+  authenticates no reader, so it reads every request as `anyone` (**not built**). At the edge a
+  named principal can read only what `anyone` may read.
 - **Membership, push access, approval and restacking** grant no read access at the edge.
 
 Which principals each project's policy names and which grants the registry declares are a
@@ -355,6 +358,39 @@ group, a former name, or a short alias — return the same `404` page byte for b
 project that does not exist (`implemented`, `web/server/server.go`). A group alias redirects any
 path under it to the group's `name` before checking whether the project exists, so hidden and
 nonexistent projects redirect identically and then return `404`.
+
+**Each response holds one reader's projects.** A project the reader may not see adds nothing to the
+reader's pages: no link, no navigation entry, no alias or former name, no redirect, no source route,
+and no title, status, or reference text of its knots (`implemented`, `web/server/projection.go`,
+`web/server/knot.go`). The server builds the reader's pages from copies of the projects in the
+reader's view. In those copies, each knot keeps the `state` that the host derived, while references
+into other projects are removed from its derived lists and cleared in its edges (see
+[Each reader's view](./architecture.md#each-readers-view)). Before looking up a referenced project,
+a page checks that the entire reference value matches a shape allowed for its field, so a malformed
+value that begins with a visible project name names nothing either. What the reader learns of a
+hidden blocker matches what the export already exposes for everyone: a single opaque "a knot in an
+unpublished project" while the blocker remains open. Readers who may see the same projects share one
+index, and neither the index nor the pages built from it ever name the reader. Because the publisher
+exports only what `anyone` may read, these guarantees are tested with signed fixtures that hold
+projects readable by named principals alone.
+
+**Authored text is published as written.** The view filter removes only what the server derives
+about other projects. It cannot remove private information that an author wrote into a visible
+project: a knot's body or comment, a README, or an absolute link is shown as written. Writing about
+a private project inside a public one discloses it.
+
+**Responses are private, and carry no active content.** Every response, including a redirect, an
+error page, a `HEAD` response, and an archive, carries `Cache-Control: private, no-store` and
+`Vary: Cookie`, carries no `ETag`, and is never answered `304` (`implemented`,
+`web/server/server.go`). No shared cache therefore stores one reader's response for another. Each
+route has its own `Content-Security-Policy` (`implemented`, `web/server/render.go`): the knots page
+admits its one inline script by its SHA-256 hash, every other route admits no script, and no route
+lets a script open a network connection. Rendered Markdown writes only a fixed set of elements and
+attributes, escapes the repository's text, and writes no script, form, image, or `style` attribute
+(`implemented`, `web/markdown`). `Referrer-Policy: no-referrer` keeps a link leaving the edge from
+sending the page's address. An archive is a gzipped attachment sent with `nosniff`, and no
+repository file is served inline. Serving active project content would require a separate origin
+that never receives a reader's cookie, because another path on the same origin would not isolate it.
 
 **A grant is bound to a project.** A grant that names a specific project binds both its name and its
 publication identity, so a new project that reuses an old project's name with a new identity is not
@@ -401,13 +437,19 @@ effect even if the pass's content upload fails. Unbuilt parts of read access are
 [Not deployed or not wired yet](./architecture.md#not-deployed-or-not-wired-yet).
 
 Checks: `readaccess-unit` reads both consents from real commits under the real schemas, including
-policies that redeclare a schema definition and trees with malformed entry names. `web-unit`
-verifies that the publisher requires both consents (`TestVisibilityNeedsBothConsents`) and that no
-private sentinel appears in any export or bundle (`TestPrivateSentinelsNeverLeave`). Both `web-unit`
-(`TestTheRegistryIsReadAtItsRef`) and `readaccess-unit` (`TestRegistryRef`) verify that every
-project stays private when the registry ref is missing even if `refs/heads/refs/heads/registry`
-grants `anyone` read. `module-eval` rejects a short registry ref. `cue-vet` and `identity-schema`
-test both schemas against their rejected examples.
+policies that redeclare a schema definition and trees with malformed entry names. `web-server-unit`
+serves anyone and two named readers over signed fixtures holding private projects
+(`TestNamedReadersSeeTheirOwnProjects`), compares a knot whose hidden blocker is done or open across
+an export without the blocker's project and one holding it for another reader
+(`TestAHiddenBlockerReadsAlikeInEitherExport`), and checks every route's headers
+(`TestEveryResponseCarriesItsRoutesHeaders`). `web-push-e2e` checks the headers on the packaged
+`valley-web`. `web-unit` verifies that the publisher requires both consents
+(`TestVisibilityNeedsBothConsents`) and that no private sentinel appears in any export or bundle
+(`TestPrivateSentinelsNeverLeave`). Both `web-unit` (`TestTheRegistryIsReadAtItsRef`) and
+`readaccess-unit` (`TestRegistryRef`) verify that every project stays private when the registry ref
+is missing even if `refs/heads/refs/heads/registry` grants `anyone` read. `module-eval` rejects a
+short registry ref. `cue-vet` and `identity-schema` test both schemas against their rejected
+examples.
 
 ## The web publisher
 

@@ -14,21 +14,22 @@ import (
 
 // index is one reader's view of an export: the projects the authorization
 // lets the reader read and their knots, by name, where each of those
-// projects' pages are, and the plan page's structure. It is built once for
-// each generation, authorization and reader, from what visible returns
-// alone, so no page built from it names a project the reader may not read.
+// projects' pages are, and the plan page's structure. It is built from the
+// projects visible returns alone, each projected for the reader
+// (projectForReader), so no page built from it names a project the reader
+// may not read, or says anything of one that the export did not say for
+// everyone. Requests share it and do not change it.
 type index struct {
 	// building is set only while the worker constructs the index.
 	building context.Context
 	projects map[string]*export.Project
 	knots    map[string]map[string]*export.Knot
-	// public are the visible projects' names, in the export's order: those
-	// that have a web URL, which a project in no group does not.
+	// public are the visible projects' names, in the export's order.
 	public []string
-	// bases are each public project's URL, /<group name>/<web name>,
-	// escaped, by the project's identifier. groups are the public
+	// bases are each visible project's URL, /<group name>/<web name>,
+	// escaped, by the project's identifier. groups are the visible
 	// projects by group name and then by web name. formers are where the
-	// URLs under a public project's former names redirect to, its base,
+	// URLs under a visible project's former names redirect to, its base,
 	// by group name and then by former name. aliases are where each
 	// alias's URLs redirect to: a group's alias to /<group name>, and a
 	// project's short alias to its base.
@@ -37,7 +38,7 @@ type index struct {
 	formers map[string]map[string]string
 	aliases map[string]string
 	// plan is the plan page, but for what is in flight, whose ages are
-	// read at each request. Requests share it and do not change it.
+	// read at each request.
 	plan *planPage
 }
 
@@ -53,21 +54,33 @@ func (idx *index) checkBuild() {
 }
 
 // visible is the one project-view filter: the projects of e that the
-// authorization lets reader read, by name, each named with the identity e
-// gives it. A nil authorization lets no one read anything. Every view a
-// server builds, of the plan, the navigation, the groups, the references
-// between projects and the redirects, is built through it.
+// authorization lets reader read, by name. A project is visible when the
+// authorization lets anyone read it, or lets reader read it, under the
+// identity e gives it, and when it is in one of e's groups: a project in no
+// group has no pages. Authorization.Allows tests one principal exactly;
+// visible takes the union of anyone and reader. A nil authorization lets
+// no one read anything. Every view a server builds, of the plan, the
+// navigation, the groups, the references between projects, the redirects
+// and the source, is built through it.
 func visible(e *export.Export, a *export.Authorization, reader string) map[string]bool {
+	groups := map[string]bool{}
+	for _, g := range e.Groups {
+		groups[g.ID] = true
+	}
 	shown := map[string]bool{}
 	for _, p := range e.Projects {
-		if a.Allows(reader, p.Name, p.Identity) {
+		if !groups[p.Group] {
+			continue
+		}
+		if a.Allows(export.Anyone, p.Name, p.Identity) || reader != export.Anyone && a.Allows(reader, p.Name, p.Identity) {
 			shown[p.Name] = true
 		}
 	}
 	return shown
 }
 
-// newIndex is the index of e's projects that shown names.
+// newIndex is the index of e's projects that shown names, built from their
+// projection for the reader (projectForReader), never from e itself.
 func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (result *index, err error) {
 	defer func() {
 		if p := recover(); p != nil {
@@ -78,18 +91,19 @@ func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (res
 			}
 		}
 	}()
+	projected, err := projectForReader(ctx, e, shown)
+	if err != nil {
+		return nil, err
+	}
 	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{},
 		bases: map[string]string{}, groups: map[string]map[string]*export.Project{},
 		formers: map[string]map[string]string{}, aliases: map[string]string{}}
 	idx.checkBuild()
 	defer func() { idx.building = nil }()
-	idx.place(e, shown)
-	for i := range e.Projects {
+	idx.place(projected)
+	for i := range projected.Projects {
 		idx.checkBuild()
-		p := &e.Projects[i]
-		if !shown[p.Name] {
-			continue
-		}
+		p := &projected.Projects[i]
 		idx.projects[p.Name] = p
 		byID := map[string]*export.Knot{}
 		for j := range p.Knots {
@@ -103,12 +117,13 @@ func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (res
 	return idx, nil
 }
 
-// place indexes where each project shown names has its pages, and where
-// each alias and former name redirects to. A project in no group has no
-// pages, and a group with no project shown has no alias. It checks for
-// cancellation before each group, project and name, so the work between
-// two checks is bounded by a name's length.
-func (idx *index) place(e *export.Export, shown map[string]bool) {
+// place indexes where each of e's projects has its pages, and where each
+// alias and former name redirects to. e is a projection, which holds the
+// visible projects alone. A project in no group has no pages, and a group
+// with no visible project has no alias. It checks for cancellation before
+// each group, project and name, so the work between two checks is bounded
+// by a name's length.
+func (idx *index) place(e *export.Export) {
 	groups := map[string]export.Group{}
 	for _, g := range e.Groups {
 		idx.checkBuild()
@@ -119,7 +134,7 @@ func (idx *index) place(e *export.Export, shown map[string]bool) {
 		idx.checkBuild()
 		p := &e.Projects[i]
 		g, grouped := groups[p.Group]
-		if !shown[p.Name] || !grouped {
+		if !grouped {
 			continue
 		}
 		used[g.ID] = true
@@ -548,14 +563,14 @@ func (idx *index) row(project string, k *export.Knot) row {
 		r.Filter = "done"
 	}
 	if k.Target != "" && k.Target != project {
-		text, _ := idx.named(project, k.Target)
+		text, _ := idx.target(k.Target)
 		r.Chips = append(r.Chips, chip{"quiet", "lands in " + text})
 	}
 	if k.Claim != nil {
 		r.Chips = append(r.Chips, chip{"", "claimed by " + k.Claim.By})
 	}
 	if k.State == "blocked" {
-		r.Chips = append(r.Chips, chip{"blocked", "waits on " + idx.waitsOn(k.WaitingOn, k.WaitingOnHidden)})
+		r.Chips = append(r.Chips, chip{"blocked", "waits on " + idx.waitsOn(project, k.WaitingOn, k.WaitingOnHidden)})
 	}
 	if k.Progress != nil && k.Progress.Of > 0 {
 		r.Chips = append(r.Chips, chip{"quiet", strconv.Itoa(k.Progress.Done) + "/" + strconv.Itoa(k.Progress.Of)})

@@ -26,11 +26,30 @@ var (
 	planJS string
 )
 
-// csp is every response's Content-Security-Policy. The inline stylesheet
-// and script are admitted by their SHA-256 hashes alone, and every other
-// fetch is held to the server's own origin.
-var csp = "default-src 'self'; script-src " + inlineHash(planJS) + "; style-src " + inlineHash(styleCSS) +
-	"; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+// The Content-Security-Policy of each route. Every policy admits the
+// inline stylesheet by its SHA-256 hash, fetches nothing from another
+// origin, opens no connection from a script, and takes no plugin, base
+// URL, form submission or frame. The knots page's policy admits its one
+// inline script by its hash; every other route's admits no script at all.
+// An error page answers with its route's policy.
+var (
+	knotsPolicy   = policy("script-src " + inlineHash(planJS))
+	contentPolicy = policy("script-src 'none'")
+)
+
+func policy(scripts string) string {
+	return "default-src 'self'; " + scripts + "; style-src " + inlineHash(styleCSS) +
+		"; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'"
+}
+
+// policyFor is the policy of the route a path's segments name: the knots
+// page's for /-/knots, and every other route's for the rest.
+func policyFor(parts []string, ok bool) string {
+	if ok && isKnotsPage(parts) {
+		return knotsPolicy
+	}
+	return contentPolicy
+}
 
 func inlineHash(s string) string {
 	sum := sha256.Sum256([]byte(s))

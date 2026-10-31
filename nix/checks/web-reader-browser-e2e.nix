@@ -15,13 +15,14 @@
 # runs its script and lets it fetch this origin, and blocks a script put
 # in the page; one click redeems the link once, the browser keeps the
 # __Host- cookie, Secure, HttpOnly and SameSite=Lax, out of the page's
-# reach, and the page lands on /. Then the proxy spoils two answers to a
+# reach, and the page follows /, which lands the reader, whose view holds
+# app alone, on app's tree. Then the proxy spoils two answers to a
 # switch to another link: a redemption answered 502 with the new
 # session's cookie, and one whose answer it drops. Each time the page
 # says it cannot tell whether the link was used. The first retry finds
-# this link's session at /-/session and lands on / with no second
-# sign-out; the second finds no session, signs no one out, and is told
-# the link cannot be used. HTTP contracts, isolation, archives,
+# this link's session at /-/session and lands on app's tree with no
+# second sign-out; the second finds no session, signs no one out, and is
+# told the link cannot be used. HTTP contracts, isolation, archives,
 # revocation, logs and permissions are the unit, binary, module and
 # image checks'.
 {

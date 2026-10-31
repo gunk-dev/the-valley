@@ -3160,8 +3160,9 @@ first-layout directory.
 #### Web server (`valley-web`)
 
 `valley-web` serves the active export in a receiver's store over HTTP, as the stored authorization
-allows. It serves the knots page, one page per knot, and a source browser over `main` for each
-project the request's reader may read, including a gzipped tar archive for each reachable commit.
+allows. For the projects the request's reader may read, it serves a projects page and a knots page
+of all of them. For each of those projects, it serves the project's own knots page, one page per
+knot, and a source browser over `main`, including a gzipped tar archive for each reachable commit.
 When started with `--origin`, `valley-web` serves a request that carries a valid session cookie as
 that session's principal, and serves every other request as `anyone` (see
 [Reader sessions](#reader-sessions)). Without `--origin`, it serves every request as `anyone`.
@@ -3196,39 +3197,46 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin ht
   `Allow: GET, HEAD`. When `--origin` is set, `/-/redeem` and `/-/logout` also answer `POST`, and
   their `405` responses carry `Allow: GET, HEAD, POST`. `/-/session` answers only `GET` and `HEAD`.
 
-| Route                                                   | Page                                                                                                            |
-| :------------------------------------------------------ | :-------------------------------------------------------------------------------------------------------------- |
-| `/`                                                     | `302` redirect to the first visible project's root tree, or to `/-/knots`                                       |
-| `/-/knots`                                              | The knots page                                                                                                  |
-| `/<group>/<project>/` and `/<group>/<project>`          | `302` redirect to the root tree at the project's `source_tip`                                                   |
-| `/<group>/<project>/knots/<id>`                         | One knot                                                                                                        |
-| `/<group>/<project>/source/`                            | `302` redirect to the root tree at the project's `source_tip`                                                   |
-| `/<group>/<project>/source/tree/<commit>/<path>/`       | One directory and its README                                                                                    |
-| `/<group>/<project>/source/blob/<commit>/<path>`        | One file                                                                                                        |
-| `/<group>/<project>/source/log/<commit>`                | Up to 50 commits of history ending at `<commit>`, newest first                                                  |
-| `/<group>/<project>/source/log/<commit>?from=<ids>`     | The next older page of that history, starting from the commits in `<ids>`                                       |
-| `/<group>/<project>/source/archive/<commit>.tar.gz`     | The tree of `<commit>` as a gzipped tar archive, sent as an attachment                                          |
-| `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                                                     |
-| `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                                                      |
-| `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>`                           |
-| `/-/redeem` and `/-/logout`                             | Reader sign-in and sign-out pages, served only when `--origin` is set (see [Reader sessions](#reader-sessions)) |
-| `/-/session`                                            | JSON reporting the credential ID of the current session's link, served only when `--origin` is set              |
-| `/-/…`                                                  | The server's own routes: `/-/knots` and the reader routes. Every other path under `/-/` answers `404`           |
+| Route                                                   | Page                                                                                                                 |
+| :------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------- |
+| `/`                                                     | `302` redirect to `/-/projects`, or to the root tree of the one project the reader may read                          |
+| `/-/projects`                                           | The projects page: every project the reader may read, by group                                                       |
+| `/-/knots`                                              | The knots page of every project the reader may read                                                                  |
+| `/<group>/` and `/<group>`                              | The projects page of one group: the group's projects the reader may read                                             |
+| `/<group>/<project>/` and `/<group>/<project>`          | `302` redirect to the root tree at the project's `source_tip`                                                        |
+| `/<group>/<project>/knots`                              | The project's knots page                                                                                             |
+| `/<group>/<project>/knots/<id>`                         | One knot                                                                                                             |
+| `/<group>/<project>/source/`                            | `302` redirect to the root tree at the project's `source_tip`                                                        |
+| `/<group>/<project>/source/tree/<commit>/<path>/`       | One directory and its README                                                                                         |
+| `/<group>/<project>/source/blob/<commit>/<path>`        | One file                                                                                                             |
+| `/<group>/<project>/source/log/<commit>`                | Up to 50 commits of history ending at `<commit>`, newest first                                                       |
+| `/<group>/<project>/source/log/<commit>?from=<ids>`     | The next older page of that history, starting from the commits in `<ids>`                                            |
+| `/<group>/<project>/source/archive/<commit>.tar.gz`     | The tree of `<commit>` as a gzipped tar archive, sent as an attachment                                               |
+| `/<group>/<project>/source/archive/main.tar.gz`         | `302` redirect to the archive of the project's `source_tip`                                                          |
+| `/<group>/<former name>` and `/<group>/<former name>/…` | `308` redirect to the same path under `/<group>/<project>`                                                           |
+| `/<alias>` and `/<alias>/…`                             | `308` redirect to the same path under the group's name, or under `/<group>/<project>`                                |
+| `/-/redeem` and `/-/logout`                             | Reader sign-in and sign-out pages, served only when `--origin` is set (see [Reader sessions](#reader-sessions))      |
+| `/-/session`                                            | JSON reporting the credential ID of the current session's link, served only when `--origin` is set                   |
+| `/-/…`                                                  | The server's own routes: `/-/projects`, `/-/knots` and the reader routes. Every other path under `/-/` answers `404` |
 
 - **Groups:** `<group>` is the group's `name` in the export, and `<project>` is the project's web
   `name` in the export. Routes match the group's `name` and the project's web `name` rather than
-  their identifiers. Names are matched in exact case. `/<group>` and `/<group>/` answer `404`. A
-  project in the export without a group has no route.
+  their identifiers. Names are matched in exact case. A project in the export without a group has no
+  route. `/<group>` and `/<group>/` list the group's projects that the reader may read. When a group
+  has none, `/<group>` and `/<group>/` answer `404`, the same as a path that does not exist, so the
+  page never shows that a group exists. The server reads a path's first segment as an alias before
+  it reads it as a group's `name`. If a group's `name` were also an alias, the alias would win.
+  Package `export` refuses an export in which a group's `name` and an alias collide.
 - **Aliases and former names:** A group's alias redirects to the same path under the group's `name`,
   and a project's short alias redirects to the same path under `/<group>/<project>`. A project's
   former name redirects to the same path under `/<group>/<project>`. These alias and former-name
   redirects are permanent (`308`) with no response body. Its `Location` header preserves the
   remainder of the path and the raw query string as sent, including percent-escapes, dot segments,
   and a trailing `?` with an empty query.
-- **Landing:** `/` redirects to the root tree at `source_tip` of the first project in the export's
-  order that the reader may see, or to `/-/knots` when the reader may see no project. Because the
-  target depends on the reader's view, the redirect carries the same headers and passes the same
-  final authorization check as any rendered page.
+- **Landing:** When the reader may see exactly one project, `/` redirects to the root tree at that
+  project's `source_tip`. When the reader may see more than one project, or none, `/` redirects to
+  `/-/projects`. Because the target depends on the reader's view, the redirect carries the same
+  headers and passes the same final authorization check as any rendered page.
 - **Reserved paths:** Every path other than `/` and the server's own routes under `/-/` starts with
   a group's name or an alias. Names match `^[a-zA-Z0-9][a-zA-Z0-9._-]*$`, which always starts with a
   letter or digit. A group or a project may be named `source`, `knots`, `web-export`, or
@@ -3255,10 +3263,10 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin ht
   read access to `anyone` or to the reader's own principal under the project's identity in the
   export. The server copies those projects for the reader, removing derived information about knots
   in other projects (see [Each reader's view](./architecture.md#each-readers-view)). From those
-  copies it builds the knots page, navigation, groups, cross-project references, the redirect from
-  `/`, all alias and former-name redirects, and the source routes. Any project excluded by the
-  filter answers `404` as if it did not exist and takes no `git` slot. A group with no remaining
-  project has no alias.
+  copies it builds the projects page, the group pages, the knots pages, navigation, groups,
+  cross-project references, the redirect from `/`, all alias and former-name redirects, and the
+  source routes. Any project excluded by the filter answers `404` as if it did not exist and takes
+  no `git` slot. A group with no remaining project has no alias.
 - **One generation per request:** Each request renders its entire response from one generation's
   export. A source route that reads a repository opens the active generation with `Store.Open` after
   taking a `git` slot, and releases the generation once rendering finishes, before writing the
@@ -3309,7 +3317,25 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin ht
   - A request waiting for its view's index to build, or for a free place in its pool, waits among
     the 64 view-waiting places (`server.MaxLoadWaiting`, at most 48 for named readers under
     `server.MaxNamedWaiting`) and answers `503` once its 15-second deadline runs out.
-- **Knots page:** The page at `/-/knots` shows four sections, in this order:
+- **Projects page:** `/-/projects` lists every project the reader may see, grouped under its group's
+  `name`. Groups and their projects follow the export's order. Each group's name links to the
+  group's page. Each project shows `<group>/<project>`, which links to its root tree at
+  `source_tip`, and a `knots` link to its knots page. Below the list, an `all knots` link goes to
+  `/-/knots`. When the reader may see no project, the page has no list and no `all knots` link. It
+  says only "No project is readable here." and answers `200`. A group's page, `/<group>/`, shows the
+  same project entries for that group alone. Its group heading does not link to itself.
+- **Navigation:** Pages rendered from an export show a `projects` link to `/-/projects` and the
+  freshness line. Pages rendered for a reader with a valid session also show `Sign out`. Every page
+  of one project also has a project header. The header names the project as `<group>/<project>` and
+  has two tabs: `source`, which links to the project's root tree at `source_tip`, and `knots`, which
+  links to `/<group>/<project>/knots`. The tree, file, and history pages mark the `source` tab with
+  `aria-current="page"`. The project's knots page and each of its knot pages mark the `knots` tab
+  with `aria-current="page"`.
+- **Knots pages:** `/-/knots` shows the knots across every project the reader may see, and
+  `/<group>/<project>/knots` shows the knots of one project. A project's own knots page shows only
+  that project's knots, ready changes, and knots in flight. Its knots' references into other
+  projects render as on every other page (see **References into unpublished projects**). Both pages
+  have the same four sections, in this order:
   1. **Waiting on you:** Always empty.
   2. **In flight:** The export's `in_flight` knots, showing who claims each knot and how long ago.
      Beside them, a card titled "Ready changes — order not assessed" lists the export's `changes`.
@@ -3337,9 +3363,10 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin ht
   complete one. The `collected` time continues to show the age of the exported content.
 - **Knot page:** A knot page shows the knot's type, status, state, and fields, the chain of parents
   above it, and links to the knots that block it, the knots it blocks, and its children. The parent
-  chain names the nearest 32 parents (`server.MaxPlanDepth`) and marks any parents above them with
-  `…`. The body and each comment render as escaped preformatted text. A comment with an `edited`
-  timestamp is marked "edited" and shows its `edited` time and `edited_by`.
+  chain starts at the project's knots page, names the nearest 32 parents (`server.MaxPlanDepth`),
+  and marks any parents above them with `…`. The body and each comment render as escaped
+  preformatted text. A comment with an `edited` timestamp is marked "edited" and shows its `edited`
+  time and `edited_by`.
 - **References into unpublished projects:** A page never shows the name of a project the reader may
   not see, or the text of a reference into one, whether the export omits that project or holds it
   for another reader. Every such reference is replaced with fixed text and no link:
@@ -3576,12 +3603,13 @@ valley-web --state /var/lib/valley-web/store --listen 127.0.0.1:8080 --origin ht
   ```
 
 - **Rendering and headers:** Pages are rendered on the server with Go's `html/template`, which
-  escapes every value from the export or a repository. The stylesheet, the knots page's script and
+  escapes every value from the export or a repository. The stylesheet, the knots pages' script and
   the reader pages' script are embedded in the binary and inlined into the page; nothing else is
   loaded. No page serves a repository file as raw content; raw repository files are served only
   inside a source archive, which is gzipped and sent as an attachment. Every response, including
   redirects, error pages, `HEAD` responses and archives, carries these headers:
-  - On `/-/knots`:
+  - On `/-/knots` and on every path of the shape `/<group>/<project>/knots`, whether or not the
+    reader may see the project:
     `Content-Security-Policy: default-src 'self'; script-src 'sha256-<script hash>'; style-src 'sha256-<stylesheet hash>'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
   - On `/-/redeem` and `/-/logout`, with `--origin`:
     `Content-Security-Policy: default-src 'self'; script-src 'sha256-<reader script hash>'; style-src 'sha256-<stylesheet hash>'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`

@@ -343,8 +343,9 @@ func shown(ctx context.Context, repo string, e entry) (text, notice string, err 
 	return string(data), "", nil
 }
 
-// dirPage is one directory of a commit.
+// dirPage is one directory of a commit, under its project header.
 type dirPage struct {
+	Head    projectHead
 	Project string
 	Commit  string
 	Short   string
@@ -530,7 +531,7 @@ func (q *request) dir(ctx context.Context, p *export.Project, repo, commit strin
 	if len(entries) > MaxEntries {
 		entries = entries[:MaxEntries]
 	}
-	page := dirPage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
+	page := dirPage{Head: q.idx.head(p.Name, "source"), Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
 		TipURL: treeURL(q.idx.bases[p.Name], p.SourceTip, nil), LogURL: logURL(q.idx.bases[p.Name], commit),
 		ArchiveURL: archiveURL(q.idx.bases[p.Name], commit), Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path),
 		Omitted: read - len(entries), Partial: !complete}
@@ -603,8 +604,9 @@ func readmeRank(e entry) int {
 	return -1
 }
 
-// filePage is one file of a commit.
+// filePage is one file of a commit, under its project header.
 type filePage struct {
+	Head    projectHead
 	Project string
 	Commit  string
 	Short   string
@@ -645,7 +647,7 @@ func (q *request) file(ctx context.Context, p *export.Project, repo, commit stri
 	if err != nil {
 		return err
 	}
-	page := filePage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
+	page := filePage{Head: q.idx.head(p.Name, "source"), Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip,
 		TipURL: treeURL(q.idx.bases[p.Name], p.SourceTip, nil), LogURL: logURL(q.idx.bases[p.Name], commit),
 		Crumbs: crumbs(p.Name, q.idx.bases[p.Name], commit, path), Name: oneLine(path[len(path)-1]),
 		Size: size(e.Size), Notice: notice}
@@ -767,8 +769,10 @@ func clip(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// logPage is one page of the history that ends at a commit.
+// logPage is one page of the history that ends at a commit, under its
+// project header.
 type logPage struct {
+	Head    projectHead
 	Project string
 	Commit  string
 	Short   string
@@ -827,7 +831,8 @@ func (q *request) log(ctx context.Context, p *export.Project, repo, commit strin
 		q.missing(err)
 		return nil
 	}
-	page := logPage{Project: p.Name, Commit: commit, Short: commit[:12], AtTip: commit == p.SourceTip}
+	page := logPage{Head: q.idx.head(p.Name, "source"), Project: p.Name, Commit: commit, Short: commit[:12],
+		AtTip: commit == p.SourceTip}
 	from := []string{commit}
 	if query := q.r.URL.Query(); query.Has("from") {
 		ids, ok := frontier(query["from"])

@@ -1,0 +1,24 @@
+{{define "content"}}
+<header class="top">
+  <div>
+    <h1>projects</h1>
+  </div>
+</header>
+{{- range .Groups}}
+<section class="panel">
+  <h2>{{if .URL}}<a href="{{.URL}}">{{.Name}}</a>{{else}}{{.Name}}{{end}}</h2>
+  <div class="card">
+    <ul class="plain">
+      {{- range .Projects}}
+      <li class="listed"><a class="mono" href="{{.Source}}">{{.Name}}</a><a href="{{.Knots}}">knots</a></li>
+      {{- end}}
+    </ul>
+  </div>
+</section>
+{{- else}}
+<div class="card"><p class="muted">No project is readable here.</p></div>
+{{- end}}
+{{- if .Groups}}
+<p><a href="/-/knots">all knots</a></p>
+{{- end}}
+{{end}}

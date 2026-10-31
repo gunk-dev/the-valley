@@ -48,6 +48,11 @@ h3 { font-size: 18px; }
 .muted { color: var(--muted); }
 nav.site { display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 14px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 nav.site .fresh { margin-left: auto; color: var(--muted); }
+header.project-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 18px; }
+header.project-head .mono { font-size: 14px; }
+nav.tabs { display: flex; gap: 14px; font-size: 14px; }
+nav.tabs a[aria-current="page"] { font-weight: 600; text-decoration-color: var(--accent); }
+.listed { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: baseline; }
 header.top { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 12px 24px; }
 header.top p { margin: 6px 0 0; max-width: 62ch; }
 .tally { display: flex; flex-wrap: wrap; gap: 8px 18px; font-variant-numeric: tabular-nums; }

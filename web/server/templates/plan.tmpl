@@ -1,4 +1,7 @@
 {{define "content"}}
+{{- with .Head}}
+{{template "project-head" .}}
+{{- end}}
 <header class="top">
   <div>
     <div class="eyebrow">{{.Projects}}</div>

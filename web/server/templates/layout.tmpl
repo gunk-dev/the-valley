@@ -25,6 +25,13 @@
 
 {{define "glyph"}}<i class="k {{glyph .}}" role="img" aria-label="{{label .}}" title="{{label .}}"></i>{{end}}
 
+{{define "project-head"}}
+<header class="project-head">
+  <span class="mono">{{.Name}}</span>
+  <nav class="tabs" aria-label="Project">{{range .Tabs}}<a href="{{.URL}}"{{if .Current}} aria-current="page"{{end}}>{{.Text}}</a>{{end}}</nav>
+</header>
+{{end}}
+
 {{define "source-head"}}
 <header class="knot-head">
   <div class="meta">

@@ -16,7 +16,7 @@ import (
 )
 
 // The pages' templates, the one stylesheet they carry inline, and the two
-// scripts: the knots page's, and the reader pages'. Nothing else is
+// scripts: the knots pages', and the reader pages'. Nothing else is
 // served: no font, image or script is fetched.
 var (
 	//go:embed templates/*.tmpl
@@ -32,7 +32,7 @@ var (
 // The Content-Security-Policy of each route. Every policy admits the
 // inline stylesheet by its SHA-256 hash, fetches nothing from another
 // origin, and takes no plugin, base URL, form submission or frame. The
-// knots page's policy admits its one inline script by its hash, and the
+// knots pages' policy admits their one inline script by its hash, and the
 // reader pages' theirs, which alone may connect, to this origin only.
 // Every other route's admits no script at all, and no route but the
 // reader pages lets a script connect. An error page answers with its
@@ -49,10 +49,13 @@ func policy(scripts, connect string) string {
 }
 
 // policyFor is the policy of the route a path's segments name: the knots
-// page's for /-/knots, and every other route's for the rest. ServeHTTP
-// gives the reader pages theirs.
+// pages' for /-/knots and for every path of the shape
+// /<group>/<project>/knots, and every other route's for the rest. It
+// reads the path's shape alone, so a project the reader may not see
+// answers with the same policy as one they may. ServeHTTP gives the
+// reader pages theirs.
 func policyFor(parts []string, ok bool) string {
-	if ok && isKnotsPage(parts) {
+	if ok && (isKnotsPage(parts) || isProjectKnotsPage(parts)) {
 		return knotsPolicy
 	}
 	return contentPolicy
@@ -63,7 +66,7 @@ func inlineHash(s string) string {
 	return "'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 }
 
-var pages = parsePages("plan", "knot", "tree", "blob", "log", "error", "notfound", redeemPage, logoutPage)
+var pages = parsePages("plan", "projects", "knot", "tree", "blob", "log", "error", "notfound", redeemPage, logoutPage)
 
 // parsePages parses each page's template over the shared layout.
 func parsePages(names ...string) map[string]*template.Template {
@@ -77,9 +80,10 @@ func parsePages(names ...string) map[string]*template.Template {
 }
 
 // layout is what every page shares: its title, the inline stylesheet, the
-// script of the knots page or of a reader page, the links to the knots
-// page, to each project's source and, for a reader with a valid session,
-// to sign out, and the export's age.
+// script of a knots page or of a reader page, the site navigation, and the
+// export's age. The navigation links the projects page and, for a reader
+// with a valid session, sign out. A page that belongs to one project
+// carries its project header in its own content (projectHead).
 type layout struct {
 	Title   string
 	Style   template.CSS
@@ -119,11 +123,7 @@ func (q *request) page(status int, name, title string, content any) {
 		data.Script = template.JS(readerJS)
 	}
 	if q.e != nil {
-		data.Nav = append(data.Nav, link{"knots", knotsURL})
-		for _, name := range q.idx.public {
-			p := q.idx.projects[name]
-			data.Nav = append(data.Nav, link{name + " source", treeURL(q.idx.bases[name], p.SourceTip, nil)})
-		}
+		data.Nav = append(data.Nav, link{"projects", projectsURL})
 		data.Fresh = freshnessOf(q.e.Collected, q.auth.a.Checked, q.now)
 	}
 	// The session's link is the request's own, and never reaches an

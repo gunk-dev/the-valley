@@ -241,8 +241,13 @@ serves "/tools/app/source/tree/$app_tip/" '<h1 id="app">app <a class="anchor" hr
 grep -qF "<a href=\"/tools/app/source/blob/$app_tip/policy/read/read.cue\">its read policy</a>" "$TMPDIR/body" ||
   fail "app's README does not link its read policy at $app_tip: $(grep -F readme-text "$TMPDIR/body")"
 serves /tools/site site-readme-text
-# / lands on the source of the first project published, app, at its tip.
-[ "$(get /)" = "302 /tools/app/source/tree/$app_tip/" ] || fail "/ answered $(get /)"
+# Anyone may read app and site, so / lands on the projects page, which
+# lists both, each linking its source and its knots. app's knots page
+# shows its knot.
+[ "$(get /)" = "302 /-/projects" ] || fail "/ answered $(get /)"
+serves / "<a class=\"mono\" href=\"/tools/app/source/tree/$app_tip/\">tools/app</a><a href=\"/tools/app/knots\">knots</a>"
+grep -qF '>tools/site</a>' "$TMPDIR/body" || fail "anyone's projects page does not list site"
+serves /tools/app/knots "Open the edge"
 serves "/tools/app/knots/$knot" "Open the edge"
 [ "$(get "/a/knots/$knot?x=1")" = "308 /tools/app/knots/$knot?x=1" ] ||
   fail "the alias a answered $(get "/a/knots/$knot?x=1")"
@@ -265,17 +270,20 @@ if grep -q "notes" edge/v2/authorization; then fail "the authorization names not
 [ ! -e edge/v2/current/repos/notes.git ] || fail "the edge holds a repository of notes"
 if grep -rqF -e notes-knot-text -e '"project":"notes"' edge; then fail "the edge holds the name or a knot of notes"; fi
 # An anonymous request gets 404 for both private projects on every route:
-# a project page, its source tree, blob, history and archives, a knot, and
-# docs' short alias.
+# a project page, its source tree, blob, history and archives, its knots
+# page, a knot, and docs' short alias. Anyone's projects page lists
+# neither.
 for name in docs notes; do
   ptip=$(git -C "srv/$name.git" rev-parse main)
   for path in "/tools/$name" "/tools/$name/" "/tools/$name/source/" "/tools/$name/source/tree/$ptip/" \
     "/tools/$name/source/blob/$ptip/README.md" "/tools/$name/source/log/$ptip" \
     "/tools/$name/source/archive/$ptip.tar.gz" "/tools/$name/source/archive/main.tar.gz" \
-    "/tools/$name/knots/${private_knot[$name]}" /tools/$name/knots/oc-0000000; do
+    "/tools/$name/knots" "/tools/$name/knots/${private_knot[$name]}" /tools/$name/knots/oc-0000000; do
     gone "$path"
   done
 done
+serves /-/projects tools/app
+if grep -qF -e tools/docs -e tools/notes "$TMPDIR/body"; then fail "anyone's projects page lists a private project"; fi
 gone /d
 gone "/d/knots/${private_knot[docs]}"
 serves /-/knots "Open the edge"
@@ -311,12 +319,12 @@ cmp -s main.tar.gz app.tar.gz || fail "app's main.tar.gz is not the archive of m
 
 # Every response is private and never stored: a page, a redirect, an
 # archive, a 404 and a HEAD alike, even one that asks to be answered 304.
-# None carries an ETag. The knots page's policy admits its one script by
-# its hash; every other route's admits none. No policy lets a script
-# connect anywhere.
+# None carries an ETag. The knots pages' policy admits their one script by
+# its hash; every other route's, the projects page's and a group's too,
+# admits none. No policy lets a script connect anywhere.
 headers() { curl -sS --max-time 10 -o /dev/null -D - -H 'If-None-Match: *' "$@" | tr -d '\r'; }
-for path in / /-/knots "/tools/app/source/tree/$app_tip/" "/tools/app/source/archive/$tip.tar.gz" \
-  /tools/app/source/archive/main.tar.gz "/a/knots/$knot" /tools/nosuch/ /-/nosuch; do
+for path in / /-/knots /-/projects /tools/ /tools/app/knots "/tools/app/source/tree/$app_tip/" \
+  "/tools/app/source/archive/$tip.tar.gz" /tools/app/source/archive/main.tar.gz "/a/knots/$knot" /tools/nosuch/ /-/nosuch; do
   for method in GET HEAD; do
     if [ "$method" = HEAD ]; then got=$(headers -I "http://$web$path"); else got=$(headers "http://$web$path"); fi
     grep -qx 'Cache-Control: private, no-store' <<< "$got" || fail "$method $path is not private and unstored: $got"
@@ -326,7 +334,7 @@ for path in / /-/knots "/tools/app/source/tree/$app_tip/" "/tools/app/source/arc
     fi
     policy=$(sed -n 's/^Content-Security-Policy: //p' <<< "$got")
     case $path in
-      /-/knots) script="script-src 'sha256-" ;;
+      /-/knots | /tools/app/knots) script="script-src 'sha256-" ;;
       *) script="script-src 'none';" ;;
     esac
     [[ $policy == *"$script"* && $policy == *"connect-src 'none'"* ]] ||
@@ -844,12 +852,15 @@ policy > /dev/null
 
 # A signed-in reader reads a project that only named readers may read.
 # Step 4b took docs off the edge, so a commit grants the operator docs
-# again, and a pass sends docs' bundle back. A session of a link issued to
-# the operator reads docs' tree page with its README, docs' knot, its
-# archive, and the knots page, which lists docs' knot. Anonymous requests
-# for the same pages get 404, and anyone's knots page shows no knot of
-# docs. Once a pass delivers the link's revocation, the session gets 404
-# for docs' tree page, while the operator may still read docs.
+# again, and a pass sends docs' bundle back. The operator may read app and
+# docs, so a session of a link issued to the operator follows / to the
+# projects page, finds docs there, and opens its source, with its README,
+# and its knots page from the links there. The session reads docs' knot,
+# its archive, and the knots page of every project, which lists docs'
+# knot. Anonymous requests for the same pages get 404, anyone's projects
+# page does not list docs, and anyone's knots page shows no knot of docs.
+# Once a pass delivers the link's revocation, the session gets 404 for
+# docs' tree page, while the operator may still read docs.
 registry "{app: \"${id[app]}\"}" "{app: \"${id[app]}\"}" "{app: \"${id[app]}\", docs: \"${id[docs]}\"}" \
   > work/valley/identity/registry.cue
 commit valley "the operator reads docs"
@@ -867,8 +878,15 @@ docs_tip=$(git -C srv/docs.git rev-parse main)
 docs_tree=/tools/docs/source/tree/$docs_tip/
 docs_knot=/tools/docs/knots/${private_knot[docs]}
 docs_archive=/tools/docs/source/archive/$docs_tip.tar.gz
-[ "$(as_reader "$docs_token" "$docs_tree")" = 200 ] && grep -qF docs-readme-text body ||
+[ "$(as_reader "$docs_token" /)" = 302 ] && tr -d '\r' < headers | grep -qx 'Location: /-/projects' ||
+  fail "the operator's session was not sent from / to the projects page: $(redact headers)"
+[ "$(as_reader "$docs_token" /-/projects)" = 200 ] || fail "the operator's session was not served the projects page"
+listed=$(sed -n 's|.*<a class="mono" href="\([^"]*\)">tools/docs</a><a href="\([^"]*\)">knots</a>.*|\1 \2|p' body)
+[ "$listed" = "$docs_tree /tools/docs/knots" ] || fail "the operator's projects page does not link docs' source and knots: $listed"
+[ "$(as_reader "$docs_token" "${listed% *}")" = 200 ] && grep -qF docs-readme-text body ||
   fail "the operator's session was not served docs' tree page with its README"
+[ "$(as_reader "$docs_token" "${listed#* }")" = 200 ] && grep -qF docs-knot-text body ||
+  fail "the operator's session was not served docs' knots page with its knot"
 [ "$(as_reader "$docs_token" "$docs_knot")" = 200 ] && grep -qF docs-knot-text body ||
   fail "the operator's session was not served docs' knot"
 [ "$(as_reader "$docs_token" "$docs_archive")" = 200 ] || fail "the operator's session was not served docs' archive"
@@ -876,7 +894,9 @@ tar -tzf body > docs.listed || fail "the operator's session's archive of docs is
 grep -qx "docs-${docs_tip:0:12}/README.md" docs.listed || fail "the operator's session's archive of docs does not hold its README"
 [ "$(as_reader "$docs_token" /-/knots)" = 200 ] && grep -qF docs-knot-text body ||
   fail "the operator's session's knots page does not list docs' knot"
-for path in "$docs_tree" "$docs_knot" "$docs_archive"; do gone "$path"; done
+for path in "$docs_tree" "$docs_knot" "$docs_archive" /tools/docs/knots; do gone "$path"; done
+[ "$(get /-/projects)" = "200 " ] || fail "anyone's projects page answered $(get /-/projects)"
+if grep -qF tools/docs body; then fail "anyone's projects page lists docs"; fi
 [ "$(get /-/knots)" = "200 " ] || fail "anyone's knots page answered $(get /-/knots)"
 if grep -qF docs-knot-text body; then fail "anyone's knots page lists docs' knot"; fi
 link revoke "$docs_id" > /dev/null

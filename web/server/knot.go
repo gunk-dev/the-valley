@@ -10,9 +10,12 @@ import (
 	"the-valley/web/export"
 )
 
-// knotPage is one knot: where it sits, its fields, the knots it links,
-// its body and its comments.
+// knotPage is one knot: its project header, where it sits, from its
+// project's knots page down, its fields, the knots it links, its body and
+// its comments.
 type knotPage struct {
+	Head      projectHead
+	Plan      string
 	Knot      knotLink
 	Type      string
 	Status    string
@@ -66,7 +69,8 @@ func (q *request) knot(project, id string) {
 		q.notFound()
 		return
 	}
-	page := knotPage{Knot: q.idx.linkOf(p.Name, k), Type: k.Type, Status: k.Status, Body: trimEnd(k.Body)}
+	page := knotPage{Head: q.idx.head(p.Name, "knots"), Plan: projectKnotsURL(q.idx.bases[p.Name]),
+		Knot: q.idx.linkOf(p.Name, k), Type: k.Type, Status: k.Status, Body: trimEnd(k.Body)}
 
 	// The trail runs from the milestone down to the knot's parent. It
 	// names the nearest MaxPlanDepth parents, and marks any above them.

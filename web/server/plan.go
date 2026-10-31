@@ -27,19 +27,30 @@ type index struct {
 	// public are the visible projects' names, in the export's order.
 	public []string
 	// bases are each visible project's URL, /<group name>/<web name>,
-	// escaped, by the project's identifier. groups are the visible
-	// projects by group name and then by web name. formers are where the
-	// URLs under a visible project's former names redirect to, its base,
-	// by group name and then by former name. aliases are where each
-	// alias's URLs redirect to: a group's alias to /<group name>, and a
-	// project's short alias to its base.
+	// escaped, by the project's identifier. names are each visible
+	// project's <group name>/<web name> as a page shows it, unescaped, by
+	// the project's identifier. groups are the visible projects by group
+	// name and then by web name. formers are where the URLs under a
+	// visible project's former names redirect to, its base, by group name
+	// and then by former name. aliases are where each alias's URLs
+	// redirect to: a group's alias to /<group name>, and a project's
+	// short alias to its base.
 	bases   map[string]string
+	names   map[string]string
 	groups  map[string]map[string]*export.Project
 	formers map[string]map[string]string
 	aliases map[string]string
-	// plan is the plan page, but for what is in flight, whose ages are
-	// read at each request.
-	plan *planPage
+	// listing is the projects page's list: each group that holds a
+	// visible project, in the export's order, with its visible projects
+	// in the export's order. listed is each of those groups' place in
+	// listing, by group name.
+	listing []projectGroup
+	listed  map[string]int
+	// plan is the knots page of every visible project, and plans each
+	// visible project's own, by its identifier, but for what is in
+	// flight, whose ages are read at each request.
+	plan  *planPage
+	plans map[string]*planPage
 }
 
 // indexCancelled unwinds the nested graph walks when their worker stops.
@@ -96,8 +107,8 @@ func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (res
 		return nil, err
 	}
 	idx := &index{building: ctx, projects: map[string]*export.Project{}, knots: map[string]map[string]*export.Knot{},
-		bases: map[string]string{}, groups: map[string]map[string]*export.Project{},
-		formers: map[string]map[string]string{}, aliases: map[string]string{}}
+		bases: map[string]string{}, names: map[string]string{}, groups: map[string]map[string]*export.Project{},
+		formers: map[string]map[string]string{}, aliases: map[string]string{}, listed: map[string]int{}}
 	idx.checkBuild()
 	defer func() { idx.building = nil }()
 	idx.place(projected)
@@ -112,24 +123,25 @@ func newIndex(ctx context.Context, e *export.Export, shown map[string]bool) (res
 		}
 		idx.knots[p.Name] = byID
 	}
-	idx.plan = idx.planPage()
+	idx.plan, idx.plans = idx.planPages()
 	idx.checkBuild()
 	return idx, nil
 }
 
-// place indexes where each of e's projects has its pages, and where each
-// alias and former name redirects to. e is a projection, which holds the
-// visible projects alone. A project in no group has no pages, and a group
-// with no visible project has no alias. It checks for cancellation before
-// each group, project and name, so the work between two checks is bounded
-// by a name's length.
+// place indexes where each of e's projects has its pages, where each
+// alias and former name redirects to, and the projects page's list. e is
+// a projection, which holds the visible projects alone. A project in no
+// group has no pages, and a group with no visible project has no alias
+// and no place in the list. It checks for cancellation before each group,
+// project and name, so the work between two checks is bounded by a name's
+// length.
 func (idx *index) place(e *export.Export) {
 	groups := map[string]export.Group{}
 	for _, g := range e.Groups {
 		idx.checkBuild()
 		groups[g.ID] = g
 	}
-	used := map[string]bool{}
+	members := map[string][]listedProject{}
 	for i := range e.Projects {
 		idx.checkBuild()
 		p := &e.Projects[i]
@@ -137,10 +149,12 @@ func (idx *index) place(e *export.Export) {
 		if !grouped {
 			continue
 		}
-		used[g.ID] = true
 		idx.public = append(idx.public, p.Name)
 		base := "/" + url.PathEscape(g.Name) + "/" + url.PathEscape(p.WebName)
 		idx.bases[p.Name] = base
+		idx.names[p.Name] = g.Name + "/" + p.WebName
+		members[g.ID] = append(members[g.ID], listedProject{Name: idx.names[p.Name],
+			Source: treeURL(base, p.SourceTip, nil), Knots: projectKnotsURL(base)})
 		if idx.groups[g.Name] == nil {
 			idx.groups[g.Name] = map[string]*export.Project{}
 			idx.formers[g.Name] = map[string]string{}
@@ -157,15 +171,23 @@ func (idx *index) place(e *export.Export) {
 	}
 	for _, g := range e.Groups {
 		idx.checkBuild()
-		if !used[g.ID] {
+		if members[g.ID] == nil {
 			continue
 		}
 		for _, alias := range g.Aliases {
 			idx.checkBuild()
 			idx.aliases[alias] = "/" + url.PathEscape(g.Name)
 		}
+		idx.listed[g.Name] = len(idx.listing)
+		idx.listing = append(idx.listing, projectGroup{Name: g.Name, URL: groupURL(g.Name), Projects: members[g.ID]})
 	}
 }
+
+// groupURL is a group's page, the list of its projects.
+func groupURL(name string) string { return "/" + url.PathEscape(name) + "/" }
+
+// projectKnotsURL is a project's knots page, under its base.
+func projectKnotsURL(base string) string { return base + "/knots" }
 
 // knotURL is a knot's page, under its project's base.
 func knotURL(base, id string) string {
@@ -186,8 +208,10 @@ func (idx *index) linkOf(project string, k *export.Knot) knotLink {
 }
 
 // The plan page, in its reading order: what waits on the reader, what is
-// in flight, the paths, and the milestones.
+// in flight, the paths, and the milestones. Head is the project header of
+// a project's own knots page, and nil on the knots page of every project.
 type planPage struct {
+	Head       *projectHead
 	Projects   string
 	Tally      []tally
 	InFlight   []flight
@@ -267,8 +291,8 @@ func rank(state string) int {
 	return len(stateRank)
 }
 
-// plan serves the knots page, /-/knots: the generation's structure, and
-// what is in flight as of the request.
+// plan serves the knots page of every visible project, /-/knots: the
+// generation's structure, and what is in flight as of the request.
 func (q *request) plan() {
 	p := *q.idx.plan
 	for _, name := range q.idx.public {
@@ -277,31 +301,75 @@ func (q *request) plan() {
 	q.page(http.StatusOK, "plan", "knots", p)
 }
 
-// planPage is the plan page's structure, without what is in flight.
-func (idx *index) planPage() *planPage {
-	var p planPage
-	p.Projects = strings.Join(idx.public, " · ")
-	counts := map[string]int{}
+// projectPlan serves a project's own knots page, /<group>/<project>/knots:
+// the plan page of its knots alone, under its project header.
+func (q *request) projectPlan(project string) {
+	p, ok := q.project(project)
+	if !ok {
+		q.notFound()
+		return
+	}
+	page := *q.idx.plans[p.Name]
+	page.InFlight = q.inFlight(p)
+	head := q.idx.head(p.Name, "knots")
+	page.Head = &head
+	q.page(http.StatusOK, "plan", q.idx.names[p.Name]+" · knots", page)
+}
+
+// planPages are each visible project's plan page, by its identifier, and
+// the plan page of them all, each without what is in flight. The page of
+// them all holds each project's parts in the index's order, and shares
+// them with the project's page.
+func (idx *index) planPages() (all *planPage, each map[string]*planPage) {
+	all = &planPage{Projects: strings.Join(idx.public, " · ")}
+	each = map[string]*planPage{}
+	total := map[string]int{}
 	for _, name := range idx.public {
 		idx.checkBuild()
-		proj := idx.projects[name]
-		roots := idx.buildSet(proj.Roots)
-		for i := range proj.Knots {
+		p, counts := idx.planPage(name)
+		each[name] = p
+		for s, n := range counts {
 			idx.checkBuild()
-			k := &proj.Knots[i]
-			if (k.Type == "outcome" || k.Type == "bug") && !roots[k.ID] {
-				counts[k.State]++
-			}
+			total[s] += n
 		}
-		p.Changes = append(p.Changes, idx.readyChanges(proj)...)
-		p.Paths = append(p.Paths, idx.paths(proj)...)
-		p.Milestones = append(p.Milestones, idx.milestones(proj)...)
+		all.Changes = append(all.Changes, p.Changes...)
+		all.Paths = append(all.Paths, p.Paths...)
+		all.Milestones = append(all.Milestones, p.Milestones...)
 	}
+	all.Tally = idx.tally(total)
+	return all, each
+}
+
+// planPage is the plan page of one project's knots, without what is in
+// flight, and how many of its outcomes and bugs that are no milestone are
+// in each state.
+func (idx *index) planPage(name string) (*planPage, map[string]int) {
+	proj := idx.projects[name]
+	p := &planPage{Projects: name}
+	counts := map[string]int{}
+	roots := idx.buildSet(proj.Roots)
+	for i := range proj.Knots {
+		idx.checkBuild()
+		k := &proj.Knots[i]
+		if (k.Type == "outcome" || k.Type == "bug") && !roots[k.ID] {
+			counts[k.State]++
+		}
+	}
+	p.Changes = idx.readyChanges(proj)
+	p.Paths = idx.paths(proj)
+	p.Milestones = idx.milestones(proj)
+	p.Tally = idx.tally(counts)
+	return p, counts
+}
+
+// tally is the plan page's count of knots in each state it counts.
+func (idx *index) tally(counts map[string]int) []tally {
+	var out []tally
 	for _, s := range []string{"done", "in-progress", "ready", "blocked"} {
 		idx.checkBuild()
-		p.Tally = append(p.Tally, tally{counts[s], stateLabel(s)})
+		out = append(out, tally{counts[s], stateLabel(s)})
 	}
-	return &p
+	return out
 }
 
 // inFlight is the project's knots in flight, in the export's order: the

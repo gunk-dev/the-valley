@@ -394,8 +394,8 @@ a private project inside a public one discloses it.
 error page, a `HEAD` response, and an archive, carries `Cache-Control: private, no-store` and
 `Vary: Cookie`, carries no `ETag`, and is never answered `304` (`implemented`,
 `web/server/server.go`). No shared cache therefore stores one reader's response for another. Each
-route has its own `Content-Security-Policy` (`implemented`, `web/server/render.go`): the knots page
-admits its one inline script by its SHA-256 hash, every other route admits no script, and no route
+route has its own `Content-Security-Policy` (`implemented`, `web/server/render.go`): the knots pages
+admit their one inline script by its SHA-256 hash, every other route admits no script, and no route
 lets a script open a network connection. Rendered Markdown writes only a fixed set of elements and
 attributes, escapes the repository's text, and writes no script, form, image, or `style` attribute
 (`implemented`, `web/markdown`). `Referrer-Policy: no-referrer` keeps a link leaving the edge from
@@ -494,16 +494,18 @@ not see it. That test injects each reader's principal into the request, and uses
 `web-push-e2e` checks the headers on the packaged `valley-web`, sends a project two named readers
 may read to the edge with both in its authorization, keeps a project with no effective reader off
 it, and answers anonymous requests for both with `404` on every route. It also signs a named reader
-in with a link and reads that project's tree page, knot, archive and knots page in the session.
-Anonymous requests for that project's tree page, knot page and archive answer `404`, and anyone's
-knots page leaves its knot out. Once a pass delivers the link's revocation, the test checks only
-that the session gets `404` for the project's tree page. `web-unit` verifies that the publisher
-requires both consents and authorizes each project's effective readers
-(`TestVisibilityNeedsBothConsents`) and that no private sentinel appears in any export or bundle
-(`TestPrivateSentinelsNeverLeave`). Both `web-unit` (`TestTheRegistryIsReadAtItsRef`) and
-`readaccess-unit` (`TestRegistryRef`) verify that no project is exported when the registry ref is
-missing even if `refs/heads/refs/heads/registry` grants `anyone` read. `module-eval` rejects a short
-registry ref. `cue-vet` and `identity-schema` test both schemas against their rejected examples.
+in with a link. The session follows `/` to the projects page, finds that project there, and reads
+its tree page, its knots page, its knot, its archive and the knots page of every project. Anonymous
+requests for that project's tree page, knots page, knot page and archive answer `404`, anyone's
+projects page does not list it, and anyone's knots page leaves its knot out. Once a pass delivers
+the link's revocation, the test checks only that the session gets `404` for the project's tree page.
+`web-unit` verifies that the publisher requires both consents and authorizes each project's
+effective readers (`TestVisibilityNeedsBothConsents`) and that no private sentinel appears in any
+export or bundle (`TestPrivateSentinelsNeverLeave`). Both `web-unit`
+(`TestTheRegistryIsReadAtItsRef`) and `readaccess-unit` (`TestRegistryRef`) verify that no project
+is exported when the registry ref is missing even if `refs/heads/refs/heads/registry` grants
+`anyone` read. `module-eval` rejects a short registry ref. `cue-vet` and `identity-schema` test both
+schemas against their rejected examples.
 
 ## The web publisher
 

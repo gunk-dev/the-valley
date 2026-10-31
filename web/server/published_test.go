@@ -3,11 +3,13 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -27,7 +29,7 @@ type publishedReader struct{}
 // The real publisher's output (web-published in nix/packages.nix), in the
 // directory VALLEY_WEB_PUBLISHED names. Anyone may read app. alice alone
 // may read site, and the operator alone docs. notes has no effective
-// reader. The store admits the authorization and the manifest under the
+// reader. docs is in the group guides, and the others in tools. The store admits the authorization and the manifest under the
 // export key's verifier line, and takes the bodies, as a receiver does.
 //
 // The export holds app, docs and site, and nothing notes' knots say.
@@ -40,9 +42,14 @@ type publishedReader struct{}
 //
 // The server serves each reader the union of what anyone and they may
 // read. For anyone, bob, alice and the operator, no page it renders, a
-// knot, the knots page, a source page, a redirect or an error, holds the
-// name, alias, former name, README, knot titles, comment or ready change
-// of a private project the reader may not see.
+// knot, a knots page, the projects page, a group's page, a source page, a
+// redirect or an error, holds the name, group, alias, former name,
+// README, knot titles, comment or ready change of a private project the
+// reader may not see. / lands anyone and bob, who may see app alone, on
+// its tree, and alice and the operator on the projects page, which lists
+// the projects each reader may see. guides answers anyone, bob and alice
+// as a group that does not exist. Each project's knots page shows its own
+// knots alone, and the site navigation links the projects page alone.
 func TestThePublishersOutputServesEachReader(t *testing.T) {
 	dir := os.Getenv("VALLEY_WEB_PUBLISHED")
 	if dir == "" {
@@ -312,12 +319,14 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 		return w
 	}
 
-	// Every page of a project: its home, source pages and knots. The
-	// archive is checked for its status alone, as it is compressed.
+	// Every page of a project: its home, source pages, knots page and
+	// knots. The archive is checked for its status alone, as it is
+	// compressed.
+	bases := map[string]string{"app": "/tools/app", "site": "/tools/site", "docs": "/guides/docs", "notes": "/tools/notes"}
 	pages := func(project string) []string {
 		p := projects[project]
-		base := "/tools/" + project
-		out := []string{base + "/", base + "/source/tree/" + p.SourceTip + "/", base + "/source/blob/" + p.SourceTip + "/README.md",
+		base := bases[project]
+		out := []string{base + "/", base + "/knots", base + "/source/tree/" + p.SourceTip + "/", base + "/source/blob/" + p.SourceTip + "/README.md",
 			base + "/source/log/" + p.SourceTip}
 		for _, k := range p.Knots {
 			out = append(out, base+"/knots/"+k.ID)
@@ -325,13 +334,17 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 		return out
 	}
 	archive := func(project string) string {
-		return "/tools/" + project + "/source/archive/" + projects[project].SourceTip + ".tar.gz"
+		return bases[project] + "/source/archive/" + projects[project].SourceTip + ".tar.gz"
 	}
 	private := map[string]struct{ alias, former string }{"site": {"portal", "homepage"}, "docs": {"handbook", "manual"}}
 	// What only a private project says: its name, alias, former name,
-	// README, knot titles, comment and ready change.
+	// README, knot titles, comment and ready change, and docs' group's
+	// identifier and name.
 	secrets := func(project string) []string {
 		out := []string{project, project + "-readme-text", project + "-comment-text", project + "-change-subject"}
+		if project == "docs" {
+			out = append(out, "library", "guides")
+		}
 		if p, ok := private[project]; ok {
 			out = append(out, p.alias, p.former)
 			for _, k := range projects[project].Knots {
@@ -351,7 +364,8 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 			shown[p] = true
 		}
 		var hidden []string
-		answers := map[string]int{"/": http.StatusFound, knotsURL: http.StatusOK, "/nowhere/": http.StatusNotFound,
+		answers := map[string]int{"/": http.StatusFound, knotsURL: http.StatusOK, projectsURL: http.StatusOK,
+			"/tools/": http.StatusOK, "/tools": http.StatusOK, "/nowhere/": http.StatusNotFound,
 			"/tools/nowhere/": http.StatusNotFound, archive("app"): http.StatusOK}
 		for _, project := range []string{"app", "site", "docs"} {
 			want := http.StatusNotFound
@@ -364,7 +378,7 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 				answers[target] = want
 			}
 			if shown[project] {
-				answers["/tools/"+project+"/"] = http.StatusFound
+				answers[bases[project]+"/"] = http.StatusFound
 			}
 			if p, ok := private[project]; ok {
 				moved := http.StatusPermanentRedirect
@@ -372,11 +386,19 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 					moved = http.StatusNotFound
 				}
 				answers["/"+p.alias+"/"] = moved
-				answers["/tools/"+p.former+"/source/tree/"+projects[project].SourceTip+"/"] = moved
+				group, _, _ := strings.Cut(strings.TrimPrefix(bases[project], "/"), "/")
+				answers["/"+group+"/"+p.former+"/source/tree/"+projects[project].SourceTip+"/"] = moved
+			}
+		}
+		for _, target := range []string{"/guides/", "/guides", "/library/"} {
+			answers[target] = http.StatusNotFound
+			if shown["docs"] && target != "/library/" {
+				answers[target] = http.StatusOK
 			}
 		}
 		hidden = append(hidden, secrets("notes")...)
 		answers["/tools/notes/"] = http.StatusNotFound
+		answers["/tools/notes/knots"] = http.StatusNotFound
 		for target, want := range answers {
 			w := get(reader, target)
 			if w.Code != want {
@@ -398,6 +420,84 @@ func TestThePublishersOutputServesEachReader(t *testing.T) {
 			page := get(reader, "/tools/app/knots/"+knotOf(e, "app", title).ID).Body.String()
 			if names := strings.Contains(page, project+"-knot-text"); names != shown[project] {
 				t.Errorf("app's knot blocked by %s names its blocker to %s: %v, want %v", project, reader, names, shown[project])
+			}
+		}
+
+		// / lands on the tree of the one project the reader may see, and
+		// on the projects page when they may see more.
+		landing := projectsURL
+		if len(shownTo[reader]) == 1 {
+			landing = bases["app"] + "/source/tree/" + projects["app"].SourceTip + "/"
+		}
+		if to := get(reader, "/").Header().Get("Location"); to != landing {
+			t.Errorf("/ as %s redirects to %s, not to %s", reader, to, landing)
+		}
+		if nav := section(t, get(reader, knotsURL).Body.String(), `<nav class="site"`, `<span class="fresh">`); nav != `<nav class="site" aria-label="Pages"><a href="/-/projects">projects</a>` {
+			t.Errorf("the navigation as %s is %s", reader, nav)
+		}
+
+		// The projects page lists the projects the reader may see, each
+		// linking its source and its knots, and each group's page those of
+		// its group. A group with none the reader may see answers as a
+		// group that does not exist.
+		row := func(project string) string {
+			base := bases[project]
+			return `<li class="listed"><a class="mono" href="` + base + `/source/tree/` + projects[project].SourceTip + `/">` +
+				strings.TrimPrefix(base, "/") + `</a><a href="` + base + `/knots">knots</a></li>`
+		}
+		listed, tools, guides := get(reader, projectsURL).Body.String(), get(reader, "/tools/").Body.String(), get(reader, "/guides/")
+		if n := strings.Count(listed, `<li class="listed">`); n != len(shownTo[reader]) {
+			t.Errorf("the projects page lists %d projects to %s, not %d", n, reader, len(shownTo[reader]))
+		}
+		for _, project := range []string{"app", "site", "docs"} {
+			if strings.Contains(listed, row(project)) != shown[project] {
+				t.Errorf("the projects page lists %s to %s: %v, want %v", project, reader, !shown[project], shown[project])
+			}
+			inGroup := strings.Contains(tools, row(project))
+			if project == "docs" {
+				inGroup = strings.Contains(guides.Body.String(), row(project))
+			}
+			if inGroup != shown[project] {
+				t.Errorf("%s's group's page lists it to %s: %v, want %v", project, reader, inGroup, shown[project])
+			}
+		}
+		if missing := get(reader, "/nowhere/"); !shown["docs"] && (fmt.Sprint(guides.Header()) != fmt.Sprint(missing.Header()) ||
+			!bytes.Equal(guides.Body.Bytes(), missing.Body.Bytes())) {
+			t.Errorf("/guides/ answers %s otherwise than a group that does not exist", reader)
+		}
+
+		// Each project's knots page links its own knots alone, under its
+		// project header, whose knots tab is current. Its tree's header
+		// marks the source tab.
+		for _, project := range shownTo[reader] {
+			base, tip := bases[project], projects[project].SourceTip
+			tabs := func(current string) string {
+				out := `<nav class="tabs" aria-label="Project">`
+				for _, tab := range [][2]string{{"source", base + "/source/tree/" + tip + "/"}, {"knots", base + "/knots"}} {
+					mark := ""
+					if tab[0] == current {
+						mark = ` aria-current="page"`
+					}
+					out += `<a href="` + tab[1] + `"` + mark + `>` + tab[0] + `</a>`
+				}
+				return out + `</nav>`
+			}
+			own := get(reader, base+"/knots").Body.String()
+			if !strings.Contains(own, `<span class="mono">`+strings.TrimPrefix(base, "/")+`</span>`) || !strings.Contains(own, tabs("knots")) {
+				t.Errorf("%s's knots page as %s has no project header with its knots tab current", project, reader)
+			}
+			if tree := get(reader, base+"/source/tree/"+tip+"/").Body.String(); !strings.Contains(tree, tabs("source")) {
+				t.Errorf("%s's tree as %s has no project header with its source tab current", project, reader)
+			}
+			for _, k := range projects[project].Knots {
+				if !strings.Contains(own, `href="`+base+`/knots/`+k.ID+`"`) {
+					t.Errorf("%s's knots page as %s does not link its knot %s", project, reader, k.ID)
+				}
+			}
+			for _, link := range regexp.MustCompile(`href="([^"]*/knots/[^"]*)"`).FindAllStringSubmatch(own, -1) {
+				if !strings.HasPrefix(link[1], base+"/knots/") {
+					t.Errorf("%s's knots page as %s links %s", project, reader, link[1])
+				}
 			}
 		}
 	}

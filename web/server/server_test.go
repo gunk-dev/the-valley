@@ -475,6 +475,7 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 		"/source/archive/main.tar.gz",
 		"/source/tree/" + siteTip + "/no/such/path/",
 		"/source/anything",
+		"/knots",
 	} {
 		for _, pair := range [][2]string{
 			{"/tools/site" + route, "/tools/nosuch" + route},
@@ -507,10 +508,10 @@ func TestHiddenProjectAnswersLikeMissing(t *testing.T) {
 
 // A group's or a project's name may be any word the server's routes use:
 // source, knots, or web-export, the receiver's first segment. A project
-// so named, in a group so named, is served on every route, and
-// /<group>/<project>/ redirects to its tree. The server's own paths, under
-// /-/, are never a group's, and a project's path without its group is no
-// route.
+// so named, in a group so named, is served on every route, its knots page
+// too, /<group>/<project>/ redirects to its tree, and /<group>/ lists it.
+// The server's own paths, under /-/, are never a group's, and a project's
+// path without its group is no route.
 func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 	for _, name := range []string{"source", "knots", "web-export"} {
 		t.Run(name, func(t *testing.T) {
@@ -527,12 +528,18 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 				t.Errorf("the plan page does not link %s's knots", name)
 			}
 			for _, target := range []string{
+				base + "/knots",
 				base + "/knots/oc-a000002",
 				tree,
 				base + "/source/blob/" + tip + "/docs/guide.md",
 				base + "/source/log/" + tip,
 			} {
 				h.page(target)
+			}
+			for _, target := range []string{"/" + name, "/" + name + "/"} {
+				if page := h.page(target); !strings.Contains(page, `<a class="mono" href="`+tree+`">`+name+"/"+name+`</a>`) {
+					t.Errorf("GET %s does not list %s", target, name)
+				}
 			}
 			for _, target := range []string{base + "/", base, base + "/source/"} {
 				if w := h.get(target); w.Code != http.StatusFound || w.Header().Get("Location") != tree {
@@ -543,7 +550,7 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 				"/-", "/-/", "/-/" + name + "/", "/-/knots/oc-a000002", "/-/source/tree/" + tip + "/",
 				"/-/" + name + "/" + name + "/source/tree/" + tip + "/", "/-" + base + "/",
 				"/" + name + "/source/tree/" + tip + "/", "/" + name + "/knots/oc-a000002",
-				"/" + name, "/" + name + "/", "/tools/app/", "/core/" + name + "/", "/site/", "/site",
+				"/tools/app/", "/tools", "/core/" + name + "/", "/site/", "/site", "/-/" + name + "/knots",
 			} {
 				if w := h.get(target); w.Code != http.StatusNotFound {
 					t.Errorf("GET %s answered %d, not 404", target, w.Code)
@@ -553,13 +560,16 @@ func TestProjectNamesBesideTheServersPaths(t *testing.T) {
 	}
 }
 
-// / lands on source: it redirects to the tree, at its published tip, of
-// the first project the reader may see, in the export's order, and to the
-// knots page when the reader may see none. The knots page is /-/knots,
-// the one page under /-/, and its title, its heading and its link in the
-// navigation say knots, as the knot page's trail and the error page's
-// link do. HEAD answers each as GET does.
-func TestLandingAndTheKnotsPage(t *testing.T) {
+// / lands on the projects page when the reader may see several projects
+// or none, and on the tree, at its published tip, of the one project the
+// reader may see. The projects page, /-/projects, lists each project by
+// group, in the export's order, each linking its source and its knots,
+// and then links the knots page of every project, /-/knots. The site
+// navigation links the projects page alone, and the error page links it
+// too. A page of one project carries its project header, whose tab of the
+// page's part of the project is current, and a knot's trail starts at its
+// project's knots page. HEAD answers each as GET does.
+func TestLandingTheProjectsPageAndTheKnotsPages(t *testing.T) {
 	h := newHarness(t)
 	h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{"site": h.f.Bundles["app"]}, func(e *export.Export) {
 		site := e.Projects[0]
@@ -576,31 +586,92 @@ func TestLandingAndTheKnotsPage(t *testing.T) {
 			}
 		}
 	}
-	lands("/tools/app/source/tree/" + tip + "/")
+	lands("/-/projects")
 
-	w := h.get("/-/knots")
+	nav := `<nav class="site" aria-label="Pages"><a href="/-/projects">projects</a><span class="fresh">`
+	w := h.get("/-/projects")
 	page := w.Body.String()
 	for _, want := range []string{
-		"<title>knots</title>", "<h1>knots</h1>",
-		`<nav class="site" aria-label="Pages"><a href="/-/knots">knots</a><a href="/tools/app/source/tree/` + tip + `/">app source</a><a href="/docs/site/source/tree/` + tip + `/">site source</a>`,
+		"<title>projects</title>", "<h1>projects</h1>", nav,
+		`<h2><a href="/tools/">tools</a></h2>`,
+		`<li class="listed"><a class="mono" href="/tools/app/source/tree/` + tip + `/">tools/app</a><a href="/tools/app/knots">knots</a></li>`,
+		`<h2><a href="/docs/">docs</a></h2>`,
+		`<li class="listed"><a class="mono" href="/docs/site/source/tree/` + tip + `/">docs/site</a><a href="/docs/site/knots">knots</a></li>`,
+		`<p><a href="/-/knots">all knots</a></p>`,
 	} {
+		if w.Code != http.StatusOK || !strings.Contains(page, want) {
+			t.Errorf("/-/projects answered %d without %q", w.Code, want)
+		}
+	}
+	if strings.Index(page, "tools/app") > strings.Index(page, "docs/site") || strings.Contains(page, "<script") {
+		t.Error("the projects page lists its groups out of the export's order, or carries a script")
+	}
+	group := h.page("/docs/")
+	if !strings.Contains(group, "<title>docs</title>") || !strings.Contains(group, "<h2>docs</h2>") ||
+		!strings.Contains(group, `href="/docs/site/knots"`) || strings.Contains(group, "/tools/app") {
+		t.Errorf("the group's page does not list its own projects alone:\n%s", group)
+	}
+
+	w = h.get("/-/knots")
+	page = w.Body.String()
+	for _, want := range []string{"<title>knots</title>", "<h1>knots</h1>", nav, `href="/tools/app/knots/oc-a000002"`, `href="/docs/site/knots/oc-a000002"`} {
 		if w.Code != http.StatusOK || !strings.Contains(page, want) {
 			t.Errorf("/-/knots answered %d without %q", w.Code, want)
 		}
 	}
-	if head := h.do("HEAD", "/-/knots"); head.Code != http.StatusOK || fmt.Sprint(head.Header()) != fmt.Sprint(w.Header()) {
-		t.Errorf("HEAD /-/knots answered %d with the headers\n%v\nnot\n%v", head.Code, head.Header(), w.Header())
+	if strings.Contains(page, " source</a>") || strings.Contains(page, `class="project-head"`) {
+		t.Error("the knots page of every project names a project's source in its navigation, or carries a project header")
 	}
-	if page := h.page("/tools/app/knots/oc-a000002"); !strings.Contains(page, `<nav class="trail" aria-label="Where this knot sits"><a href="/-/knots">knots</a>`) {
-		t.Error("the knot page's trail does not start at the knots page")
+	for _, target := range []string{"/-/knots", "/-/projects", "/docs/", "/docs/site/knots"} {
+		get, head := h.get(target), h.do("HEAD", target)
+		if head.Code != http.StatusOK || fmt.Sprint(head.Header()) != fmt.Sprint(get.Header()) {
+			t.Errorf("HEAD %s answered %d with the headers\n%v\nnot\n%v", target, head.Code, head.Header(), get.Header())
+		}
 	}
-	if page := h.page("/tools/app/source/tree/" + tip + "/"); !strings.Contains(page, `<span class="eyebrow">source</span>`) {
-		t.Error("the source page's eyebrow does not read source")
+
+	head := func(base, current string) string {
+		tab := func(text, url string) string {
+			if text == current {
+				return `<a href="` + url + `" aria-current="page">` + text + `</a>`
+			}
+			return `<a href="` + url + `">` + text + `</a>`
+		}
+		return `<header class="project-head">
+  <span class="mono">` + strings.TrimPrefix(base, "/") + `</span>
+  <nav class="tabs" aria-label="Project">` + tab("source", base+"/source/tree/"+tip+"/") + tab("knots", base+"/knots") + `</nav>
+</header>`
 	}
-	if !bytes.Contains(busyPage, []byte(`<p><a href="/-/knots">knots</a></p>`)) {
-		t.Error("the error page does not link the knots page")
+	for target, wants := range map[string][]string{
+		"/docs/site/knots": {head("/docs/site", "knots"), "<title>docs/site · knots</title>", "<h1>knots</h1>", nav},
+		"/docs/site/knots/oc-a000002": {head("/docs/site", "knots"),
+			`<nav class="trail" aria-label="Where this knot sits"><a href="/docs/site/knots">knots</a>`},
+		"/docs/site/source/tree/" + tip + "/":                  {head("/docs/site", "source"), `<span class="eyebrow">source</span>`},
+		"/docs/site/source/blob/" + tip + "/README.md":         {head("/docs/site", "source")},
+		"/docs/site/source/log/" + tip:                         {head("/docs/site", "source")},
+		"/tools/app/source/tree/" + tip + "/docs/":             {head("/tools/app", "source")},
+		"/tools/app/knots/oc-a000002":                          {head("/tools/app", "knots")},
+		"/tools/app/source/blob/" + tip + "/docs/guide.md":     {head("/tools/app", "source")},
+		"/tools/app/source/blob/" + tip + "/README.md?plain=1": {head("/tools/app", "source")},
+	} {
+		page := h.page(target)
+		for _, want := range wants {
+			if !strings.Contains(page, want) {
+				t.Errorf("%s does not hold %q", target, want)
+			}
+		}
+		if strings.Count(page, `<header class="project-head">`) != 1 {
+			t.Errorf("%s has %d project headers", target, strings.Count(page, `<header class="project-head">`))
+		}
 	}
-	for _, target := range []string{"/-", "/-/", "/-/knots/", "/-/knots/oc-a000002", "/-/Knots", "/-/plan", "/-/knots/x"} {
+	plan := h.page("/docs/site/knots")
+	if strings.Contains(plan, "/tools/app") || !strings.Contains(plan, `href="/docs/site/knots/oc-a000002"`) {
+		t.Errorf("site's knots page does not show site's knots alone:\n%s", plan)
+	}
+	if !bytes.Contains(busyPage, []byte(`<p><a href="/-/projects">projects</a></p>`)) {
+		t.Error("the error page does not link the projects page")
+	}
+	for _, target := range []string{"/-", "/-/", "/-/knots/", "/-/knots/oc-a000002", "/-/Knots", "/-/plan", "/-/knots/x",
+		"/-/projects/", "/-/Projects", "/-/projects/x", "/docs/site/knots/", "/docs/nosuch/knots", "/nosuch/", "/nosuch"} {
 		for _, method := range []string{"GET", "HEAD"} {
 			if w := h.do(method, target); w.Code != http.StatusNotFound {
 				t.Errorf("%s %s answered %d, not 404", method, target, w.Code)
@@ -616,9 +687,16 @@ func TestLandingAndTheKnotsPage(t *testing.T) {
 	only.Projects = []export.AuthorizedProject{{Name: "site", Identity: exporttest.Identities["app"], Readers: []string{export.Anyone}}}
 	h.authorize(only)
 	lands("/docs/site/source/tree/" + tip + "/")
+	if w := h.get("/tools/"); w.Code != http.StatusNotFound {
+		t.Errorf("a group none of whose projects the reader may see answered %d", w.Code)
+	}
 
 	h.authorize(exporttest.Authorization(a.Sequence + 2))
-	lands("/-/knots")
+	lands("/-/projects")
+	if empty := h.page("/-/projects"); !strings.Contains(empty, `<p class="muted">No project is readable here.</p>`) ||
+		strings.Contains(empty, "all knots") || strings.Contains(empty, "<h2>") {
+		t.Errorf("with no project to see, the projects page is not its empty state:\n%s", empty)
+	}
 	empty := h.page("/-/knots")
 	if !strings.Contains(empty, "<h1>knots</h1>") || strings.Contains(empty, " source</a>") || strings.Contains(empty, "/tools/app") {
 		t.Errorf("with no project to see, the knots page is not its empty state:\n%s", empty)
@@ -630,8 +708,8 @@ func TestLandingAndTheKnotsPage(t *testing.T) {
 // name to its web name in its group, and a project's short alias to
 // /<group>/<project>. The rest of the path and the query are kept as they
 // were sent, escapes, dot segments and a bare "?" too, and the redirect
-// leads to the page. A group's identifier, a name in another case, and a
-// group with no project named answer 404.
+// leads to the page. A group's alias leads to the group's page. A group's
+// identifier and a name in another case answer 404.
 func TestAliasesRedirectPermanently(t *testing.T) {
 	h := newHarness(t)
 	tip := h.tip()
@@ -671,7 +749,14 @@ func TestAliasesRedirectPermanently(t *testing.T) {
 			t.Errorf("/app/ leads to %d %q, not to app's tree", next.Code, next.Header().Get("Location"))
 		}
 	}
-	for _, target := range []string{"/tools", "/tools/", "/core/app/", "/Tools/app/", "/T/app/", "/App/", "/tools/App/",
+	for _, target := range []string{"/t", "/t/"} {
+		if w := h.get(target); w.Code == http.StatusPermanentRedirect {
+			if page := h.page(w.Header().Get("Location")); !strings.Contains(page, `<a class="mono" href="/tools/app/source/tree/`+tip+`/">tools/app</a>`) {
+				t.Errorf("%s leads to a page that does not list app", target)
+			}
+		}
+	}
+	for _, target := range []string{"/core", "/core/", "/core/app/", "/Tools/app/", "/Tools/", "/T/app/", "/App/", "/tools/App/",
 		"/tools/Old-app/", "/old-app/", "/core/old-app/"} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d, not 404", target, w.Code)
@@ -681,8 +766,8 @@ func TestAliasesRedirectPermanently(t *testing.T) {
 
 // A project's web name is its own within its group, and need not be its
 // identifier. Two projects that are each app on the web, in two groups,
-// are served apart, each under its group's name, while the plan page
-// links each. A project's identifier is no web name of its own.
+// are served apart, each under its group's name, with a knots page of its
+// own, while the plan page of every project links each. A project's identifier is no web name of its own.
 func TestTwoGroupsEachHoldAnApp(t *testing.T) {
 	h := newHarness(t)
 	h.publish(exporttest.SignedAt.Add(time.Minute), map[string]string{"site": h.f.Bundles["app"]}, func(e *export.Export) {
@@ -709,6 +794,15 @@ func TestTwoGroupsEachHoldAnApp(t *testing.T) {
 			t.Errorf("the plan page does not hold %s", link)
 		}
 	}
+	// Each app's knots page shows its own project's knots alone.
+	tools, docs := h.page("/tools/app/knots"), h.page("/docs/app/knots")
+	if !strings.Contains(tools, `href="/tools/app/knots/oc-a000002"`) || strings.Contains(tools, "/docs/app/knots/") || strings.Contains(tools, "Site: ") {
+		t.Errorf("/tools/app/knots shows other knots than app's:\n%s", tools)
+	}
+	if !strings.Contains(docs, `href="/docs/app/knots/oc-a000002"`) || strings.Contains(docs, "/tools/app/knots/") ||
+		!strings.Contains(docs, "Site: The plan page lists milestones") {
+		t.Errorf("/docs/app/knots shows other knots than site's:\n%s", docs)
+	}
 	for _, target := range []string{"/docs/site/", "/docs/site/knots/oc-a000002", "/tools/site/"} {
 		if w := h.get(target); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s answered %d, not 404", target, w.Code)
@@ -721,7 +815,7 @@ func TestTwoGroupsEachHoldAnApp(t *testing.T) {
 // Every Location is a path on the server's own origin, whatever dot
 // segments, escaped slashes or empty segments the path held. Where the
 // browser goes answers as it does when asked for directly: a page of the
-// project, or the one 404.
+// project, the group's page, or the one 404.
 func TestRedirectsLeadWhereTheBrowserGoes(t *testing.T) {
 	h := newHarness(t)
 	tip := h.tip()
@@ -737,8 +831,8 @@ func TestRedirectsLeadWhereTheBrowserGoes(t *testing.T) {
 		"/t/../../..//example.net/": {"//example.net/", http.StatusNotFound},
 		"/t/..%2F..%2Fx":            {"/tools/..%2F..%2Fx", http.StatusNotFound},
 		"/app/.%2E/x":               {"/tools/x", http.StatusNotFound},
-		"/tools/old-app/..":         {"/tools/", http.StatusNotFound},
-		"/tools/old-app/.%2e?":      {"/tools/?", http.StatusNotFound},
+		"/tools/old-app/..":         {"/tools/", http.StatusOK},
+		"/tools/old-app/.%2e?":      {"/tools/?", http.StatusOK},
 	} {
 		w := h.get(from)
 		if w.Code != http.StatusPermanentRedirect {
@@ -2248,9 +2342,11 @@ func TestDeepPlan(t *testing.T) {
 
 // Every response carries its route's strict policy and is private and
 // never stored: a page, a redirect, an archive, an error page, a 404 and
-// a HEAD alike, for anyone and for a named reader. The knots page's policy
-// admits its one inline script and stylesheet by their hashes, every other
-// route's admits the stylesheet and no script, and no policy lets a script
+// a HEAD alike, for anyone and for a named reader. The knots pages'
+// policy, on /-/knots and on every path of a project's knots page,
+// admits their one inline script and stylesheet by their hashes, every
+// other route's, the projects page's and the groups' too, admits the
+// stylesheet and no script, and no policy lets a script
 // connect anywhere or fetch from another origin. No response carries an
 // ETag or a Last-Modified, and a conditional request is answered in full.
 func TestEveryResponseCarriesItsRoutesHeaders(t *testing.T) {
@@ -2269,6 +2365,17 @@ func TestEveryResponseCarriesItsRoutesHeaders(t *testing.T) {
 			{"HEAD", "/-/knots", knotsPolicy},
 			{"POST", "/-/knots", knotsPolicy},
 			{"GET", "/-/knots/", contentPolicy},
+			{"GET", "/-/projects", contentPolicy},
+			{"HEAD", "/-/projects", contentPolicy},
+			{"GET", "/tools/", contentPolicy},
+			{"GET", "/tools", contentPolicy},
+			{"GET", "/t/", contentPolicy},
+			{"GET", "/tools/app/knots", knotsPolicy},
+			{"HEAD", "/tools/app/knots", knotsPolicy},
+			{"GET", "/tools/site/knots", knotsPolicy},
+			{"GET", "/tools/nosuch/knots", knotsPolicy},
+			{"GET", "/app/knots", contentPolicy},
+			{"GET", "/tools/app/knots/", contentPolicy},
 			{"GET", "/tools/app/knots/oc-a000002", contentPolicy},
 			{"GET", "/tools/app/source/", contentPolicy},
 			{"GET", "/tools/app/source/tree/" + tip + "/", contentPolicy},
@@ -2330,6 +2437,14 @@ func TestEveryResponseCarriesItsRoutesHeaders(t *testing.T) {
 		if strings.Contains(page, external) {
 			t.Errorf("the plan page holds %q", external)
 		}
+	}
+	for _, target := range []string{"/-/projects", "/tools/"} {
+		if page := h.page(target); strings.Contains(page, "<script") {
+			t.Errorf("%s carries a script", target)
+		}
+	}
+	if own := h.page("/tools/app/knots"); strings.Count(own, "<script>") != 1 || !strings.Contains(own, "<script>"+planJS+"</script>") {
+		t.Error("a project's knots page does not carry the knots pages' one script")
 	}
 	if knot := h.page("/tools/app/knots/oc-a000002"); strings.Contains(knot, "<script") {
 		t.Error("a knot page carries a script")

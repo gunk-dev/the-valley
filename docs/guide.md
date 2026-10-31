@@ -922,6 +922,15 @@ again requires a new link. If the page cannot tell whether the server used the l
 button again to retry. If the earlier attempt started a session, the retry continues to `/`; if the
 server reports that the link cannot be used, issue a new link.
 
+After signing in, the browser goes to `/`. A reader who may read more than one project lands on the
+projects page, `/-/projects`, which lists each project they may read under its group. Each entry
+links to the project's source and to its knots. A reader who may read exactly one project lands on
+that project's source instead. Every page of a project has a header that names it as
+`<group>/<project>`, with two tabs: **source** and **knots**. The **projects** link at the top of
+every project page and every listing page returns to the list. The list's **all knots** link shows
+the knots of every project the reader may read (see
+[Web server (`valley-web`)](./reference.md#web-server-valley-web) for the routes).
+
 ```bash
 valley-web-link list
 valley-web-link revoke lk-0123456789abcdef

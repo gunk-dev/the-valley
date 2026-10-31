@@ -38,10 +38,12 @@ import (
 // the address bar and sends nothing, the page's policy runs its script and
 // lets it fetch while it blocks a script put in the page, and one click
 // redeems the link once, stores the host-only cookie over HTTPS, and
-// lands on /. Two answers the proxy spoils then leave the outcome
-// unknown, and the page says so. A redemption, after a sign-out, answered
-// 502 with the new session's cookie: the retry asks /-/session, finds
-// this link's session, and lands on / with no second sign-out. A
+// follows / with the session. The reader's view holds app alone, so /
+// lands on app's tree. Two answers the proxy spoils then leave the
+// outcome unknown, and the page says so. A redemption, after a sign-out,
+// answered 502 with the new session's cookie: the retry asks /-/session,
+// finds this link's session, and lands on app's tree with no second
+// sign-out. A
 // redemption whose answer never arrived: the retry finds no session,
 // signs no one out, and is told the link cannot be used. web-server-unit
 // skips it.
@@ -129,7 +131,7 @@ func TestBrowser(t *testing.T) {
 	// A command sent while the page navigates may go unanswered, so the
 	// navigation is followed through the proxy first.
 	page.until(t, "the browser follows / with its session", 2, func() bool { return seen.cookied("GET", "/") })
-	page.until(t, "the click lands on a page of the source", 2, func() bool { return b.landed(origin) })
+	page.until(t, "the click lands on app's tree", 2, func() bool { return b.landed(origin) })
 	if n := seen.count("POST", "/-/redeem"); n != 1 || seen.status("POST", "/-/redeem") != http.StatusNoContent {
 		t.Errorf("one click sent %d redemptions, the first answered %d", n, seen.status("POST", "/-/redeem"))
 	}
@@ -159,7 +161,7 @@ func TestBrowser(t *testing.T) {
 	page.click(t, "r-switch")
 	page.unknown(t, "r-switch")
 	page.click(t, "r-switch")
-	page.until(t, "the retry lands on a page of the source", 3, func() bool { return b.landed(origin) })
+	page.until(t, "the retry lands on app's tree", 3, func() bool { return b.landed(origin) })
 	if n := seen.count("POST", "/-/logout"); n != 1 {
 		t.Errorf("the switch and its retry sent %d logouts, want 1", n)
 	}
@@ -252,11 +254,12 @@ func (p *tab) unknown(t *testing.T, button string) {
 	}
 }
 
-// landed reports whether the last navigation went to a page of this
-// origin's source, out of /-/.
+// landed reports whether the last navigation went to where / takes the
+// reader: app's tree on this origin, since app is the one project in the
+// reader's view.
 func (b *browser) landed(origin string) bool {
 	u, err := url.Parse(b.navigated())
-	return err == nil && u.Host == strings.TrimPrefix(origin, "https://") && !strings.HasPrefix(u.Path, "/-/")
+	return err == nil && u.Host == strings.TrimPrefix(origin, "https://") && strings.HasPrefix(u.Path, "/tools/app/source/tree/")
 }
 
 // cookie is a cookie the browser holds, as Storage.getCookies tells it.

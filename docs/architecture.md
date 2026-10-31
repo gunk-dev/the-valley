@@ -3331,10 +3331,11 @@ into a session for the link's principal (`implemented`; see [Readers' sessions](
 ## The web server
 
 `valley-web` serves a receiver's store over HTTP (`web/server/`, `web/cmd/valley-web/`). It builds
-each response for one reader (see [Each reader's view](#each-readers-view)). For each project that
-reader may see, it serves the knots page, each knot page, and a source browser for `main` under the
-project's group, including a gzipped tar archive for each reachable commit. When started with
-`--origin`, `valley-web` serves a request that carries a valid session cookie as that session's
+each response for one reader (see [Each reader's view](#each-readers-view)). For the projects that
+reader may see, it serves a projects page and a knots page of all of them. For each of those
+projects, it serves the project's own knots page, each knot page, and a source browser for `main`
+under the project's group, including a gzipped tar archive for each reachable commit. When started
+with `--origin`, `valley-web` serves a request that carries a valid session cookie as that session's
 principal, and serves every other request as `anyone` (`implemented`; see
 [Readers' sessions](#readers-sessions)). Without `--origin`, it serves every request as `anyone`.
 `valley-web` runs alongside the receiver as a separate process (see [The receiver](#the-receiver)).
@@ -3413,10 +3414,10 @@ is in a hidden project renders identically whether the export omits that project
 another reader. When the blocker is done, neither view shows the knot as waiting. When the blocker
 is open, both views show once that it waits on "a knot in an unpublished project".
 
-A project outside the reader's view adds no navigation link, former name, alias, redirect, target
-title or status, or source route. A group that contains no project in the reader's view has no group
-alias. Any request for a hidden project returns the same static `404` page as a request for a
-project that does not exist.
+A project outside the reader's view adds no entry on the projects page, navigation link, former
+name, alias, redirect, target title or status, or source route. A group that contains no project in
+the reader's view has no page and no group alias. Any request for a hidden project returns the same
+static `404` page as a request for a project that does not exist.
 
 This filtering applies only to the export's structured fields. Authored prose in a visible project —
 such as a knot body, a comment, a README, or an absolute link — is published as written.
@@ -3677,9 +3678,10 @@ Checked by:
   any session out.
 - `web-push-e2e`, which redeems a link issued by the packaged publisher and exercises server
   restarts, link revocation, logout, and recovery from a missing or corrupted `browser/state`. It
-  also redeems a link of a named reader of a project that `anyone` may not read. The session reads
-  that project's tree page, knot, archive and knots page, and gets `404` for its tree page once a
-  pass delivers the link's revocation.
+  also redeems a link of a named reader of a project that `anyone` may not read. The session follows
+  `/` to the projects page, finds that project there, and opens its tree page and its knots page
+  from the page's links. It reads the project's knot, archive and the knots page of every project,
+  and gets `404` for its tree page once a pass delivers the link's revocation.
 - `web-receiver-unit`, which uploads a signed export with private projects through the real receiver
   to the packaged `valley-web` (`web/cmd/valley-web-receive/readers_test.go`). It verifies that two
   named principals and `anyone` each see the knots, source pages, and archives of their authorized
@@ -3729,11 +3731,12 @@ treats as owned by another user.
 ### Groups and web URLs
 
 Every project on the web belongs to a group. Project URLs begin with the group name followed by the
-project's web name: `/<group>/<project>/…`, such as `/tools/app/knots/<id>`. The root path `/`
-redirects to a project's source tree, and the knots page is at `/-/knots`. Because URLs appear in
-links, commits, and knots, renaming a group or a project redirects old URLs only if the old name
-stays in the group's `aliases` or the project's `formerNames`. The lookup index uses only declared
-names (`implemented`, `web/server/plan.go`).
+project's web name: `/<group>/<project>/…`, such as `/tools/app/knots/<id>`. `/<group>/` lists the
+group's projects. The root path `/` redirects to the projects page at `/-/projects`, or to the
+source tree of the reader's one project, and the knots page of every project is at `/-/knots`.
+Because URLs appear in links, commits, and knots, renaming a group or a project redirects old URLs
+only if the old name stays in the group's `aliases` or the project's `formerNames`. The lookup index
+uses only declared names (`implemented`, `web/server/plan.go`).
 
 Groups and project placements are declared in `valley.cue` alongside each project's git store,
 mirrors, ref protection, and push grants (`schema/valley.cue`). At build time, the NixOS modules

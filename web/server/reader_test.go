@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -247,11 +248,12 @@ func (s *Server) heldViews() (anonymous, named, pins int) {
 // Each reader is served from the projects they may see: what anyone may
 // read, app, and what their principal may read, site for alice and docs
 // for bob. For each reader, every route, the navigation, the landing, the
+// projects page, each group's page, each project's knots page, the
 // aliases, the former names, the references between projects, the
 // rendered Markdown and the archives are built from those projects alone.
 // A project the reader may not see answers every route exactly as one that
-// does not exist, takes no git slot, and its group's alias, when none of
-// the group's projects is the reader's, is no alias.
+// does not exist, takes no git slot, and its group, when none of the
+// group's projects is the reader's, has no page and no alias.
 func TestNamedReadersSeeTheirOwnProjects(t *testing.T) {
 	h := newHarness(t)
 	h.edge(exporttest.SignedAt.Add(time.Minute), map[string][]string{
@@ -269,22 +271,94 @@ func TestNamedReadersSeeTheirOwnProjects(t *testing.T) {
 	readers := map[string][]string{export.Anyone: {"app"}, "alice": {"app", "site"}, "bob": {"app", "docs"}}
 	for reader, sees := range readers {
 		t.Run(reader, func(t *testing.T) {
-			// The navigation, the knots page and the landing.
+			// The navigation, the knots page and the landing: a reader who
+			// may see app alone lands on its tree, and one who may see more
+			// on the projects page.
 			plan := h.pageAs(reader, "/-/knots")
-			nav := section(t, plan, `<nav class="site"`, `<span class="fresh">`)
-			var want strings.Builder
-			want.WriteString(`<nav class="site" aria-label="Pages"><a href="/-/knots">knots</a>`)
-			for _, name := range sees {
-				fmt.Fprintf(&want, `<a href="%s/source/tree/%s/">%s source</a>`, projects[name].base, projects[name].tip, name)
-			}
-			if nav != want.String() {
-				t.Errorf("the navigation is\n%s\nnot\n%s", nav, want.String())
+			if nav := section(t, plan, `<nav class="site"`, `<span class="fresh">`); nav != `<nav class="site" aria-label="Pages"><a href="/-/projects">projects</a>` {
+				t.Errorf("the navigation is\n%s", nav)
 			}
 			if !strings.Contains(plan, "Policy last checked") {
 				t.Error("the knots page does not say when the policy was checked")
 			}
-			if w := h.as(reader, "GET", "/", nil); w.Code != http.StatusFound || w.Header().Get("Location") != "/tools/app/source/tree/"+appTip+"/" {
-				t.Errorf("/ answered %d to %q", w.Code, w.Header().Get("Location"))
+			landing := "/-/projects"
+			if len(sees) == 1 {
+				landing = "/tools/app/source/tree/" + appTip + "/"
+			}
+			if w := h.as(reader, "GET", "/", nil); w.Code != http.StatusFound || w.Header().Get("Location") != landing {
+				t.Errorf("/ answered %d to %q, not to %s", w.Code, w.Header().Get("Location"), landing)
+			}
+
+			// The projects page lists each project the reader may see, by
+			// group, and each group's page those of the group alone. A group
+			// none of whose projects the reader may see answers as a path
+			// that does not exist.
+			row := func(name string) string {
+				p := projects[name]
+				return `<li class="listed"><a class="mono" href="` + p.base + `/source/tree/` + p.tip + `/">` +
+					strings.TrimPrefix(p.base, "/") + `</a><a href="` + p.base + `/knots">knots</a></li>`
+			}
+			listed := h.pageAs(reader, "/-/projects")
+			groups := map[string][]string{"/tools/": nil, "/pages/": nil}
+			for _, name := range sees {
+				group := "/" + strings.Split(projects[name].base, "/")[1] + "/"
+				groups[group] = append(groups[group], row(name))
+			}
+			if n := strings.Count(listed, `<li class="listed">`); n != len(sees) || !strings.Contains(listed, `<a href="/-/knots">all knots</a>`) {
+				t.Errorf("the projects page lists %d projects, not %d, or does not link all knots", n, len(sees))
+			}
+			missing := h.as(reader, "GET", "/tools/nosuch/", nil)
+			for group, rows := range groups {
+				for _, r := range rows {
+					if !strings.Contains(listed, r) {
+						t.Errorf("the projects page does not list %s", r)
+					}
+				}
+				for _, target := range []string{group, strings.TrimSuffix(group, "/")} {
+					w := h.as(reader, "GET", target, nil)
+					if rows == nil {
+						if w.Code != http.StatusNotFound || fmt.Sprint(w.Header()) != fmt.Sprint(missing.Header()) ||
+							!bytes.Equal(w.Body.Bytes(), missing.Body.Bytes()) {
+							t.Errorf("GET %s answered %d, not as a path that does not exist", target, w.Code)
+						}
+						continue
+					}
+					page := w.Body.String()
+					if w.Code != http.StatusOK || strings.Count(page, `<li class="listed">`) != len(rows) {
+						t.Errorf("GET %s answered %d without its group's projects alone", target, w.Code)
+					}
+					for _, r := range rows {
+						if !strings.Contains(page, r) {
+							t.Errorf("GET %s does not list %s", target, r)
+						}
+					}
+				}
+			}
+
+			// Each project's knots page shows its own knots alone, under
+			// its project header, whose knots tab is current.
+			for _, name := range sees {
+				p := projects[name]
+				page := h.pageAs(reader, p.base+"/knots")
+				head := `<header class="project-head">
+  <span class="mono">` + strings.TrimPrefix(p.base, "/") + `</span>
+  <nav class="tabs" aria-label="Project"><a href="` + p.base + `/source/tree/` + p.tip + `/">source</a><a href="` + p.base + `/knots" aria-current="page">knots</a></nav>
+</header>`
+				if !strings.Contains(page, head) {
+					t.Errorf("%s's knots page has no project header with its knots tab current", name)
+				}
+				links := regexp.MustCompile(`href="([^"]*/knots/[^"]*)"`).FindAllStringSubmatch(page, -1)
+				if len(links) == 0 {
+					t.Errorf("%s's knots page links no knot", name)
+				}
+				for _, l := range links {
+					if !strings.HasPrefix(l[1], p.base+"/knots/") {
+						t.Errorf("%s's knots page links %s", name, l[1])
+					}
+				}
+				if !strings.Contains(page, "<script>") {
+					t.Errorf("%s's knots page carries no script", name)
+				}
 			}
 			seesSite := slices.Contains(sees, "site")
 			if strings.Contains(plan, "/tools/site/knots/") != seesSite {
@@ -357,7 +431,6 @@ func TestNamedReadersSeeTheirOwnProjects(t *testing.T) {
 
 			// Each project the reader may not see answers as one that does
 			// not exist, on every route, and takes no git slot.
-			missing := h.as(reader, "GET", "/tools/nosuch/", nil)
 			for _, name := range []string{"site", "docs"} {
 				if slices.Contains(sees, name) {
 					continue
@@ -382,6 +455,13 @@ func TestNamedReadersSeeTheirOwnProjects(t *testing.T) {
 						t.Errorf("GET %s answered %d, not as a project that does not exist", target, w.Code)
 					}
 				}
+				// A knots page's path carries the knots pages' policy, whether
+				// or not its project is one the reader may see.
+				w, none := h.as(reader, "GET", p.base+"/knots", nil), h.as(reader, "GET", "/tools/nosuch/knots", nil)
+				if w.Code != http.StatusNotFound || fmt.Sprint(w.Header()) != fmt.Sprint(none.Header()) ||
+					!bytes.Equal(w.Body.Bytes(), none.Body.Bytes()) || w.Header().Get("Content-Security-Policy") != knotsPolicy {
+					t.Errorf("GET %s/knots answered %d, not as a project that does not exist", p.base, w.Code)
+				}
 				if n := admitted.Load(); n != 0 {
 					t.Errorf("the routes of %s, which the reader may not see, took %d git slots", name, n)
 				}
@@ -389,16 +469,25 @@ func TestNamedReadersSeeTheirOwnProjects(t *testing.T) {
 		})
 	}
 
-	// With app withdrawn from anyone, / lands on the first project each
-	// reader may see, and on the knots page for a reader who may see none.
+	// With app withdrawn from anyone, / lands on the one project each
+	// named reader may see, and on the projects page for a reader who may
+	// see none, which says so.
 	e, _ := h.buildExport(true, nil)
 	withDocs(e, map[string]string{"site": ""})
 	h.authorizeReaders(e, map[string][]string{"app": {"carol"}, "site": {"alice"}, "docs": {"bob"}})
-	for reader, to := range map[string]string{export.Anyone: knotsURL, "alice": "/tools/site/source/tree/" + siteTip + "/",
+	for reader, to := range map[string]string{export.Anyone: projectsURL, "alice": "/tools/site/source/tree/" + siteTip + "/",
 		"bob": "/pages/docs/source/tree/" + siteTip + "/", "carol": "/tools/app/source/tree/" + appTip + "/"} {
 		if w := h.as(reader, "GET", "/", nil); w.Code != http.StatusFound || w.Header().Get("Location") != to {
 			t.Errorf("/ as %s answered %d to %q, not to %s", reader, w.Code, w.Header().Get("Location"), to)
 		}
+	}
+	empty := h.pageAs(export.Anyone, "/-/projects")
+	if !strings.Contains(empty, `<p class="muted">No project is readable here.</p>`) || strings.Contains(empty, "all knots") ||
+		strings.Contains(empty, `<li class="listed">`) || strings.Contains(empty, "tools") {
+		t.Errorf("with no project to see, the projects page is not its empty state:\n%s", empty)
+	}
+	if w := h.as(export.Anyone, "GET", "/tools/", nil); w.Code != http.StatusNotFound {
+		t.Errorf("a group none of whose projects anyone may see answered %d", w.Code)
 	}
 	if w := h.as(export.Anyone, "GET", "/t/app/", nil); w.Code != http.StatusNotFound {
 		t.Errorf("a group none of whose projects anyone may see kept its alias: %d", w.Code)

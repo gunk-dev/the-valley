@@ -4,10 +4,11 @@
 # app. alice alone may read site, and the operator alone docs, so the two
 # named readers see different private projects. notes' policy/read lets
 # bob alone read it, and no grant names bob, so it has no effective
-# reader. site and docs each have an alias, a former name, a knot with a
-# comment, an abandoned knot and a ready change. Three of app's knots are
-# each blocked by an open knot, an abandoned knot and a missing knot of
-# one other project: site, docs or notes. $out holds the export the
+# reader. app, site and notes are in the group tools, and docs in a group
+# of its own, guides. site and docs each have an alias, a former name, a
+# knot with a comment, an abandoned knot and a ready change. Three of
+# app's knots are each blocked by an open knot, an abandoned knot and a
+# missing knot of one other project: site, docs or notes. $out holds the export the
 # publisher wrote, as published/, and the export key's verifier line, as
 # verifier.
 set -euo pipefail
@@ -112,9 +113,10 @@ cat > host.cue << 'EOF'
 package valley
 
 groups: core: name: "tools"
+groups: library: name: "guides"
 projects: app: group: "core"
 projects: site: {group: "core", aliases: ["portal"], formerNames: ["homepage"]}
-projects: docs: {group: "core", aliases: ["handbook"], formerNames: ["manual"]}
+projects: docs: {group: "library", aliases: ["handbook"], formerNames: ["manual"]}
 projects: notes: group: "core"
 projects: valley: {}
 EOF

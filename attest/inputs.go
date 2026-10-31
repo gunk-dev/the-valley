@@ -6,7 +6,8 @@ import (
 )
 
 // cmdInputs prints the input-closure digest of one or more pure checks over
-// a revision's tree, without building anything.
+// a revision's tree, without building anything. Every check asked for is
+// evaluated in one nix evaluation where it can be (evalClosures).
 //
 // This is what an integrator needs and a contributor does not. The pure
 // transfer rule of dcr-439b771 is closure-digest equality: the integrator
@@ -47,15 +48,14 @@ func cmdInputs(args []string) error {
 	if err != nil {
 		return err
 	}
-	for _, spec := range specs {
-		if spec.runner() != "nix" {
-			return fmt.Errorf("%s is a %s check; only a pure check has an input closure", spec.name, spec.runner())
+	// The checks are evaluated together, and printed in the order asked
+	// for, up to the first that did not evaluate. Its error ends the
+	// command, as when each check was evaluated in turn.
+	for i, e := range evalClosures(tree, *system, specs) {
+		if e.err != nil {
+			return e.err
 		}
-		c, err := evalClosure(tree, *system, spec)
-		if err != nil {
-			return err
-		}
-		fmt.Printf("%s %s:%s sha256:%s\n", spec.name, inputsScheme, c.inputs, c.derivation)
+		fmt.Printf("%s %s:%s sha256:%s\n", specs[i].name, inputsScheme, e.inputs, e.derivation)
 	}
 	return nil
 }

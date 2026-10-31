@@ -591,6 +591,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   - `attest digest [--repo <dir>] [--rev <rev>]` — prints `valley-tree-v1:<64-hex>`.
   - `attest inputs [--repo <dir>] [--rev <rev>] [--check <name>[=<attr>]]... [--system <system>]` —
     prints `<check> valley-inputs-v1:<64-hex> sha256:<64-hex-drv>` per check without building.
+    - Exports the tree once and evaluates every check named in one `nix` evaluation, as `attest run`
+      does. One check alone is evaluated on its own.
+    - Prints one line per check on `stdout`, in the order given.
+    - A check that does not evaluate ends the command. The lines of the checks before it are
+      printed, its error goes to `stderr` as `attest: evaluating …`, and the exit status is `1`.
   - `attest render [<file>]` — renders statement JSON (or canonical statement text) on `<file>` or
     stdin to canonical statement text.
   - `attest sign --key <path> [--name <name>]` — signs canonical statement text on stdin into a

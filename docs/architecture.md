@@ -1555,6 +1555,17 @@ signed by a known signer, says the check `passed`, and one of these holds
 
 Checked by `integrator-unit` (the verdict tests) and `integrator-e2e`.
 
+The integrator recomputes inputs only when the landed tree is not the attested tree. Then it asks
+one `attest inputs` for every required pure check, which exports the tree once and evaluates the
+checks together (`integrator/evidence.go`). It takes that answer only when the command exited `0`
+and printed exactly the checks asked for, each in the expected form. Otherwise it drops the whole
+answer and asks for each check alone, so a check that does not evaluate is stale alone and the
+others still transfer. A single check is never asked for twice. The retry has a cost: when the
+shared evaluation stops at an error nix cannot catch, a pass makes up to 2N+1 evaluations for N
+checks, where asking for each alone makes N.
+
+Checked by `integrator-unit` (the closures tests) and `integrator-e2e` (scenarios 1, 2, 2b and 2d).
+
 The flake gives each check only the files it reads, and gives each package only the files its build
 reads (`nix/checks.nix`, `nix/packages.nix`). An edit to any other file leaves a check's derivation
 and inputs digest unchanged, so its evidence transfers. Building a package does not run tests. Each

@@ -22,6 +22,8 @@ export TMPDIR="$work/tmp"
 mkdir -p "$TMPDIR"
 export VALLEY_FAKE_STORE="$work/store"
 export PATH="$here:$PATH" # the nix stand-ins, ahead of anything real
+# What the nix stand-in was asked to do, one line per call (integrator/e2e/nix).
+export VALLEY_E2E_NIX_LOG="$work/nix.log"
 
 git config --global user.name valley-check
 git config --global user.email valley-check@localhost
@@ -169,12 +171,22 @@ reconcile() {
     "$@"
 }
 
-# integrate [flag…] — one pass, its output kept in last.out. pre is main's
-# tip on origin before the pass.
+# integrate [flag…] — one pass, its output kept in last.out and what it
+# asked of the nix stand-in in last.nix. pre is main's tip on origin before
+# the pass.
 integrate() {
   pre="$(tip)"
+  : > "$VALLEY_E2E_NIX_LOG"
   reconcile "$@" 2>&1 | tee "$work/last.out"
+  cp "$VALLEY_E2E_NIX_LOG" "$work/last.nix"
   grep -q . "$work/last.out" || die "the integrator said nothing"
+}
+
+# asked_nix LINE… — the last pass asked the nix stand-in for exactly these
+# calls, in this order, and for nothing else.
+asked_nix() {
+  [ "$(cat "$work/last.nix")" = "$(if [ $# -gt 0 ]; then printf '%s\n' "$@"; fi)" ] \
+    || die "the pass asked nix for $(paste -sd, "$work/last.nix"), not $(IFS=,; echo "$*")"
 }
 
 tip() { git -C "$origin" rev-parse refs/heads/main; }
@@ -224,6 +236,8 @@ grep -qF "event    ref-updated {\"event\":\"ref-updated\",\"repo\":" "$work/last
   || die "no ref-updated event"
 [ "$(tip)" != "$before" ] || die "the protected ref did not move"
 landed_as "$(git rev-parse c1)" "$pre"
+asked_nix
+holds "the tree that landed is the tree attested, so nothing was evaluated"
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c1 > /dev/null \
   && die "the request ref outlived the landing"
 holds "main moved $(git rev-parse --short "$before") -> $(git -C "$origin" rev-parse --short refs/heads/main)"
@@ -325,6 +339,8 @@ grep -q '"checks":\["code-build"\]' "$work/last.out" || die "the event does not 
 git -C "$origin" rev-parse --verify --quiet refs/the-valley/integration-requests/main/c2 > /dev/null \
   || die "the request ref was dropped; there is nothing to approve again"
 holds "one request-stale naming exactly code-build; prose-format reported transferred"
+asked_nix "eval shared code-build prose-format"
+holds "both checks were evaluated together on the moved tree, in one evaluation, and nothing was built"
 forget c2
 
 # ----------------------------------------------------------------------
@@ -366,6 +382,8 @@ landedtree="$(git -C "$origin" rev-parse refs/heads/main^{tree})"
 [ "$(git -C "$origin" rev-parse refs/heads/main^{tree})" != "$(git rev-parse "$c2b^{tree}")" ] \
   || die "the tree did not actually move; the scenario proves nothing"
 holds "the delta landed on a tree it was never attested over, and no check re-ran"
+asked_nix "eval prose-format"
+holds "the one check was evaluated once, alone"
 
 # Two attestation refs now, because the two statements are about two
 # different trees: the contributor's is keyed by the tree it was made over,
@@ -468,6 +486,75 @@ landed_commit="$(git -C "$origin" rev-parse refs/heads/main)"
 [ "$(git -C "$origin" log -1 --format=%aI "$landed_commit")" = "$(git -C "$origin" log -1 --format=%cI "$landed_commit")" ] \
   || die "the committer date is not the author's, so the landed commit id is not reproducible"
 holds "the integrator committed under its own name with nothing in the environment to take one from"
+
+# ----------------------------------------------------------------------
+say "2d. a check that does not evaluate on the moved tree is stale alone"
+
+# c2d reads both classes. Landings under it then keep code-build from
+# evaluating on the tree that would land, while prose-format still
+# evaluates there: first with an error no evaluation can catch, which ends
+# the shared evaluation of both, then by taking the check out of the tree.
+# Each time the two checks together fail, each is evaluated alone, so
+# prose-format still transfers and code-build alone is stale.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c2d
+echo "a readme revised beside the source" > docs/readme.md
+echo "the source, revised beside the readme" > src/main.txt
+git add -A
+git commit --quiet -m "revise the readme and the source together"
+attest_change c2d "" "" --check prose-format --check code-build
+c2d="$(git rev-parse c2d)"
+
+# land_unclassified BRANCH MESSAGE — commit what is staged, on BRANCH off
+# main, and land it. It touches only checks/, which no class covers, so it
+# requires no check.
+land_unclassified() {
+  git commit --quiet -m "$2"
+  request "$1" main "$(git rev-parse "$1")"
+  integrate
+  grep -q "^$1 -> refs/heads/main .*: land$" "$work/last.out" || die "$1 did not land"
+  git checkout --quiet main
+  git pull --quiet --ff-only origin main
+}
+
+# c2d_is_stale_alone WHY — c2d, requested now, is stale, prose-format
+# transfers, and code-build alone could not be recomputed, for WHY.
+c2d_is_stale_alone() {
+  request c2d main "$c2d"
+  integrate
+  grep -q "^c2d -> refs/heads/main .*: stale$" "$work/last.out" || die "c2d was not stale"
+  grep -q "check    prose-format .*transferred (closure)" "$work/last.out" \
+    || die "prose-format did not transfer beside the check that does not evaluate"
+  grep -q "check    code-build .*could not be recomputed on the landed tree: attest: evaluating .*$1" "$work/last.out" \
+    || die "code-build is not reported as not evaluating: $(grep 'check    code-build' "$work/last.out")"
+  grep -q '"checks":\["code-build"\]' "$work/last.out" || die "the event does not name exactly code-build"
+  forget c2d
+}
+
+git checkout --quiet main
+git checkout --quiet -b uncaught
+echo "error: code-build does not evaluate, and nothing can catch it" > checks/code-build.uncaught
+git add -A
+land_unclassified uncaught "break code-build beyond catching"
+c2d_is_stale_alone "nothing can catch it"
+# Together, then in the shared evaluation's place each alone, then each in
+# a call of its own: 2N+1 evaluations of N checks, where it is N alone.
+asked_nix "eval shared code-build prose-format" "eval code-build" "eval prose-format" \
+  "eval code-build" "eval prose-format"
+holds "an error that ends the shared evaluation leaves prose-format transferred and code-build alone stale"
+
+git checkout --quiet -b missing
+git rm --quiet checks/code-build.uncaught checks/code-build.inputs
+land_unclassified missing "take code-build out of the tree"
+c2d_is_stale_alone "declares no check code-build"
+asked_nix "eval shared code-build prose-format" "eval code-build" "eval code-build" "eval prose-format"
+holds "a check missing from the tree leaves prose-format transferred and code-build alone stale"
+
+git checkout --quiet -b restored
+echo src > checks/code-build.inputs
+git add -A
+land_unclassified restored "put code-build back"
 
 # ----------------------------------------------------------------------
 say "3. a conflicting delta is stale, and demands full re-attestation"

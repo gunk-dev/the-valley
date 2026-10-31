@@ -209,10 +209,11 @@ func evalClosures(tree, system string, specs []checkSpec) []evaluation {
 // is not a derivation, is left out of the answer. Some evaluation errors
 // cannot be caught inside nix, such as a type error, and they end the
 // whole evaluation; then the answer is empty, and every check is evaluated
-// alone.
+// alone. One attribute has nothing to share, so it is left to be evaluated
+// alone from the start.
 func evalDrvPaths(tree, system string, attrs []string) map[string]string {
 	drvs := map[string]string{}
-	if len(attrs) == 0 {
+	if len(attrs) < 2 {
 		return drvs
 	}
 	quoted := make([]string, len(attrs))

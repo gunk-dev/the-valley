@@ -26,14 +26,27 @@ fi
 store="${VALLEY_FAKE_STORE:?VALLEY_FAKE_STORE is not set}"
 mkdir -p "$store"
 
+# A scenario that counts what is asked of the evaluator names a log, and
+# each call is written to it as one line: "eval shared <attr>…" for attest's
+# shared evaluation, "eval <attr>" for one check alone, "eval attrNames"
+# for the list of checks, and "build" for a build.
+log() {
+  if [ -n "${VALLEY_E2E_NIX_LOG:-}" ]; then printf '%s\n' "$*" >> "$VALLEY_E2E_NIX_LOG"; fi
+}
+
 # derive <tree> <attr>: evaluate one check, writing its derivation into the
 # store and printing the derivation's path. A check that declares a
 # failure (checks/<name>.fails) or an output it shares with other checks
 # (checks/<name>.output, as fixed-output derivations can) carries that
-# beside its derivation, for the build.
+# beside its derivation, for the build. A check that declares an error no
+# evaluation can catch (checks/<name>.uncaught) fails with what it declares.
 derive() {
   local tree="$1" attr="$2" list drv path f
   list="$tree/checks/$attr.inputs"
+  if [ -f "$tree/checks/$attr.uncaught" ]; then
+    cat "$tree/checks/$attr.uncaught" >&2
+    return 1
+  fi
   [ -f "$list" ] || { echo "nix (stub): $tree declares no check $attr" >&2; return 1; }
   drv="$(mktemp "$store/$attr-XXXXXX.drv")"
   while read -r path; do
@@ -66,6 +79,7 @@ case "${1:-}" in
     if [ "$rest" = "${rest%.drvPath}" ] && [ "$apply" = builtins.attrNames ]; then
       # `nix eval --json --apply builtins.attrNames …#checks.<system>`:
       # every check the tree declares.
+      log eval attrNames
       names=""
       for f in "$tree"/checks/*.inputs; do
         [ -e "$f" ] || continue
@@ -79,21 +93,33 @@ case "${1:-}" in
       # attest's shared evaluation, `nix eval --json --apply <expression>
       # …#checks.<system>`: the derivation of every check the expression
       # names, each as a quoted string, and null for a check that does not
-      # evaluate.
-      out=""
+      # evaluate. An error no evaluation can catch ends the whole of it, as
+      # a type error ends nix's.
+      attrs=()
       while IFS= read -r quoted; do
-        attr="${quoted//\"/}"
+        attrs+=("${quoted//\"/}")
+      done < <(grep -o '"[^"]*"' <<< "$apply")
+      log eval shared "${attrs[@]}"
+      for attr in "${attrs[@]}"; do
+        if [ -f "$tree/checks/$attr.uncaught" ]; then
+          cat "$tree/checks/$attr.uncaught" >&2
+          exit 1
+        fi
+      done
+      out=""
+      for attr in "${attrs[@]}"; do
         if drv="$(derive "$tree" "$attr" 2> /dev/null)"; then
           value="\"$drv\""
         else
           value=null
         fi
         out="${out:+$out,}\"$attr\":$value"
-      done < <(grep -o '"[^"]*"' <<< "$apply")
+      done
       printf '{%s}\n' "$out"
       exit 0
     fi
     attr="${rest#*.}"
+    log eval "${attr%.drvPath}"
     derive "$tree" "${attr%.drvPath}"
     ;;
   build)
@@ -103,6 +129,7 @@ case "${1:-}" in
     # be, or, when checks share it, of its name. A check that declares a
     # failure fails with what it declares, on standard error, and builds
     # nothing.
+    log build
     status=0
     for a in "$@"; do
       case "$a" in

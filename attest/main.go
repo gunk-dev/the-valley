@@ -100,7 +100,10 @@ inputs evaluates each check over the revision's tree and prints its name,
 the digest of its input closure, and the digest of its derivation. It
 builds nothing: the integrator compares closure digests to decide whether
 a contributor's evidence transfers to a moved base, and check latency has
-no business on that path.
+no business on that path. Several checks are evaluated together, in one
+nix evaluation where nix allows it, and printed in the order given. A
+check that does not evaluate ends the command with its error, after the
+lines of the checks before it.
 
 sign and key flags:
   --key PATH          ed25519 private key

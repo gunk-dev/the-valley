@@ -235,42 +235,128 @@ func (in *integrator) treeDigest(wt *worktree, rev string) (string, error) {
 // closures recomputes the input-closure digest of each pure check over the
 // tree that would land. `attest inputs` evaluates and digests; it builds
 // nothing, so this stays off the latency path the commit point serializes.
+//
+// Every required pure check is asked for in one `attest inputs`, which
+// exports the tree once and evaluates the checks together. Its answer is
+// taken only when it exited zero and printed exactly the checks asked for.
+// Otherwise every line of it is dropped and each check is asked for alone,
+// so a check that does not evaluate is an error for that check only, and
+// the checks beside it still get their closures. One check alone is not
+// asked for twice. Each check asked for ends up in exactly one of the two
+// maps returned.
 func (in *integrator) closures(wt *worktree, rev string, required []verdict.Required) (map[string]verdict.Closure, map[string]string) {
 	got, bad := map[string]verdict.Closure{}, map[string]string{}
-	names := make([]string, 0, len(required))
-	byAttr := map[string]string{}
+	var names []string
+	attrs := map[string]string{}
 	for _, r := range required {
 		if r.Runner != "nix" {
 			continue
 		}
-		names = append(names, r.Name)
-		byAttr[r.Name] = r.Attribute
+		if _, seen := attrs[r.Name]; !seen {
+			names = append(names, r.Name)
+		}
+		attrs[r.Name] = r.Attribute
+	}
+	if len(names) == 0 {
+		// Without a --check, attest inputs would digest every flake check.
+		return got, bad
 	}
 	sort.Strings(names)
+	all, err := in.attestInputs(wt, rev, names, attrs)
+	switch {
+	case err == nil:
+		return all, bad
+	case len(names) == 1:
+		bad[names[0]] = err.Error()
+		return got, bad
+	}
 	for _, name := range names {
-		args := []string{"inputs", "--repo", wt.dir, "--rev", rev, "--check", name + "=" + byAttr[name]}
-		if in.system != "" {
-			args = append(args, "--system", in.system)
-		}
-		out, err := exec.Command(in.attest, args...).CombinedOutput()
+		one, err := in.attestInputs(wt, rev, []string{name}, attrs)
 		if err != nil {
-			bad[name] = firstLine(string(out))
+			bad[name] = err.Error()
 			continue
 		}
-		// "<name> valley-inputs-v1:<closure> sha256:<derivation>". Both
-		// digests are read, because the pure rule compares the whole of
-		// what the attestation claims.
-		fields := strings.Fields(string(out))
-		if len(fields) < 3 || !strings.HasPrefix(fields[1], "valley-inputs-v1:") || !strings.HasPrefix(fields[2], "sha256:") {
-			bad[name] = "attest inputs printed " + firstLine(string(out))
-			continue
-		}
-		got[name] = verdict.Closure{
-			Inputs:     strings.TrimPrefix(fields[1], "valley-inputs-v1:"),
-			Derivation: strings.TrimPrefix(fields[2], "sha256:"),
-		}
+		got[name] = one[name]
 	}
 	return got, bad
+}
+
+// attestInputs runs one `attest inputs` over the named checks, each as
+// name=attribute, and reads the closures it printed on standard output.
+// Standard error is only ever a diagnostic: when the command fails, its
+// first line is the error.
+func (in *integrator) attestInputs(wt *worktree, rev string, names []string, attrs map[string]string) (map[string]verdict.Closure, error) {
+	args := []string{"inputs", "--repo", wt.dir, "--rev", rev}
+	for _, name := range names {
+		args = append(args, "--check", name+"="+attrs[name])
+	}
+	if in.system != "" {
+		args = append(args, "--system", in.system)
+	}
+	cmd := exec.Command(in.attest, args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if line := firstLine(stderr.String()); line != "" {
+			return nil, fmt.Errorf("%s", line)
+		}
+		return nil, fmt.Errorf("attest inputs: %w", err)
+	}
+	return parseInputs(stdout.String(), names)
+}
+
+// parseInputs reads what `attest inputs` printed for the named checks: one
+// line per check, "<name> valley-inputs-v1:<closure> sha256:<derivation>",
+// each digest 64 lowercase hex digits. Both digests are read, because the
+// pure rule compares the whole of what the attestation claims. A line is
+// matched to its check by name, never by where it is. Any line that is not
+// that form, names a check not asked for or one already read, or a check
+// asked for and not printed, makes the whole answer an error.
+func parseInputs(out string, names []string) (map[string]verdict.Closure, error) {
+	asked := map[string]bool{}
+	for _, name := range names {
+		asked[name] = true
+	}
+	got := map[string]verdict.Closure{}
+	for _, line := range strings.Split(strings.TrimSuffix(out, "\n"), "\n") {
+		fields := strings.Split(line, " ")
+		if len(fields) != 3 {
+			return nil, fmt.Errorf("attest inputs printed %q", firstLine(line))
+		}
+		name := fields[0]
+		inputs, isInputs := strings.CutPrefix(fields[1], "valley-inputs-v1:")
+		derivation, isDerivation := strings.CutPrefix(fields[2], "sha256:")
+		_, twice := got[name]
+		switch {
+		case !asked[name]:
+			return nil, fmt.Errorf("attest inputs printed %q, a check not asked for", name)
+		case twice:
+			return nil, fmt.Errorf("attest inputs printed %s twice", name)
+		case !isInputs || !isDigest(inputs) || !isDerivation || !isDigest(derivation):
+			return nil, fmt.Errorf("attest inputs printed %q", line)
+		}
+		got[name] = verdict.Closure{Inputs: inputs, Derivation: derivation}
+	}
+	for _, name := range names {
+		if _, ok := got[name]; !ok {
+			return nil, fmt.Errorf("attest inputs printed nothing for %s", name)
+		}
+	}
+	return got, nil
+}
+
+// isDigest is whether s is a SHA-256 digest as attest writes one: 64
+// lowercase hex digits.
+func isDigest(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 func firstLine(s string) string {

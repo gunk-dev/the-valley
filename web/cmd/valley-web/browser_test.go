@@ -97,6 +97,7 @@ func TestBrowser(t *testing.T) {
 	})
 	b := startBrowser(t, chromium, home)
 	page := b.page(t)
+	page.seen = seen
 	page.call(t, "Page.enable", nil)
 	page.open(t, origin+"/-/redeem#"+e.links[0].credential)
 	if href := page.eval(t, `location.href`); href != origin+"/-/redeem" {
@@ -127,8 +128,8 @@ func TestBrowser(t *testing.T) {
 	page.click(t, "r-redeem")
 	// A command sent while the page navigates may go unanswered, so the
 	// navigation is followed through the proxy first.
-	page.until(t, "the browser follows / with its session", func() bool { return seen.cookied("GET", "/") })
-	page.until(t, "the click lands on a page of the source", func() bool { return b.landed(origin) })
+	page.until(t, "the browser follows / with its session", 2, func() bool { return seen.cookied("GET", "/") })
+	page.until(t, "the click lands on a page of the source", 2, func() bool { return b.landed(origin) })
 	if n := seen.count("POST", "/-/redeem"); n != 1 || seen.status("POST", "/-/redeem") != http.StatusNoContent {
 		t.Errorf("one click sent %d redemptions, the first answered %d", n, seen.status("POST", "/-/redeem"))
 	}
@@ -158,7 +159,7 @@ func TestBrowser(t *testing.T) {
 	page.click(t, "r-switch")
 	page.unknown(t, "r-switch")
 	page.click(t, "r-switch")
-	page.until(t, "the retry lands on a page of the source", func() bool { return b.landed(origin) })
+	page.until(t, "the retry lands on a page of the source", 3, func() bool { return b.landed(origin) })
 	if n := seen.count("POST", "/-/logout"); n != 1 {
 		t.Errorf("the switch and its retry sent %d logouts, want 1", n)
 	}
@@ -177,7 +178,7 @@ func TestBrowser(t *testing.T) {
 	page.click(t, "r-switch")
 	page.unknown(t, "r-switch")
 	page.click(t, "r-switch")
-	page.until(t, "the retry is told the link cannot be used", func() bool { return page.visible(t, "r-refused") })
+	page.until(t, "the retry is told the link cannot be used", 2, func() bool { return page.visible(t, "r-refused") })
 	if n := seen.count("POST", "/-/logout"); n != 2 {
 		t.Errorf("the second switch and its retry sent %d logouts in all, want 2", n)
 	}
@@ -201,7 +202,8 @@ func (p *tab) open(t *testing.T, target string) {
 	t.Helper()
 	navigated := p.call(t, "Page.navigate", map[string]any{"url": target})
 	page, _, _ := strings.Cut(target, "#")
-	for range 200 {
+	wait := serverRequestTimeout + schedulingAllowance
+	for deadline := time.Now().Add(wait); time.Now().Before(deadline); {
 		if p.b.navigated() == page {
 			loaded, ok := p.evalWithin(t, `document.readyState === "complete" && !!document.getElementById("reader")`, 2*time.Second)
 			if ok && loaded == true {
@@ -213,7 +215,7 @@ func (p *tab) open(t *testing.T, target string) {
 	p.b.mu.Lock()
 	events := strings.Join(p.b.events, "\n")
 	p.b.mu.Unlock()
-	t.Fatalf("%s did not load within ten seconds: the last navigation went to %s, and Page.navigate answered %s; events:\n%s", page, redacted(p.b.navigated()), navigated, redacted(events))
+	t.Fatalf("%s did not load within %v: the last navigation went to %s, and Page.navigate answered %s; the proxy passed on %s; events:\n%s", page, wait, redacted(p.b.navigated()), navigated, p.seen.summary(), redacted(events))
 }
 
 // click clicks the middle of the element id, as a reader does.
@@ -241,7 +243,7 @@ func (p *tab) visible(t *testing.T, id string) bool {
 // button retried enabled again.
 func (p *tab) unknown(t *testing.T, button string) {
 	t.Helper()
-	p.until(t, "the page says the outcome is unknown", func() bool {
+	p.until(t, "the page says the outcome is unknown", 2, func() bool {
 		return p.visible(t, "r-unknown") && p.eval(t, `document.getElementById(`+jsString(button)+`).disabled`) == false
 	})
 	text, _ := p.eval(t, `document.getElementById("r-unknown").textContent`).(string)
@@ -365,6 +367,21 @@ func (r *requests) find(method, path string) []seenRequest {
 		}
 	}
 	return found
+}
+
+// summary lists the requests the proxy passed on, each with its answer's
+// status and whether it carried the session cookie, never a cookie's value.
+func (r *requests) summary() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.seen) == 0 {
+		return "no requests"
+	}
+	var parts []string
+	for _, s := range r.seen {
+		parts = append(parts, fmt.Sprintf("%s %s -> %d (session cookie: %v)", s.method, s.path, s.status, s.cookie))
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (r *requests) count(method, path string) int { return len(r.find(method, path)) }
@@ -545,6 +562,8 @@ func (b *browser) sendWithin(t *testing.T, session, method string, params any, d
 type tab struct {
 	b       *browser
 	session string
+	// seen is what the proxy passed on, which a timed-out wait reports.
+	seen *requests
 }
 
 func (b *browser) page(t *testing.T) *tab {
@@ -553,7 +572,7 @@ func (b *browser) page(t *testing.T) *tab {
 	json.Unmarshal(b.send(t, "", "Target.createTarget", map[string]any{"url": "about:blank"}), &target)
 	var attached struct{ SessionID string }
 	json.Unmarshal(b.send(t, "", "Target.attachToTarget", map[string]any{"targetId": target.TargetID, "flatten": true}), &attached)
-	return &tab{b, attached.SessionID}
+	return &tab{b: b, session: attached.SessionID}
 }
 
 func (p *tab) call(t *testing.T, method string, params any) json.RawMessage {
@@ -600,15 +619,30 @@ func (p *tab) evalWithin(t *testing.T, expression string, d time.Duration) (any,
 	return r.Result.Value, true
 }
 
-func (p *tab) until(t *testing.T, what string, cond func() bool) {
+// serverRequestTimeout is how long valley-web lets one request take:
+// requestTimeout in web/server/server.go, which the test cannot import.
+const serverRequestTimeout = 15 * time.Second
+
+// schedulingAllowance is the time a loaded sandbox may take on top of what
+// the requests may.
+const schedulingAllowance = 30 * time.Second
+
+// until waits for cond, polling every 50 ms. The wait covers requests
+// requests to valley-web in a row, each allowed serverRequestTimeout, plus
+// schedulingAllowance. When it runs out, the failure says which requests
+// the proxy passed on, so a click that never sent them is told from
+// answers that were slow.
+func (p *tab) until(t *testing.T, what string, requests int, cond func() bool) {
 	t.Helper()
-	for range 200 {
+	wait := time.Duration(requests)*serverRequestTimeout + schedulingAllowance
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
 		if cond() {
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("%s: not within ten seconds", what)
+	t.Fatalf("%s: not within %v, enough for %d requests of up to %v each; the proxy passed on %s", what, wait, requests, serverRequestTimeout, p.seen.summary())
 }
 
 func jsString(s string) string {

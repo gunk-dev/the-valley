@@ -31,6 +31,7 @@ package main
 
 import (
 	"the-valley/change"
+	"the-valley/composed"
 	"the-valley/integrator/verdict"
 
 	"fmt"
@@ -123,8 +124,10 @@ func (in *integrator) reconcile() error {
 		fmt.Fprintf(in.out, "WARNING: %s is a change record that does not read: %s. Requests are judged as though it did not exist, so a head it names is not held back by it. The hook refuses such a record, so the repository's storage is corrupt; restore the record or delete it.\n", u.ref, u.why)
 	}
 	requests = in.voidWithdrawn(requests, idx)
+	inputs, done := in.inputState()
+	defer done()
 	for _, r := range requests {
-		if err := in.handle(r, idx); err != nil {
+		if err := in.handle(r, idx, inputs); err != nil {
 			// One bad request must not stop the pass: the integrator is a
 			// controller, and a request it cannot judge is one request's
 			// problem.
@@ -134,11 +137,11 @@ func (in *integrator) reconcile() error {
 	return nil
 }
 
-// handle judges one request and acts on the verdict. A decision it
-// reports is timed, and its timing line follows the report and the
+// handle judges one request under the pass's inputs, and acts on the
+// verdict. A decision it reports is timed, and its timing line follows the report and the
 // recorded outcome; a refusal said before, and so not said again, is not
 // timed again either.
-func (in *integrator) handle(r request, idx *recordIndex) error {
+func (in *integrator) handle(r request, idx *recordIndex, inputs inputs) error {
 	watch := newStopwatch()
 	tip, ok, err := resolveRef(in.repo, r.target)
 	if err != nil {
@@ -147,8 +150,9 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 		return fmt.Errorf("no target %s to integrate onto", r.target)
 	}
 	// Level-triggering: the verdict is a function of the request's head,
-	// the target's tip, and the evidence stored for the change, so an
-	// unchanged answer is one where none of the three has moved.
+	// the target's tip, the evidence stored for the change, and the
+	// inputs (inputs.go), so an unchanged answer is one where none of the
+	// four has moved.
 	// Re-announcing an unchanged answer would be a retry storm; missing a
 	// moved one would strand a contributor who pushed the attestation a
 	// previous pass said was absent.
@@ -161,7 +165,8 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	if err != nil {
 		return err
 	}
-	if in.answered(last, memo) {
+	lastInputs := in.readInputs(r)
+	if in.answered(last, memo, lastInputs, inputs.digest) {
 		return nil
 	}
 	// From here on the request has been taken up, so whatever happens is
@@ -170,26 +175,30 @@ func (in *integrator) handle(r request, idx *recordIndex) error {
 	done := watch.stage(stageRefusal)
 	outcome, err := in.refuse(r, idx, tip, last, memo)
 	done()
+	// A request no rule refuses is judged only when every input read.
 	if err == nil && outcome == "" {
-		outcome, err = in.act(r, tip, memo, watch)
+		if err = inputs.err; err == nil {
+			outcome, err = in.act(r, tip, memo, inputs.floor, watch)
+		}
 	}
 	if err != nil {
 		printTiming := in.timing(r, tip, failedMemo, watch)
-		memoErr := in.writeMemo(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339))
+		memoErr := in.writeAnswer(r, memo+" "+failedMemo+" "+in.now().Format(time.RFC3339), inputs.digest)
 		printTiming()
 		if memoErr != nil {
 			return fmt.Errorf("%v (and the failure could not be recorded: %v)", err, memoErr)
 		}
 		return err
 	}
-	if last == memo+" "+string(outcome) {
+	if last == memo+" "+string(outcome) && lastInputs == inputs.digest {
 		return nil
 	}
 	printTiming := in.timing(r, tip, string(outcome), watch)
 	// A landing wrote its outcome record in the transaction that moved
-	// the target.
+	// the target, and no inputs record: the landing consumed the request,
+	// and moved the tip any later request at that name is judged against.
 	if outcome != verdict.Land {
-		err = in.writeMemo(r, memo+" "+string(outcome))
+		err = in.writeAnswer(r, memo+" "+string(outcome), inputs.digest)
 	}
 	printTiming()
 	return err
@@ -231,11 +240,11 @@ func (in *integrator) reportRefusal(r request, tip string, outcome verdict.Outco
 // failedMemo marks a memo written for a pass that could not act on its own
 // verdict, and retryAfter is how long that answer stands.
 //
-// A failure here is a function of the same three things the verdict is, so
+// A failure here is a function of the same four things the verdict is, so
 // the identical attempt fails identically until one of them moves — and
 // moving any of them already re-judges the request, whatever the memo says.
 // The window exists for the other kind of failure: a bus, a disk, a lock,
-// something outside the three that will be different later. Minutes rather
+// something outside the four that will be different later. Minutes rather
 // than ticks, because a controller that reports the same refusal every
 // fifteen seconds has buried the report it was making.
 const (
@@ -244,16 +253,18 @@ const (
 )
 
 // answered says whether this pass already has this request's answer, given
-// the last memo written for it. An outcome stands until the request, the
-// tip, or the evidence moves; a recorded failure stands the same way, and
+// the last memo written for it and the inputs it was written under
+// (inputs.go). An outcome stands until the request, the tip, the evidence
+// or the inputs move; a recorded failure stands the same way, and
 // additionally expires, so a transient one is retried without being
-// retried at tick rate. A refusal never stands: what refused it can change
+// retried at tick rate. When an input did not read, only a failure
+// stands: no verdict was reached under it. A refusal never stands: what refused it can change
 // while the three stay where they are, as when a draft is readied again,
 // so it is decided again on every pass. Nor does a voiding: a request
 // filed again at the same head is a fresh approval.
-func (in *integrator) answered(last, memo string) bool {
+func (in *integrator) answered(last, memo, lastInputs, inputs string) bool {
 	rest, ok := strings.CutPrefix(last, memo+" ")
-	if !ok {
+	if !ok || lastInputs != inputs {
 		return false
 	}
 	switch verdict.Outcome(rest) {
@@ -262,7 +273,7 @@ func (in *integrator) answered(last, memo string) bool {
 	}
 	when, failed := strings.CutPrefix(rest, failedMemo+" ")
 	if !failed {
-		return true
+		return inputs != unreadInputs
 	}
 	at, err := time.Parse(time.RFC3339, when)
 	if err != nil {
@@ -273,9 +284,9 @@ func (in *integrator) answered(last, memo string) bool {
 
 // act judges one request and does what the verdict says, returning the
 // outcome so the memo can record it. A landing records its own: memo is
-// what it records it after.
-func (in *integrator) act(r request, tip, memo string, watch *stopwatch) (verdict.Outcome, error) {
-	ch, snap, landed, err := in.materialize(r, tip, watch)
+// what it records it after. floor is the pass's copy of the floor.
+func (in *integrator) act(r request, tip, memo, floor string, watch *stopwatch) (verdict.Outcome, error) {
+	ch, snap, landed, err := in.materialize(r, tip, floor, watch)
 	if err != nil {
 		return "", err
 	}
@@ -328,8 +339,9 @@ type landing struct {
 
 // materialize gathers everything the verdict is a function of: the applied
 // delta, the required checks, the recomputed closures, and what intervening
-// landings touched.
-func (in *integrator) materialize(r request, tip string, watch *stopwatch) (verdict.Change, verdict.Snapshot, landing, error) {
+// landings touched. The floor is read from floor, the directory the pass
+// took its inputs digest over.
+func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch) (verdict.Change, verdict.Snapshot, landing, error) {
 	var land landing
 	done := watch.stage(stageCheckout)
 	wt, err := addWorktree(in.repo, tip)
@@ -359,9 +371,12 @@ func (in *integrator) materialize(r request, tip string, watch *stopwatch) (verd
 	// The policy is read from the integrator's own side and never from the
 	// tree being gated: the project layer from this checkout of the target
 	// tip, the floor from the instance repository's integrated tip. Both
-	// are resolved once and held for the whole pass.
+	// are resolved once and held for the whole pass: the floor as the
+	// copy the pass's inputs were read from.
 	done = watch.stage(stagePolicy)
-	pol, closePolicy, err := in.policy.open(wt)
+	source := in.policy
+	source.layer = composed.Floor{Path: floor}
+	pol, closePolicy, err := source.open(wt)
 	if err != nil {
 		done()
 		return ch, verdict.Snapshot{}, land, err

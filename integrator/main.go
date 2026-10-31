@@ -72,7 +72,8 @@ flags:
   --name NAME         the name that key signs under (default: this host's)
   --known-signers F   verifier keys whose attestations count, one per line
   --signer-projects F signers whose attestations count only in the projects
-                      listed beside them (see below); read once, at start
+                      listed beside them (see below); read once, at start, so a
+                      changed file counts from the next start
   --instance-repo DIR the bare repository carrying the group's floor; the
                       instance layer is read from its integrated tip
   --instance-ref REF  the ref whose tip carries it, a full ref name read by
@@ -160,8 +161,11 @@ type integrator struct {
 	knownSigners string
 
 	// signerProjects restricts signers in knownSigners to projects
-	// (note/signerprojects.go). Nil restricts nobody.
-	signerProjects note.SignerProjects
+	// (note/signerprojects.go). Nil restricts nobody. It is read once, at
+	// start, and signerProjectsData is the bytes it was read from, which
+	// the inputs digest covers (inputs.go).
+	signerProjects     note.SignerProjects
+	signerProjectsData []byte
 
 	bus          string
 	publishQueue string
@@ -307,7 +311,7 @@ func run(args []string, loop bool) error {
 	if in.project == "" {
 		in.project = projectName(in.repo)
 	}
-	if in.signerProjects, _, err = readSignerProjects(*signerProjects, in.signerName); err != nil {
+	if in.signerProjects, in.signerProjectsData, err = readSignerProjects(*signerProjects, in.signerName); err != nil {
 		return err
 	}
 	if in.keyHash, err = in.readKeyHash(); err != nil {

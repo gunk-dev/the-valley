@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"the-valley/change"
 )
@@ -347,12 +348,42 @@ func TestARefusalIsNeverTheStandingAnswer(t *testing.T) {
 		"land": true, "stale": true, "reject": true,
 		string(refusedNotReady): false, string(refusedMerge): false,
 	} {
-		if got := in.answered(memo+" "+outcome, memo); got != stands {
+		if got := in.answered(memo+" "+outcome, memo, "i", "i"); got != stands {
 			t.Errorf("a %s memo stands: %v, want %v", outcome, got, stands)
 		}
 	}
-	if in.answered("other t e land", memo) {
+	if in.answered("other t e land", memo, "i", "i") {
 		t.Errorf("a memo about another head stands")
+	}
+}
+
+// An answer stands only under the inputs it was reached under. An outcome
+// record with no inputs record beside it, as one written before inputs
+// were remembered, stands under none. When an input does not read, no
+// verdict stands, and a failure stands for its window as any failure does.
+func TestAnAnswerStandsOnlyUnderItsInputs(t *testing.T) {
+	now := time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC)
+	in := &integrator{clock: now}
+	memo := "h t e"
+	recent := memo + " " + failedMemo + " " + now.Add(-time.Minute).Format(time.RFC3339)
+	expired := memo + " " + failedMemo + " " + now.Add(-retryAfter).Format(time.RFC3339)
+	for _, c := range []struct {
+		name              string
+		last, before, now string
+		stands            bool
+	}{
+		{"a verdict under the same inputs", memo + " stale", "i", "i", true},
+		{"a verdict under other inputs", memo + " stale", "i", "j", false},
+		{"a verdict with no inputs record", memo + " stale", "", "i", false},
+		{"a verdict while an input does not read", memo + " stale", unreadInputs, unreadInputs, false},
+		{"a recent failure while an input does not read", recent, unreadInputs, unreadInputs, true},
+		{"an expired failure while an input does not read", expired, unreadInputs, unreadInputs, false},
+		{"a recent failure once the input reads", recent, unreadInputs, "i", false},
+		{"a recent failure under the same inputs", recent, "i", "i", true},
+	} {
+		if got := in.answered(c.last, memo, c.before, c.now); got != c.stands {
+			t.Errorf("%s stands: %v, want %v", c.name, got, c.stands)
+		}
 	}
 }
 

@@ -74,7 +74,7 @@ func TestAMissingTargetIsNoTarget(t *testing.T) {
 	if _, there := gitTry(s.repo, "rev-parse", "--verify", "--quiet", ref); !there {
 		t.Errorf("with refs/heads/gone missing, the request was deleted")
 	}
-	if err := in.handle(r, idx); err == nil || err.Error() != "no target refs/heads/gone to integrate onto" {
+	if err := in.handle(r, idx, inputs{digest: "i"}); err == nil || err.Error() != "no target refs/heads/gone to integrate onto" {
 		t.Errorf("with refs/heads/gone missing, the request was judged: %v", err)
 	}
 }

@@ -65,7 +65,7 @@ func TestADecisionIsFollowedByItsTimingLine(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := in.handle(r, idx); err != nil {
+		if err := in.handle(r, idx, inputs{digest: "i"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -127,7 +127,7 @@ func TestATimingLineNobodyReadsHoldsNothingUp(t *testing.T) {
 		t.Fatal(err)
 	}
 	began := time.Now()
-	if err := in.handle(r, idx); err != nil {
+	if err := in.handle(r, idx, inputs{digest: "i"}); err != nil {
 		t.Fatal(err)
 	}
 	if took := time.Since(began); took > timingDeadline+5*time.Second {

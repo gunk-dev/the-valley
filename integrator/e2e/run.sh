@@ -787,9 +787,9 @@ grep -qF "no instance policy layer: $origin has no policy/instance/ at refs/head
 #
 # Under a second request name, because the refusal above is now this
 # controller's recorded answer to c11 and it stands until the request, the
-# tip or the evidence moves — which is scenario 14's whole subject. A
-# request is what an answer is remembered against, so a second one asks the
-# question again.
+# tip, the evidence or the inputs move — which is scenario 14's whole
+# subject. A request is what an answer is remembered against, so a second
+# one asks the question again.
 request c11-flat main "$(git rev-parse c11)"
 floorless --instance-repo "$origin" --instance-policy policy || true
 grep -qF "no instance policy layer: $origin holds no *.cue in policy/ at refs/heads/main: $unwritten" "$work/last.out" \
@@ -1816,5 +1816,142 @@ nb31="$(git rev-parse origin/c31-b)"
 [ "$(git rev-parse origin/c31-p)" = "$p31" ] || die "the rebase moved the plain branch below the landed change"
 holds "b rebased alone onto main: the plain branch and a's commits dropped out from under it"
 unset VALLEY_KNOWN_SIGNERS VALLEY_INTEGRATOR_SIGNER
+
+# ----------------------------------------------------------------------
+say "32. a standing answer is judged again when the accepted signers or the floor change, and only then"
+
+# A verdict reads more than the request, the target and the attestation
+# refs. It reads which signers count, and the floor. Each case below holds
+# the head, main and every attestation ref where they are, changes only the
+# one input, and expects the request to be judged again.
+inputs_of() { git -C "$origin" cat-file blob "refs/the-valley/integration-inputs/main/$1"; }
+# quiet32 [flag…] — a pass that may have nothing to say, its output in last.out.
+quiet32() { reconcile "$@" > "$work/last.out" 2>&1 || die "the pass failed: $(cat "$work/last.out")"; }
+fixed() { printf '%s %s %s' "$(git -C "$origin" rev-parse "refs/the-valley/integration-requests/main/$1")" "$(tip)" \
+  "$(git -C "$origin" for-each-ref --format='%(refname) %(objectname)' refs/the-valley/attestations/ | sha256sum)"; }
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+
+# A signer the known-signers file does not hold yet attests a change.
+ssh-keygen -q -t ed25519 -N "" -C late -f "$work/late"
+late=late.valley.invalid/attestations
+cp "$work/known_signers" "$work/late_signers"
+git checkout --quiet -b c32s
+echo "a readme a late signer attested" > docs/c32s.md
+git add -A
+git commit --quiet -m "a change attested by a signer not yet accepted"
+attest_change c32s "$work/late" "$late" --check prose-format
+request c32s main "$(git rev-parse c32s)"
+integrate --known-signers "$work/late_signers"
+grep -q "^c32s -> refs/heads/main .*: stale$" "$work/last.out" || die "an unaccepted signer's evidence did not leave c32s stale"
+grep -q "check    prose-format .*signed by no signer the integrator holds" "$work/last.out" \
+  || die "the late signer's note was not reported as an unknown signer's"
+grep -Eqx '[0-9a-f]{40} [0-9a-f]{40} [0-9a-f]{16} stale' <(git -C "$origin" cat-file blob refs/the-valley/integration-outcomes/main/c32s) \
+  || die "the outcome record is not in the format its readers parse"
+fixed32="$(fixed c32s)"
+
+# Nothing moved, so nothing is judged again.
+quiet32 --known-signers "$work/late_signers"
+grep -q "^c32s " "$work/last.out" && die "an unchanged c32s was judged again: $(cat "$work/last.out")"
+
+# A record written before inputs were remembered has an outcome and no
+# inputs record. It is judged once more, and then stands.
+git -C "$origin" update-ref -d refs/the-valley/integration-inputs/main/c32s
+integrate --known-signers "$work/late_signers"
+grep -q "^c32s -> refs/heads/main .*: stale$" "$work/last.out" || die "an outcome with no inputs record was not judged again"
+inputs_of c32s > /dev/null || die "judging c32s again did not record its inputs"
+quiet32 --known-signers "$work/late_signers"
+grep -q "^c32s " "$work/last.out" && die "c32s was judged again after its inputs were recorded: $(cat "$work/last.out")"
+
+# The registry accepts the late signer. Only the known-signers file moves.
+attest key --key "$work/late" --name "$late" >> "$work/late_signers"
+[ "$(fixed c32s)" = "$fixed32" ] || die "the head, main or an attestation ref moved; the case proves nothing"
+integrate --known-signers "$work/late_signers"
+grep -q "^c32s -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "accepting the signer did not judge c32s again: $(cat "$work/last.out")"
+landed_as "$(git rev-parse c32s)" "$pre"
+holds "a stale answer stands while nothing moves, and accepting the signer alone lands the change"
+
+# The signer projects file is read once, when the controller starts, and
+# the host restarts the controller when the list changes. So a start under
+# a changed list at the same path must judge again what an earlier start
+# answered.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c32p
+echo "a readme a restricted signer attested" > docs/c32p.md
+git add -A
+git commit --quiet -m "a change attested by a signer restricted elsewhere"
+attest_change c32p "$work/late" "$late" --check prose-format
+request c32p main "$(git rev-parse c32p)"
+printf '%s elsewhere\n' "$late" > "$work/late_projects"
+integrate --known-signers "$work/late_signers" --signer-projects "$work/late_projects"
+grep -q "^c32p -> refs/heads/main .*: stale$" "$work/last.out" || die "a signer restricted elsewhere counted in this project"
+fixed32="$(fixed c32p)"
+quiet32 --known-signers "$work/late_signers" --signer-projects "$work/late_projects"
+grep -q "^c32p " "$work/last.out" && die "an unchanged c32p was judged again: $(cat "$work/last.out")"
+printf '%s project\n' "$late" > "$work/late_projects"
+[ "$(fixed c32p)" = "$fixed32" ] || die "the head, main or an attestation ref moved; the case proves nothing"
+integrate --known-signers "$work/late_signers" --signer-projects "$work/late_projects"
+grep -q "^c32p -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "a start under a changed signer projects file did not judge c32p again: $(cat "$work/last.out")"
+landed_as "$(git rev-parse c32p)" "$pre"
+holds "a controller started under a changed signer projects file judges the standing answer again"
+
+# The floor requires a check the change carries no evidence for.
+cp "$floor/policy/instance/floor.cue" "$work/floor32.cue"
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
+package verification
+
+floor: {
+	checks: {
+		"prose-format": {runner: "nix", attribute: "prose-format"}
+		"floor-review": {runner: "command", command: "true"}
+	}
+	classes: prose: {paths: "docs/**": true, requires: {"prose-format": true, "floor-review": true}}
+	unclassified: {}
+}
+EOF
+git -C "$floor" commit --quiet -am "the floor requires floor-review of docs/"
+git -C "$floor" push --quiet "$instance_repo" main
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c32f
+echo "a readme the floor holds back" > docs/c32f.md
+git add -A
+git commit --quiet -m "a change the floor holds back"
+attest_change c32f "" "" --check prose-format
+request c32f main "$(git rev-parse c32f)"
+integrate
+grep -q "^c32f -> refs/heads/main .*: stale$" "$work/last.out" || die "the floor's own requirement did not hold c32f back: $(cat "$work/last.out")"
+grep -q "floor-review" "$work/last.out" || die "the missing floor-review evidence was not named"
+fixed32="$(fixed c32f)"
+quiet32
+grep -q "^c32f " "$work/last.out" && die "an unchanged c32f was judged again: $(cat "$work/last.out")"
+
+# An input that does not read fails the request closed, and the failure
+# stands for its window. Restored, the input is judged again at once.
+before="$(tip)"
+integrate --known-signers "$work/nowhere"
+grep -q "^c32f: .*known-signers" "$work/last.out" || die "an unreadable known-signers file was not the reason c32f failed: $(cat "$work/last.out")"
+[ "$(outcome_of c32f)" = failed ] || die "the unreadable input did not record a failure"
+[ "$(tip)" = "$before" ] || die "main moved while an input did not read"
+quiet32 --known-signers "$work/nowhere"
+grep -q "^c32f" "$work/last.out" && die "the failure did not stand for its window: $(cat "$work/last.out")"
+integrate
+grep -q "^c32f -> refs/heads/main .*: stale$" "$work/last.out" || die "c32f was not judged again once the input read: $(cat "$work/last.out")"
+holds "an input that does not read fails closed, and the request is judged again once it reads"
+
+# The floor drops the requirement. Only the instance repository moves.
+cp "$work/floor32.cue" "$floor/policy/instance/floor.cue"
+git -C "$floor" commit --quiet -am "the floor no longer requires floor-review"
+git -C "$floor" push --quiet "$instance_repo" main
+[ "$(fixed c32f)" = "$fixed32" ] || die "the head, main or an attestation ref moved; the case proves nothing"
+integrate
+grep -q "^c32f -> refs/heads/main .*: land$" "$work/last.out" \
+  || die "changing the floor did not judge c32f again: $(cat "$work/last.out")"
+landed_as "$(git rev-parse c32f)" "$pre"
+holds "a stale answer the floor gave is judged again when only the floor changes, and the change lands"
 
 printf '\nintegrator-e2e: every scenario held\n'

@@ -58,6 +58,18 @@ package main
 // happen must not read as no changes or no evidence. Anything else that
 // goes wrong with one change is reported, and the pass goes on to the
 // next. The pass exits 1 when anything went wrong.
+//
+// Given --wake, a pass claims that wake directory's due mark before it
+// reads anything, and acknowledges the claim when it has handled what it
+// read (wake.go). A pass has handled it when it read every project whole
+// and everything that went wrong was a failed batch or push whose wait it
+// recorded: those are retried when their wait is over, by a pass the
+// timer starts, and a new mark for the same refs would only find them
+// still waiting. Anything else that went wrong (a policy that did not
+// read, checks that did not derive, a read that stopped the pass, a
+// record that was not written) leaves the claim unacknowledged. A pass
+// that could not claim due reads and builds all the same, and then exits
+// claimFailedStatus instead of 0 or 1.
 
 import (
 	"context"
@@ -76,7 +88,7 @@ import (
 	"the-valley/composed"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>]"
+const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
@@ -96,18 +108,20 @@ type worker struct {
 	key, name string
 	keyhash   string   // the key hash an attestation ref of this signer ends in
 	lock      *os.File // the state directory's lock, held for the pass
+	wake      *wake    // the wake directory's claim, or nil without --wake
 	failures  *failureRecord
 	stdout    io.Writer
 	stderr    io.Writer
 	troubles  int // things that went wrong that did not stop the pass
+	waits     int // of the troubles, the failures whose wait was recorded
 }
 
-func runWork(g git, args []string, stdout, stderr io.Writer) error {
+func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	var repos []string
-	var key, name, state string
+	var key, name, state, wakeDir string
 	for i := 0; i < len(args); i++ {
 		opt, value, inline := strings.Cut(args[i], "=")
-		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" {
+		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" {
 			return failure(workUsage)
 		}
 		if !inline {
@@ -129,10 +143,31 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 			name = value
 		case "--state":
 			state = value
+		case "--wake":
+			wakeDir = value
 		}
 	}
 	if len(repos) == 0 || key == "" {
 		return failure(workUsage)
+	}
+	// From here on, a pass given --wake that ends without having claimed
+	// due exits claimFailedStatus, however it ends, so whatever started
+	// it for that due holds off before it starts another.
+	var claim *wake
+	if wakeDir != "" {
+		defer func() {
+			if claim != nil && claim.err == nil {
+				return
+			}
+			why := "due was not claimed"
+			if claim != nil {
+				why = claim.err.Error()
+			}
+			if err != nil {
+				fmt.Fprintf(stderr, "valley: %s\n", err)
+			}
+			err = claimFailure{fmt.Sprintf("%s, so the pass exits %d", why, claimFailedStatus)}
+		}()
 	}
 	// attest runs in the repository a project is read through, which may
 	// be a cache clone, so a key named relative to here is made absolute.
@@ -156,6 +191,16 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 	}
 	defer lock.Close() // close drops the flock; every attest handed it has ended by then
 
+	// The claim comes before any read, so a move marked after it is
+	// either read by this pass or left marked for the next.
+	if wakeDir != "" {
+		claim = claimWake(wakeDir, stderr)
+		defer claim.close()
+		if claim.err != nil {
+			fmt.Fprintf(stderr, "valley: %v; the pass reads everything all the same\n", claim.err)
+		}
+	}
+
 	// The signer is read before anything else is done, so a pass that
 	// could only end in "no key" says so before it reads anything.
 	keyArgs := []string{"key", "--key", key}
@@ -168,7 +213,7 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 		return failure(fmt.Sprintf("could not read the signing key at %s: %s", key, refusalOf(out)))
 	}
 
-	w := &worker{key: key, name: name, keyhash: fields[1], lock: lock, stdout: stdout, stderr: stderr}
+	w := &worker{key: key, name: name, keyhash: fields[1], lock: lock, wake: claim, stdout: stdout, stderr: stderr}
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
 	for _, repo := range repos {
 		if err := w.project(g, repo); err != nil {
@@ -176,6 +221,12 @@ func runWork(g git, args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	w.save()
+	if claim != nil && w.troubles == w.waits {
+		if err := claim.ack(); err != nil {
+			fmt.Fprintf(stderr, "valley: could not acknowledge %s: %v\n", filepath.Join(wakeDir, "claimed"), err)
+			w.troubles++
+		}
+	}
 	if w.troubles > 0 {
 		return failure(fmt.Sprintf("the pass finished, but %s went wrong in it; each is said above", counted(w.troubles, "thing")))
 	}
@@ -338,6 +389,7 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 		f := w.failures.failed(r.name, batch, clock(), firstBuildWait)
 		say("the batch did not pass (%v); it is not built again before %s", err, f.Retry.Format(time.RFC3339))
 		w.troubles++
+		w.waits++
 		w.save()
 		return true, nil
 	}
@@ -356,7 +408,8 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 // worker's attestation ref for the head's tree and publishes nothing.
 // What attest prints is passed on.
 //
-// attest is handed the lock file as well, and holds it until it ends. The
+// attest is handed the lock file as well, and holds it until it ends, and
+// the wake directory's lock with it. The
 // flock belongs to the open file, so the lock stays held while attest
 // runs, and while anything it started that inherited the file runs, even
 // when this pass is killed. A later pass waits for all of it, and then
@@ -378,6 +431,9 @@ func (w *worker) attest(g git, head string, checks []nixCheck) error {
 	cmd.Dir = g.dir
 	cmd.Stdout, cmd.Stderr = w.stdout, w.stderr
 	cmd.ExtraFiles = []*os.File{w.lock}
+	if w.wake != nil && w.wake.lock != nil {
+		cmd.ExtraFiles = append(cmd.ExtraFiles, w.wake.lock)
+	}
 	return cmd.Run()
 }
 
@@ -397,6 +453,7 @@ func (w *worker) publish(r listed, ref, object string, met map[string]bool, say 
 		f := w.failures.failed(r.name, key, clock(), firstPushWait)
 		say("could not publish %s; it is not pushed again before %s", ref, f.Retry.Format(time.RFC3339))
 		w.troubles++
+		w.waits++
 		w.save()
 		return
 	}

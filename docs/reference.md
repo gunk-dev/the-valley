@@ -617,8 +617,8 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
   flake's git, cue and `attest` and with `VALLEY_VERIFICATION_SCHEMA` set. It runs the machine's own
   `nix`. On a host, `services.valley.worker` runs it on a timer (see
   [NixOS host options](#nixos-host-options)).
-  - `valley-worker --repo <name>... --key <path> [--name <name>] [--state <dir>]` — run in a clone
-    of any project the host serves.
+  - `valley-worker --repo <name>... --key <path> [--name <name>] [--state <dir>] [--wake <dir>]` —
+    run in a clone of any project the host serves.
     - `--repo <name>`: A project to build evidence for, once per project. At least one is required.
       The worker builds evidence for no other project. To find a project other than its clone's own,
       it reads `policy/valley` on `origin`'s `main` and the instance repository's
@@ -629,6 +629,11 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
       `attest run`. The name defaults as `attest`'s does.
     - `--state <dir>`: The directory holding the lock and the record of failed batches and pushes
       (default `${XDG_STATE_HOME:-$HOME/.local/state}/valley/worker`).
+    - `--wake <dir>`: A wake directory (see
+      [The worker's wakeups](architecture.md#the-workers-wakeups)). Before it reads anything, the
+      pass takes `<dir>/lock` and renames `<dir>/due` to `<dir>/claimed`. It removes `claimed` once
+      it has read every project and recorded every failure it met. A pass that could not take the
+      lock or rename `due` still reads and builds, and then exits `75` instead of `0` or `1`.
   - Prints lines of the form `<project>: <handle> v<n> at <short-head>: <what>` for the ready
     changes in a project whose policy at `main` loads. A change it builds or publishes gets one line
     for each step, with what `attest run` prints between them. `<what>` is usually one of these.

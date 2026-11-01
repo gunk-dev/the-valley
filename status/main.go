@@ -149,6 +149,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 			err = runPlan(g, args, stdout, stderr)
 		default:
 			err = runWork(g, args, stdout, stderr)
+			var unclaimed claimFailure
+			if errors.As(err, &unclaimed) {
+				fmt.Fprintf(stderr, "valley: %s\n", err)
+				return claimFailedStatus
+			}
 		}
 	default:
 		fmt.Fprintln(stderr, usage)

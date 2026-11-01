@@ -9,6 +9,17 @@
 # and the evidence is on origin before anyone approves the change. The
 # timer runs the next pass.
 #
+# Then the wake directory. A move the worker reads starts a pass with the
+# timer stopped, and a move during a pass gets the next one. A landing by
+# the integrator's own service marks the worker while the project's mirror
+# and the bus hang, and so does a ready push. A floor landed in the
+# instance, which the worker does not build, marks it, and the next pass
+# reads the new floor. With the timer at its minute, a
+# pass killed during a build, and a pass that cannot reach the
+# repositories, leave their claim, and the timer's next pass builds the
+# change with no new mark. A failed batch is not built again before its
+# wait, however many marks and timer passes come.
+#
 # Then the slice's caps, with builds that are not the worker's. A build
 # that wants six CPUs gets four. A change whose check eats memory without
 # end is built while two unrelated builds hold memory of their own. The
@@ -46,23 +57,34 @@ let
     projects: {
       // The instance repository, which carries the floor and the registry.
       "instance": protection: refs: ["refs/heads/main"]
-      "project": protection: {}
+      // The project's mirror is a local repository, which a scenario
+      // below makes hang.
+      "project": {
+        protection: {}
+        mirrors: ["/srv/hung.git"]
+      }
     }
   '';
 
-  # A floor that requires two nix checks of every change.
-  floor = pkgs.writeText "floor.cue" ''
+  # A floor that requires two nix checks of every change but one to the
+  # policy alone, so the instance's own floor lands by integration with no
+  # evidence. floorThird, which a scenario lands in the instance, requires a
+  # third check of the same attribute as the second.
+  floorWith = third: pkgs.writeText "floor.cue" ''
     package verification
 
     floor: {
     	checks: {
     		first: {runner: "nix", attribute: "first"}
     		second: {runner: "nix", attribute: "second"}
+    		${lib.optionalString third ''third: {runner: "nix", attribute: "second"}''}
     	}
-    	classes: {}
-    	unclassified: {first: true, second: true}
+    	classes: policy: {paths: {"policy/**": true}, requires: {}}
+    	unclassified: {first: true, second: true${lib.optionalString third ", third: true"}}
     }
   '';
+  floor = floorWith false;
+  floorThird = floorWith true;
 
   # The project's flake, with no inputs, so the machine builds it offline.
   # Each check runs a script from the project's tree in the sandbox's
@@ -97,6 +119,13 @@ let
     while [ $i -lt 250000 ]; do i=$((i+1)); done
     echo $NIX_BUILD_CORES > $out
   '';
+  # A build long enough to be killed in: about twenty seconds of spinning.
+  slow = pkgs.writeText "slow.sh" ''
+    i=0
+    while [ $i -lt 10000000 ]; do i=$((i+1)); done
+    echo $NIX_BUILD_CORES > $out
+  '';
+  broken = pkgs.writeText "broken.sh" "exit 1";
   runaway = pkgs.writeText "runaway.sh" ''
     x=a
     while :; do x=$x$x; done
@@ -171,6 +200,7 @@ in
           }
         ];
         identity.enable = true;
+        bus.enable = true;
         integrator = {
           enable = true;
           signingKeyFile = "${keys}/integrator";
@@ -188,11 +218,11 @@ in
       # below is stopped by the slice's OOM, so a host's default is restored.
       boot.kernel.sysctl."vm.panic_on_oom" = 0;
       # The test starts each pass itself until it checks the timer, so no
-      # pass runs before the test is ready for it. When it checks the timer,
-      # the next pass starts a second after the last one ended, rather than
-      # a minute and up to a minute of systemd's accuracy later.
+      # pass runs before the test is ready for it. The interval stays the
+      # module's minute: the recovery scenarios wait for it. A timer pass
+      # starts within a second of it, rather than up to a minute of
+      # systemd's accuracy later.
       systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
-      services.valley.worker.interval = "1s";
       systemd.timers.valley-worker.timerConfig.AccuracySec = "1s";
       # The machine has no network. Without these, every new build waits
       # for the daemon's lookups in cache.nixos.org to fail, and every boot
@@ -205,10 +235,11 @@ in
       import shlex
 
       host.wait_for_unit("multi-user.target")
-      host.succeed("systemctl is-active valley-worker.timer")
-      host.succeed("systemctl stop valley-worker.timer")
+      host.succeed("systemctl is-active valley-worker.timer valley-worker.path")
+      host.succeed("systemctl stop valley-worker.timer valley-worker.path")
 
       git = "sudo -u git git"
+      wake = "/var/lib/valley-worker-wake"
       state = "/var/lib/valley-worker"
       ssh = shlex.quote(
           "ssh -i /root/keys/contributor -o IdentitiesOnly=yes -o BatchMode=yes"
@@ -290,6 +321,7 @@ in
           )
 
       with subtest("the instance and the project are seeded, and a change is ready"):
+          host.succeed("mkdir /srv/hung.git && chown git:git /srv/hung.git", f"{git} init --quiet --bare /srv/hung.git")
           land_instance(None)
           host.succeed(
               "mkdir -p /tmp/project/policy",
@@ -379,6 +411,265 @@ in
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating")
           assert len(attestations()) == 1
 
+      def idle():
+          host.wait_until_succeeds(
+              "test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating"
+              f" && test ! -e {wake}/due",
+              timeout=300,
+          )
+
+      def started():
+          return unit_property("valley-worker.service", "ExecMainStartTimestampMonotonic")
+
+      with subtest("the wake directory is the worker's and its writers', and the worker's access is unchanged"):
+          assert host.succeed(f"stat -c '%U %G %a' {wake}").strip() == "valley-worker valley-worker-wake 770"
+          assert "valley-worker-wake" in host.succeed("id -nG git").split()
+          assert "valley-worker-wake" in host.succeed(f"id -nG {unit_property('valley-integrator@project.service', 'User')}").split()
+          assert host.succeed("id -nG valley-worker").split() == ["valley-worker"]
+          host.fail("sudo -u valley-worker ls /srv/git/project.git/refs")
+          host.succeed("systemctl cat valley-worker.path | grep -qx 'PathExists=/var/lib/valley-worker-wake/due'")
+          assert unit_property("valley-worker.service", "StartLimitIntervalUSec") == "0"
+          assert unit_property("valley-worker.service", "RestartForceExitStatus") == "75"
+          host.fail("systemctl show -p WantedBy --value valley-worker.service | grep -q multi-user")
+          # The marks the seeding pushes and the signer publication left
+          # are read by one pass, which builds nothing.
+          host.succeed("systemctl start valley-worker.path")
+          idle()
+          host.succeed(f"test ! -e {wake}/claimed")
+          assert len(attestations()) == 1
+
+      with subtest("a ready push starts a pass at once with no timer, and a change readied during it gets the next pass"):
+          import time
+          host.fail("systemctl is-active valley-worker.timer")
+          building = journal().count("building first, second")
+          evidence = len(attestations())
+          ready("wake-first", "${spin}")
+          readied = time.monotonic()
+          host.wait_until_succeeds(
+              f"test $(journalctl -u valley-worker -o cat | grep -c 'building first, second') -gt {building}",
+              timeout=120,
+          )
+          print(f"ready to building: {time.monotonic() - readied:.1f}s")
+          assert unit_property("valley-worker.service", "ActiveState") == "activating"
+          ready("wake-second", "${spin}")
+          host.wait_until_succeeds(f"test -e {wake}/due -a -e {wake}/claimed")
+          host.wait_until_succeeds(
+              f"test $({git} -C /srv/git/project.git for-each-ref refs/the-valley/attestations/ | wc -l) -eq {evidence + 2}",
+              timeout=600,
+          )
+          idle()
+          host.fail("systemctl is-active valley-worker.timer")
+          assert journal().count("building first, second") == building + 2
+
+      with subtest("marks from the git user and the integrator's user are one file, and a stale mark builds nothing"):
+          host.succeed("systemctl stop valley-worker.path")
+          integrator = unit_property("valley-integrator@project.service", "User")
+          for who in ["git", integrator, "git", integrator]:
+              host.succeed(f"sudo -u {who} bash -c 'set -C; : > {wake}/due' 2>/dev/null || test -e {wake}/due")
+          assert host.succeed(f"ls -A {wake}").split() == ["due", "lock"]
+          host.succeed(f"rm {wake}/due && sudo -u {integrator} bash -c 'set -C; : > {wake}/due'")
+          building = journal().count("building first, second")
+          pushes = journal().count("published ")
+          host.succeed("systemctl start valley-worker.path")
+          idle()
+          assert host.succeed(f"ls -A {wake}").split() == ["lock"]
+          assert journal().count("building first, second") == building
+          assert journal().count("published ") == pushes
+
+      with subtest("a claim a killed pass left starts nothing, and the next pass acknowledges it"):
+          host.succeed(f"sudo -u valley-worker touch {wake}/claimed")
+          mark = started()
+          host.succeed("sleep 5")
+          assert started() == mark
+          host.succeed("systemctl start valley-worker.service")
+          host.succeed(f"test ! -e {wake}/claimed")
+
+      with subtest("a pass that cannot claim due reads all the same and is started again only after its hold-off"):
+          restarts = int(unit_property("valley-worker.service", "NRestarts"))
+          host.succeed(f"chmod 0550 {wake} && touch {wake}/due")
+          host.wait_until_succeeds("journalctl -u valley-worker -o cat | grep -q 'could not claim'", timeout=60)
+          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-worker)\" = auto-restart")
+          # due is still there, and nothing starts a pass for a minute.
+          mark = started()
+          host.sleep(20)
+          assert started() == mark
+          assert int(unit_property("valley-worker.service", "NRestarts")) == restarts
+          host.fail("systemctl is-failed valley-worker.path")
+          assert "origin holds evidence for every nix check it requires" in journal()
+          host.succeed(f"chmod 0770 {wake}")
+          idle()
+          host.succeed("systemctl is-active valley-worker.path")
+
+      with subtest("a push to the instance, which the worker does not build, marks it due, and knots and bookkeeping do not"):
+          host.succeed("systemctl stop valley-worker.path")
+          host.succeed(
+              f"cd /root && rm -rf instance && GIT_SSH_COMMAND={ssh} git clone --quiet git@localhost:instance.git instance",
+              f"cd /root/instance && git checkout --quiet -b floor-probe && echo probe > probe && git add probe && {commit} -m probe",
+          )
+          hook = "/srv/git/instance.git/hooks/post-receive.d/valley-wake"
+          zero = "0" * 40
+          host.succeed(f"echo '{zero} {zero} refs/the-valley/knots' | sudo -u git {hook}")
+          host.succeed(f"echo '{zero} {zero} refs/the-valley/integration-outcomes/main/x' | sudo -u git {hook}")
+          host.succeed(f"test ! -e {wake}/due")
+          host.succeed(f"cd /root/instance && GIT_SSH_COMMAND={ssh} git push --quiet origin floor-probe")
+          host.succeed(f"test -e {wake}/due")
+
+      with subtest("a signer publication marks the worker due only when it moves the ref"):
+          host.succeed(f"rm -f {wake}/due")
+          host.succeed("systemctl start valley-signers.service")
+          host.succeed(f"test ! -e {wake}/due")
+          host.succeed(f"{git} -C /srv/git/instance.git update-ref -d refs/the-valley/signers")
+          host.succeed("systemctl start valley-signers.service")
+          host.succeed(f"test -e {wake}/due")
+          host.succeed("systemctl start valley-worker.path")
+          idle()
+
+      def head(branch):
+          return host.succeed(f"git -C /root/project rev-parse --short=7 {branch}").strip()
+
+      def told(commit, what):
+          return journal().count(f" at {commit}: {what}")
+
+      def wait_said(commit, what, timeout):
+          host.wait_until_succeeds(f"journalctl -u valley-worker -o cat | grep -qF ' at {commit}: {what}'", timeout=timeout)
+
+      with subtest("with the mirror and the bus hung, a landing by the integrator's service and a ready push mark the worker at once"):
+          # The mirror takes the drain's push of main and never answers it,
+          # and what listens at the bus's address takes a connection and
+          # never answers it.
+          host.succeed(
+              "printf '#!/bin/sh\\nexec /run/current-system/sw/bin/sleep 100001\\n' > /srv/hung.git/hooks/pre-receive",
+              "chmod 755 /srv/hung.git/hooks/pre-receive",
+              "systemctl stop valley-bus.service",
+              "systemd-run --unit=hung-bus ${pkgs.socat}/bin/socat TCP-LISTEN:4222,bind=127.0.0.1,fork,reuseaddr"
+              " SYSTEM:'exec ${pkgs.coreutils}/bin/sleep 100000'",
+          )
+          host.wait_for_open_port(4222)
+          # The good change lands by the integrator's own service, which
+          # marks due from inside its sandbox. The request ref is written
+          # locally, which runs no hook, so the landing's mark is the only one.
+          host.succeed("systemctl stop valley-worker.path")
+          base = host.succeed(f"{git} -C /srv/git/project.git rev-parse refs/heads/main").strip()
+          good = host.succeed("git -C /root/project rev-parse good").strip()
+          host.succeed(f"{git} -C /srv/git/project.git update-ref refs/the-valley/integration-requests/main/good {good}")
+          host.wait_until_succeeds(
+              f"test \"$({git} -C /srv/git/project.git rev-parse refs/heads/main^)\" = {base}", timeout=120
+          )
+          landed = time.monotonic()
+          host.wait_until_succeeds(f"test -e {wake}/due", timeout=10)
+          print(f"landing to mark, mirror and bus hung: {time.monotonic() - landed:.1f}s")
+          host.wait_until_succeeds(
+              "journalctl -u valley-integrator@project -o cat | grep -q 'bus      publish of .* FAILED'", timeout=120
+          )
+          said_by = host.succeed("journalctl -u valley-integrator@project -o cat")
+          assert said_by.index("wake     the check worker is due") < said_by.index("bus      publish of"), said_by
+          host.wait_until_succeeds("pgrep -f 'sleep 10000[1]'", timeout=60)
+          host.succeed("systemctl start valley-worker.path")
+          idle()
+          # With the mirror's push still hung, a ready push starts a pass.
+          ready("hung", "${spin}")
+          readied = time.monotonic()
+          wait_said(head("hung"), "building", 120)
+          print(f"ready to building, mirror and bus hung: {time.monotonic() - readied:.1f}s")
+          wait_said(head("hung"), "published", 120)
+          idle()
+          host.succeed("pgrep -f 'sleep 10000[1]'")
+          host.succeed(
+              "rm /srv/hung.git/hooks/pre-receive && pkill -f 'sleep 10000[1]'",
+              "systemctl stop hung-bus && systemctl start valley-bus.service",
+          )
+
+      with subtest("a floor landed in the instance, which the worker does not build, marks it, and the next pass reads the floor it landed"):
+          host.succeed("systemctl stop valley-worker.path")
+          floor_base = host.succeed(f"{git} -C /srv/git/instance.git rev-parse refs/heads/main").strip()
+          host.succeed(
+              "cp ${floorThird} /tmp/instance/policy/instance/floor.cue",
+              f"cd /tmp/instance && sudo -u git {commit} -am third",
+              f"{git} -C /srv/git/instance.git fetch --quiet /tmp/instance main:refs/the-valley/integration-requests/main/third",
+          )
+          host.wait_until_succeeds(
+              f"test \"$({git} -C /srv/git/instance.git rev-parse refs/heads/main^)\" = {floor_base}", timeout=120
+          )
+          host.wait_until_succeeds(f"test -e {wake}/due", timeout=10)
+          host.succeed("journalctl -u valley-integrator@instance -o cat | grep -q 'wake     the check worker is due'")
+          # The pass reads the new floor. A change built before it holds this
+          # worker's evidence for its tree, which admits no addition, so the
+          # pass says the third check is not covered.
+          host.succeed("systemctl start valley-worker.path")
+          host.wait_until_succeeds(
+              "journalctl -u valley-worker -o cat | grep -q 'and it does not cover third'", timeout=120
+          )
+          idle()
+          assert "instance:" not in journal()
+
+      with subtest("a pass killed during a build leaves its claim, and the timer's next pass builds the change"):
+          # The push and the ready mark are made before the pass starts,
+          # so they are one due, which the pass claims.
+          host.succeed("systemctl stop valley-worker.path")
+          ready("killed", "${slow}")
+          killed = head("killed")
+          host.succeed("systemctl start valley-worker.path")
+          wait_said(killed, "building", 120)
+          host.wait_until_succeeds("ps -eo user= | grep -q '^nixbld'", timeout=60)
+          host.succeed("systemctl kill --signal=KILL valley-worker.service")
+          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" = failed", timeout=60)
+          assert host.succeed(f"ls -A {wake}").split() == ["claimed", "lock"]
+          host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
+          # Nothing watches claimed, so nothing starts a pass, until the
+          # timer runs the recovery scan a minute after the kill.
+          mark = started()
+          host.sleep(5)
+          assert started() == mark
+          assert told(killed, "published") == 0
+          host.succeed("systemctl start valley-worker.timer")
+          wait_said(killed, "published", 300)
+          idle()
+          host.succeed(f"test ! -e {wake}/claimed")
+          assert told(killed, "building") == 2
+
+      with subtest("a pass that cannot reach the repositories leaves its claim, and the timer's next pass builds the change with no new mark"):
+          host.succeed("systemctl stop valley-worker.path")
+          ready("outage", "${spin}")
+          outage = head("outage")
+          host.succeed("systemctl stop sshd.service")
+          host.succeed("systemctl start valley-worker.path")
+          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" = failed", timeout=120)
+          assert host.succeed(f"ls -A {wake}").split() == ["claimed", "lock"]
+          assert told(outage, "building") == 0
+          triggered = unit_property("valley-worker.timer", "LastTriggerUSecMonotonic")
+          host.succeed("systemctl start sshd.service")
+          wait_said(outage, "published", 300)
+          assert unit_property("valley-worker.timer", "LastTriggerUSecMonotonic") != triggered
+          idle()
+          host.succeed(f"test ! -e {wake}/claimed")
+
+      with subtest("a failed batch is not built again before its wait, however many marks and timer passes come"):
+          ready("broken", "${broken}")
+          broken = head("broken")
+          wait_said(broken, "the batch did not pass", 120)
+          idle()
+          ready("unrelated", "${spin}")
+          wait_said(head("unrelated"), "published", 120)
+          idle()
+          host.succeed(
+              f"{git} -C /srv/git/instance.git update-ref -d refs/the-valley/signers",
+              "systemctl start valley-signers.service",
+          )
+          idle()
+          host.succeed(f"cd /root/instance && echo again >> probe && {commit} -am again && GIT_SSH_COMMAND={ssh} git push --quiet origin floor-probe")
+          idle()
+          triggered = unit_property("valley-worker.timer", "LastTriggerUSecMonotonic")
+          host.wait_until_succeeds(
+              f"test \"$(systemctl show -p LastTriggerUSecMonotonic --value valley-worker.timer)\" != '{triggered}'", timeout=150
+          )
+          idle()
+          assert told(broken, "building") == 1
+          assert told(broken, "the batch did not pass") == 1
+          assert told(broken, "its batch") >= 4, journal()
+          # The scenarios below start each pass themselves.
+          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
+          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating")
+
       with subtest("the slice holds its default caps"):
           cgroup = "/sys/fs/cgroup/valley.slice/valley-builds.slice"
           assert host.succeed(f"cat {cgroup}/cpu.max").strip() == "400000 100000"
@@ -402,6 +693,7 @@ in
           host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
 
       with subtest("a runaway build is stopped at the memory cap, a bigger unrelated build is stopped with it, and the rest of the host stays healthy"):
+          evidence = len(attestations())
           ready("runaway", "${runaway}")
           failed_before = set(host.succeed("systemctl list-units --state=failed --no-legend --plain | cut -d' ' -f1").split())
           # Two builds that are not the worker's, with room to make their
@@ -431,7 +723,8 @@ in
           assert "the batch did not pass" in said, said
           kills = host.succeed(f"sed -n 's/^oom_kill //p' {cgroup}/memory.events").strip()
           assert int(kills) >= 2, kills
-          assert len(attestations()) == 1
+          # Nothing for the runaway.
+          assert len(attestations()) == evidence
           # The kernel killed the biggest process in the slice: the unrelated
           # big build, before the runaway grew past it, and then the runaway.
           # The small build was never the biggest. It is still running, and
@@ -461,7 +754,7 @@ in
           host.shutdown()
           host.start()
           host.wait_for_unit("multi-user.target")
-          host.succeed("systemctl stop valley-worker.timer")
+          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
           host.succeed("systemctl start valley-worker.service")
           assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
           assert host.succeed(f"cat {state}/verifier").strip() == verifier

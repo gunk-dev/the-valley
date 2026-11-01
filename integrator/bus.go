@@ -18,7 +18,9 @@ import (
 
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -73,6 +75,42 @@ func (in *integrator) publishRefUpdated(ref, old, new string) {
 		Old   string `json:"old"`
 		New   string `json:"new"`
 	}{"ref-updated", in.project, ref, old, new})
+}
+
+// markDue tells the host's check worker that a landing moved a ref it
+// reads, so it starts a pass without waiting for its timer. The landing
+// does not wait for anything the worker does, and a mark that fails is
+// reported and the landing stands: the worker's recovery scan reads the
+// same refs later (status/worker.go).
+func (in *integrator) markDue() {
+	if in.wake == "" {
+		return
+	}
+	if err := markDue(in.wake); err != nil {
+		fmt.Fprintf(in.out, "  wake     the check worker was not marked due: %v\n", err)
+		return
+	}
+	fmt.Fprintf(in.out, "  wake     the check worker is due\n")
+}
+
+// markDue creates the empty file due in the wake directory dir, which
+// the host made. One mark stands for any number of moves: a file that
+// is already there is a mark already made, so it is success, and the
+// directory never holds more than the one file from every writer. The
+// file carries nothing and nothing reads it; the worker renames it when
+// it starts a pass (status/wake.go). An empty dir marks nothing.
+func markDue(dir string) error {
+	if dir == "" {
+		return nil
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "due"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o440)
+	if errors.Is(err, fs.ErrExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }
 
 // queueRefUpdate hands one ref move to the host, which pushes it to the

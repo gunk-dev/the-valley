@@ -603,8 +603,11 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	}
 
 	// The notices come last, as best effort: a queue or a bus that fails
-	// or hangs changes nothing the transaction recorded.
+	// or hangs changes nothing the transaction recorded. The worker's mark
+	// comes first of them: it is one local file, and a mirror or a bus
+	// that hangs must not hold it back.
 	done = watch.stage(stagePublish)
+	in.markDue()
 	in.queueRefUpdate(ch.Target, tip, l.commit)
 	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)

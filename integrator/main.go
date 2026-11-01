@@ -94,6 +94,10 @@ flags:
                       leaves its target's move there, and the host pushes it
                       to the mirrors as it does a pushed one; empty leaves
                       nothing
+  --wake DIR          the host check worker's wake directory: each landing
+                      creates the empty file DIR/due, before the mirror
+                      queue and the bus, so the worker starts a pass;
+                      empty marks nothing
   --system SYSTEM     flake system for closure recomputation
   --interval D        watch: how long to wait between passes (default 15s)
   --now TIME          judge as at this RFC 3339 instant, for the effectful
@@ -169,6 +173,7 @@ type integrator struct {
 
 	bus          string
 	publishQueue string
+	wake         string // the check worker's wake directory, or empty
 	system       string
 
 	// clock, when set, is the instant the effectful window is measured
@@ -233,6 +238,7 @@ func run(args []string, loop bool) error {
 	eventSchema := fs.String("event-schema", env("VALLEY_EVENT_SCHEMA"), "the event vocabulary")
 	bus := fs.String("bus", "", "nats server to publish outcomes to")
 	publishQueue := fs.String("publish-queue", "", "the host's queue of ref moves to publish")
+	wake := fs.String("wake", "", "the check worker's wake directory, marked due after each landing")
 	system := fs.String("system", "", "flake system")
 	interval := fs.Duration("interval", 15*time.Second, "how long to wait between passes")
 	now := fs.String("now", "", "judge as at this instant")
@@ -252,6 +258,7 @@ func run(args []string, loop bool) error {
 		knownSigners: *known,
 		bus:          *bus,
 		publishQueue: *publishQueue,
+		wake:         *wake,
 		system:       *system,
 	}
 	for _, missing := range []struct{ flag, value string }{

@@ -125,6 +125,10 @@ let
     )
     ++ lib.optional cfg.bus.enable "--bus ${busUrl}"
     ++ [ "--publish-queue ${cfg.dataDir}/%i.git/${publishQueueName}" ]
+    # The worker's wake directory, for the projects whose landings it reads:
+    # the unit's environment file for the instance names it (valley-wake-%i
+    # below), and empty, which marks nothing, for every other project.
+    ++ lib.optional cfg.worker.enable "--wake=\${VALLEY_WAKE}"
   );
 
   # The one filesystem grant the integrator's user gets. It writes refs,
@@ -254,6 +258,7 @@ let
     ]
     ++ lib.optional (cfg.integrator.signingName != null) "--name ${cfg.integrator.signingName}"
     ++ lib.optional (signerProjects != null) "--signer-projects ${signerProjects}"
+    ++ lib.optional cfg.worker.enable "--wake ${workerWakeDir}"
   );
 
   # The check worker (status/worker.go), as this flake packages it, and the
@@ -268,6 +273,34 @@ let
   # the host the first time the service starts, and the service never
   # copies or prints it. Anything running as the worker can read it.
   workerKey = "${workerDir}/key";
+
+  # The worker's wake directory (status/wake.go): a writer that moves a
+  # ref the worker reads creates the empty file due in it, and the path
+  # unit starts a pass while due is there. The host makes it, owned by the
+  # worker, outside the worker's own directory, which is the worker's
+  # alone. Its group is the writers': the git user, whose post-receive
+  # hook and signer publisher write, and the integrator's user, which
+  # writes after a landing. Mode 0770 and no sticky bit, so the worker can
+  # rename a due whichever writer made it. Nothing in it is read as data.
+  workerWakeDir = toString cfg.worker.wakeDir;
+  workerWakeGroup = "valley-worker-wake";
+
+  # The projects whose moves can change what the worker builds: its own,
+  # and the instance project its floor is read from, whether or not the
+  # worker builds the instance project too.
+  # The integrator's environment for each project in wakeProjects, which
+  # names the wake directory to its --wake. A controller for any other
+  # project finds no file, and its --wake is empty.
+  integratorWake = pkgs.runCommand "valley-integrator-wake" { } (
+    "mkdir $out\n"
+    + lib.concatMapStrings (
+      name: "echo ${lib.escapeShellArg "VALLEY_WAKE=${workerWakeDir}"} > $out/${lib.escapeShellArg name}\n"
+    ) wakeProjects
+  );
+
+  wakeProjects = lib.unique (
+    cfg.worker.projects ++ lib.optional (cfg.integrator.instanceProject != null) cfg.integrator.instanceProject
+  );
 
   # The worker reads and pushes as an ssh client of this host, as the git
   # user, so its pushes pass the pre-receive hook like anyone else's. It
@@ -361,7 +394,7 @@ let
     cd "$origin"
     exec valley-worker ${
       lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
-    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state"
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir}
   '';
 
   # The name the controllers sign under, which the worker's must not be.
@@ -653,6 +686,64 @@ let
     exit 0
   '';
 
+  # The post-receive.d hook that marks the check worker due. It runs in the
+  # push, after the refs moved, so it does nothing slow: it reads the moves
+  # and creates one empty file, and it never fails the push. A push of
+  # nothing but knots or integration bookkeeping marks nothing, since the
+  # worker does not read those refs. Every other ref is a mark, so a ref
+  # the worker comes to read is covered without a change here. The
+  # worker's own evidence marks it too, and the pass that follows finds
+  # the evidence and builds nothing. noclobber makes the redirection
+  # O_EXCL, and a due that is there already is a mark already made. A
+  # mark that fails is logged; the worker's timer reads the push later.
+  wakeHook = pkgs.writeShellScript "valley-wake" ''
+    # Managed by services.valley — marks the check worker due.
+    due=${lib.escapeShellArg "${workerWakeDir}/due"}
+    marks=
+    while read -r old new ref; do
+      case "$ref" in
+        refs/the-valley/knots | refs/the-valley/knots/* | \
+          refs/the-valley/integration-outcomes/* | refs/the-valley/integration-landings/*) ;;
+        *) marks=1 ;;
+      esac
+    done
+    [ -n "$marks" ] || exit 0
+    set -C
+    { : > "$due"; } 2>/dev/null || [ -e "$due" ] || { : > "$due"; } 2>/dev/null || [ -e "$due" ] ||
+      ${pkgs.util-linux}/bin/logger -t valley-wake "could not mark the check worker due in ${workerWakeDir}" || true
+    exit 0
+  '';
+
+  # Wake-hook wiring, one symlink per repo, by the bus hook's rules: the
+  # worker's projects and the instance project get it, and every other
+  # repository loses a store symlink of the name.
+  wakeHookCommands = lib.concatMapStrings (
+    name:
+    let
+      whook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/post-receive.d/valley-wake";
+    in
+    if cfg.worker.enable && lib.elem name wakeProjects then
+      ''
+        whook=${whook}
+        if [ -L "$whook" ]; then
+          case "$(readlink "$whook")" in
+            /nix/store/*) ln -sfn ${wakeHook} "$whook" ;;
+          esac
+        elif [ ! -e "$whook" ]; then
+          ln -s ${wakeHook} "$whook"
+        fi
+      ''
+    else
+      ''
+        whook=${whook}
+        if [ -L "$whook" ]; then
+          case "$(readlink "$whook")" in
+            /nix/store/*) rm -f "$whook" ;;
+          esac
+        fi
+      ''
+  ) repoNames;
+
   # Bus-hook wiring, one symlink per repo. Same rules as the mirror hooks:
   # only ever installs, updates, or removes a store symlink — a hand-written
   # hook of the same name is left alone.
@@ -771,6 +862,7 @@ let
 
     # The ref-updated publisher hook, on every repo when the bus is on.
     ${busHookCommands}
+    ${wakeHookCommands}
 
     # The project list, published in the instance repository for clients to
     # discover this host's projects by (valley changes --all): a blob at
@@ -1601,7 +1693,25 @@ in
         description = ''
           How long the timer waits after one pass ends before it starts the
           next; systemd's default timer accuracy can add up to a minute. A
-          pass that has nothing to build reads origin and ends.
+          pass that has nothing to build reads origin and ends. A move the
+          worker reads starts a pass sooner, through the wake directory;
+          the timer is the recovery scan, and what retries a failed batch
+          or push once its wait is over. It is also the hold-off after a
+          pass that could not claim its wake mark.
+        '';
+      };
+
+      wakeDir = lib.mkOption {
+        type = lib.types.path;
+        default = "/var/lib/valley-worker-wake";
+        description = ''
+          The worker's wake directory, mode 0770, owned by the
+          `valley-worker` user and the `valley-worker-wake` group, whose
+          members are the git user and the integrator's user. A push to
+          one of the worker's projects or to the instance project, a
+          landing in one, and a moved signer publication create the empty
+          file `due` in it, and a path unit starts a pass while it is
+          there. It holds no more than `due`, `claimed` and `lock`.
         '';
       };
 
@@ -2045,6 +2155,12 @@ in
       description = "The valley check worker";
     };
     users.groups.valley-worker = lib.mkIf cfg.worker.enable { };
+    users.groups.${workerWakeGroup} = lib.mkIf cfg.worker.enable {
+      members = [
+        cfg.user
+        cfg.integrator.user
+      ];
+    };
 
     # The restacker's own account. Its group is its own, not the git group,
     # so it can neither read nor write the repositories on disk, and it is
@@ -2100,6 +2216,7 @@ in
     ]
     ++ lib.optionals cfg.worker.enable [
       "d ${workerDir} 0700 valley-worker valley-worker - -"
+      "d ${workerWakeDir} 0770 valley-worker ${workerWakeGroup} - -"
     ];
 
     # The bus itself. It runs as the git user — the store directory lives in
@@ -2311,7 +2428,7 @@ in
         Group = cfg.group;
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        ReadWritePaths = [ instanceRepo ];
+        ReadWritePaths = [ instanceRepo ] ++ lib.optional cfg.worker.enable workerWakeDir;
         ProtectHome = true;
         PrivateTmp = true;
         PrivateDevices = true;
@@ -2424,6 +2541,7 @@ in
       };
       serviceConfig = {
         ExecStart = integratorCommand;
+        EnvironmentFile = lib.mkIf cfg.worker.enable "-${integratorWake}/%i";
         Restart = "on-failure";
         RestartSec = "10s";
         User = cfg.integrator.user;
@@ -2447,11 +2565,14 @@ in
         # The one repository it serves, and the nix daemon's socket —
         # recomputing a closure means asking the daemon, and connecting to
         # a unix socket needs write access to it.
+        #
+        # The worker's wake directory, where a landing marks the worker due.
         ReadWritePaths = [
           integratorStateDir
           "${cfg.dataDir}/%i.git"
           "/nix/var/nix/daemon-socket"
-        ];
+        ]
+        ++ lib.optional cfg.worker.enable workerWakeDir;
         ProtectHome = true;
         PrivateTmp = true;
         PrivateDevices = true;
@@ -2582,7 +2703,14 @@ in
         "valley-init.service"
         "systemd-tmpfiles-setup.service"
       ];
-      unitConfig.RequiresMountsFor = workerDir;
+      unitConfig.RequiresMountsFor = [
+        workerDir
+        workerWakeDir
+      ];
+      # A burst of marks must never leave the unit refusing to start: the
+      # path unit starts a pass at most once per pass that ends, and a pass
+      # that could not claim due waits out RestartSec first.
+      unitConfig.StartLimitIntervalSec = 0;
       # nix is the machine's own, for the reason the integrator's is.
       path = [
         workerPackage
@@ -2603,14 +2731,21 @@ in
         Type = "oneshot";
         User = "valley-worker";
         Group = "valley-worker";
+        # A pass that could not claim its due mark exits 75 (status/wake.go),
+        # and the due is still there. It is started again one interval
+        # later, and the path unit, which sees the unit restarting, starts
+        # nothing meanwhile. Any other status is left to the timer.
+        RestartForceExitStatus = "75";
+        RestartSec = cfg.worker.interval;
         Slice = buildSlice;
         CPUAffinity = "0";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
-        # Its own directory, and the nix daemon's socket, which a client
-        # writes to connect.
+        # Its own directory, its wake directory, and the nix daemon's
+        # socket, which a client writes to connect.
         ReadWritePaths = [
           workerDir
+          workerWakeDir
           "/nix/var/nix/daemon-socket"
         ];
         ProtectHome = true;
@@ -2639,19 +2774,30 @@ in
       };
     };
 
-    # The first pass starts five minutes after the timer starts. Each later
-    # pass starts one interval after the last one ended, so a long batch is
-    # never followed at once by another pass. These are delays and nothing
-    # more: a switch that runs longer than five minutes can see the first
-    # pass start inside it, and any later switch can see a pass start
-    # inside it.
+    # The timer is the worker's recovery scan. Its first pass starts soon
+    # after the timer starts, at boot or at the switch that adds it, and
+    # reads everything, so a mark lost between a ref moving and its hook
+    # running, or a claim a killed pass left, is made good. Each later pass
+    # starts one interval after the last one ended, and is what retries a
+    # failed batch or push once its wait is over. A pass may start inside a
+    # switch. Nothing waits for it: the service is wanted by no target.
     systemd.timers.valley-worker = lib.mkIf cfg.worker.enable {
       description = "Run the valley check worker";
       wantedBy = [ "timers.target" ];
       timerConfig = {
-        OnActiveSec = "5m";
+        OnActiveSec = "1s";
         OnUnitInactiveSec = cfg.worker.interval;
       };
+    };
+
+    # A pass whenever the wake directory holds due. PathExists, and not
+    # PathChanged: a mark made while a pass runs is seen when that pass
+    # ends, and starts the next one then, rather than being absorbed by
+    # the pass already running. claimed starts nothing.
+    systemd.paths.valley-worker = lib.mkIf cfg.worker.enable {
+      description = "Start the valley check worker when a ref it reads moves";
+      wantedBy = [ "multi-user.target" ];
+      pathConfig.PathExists = "${workerWakeDir}/due";
     };
 
     # One restacker controller for each project listed: valley-restacker

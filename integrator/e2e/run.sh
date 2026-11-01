@@ -1211,7 +1211,7 @@ say "19. a bus that never answers does not hold up a landing"
 # does the integrator publish, and each publish is cut off at its deadline.
 # The shipped wrapper puts the real nats first on the path, so the bare
 # binary runs here, behind a nats that never exits.
-mkdir "$work/hung-bus" "$work/queue"
+mkdir "$work/hung-bus" "$work/queue" "$work/wake"
 cat > "$work/hung-bus/nats" <<EOF
 #!$(command -v bash)
 exec sleep 1000
@@ -1237,6 +1237,7 @@ PATH="$work/hung-bus:$PATH" timeout 120 "$INTEGRATOR_UNWRAPPED" reconcile \
   --event-schema "$SCHEMA_EVENTS" \
   --bus nats://127.0.0.1:1 \
   --publish-queue "$work/queue" \
+  --wake "$work/wake" \
   2>&1 | tee "$work/last.out" \
   || die "the pass did not finish with a bus that never answers: $(cat "$work/last.out")"
 elapsed=$((SECONDS - started))
@@ -1255,6 +1256,15 @@ grep -q "bus      publish of valley.git.project.ref-updated FAILED: no answer wi
 grep -q "bus      publish of valley.git.project.integration-succeeded FAILED: no answer within 10s" "$work/last.out" \
   || die "the hung integration-succeeded publish was not cut off"
 [ "$elapsed" -lt 60 ] || die "the pass took ${elapsed}s behind a bus that never answers"
+# The check worker is marked due by the landing, before the mirror queue
+# and the bus, and the wake directory holds the one empty file.
+[ "$(ls -A "$work/wake")" = due ] && [ ! -s "$work/wake/due" ] \
+  || die "the landing did not leave one empty due: $(ls -A "$work/wake")"
+first_wake="$(grep -n "^  wake     the check worker is due$" "$work/last.out" | head -n1 | cut -d: -f1)"
+first_queue="$(grep -n "^  publish  " "$work/last.out" | head -n1 | cut -d: -f1)"
+[ -n "$first_wake" ] && [ "$first_wake" -lt "$first_queue" ] && [ "$first_wake" -lt "$first_bus" ] \
+  || die "the worker was not marked due before the mirror queue and the bus: $(cat "$work/last.out")"
+holds "c19 marked the check worker due before its mirror queue and its hung bus"
 holds "c19 landed, queued and consumed its request before a hung bus was asked, and each publish gave up after 10s (${elapsed}s in all)"
 
 # ----------------------------------------------------------------------

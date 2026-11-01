@@ -1157,6 +1157,92 @@ and goes on, and that alone does not make it exit 1.
 Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
 lands its evidence with the real integrator.
 
+### The worker's wakeups
+
+A move of a ref the worker reads starts a pass at once, without waiting for the timer. The host does
+this with a wake directory, `worker.wakeDir` (`/var/lib/valley-worker-wake` by default). A writer
+that moves such a ref creates the empty file `due` there, and `valley-worker.path` starts a pass
+while `due` exists (`implemented`, `status/wake.go`, `nix/valley-host.nix`).
+
+The writers are these:
+
+- a push to one of `worker.projects` or to `integrator.instanceProject`, through the
+  `post-receive.d/valley-wake` hook. A push that moves only `refs/the-valley/knots`,
+  `refs/the-valley/integration-outcomes/*` or `refs/the-valley/integration-landings/*` marks
+  nothing. Every other ref marks, the worker's own evidence included.
+- the integrator, after a landing in one of those projects. A local landing runs no hook, so the
+  controller marks `due` itself, right after the landing commits and before the mirror queue and the
+  bus.
+- `integrator publish-signers`, when it moves `refs/the-valley/signers`. A run that publishes
+  nothing new marks nothing.
+
+A mark is created with `O_CREAT|O_EXCL`. A `due` that already exists is a mark already made, so any
+number of moves leave one file. The directory never holds more than `due`, `claimed` and `lock`, and
+none of them is a temporary file.
+
+A pass claims the mark before it reads any ref. It takes `lock` in the wake directory and renames
+`due` to `claimed`. A move marked after the rename leaves a new `due` beside `claimed`. When the
+pass ends, the path unit sees that `due` and starts the next pass. A mark made while a pass builds
+is therefore never absorbed by that pass. The pass then reads the refs as they are, as a pass the
+timer starts does.
+
+A pass acknowledges its claim by removing `claimed`, and only when it has handled what it read. It
+has handled it when it read every project and every failure it met is a failed batch or push whose
+wait it recorded. A policy that did not read, checks that did not derive, a read of `origin` that
+failed, or a record that was not written leaves `claimed` in place. So does a pass that is killed.
+Nothing watches `claimed`. It records that the last claim was not handled, and the next pass that
+handles everything removes it. A pass never removes `due`.
+
+`due` is a prompt and nothing more. It carries no content, and nothing reads it as code, a path or a
+ref. What a pass builds still comes from the change records, `main`, the floor and the evidence it
+reads, and the pushes it makes still pass the pre-receive hook. A pass that a stale or duplicate
+mark starts finds nothing to build and pushes nothing. It still reads every project's records,
+policy and coverage. The worker's own evidence push marks `due` once, and the pass that follows
+finds the evidence and builds nothing, so it stops there.
+
+The worker's timer remains the recovery scan (`implemented`):
+
+- A ref can move and its writer can fail to mark, for example when the writer is killed between the
+  two. The timer's first pass after activation, and every later one, reads everything.
+- A failed batch or push waits out its recorded wait (`firstBuildWait`, `firstPushWait`, doubled for
+  each failure in a row). A mark does not retry it sooner: the pass finds it still waiting. It runs
+  again in the first pass that starts after its wait is over. That pass starts at most
+  `worker.interval` plus the timer's accuracy after the pass before it ended, so a retry comes
+  within one interval, one accuracy window and one pass's runtime of its deadline.
+- A pass that could not read `origin`, or its policy, is not retried at once either. The service has
+  no `Restart=`, so the next pass is the timer's, or one a new mark starts.
+
+A pass that cannot claim `due` still reads and builds, and then exits `75`. The service restarts on
+that status alone (`RestartForceExitStatus=75`), after `RestartSec` set to `worker.interval`. While
+the service waits to restart, the path unit starts nothing. A wake directory that cannot be renamed
+in therefore runs one pass per interval, rather than one pass after another.
+`StartLimitIntervalSec=0` keeps a burst of passes from leaving the service refusing to start.
+
+The directory is `0770`, owned by `valley-worker` and the `valley-worker-wake` group, whose members
+are `services.valley.user` and `integrator.user`. It has no sticky bit, so the worker can rename a
+`due` made by either writer. It sits outside the worker's own `0700` state directory and outside the
+repository directory, and the worker stays out of the repository group. The worker, the integrator
+and the signer publisher each name it in `ReadWritePaths`.
+
+Where the timer still does the work (`not built`):
+
+- A worker project's `policy/valley` can name an instance on another host, or another instance
+  project. A move there marks nothing on this host, and the timer's pass reads it.
+- A mark made by a hand-written `post-receive.d` hook that fails before `valley-wake` runs, since
+  the dispatcher stops at the first hook that fails.
+- The integrator, the restacker and the identity compiler keep their own polling loops and timers.
+  Their memos and caches do not wake on these marks.
+
+Checked by `worker-e2e`, which runs the real units on a host, and by `module-eval`. In `worker-e2e`,
+with the timer stopped, a ready push starts a pass. So does a landing by the integrator's own
+service while the project's mirror and the bus hang, and so does a floor landing in the instance
+project, which is not a worker project. With the timer at its minute, a pass killed during a build
+leaves its claim, and so does a pass that cannot reach the repositories over SSH. In both cases the
+timer's next pass builds the change with no new mark. A failed batch is not built again before its
+wait, however many marks and timer passes arrive. The claim and acknowledgement under concurrent
+writers is checked by `TestWakeLosesNoMark` (`status/wake_test.go`), and the landing's mark ahead of
+a hung bus by `integrator-e2e`.
+
 ### The worker on the host
 
 `services.valley.worker.enable` runs `valley-worker` on a timer so ready changes have their Nix
@@ -1168,9 +1254,14 @@ default, and turning it on is a **deployment choice**. When enabled, the module 
   (`/var/lib/valley-worker` by default);
 - `valley-worker.service`, a oneshot unit that runs one pass of `valley-worker` over
   `worker.projects` as `valley-worker`, inside `valley-builds.slice`;
-- `valley-worker.timer`, which starts `valley-worker.service` 5 minutes after activation and waits
+- `valley-worker.timer`, which starts `valley-worker.service` 1 second after activation and waits
   `worker.interval` (`1m` by default, plus up to 1 minute of systemd timer slack) after each pass
-  finishes before starting the next.
+  finishes before starting the next;
+- `valley-worker.path`, which starts `valley-worker.service` whenever the wake directory holds `due`
+  (see [The worker's wakeups](#the-workers-wakeups)).
+
+No target waits for `valley-worker.service`: boot and a switch never wait for a build
+(`implemented`). A pass can start while a switch runs.
 
 Two passes that use the same state directory never overlap. systemd only starts the oneshot unit
 while it is inactive, and the worker's own `flock` on `<stateDir>/lock` serializes any pass run by
@@ -2302,8 +2393,16 @@ contract with a version. A change to the name or meaning of any field is a new v
   "target": "main",
   "target_tip": "<sha>",
   "head": "<sha>",
-  "request": { "ref": "refs/the-valley/integration-requests/main/topic-one", "commit": "<sha>" },
-  "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>", "failed_at": null },
+  "request": {
+    "ref": "refs/the-valley/integration-requests/main/topic-one",
+    "commit": "<sha>"
+  },
+  "outcome": {
+    "decision": "stale",
+    "head": "<sha>",
+    "tip": "<sha>",
+    "failed_at": null
+  },
   "state": "stale",
   "change_id": null,
   "handle": null,
@@ -2487,8 +2586,15 @@ configuration.
               "uploader": "alice",
               "landing": "not-landed",
               "landed_commit": null,
-              "request": { "ref": "refs/the-valley/integration-requests/main/topic", "commit": "<sha>" },
-              "outcome": { "decision": "stale", "head": "<sha>", "tip": "<sha>" }
+              "request": {
+                "ref": "refs/the-valley/integration-requests/main/topic",
+                "commit": "<sha>"
+              },
+              "outcome": {
+                "decision": "stale",
+                "head": "<sha>",
+                "tip": "<sha>"
+              }
             }
           ],
           "includes": ["<change id>"],
@@ -2949,7 +3055,12 @@ change to the name or meaning of any field is a new version.
           "children": ["oc-70947c5", "bd-b198e52", "bd-6e27560"],
           "blocks": [],
           "progress": { "done": 1, "of": 3 },
-          "claim": { "by": "run-7", "at": "2026-10-14T21:30:00Z", "age_seconds": 41400, "stale": false },
+          "claim": {
+            "by": "run-7",
+            "at": "2026-10-14T21:30:00Z",
+            "age_seconds": 41400,
+            "stale": false
+          },
           "state": "in-progress",
           "edges": []
         }

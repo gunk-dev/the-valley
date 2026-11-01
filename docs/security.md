@@ -263,6 +263,17 @@ remote-tracking ref of `main` or of a branch that origin lacks, and with an owni
 `main` is missing. It also runs the check worker with a tag named like the worker's own evidence
 ref. `protect-e2e` and `valleyhook-unit` check the hook's refusal.
 
+## A wakeup grants nothing
+
+The check worker's wake mark is an empty file, `due`, in a directory the host makes (`implemented`,
+see [The worker's wakeups](architecture.md#the-workers-wakeups)). Only the git user and the
+integrator's user can create it, through the `valley-worker-wake` group. The worker never reads its
+contents. A mark only starts a pass sooner. The pass decides what to build from the refs it reads
+over SSH, and pushes what it builds through the pre-receive hook, as any pass does. The directory
+gives the worker no access to the repositories on disk, and the worker stays out of the repository
+group. A forged or repeated mark costs one pass that reads every project and builds nothing new. The
+unauthenticated bus starts no pass: nothing consumes it.
+
 ## Trust roots
 
 The operator's trust roots are hardware keys that the deployment supplies (**deployment choice**):

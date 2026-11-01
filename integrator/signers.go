@@ -36,7 +36,7 @@ const (
 	signersLock     = "valley-signers.lock"
 )
 
-const signersUsage = `usage: integrator publish-signers --instance-repo DIR --known-signers F [--name NAME] [--signer-projects F]
+const signersUsage = `usage: integrator publish-signers --instance-repo DIR --known-signers F [--name NAME] [--signer-projects F] [--wake DIR]
 
 Publishes, in the instance repository, the two values a client verifies
 this host's transfer statements with: the known-signers file a controller
@@ -52,6 +52,9 @@ so a client can tell which signers' evidence counts in which projects.
                       to watch (default: this host's, as watch defaults)
   --signer-projects F the file a controller is given as --signer-projects;
                       without it, the publication holds none
+  --wake DIR          the host check worker's wake directory: a run that
+                      moves the ref creates the empty file DIR/due, so
+                      the worker reads the new signers; empty marks nothing
 
 A publication that would not change is not written. One that would is
 written with a compare-and-swap on the ref. Two runs at once take turns:
@@ -78,6 +81,7 @@ func publishSigners(args []string) error {
 	known := fs.String("known-signers", "", "the file a controller is given as --known-signers")
 	name := fs.String("name", defaultSignerName(), "the name a controller signs under")
 	projects := fs.String("signer-projects", "", "the file a controller is given as --signer-projects")
+	wake := fs.String("wake", "", "the check worker's wake directory, marked due when the publication moves")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -128,6 +132,15 @@ func publishSigners(args []string) error {
 		return err
 	}
 	fmt.Printf("%s now publishes %s and the signers in %s\n", signersRef, *name, *known)
+	// The check worker reads this publication for coverage, so a moved
+	// one marks it due. A run that published nothing new marks nothing.
+	// The ref has moved either way, so a mark that fails is said and is
+	// not this run's failure.
+	if err := markDue(*wake); err != nil {
+		fmt.Printf("the check worker was not marked due: %v\n", err)
+	} else if *wake != "" {
+		fmt.Println("the check worker is due")
+	}
 	return nil
 }
 

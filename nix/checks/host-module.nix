@@ -641,6 +641,9 @@ let
   workerRenderedWithoutEnable =
     integratorHost.config.systemd.services ? valley-worker
     || integratorHost.config.systemd.timers ? valley-worker
+    || integratorHost.config.systemd.paths ? valley-worker
+    || integratorHost.config.users.groups ? valley-worker-wake
+    || lib.hasInfix "--wake" integratorHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart
     || integratorHost.config.systemd.slices ? valley-builds
     || integratorHost.config.users.users ? valley-worker
     || integratorHost.config.systemd.services.nix-daemon.serviceConfig ? Slice;
@@ -671,9 +674,13 @@ let
   # derivation at a time with 4 cores. The account is not in the git
   # group, so the repositories on disk are not the worker's to read or
   # write, and it reaches them only through this host's sshd, checking the
-  # host's key. Its timer starts the first pass five minutes after the
-  # timer starts, not after boot, and each later pass one minute after the
-  # last one ended.
+  # host's key. Its timer starts the first pass a second after the timer
+  # starts, not after boot, and each later pass one minute after the last
+  # one ended. Its path unit starts a pass while the wake directory holds
+  # due; the directory is the worker's, in a group of the git user and the
+  # integrator's user, and every writer's sandbox may write it. Nothing
+  # waits for the service at boot, a burst never start-limits it, and a
+  # pass that could not claim due is started again one interval later.
   workerMisrendered =
     let
       unit = workerHost.config.systemd.services.valley-worker;
@@ -682,6 +689,9 @@ let
       slice = workerHost.config.systemd.slices.valley-builds.sliceConfig;
       account = workerHost.config.users.users.valley-worker;
       timer = workerHost.config.systemd.timers.valley-worker;
+      wakePath = workerHost.config.systemd.paths.valley-worker;
+      integrator = workerHost.config.systemd.services."valley-integrator@".serviceConfig;
+      signers = workerHost.config.systemd.services.valley-signers.serviceConfig;
       devicePolicy = c: c ? DevicePolicy || c ? DeviceAllow || c ? PrivateDevices;
     in
     service.User or null != "valley-worker"
@@ -702,11 +712,29 @@ let
     || !(lib.hasInfix "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost" unit.environment.GIT_SSH_COMMAND)
     || service.ReadWritePaths or [ ] != [
       "/var/lib/valley-worker"
+      "/var/lib/valley-worker-wake"
       "/nix/var/nix/daemon-socket"
     ]
-    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\"" unit.script)
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake\n" unit.script)
+    || unit.wantedBy != [ ]
+    || unit.unitConfig.StartLimitIntervalSec or null != 0
+    || service.RestartForceExitStatus or null != "75"
+    || service.RestartSec or null != "1m"
+    || service ? Restart
+    || wakePath.pathConfig.PathExists or null != "/var/lib/valley-worker-wake/due"
+    || !(builtins.elem "multi-user.target" wakePath.wantedBy)
+    || !(builtins.elem "d /var/lib/valley-worker-wake 0770 valley-worker valley-worker-wake - -" workerHost.config.systemd.tmpfiles.rules)
+    || lib.sort lib.lessThan workerHost.config.users.groups.valley-worker-wake.members != lib.sort lib.lessThan [
+      workerHost.config.services.valley.user
+      workerHost.config.services.valley.integrator.user
+    ]
+    || !(builtins.elem "/var/lib/valley-worker-wake" integrator.ReadWritePaths)
+    || !(lib.hasInfix "--wake=\${VALLEY_WAKE}" integrator.ExecStart)
+    || !(lib.hasPrefix "-/nix/store/" integrator.EnvironmentFile or "")
+    || !(lib.hasInfix "--wake /var/lib/valley-worker-wake" signers.ExecStart)
+    || !(builtins.elem "/var/lib/valley-worker-wake" signers.ReadWritePaths)
     || !(lib.hasInfix "git -C \"$origin\" remote add origin git@localhost:sealed.git\n" unit.script)
-    || timer.timerConfig.OnActiveSec or null != "5m"
+    || timer.timerConfig.OnActiveSec or null != "1s"
     || timer.timerConfig ? OnBootSec
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);

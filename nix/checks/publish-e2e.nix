@@ -8,7 +8,10 @@
 # until systemd's retry publishes it. The host also publishes, in its
 # instance repository, the signers a client verifies the landing with, and
 # publishes them again when the signers file is replaced. No push over ssh
-# replaces that publication or deletes it.
+# replaces that publication or deletes it. The controllers pass on a
+# one-hour interval, so every landing here is started by a mark in a
+# controller's wake directory: the host's hook on a push, and the instance
+# controller's own mark after it lands the floor.
 {
   pkgs,
   lib,
@@ -90,13 +93,14 @@ in
           signingKeyFile = "${keys}/integrator";
           knownSignersFile = "/var/lib/valley-signers-file/known_signers";
           instanceProject = "instance";
-          interval = "2s";
+          interval = "1h";
         };
       };
     };
 
     testScript = ''
       import json
+      import time
 
       host.wait_for_unit("multi-user.target")
       host.wait_for_unit("valley-publish@project.path")
@@ -149,6 +153,32 @@ in
       # The request ref alone files the change for integration.
       seed("project", f"{change}:refs/the-valley/integration-requests/main/one")
 
+      # The fetch ran no hook, so nothing marked the controller. The hook the
+      # host installed is run by hand as the git user, as a push runs it:
+      # moves of the integrator's own bookkeeping mark nothing, and the
+      # request's move marks the project's controller, which lands it at
+      # once on its one-hour interval.
+      wakes = "/run/valley-integrator-wake"
+      hook = "/srv/git/project.git/hooks/post-receive.d/valley-integrator-wake"
+      zero = "0" * 40
+
+      def due_passes(project):
+          return int(host.succeed(f"journalctl -u valley-integrator@{project} -o cat | grep -c '^pass: due$' || true").strip())
+
+      with subtest("the host's hook marks the controller for what it reads, and only that"):
+          host.succeed(f"test -L {hook}")
+          before = due_passes("project")
+          host.succeed(
+              f"printf '%s %s %s\\n' {zero} {change} refs/the-valley/integration-outcomes/main/one"
+              f" {zero} {change} refs/the-valley/knots | sudo -u git {hook}"
+          )
+          host.sleep(2)
+          assert due_passes("project") == before, "bookkeeping marked the controller"
+          marked = time.monotonic()
+          host.succeed(
+              f"printf '%s %s %s\\n' {zero} {change} refs/the-valley/integration-requests/main/one | sudo -u git {hook}"
+          )
+
       # The change lands as one commit the integrator makes on the base,
       # with the change's tree. That commit is what main, the mirror and
       # the events carry from here on.
@@ -156,6 +186,10 @@ in
           host.wait_until_succeeds(
               f"test \"$({git} -C /srv/git/project.git rev-parse refs/heads/main^)\" = {base}", timeout=120
           )
+          took = time.monotonic() - marked
+          print(f"mark to landing, one-hour interval, VM: {took:.1f}s")
+          assert took < 60, took
+          assert due_passes("project") > before
           landing = host.succeed(f"{git} -C /srv/git/project.git rev-parse refs/heads/main").strip()
           assert landing != change, "the change's own commit landed"
           tree = f"{git} -C /srv/git/project.git rev-parse"
@@ -176,7 +210,7 @@ in
               "nats --server nats://127.0.0.1:4222 stream get valley --last-for valley.git.project.ref-updated"
           )
           host.succeed(f"test -n \"$(ls -A {queue})\"")
-          moved = [p for p in payloads() if '"event":"ref-updated"' in p]
+          moved = [p for p in payloads() if '"event":"ref-updated"' in p and '"ref":"refs/heads/main"' in p]
           assert moved == [
               f'{{"event":"ref-updated","repo":"project","ref":"refs/heads/main","old":"{base}","new":"{landing}"}}'
           ], moved
@@ -215,7 +249,7 @@ in
           host.succeed(f"test -z \"$(ls -A {queue})\"")
 
       with subtest("the landing is one ref-updated event on the bus"):
-          moved = [e for e in events() if e["event"] == "ref-updated"]
+          moved = [e for e in events() if e["event"] == "ref-updated" and e["ref"] == "refs/heads/main"]
           assert moved == [
               {"event": "ref-updated", "repo": "project", "ref": "refs/heads/main", "old": base, "new": landing}
           ], moved
@@ -268,6 +302,52 @@ in
               out = host.fail(f"cd /root/forged.git && {ssh} git push git@localhost:instance.git {refspec} 2>&1")
               assert f"{ref} is written only by the machinery on the host, and no push may write it" in out, out
               assert host.succeed(f"{instance} rev-parse {ref}").strip() == published, refspec
+
+      # The wake directories are the host's: one per controller, owned by
+      # the integrator's user and the writers' group, which is the git user
+      # and the integrator's user. An idle one holds nothing.
+      with subtest("each controller's wake directory is its own, and a writer group's"):
+          for project in ["instance", "project"]:
+              assert host.succeed(f"stat -c '%a %U %G' {wakes}/{project}").strip() == "770 valley-integrator valley-integrator-wake"
+              host.wait_until_succeeds(f"test -z \"$(ls -A {wakes}/{project})\"")
+          members = host.succeed("getent group valley-integrator-wake").strip().split(":")[3].split(",")
+          assert sorted(members) == ["git", "valley-integrator"], members
+
+      # A push over ssh runs the dispatcher, whose hooks run in turn. A topic
+      # branch, which anyone may push, marks the project's controller and
+      # not the instance's.
+      with subtest("a push over ssh wakes the controller of the project it moved, and no other"):
+          host.succeed(
+              f"git init --quiet /root/topic && cd /root/topic && {commit} --allow-empty -m topic"
+          )
+          project_before, instance_before = due_passes("project"), due_passes("instance")
+          host.succeed(f"cd /root/topic && {ssh} git push --quiet git@localhost:project.git HEAD:refs/heads/topic")
+          host.wait_until_succeeds(f"test {project_before} -lt $(journalctl -u valley-integrator@project -o cat | grep -c '^pass: due$')", timeout=30)
+          host.sleep(2)
+          assert due_passes("instance") == instance_before, "a push to project woke the instance's controller"
+
+      # The floor moves by the instance's controller, which runs no hook. It
+      # marks the project's controller itself, from inside its sandbox, after
+      # the landing. The request is fetched, so only a push to a topic branch
+      # of the instance marks the instance's controller.
+      with subtest("a floor landed by the instance's controller wakes the controller that reads it"):
+          floor_base = host.succeed(f"{git} -C /srv/git/instance.git rev-parse refs/heads/main").strip()
+          host.succeed(
+              f"cd /tmp/work && sudo -u git git checkout --quiet -b floor {floor_base}",
+              "cd /tmp/work && sudo -u git sh -c 'echo moved > moved.txt' && sudo -u git git add moved.txt",
+              f"cd /tmp/work && sudo -u git {commit} -m 'the floor, moved'",
+          )
+          seed("instance", "floor:refs/the-valley/integration-requests/main/floor")
+          before = due_passes("project")
+          host.succeed(f"cd /root/topic && {ssh} git push --quiet git@localhost:instance.git HEAD:refs/heads/topic")
+          host.wait_until_succeeds(
+              f"test \"$({git} -C /srv/git/instance.git rev-parse refs/heads/main^)\" = {floor_base}", timeout=60
+          )
+          host.wait_until_succeeds(
+              f"journalctl -u valley-integrator@instance -o cat | grep -q '^  wake     the floor reader at {wakes}/project is due$'",
+              timeout=30,
+          )
+          host.wait_until_succeeds(f"test {before} -lt $(journalctl -u valley-integrator@project -o cat | grep -c '^pass: due$')", timeout=30)
     '';
   };
 }

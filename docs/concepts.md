@@ -144,22 +144,23 @@ components guard it:
   only an `approve` holder may delete a change record or write/delete integration requests; and
   nobody may push to `integration-outcomes`, `integration-landings` or `projects`.
 - **The integrator** verifies approved changes and lands them onto `main`; it runs as an optional
-  host service (`services.valley.integrator.enable`) that polls at a configurable interval
-  (`services.valley.integrator.interval`, default `15s`). On each pass, it deletes pending requests
-  for changes that are currently `withdrawn` and records `voided-withdrawn` (if a withdrawn change
-  is readied again before that pass runs, the old request remains standing and can land; to revoke
-  an approval immediately, an `approve` holder must delete the request ref). For each remaining
-  request, the integrator refuses if the request's commits include a merge (`refused-merge`) or a
-  version head of a `draft` or `withdrawn` change, or if a `c-<id>` request's change is not `ready`
-  or does not list the requested head among its versions (`refused-not-ready`). Otherwise it
-  evaluates policy and signed check evidence (and Nix closure equivalence when `main` has moved) and
-  lands the change on `main` via a local ref transaction (which runs on the host and bypasses
-  `pre-receive`). Every change lands as a **new single-parent commit** the integrator writes on top
-  of `main`, with the approved commit's tree when `main` has not moved since the change's base, and
-  otherwise with the tree `git merge-tree` builds. It re-reads the change records right before the
-  transaction, though an `unready` or `withdraw` push arriving in the narrow instant between that
-  final read and the transaction will not stop the landing. It writes an **outcome record** (`land`,
-  `stale`, `reject`, `refused-not-ready`, `refused-merge`, `voided-withdrawn`, or `failed`) at
+  host service (`services.valley.integrator.enable`). A push to the project starts a pass promptly,
+  and a recovery pass runs at a configurable interval (`services.valley.integrator.interval`,
+  default `15s`). On each pass, it deletes pending requests for changes that are currently
+  `withdrawn` and records `voided-withdrawn` (if a withdrawn change is readied again before that
+  pass runs, the old request remains standing and can land; to revoke an approval immediately, an
+  `approve` holder must delete the request ref). For each remaining request, the integrator refuses
+  if the request's commits include a merge (`refused-merge`) or a version head of a `draft` or
+  `withdrawn` change, or if a `c-<id>` request's change is not `ready` or does not list the
+  requested head among its versions (`refused-not-ready`). Otherwise it evaluates policy and signed
+  check evidence (and Nix closure equivalence when `main` has moved) and lands the change on `main`
+  via a local ref transaction (which runs on the host and bypasses `pre-receive`). Every change
+  lands as a **new single-parent commit** the integrator writes on top of `main`, with the approved
+  commit's tree when `main` has not moved since the change's base, and otherwise with the tree
+  `git merge-tree` builds. It re-reads the change records right before the transaction, though an
+  `unready` or `withdraw` push arriving in the narrow instant between that final read and the
+  transaction will not stop the landing. It writes an **outcome record** (`land`, `stale`, `reject`,
+  `refused-not-ready`, `refused-merge`, `voided-withdrawn`, or `failed`) at
   `refs/the-valley/integration-outcomes/<target>/<change>`, and for each landing a **landing
   record** at `refs/the-valley/integration-landings/<target>/<head>`.
 
@@ -292,7 +293,7 @@ schema definitions.
 | **Instance**                 | A deployment of one or more projects governed by a shared floor verification policy and identity configuration.                                                                                                                                                                                                                                                                          | [Checks and evidence](#checks-and-evidence), [Policy](./architecture.md#policy)                                                                                                             |
 | **Instance floor**           | The mandatory baseline verification policy (`policy/instance/`) that the integrator and CLI check tools require every project in an instance to satisfy; project policy (`policy/project/`) is optional and can only narrow (strengthen) the floor.                                                                                                                                      | [Checks and evidence](#checks-and-evidence), [Verification policy](./reference.md#verification-policy-schemaverificationcue)                                                                |
 | **Integration request**      | The record written by an `approve` grant holder (`valley approve`) authorizing the integrator to verify and land one exact commit onto `<target>` (such as `main`), stored as a commit ref at `refs/the-valley/integration-requests/<target>/<change>`.                                                                                                                                  | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [Ref layout](./reference.md#project-storage-ref-layout-and-bounds)                                                |
-| **Integrator**               | The optional host service (`services.valley.integrator.enable`) that polls integration requests (default every `15s`), verifies policy and check evidence, lands passing ready changes onto `main`, writes transfer statements, and records outcomes.                                                                                                                                    | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator), [The integrator](./architecture.md#the-integrator)                                                         |
+| **Integrator**               | The optional host service (`services.valley.integrator.enable`) that reads integration requests when a push wakes it and at a recovery interval (default `15s`), verifies policy and check evidence, lands passing ready changes onto `main`, writes transfer statements, and records outcomes.                                                                                          | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator), [The integrator](./architecture.md#the-integrator)                                                         |
 | **Knot**                     | A single item in a project's plan graph — typed as `outcome` (`oc-*`), `bug` (`bd-*`), `idea` (`ida-*`), or `question` (`qn-*`) — stored as `<type-dir>/<id>-<slug>.md` under `refs/the-valley/knots`.                                                                                                                                                                                   | [Records, project storage, the plan graph, and knots](#records-project-storage-the-plan-graph-and-knots), [Plan graph and knots](./reference.md#plan-graph-and-knots-refsthe-valleyknots)   |
 | **Landed / Landed-recorded** | The two states of a submitted change version: `landed` when its commit is on `main`'s first-parent history with no merge commit above it; `landed-recorded` when a single-parent commit on `main` carries a verified transfer statement, the landing record (or, for an older landing, the `land` outcome record) binds that version's head to it, and the head merges to the same tree. | [A change: ready, approve, submitted](#a-change-ready-approve-submitted), [The integrator](./architecture.md#the-integrator)                                                                |
 | **Landing record**           | The integrator's record that one head landed, naming the commit it landed as and the request name it landed under, stored as a commit at `refs/the-valley/integration-landings/<target>/<head>`; a later landing under the same request name leaves it in place.                                                                                                                         | [The host, the hook, and the integrator](#the-host-the-hook-and-the-integrator)                                                                                                             |

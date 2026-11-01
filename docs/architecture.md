@@ -550,8 +550,11 @@ git directly.
 
 Each protected project has one controller, `valley-integrator@<project>`, running as the
 `valley-integrator` user in group git (`nix/valley-host.nix`). It makes one pass over the open
-requests in order, then sleeps 15 seconds and starts again (`integrator/main.go`,
-`integrator/refs.go`). No bound on how long a request waits is checked.
+requests in order (`integrator/refs.go`). A pass starts when the controller starts, soon after a
+push marks its wake directory, right after a pass that landed something, and when its recovery
+interval (`integrator.interval`, 15 seconds by default) runs out with nothing else having started
+one (`integrator/wake.go`). [The integrator's wakeups](#the-integrators-wakeups) says how. No bound
+on how long a request waits is checked.
 
 1. **Find requests.** A request is a ref `refs/the-valley/integration-requests/<target>/<change>`
    that points at the change's head commit. A change with a record is requested as `c-<change-id>`.
@@ -683,6 +686,116 @@ refuses nothing, and a head it names can land. Every pass that reads records rep
 its record commit reaches, since a record names its version heads as parents of its record commits.
 `valley status` warns the same way for the change's request. The hook refuses a record that does not
 read, so corrupt storage is the only way to get one.
+
+### The integrator's wakeups
+
+Each controller has a wake directory, `/run/valley-integrator-wake/<project>`, and watches it
+(`implemented`). A writer that moves a ref the controller reads creates the empty file `due` there
+with `O_CREAT|O_EXCL`. A `due` that is already there is a mark already made, so any number of moves
+leave one file. The controller removes `due` and starts a pass. `due` carries nothing, and nothing
+reads it: what the pass decides still comes from the refs it reads, under the same rules as every
+other pass. A mark grants nothing.
+
+The writers are these (`nix/valley-host.nix`, `integrator/bus.go`):
+
+- The post-receive hook `valley-integrator-wake`, on every project a controller serves. A push that
+  moves any ref other than knots, `integration-outcomes`, `integration-inputs`,
+  `integration-landings` or `refs/the-valley/signers` marks that project's controller. This covers
+  requests, attestation refs, change records, including a withdrawal, and target branches. The hook
+  always exits 0, so the hooks after it still run.
+- The same hook in the instance project, when a push moves `refs/heads/main`, which holds the floor.
+  It then also marks every other controller, since each reads the floor. No other push marks a
+  controller of another project.
+- The instance project's controller, after it lands on `refs/heads/main`. A landing runs no hook, so
+  the controller marks each other controller itself, with `--wake-floor-reader`. The marks come
+  after the landing's ref transaction and the worker's mark, and before the mirror queue and the
+  bus. A mark that fails is logged and the landing stands.
+
+A pass that lands something is followed by another pass at once, with no mark. A request judged
+earlier in the same pass was judged against the tip before the landing, so it is judged again
+against the new tip. A pass that lands nothing and finds no new `due` is followed by nothing until a
+mark or the interval.
+
+The order makes a mark impossible to lose (`implemented`). The controller watches the directory with
+inotify before it removes `due`, and removes `due` before the pass reads any ref. A mark made before
+the removal is covered by the pass, which reads the refs after it. A mark made after the removal is
+a new `due`. When the pass ends, the controller looks for `due` on disk before it waits, and starts
+the next pass for it. A notification left over from a `due` that a pass already removed starts
+nothing, because only `due` on disk starts a pass.
+
+One controller serves a repository at a time (`implemented`). Every `integrator watch` takes an
+exclusive `flock` on the served repository's own directory before it sweeps its scratch or judges
+anything, and holds it until it exits. A second `watch` over the same repository finds the lock held
+and stops before it sweeps or passes. The lock counts only while the repository's path names the
+directory that was locked. That is checked once the lock is taken, and a path that has come to name
+another directory is opened and locked again, up to 3 times. It is checked again before every pass,
+and a controller whose path names another directory stops. `integrator reconcile` takes no lock.
+
+The lock is on the repository, not in the wake directory, because the wake directory's writers may
+create and remove entries in it, and a missing wake directory leaves nothing to lock. So what
+happens to the wake directory changes only how soon a pass starts, never which controller runs it.
+
+While it watches the wake directory, the controller holds the directory open and locked. A second
+controller given the same directory consumes none of its marks, and passes on its interval. The
+inotify watch is on the directory the controller holds, and `due` is looked for and removed there.
+The controller also watches the parent for the directory's name. It checks that the path names the
+directory it holds once both watches are in place. A directory replaced before that check is not
+watched, and the watch is tried again. A directory removed, moved or replaced later ends the watch
+at once. `integrator reconcile` never reads a wake directory. The controller does not exit or
+interrupt a pass for a mark, so a signing or landing in progress finishes first, and the start's
+scratch sweep runs once.
+
+The interval stays the recovery pass (`implemented`). It reads what a mark did not cover:
+
+- a mark that never came, for example from a writer killed between its ref move and its mark;
+- a watch that failed. A removed, missing or replaced directory, a second consumer, or an inotify
+  limit is logged once, passes then come from the timer, and the watch is tried again every 5
+  seconds. The first pass after the watch is restored reads everything;
+- a `due` that cannot be removed. It starts the pass it is found at, and then no pass until the next
+  timer pass, so it cannot start one pass after another;
+- the time-based parts of a decision: a `failed` outcome's 10-minute retry, and an effectful check's
+  validity window.
+
+Every start runs a full pass, so a crash or a restart loses nothing. A pass that fails is followed
+by another no sooner than 10 seconds later, or one interval when that is shorter, whatever is marked
+meanwhile.
+
+Each pass prints `pass: <reason>` first, where the reason is `startup`, `due`, `timer`, `follow-up`
+or `watcher`. A timer pass with nothing else to say prints nothing, so an idle controller's journal
+does not grow by a line per interval. The decision's timing line (`integrator/timing.go`) is
+unchanged. It measures the decision's stages, and not the time the request waited before the pass.
+
+The directories are owned by `services.valley.integrator.user` and the `valley-integrator-wake`
+group, mode `0770`, with no sticky bit. The group's members are `services.valley.user` and
+`integrator.user`. The worker is not a member. The directories sit in `/run`, outside the
+integrator's `0700` state directory and outside the repositories. A boot loses them, and the first
+pass after it reads every ref anyway. Each controller's sandbox may write its own directory. The
+instance project's controller may also write the other controllers' directories, through a systemd
+drop-in that adds those paths and nothing else.
+
+Where the interval still does the work (`not built`):
+
+- A change to the compiled known-signers file marks nothing. The next timer pass reads it. The
+  signer projects file is read only when the controller starts.
+- A floor read from a materialized `integrator.instancePolicy` directory marks nothing.
+- A mark made by a hand-written `post-receive.d` hook that fails before `valley-integrator-wake`
+  runs, since the dispatcher stops at the first hook that fails.
+
+Checked by `integrator-e2e`, which runs the real binaries with a post-receive hook of the host's
+shape and a one-hour interval. It covers a request and evidence pushed to an idle controller, a
+request pushed while a pass works, a request that conflicted with the tip before a landing and lands
+in the follow-up pass, a burst of evidence, a crash, a second controller over one repository whose
+first controller's wake directory was replaced, which neither sweeps nor passes, a dropped mark and
+a changed known-signers file read by the timer, a `due` that cannot be removed, and a floor landed
+by the instance's controller that wakes the project's controller and no other. The loop's ordering,
+its watch failures and its hold-offs are checked over a real directory by `integrator/wake_test.go`.
+Which controller serves a repository is checked over real directories, with a second process as the
+competing controller, by `integrator/own_test.go`, including a repository and a wake directory
+replaced between their lock and its check. `publish-e2e` runs the units on a host with a one-hour
+interval: the installed hook marks the controller for a request and not for bookkeeping, a push over
+SSH marks the project's controller and not the instance's, and a floor landed by the instance's
+controller marks the project's from inside its sandbox. `module-eval` checks the directories, the
+group, the sandbox paths, the drop-in and the hook wiring.
 
 ## The restacker
 
@@ -1230,8 +1343,9 @@ Where the timer still does the work (`not built`):
   project. A move there marks nothing on this host, and the timer's pass reads it.
 - A mark made by a hand-written `post-receive.d` hook that fails before `valley-wake` runs, since
   the dispatcher stops at the first hook that fails.
-- The integrator, the restacker and the identity compiler keep their own polling loops and timers.
-  Their memos and caches do not wake on these marks.
+- The restacker and the identity compiler keep their own timers. Their memos and caches do not wake
+  on these marks. The integrator has wake directories of its own; see
+  [The integrator's wakeups](#the-integrators-wakeups).
 
 Checked by `worker-e2e`, which runs the real units on a host, and by `module-eval`. In `worker-e2e`,
 with the timer stopped, a ready push starts a pass. So does a landing by the integrator's own

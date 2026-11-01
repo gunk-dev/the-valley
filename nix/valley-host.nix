@@ -126,10 +126,45 @@ let
     ++ lib.optional cfg.bus.enable "--bus ${busUrl}"
     ++ [ "--publish-queue ${cfg.dataDir}/%i.git/${publishQueueName}" ]
     # The worker's wake directory, for the projects whose landings it reads:
-    # the unit's environment file for the instance names it (valley-wake-%i
+    # the unit's environment file for the instance names it (integratorEnv
     # below), and empty, which marks nothing, for every other project.
     ++ lib.optional cfg.worker.enable "--wake=\${VALLEY_WAKE}"
+    # The controller's own wake directory, which it watches and consumes.
+    # --wake above is output, to the worker; this is the controller's input.
+    ++ [ "--woken-by ${integratorWakeRoot}/%i" ]
+    # The floor's readers, for the instance project's controller alone: its
+    # environment file names one --wake-floor-reader per other controller,
+    # and $VALLEY_FLOOR_READERS, unbraced, is split into those words. Every
+    # other controller's file names none, and the variable is no word at all.
+    ++ lib.optional (floorReaders != [ ]) "$VALLEY_FLOOR_READERS"
   );
+
+  # The controllers' wake directories (integrator/wake.go), one per
+  # controller under integratorWakeRoot. A writer that moves a ref the
+  # controller reads creates the empty file due in it, and the controller
+  # starts a pass. The host makes each one, owned by the integrator's user
+  # and the writers' group: the git user, whose post-receive hook marks a
+  # push, and the integrator's user, whose instance controller marks a
+  # floor landing. Mode 0770 and no sticky bit, so the controller can
+  # remove a due whichever writer made it. They sit in /run, outside the
+  # integrator's 0700 state directory and outside the repositories: a boot
+  # loses them, and a controller's first pass reads every ref anyway.
+  integratorWakeRoot = "/run/valley-integrator-wake";
+  integratorWakeGroup = "valley-integrator-wake";
+  integratorWakeDir = name: "${integratorWakeRoot}/${name}";
+
+  # The ref the floor is read from: the integrator's default --instance-ref,
+  # which the host does not change.
+  floorRef = "refs/heads/main";
+
+  # The controllers that read the floor the instance project's controller
+  # lands: every other one. Empty when the host serves no instance
+  # repository, since then no landing here moves the floor.
+  floorReaders =
+    if instanceRepo == null then
+      [ ]
+    else
+      lib.filter (name: name != cfg.integrator.instanceProject) (lib.attrNames integratedProjects);
 
   # The one filesystem grant the integrator's user gets. It writes refs,
   # objects, and the worktree metadata `git worktree add` keeps inside the
@@ -285,18 +320,30 @@ let
   workerWakeDir = toString cfg.worker.wakeDir;
   workerWakeGroup = "valley-worker-wake";
 
+  # The integrator's environment, one file per controller. VALLEY_WAKE names
+  # the worker's wake directory to --wake for each project in wakeProjects,
+  # and is empty, which marks nothing, for every other.
+  # VALLEY_FLOOR_READERS names the floor's readers to the instance project's
+  # controller, and nothing to any other.
+  integratorEnv = pkgs.runCommand "valley-integrator-env" { } (
+    "mkdir $out\n"
+    + lib.concatMapStrings (
+      name:
+      let
+        lines =
+          lib.optional (cfg.worker.enable && lib.elem name wakeProjects) "VALLEY_WAKE=${workerWakeDir}"
+          ++ lib.optional (name == cfg.integrator.instanceProject && floorReaders != [ ]) (
+            "VALLEY_FLOOR_READERS="
+            + lib.concatMapStringsSep " " (r: "--wake-floor-reader=${integratorWakeDir r}") floorReaders
+          );
+      in
+      "printf '%s\\n' ${lib.escapeShellArgs lines} > $out/${lib.escapeShellArg name}\n"
+    ) (lib.attrNames integratedProjects)
+  );
+
   # The projects whose moves can change what the worker builds: its own,
   # and the instance project its floor is read from, whether or not the
   # worker builds the instance project too.
-  # The integrator's environment for each project in wakeProjects, which
-  # names the wake directory to its --wake. A controller for any other
-  # project finds no file, and its --wake is empty.
-  integratorWake = pkgs.runCommand "valley-integrator-wake" { } (
-    "mkdir $out\n"
-    + lib.concatMapStrings (
-      name: "echo ${lib.escapeShellArg "VALLEY_WAKE=${workerWakeDir}"} > $out/${lib.escapeShellArg name}\n"
-    ) wakeProjects
-  );
 
   wakeProjects = lib.unique (
     cfg.worker.projects ++ lib.optional (cfg.integrator.instanceProject != null) cfg.integrator.instanceProject
@@ -714,6 +761,76 @@ let
     exit 0
   '';
 
+  # The post-receive.d hook that marks a project's integrator due. Like the
+  # worker's, it runs in the push after the refs moved, reads the moves,
+  # creates at most a few empty files, and exits 0 whatever happens: the
+  # dispatcher stops at the first hook that fails, and the hooks after it
+  # must still run. A push of nothing but knots, integration bookkeeping or
+  # the signers publication marks nothing, since no controller decides
+  # from those refs; the compiled signers file is what it reads, and a
+  # change to it waits for the interval. Every other ref marks the
+  # project's own controller. In the instance project, a push that moves
+  # the floor's ref also marks every controller that reads the floor, and
+  # nothing else is marked across projects. A mark that fails is logged,
+  # and the controller's interval reads the push later.
+  integratorWakeHook =
+    name:
+    pkgs.writeShellScript "valley-integrator-wake-${name}" ''
+      # Managed by services.valley — marks the integrator for ${name} due.
+      mark() {
+        { set -C; : > "$1/due"; } 2>/dev/null || [ -e "$1/due" ] ||
+          ${pkgs.util-linux}/bin/logger -t valley-integrator-wake "could not mark the integrator due in $1" || true
+      }
+      own=
+      floor=
+      while read -r old new ref; do
+        case "$ref" in
+          refs/the-valley/knots | refs/the-valley/knots/* | refs/the-valley/signers | \
+            refs/the-valley/integration-outcomes/* | refs/the-valley/integration-inputs/* | \
+            refs/the-valley/integration-landings/*) ;;
+          ${floorRef}) own=1 floor=1 ;;
+          *) own=1 ;;
+        esac
+      done
+      [ -z "$own" ] || mark ${lib.escapeShellArg (integratorWakeDir name)}
+      ${lib.optionalString (name == cfg.integrator.instanceProject) (
+        lib.concatMapStrings (
+          r: "[ -z \"$floor\" ] || mark ${lib.escapeShellArg (integratorWakeDir r)}\n"
+        ) floorReaders
+      )}
+      exit 0
+    '';
+
+  # Integrator-wake-hook wiring, one symlink per repo, by the bus hook's
+  # rules: every project a controller serves gets it, and every other
+  # repository loses a store symlink of the name.
+  integratorWakeHookCommands = lib.concatMapStrings (
+    name:
+    let
+      ihook = lib.escapeShellArg "${cfg.dataDir}/${name}.git/hooks/post-receive.d/valley-integrator-wake";
+    in
+    if cfg.integrator.enable && integratedProjects ? ${name} then
+      ''
+        ihook=${ihook}
+        if [ -L "$ihook" ]; then
+          case "$(readlink "$ihook")" in
+            /nix/store/*) ln -sfn ${integratorWakeHook name} "$ihook" ;;
+          esac
+        elif [ ! -e "$ihook" ]; then
+          ln -s ${integratorWakeHook name} "$ihook"
+        fi
+      ''
+    else
+      ''
+        ihook=${ihook}
+        if [ -L "$ihook" ]; then
+          case "$(readlink "$ihook")" in
+            /nix/store/*) rm -f "$ihook" ;;
+          esac
+        fi
+      ''
+  ) repoNames;
+
   # Wake-hook wiring, one symlink per repo, by the bus hook's rules: the
   # worker's projects and the instance project get it, and every other
   # repository loses a store symlink of the name.
@@ -863,6 +980,7 @@ let
     # The ref-updated publisher hook, on every repo when the bus is on.
     ${busHookCommands}
     ${wakeHookCommands}
+    ${integratorWakeHookCommands}
 
     # The project list, published in the instance repository for clients to
     # discover this host's projects by (valley changes --all): a blob at
@@ -1603,10 +1721,13 @@ in
         default = "15s";
         example = "1m";
         description = ''
-          How long a controller waits between passes. The integrator polls
-          deliberately: integration requests are durable in git, and the
-          controller level-triggers over those refs, so a lost event costs
-          one interval and nothing more.
+          How long a controller waits after a pass before the next, when
+          nothing starts one sooner. A push to the project, a floor moved
+          in the instance project, and a landing by the controller itself
+          each start a pass promptly. This interval is the recovery pass: it
+          reads what a lost mark, a failed watch or a changed
+          known-signers file left waiting, since integration requests are
+          durable in git and the controller level-triggers over those refs.
         '';
       };
     };
@@ -2155,6 +2276,15 @@ in
       description = "The valley check worker";
     };
     users.groups.valley-worker = lib.mkIf cfg.worker.enable { };
+    # The writers of the integrator's wake directories: the git user, whose
+    # post-receive hook marks a push, and the integrator's user, whose
+    # instance controller marks a floor landing. The worker is not in it.
+    users.groups.${integratorWakeGroup} = lib.mkIf cfg.integrator.enable {
+      members = [
+        cfg.user
+        cfg.integrator.user
+      ];
+    };
     users.groups.${workerWakeGroup} = lib.mkIf cfg.worker.enable {
       members = [
         cfg.user
@@ -2217,7 +2347,13 @@ in
     ++ lib.optionals cfg.worker.enable [
       "d ${workerDir} 0700 valley-worker valley-worker - -"
       "d ${workerWakeDir} 0770 valley-worker ${workerWakeGroup} - -"
-    ];
+    ]
+    ++ lib.optionals cfg.integrator.enable (
+      [ "d ${integratorWakeRoot} 0755 root root - -" ]
+      ++ map (
+        name: "d ${integratorWakeDir name} 0770 ${cfg.integrator.user} ${integratorWakeGroup} - -"
+      ) (lib.attrNames integratedProjects)
+    );
 
     # The bus itself. It runs as the git user — the store directory lives in
     # that user's data — but the sandbox is what confines it: the unit can
@@ -2465,14 +2601,18 @@ in
 
     # One controller per served project, as instances of a single template:
     # the units differ only in the repository they serve, which is the
-    # instance name. `watch` rather than a timer firing `reconcile`: the
-    # binary owns its poll loop and its interval, and a timer would be a
-    # second cadence over the same level-triggered refs.
+    # instance name. One long-lived `watch` per project, rather than a timer
+    # or a path unit starting `reconcile`: the binary watches its own wake
+    # directory, follows a landing with another pass, and keeps its
+    # interval as the recovery pass. A unit started for each mark would
+    # repeat the start's sweep and could not interrupt a pass in progress
+    # anyway, and starting a service that is already running wakes nothing.
     systemd.services."valley-integrator@" = lib.mkIf cfg.integrator.enable {
       description = "The valley integrator for %i";
       after = [
         "network.target"
         "valley-init.service"
+        "systemd-tmpfiles-setup.service"
       ]
       ++ lib.optional cfg.bus.enable "valley-bus-init.service"
       ++ lib.optional cfg.identity.enable "valley-identity.service";
@@ -2541,7 +2681,7 @@ in
       };
       serviceConfig = {
         ExecStart = integratorCommand;
-        EnvironmentFile = lib.mkIf cfg.worker.enable "-${integratorWake}/%i";
+        EnvironmentFile = "-${integratorEnv}/%i";
         Restart = "on-failure";
         RestartSec = "10s";
         User = cfg.integrator.user;
@@ -2566,11 +2706,20 @@ in
         # recomputing a closure means asking the daemon, and connecting to
         # a unix socket needs write access to it.
         #
+        # Its own wake directory, where it removes due.
+        # The leading - starts the controller even when the directory is
+        # missing; it then says so and passes on its interval.
+        #
         # The worker's wake directory, where a landing marks the worker due.
+        #
+        # The instance project's controller also writes the floor readers'
+        # wake directories, in the drop-in below, and no other controller
+        # does.
         ReadWritePaths = [
           integratorStateDir
           "${cfg.dataDir}/%i.git"
           "/nix/var/nix/daemon-socket"
+          "-${integratorWakeRoot}/%i"
         ]
         ++ lib.optional cfg.worker.enable workerWakeDir;
         ProtectHome = true;
@@ -2601,6 +2750,21 @@ in
         UMask = "0002";
       };
     };
+
+    # The instance project's controller marks every floor reader after a
+    # floor landing, so its sandbox may write their wake directories. A
+    # drop-in on that one instance adds them to the template's list, which
+    # it extends. It is written as text, and sets nothing else: a drop-in
+    # declared as a service would carry the default PATH, which would
+    # replace the template's and its nix.
+    systemd.units."valley-integrator@${toString cfg.integrator.instanceProject}.service" =
+      lib.mkIf (cfg.integrator.enable && floorReaders != [ ])
+        {
+          overrideStrategy = "asDropin";
+          text = ''
+            [Service]
+            ${lib.concatMapStrings (r: "ReadWritePaths=-${integratorWakeDir r}\n") floorReaders}'';
+        };
 
     # What pushes the mirrors: a path unit per published project, watching
     # its publish queue, and the drain it starts.

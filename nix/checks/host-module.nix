@@ -501,6 +501,48 @@ let
     integratorGitEnv.TMPDIR or null != "/var/lib/${integratorService.StateDirectory}"
     || !(builtins.elem "/var/lib/${integratorService.StateDirectory}" integratorService.ReadWritePaths);
 
+  # The controllers' wake directories. Each controller watches its own,
+  # under /run, which the host makes owned by the integrator's user and the
+  # writers' group of the git user and the integrator's user. Its sandbox
+  # may write its own and, for the instance project's controller alone,
+  # each other controller's, which that controller marks after a floor
+  # landing. The drop-in that grants those sets nothing else. The push hook
+  # is wired for every served project and no other repository.
+  integratorWakeMisrendered =
+    let
+      wakeOf = name: "/run/valley-integrator-wake/${name}";
+      dropIn = host: name: host.config.systemd.units."valley-integrator@${name}.service" or null;
+      readers =
+        host: instance: others:
+        let
+          unit = dropIn host instance;
+        in
+        unit == null
+        || unit.overrideStrategy or null != "asDropin"
+        || unit.text != "[Service]\n" + lib.concatMapStrings (o: "ReadWritePaths=-${wakeOf o}\n") others;
+      init = integratorHost.config.systemd.services.valley-init.script;
+    in
+    !(lib.hasInfix "--woken-by /run/valley-integrator-wake/%i" integratorService.ExecStart)
+    || !(lib.hasInfix "$VALLEY_FLOOR_READERS" integratorService.ExecStart)
+    || !(lib.hasPrefix "-/nix/store/" integratorService.EnvironmentFile or "")
+    || !(builtins.elem "-${wakeOf "%i"}" integratorService.ReadWritePaths)
+    || builtins.elem "/run/valley-integrator-wake" integratorService.ReadWritePaths
+    || lib.any (
+      name:
+      !(builtins.elem "d ${wakeOf name} 0770 valley-integrator valley-integrator-wake - -" integratorHost.config.systemd.tmpfiles.rules)
+      || !(lib.hasInfix "${name}.git/hooks/post-receive.d/valley-integrator-wake" init)
+    ) [ "guarded" "released" "sealed" ]
+    || lib.hasInfix "ln -s /nix/store/" (lib.concatStrings (lib.filter (lib.hasInfix "open.git/hooks/post-receive.d/valley-integrator-wake") (lib.splitString "ihook=" init)))
+    || lib.sort lib.lessThan integratorHost.config.users.groups.valley-integrator-wake.members != lib.sort lib.lessThan [
+      integratorHost.config.services.valley.user
+      integratorHost.config.services.valley.integrator.user
+    ]
+    || readers integratorHost "sealed" [ "guarded" "released" ]
+    || readers integratorSelfHost "guarded" [ "released" "sealed" ]
+    || dropIn integratorHost "guarded" != null
+    || dropIn integratorHost "released" != null
+    || protectedHost.config.users.groups ? valley-integrator-wake;
+
   # The registry compiler. It is off by default and must stay inert: a
   # consumer that has not asked for it renders the system it always did.
   # integratorHost is the strongest witness available — the integrator on,
@@ -1061,6 +1103,8 @@ in
       throw "valley module-eval: a controller must be told which repository carries the floor, and must carry a safe.directory exception for it — the floor is read from that repository's integrated tip, and git refuses a repository its caller does not own"
     else if integratorScratch then
       throw "valley module-eval: a controller's TMPDIR must be its state directory and that directory must be named in ReadWritePaths — under ProtectSystem=strict a path the unit does not enumerate is one it cannot write, and a verdict needs a worktree on disk"
+    else if integratorWakeMisrendered then
+      throw "valley module-eval: each controller watches its own wake directory under /run/valley-integrator-wake, owned by the integrator and the group of the git user and the integrator; its sandbox writes that one, the instance project's controller alone writes the floor readers' too, and every served project carries the push hook that marks it"
     else if identityRenderedWithoutEnable then
       throw "valley module-eval: registry-compilation machinery rendered for a host that never enabled it — nothing may change until a consumer opts in"
     else if identityCompiler then

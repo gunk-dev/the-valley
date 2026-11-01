@@ -3,15 +3,16 @@ package main
 // The refs transport: a reconciliation loop over the integration requests
 // durable in the served repository.
 //
-// It polls, deliberately. The bus is unauthenticated (bd-d853d9c), which
-// gates automated consumers, and the requests are durable in git with the
-// bus as a projection over them (architecture.md). So the controller
-// level-triggers over the request refs themselves and converges: each pass
-// recomputes the verdict for every request against the current tip, acts
-// only where the answer has changed since the last pass, and needs no
-// subscription at all. It publishes outcomes to the bus exactly as the
-// post-receive hook publishes ref updates. Consuming events arrives in a
-// later phase.
+// The bus is unauthenticated (bd-d853d9c), which gates automated
+// consumers, and the requests are durable in git with the bus as a
+// projection over them (architecture.md). So the controller level-triggers
+// over the request refs themselves and converges: each pass recomputes the
+// verdict for every request against the current tip, acts only where the
+// answer has changed since the last pass, and needs no subscription at
+// all. It publishes outcomes to the bus exactly as the post-receive hook
+// publishes ref updates. What starts a pass is the controller's start, its
+// interval, and a mark in its own wake directory (wake.go); a mark carries
+// nothing, so a pass decides from the refs alone.
 //
 // # The request ref
 //
@@ -592,6 +593,7 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 			return "", fmt.Errorf("nothing landed: a ref the landing records moved under each of %d tries: %w", landingTries, err)
 		}
 	}
+	in.landings++
 	fmt.Fprintf(in.out, "  landed   %s %s -> %s\n", ch.Target, verdict.Short(tip), verdict.Short(l.commit))
 	for _, ref := range tx.evidence {
 		fmt.Fprintf(in.out, "  evidence %s\n", ref)
@@ -603,11 +605,13 @@ func (in *integrator) land(ch verdict.Change, v verdict.Verdict, r request, tip 
 	}
 
 	// The notices come last, as best effort: a queue or a bus that fails
-	// or hangs changes nothing the transaction recorded. The worker's mark
-	// comes first of them: it is one local file, and a mirror or a bus
-	// that hangs must not hold it back.
+	// or hangs changes nothing the transaction recorded. The local marks
+	// come first of them, the worker's and then the floor readers': each
+	// is one local file, and a mirror or a bus that hangs must not hold
+	// them back.
 	done = watch.stage(stagePublish)
 	in.markDue()
+	in.markFloorReaders(ch.Target)
 	in.queueRefUpdate(ch.Target, tip, l.commit)
 	in.publishRefUpdated(ch.Target, tip, l.commit)
 	in.publishLanded(ch, v, tip, l.commit)

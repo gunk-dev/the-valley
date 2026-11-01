@@ -11,7 +11,8 @@
 set -euo pipefail
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# A scenario's controllers run in the background, and end with the run.
+trap 'kill $(jobs -p) 2> /dev/null || true; wait || true; rm -rf "$work"' EXIT
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export HOME="$work"
@@ -2050,5 +2051,392 @@ grep -q "^c32f -> refs/heads/main .*: land$" "$work/last.out" \
   || die "changing the floor did not judge c32f again: $(cat "$work/last.out")"
 landed_as "$(git rev-parse c32f)" "$pre"
 holds "a stale answer the floor gave is judged again when only the floor changes, and the change lands"
+
+# ----------------------------------------------------------------------
+say "33. a controller woken by its wake directory decides at once, follows a landing, and recovers what it missed"
+
+# Every controller here passes on a one-hour interval unless a case says
+# otherwise, so a pass that comes within seconds came from a mark, a
+# landing or a start, never the timer. The served repositories carry a
+# post-receive hook in the shape the host installs: each push creates the
+# empty file due in the controller's wake directory with O_EXCL, and a due
+# that is already there is a mark already made.
+wake="$work/wake33"
+iwake="$work/wake33-instance"
+other="$work/wake33-other" # a controller that reads nothing here
+mkdir -m 0770 "$wake" "$iwake" "$other"
+hook33() {
+  printf '#!%s\nset -C\n{ : > "%s/due"; } 2>/dev/null || true\n' "$(command -v bash)" "$2" > "$1/hooks/post-receive"
+  chmod +x "$1/hooks/post-receive"
+}
+hook33 "$origin" "$wake"
+hook33 "$instance_repo" "$iwake"
+
+# Each line a controller prints is stamped with the time it was read, so a
+# case measures from a stamp taken before a push to a line.
+stamp() { while IFS= read -r line; do printf '%s %s\n' "$EPOCHREALTIME" "$line"; done; }
+# watch33 LOG REPO DIR [flag…] — a controller for REPO, woken by DIR, in the
+# background, its pid in watch_pid. A case that leaves an executable
+# $work/during33 has it run once, from the middle of a pass.
+watch33() {
+  local log="$1" served="$2" dir="$3"
+  shift 3
+  VALLEY_E2E_DURING_PASS="f=$work/during33; if [ -x \$f ]; then mv \$f \$f.ran && \$f.ran; fi" \
+    integrator watch \
+    --repo "$served" \
+    --key "$work/integrator" --name "$integrator_name" \
+    --known-signers "$work/known_signers" \
+    --instance-repo "$instance_repo" \
+    --schema "$SCHEMA_VERIFICATION" \
+    --attest-schema "$SCHEMA_ATTESTATION" \
+    --event-schema "$SCHEMA_EVENTS" \
+    --woken-by "$dir" --interval 1h "$@" > >(stamp >> "$log") 2>&1 &
+  watch_pid=$!
+}
+# when33 LOG AFTER PATTERN [SECONDS] — the stamp of the first line of LOG
+# stamped no earlier than AFTER that matches PATTERN, waiting for it.
+when33() {
+  local log="$1" after="$2" pattern="$3" limit="${4:-30}" i at
+  for ((i = 0; i < limit * 20; i++)); do
+    at="$(awk -v a="$after" -v p="$pattern" \
+      '$1 >= a { line = $0; sub(/^[^ ]* /, "", line); if (line ~ p) { print $1; exit } }' "$log" 2> /dev/null)"
+    if [ -n "$at" ]; then
+      echo "$at"
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+ms() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%d", (b - a) * 1000 }'; }
+passes33() { awk -v a="$2" '$1 >= a && $2 == "pass:"' "$1" | wc -l; }
+# restart33 [flag…] — the project's controller, stopped and started again;
+# t is the stamp before the start.
+restart33() {
+  kill "$watch_pid" 2> /dev/null || true
+  wait "$watch_pid" 2> /dev/null || true
+  t="$EPOCHREALTIME"
+  watch33 "$log" "$origin" "$wake" "$@"
+  when33 "$log" "$t" "^pass: startup$" > /dev/null || die "the controller did not start: $(cat "$log")"
+}
+log="$work/watch33.log"
+ilog="$work/inst33.log"
+# change33 NAME — a change to docs/, which prose-format reads, off main.
+change33() {
+  git checkout --quiet main
+  git pull --quiet --ff-only origin main
+  git checkout --quiet -b "$1"
+  echo "$1" > "docs/$1.md"
+  git add -A
+  git commit --quiet -m "$1"
+}
+# lands33 NAME AFTER WHAT — NAME lands after AFTER. Says how long it took
+# from AFTER to the start of the pass that decided it, and to its landing.
+lands33() {
+  local decided landed started
+  decided="$(when33 "$log" "$2" "^$1 -> refs/heads/main .*: land$")" || die "$1 did not land within 30s: $(cat "$log")"
+  landed="$(when33 "$log" "$decided" "^  landed   refs/heads/main ")" || die "$1 decided to land, and did not"
+  started="$(awk -v a="$2" -v d="$decided" '$1 >= a && $1 <= d && $2 == "pass:" { s = $1 } END { print s }' "$log")"
+  [ -n "$started" ] || die "no pass started between $2 and deciding $1"
+  printf '  measured: %s: to decision start %sms, to landing %sms\n' "$3" "$(ms "$2" "$started")" "$(ms "$2" "$landed")"
+}
+
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+watch33 "$log" "$origin" "$wake"
+when33 "$log" 0 "^pass: startup$" > /dev/null || die "the controller did not start: $(cat "$log")"
+holds "a controller started on a one-hour interval passes once, at its start"
+
+# Request arrival, idle. The evidence is published first, and its push
+# starts a pass that finds no request. The request's push starts the pass
+# that lands it. The first decision this process makes is the cold case;
+# the ones after it are warm.
+for c in c33a c33b c33c; do
+  change33 "$c"
+  t="$EPOCHREALTIME"
+  attest_change "$c" "" "" --check prose-format
+  when33 "$log" "$t" "^pass: due$" > /dev/null || die "the evidence push did not wake the controller"
+  sleep 0.5
+  t="$EPOCHREALTIME"
+  request "$c" main "$(git rev-parse "$c")"
+  pushed="$EPOCHREALTIME"
+  [ "$c" = c33a ] && what="request publication, cold" || what="request publication, warm"
+  lands33 "$c" "$t" "$what (the push returned at $(ms "$t" "$pushed")ms)"
+done
+holds "a request pushed to an idle controller lands within seconds on a one-hour interval"
+
+# Evidence arrival. The request is judged stale for want of evidence, and
+# the evidence's own push wakes the controller, which lands it.
+change33 c33e
+git push --quiet origin c33e
+request c33e main "$(git rev-parse c33e)"
+when33 "$log" 0 "^c33e -> refs/heads/main .*: stale$" > /dev/null || die "c33e was not judged stale without evidence"
+sleep 0.5
+t="$EPOCHREALTIME"
+attest_change c33e "" "" --check prose-format
+lands33 c33e "$t" "evidence publication, warm"
+holds "evidence pushed for a stale request wakes the controller, which lands it"
+
+# Busy. A request is pushed while a pass works on another, after that pass
+# listed the requests. Its mark survives the pass, and the next pass starts
+# as soon as the busy one ends, and lands it. The busy pass judges c33f,
+# whose evidence is over a tree c33h has since moved what prose-format
+# reads under, so it evaluates the check, and the request it pushes then
+# is pushed from the middle of the pass. c33f stays stale, so nothing lands
+# and no follow-up comes: only the mark starts the next pass.
+change33 c33f
+attest_change c33f "" "" --check prose-format
+change33 c33h
+attest_change c33h "" "" --check prose-format
+t="$EPOCHREALTIME"
+request c33h main "$(git rev-parse c33h)"
+lands33 c33h "$t" "request publication, warm"
+change33 c33g
+t="$EPOCHREALTIME"
+attest_change c33g "" "" --check prose-format
+when33 "$log" "$t" "^pass: due$" > /dev/null || die "c33g's evidence did not wake the controller"
+cat > "$work/during33" <<EOF
+#!$(command -v bash)
+echo "\$EPOCHREALTIME" > "$work/during33.at"
+git -C "$repo" push --quiet origin "$(git rev-parse c33g):refs/the-valley/integration-requests/main/c33g"
+sleep 2
+EOF
+chmod +x "$work/during33"
+sleep 0.5
+request c33f main "$(git rev-parse c33f)"
+busy="$(when33 "$log" 0 "^c33f -> refs/heads/main .*: stale$")" || die "c33f was not judged"
+[ -e "$work/during33.ran" ] || die "the busy pass did not push c33g's request"
+t="$(cat "$work/during33.at")"
+lands33 c33g "$t" "request publication while busy"
+reason="$(awk -v a="$busy" '$1 >= a && $2 == "pass:" { print $3; exit }' "$log")"
+[ "$reason" = due ] || die "the pass after the busy one started for $reason, not due"
+holds "a request pushed while a pass works is landed by the pass right after it"
+
+# A landing is followed by another pass at once. c33-dep-a sorts first, so
+# it is judged against the tip before c33-dep-b lands, and it conflicts
+# there: the tip and it change one line differently. c33-dep-b reverts the
+# tip's change, and on the tip it lands the two no longer conflict.
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c33s
+echo base > checks/dep33.txt
+git add -A
+git commit --quiet -m "the line both sides change"
+t="$EPOCHREALTIME"
+request c33s main "$(git rev-parse c33s)"
+lands33 c33s "$t" "unclassified request publication, warm"
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c33-dep-a
+echo a > checks/dep33.txt
+git commit --quiet -am "a changes the line"
+git checkout --quiet main
+git checkout --quiet -b c33x
+echo x > checks/dep33.txt
+git commit --quiet -am "the tip changes it otherwise"
+t="$EPOCHREALTIME"
+request c33x main "$(git rev-parse c33x)"
+lands33 c33x "$t" "unclassified request publication, warm"
+git checkout --quiet main
+git pull --quiet --ff-only origin main
+git checkout --quiet -b c33-dep-b
+echo base > checks/dep33.txt
+git commit --quiet -am "b reverts the tip's change"
+t="$EPOCHREALTIME"
+git push --quiet origin \
+  "$(git rev-parse c33-dep-a):refs/the-valley/integration-requests/main/c33-dep-a" \
+  "$(git rev-parse c33-dep-b):refs/the-valley/integration-requests/main/c33-dep-b"
+stale="$(when33 "$log" "$t" "^c33-dep-a -> refs/heads/main .*: stale$")" || die "c33-dep-a did not conflict with the tip before c33-dep-b"
+when33 "$log" "$stale" "^c33-dep-b -> refs/heads/main .*: land$" > /dev/null || die "c33-dep-b did not land"
+follow="$(when33 "$log" "$stale" "^pass: follow-up$")" || die "no follow-up pass after c33-dep-b landed"
+lands33 c33-dep-a "$follow" "dependent request, from the follow-up's start"
+lands33 c33-dep-a "$t" "dependent request, from the publication of both"
+[ "$(git -C "$origin" show refs/heads/main:checks/dep33.txt)" = a ] || die "c33-dep-a's line is not on main"
+holds "a request that conflicted with the tip before a landing lands in the pass that follows it at once"
+
+# A burst of evidence. Six requests are stale for want of it, and each
+# change's evidence is pushed in turn, as fast as attest publishes. While a
+# pass works, the marks wait as one due. Each change adds to docs/, which
+# prose-format reads, so once one lands the others' evidence no longer
+# transfers to the tip, and they are judged stale again. What is measured
+# is the work: every request judged after its evidence, how many passes
+# and decisions that took, and that the controller then goes quiet.
+burst=(c33b1 c33b2 c33b3 c33b4 c33b5 c33b6)
+for c in "${burst[@]}"; do
+  change33 "$c"
+  git push --quiet origin "$c"
+  request "$c" main "$(git rev-parse "$c")"
+  when33 "$log" 0 "^$c -> refs/heads/main .*: stale$" > /dev/null || die "$c was not judged stale"
+done
+sleep 0.5
+t="$EPOCHREALTIME"
+before="$(grep -c ' -> refs/heads/main ' "$log")"
+for c in "${burst[@]}"; do
+  git checkout --quiet "$c"
+  pushed="$EPOCHREALTIME"
+  attest_change "$c" "" "" --check prose-format
+  when33 "$log" "$pushed" "^$c -> refs/heads/main " 60 > /dev/null || die "$c was not judged after its evidence: $(cat "$log")"
+done
+published="$EPOCHREALTIME"
+n=-1
+while [ "$n" != "$(passes33 "$log" "$t")" ]; do
+  n="$(passes33 "$log" "$t")"
+  sleep 2
+done
+last="$(awk -v a="$t" '$1 >= a && / -> refs\/heads\/main / { l = $1 } END { print l }' "$log")"
+decisions=$(($(grep -c ' -> refs/heads/main ' "$log") - before))
+landings="$(awk -v a="$t" '$1 >= a && $2 == "landed"' "$log" | wc -l)"
+printf '  measured: evidence burst of %d pushes over %sms: %d passes, %d decisions, %d landing, last decision %sms after the first push began\n' \
+  "${#burst[@]}" "$(ms "$t" "$published")" "$n" "$decisions" "$landings" "$(ms "$t" "$last")"
+[ "$landings" -ge 1 ] || die "nothing landed after the burst"
+[ "$n" -le $((2 * ${#burst[@]} + 1)) ] || die "a burst of ${#burst[@]} evidence pushes ran $n passes"
+for c in "${burst[@]}"; do forget "$c"; done
+holds "a burst of evidence is judged in $n passes, and the controller goes quiet"
+
+# Idle, the controller does nothing: no mark, no landing, no pass.
+t="$EPOCHREALTIME"
+sleep 2
+[ "$(passes33 "$log" "$t")" = 0 ] || die "an idle controller passed: $(awk -v a="$t" '$1 >= a' "$log")"
+[ -z "$(ls -A "$wake")" ] || die "the idle wake directory holds $(ls -A "$wake")"
+holds "an idle controller on a one-hour interval passes no more, and its directory holds nothing"
+
+# A second controller over the same repository stops at its start, before
+# it sweeps or passes, whatever happened to the wake directory. Here the
+# first controller's wake directory is replaced, as anyone who may write
+# its parent could, and a scratch worktree stands where a pass in progress
+# would keep one. The second controller is refused the repository, sweeps
+# nothing, and judges nothing. The first goes on serving it.
+leak33="$TMPDIR/valley-integrator-wt-in-progress"
+git -C "$origin" worktree add --quiet --detach "$leak33" refs/heads/main
+mv "$wake" "$wake.replaced"
+mkdir -m 0770 "$wake"
+t="$EPOCHREALTIME"
+if out="$(timeout 20 integrator watch --repo "$origin" --key "$work/integrator" --name "$integrator_name" \
+  --known-signers "$work/known_signers" --instance-repo "$instance_repo" --schema "$SCHEMA_VERIFICATION" \
+  --attest-schema "$SCHEMA_ATTESTATION" --woken-by "$wake" --interval 1h 2>&1)"; then
+  die "a second controller over one repository ran: $out"
+fi
+grep -q "$origin: another controller holds its lock; one controller serves a repository" <<< "$out" \
+  || die "the second controller said: $out"
+grep -q "^pass: " <<< "$out" && die "the refused controller passed: $out"
+[ -e "$leak33" ] || die "the refused controller swept the first one's worktree"
+git -C "$origin" worktree remove --force "$leak33"
+rm -r "$wake.replaced"
+when33 "$log" "$t" "watching $wake again" 20 > /dev/null || die "the first controller did not watch the new directory: $(cat "$log")"
+t="$EPOCHREALTIME"
+change33 c33r
+attest_change c33r "" "" --check prose-format
+request c33r main "$(git rev-parse c33r)"
+lands33 c33r "$t" "the first controller, after its wake directory was replaced"
+reconcile --woken-by "$wake" > "$work/last.out" 2>&1 && die "reconcile took a wake directory"
+grep -q "reconcile reads no wake directory" "$work/last.out" || die "reconcile said: $(cat "$work/last.out")"
+holds "one controller serves a repository, a refused one sweeps and judges nothing, and reconcile never takes a wake directory"
+
+# A crash. The controller is killed, a request is pushed while nothing
+# consumes its mark, and the next start lands it.
+kill -9 "$watch_pid"
+wait "$watch_pid" 2> /dev/null || true
+change33 c33k
+attest_change c33k "" "" --check prose-format
+request c33k main "$(git rev-parse c33k)"
+[ -e "$wake/due" ] || die "the push while the controller was down left no mark"
+restart33
+lands33 c33k "$t" "restart after a crash, from the start"
+holds "a request pushed while the controller was down lands at its next start"
+
+# A dropped mark and a newly accepted signer start no pass on a one-hour
+# interval. The interval is what reads them. The request is written with
+# update-ref, which runs no hook, as a mark that never came.
+grep -v "^$late+" "$work/late_signers" > "$work/signers33"
+change33 c33l
+attest_change c33l "$work/late" "$late" --check prose-format
+request c33l main "$(git rev-parse c33l)"
+# c33m touches only checks/, which no class covers, so c33l landing first
+# leaves it nothing to be stale for.
+git checkout --quiet main
+git checkout --quiet -b c33m
+echo c33m > checks/c33m.txt
+git add -A
+git commit --quiet -m c33m
+git push --quiet origin c33m
+restart33 --known-signers "$work/signers33"
+when33 "$log" "$t" "^c33l -> refs/heads/main .*: stale$" > /dev/null || die "c33l counted a signer not yet accepted"
+sleep 0.5
+t="$EPOCHREALTIME"
+cp "$work/late_signers" "$work/signers33"
+git -C "$origin" update-ref refs/the-valley/integration-requests/main/c33m "$(git rev-parse c33m)"
+sleep 2
+[ "$(passes33 "$log" "$t")" = 0 ] || die "a changed signers file or a dropped mark started a pass on a one-hour interval"
+holds "on a one-hour interval, a changed signers file and a dropped mark start no pass"
+
+grep -v "^$late+" "$work/late_signers" > "$work/signers33"
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/c33m
+restart33 --known-signers "$work/signers33" --interval 3s
+sleep 0.5
+t="$EPOCHREALTIME"
+cp "$work/late_signers" "$work/signers33"
+git -C "$origin" update-ref refs/the-valley/integration-requests/main/c33m "$(git rev-parse c33m)"
+lands33 c33l "$t" "accepted signer, on a 3s interval"
+lands33 c33m "$t" "dropped mark, on a 3s interval"
+reason="$(awk -v a="$t" '$1 >= a && $2 == "pass:" { print $3; exit }' "$log")"
+[ "$reason" = timer ] || die "the changed signers file and the dropped mark were read by a $reason pass, not the timer"
+holds "the interval's timer pass lands what a changed signers file and a dropped mark left waiting"
+
+# A due the controller cannot remove starts the pass it is found at, and
+# then none until the interval, however often it is marked.
+restart33
+t="$EPOCHREALTIME"
+mkdir -p "$wake/due/held"
+when33 "$log" "$t" "could not remove the due in $wake" > /dev/null || die "the stuck due was not said"
+change33 c33q
+attest_change c33q "" "" --check prose-format
+sleep 2
+[ "$(passes33 "$log" "$t")" = 1 ] || die "a due that cannot be removed started $(passes33 "$log" "$t") passes"
+rm -r "$wake/due"
+holds "a due that cannot be removed starts one pass, and the controller does not spin on it"
+
+# The floor's move wakes the controllers that read it, and only those. The
+# instance repository's controller lands a floor change, and marks the
+# project's directory once it has. Its own push woke only it.
+restart33
+sleep 1
+watch33 "$ilog" "$instance_repo" "$iwake" --wake-floor-reader "$wake"
+when33 "$ilog" 0 "^pass: startup$" > /dev/null || die "the instance's controller did not start: $(cat "$ilog")"
+cat > "$floor/policy/instance/floor.cue" <<'EOF'
+package verification
+
+floor: {
+	checks: {
+		"prose-format": {runner: "nix", attribute: "prose-format"}
+		"floor-review": {runner: "command", command: "true"}
+	}
+	classes: prose: {paths: "docs/**": true, requires: {"prose-format": true, "floor-review": true}}
+	unclassified: {}
+}
+EOF
+git -C "$floor" commit --quiet -am "the floor requires floor-review of docs/"
+git -C "$floor" push --quiet "$instance_repo" main
+change33 c33o
+attest_change c33o "" "" --check prose-format
+request c33o main "$(git rev-parse c33o)"
+when33 "$log" 0 "^c33o -> refs/heads/main .*: stale$" > /dev/null || die "the floor did not hold c33o back: $(cat "$log")"
+cp "$work/floor32.cue" "$floor/policy/instance/floor.cue"
+git -C "$floor" commit --quiet -am "the floor no longer requires floor-review"
+sleep 0.5
+t="$EPOCHREALTIME"
+git -C "$floor" push --quiet "$instance_repo" "HEAD:refs/the-valley/integration-requests/main/floor33"
+when33 "$ilog" "$t" "^  wake     the floor reader at $wake is due$" > /dev/null || die "the floor landing did not mark the project: $(cat "$ilog")"
+lands33 c33o "$t" "floor request publication, to the project's landing"
+[ -z "$(ls -A "$other")" ] || die "a controller that reads nothing here was marked"
+holds "a floor landed by the instance's controller wakes the project's, which lands what the floor held back"
+holds "the directory of a controller the floor does not concern stayed empty"
+reconcile --wake-floor-reader "$other" > "$work/last.out" 2>&1 \
+  && die "a controller that does not serve the instance repository took --wake-floor-reader"
+grep -q "is for the controller that lands the floor" "$work/last.out" || die "the refusal said: $(cat "$work/last.out")"
+holds "only the controller serving the instance repository marks the floor's readers"
+
+kill $(jobs -p) 2> /dev/null || true
+wait 2> /dev/null || true
+rm -f "$origin/hooks/post-receive" "$instance_repo/hooks/post-receive"
 
 printf '\nintegrator-e2e: every scenario held\n'

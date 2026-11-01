@@ -28,16 +28,20 @@ import (
 const usage = `usage: integrator <command> [flags]
 
   reconcile        judge every pending integration request once, and act
-  watch            reconcile on an interval until interrupted
+  watch            reconcile at start, when woken and on an interval,
+                   until interrupted
   publish-signers  publish what clients verify transfer statements with
                    (integrator publish-signers --help)
   help             print this message
 
-The integrator polls, deliberately. Integration requests are durable in
-git — refs/the-valley/integration-requests/<target>/<change>, whose commit
-is the change's head — and the bus is a projection over them, so the
-controller level-triggers over the refs and converges. It publishes its
-outcomes to the bus and consumes nothing.
+The integrator level-triggers over refs. Integration requests are durable
+in git — refs/the-valley/integration-requests/<target>/<change>, whose
+commit is the change's head — and the bus is a projection over them, so
+each pass reads the refs as they are and converges. It publishes its
+outcomes to the bus and consumes nothing from it. What starts a pass is
+the start, the interval, and, given --woken-by, a mark in its own wake
+directory (see below). A mark only starts a pass: it carries nothing, and
+what a pass decides comes from the refs it reads.
 
 The commit rule (dcr-439b771). The delta must apply cleanly to the tip; a
 conflict is new authorship, so every check is re-demanded. Then, per check
@@ -97,9 +101,22 @@ flags:
   --wake DIR          the host check worker's wake directory: each landing
                       creates the empty file DIR/due, before the mirror
                       queue and the bus, so the worker starts a pass;
-                      empty marks nothing
+                      empty marks nothing. Output only; --woken-by is what
+                      wakes this controller
+  --wake-floor-reader DIR
+                      another controller's wake directory, which reads the
+                      floor this one lands: each landing on --instance-ref
+                      creates the empty file DIR/due, after the worker's
+                      mark and before the mirror queue and the bus. Only the
+                      controller serving --instance-repo takes it. Repeat it
+                      for each reader
+  --woken-by DIR      watch: this controller's own wake directory (Linux
+                      only). A pass starts soon after a writer creates
+                      DIR/due, and once more after any pass that lands
+                      something; see below
   --system SYSTEM     flake system for closure recomputation
-  --interval D        watch: how long to wait between passes (default 15s)
+  --interval D        watch: how long to wait after a pass before the next,
+                      when nothing starts one sooner (default 15s)
   --now TIME          judge as at this RFC 3339 instant, for the effectful
                       window; defaults to the clock
 
@@ -109,6 +126,29 @@ it up, so a pushed refs/replace/* could swap the floor, a project's policy
 or a change's tree without moving any ref the controller watches. No GIT_
 variable is inherited except the safe.directory entries of command-scope
 configuration, and system and user configuration are not read.
+
+--woken-by is how a controller starts a pass promptly. A writer that moves
+a ref the controller reads creates the empty file DIR/due with
+O_CREAT|O_EXCL, and a due already there is a mark already made. The
+controller watches DIR with inotify, removes due before a pass reads any
+ref, and starts the next pass when the pass ends if due is there again,
+so a mark made during a pass is never lost. While it watches DIR it holds
+a lock on DIR itself, so a second controller given the same DIR consumes
+no mark from it and passes at its interval. reconcile never reads DIR. The
+interval stays the recovery pass: a missed mark, a
+watch that failed and a missing directory are all covered by the next
+timer pass. A due that cannot be removed starts no pass until the next
+timer pass, and a pass that failed is followed by another no sooner than
+10s later. Each pass opens with the line "pass: REASON", where REASON is
+startup, due, timer, follow-up or watcher; a timer pass with nothing else
+to say prints nothing.
+
+One watch serves a repository at a time. watch takes an exclusive lock on
+the --repo directory before it sweeps its scratch or judges anything, and
+checks before every pass that the path still names the directory it
+locked. A second watch over the same repository stops at its start, and a
+watch whose repository path comes to name another directory stops. A
+reconcile run by hand takes no lock.
 
 --known-signers is the registry's interim compilation. Identity is a
 governed registry (dcr-b87f6e8) whose entries compile into what each
@@ -144,7 +184,7 @@ through another signer who counts there.
 type integrator struct {
 	repo    string
 	project string
-	out     *os.File
+	out     io.Writer
 	timings io.Writer // where timing lines go (timing.go); nil prints none
 
 	// The programs it drives. Every judgement about a statement or a note
@@ -175,6 +215,16 @@ type integrator struct {
 	publishQueue string
 	wake         string // the check worker's wake directory, or empty
 	system       string
+
+	// floorReaders are the wake directories of the controllers that read
+	// the floor this controller lands, marked after a landing on the
+	// floor's ref (bus.go). Empty for every controller but the instance
+	// repository's.
+	floorReaders []string
+
+	// landings counts the landings this process has made, so watch can
+	// tell a pass that landed something and follow it with another.
+	landings int
 
 	// clock, when set, is the instant the effectful window is measured
 	// against. Zero means the wall clock.
@@ -239,6 +289,9 @@ func run(args []string, loop bool) error {
 	bus := fs.String("bus", "", "nats server to publish outcomes to")
 	publishQueue := fs.String("publish-queue", "", "the host's queue of ref moves to publish")
 	wake := fs.String("wake", "", "the check worker's wake directory, marked due after each landing")
+	var floorReaders dirList
+	fs.Var(&floorReaders, "wake-floor-reader", "a floor-reading controller's wake directory, marked due after each floor landing")
+	wokenBy := fs.String("woken-by", "", "watch: this controller's own wake directory")
 	system := fs.String("system", "", "flake system")
 	interval := fs.Duration("interval", 15*time.Second, "how long to wait between passes")
 	now := fs.String("now", "", "judge as at this instant")
@@ -260,6 +313,7 @@ func run(args []string, loop bool) error {
 		publishQueue: *publishQueue,
 		wake:         *wake,
 		system:       *system,
+		floorReaders: floorReaders,
 	}
 	for _, missing := range []struct{ flag, value string }{
 		{"--key", in.key},
@@ -324,6 +378,20 @@ func run(args []string, loop bool) error {
 	if in.keyHash, err = in.readKeyHash(); err != nil {
 		return err
 	}
+	if len(in.floorReaders) > 0 && !landsFloor(in.repo, layer) {
+		return fmt.Errorf("--wake-floor-reader is for the controller that lands the floor: give it only with --instance-repo naming the repository --repo serves")
+	}
+	// A wake directory is consumed by one long-lived controller. A
+	// reconcile run by hand beside it must not take its marks.
+	if *wokenBy != "" && !loop {
+		return fmt.Errorf("--woken-by is watch's: reconcile reads no wake directory")
+	}
+	if *wokenBy != "" && !wakeSupported {
+		return fmt.Errorf("--woken-by: watching a wake directory needs Linux's inotify; run watch without it to pass at --interval")
+	}
+	if loop && *interval <= 0 {
+		return fmt.Errorf("--interval %s: the recovery interval must be positive", *interval)
+	}
 
 	if !loop {
 		return in.reconcile()
@@ -332,13 +400,79 @@ func run(args []string, loop bool) error {
 	// running the integrator by hand beside a controller that is already
 	// watching this repository, and sweeping from there would pull the
 	// worktree out from under a tick in progress.
-	sweepScratch(in.repo)
-	for {
-		if err := in.reconcile(); err != nil {
-			fmt.Fprintf(os.Stderr, "integrator: %v\n", err)
+	//
+	// One controller serves a repository (own_unix.go). Its lock comes
+	// before the sweep, so a second watch over the same repository stops
+	// before it can sweep a worktree out from under the first, and the lock
+	// is checked again before every pass.
+	return serve(in.repo, sweepScratch, func(owned func() error) error {
+		if *wokenBy == "" {
+			for {
+				if err := owned(); err != nil {
+					return err
+				}
+				if err := in.reconcile(); err != nil {
+					fmt.Fprintf(os.Stderr, "integrator: %v\n", err)
+				}
+				time.Sleep(*interval)
+			}
 		}
-		time.Sleep(*interval)
+		l := &wakeLoop{
+			dir:      abs(*wokenBy),
+			interval: *interval,
+			stderr:   os.Stderr,
+			watch:    watchDir,
+			owned:    owned,
+			pass: func(reason passReason) (bool, error) {
+				in.out = newPassOutput(os.Stdout, reason)
+				before := in.landings
+				err := in.reconcile()
+				return in.landings > before, err
+			},
+		}
+		return l.run()
+	})
+}
+
+// serve is a watch's start: it takes the repository's lock, then sweeps
+// the repository's scratch, then runs the loop, which asks owned before
+// every pass. A watch that cannot take the lock does neither, and holds
+// nothing when it returns.
+func serve(repo string, sweep func(string), loop func(owned func() error) error) error {
+	owner, err := ownRepo(repo)
+	if err != nil {
+		return err
 	}
+	defer owner.Close()
+	sweep(repo)
+	return loop(owner.check)
+}
+
+// dirList is a flag given once per directory.
+type dirList []string
+
+func (d *dirList) String() string { return strings.Join(*d, ",") }
+
+func (d *dirList) Set(dir string) error {
+	if dir == "" {
+		return fmt.Errorf("an empty directory marks nothing")
+	}
+	*d = append(*d, abs(dir))
+	return nil
+}
+
+// landsFloor says whether the repository this controller serves is the one
+// its floor is read from, so a landing there can move the floor.
+func landsFloor(repo string, layer composed.Floor) bool {
+	if layer.Repo == "" {
+		return false
+	}
+	a, err := os.Stat(repo)
+	if err != nil {
+		return false
+	}
+	b, err := os.Stat(layer.Repo)
+	return err == nil && os.SameFile(a, b)
 }
 
 // readKeyHash asks attest for the verifier key this integrator signs under,

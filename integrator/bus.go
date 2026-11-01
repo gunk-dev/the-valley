@@ -11,7 +11,8 @@ package main
 //
 // Nothing here consumes. Bus authentication (bd-d853d9c) gates automated
 // consumers, and the integrator level-triggers over the request refs
-// instead, so it needs no subscription.
+// instead, so it needs no subscription. What wakes it promptly is a local
+// mark in its own wake directory (wake.go), never an event.
 
 import (
 	"the-valley/integrator/verdict"
@@ -93,12 +94,32 @@ func (in *integrator) markDue() {
 	fmt.Fprintf(in.out, "  wake     the check worker is due\n")
 }
 
+// markFloorReaders tells the controllers that read the floor that a
+// landing moved it, so each starts a pass without waiting for its
+// interval. A landing on any other target marks nothing. As with the
+// worker's mark, the landing waits for none of them, and a mark that fails
+// is reported and the landing stands: each reader's timer pass reads the
+// floor later.
+func (in *integrator) markFloorReaders(target string) {
+	if len(in.floorReaders) == 0 || target != in.policy.layer.Ref {
+		return
+	}
+	for _, dir := range in.floorReaders {
+		if err := markDue(dir); err != nil {
+			fmt.Fprintf(in.out, "  wake     the floor reader at %s was not marked due: %v\n", dir, err)
+			continue
+		}
+		fmt.Fprintf(in.out, "  wake     the floor reader at %s is due\n", dir)
+	}
+}
+
 // markDue creates the empty file due in the wake directory dir, which
 // the host made. One mark stands for any number of moves: a file that
 // is already there is a mark already made, so it is success, and the
 // directory never holds more than the one file from every writer. The
 // file carries nothing and nothing reads it; the worker renames it when
-// it starts a pass (status/wake.go). An empty dir marks nothing.
+// it starts a pass (status/wake.go), and a controller removes it when it
+// starts one (wake.go). An empty dir marks nothing.
 func markDue(dir string) error {
 	if dir == "" {
 		return nil

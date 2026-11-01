@@ -12,7 +12,7 @@
   pkgs,
   lib,
   self,
-  packages,
+  machineValley,
   ...
 }:
 let
@@ -41,7 +41,7 @@ in
       environment.systemPackages = [
         pkgs.git
         pkgs.jq
-        packages.valley
+        machineValley
       ];
       services.valley = {
         enable = true;

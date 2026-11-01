@@ -1136,10 +1136,19 @@ nix/tools/drv-churn.sh --expect nix/tools/drv-churn.expected
 ```
 
 It applies a fixed list of representative edits to the commit's tree, one at a time, and evaluates
-every check's derivation after each. With `--expect`, it fails if any edit changes other checks than
-the recorded table says. When a change means to alter the table, write the new one with `--write`.
-With `--history origin/main~20..origin/main` instead, it replays the paths each of those commits
-touched. Run `nix/tools/drv-churn.sh --help` for every option.
+every check's derivation after each. The first edit, `commit only`, commits the same tree twice and
+evaluates each commit. Only the checks that read the commit may change: `valley-cli`,
+`valley-self-update` and `valley-darwin-eval`. With `--expect`, it fails if any edit changes other
+checks than the recorded table says. When a change means to alter the table, write the new one with
+`--write`. To measure only some edits, name each with `--edit`:
+
+```sh
+nix/tools/drv-churn.sh --edit 'commit only' --edit bin/valley --expect nix/tools/drv-churn.expected
+```
+
+Every check is still evaluated, and `--expect` and `--write` compare or replace only the rows of the
+edits named. With `--history origin/main~20..origin/main` instead, it replays the paths each of
+those commits touched. Run `nix/tools/drv-churn.sh --help` for every option.
 
 The [architecture](./architecture.md) explains component invariants and the checks that cover them.
 The [reference](./reference.md) documents CLI flags, ref bounds, wire formats, JSON outputs, and

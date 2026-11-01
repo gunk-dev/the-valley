@@ -29,11 +29,22 @@
 #                    written by --write, and fail on any difference.
 #   --write FILE     write the fixed edits' results to FILE.
 #                    Both use the fixed edits in the default mode.
+#   --edit LABEL     measure only the fixed edit that FILE's table names
+#                    LABEL, such as 'commit only'. Repeat it to measure
+#                    several. Every check is still evaluated. --expect then
+#                    compares only the measured rows, and --write replaces
+#                    only those rows of FILE.
 #
 # Every edit appends a comment line in the file's own syntax, adds a new
 # file, or deletes one. An edit to a file that holds no input of any check
 # must change no derivation; an edit to a check's input must change that
 # check's.
+#
+# The first edit, commit only, makes a new commit with the same tree. A
+# tree exported as attest exports it has no commit, so in the default mode
+# this edit is measured in git mode: the tree committed twice and
+# evaluated as each commit. The checks it changes are those that read the
+# commit, and a check that boots a machine must not be among them.
 set -euo pipefail
 
 mode=path
@@ -41,12 +52,14 @@ history=
 expect=
 write=
 rev=HEAD
+only=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --git) mode=git ;;
     --history) history="$2"; shift ;;
     --expect) expect="$2"; shift ;;
     --write) write="$2"; shift ;;
+    --edit) only+=("$2"); shift ;;
     -h | --help) sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
     -*) echo "drv-churn: unknown option $1" >&2; exit 2 ;;
     *) rev="$1" ;;
@@ -55,6 +68,10 @@ while [ $# -gt 0 ]; do
 done
 if { [ -n "$history" ] || [ "$mode" = git ]; } && { [ -n "$expect" ] || [ -n "$write" ]; }; then
   echo "drv-churn: --expect and --write record the fixed edits in the default mode" >&2
+  exit 2
+fi
+if [ -n "$history" ] && [ ${#only[@]} -gt 0 ]; then
+  echo "drv-churn: --edit names a fixed edit, and --history replays commits instead" >&2
   exit 2
 fi
 
@@ -77,18 +94,25 @@ evaluate() {
       (builtins.attrNames cs))'
 }
 
-# The flake reference for a tree. In git mode the tree is committed first,
-# with a fixed identity and date, so the same edit makes the same commit.
+# Commit a tree and print the git flake reference for that commit. The
+# commit has a fixed identity and date, so the same edit makes the same
+# commit. The date is the epoch in a form git accepts: git refuses @0.
+commitFlake() {
+  local dir="$1" label="$2" epoch=1970-01-01T00:00:00Z
+  git -C "$dir" add -A
+  GIT_AUTHOR_DATE=$epoch GIT_COMMITTER_DATE=$epoch git -C "$dir" \
+    -c user.name=drv-churn -c user.email=drv-churn@localhost \
+    commit --quiet --allow-empty --no-verify -m "$label"
+  echo "git+file://$dir?rev=$(git -C "$dir" rev-parse HEAD)"
+}
+
+# The flake reference for a tree: a commit of it in git mode, and the
+# plain directory otherwise.
 flakeOf() {
-  local dir="$1" label="$2"
   if [ "$mode" = git ]; then
-    git -C "$dir" add -A
-    GIT_AUTHOR_DATE=@0 GIT_COMMITTER_DATE=@0 git -C "$dir" \
-      -c user.name=drv-churn -c user.email=drv-churn@localhost \
-      commit --quiet --allow-empty --no-verify -m "$label"
-    echo "git+file://$dir?rev=$(git -C "$dir" rev-parse HEAD)"
+    commitFlake "$@"
   else
-    echo "path:$dir"
+    echo "path:$1"
   fi
 }
 
@@ -168,6 +192,17 @@ EOF
   done < <(cd "$base" && find . -name go.mod ! -path './archive/*' -printf '%h\n' | sed 's|^\./||' | LC_ALL=C sort)
 }
 
+# Whether to measure the fixed edit labelled $1: every edit, unless
+# --edit named some.
+selected() {
+  [ ${#only[@]} -eq 0 ] && return 0
+  local l
+  for l in "${only[@]}"; do
+    [ "$l" = "$1" ] && return 0
+  done
+  return 1
+}
+
 # The history's edits: one per non-merge commit in the range, oldest
 # first, as label and the paths it touched.
 historyEdits() {
@@ -196,7 +231,7 @@ echo "# drv-churn: $(git -C "$repo" rev-parse --short "$commit") ($mode mode), $
 results="$work/results"
 : > "$results"
 run() {
-  local label="$1" dir="$work/edit"
+  local label="$1" dir="$work/edit" before="$work/base.drvs"
   shift
   if [ "$mode" = git ]; then
     dir="$base"
@@ -206,13 +241,22 @@ run() {
     rm -rf "$dir"
     cp -a "$base" "$dir"
   fi
-  while [ $# -gt 0 ]; do
-    apply "$dir" "$1" "$2"
-    shift 2
-  done
-  evaluate "$(flakeOf "$dir" "$label")" > "$work/edit.drvs"
+  if [ "$mode" = path ] && [ "${1:-}" = commit ]; then
+    # The commit-only edit in the default mode: the same tree committed
+    # twice, each commit evaluated.
+    git -C "$dir" init --quiet --initial-branch=main
+    before="$work/commit.drvs"
+    evaluate "$(commitFlake "$dir" base)" > "$before"
+    evaluate "$(commitFlake "$dir" "$label")" > "$work/edit.drvs"
+  else
+    while [ $# -gt 0 ]; do
+      apply "$dir" "$1" "$2"
+      shift 2
+    done
+    evaluate "$(flakeOf "$dir" "$label")" > "$work/edit.drvs"
+  fi
   local names
-  names="$(changed "$work/base.drvs" "$work/edit.drvs")"
+  names="$(changed "$before" "$work/edit.drvs")"
   printf '%s\t%s\n' "$label" "$names" >> "$results"
   printf '%-34s %3d  %s\n' "$label" "$(wc -w <<< "$names")" "$names"
 }
@@ -233,15 +277,43 @@ if [ -n "$history" ]; then
     'BEGIN { printf "mean: %.1f of %d checks changed per commit, over %d commits\n", s / c, t, c }'
 else
   while IFS=$'\t' read -r label op path; do
-    run "$label" "$op" "$path"
+    if selected "$label"; then
+      run "$label" "$op" "$path"
+    fi
   done < <(edits)
+  for label in "${only[@]}"; do
+    cut -f1 "$results" | grep -qxF -- "$label" || {
+      echo "drv-churn: no fixed edit is named $label" >&2
+      exit 2
+    }
+  done
 fi
 
-if [ -n "$write" ]; then
+if [ -n "$write" ] && [ ${#only[@]} -eq 0 ]; then
   cp "$results" "$write"
+elif [ -n "$write" ]; then
+  # Replace the measured rows only. A row the table lacks is a new edit,
+  # and the whole table is written again to add it.
+  while IFS= read -r label; do
+    cut -f1 "$write" | grep -qxF -- "$label" || {
+      echo "drv-churn: $write has no row $label; write the whole table" >&2
+      exit 2
+    }
+  done < <(cut -f1 "$results")
+  awk -F'\t' 'NR == FNR { row[$1] = $0; next } { print ($1 in row) ? row[$1] : $0 }' \
+    "$results" "$write" > "$work/written"
+  cp "$work/written" "$write"
 fi
 if [ -n "$expect" ]; then
-  diff -u "$expect" "$results" >&2 || {
+  # The table's rows for the edits measured: the whole table, unless
+  # --edit chose some.
+  if [ ${#only[@]} -eq 0 ]; then
+    cp "$expect" "$work/expected"
+  else
+    awk -F'\t' 'NR == FNR { measured[$1] = 1; next } $1 in measured' \
+      "$results" "$expect" > "$work/expected"
+  fi
+  diff -u "$work/expected" "$results" >&2 || {
     echo "drv-churn: the edits changed other checks than $expect records" >&2
     exit 1
   }

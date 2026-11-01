@@ -36,7 +36,7 @@
   pkgs,
   lib,
   self,
-  packages,
+  machineValley,
   ...
 }:
 let
@@ -187,7 +187,7 @@ in
       virtualisation.memorySize = 2048;
       environment.systemPackages = [
         pkgs.git
-        packages.valley
+        machineValley
       ];
       services.valley = {
         enable = true;

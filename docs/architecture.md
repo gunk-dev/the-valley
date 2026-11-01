@@ -1782,6 +1782,13 @@ with stand-in scripts for the integrator, the identity compiler, and `valleyhook
 (`nix/checks/hosts.nix`), so editing one of those programs leaves the four checks unchanged.
 `nix/tools/drv-churn.sh` measures which checks a representative edit changes.
 
+The installed CLI's version names the commit it was built from (`nix/packages.nix`). A NixOS test
+machine installs the same package built as if nix knew no commit (`nix/checks.nix`). A new commit
+with the same tree therefore gives no machine check a new derivation (`implemented`). Only
+`valley-cli`, `valley-self-update` and `valley-darwin-eval` read the commit. attest exports a tree
+with no commit, so no check it runs reads one. The `commit only` edit of `nix/tools/drv-churn.sh`
+measures this.
+
 A signer can be restricted to projects. This is how a check worker's key can sit in the
 known-signers file that every controller on a host shares, while its evidence counts only in the
 projects it builds for. The controllers are given a signer projects file (`--signer-projects`,

@@ -37,6 +37,7 @@
   lib,
   self,
   packages,
+  machineValley,
   ...
 }:
 let
@@ -131,7 +132,7 @@ in
         virtualisation.memorySize = 3072;
         environment.systemPackages = [
           pkgs.git
-          packages.valley
+          machineValley
         ];
         users.users.alice.isNormalUser = true;
         services.valley = {

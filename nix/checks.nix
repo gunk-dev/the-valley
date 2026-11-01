@@ -139,6 +139,19 @@ let
     ../integrator/e2e/nix
     ../integrator/e2e/nix-store
   ];
+  # The CLI a NixOS test machine installs. It is the real installed
+  # package, built as if nix knew no commit, so its version is always
+  # 0.1.0-unknown. packages.valley's version names the commit the flake is
+  # built from. A machine that installed it would get a new derivation, and
+  # boot again, for every new commit, even one with the same tree. attest
+  # exports a tree with no commit, so it gives both packages the same
+  # derivation. valley-cli and valley-self-update test the version that
+  # names the commit.
+  machineValley =
+    (import ./packages.nix {
+      inherit pkgs lib;
+      rev = null;
+    }).valley;
   args = {
     inherit
       pkgs
@@ -150,6 +163,7 @@ let
       stubbedHosts
       partOf
       nixStandIns
+      machineValley
       ;
   };
 in

@@ -14,6 +14,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -259,14 +260,17 @@ var buildSlots = runtime.NumCPU()
 // A check is timed from the start of the shared evaluation. Its duration
 // is its evaluation, its probe, and its derivation's build. One that does
 // not evaluate ends at its evaluation error.
-func runPure(tree, system string, specs []checkSpec, probe bool, report func(ranCheck)) []ranCheck {
+func runPure(tree, system string, specs []checkSpec, probe bool, report func(ranCheck), obs *observer) []ranCheck {
 	began := time.Now()
+	obs.emit("eval.start", "", map[string]any{"checks": specNames(specs)})
 	evals := evalClosures(tree, system, specs)
+	obs.emit("eval.end", "", map[string]any{"eval_ms": time.Since(began).Milliseconds()})
 	runs := make([]ranCheck, len(specs))
 	for i, spec := range specs {
 		e := evals[i]
 		runs[i] = ranCheck{out: checkOutcome{spec: spec}, began: began, took: e.took, eval: e.took, err: e.err}
 		if e.err != nil {
+			obs.emit("check.result", spec.name, map[string]any{"result": "error", "error": clipError(e.err.Error()), "eval_ms": e.took.Milliseconds()})
 			continue
 		}
 		runs[i].out.derivation, runs[i].out.inputs = e.derivation, e.inputs
@@ -275,16 +279,30 @@ func runPure(tree, system string, specs []checkSpec, probe bool, report func(ran
 			runs[i].out.satisfied = outputsCached(e.drv)
 			runs[i].took += time.Since(probed)
 		}
+		obs.name(e.drv, spec.name)
+		obs.emit("check.queued", spec.name, map[string]any{"eval_ms": e.took.Milliseconds(), "probe_ms": (runs[i].took - e.took).Milliseconds()})
 	}
 
 	drvs := make([]string, len(evals))
 	for i, e := range evals {
 		drvs[i] = e.drv
 	}
-	buildChecks(runs, drvs, buildSlots, func(drv string) (string, string, error) {
+	build := func(drv string) (string, string, error) {
 		return nix(tree, "build", "--no-link", "--print-out-paths", drv+"^*")
-	}, report)
+	}
+	if obs != nil {
+		build = func(drv string) (string, string, error) { return obs.nixBuild(tree, drv) }
+	}
+	buildChecks(runs, drvs, buildSlots, build, report, obs)
 	return runs
+}
+
+func specNames(specs []checkSpec) []string {
+	names := make([]string, len(specs))
+	for i, s := range specs {
+		names[i] = s.name
+	}
+	return names
 }
 
 // buildChecks builds the derivation of every run that has no error yet
@@ -293,12 +311,21 @@ func runPure(tree, system string, specs []checkSpec, probe bool, report func(ran
 // printed on standard output and standard error and how it ended. Builds
 // start in the order of runs, at most slots of them at once, and runs that
 // share a derivation share its one build. Each run is handed to report in
-// order, as soon as it and every run before it have ended.
-func buildChecks(runs []ranCheck, drvs []string, slots int, build func(drv string) (string, string, error), report func(ranCheck)) {
+// order, as soon as it and every run before it have ended. With obs, each
+// build's start and end and each run's result are recorded as they
+// happen, whatever the order.
+func buildChecks(runs []ranCheck, drvs []string, slots int, build func(drv string) (string, string, error), report func(ranCheck), obs *observer) {
 	builds := map[string]*drvBuild{}
+	users := map[string][]int{} // the runs each derivation decides
+	pending := make([]bool, len(runs))
 	var order []*drvBuild
 	for i := range runs {
-		if runs[i].err != nil || builds[drvs[i]] != nil {
+		if runs[i].err != nil {
+			continue
+		}
+		pending[i] = true
+		users[drvs[i]] = append(users[drvs[i]], i)
+		if builds[drvs[i]] != nil {
 			continue
 		}
 		b := &drvBuild{drv: drvs[i], done: make(chan struct{})}
@@ -308,27 +335,56 @@ func buildChecks(runs []ranCheck, drvs []string, slots int, build func(drv strin
 	free := make(chan struct{}, max(slots, 1))
 	go func() {
 		for _, b := range order {
+			queued := time.Now()
 			free <- struct{}{}
+			wait := time.Since(queued)
 			go func() {
 				defer close(b.done)
 				defer func() { <-free }()
+				for _, i := range users[b.drv] {
+					obs.emit("check.build-start", runs[i].out.spec.name, map[string]any{"slot_wait_ms": wait.Milliseconds()})
+				}
 				began := time.Now()
 				b.paths, b.log, b.err = build(b.drv)
 				b.took = time.Since(began)
+				ended := time.Now()
+				// Each run the build decides is decided as soon as it
+				// ends, and its result recorded then; it is reported in
+				// order below.
+				for _, i := range users[b.drv] {
+					runs[i].took += b.took
+					runs[i].err = pureOutcome(b, &runs[i].out)
+					if obs != nil {
+						d := buildData(b, wait, began, ended, obs.logOf(b.drv))
+						obs.emit("check.build-end", runs[i].out.spec.name, d)
+						d["result"] = resultOf(runs[i])
+						d["eval_ms"] = runs[i].eval.Milliseconds()
+						d["check_ms"] = runs[i].took.Milliseconds()
+						obs.emit("check.result", runs[i].out.spec.name, d)
+					}
+				}
 			}()
 		}
 	}()
 	for i := range runs {
-		if runs[i].err == nil {
-			b := builds[drvs[i]]
-			<-b.done
-			runs[i].took += b.took
-			runs[i].err = pureOutcome(b, &runs[i].out)
+		if pending[i] {
+			<-builds[drvs[i]].done
 		}
 		if report != nil {
 			report(runs[i])
 		}
 	}
+}
+
+// resultOf is a run's result as a timing and a record name it.
+func resultOf(r ranCheck) string {
+	switch {
+	case r.err != nil:
+		return "error"
+	case !r.out.passed:
+		return "failed"
+	}
+	return "passed"
 }
 
 // drvBuild is the nix build of one derivation: what it printed on standard
@@ -391,12 +447,18 @@ func drvInputs(drv string) ([]string, error) {
 // runEffectful runs a command over the exported tree and notarizes what it
 // observed. No digests: there is nothing to re-derive, which is exactly
 // what the effectful predicate type says.
-func runEffectful(tree string, spec checkSpec) checkOutcome {
+func runEffectful(tree string, spec checkSpec, logTo io.Writer) checkOutcome {
 	out := checkOutcome{spec: spec, satisfied: satisfiedRan}
 	cmd := exec.Command("sh", "-c", spec.command)
 	cmd.Dir = tree
-	log, err := cmd.CombinedOutput()
-	out.log = strings.TrimSpace(string(log))
+	var log bytes.Buffer
+	if logTo == nil {
+		logTo = io.Discard
+	}
+	cmd.Stdout = io.MultiWriter(&log, logTo)
+	cmd.Stderr = cmd.Stdout
+	err := cmd.Run()
+	out.log = strings.TrimSpace(log.String())
 	out.observedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	out.passed = err == nil
 	return out

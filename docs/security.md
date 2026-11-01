@@ -274,6 +274,43 @@ gives the worker no access to the repositories on disk, and the worker stays out
 group. A forged or repeated mark costs one pass that reads every project and builds nothing new. The
 unauthenticated bus starts no pass: nothing consumes it.
 
+## Who can read telemetry
+
+Telemetry is read and reported over the git user's SSH route, by principals the host names
+(`implemented`; who is named is a `deployment choice`, `services.valley.telemetry`).
+
+- **The principal comes from the key.** The git user's shell derives it from the key sshd
+  authenticated, as it does for a push, and drops any principal the session's environment names. An
+  untagged key has no principal and gets nothing.
+- **Two grants, each for itself.** `observe` reads every source. It is host-wide, because the shared
+  units' logs span every project, and a project's read consent does not imply it. `report` sends
+  records about the sender's own runs and reads nothing. The grants are in a file the host module
+  writes from `services.valley.telemetry`; the identity registry grants neither.
+- **A closed command.** The shell parses the telemetry command whole and refuses anything else. A
+  refused command reaches nothing: neither `git-shell` nor the collector. There is no path, unit
+  name, pattern, environment or service control in the interface. Reading works while pushes are
+  held, and a forced-command key still runs only its forced command.
+- **One local peer.** The collector's socket is the git user's alone (mode 0600), and the collector
+  checks its peer is that user. Anything that runs as the git user could connect and name any
+  principal. The shared git account is one trust boundary, and the socket is not a second one inside
+  it.
+- **An unprivileged collector.** The collector runs as its own user in a sandbox that can write only
+  its state directory. It is in the `systemd-journal` group, so its account can read the whole
+  system journal; its code asks only for the units the manifest names. It reads unit properties from
+  a fixed list, which leaves out the environment. It holds no key and no grant on the repositories,
+  and cannot enter the worker's private directory. The git user is in none of its groups, and cannot
+  read the diagnostics on disk.
+- **Reports are claims.** A report is stored under the principal the shell derived and the time the
+  host received it. The sender's own times are kept as the sender's, and a field the format does not
+  have, a principal, a receipt time or a host producer's record type is refused. A report is bounded
+  in size and count, and each reporter's stream in bytes, so no reporter can fill the host's disk.
+- **Output is untrusted.** Build and service output is whatever a check author or a program printed.
+  It is shown only with `--logs`, marked untrusted, with every control character escaped. Observing
+  shared logs is a privilege: nothing promises that a project's build output holds no secret.
+- **Telemetry decides nothing.** No record is evidence, and nothing reads one to approve, land or
+  build anything. Losing telemetry loses observations and nothing else: approval, pushes, checks,
+  the worker and the integrator go on without it.
+
 ## Trust roots
 
 The operator's trust roots are hardware keys that the deployment supplies (**deployment choice**):

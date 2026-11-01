@@ -4546,6 +4546,103 @@ Checked by:
   Because neither `module-eval` nor `web-image` runs the edge units or containers, runtime
   enforcement of the memory caps and sandbox on the edge is unchecked.
 
+## Telemetry
+
+Telemetry is how a session sees what the host's components are doing (`implemented`; a host serves
+it with `services.valley.telemetry`, a `deployment choice`). It has three parts: producers that
+record their own work, a collector that answers questions about it, and the git user's shell, which
+is the only way to the collector.
+
+### Producers and streams
+
+A producer is code that records what it does as it does it. Its records go into a stream: a
+directory of numbered JSON records in segment files ([`telemetry/store.go`](../telemetry/store.go)).
+A stream keeps its newest segments and drops its oldest, so its size is bounded and what it lost
+shows as the oldest number it still holds. Several processes can write one stream; each append holds
+the stream's lock. A record is never read out of a program's output. A line a check prints is output
+and nothing more, whatever it looks like.
+
+Recording never holds up the work. A producer gives each record half a second to be stored and drops
+it after that. While one store is stuck, later records are dropped at once. The next record stored
+says how many were dropped before it.
+
+The producers:
+
+- **The check worker** ([`status/workertelemetry.go`](../status/workertelemetry.go)) records each
+  pass, the change, version, head and tree it reads, each batch it builds and each publication, and
+  each backoff with its reason and next retry. It keeps `state.json` beside its stream: the pass
+  running now, its last 20 attempts, and every failure waiting out its backoff, with what it was
+  about. `failures.json` in its private directory stays what decides a backoff. A pass that is
+  killed cannot record its end, so the next pass finds the open pass in `state.json` and records it
+  as interrupted, marked as inferred.
+- **`attest run`** ([`attest/progress.go`](../attest/progress.go)) records the shared evaluation,
+  each check queued, its build starting after its slot wait, its build ending and its result, when
+  each happens. Checks are still reported to the terminal and decided in the order given; only the
+  records are not held back. A nix build runs with nix's structured log, which frames each line the
+  builder prints, so the build output goes to the check's log as it is written, at most 256 KiB of
+  it. nix's own messages remain the log a failed check shows.
+- **The integrator** ([`integrator/timing.go`](../integrator/timing.go)) records each decision: the
+  request, the outcome, and each stage's time from when it began judging the request. When it first
+  saw the request is not recorded.
+- **An approval attempt** on a workstation, from `valley approve` or `valley review`, records its
+  steps and runs `attest run` with the same spool. The spool is the one of the destination the
+  checkout named when the attempt began, and a background flusher sends each spool to its own
+  destination as reports (see [The telemetry spool](reference.md#the-telemetry-spool)).
+
+The host gives the worker and the integrator each an export directory under
+`/var/lib/valley-telemetry`, owned by the producer and setgid to the collector's group. The producer
+runs with a umask that keeps group read, so the collector can read what it writes there and nothing
+else of the producer's. The worker's key and failure record stay in its own 0700 directory.
+
+### The collector
+
+The collector is `valley-telemetry serve`
+([`telemetry/valley-telemetry/main.go`](../telemetry/valley-telemetry/main.go)). systemd starts one
+per connection to its socket, `/run/valley-telemetry.sock`, as the `valley-telemetry` user. It reads
+one request, answers it, and exits, so it keeps nothing in memory between requests and a restart
+loses nothing.
+
+It answers from a manifest the host module generates from the declaration
+([`nix/telemetry.nix`](../nix/telemetry.nix)). The manifest lists every source the host has, whether
+or not it is enabled: its units, its stream and exported state, the store paths it was configured
+with, and what it does and does not record. For each unit the collector reads a fixed list of
+properties with `systemctl show`, and the unit's journal with `journalctl`. An entry systemd itself
+wrote is lifecycle, shown by default; anything else is the unit's own output, shown only with
+`--logs`. Reports from each reporter go into a stream of the collector's own, at most 4 MiB per
+reporter.
+
+A source's state says what can be said about it. A run recorded as started, with no end and no unit
+of the source running, reads as `stale`, because a killed process records no end of its own. A
+source the host does not run reads as `disabled`, and one it cannot observe as `unavailable`, never
+as idle.
+
+### Bounds and retention
+
+| What                   | Bound                                                                |
+| :--------------------- | :------------------------------------------------------------------- |
+| A record               | 8 KiB; a `check.output` record carries at most 1 KiB of output       |
+| The worker's stream    | 8 segments of 1 MiB; logs of the newest 16 runs, 256 KiB per check   |
+| A reporter's stream    | 8 segments of 512 KiB                                                |
+| A workstation's spools | 4 destinations, each 8 segments of 1 MiB; logs of the newest 16 runs |
+| A read                 | 1000 records, 4 MiB, logs' last 64 KiB each                          |
+| A follow               | 300 seconds; the unit is killed after 360                            |
+| A report               | 1000 records, 1 MiB, 30 seconds                                      |
+| Connections            | 16 at once; per principal, 4 reads and 1 report                      |
+| The collector          | 256 MiB of memory, 32 tasks, half a CPU                              |
+| The journal            | the host's own journal settings; each source reports `journal_since` |
+
+The bounds are the collector's, whatever a request asks for. Retained records outlive the collector
+and the producers, so a run that ended, failed or was interrupted can be read after a restart.
+
+### What is recorded, and what is not
+
+The catalog says it per source. The worker, `attest run`, the integrator's decisions and
+`valley approve` record their own work. The restacker, the registry compiler, the signers publisher,
+the publish queues, the bus, the web publisher, backups, `valley-init` and the build slice record
+nothing of their own: their units' state, lifecycle and output are what is shown. The running
+version of such a unit is not observed; `configured` names what the host was built with. A component
+on another machine is shown only through what it reports.
+
 ## The life of a change
 
 1. An author pushes a topic branch. The hook accepts it, and the bus gets `ref-updated`. The mirrors
@@ -4613,3 +4710,5 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | Policy and registry snapshot in the outcome  | The outcome record holds the head, the tip and an evidence hash.                                                                                                                                                                                                                   |
 | Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
 | Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |
+| Telemetry from remote components             | The collector takes reports from a remote component's reporter principal. No component of the-valley sends them; a web receiver is observed only when it runs on the host.                                                                                                         |
+| When the integrator first sees a request     | A decision record starts when the integrator begins judging the request. The wait before it is not recorded.                                                                                                                                                                       |

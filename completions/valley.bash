@@ -24,7 +24,7 @@ _valley() {
   local cur="${COMP_WORDS[COMP_CWORD]}"
   COMPREPLY=()
   if [ "$COMP_CWORD" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay self-update help' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay self-update telemetry help' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${COMP_WORDS[COMP_CWORD - 1]}" = --cost ]; then
     mapfile -t COMPREPLY < <(compgen -W 'quick slow' -- "$cur")
   elif [ "${COMP_WORDS[1]}" = checks ] && [ "${cur:0:1}" = - ]; then
@@ -66,7 +66,7 @@ _valley() {
   elif [ "${COMP_WORDS[1]}" = self-update ] && [ "${cur:0:1}" = - ]; then
     mapfile -t COMPREPLY < <(compgen -W '--verbose --retry --rollback --pin --unpin --repo --branch' -- "$cur")
   elif [ "$COMP_CWORD" -eq 2 ] && [ "${COMP_WORDS[1]}" = help ]; then
-    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay self-update' -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W 'pending changes review approve rebase status ready unready withdraw knot plan checks tail replay self-update telemetry' -- "$cur")
   fi
 }
 

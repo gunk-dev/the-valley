@@ -281,6 +281,45 @@ Use the deployment's bus address and credentials if they differ. This writes cur
 the bus; it is not a history viewer. See
 [events and mirrors](./architecture.md#after-a-push-events-and-mirrors).
 
+### Read the host's telemetry
+
+Telemetry lets a session see what the host's components are doing without a shell on the host: the
+check worker and the builds it runs, the integrators, the registry compiler, the signers publisher,
+the publish queues, the bus, the web publisher, backups, `valley-init` and the build slice. It is
+diagnostics. It never approves anything and never stands in for evidence.
+
+An observer reads it with the same SSH key it pushes with:
+
+```sh
+valley telemetry sources                        # what the host runs, and each source's state
+valley telemetry snapshot                       # the worker's pass, its failures and open runs
+valley telemetry read --source=worker           # the worker's records and its systemd lifecycle
+valley telemetry read --source=worker --logs    # with the build output, marked untrusted
+valley telemetry follow --seconds=300 --logs    # what happens next, for five minutes
+valley telemetry --remote git@valley-host:app.git sources   # outside a checkout
+```
+
+`follow` and `read` end with a cursor. Pass it to `--since` to carry on where the last one stopped.
+A gap in what the host still holds, an error, or an answer that broke off is said, so silence always
+means nothing happened. Each answer is bounded: a read returns at most 1000 records and 4 MiB, and a
+follow lasts at most 300 seconds.
+
+`--logs` shows what checks and services printed. That text comes from whoever wrote the check, so it
+is marked untrusted and its control characters are escaped. Leave `--logs` off unless the output is
+what you need.
+
+To publish a workstation's approvals and check runs to the host, so a session can see them while
+they run:
+
+```sh
+git config --global valley.telemetry true
+```
+
+Each approval attempt, from `valley approve` or from `valley review`, then records its steps and its
+checks' progress in a spool on the workstation, and they are sent in the background to the valley
+the checkout's remote named when the attempt began, and to no other. A host that is down or
+unreachable never slows or fails an approval; `valley telemetry flush` sends what is left later.
+
 ## Planning work with knots
 
 The plan graph records work and the relationships between its knots. Read it from a clone of the
@@ -710,6 +749,39 @@ sudo touch /srv/git/.valley-hold
 Remove it after maintenance with `sudo rm /srv/git/.valley-hold`. Use your configured `dataDir` if
 it differs. The hold stops SSH pushes; stop the relevant integrator services separately if
 maintenance also requires local integration writes to stop.
+
+### Serve telemetry from the host
+
+A host serves telemetry once the administrator enables the collector and names who may read and who
+may report (`deployment choice`):
+
+```nix
+services.valley.telemetry = {
+  enable = true;
+  observers = [ "operator" ];   # read every source on the host
+  reporters = [ "alice" ];      # send records about their own approvals and checks
+};
+```
+
+A principal is named by its key's tag, as for a push. `observe` is host-wide: the shared units' logs
+span every project, so give it only to principals that may see every project's activity. `report`
+grants no reading. A workstation that should read its own reports back needs `observe` too.
+
+A component on another machine, such as a web receiver, can report with a principal of its own:
+
+```nix
+services.valley.telemetry.reporters = [ "receiver" ];
+services.valley.telemetry.remoteSources = [
+  { name = "remote-receiver"; description = "the web receiver at example.org"; principal = "receiver"; }
+];
+```
+
+The source reads as `unavailable` until that principal reports and as `stale` after an hour of
+silence. No component of the-valley reports this way by itself yet; see
+[Not deployed or not wired yet](architecture.md#not-deployed-or-not-wired-yet).
+
+The collector reads the journal, so how far back unit lifecycle and output reach is the host's
+journal retention, which each `source` line reports as `journal_since`.
 
 ### Find refs named like other refs
 

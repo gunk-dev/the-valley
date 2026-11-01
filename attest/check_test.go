@@ -69,7 +69,7 @@ func TestEachBuildDecidesOnlyItsOwnChecks(t *testing.T) {
 	finished := make(chan struct{})
 	go func() {
 		defer close(finished)
-		buildChecks(runs, drvs, 2, build, func(r ranCheck) { note("report "+r.out.spec.name, 0) })
+		buildChecks(runs, drvs, 2, build, func(r ranCheck) { note("report "+r.out.spec.name, 0) }, nil)
 	}()
 	await := func(c chan string, what string) string {
 		t.Helper()

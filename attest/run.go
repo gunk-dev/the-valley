@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"the-valley/telemetry"
 )
 
 // cmdRun is the whole protocol in order: digest the subject tree, run the
@@ -18,8 +20,9 @@ import (
 // the run before the next — a failed check publishes nothing, and neither
 // does a statement the schema rejects. How long each check took is
 // printed, and logged with --timings (timing.go), whatever the check's
-// result.
-func cmdRun(args []string) error {
+// result. With --telemetry, the run's progress is recorded as it happens
+// (progress.go).
+func cmdRun(args []string) (err error) {
 	fs := newFlagSet("run")
 	repo := fs.String("repo", "", "repository")
 	rev := fs.String("rev", "HEAD", "revision")
@@ -34,6 +37,9 @@ func cmdRun(args []string) error {
 	timings := fs.Bool("timings", false, "append each check's timing to the timing log")
 	changeID := fs.String("change", "", "the change ID a timing names")
 	changeVersion := fs.Int("change-version", 0, "the change version a timing names")
+	telemetryDir := fs.String("telemetry", "", "a telemetry stream to record the run's progress in")
+	telemetryRun := fs.String("telemetry-run", "", "the run ID the progress records name")
+	project := fs.String("project", "", "the project the progress records name")
 	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
@@ -77,6 +83,19 @@ func cmdRun(args []string) error {
 		}
 	}
 	fmt.Printf("signer  %s\n", host.verifierKey())
+
+	tel := telemetry.NewEmitter(*telemetryDir, telemetry.Self("attest", ""), *telemetryRun)
+	tel.Correlate(telemetry.Record{Project: *project, Change: *changeID, Version: *changeVersion,
+		Head: subj.Digest["git-sha1"] + subj.Digest["git-sha256"], Tree: subj.Digest[subj.Primary]})
+	tel.Emit("run.start", telemetry.Record{}, map[string]any{"checks": append(append([]string{}, checks...), commands...), "slots": buildSlots, "system": *system})
+	defer func() {
+		result := "passed"
+		if err != nil {
+			result = "failed"
+		}
+		tel.Emit("run.end", telemetry.Record{}, map[string]any{"result": result})
+	}()
+	obs := newObserver(tel)
 
 	tree, err := os.MkdirTemp("", "valley-attest-tree")
 	if err != nil {
@@ -159,11 +178,16 @@ func cmdRun(args []string) error {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	runPure(tree, *system, pure, *timings, report)
+	runPure(tree, *system, pure, *timings, report, obs)
 	for _, spec := range effectful {
 		began := time.Now()
-		out := runEffectful(tree, spec)
-		report(ranCheck{out: out, began: began, took: time.Since(began)})
+		obs.emit("check.start", spec.name, nil)
+		log := tel.Log(spec.name)
+		out := runEffectful(tree, spec, log)
+		bytes, truncated := log.Close()
+		r := ranCheck{out: out, began: began, took: time.Since(began)}
+		obs.emit("check.result", spec.name, map[string]any{"result": resultOf(r), "check_ms": r.took.Milliseconds(), "log_bytes": bytes, "log_truncated": truncated})
+		report(r)
 	}
 	if failed > 0 {
 		for _, out := range outcomes {
@@ -223,6 +247,7 @@ func cmdRun(args []string) error {
 		return err
 	}
 	fmt.Printf("stored  %s -> %s\n", ref, top)
+	tel.Emit("evidence.stored", telemetry.Record{}, map[string]any{"ref": ref, "object": top})
 
 	if *push == "" {
 		return nil

@@ -82,6 +82,7 @@ Bus and client maintenance:
   tail         watch NATS bus events scroll by
   replay       publish ref-updated events for the current refs of a repo
   self-update  build, test, and install the tip of a branch of the-valley
+  telemetry    read a valley host's diagnostics over ssh (observe grant)
 
 A change is named by its 32-letter change id, its handle (shortest unique
 prefix, at least 4 letters, or <repo>:<handle>), or its branch name.
@@ -953,6 +954,45 @@ EOF
   help_runtime
 }
 
+help_telemetry() {
+  cat <<'EOF'
+usage: valley telemetry [--remote <remote>] [--json] <operation> [flags]
+
+  sources                 every source the host declares, and its state:
+                          disabled, unavailable, failed, stale, active or
+                          idle, with its units, its records and how far its
+                          journal reaches
+  snapshot                sources, with each producer's exported state and
+                          its open and latest runs
+  read [--source <name>] [--since <cursor>] [--limit <n>] [--logs]
+                          records after the cursor (default: the newest
+                          --limit, 200, at most 1000); a source's systemd
+                          lifecycle from the journal; with --logs, its own
+                          output and the tail of its build logs, marked
+                          untrusted
+  follow [--source <name>] [--since <cursor>] [--seconds <n>] [--logs]
+                          records as they are stored, and with --logs build
+                          output as it is written, for --seconds (default
+                          60, at most 300); ends with a cursor to resume from
+  flush                   send this workstation's spooled records now
+
+Reading needs a key whose principal holds the host's observe grant. The
+remote is the checkout's valley.telemetry.remote, else origin, or the one
+--remote names (a remote, an ssh URL, or user@host:path); its URL is read
+and never run. --json prints the valley-telemetry/v1 answer lines as they
+come. A gap, a cut-short answer or an error is said; an answer that does
+not end exits 1.
+
+With `git config valley.telemetry true`, every approval attempt, from
+approve or from review, records its steps and its checks' progress in an
+owner-only spool for the destination the checkout's telemetry remote names
+when the attempt starts, under $XDG_STATE_HOME/valley/telemetry/spools.
+A background flusher sends each spool to its own destination, with the
+report grant; flush does the same now, and --remote limits it to that
+remote's spool. Telemetry never fails or holds up an approval.
+EOF
+}
+
 help_self_update() {
   if command -v valley-go > /dev/null 2>&1; then
     valley-go self-update --help
@@ -1452,6 +1492,9 @@ page_buffer() {
 # and no ctrl-C in the pager — leaves any of them behind. The rebase's
 # worktree is valley-go's, which removes it itself.
 cleanup_scratch() {
+  # An approval attempt still open when the session exits was cut short:
+  # by a signal, or by a step that ended the session.
+  if [ -n "$TEL_RUN" ]; then tel_end interrupted; fi
   cleanup_approve_wt
   cleanup_policy_tmp
   cleanup_instance_tmp
@@ -1638,7 +1681,71 @@ diagnose_request_push() {
 # the approve verb alike, which suspends `set -e` for the whole call — so
 # every step below is checked by hand, and the failures say what was
 # published before they happened.
+# Workstation telemetry (valley help telemetry). With valley.telemetry set
+# to true in git's configuration, each approval attempt is a run of its
+# own: approve records its steps, and attest the progress of the checks it
+# runs, in the spool of the destination the checkout's telemetry remote
+# names when the attempt starts. One flusher per session, in the
+# background, sends every spool to its own destination while the session
+# runs and once after it ends. A record is never evidence, and nothing
+# reads one to decide anything. Every step is best effort: a record that
+# cannot be stored or sent costs that record and nothing else, and
+# approve's outcome never depends on it.
+TEL_RUN="" TEL_SPOOL="" TEL_PROJECT="" TEL_BEGAN="" TEL_EXE="" TEL_FLUSHER=""
+TEL_CTX=()
+
+# tel_begin: start an approval attempt's run, when telemetry is on.
+tel_begin() {
+  TEL_RUN="" TEL_SPOOL="" TEL_PROJECT="" TEL_CTX=()
+  [ "$(git config --get --bool valley.telemetry 2> /dev/null || true)" = true ] || return 0
+  command -v valley-go > /dev/null 2>&1 || return 0
+  local started rest
+  if ! started="$(valley-go telemetry start 2>&1)"; then
+    printf 'valley: telemetry: %s\n' "${started#valley: }" >&2
+    return 0
+  fi
+  TEL_RUN="${started%%$'\t'*}" rest="${started#*$'\t'}"
+  TEL_SPOOL="${rest%%$'\t'*}" TEL_PROJECT="${rest#*$'\t'}"
+  TEL_BEGAN="${EPOCHREALTIME/[.,]/}"
+  [ -n "$TEL_EXE" ] || TEL_EXE="$(readlink -f "${BASH_SOURCE[0]}" 2> /dev/null || true)"
+  if [ -z "$TEL_FLUSHER" ]; then
+    TEL_FLUSHER=started
+    (valley-go telemetry flush --watch "$$" > /dev/null 2>&1 &)
+  fi
+}
+
+# tel <type> [emit flags…]: record one step of this attempt. elapsed_ms
+# is this machine's wall clock since the attempt began.
+tel() {
+  [ -n "$TEL_RUN" ] || return 0
+  local type="$1"
+  shift
+  valley-go telemetry emit --spool "$TEL_SPOOL" --type "$type" --run "$TEL_RUN" \
+    --producer-version "${VALLEY_STAMP:-unstamped}" --producer-exe "$TEL_EXE" \
+    --number "elapsed_ms=$(((${EPOCHREALTIME/[.,]/} - TEL_BEGAN) / 1000))" \
+    --project "$TEL_PROJECT" ${TEL_CTX[@]+"${TEL_CTX[@]}"} "$@" > /dev/null 2>&1 || true
+}
+
+# tel_end <result>: end the attempt's run, as filed, refused, or, from
+# the exit trap, interrupted.
+tel_end() {
+  tel approve.end --data "result=$1"
+  TEL_RUN="" TEL_SPOOL="" TEL_PROJECT="" TEL_CTX=()
+}
+
+# approve <branch>: one approval attempt, and its telemetry. Every way of
+# approving runs it: valley approve, and each [a]pprove answer review takes,
+# a stack's layers included, so each attempt is its own run. An attempt the
+# session exits during is ended by cleanup_scratch.
 approve() {
+  tel_begin
+  local status=0
+  approve_attempt "$@" || status=$?
+  if [ "$status" -eq 0 ]; then tel_end filed; else tel_end refused; fi
+  return "$status"
+}
+
+approve_attempt() {
   local branch="$1" target=main tip change head base digest root ref check spec what
   local key
   local -a signer=() required=() run=() timing=() evidence=()
@@ -1698,6 +1805,8 @@ approve() {
   }
   ref="refs/the-valley/integration-requests/$target/$change"
   local named="$branch" under of
+  TEL_CTX=(--change "$CHANGE_ID" --version "${APPROVE_VERSION:-0}" --head "$head")
+  tel approve.start --data "what=$what" --data "request=$ref"
   [ -z "$CHANGE_ID" ] || named="$CHANGE_HANDLE"
 
   # A head that does not fast-forward from main, and would bring a version
@@ -1739,6 +1848,8 @@ approve() {
     refuse "could not sort the required checks; nothing published"
     return 1
   }
+  tel approve.policy --list "required=$(join_by , ${required[@]+"${required[@]}"})" \
+    --data "instance=$POLICY_INSTANCE_LABEL" --data "project=$POLICY_PROJECT_LABEL"
 
   # A change the policy asks nothing of is still a change, and approving
   # is how one reaches main. The integrator already lands a request that
@@ -1786,6 +1897,14 @@ approve() {
     for check in "${required[@]}"; do
       if [ -n "${covered[$check]:-}" ]; then reused+=("$check"); else missing+=("$check"); fi
     done
+    local -a signed_by=()
+    for check in ${reused[@]+"${reused[@]}"}; do
+      signed_by+=("$check=${covered[$check]#* }")
+    done
+    tel approve.coverage --data "tree=$digest" \
+      --list "reused=$(join_by , ${reused[@]+"${reused[@]}"})" \
+      --list "reused_by=$(join_by , ${signed_by[@]+"${signed_by[@]}"})" \
+      --list "missing=$(join_by , ${missing[@]+"${missing[@]}"})"
     if [ "${#reused[@]}" -gt 0 ]; then
       printf '\nreusing the evidence origin holds for %s at %s:\n' "$what" "$(git rev-parse --short "$head")"
       for check in "${reused[@]}"; do
@@ -1855,6 +1974,10 @@ approve() {
 
     printf '\nchecking %s at %s: %s\n' "$what" "$(git rev-parse --short "$head")" \
       "$(printf '%s\n' "${missing[@]}" | join_lines)"
+    if [ -n "$TEL_RUN" ]; then
+      timing+=(--telemetry "$TEL_SPOOL" --telemetry-run "$TEL_RUN-checks" --project "$TEL_PROJECT")
+      tel approve.checks --data "attest_run=$TEL_RUN-checks" --list "checks=$(join_by , "${missing[@]}")"
+    fi
     if ! attest run --repo "$APPROVE_WT" "${signer[@]}" "${timing[@]}" "${run[@]}"; then
       cleanup_approve_wt
       CHECKS_FAILED_AT="$head"
@@ -1970,6 +2093,7 @@ approve() {
   if [ "${#push[@]}" -gt 0 ]; then
     made_push=yes
     if ! git push --atomic --quiet ${lease[@]+"${lease[@]}"} origin "${push[@]}"; then
+      tel approve.request --data "ref=$ref" --data "result=refused"
       if [ "${#lease[@]}" -eq 0 ] \
         && attestation_stands_elsewhere "$digest" ${evidence[@]+"${evidence[@]}"}; then
         refuse "origin already holds an attestation for this tree from this signer, and that namespace admits creations only, so a second observation of the same tree has nowhere to go. That is bd-7b7d58f rather than anything approving again will clear. Nothing was published and main is untouched"
@@ -1979,6 +2103,7 @@ approve() {
       report_local_evidence ${evidence[@]+"${evidence[@]}"}
       return 1
     fi
+    tel approve.request --data "ref=$ref" --data "result=pushed"
   fi
 
   # The lines under the request line, which differ by what was found and
@@ -2937,6 +3062,13 @@ cmd_approve() {
   # In a condition, as the review prompt calls it: approve checks each of
   # its own steps, and has already said why when it refuses.
   approve "$branch" || exit 1
+}
+
+# join_by <separator> <word…>: the words joined by the separator.
+join_by() {
+  local IFS="$1"
+  shift
+  printf '%s' "$*"
 }
 
 # The two flags that say what a transfer statement is verified with are
@@ -3939,6 +4071,7 @@ cmd_help() {
     tail) out="$(help_tail)" ;;
     replay) out="$(help_replay)" ;;
     self-update) out="$(help_self_update)" ;;
+    telemetry) out="$(help_telemetry)" ;;
     *) die "unknown help topic: $1 (try 'valley help')" ;;
   esac
   printf '%s\n' "$out" 2> /dev/null || true
@@ -3950,7 +4083,7 @@ main() {
   # The verb set is mirrored in completions/ (valley.bash, _valley) —
   # update both when it changes.
   case "$verb" in
-    pending | changes | review | approve | rebase | status | ready | unready | withdraw | knot | plan | checks | tail | replay | self-update)
+    pending | changes | review | approve | rebase | status | ready | unready | withdraw | knot | plan | checks | tail | replay | self-update | telemetry)
       if [ $# -eq 1 ] && { [ "$1" = -h ] || [ "$1" = --help ]; }; then
         cmd_help "$verb"
         return
@@ -3967,6 +4100,7 @@ main() {
     tail) cmd_tail "$@" ;;
     replay) cmd_replay "$@" ;;
     self-update) cmd_self_update "$@" ;;
+    telemetry) cmd_go telemetry "$@" ;;
     --version) cmd_version ;;
     help | -h | --help) cmd_help "$@" ;;
     *)

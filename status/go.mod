@@ -15,6 +15,7 @@ require (
 	the-valley/note v0.0.0
 	the-valley/rebase v0.0.0
 	the-valley/selfupdate v0.0.0
+	the-valley/telemetry v0.0.0
 )
 
 // The change record is shared with the push hook (../valleyhook), so this
@@ -28,8 +29,9 @@ require (
 // Self-update (../selfupdate) installs the tip of a branch of the-valley.
 // The deriver (../derive) says which checks a change requires, from the
 // policy the composed-policy reader (../composed) reads, the reader the
-// integrator and the restacker share. All eight live in this repository and
-// are never fetched.
+// integrator and the restacker share. The check worker and the telemetry
+// verbs read and write telemetry streams (../telemetry) as the collector
+// does. All nine live in this repository and are never fetched.
 replace (
 	the-valley/change => ../change
 	the-valley/composed => ../composed
@@ -39,4 +41,5 @@ replace (
 	the-valley/note => ../note
 	the-valley/rebase => ../rebase
 	the-valley/selfupdate => ../selfupdate
+	the-valley/telemetry => ../telemetry
 )

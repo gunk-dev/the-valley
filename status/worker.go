@@ -70,6 +70,12 @@ package main
 // record that was not written) leaves the claim unacknowledged. A pass
 // that could not claim due reads and builds all the same, and then exits
 // claimFailedStatus instead of 0 or 1.
+//
+// Given --telemetry, or VALLEY_TELEMETRY_DIR in its environment, which is
+// how the host module names it, a pass says what it is doing as it does it, and keeps
+// its recent attempts and the failures waiting out their backoff with
+// what each was about (workertelemetry.go). It hands attest the same
+// stream for each batch's progress.
 
 import (
 	"context"
@@ -80,15 +86,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
 	"the-valley/change"
 	"the-valley/composed"
+	"the-valley/telemetry"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>]"
+const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
@@ -109,6 +117,7 @@ type worker struct {
 	keyhash   string   // the key hash an attestation ref of this signer ends in
 	lock      *os.File // the state directory's lock, held for the pass
 	wake      *wake    // the wake directory's claim, or nil without --wake
+	tel       *workerTelemetry
 	failures  *failureRecord
 	stdout    io.Writer
 	stderr    io.Writer
@@ -118,10 +127,10 @@ type worker struct {
 
 func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	var repos []string
-	var key, name, state, wakeDir string
+	var key, name, state, wakeDir, telemetryDir string
 	for i := 0; i < len(args); i++ {
 		opt, value, inline := strings.Cut(args[i], "=")
-		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" {
+		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" && opt != "--telemetry" {
 			return failure(workUsage)
 		}
 		if !inline {
@@ -145,10 +154,15 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 			state = value
 		case "--wake":
 			wakeDir = value
+		case "--telemetry":
+			telemetryDir = value
 		}
 	}
 	if len(repos) == 0 || key == "" {
 		return failure(workUsage)
+	}
+	if telemetryDir == "" {
+		telemetryDir = os.Getenv("VALLEY_TELEMETRY_DIR")
 	}
 	// From here on, a pass given --wake that ends without having claimed
 	// due exits claimFailedStatus, however it ends, so whatever started
@@ -214,6 +228,8 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	}
 
 	w := &worker{key: key, name: name, keyhash: fields[1], lock: lock, wake: claim, stdout: stdout, stderr: stderr}
+	w.tel = openWorkerTelemetry(telemetryDir)
+	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
 	for _, repo := range repos {
 		if err := w.project(g, repo); err != nil {
@@ -322,6 +338,7 @@ func (w *worker) project(g git, name string) error {
 func (w *worker) change(r listed, instance, project string, c jsonChange, met map[string]bool) (read bool, err error) {
 	v := c.Versions[c.Active-1]
 	head := v.Head
+	w.tel.change(r.name, c, v)
 	say := func(format string, args ...any) {
 		fmt.Fprintf(w.stdout, "%s: %s v%d at %s: %s\n", r.name, c.Handle, v.N, head[:min(7, len(head))], fmt.Sprintf(format, args...))
 	}
@@ -384,9 +401,17 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 		return true, nil
 	}
 	say("building %s", strings.Join(names, ", "))
-	if err := w.attest(r.g, head, missing); err != nil {
+	mark := w.tel.streamEnd()
+	attestRun := telemetry.NewRunID()
+	a := w.tel.begin("build", e.digest, names, map[string]any{"attest_run": attestRun})
+	if err := w.attest(r.g, head, missing, attestRun, r.name, c, v); err != nil {
 		// The wait runs from when the batch ended, not from when it began.
 		f := w.failures.failed(r.name, batch, clock(), firstBuildWait)
+		reason := fmt.Sprintf("attest run %s: %v", attestRun, err)
+		if failed := w.tel.failedChecks(attestRun, mark); len(failed) > 0 {
+			reason += "; " + strings.Join(failed, ", ")
+		}
+		w.tel.end(a, err, reason, r.name, batch, &f)
 		say("the batch did not pass (%v); it is not built again before %s", err, f.Retry.Format(time.RFC3339))
 		w.troubles++
 		w.waits++
@@ -394,6 +419,7 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 		return true, nil
 	}
 	w.failures.passed(r.name, batch)
+	w.tel.end(a, nil, "", r.name, batch, nil)
 	stored, found, err := r.g.ref(own)
 	if err != nil || !found {
 		say("attest stored no %s, so nothing is published", own)
@@ -414,7 +440,7 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 // runs, and while anything it started that inherited the file runs, even
 // when this pass is killed. A later pass waits for all of it, and then
 // finds the ref attest stored.
-func (w *worker) attest(g git, head string, checks []nixCheck) error {
+func (w *worker) attest(g git, head string, checks []nixCheck, run, project string, c jsonChange, v jsonVersion) error {
 	repo := g.dir
 	if repo == "" {
 		repo = "."
@@ -425,6 +451,10 @@ func (w *worker) attest(g git, head string, checks []nixCheck) error {
 	}
 	for _, q := range checks {
 		args = append(args, "--check", q.name+"="+q.attribute)
+	}
+	if w.tel != nil {
+		args = append(args, "--telemetry", w.tel.stream(), "--telemetry-run", run, "--project", project,
+			"--change", c.ChangeID, "--change-version", strconv.Itoa(v.N))
 	}
 	cmd := exec.Command("attest", args...)
 	cmd.Env = g.env
@@ -449,8 +479,10 @@ func (w *worker) publish(r listed, ref, object string, met map[string]bool, say 
 		say("publishing %s failed %s in a row, so it is not pushed again before %s", ref, counted(f.Failures, "time"), f.Retry.Format(time.RFC3339))
 		return
 	}
+	a := w.tel.begin("push", "", nil, map[string]any{"ref": ref, "object": object})
 	if _, err := r.g.output(false, "push", "--quiet", "origin", object+":"+ref); err != nil {
 		f := w.failures.failed(r.name, key, clock(), firstPushWait)
+		w.tel.end(a, err, fmt.Sprintf("pushing %s to origin: %v", ref, err), r.name, key, &f)
 		say("could not publish %s; it is not pushed again before %s", ref, f.Retry.Format(time.RFC3339))
 		w.troubles++
 		w.waits++
@@ -458,6 +490,7 @@ func (w *worker) publish(r listed, ref, object string, met map[string]bool, say 
 		return
 	}
 	w.failures.passed(r.name, key)
+	w.tel.end(a, nil, "", r.name, key, nil)
 	say("published %s", ref)
 }
 

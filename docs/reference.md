@@ -553,6 +553,69 @@ valley help [<verb>]
   `knot`, `plan`, `checks`, `tail`, `replay`, or `self-update`). `valley <verb> --help` and
   `valley <verb> -h` print the same per-verb help.
 
+### `valley telemetry`
+
+`valley telemetry` reads a valley host's diagnostics from a session, over SSH, with the key the
+remote already uses (`implemented`). It shows what the host's components are doing and did: their
+units' state, their own records of their work, and on request their output. It is diagnostics only.
+Nothing it shows is evidence, and nothing reads it to decide anything.
+
+```text
+$ valley telemetry sources
+valley-host at 2026-11-01T17:20:04.112Z (valley-telemetry/v1)
+
+worker               active      a unit is running
+  the check worker, and the attest runs its passes start; local
+  valley-worker.service: activating/start since Sun 2026-11-01 17:19:51 UTC
+  stream worker: records 1..212, newest check.build-start at 2026-11-01T17:19:58.020Z
+  journal reaches back to 2026-10-25T03:00:01.000Z
+...
+$ valley telemetry read --source=worker --since=worker=0123456789abcdef:200
+$ valley telemetry follow --seconds=120 --logs
+$ valley telemetry --json snapshot
+```
+
+The operations:
+
+- `sources`: every source the host declares, enabled or not, and its state.
+- `snapshot`: the sources, with each producer's exported state and its open and latest runs.
+- `read [--source=<name>] [--since=<cursor>] [--limit=<n>] [--logs]`: the records each stream holds
+  after the cursor. Without a cursor, a stream's newest `--limit` records, 200 by default and 1000
+  at most. With `--source`, also that source's systemd lifecycle from the journal: starts, exits,
+  exit statuses and kills.
+- `follow [--source=<name>] [--since=<cursor>] [--seconds=<n>] [--logs]`: records as they are
+  stored, for `--seconds`, 60 by default and 300 at most. A heartbeat every 10 seconds carries the
+  cursor.
+- `flush`: send this workstation's spooled records now, each spool to its own destination (see
+  [The telemetry spool](#the-telemetry-spool)).
+
+`--logs` adds output: the units' own journal lines, the tail of each stream's newest build logs, and
+a workstation's `check.output` records. Every piece of it is a check's or a program's own text. It
+is marked untrusted, and every control character in it is shown escaped, such as `\x1b`. Without
+`--logs`, no such text is shown.
+
+A read ends with a cursor, `stream=epoch:seq` for each stream, separated by commas. `--since` takes
+it back to resume. A cursor older than what a stream still holds reads as a `retention` gap, and a
+stream made again since reads as a `reset` gap. Either is said, and reading resumes at the oldest
+record the stream holds.
+
+The remote is the checkout's `valley.telemetry.remote`, else `origin`, or the one `--remote` names:
+a remote's name, an `ssh://` URL, or `user@host:path`. Its URL is read and never run, so no
+configured ssh command takes part; `ssh` resolves the host through its own configuration. A remote
+that is not reached over SSH is refused.
+
+`--json` prints the answer's `valley-telemetry/v1` lines as they come (see
+[Telemetry answers](#telemetry-answers-valley-telemetryv1)). The text form shows the same lines. An
+error, a refusal or an answer that did not end exits 1, and none of them reads as nothing to report.
+
+Reading needs a key whose principal holds the host's `observe` grant. That grant is host-wide: the
+shared units' logs span every project. A project's read consent does not imply it. Whether a host
+serves telemetry, and to whom, is a `deployment choice` (`services.valley.telemetry`).
+
+The command a session sends is `valley-telemetry <operation> [--flag=value]...`, with single spaces
+and no quoting. The host's shell parses it whole and refuses anything else, including a path, a unit
+name or a pattern. A refused command reaches nothing, not `git-shell` and not the collector.
+
 ### Helper and host commands
 
 The `valley` package, the NixOS host module, and the web publisher's module build seven Go binaries
@@ -899,6 +962,8 @@ git config --global valley.selfUpdate.branch main
 | `valley.principal`         | repo or global      | `ready`, `unready`, `withdraw`, `rebase`, `knot` (writes), `plan` | The principal name your SSH key authenticates as on the host. Required for writing change records (`owner` / `uploader`) and knots (`created_by`, `author`, commit `Committer`), and used as the default operator in `valley plan`. |
 | `valley.selfUpdate.repo`   | global (`--global`) | `self-update`                                                     | Default repository URL for `valley self-update` when `--repo` is not passed.                                                                                                                                                        |
 | `valley.selfUpdate.branch` | global (`--global`) | `self-update`                                                     | Default branch name for `valley self-update` when `--branch` is not passed (defaults to `main`).                                                                                                                                    |
+| `valley.telemetry`         | repo or global      | `approve`, `review`                                               | `true` records approve's steps and its checks' progress in the telemetry spool and sends them to the host ([The telemetry spool](#the-telemetry-spool)). Off by default.                                                            |
+| `valley.telemetry.remote`  | repo or global      | `telemetry`, `approve`                                            | The remote telemetry is read from and sent to. Defaults to `origin`.                                                                                                                                                                |
 | `pager.diff`, `core.pager` | repo or global      | `review`                                                          | Diff renderer used as `less`'s input preprocessor when `valley review` pages a diff (`git var GIT_PAGER` fallback).                                                                                                                 |
 
 ### Environment variables
@@ -927,6 +992,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_IDENTITY_SCHEMA`     | `identity`                                                      | Path to `schema/identity.cue`, set by the Nix wrapper.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `VALLEY_COMMAND`             | `pending --checks`                                              | Executable invoked by `valley-go pending --checks` to run `<valley> checks <base> <head>` (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
+| `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_VERSION`             | `bin/valley`, `self-update`                                     | Package stamp (`<version>-<rev>`) baked into the Nix-wrapped `valley` script, captured into `VALLEY_STAMP` and unset on startup so child processes do not inherit it, and passed explicitly to `valley-go self-update`.                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VALLEY_PRINCIPAL`           | `valleyhook shell`, host `pre-receive` wrapper                  | Host-side environment variable set by `valleyhook shell` after looking up the key named in `SSH_USER_AUTH` against the host's `authorized_keys` files. Any client-supplied `VALLEY_PRINCIPAL` or `GIT_*` environment variable is stripped by `valleyhook shell` before `git-shell` runs.                                                                                                                                                                                                                                                                                                                       |
 | `SSH_USER_AUTH`              | `valleyhook shell`                                              | Path to the file written by OpenSSH `sshd` (`ExposeAuthInfo yes`) containing the public key that authenticated the SSH session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -1020,6 +1086,56 @@ A log that cannot be written produces one warning on standard error, and the run
 `time` line, warning and log line has one second to be written. One that fails or takes longer is
 dropped, and the run continues without it.
 
+### The telemetry spool
+
+The telemetry spool holds a workstation's own records until the host has them (`implemented`).
+Publishing is off until a checkout or the global configuration turns it on:
+
+```sh
+git config --global valley.telemetry true
+git config valley.telemetry.remote origin   # optional; origin is the default
+```
+
+With `valley.telemetry` true, every approval attempt records its steps: `valley approve`, and each
+`[a]pprove` answer in `valley review`, a stack's layers included. An attempt records its start, the
+policy it derived, which checks origin's evidence covers and who signed that evidence, the checks it
+runs, the request push and its end: `filed`, `refused`, or `interrupted` when the session exits
+during it. Each attempt is a run of its own, so a review that is refused and approved again records
+two runs. Each record carries the CLI's version stamp and executable path, the project, change,
+version and head, and `elapsed_ms`, this machine's wall clock since the attempt began. `attest run`
+records the progress of the checks it runs into the same spool, and writes each check's output to a
+log there. A run whose evidence is all reused records no checks, and its approval is observable all
+the same. Reviewing a change without approving it records nothing.
+
+Each run is bound to a destination when it begins: the SSH destination of the checkout's
+`valley.telemetry.remote`, else `origin`, as the remote spells it, `ssh://[user@]host[:port]`. Its
+records go into that destination's own spool, and only to that destination. Two spellings of one
+host are two destinations, because an alias in SSH's configuration can stand for another host, port
+or key. A run keeps its destination whatever the checkout's remote says later, and whichever
+checkout or `--remote` a flush runs from. Each spool has its own acknowledgement, lock and log
+offsets, so one host's acknowledgement never stands for another's. Repositories on one destination
+share its spool, and each record names its project and run.
+
+The spools are `${XDG_STATE_HOME:-$HOME/.local/state}/valley/telemetry/spools/<key>`, readable by
+their owner alone, where `key` begins the SHA-256 of the destination, and each spool's `destination`
+file names it. Each is a telemetry stream of at most 8 MiB that loses its oldest records first, and
+keeps the logs of its newest 16 runs, 256 KiB of each check's output at most. At most 4 spools exist
+at once. A run for a fifth destination takes the place of a spool that has sent everything and has
+lain idle for an hour; with none, the run is not recorded, and approve says so and goes on. The
+single spool of earlier CLIs, `.../valley/telemetry/spool`, names no destination: it is kept and
+never sent, and `valley telemetry flush` says so until it is removed.
+
+One flusher per session runs in the background, from the first approval attempt on. It sends every
+spool to its own destination every 2 seconds, and once more after the session ends. Each send runs
+the `report` operation over that destination's SSH route, and needs the `report` grant there.
+Records the host acknowledged are not sent again, and a record sent twice is stored once. New check
+output goes with them as `check.output` records of at most 1 KiB each, up to 256 KiB a send. A send
+that fails, a host that is down, or a destination that does not answer costs nothing but the send:
+approve neither waits for it nor changes its outcome. `valley telemetry flush` sends what is left in
+every spool, and exits 1 when a destination did not take its records; `--remote` limits it to the
+spool of the destination that remote names. Recording a step costs approve one short local write,
+given at most half a second.
+
 ### NixOS host options
 
 On a NixOS valley host, machine paths, service toggles, static keys, and static grants are
@@ -1058,6 +1174,8 @@ services.valley = {
 | `restacker.enable`, `restacker.projects`, `restacker.sshKeyFile`                             | `false`, `[]`, `null`                              | Runs `valley-restacker run` as `valley-restacker@<project>.service` for each of `projects`, under the `valley-restacker` user and group it creates, with state in `/var/lib/valley-restacker/<project>` (mode `0700`). Requires non-empty `projects` served by this host, `sshKeyFile`, `services.openssh.enable`, and exactly one of `integrator.instanceProject` or `integrator.instancePolicy` for the instance floor. `sshKeyFile` is the private key passed via systemd `LoadCredential` to authenticate to the host's sshd as `restacker.principal`. Enrolling the public key in `authorizedKeys` and granting the principal `restack` are **deployment choices** (see [The restacker on the host](architecture.md#the-restacker-on-the-host)). |
 | `restacker.principal`, `restacker.interval`                                                  | `"valley-restacker"`, `"15s"`                      | Principal name that `valley-restacker` pushes as and records as the uploader of each version it adds, and its `--interval` between passes.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `worker.interval`, `worker.stateDir`                                                         | `"1m"`, `"/var/lib/valley-worker"`                 | Delay (`OnUnitInactiveSec`) between the end of one `valley-worker.service` pass and the start of the next, and the `0700` state directory owned by `valley-worker`. Holds the worker's Ed25519 private key (`key`, mode `0400`, generated on first start), its public key (`key.pub`) and `known-signers` line (`verifier`), its `known_hosts`, the scratch repository (`origin/`), cached project clones (`cache/`), and `lock` and `failures.json`.                                                                                                                                                                                                                                                                                                 |
+| `telemetry.enable`, `telemetry.observers`, `telemetry.reporters`                             | `false`, `[]`, `[]`                                | Serves the telemetry command through the git user's shell, with a collector per connection to `/run/valley-telemetry.sock`. `observers` hold the `observe` grant, which reads every source; `reporters` hold the `report` grant, which sends records ([`valley telemetry`](#valley-telemetry)).                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `telemetry.remoteSources`                                                                    | `[]`                                               | Components on other machines, each `{ name, description, principal, staleAfter ? 3600 }`, catalogued as remote sources whose records are what `principal`, a reporter, sends.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | `backup.repositoryFile`, `backup.passwordFile`, `backup.sshKeyFile`, `backup.knownHostsFile` | `null`                                             | Runtime secret paths required whenever `valley.cue` enables `backup` (`backup.enable` defaults to `true` when `backup` is declared).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 
 #### The web publisher's options
@@ -2140,6 +2258,73 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `blocks` (`[]string`), `progress` (`{ "done": <int>, "of": <int> }`, `omitempty`), `claim`
     (`{ "by": <string>, "at": <rfc3339>, "age_seconds": <int64>, "stale": <bool, true when age > 24h> }`,
     `omitempty`).
+
+#### Telemetry answers (`valley-telemetry/v1`)
+
+Every telemetry operation answers with JSON lines, one object each, told apart by `kind`
+(`implemented`). `valley telemetry --json` prints them as they come.
+
+```json
+{"kind":"header","format":"valley-telemetry/v1","op":"read","host":"valley-host","server_time":"2026-11-01T17:20:04.112Z","limits":{"follow_seconds":60,"read_limit":200,"response_bytes":4194304},"collector":{"name":"valley-telemetry","exe":"/nix/store/…-valley-telemetry-0/bin/valley-telemetry","pid":4242}}
+{"kind":"record","stream":"report.alice","seq":41,"type":"check.result","time":"2026-11-01T17:19:59.501Z","run":"r20261101T171940-9f3a1c22-checks","change":"kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz","version":2,"head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","tree":"9c1f…","check":"fast","data":{"result":"passed","build_ms":130,"slot_wait_ms":0,"eval_ms":2210,"check_ms":2340,"build_began":"2026-11-01T17:19:59.371Z","build_ended":"2026-11-01T17:19:59.501Z","log_bytes":5,"elapsed_ms":2400},"producer":{"name":"attest","exe":"/nix/store/…-valley-attest-unwrapped-0/bin/attest","pid":3121},"principal":"alice","received":"2026-11-01T17:20:01.006Z","client_id":"0123456789abcdef:41"}
+{"kind":"end","cursor":"report.alice=fedcba9876543210:41,worker=0123456789abcdef:212","truncated":false,"bytes":1873}
+```
+
+The kinds:
+
+- `header`: the first line. The host's name and clock, the format, the limits the collector held the
+  request to, and the collector's own executable.
+- `source`: one source. `name`, `description`, `location` (`local`, `remote` or `client`),
+  `enabled`, and `state` with `detail` saying why. `state` is `disabled` (not enabled in the host's
+  configuration), `unavailable` (not observable: a unit that is not loaded, a stream that cannot be
+  read, a remote source that never reported), `failed` (a unit failed, or its last run did not
+  succeed), `stale` (a run recorded a start and no end while none of the source's units runs, or a
+  remote source stopped reporting), `active` or `idle`. `unit_states` holds each unit's properties
+  from a fixed list: load, active and sub state, result, main process exit code and status, start
+  and exit times, restarts, memory, CPU time, invocation and, for a timer, its last and next
+  trigger. `stream` gives the producer stream's epoch, first and last numbers and newest record.
+  `journal_since` is the time of the oldest journal entry the host still holds for the units: the
+  host's journal settings decide that horizon, not the collector. `configured` names the store paths
+  the host was configured with, which are not proof of what runs; a record's `producer` says what
+  ran. `instruments` and `not_instrumented` say what the source records. With `snapshot`, also
+  `exported_state`, `open_runs` and `latest_runs`.
+- `record`: one stored record (below).
+- `gap`: records a reader asked for and will not get. `reason` is `retention`, with the numbers
+  lost, `reset`, or `ahead`.
+- `lifecycle`: an entry systemd itself wrote to the journal about a unit.
+- `log`: output, only with `--logs`, marked `"untrusted": true`, every control character escaped.
+- `heartbeat`: in a `follow`, every 10 seconds, with the cursor so far.
+- `unavailable`: a part of the answer that could not be read, and why.
+- `ack`: the answer to a `report`: how many records were accepted, already held, or refused, the
+  first problems, and the highest number held for each sender epoch.
+- `error`: the request was refused or failed. Nothing before it is complete.
+- `end`: the last line of an answer that ended as it should, with the cursor to resume from, and
+  `truncated` when the answer stopped at its size bound.
+
+A record has a `type`, the producer's own `time`, and what it is about: `run`, `project`, `change`,
+`version`, `head`, `tree` and `check`, where known. `data` holds the rest, and every record's
+`elapsed_ms` is the time since its run began on the producer's own clock. A reported record also
+carries the `principal` the host derived from the sender's key, the host's `received` time, and the
+sender's own `client_id`. Two machines' times are never subtracted: their clocks can differ, and a
+workstation can sleep. Within one run, `elapsed_ms` and `build_began` and `build_ended` order what
+happened.
+
+The types:
+
+| Producer              | Types                                                                                                                                                           |
+| :-------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| check worker          | `pass.start`, `pass.end`, `pass.interrupted` (inferred, at the next pass), `change.seen`, `batch.start`, `batch.end`, `backoff`, `publish.start`, `publish.end` |
+| `attest run`          | `run.start`, `run.end`, `eval.start`, `eval.end`, `check.queued`, `check.build-start`, `check.build-end`, `check.start`, `check.result`, `evidence.stored`      |
+| `valley approve`      | `approve.start`, `approve.policy`, `approve.coverage`, `approve.checks`, `approve.request`, `approve.end`                                                       |
+| a workstation's flush | `check.output`, a piece of a check's output, shown only with `--logs`                                                                                           |
+| integrator            | `decision`: the request, outcome, total time and each stage's time, from when judging began                                                                     |
+| collector             | `report.gap`: a sender's records that never arrived                                                                                                             |
+
+A check's records come as its work happens, not in the order the checks were given: a fast check's
+`check.result` is stored while a slow one still builds. `slot_wait_ms` is how long a build waited
+for a build slot, `build_ms` how long its `nix build` ran, `eval_ms` the shared evaluation plus the
+check's own, and `check_ms` all three with the store probe. Checks build side by side, so their
+`check_ms` do not add up to a run's wall time.
 
 ### Web export (`the-valley/web-export/v2`)
 

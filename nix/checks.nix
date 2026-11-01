@@ -174,5 +174,6 @@ import ./checks/host-module.nix args
 // import ./checks/ssh-e2e.nix args
 // import ./checks/publish-e2e.nix args
 // import ./checks/worker-e2e.nix args
+// import ./checks/telemetry.nix args
 // import ./checks/restack-host-e2e.nix args
 // import ./checks/web-publisher-e2e.nix args

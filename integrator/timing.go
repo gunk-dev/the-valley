@@ -12,6 +12,15 @@ package main
 // Nor may it stand in the way of a decision. The line is printed only
 // after the decision's outcome is recorded, and it is dropped when it
 // cannot be written within timingDeadline.
+//
+// Where the host names a telemetry stream in VALLEY_TELEMETRY_DIR, the
+// same timing is also stored there as a decision record (../telemetry),
+// which the collector serves. The record is the producer's own: the
+// collector never reads one out of the printed line. It is stored after
+// the outcome is recorded too, and dropped when it cannot be stored
+// within telemetry.EmitDeadline. A decision begins when the integrator
+// starts judging a request; when it first saw the request is not
+// recorded here.
 
 import (
 	"bytes"
@@ -22,6 +31,8 @@ import (
 	"os"
 	"syscall"
 	"time"
+
+	"the-valley/telemetry"
 )
 
 // The stages a decision is timed in. A stage a decision did not reach is
@@ -95,11 +106,34 @@ func (in *integrator) timing(r request, tip, outcome string, s *stopwatch) func(
 	for name, d := range s.stages {
 		t.StagesMS[name] = d.Milliseconds()
 	}
+	record := decisionRecord(t, s.began)
 	line, err := json.Marshal(t)
 	if err != nil || in.timings == nil {
+		return record
+	}
+	return func() {
+		fmt.Fprintf(in.timings, "  timing   %s\n", line)
+		record()
+	}
+}
+
+// decisionRecord returns what stores a decision's timing as a telemetry
+// record, or does nothing where the host names no stream. Each decision
+// is a run of its own.
+func decisionRecord(t decisionTiming, began time.Time) func() {
+	dir := os.Getenv("VALLEY_TELEMETRY_DIR")
+	if dir == "" {
 		return func() {}
 	}
-	return func() { fmt.Fprintf(in.timings, "  timing   %s\n", line) }
+	data := map[string]any{"request": t.Request, "target": t.Target, "tip": t.Tip, "outcome": t.Outcome,
+		"duration_ms": t.DurationMS, "began": telemetry.Stamp(began)}
+	for name, ms := range t.StagesMS {
+		data["stage_"+name+"_ms"] = ms
+	}
+	return func() {
+		e := telemetry.NewEmitter(dir, telemetry.Self("integrator", ""), "")
+		e.Emit("decision", telemetry.Record{Project: t.Project, Change: t.Change, Head: t.Head}, data)
+	}
 }
 
 // timingDeadline is how long printing one timing line may take.

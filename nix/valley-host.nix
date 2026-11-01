@@ -1038,6 +1038,7 @@ let
       --authorized-keys /etc/ssh/authorized_keys.d/${cfg.user} ${
         lib.optionalString cfg.identity.enable "--authorized-keys ${identityAuthorizedKeys}"
       } \
+      ${cfg.telemetry.shellFlags} \
       -- "$@"
   '';
 
@@ -1313,6 +1314,23 @@ let
   );
 in
 {
+  # Telemetry (./telemetry.nix), given what this module derives from the
+  # declaration, so its catalog names the units this host runs.
+  imports = [
+    (import ./telemetry.nix {
+      inherit
+        integratedProjects
+        publishedProjects
+        publishesSigners
+        backupEnabled
+        workerPackage
+        attestPackage
+        integratorPackage
+        restackerPackage
+        ;
+    })
+  ];
+
   options.services.valley = {
     enable = lib.mkEnableOption "the valley host: declarative bare-git hosting driven by a CUE declaration";
 

@@ -79,6 +79,8 @@ project: {
 		"ssh-e2e",
 		"publish-e2e",
 		"worker-e2e",
+		"telemetry-unit",
+		"telemetry-e2e",
 		"restack-host-e2e",
 		"web-publisher-e2e",
 		"web-image",
@@ -92,7 +94,8 @@ project: {
 	}
 
 	// The integrator's scenarios take about a minute, and ssh-e2e,
-	// publish-e2e, worker-e2e, restack-host-e2e and web-publisher-e2e boot
+	// publish-e2e, worker-e2e, telemetry-e2e, restack-host-e2e and
+	// web-publisher-e2e boot
 	// NixOS machines. web-reader-browser-e2e boots no machine, but its
 	// closure holds Chromium, and it runs a browser in about 2 GiB.
 	// Every other check here takes seconds once its packages are built.
@@ -100,6 +103,7 @@ project: {
 	checks: "ssh-e2e": cost:                "slow"
 	checks: "publish-e2e": cost:            "slow"
 	checks: "worker-e2e": cost:             "slow"
+	checks: "telemetry-e2e": cost:          "slow"
 	checks: "restack-host-e2e": cost:       "slow"
 	checks: "web-publisher-e2e": cost:      "slow"
 	checks: "web-reader-browser-e2e": cost: "slow"
@@ -222,6 +226,36 @@ project: {
 		paths: "examples/identity/**": true
 		requires: "identity-unit":     true
 		requires: "identity-e2e":      true
+	}
+
+	// Telemetry: the records, streams and command grammar of telemetry/, the
+	// collector built from it, and the host module's half in
+	// nix/telemetry.nix. The git user's shell parses the command with it,
+	// attest, the worker and the integrator write its streams, and the CLI
+	// reads and reports with it, so a change to it requires their unit
+	// tests as well as its own. telemetry-e2e drives all of it on a NixOS
+	// machine, and module-eval evaluates the module it is part of.
+	classes: telemetry: {
+		paths: "telemetry/**":       true
+		paths: "nix/telemetry.nix":  true
+		requires: "telemetry-unit":  true
+		requires: "telemetry-e2e":   true
+		requires: "valleyhook-unit": true
+		requires: "attest-unit":     true
+		requires: "valley-go-unit":  true
+		requires: "integrator-unit": true
+		requires: "module-eval":     true
+	}
+
+	// The producers and the CLI that record and send telemetry: attest's
+	// progress, the worker's and the workstation's records, and approve,
+	// which runs them. telemetry-e2e observes each over ssh.
+	classes: "telemetry-producers": {
+		paths: "attest/progress.go":        true
+		paths: "status/telemetry.go":       true
+		paths: "status/workertelemetry.go": true
+		paths: "bin/valley":                true
+		requires: "telemetry-e2e":          true
 	}
 
 	// The integrator, the end-to-end scenarios under integrator/e2e/, and the
@@ -500,6 +534,7 @@ project: {
 	// is left to the nix class, as is nix/checks.nix, which wires them all.
 	let checkFiles = {
 		"attest.nix": ["attest-unit", "attest-conformance", "attest-e2e"]
+		"telemetry.nix": ["telemetry-unit", "telemetry-e2e"]
 		"delta.nix": ["delta-unit"]
 		"derive.nix": ["derive-unit"]
 		"review.nix": ["review-unit"]

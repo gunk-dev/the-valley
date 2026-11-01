@@ -135,6 +135,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runChanges(g, args, stdout, stderr)
 	case "pending":
 		err = runPending(g, args, stdout, stderr)
+	case "telemetry":
+		err = runTelemetry(g, args, stdout, stderr)
 	case "self-update":
 		return runSelfUpdate(args, stdout, stderr)
 	case "knot", "plan", "work":

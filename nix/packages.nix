@@ -214,6 +214,7 @@ rec {
       ../note
       ../rebase
       ../selfupdate
+      ../telemetry
     ];
     excluded = [ ../status/testdata/plan ];
     preBuild = readsGoMod;
@@ -281,7 +282,10 @@ rec {
   attest-unwrapped = goModule {
     pname = "valley-attest";
     dir = ../attest;
-    modules = [ ../note ];
+    modules = [
+      ../note
+      ../telemetry
+    ];
     excluded = [ ../attest/conformance ];
     preBuild = readsGoMod;
     tests.nativeCheckInputs = [
@@ -382,6 +386,17 @@ rec {
     meta.mainProgram = "sigverify";
   };
 
+  # Telemetry (../telemetry): the diagnostic records, the bounded streams
+  # that hold them and the telemetry command's grammar, which the
+  # producers, the git user's shell and the collector share, and the
+  # collector itself, valley-telemetry serve, which the host runs per
+  # connection to its socket. Go, standard library only.
+  telemetry = goModule {
+    pname = "valley-telemetry";
+    dir = ../telemetry;
+    meta.mainProgram = "valley-telemetry";
+  };
+
   # The pre-receive hook's policy (valleyhook/): what a push may write to a
   # project a valley host serves. It validates a push to the plan graph
   # with the one reading of a graph the CLI shares (../knot), and reads the
@@ -401,6 +416,7 @@ rec {
       ../change
       ../knot
       ../exactjson
+      ../telemetry
     ];
     preBuild = readsGoMod;
     ldflags = [ "-X main.gitProgram=${lib.getExe pkgs.git}" ];
@@ -961,6 +977,7 @@ rec {
       ../change
       ../composed
       ../note
+      ../telemetry
     ];
     # The scenarios (integrator/e2e/) are integrator-e2e's, and no Go test
     # reads them.

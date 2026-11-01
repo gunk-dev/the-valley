@@ -277,7 +277,7 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []checkSpec{{name: "one", attribute: "one"}, {name: "broken", attribute: "broken"}, {name: "two", attribute: "two"}}
-	runs := runPure(tree, nixSystem(), specs, false, nil)
+	runs := runPure(tree, nixSystem(), specs, false, nil, nil)
 	for i, r := range runs {
 		if r.err != nil {
 			t.Fatalf("%s: %v", specs[i].name, r.err)

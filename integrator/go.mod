@@ -6,6 +6,7 @@ require (
 	the-valley/change v0.0.0
 	the-valley/composed v0.0.0
 	the-valley/note v0.0.0
+	the-valley/telemetry v0.0.0
 )
 
 // The change record is shared with the push hook (../valleyhook) and the
@@ -14,10 +15,12 @@ require (
 // reader (../composed) is shared with the restacker (../restack), so both
 // read one composition of the policy. The signed-note format (../note) is
 // the one reading of a verifier key, which publish-signers holds the
-// known-signers file to. All three live in this repository and are never
-// fetched.
+// known-signers file to. A decision's timing is stored as a telemetry
+// record (../telemetry) the collector serves. All four live in this
+// repository and are never fetched.
 replace (
 	the-valley/change => ../change
 	the-valley/composed => ../composed
 	the-valley/note => ../note
+	the-valley/telemetry => ../telemetry
 )

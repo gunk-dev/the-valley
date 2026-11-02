@@ -680,12 +680,14 @@ holds "a signature cannot be lifted onto a tree it was not made about"
 forget c6
 
 # ----------------------------------------------------------------------
-say "7. an attestation lying about its kind is rejected"
+say "7. an attestation of the wrong kind is no evidence"
 
 # The policy runs prose-format with nix, so its evidence is content-
-# addressed. This attestation claims a notarization instead, and its class
+# addressed. This attestation is for a notarization instead, and its class
 # was untouched by the intervening landing — so under the rule it nominated
-# for itself it would sail onto a base it was never produced over.
+# for itself it would sail onto a base it was never produced over. The
+# integrator counts a note of the wrong kind as no evidence, so the request
+# is stale.
 git checkout --quiet main
 git pull --quiet --ff-only origin main
 git checkout --quiet -b c7
@@ -707,9 +709,9 @@ grep -q "^under-c7 -> refs/heads/main .*: land$" "$work/last.out" || die "the in
 
 request c7 main "$c7"
 integrate
-grep -q "^c7 -> refs/heads/main .*: reject$" "$work/last.out" || die "a lie about the kind was not rejected"
-grep -q 'requires a pure check and the attestation claims an effectful check' "$work/last.out" \
-  || die "the refusal does not say the policy decides the rule"
+grep -q "^c7 -> refs/heads/main .*: stale$" "$work/last.out" || die "a note of the wrong kind was not treated as no evidence"
+grep -q 'requires a pure check and the attestation is for an effectful check' "$work/last.out" \
+  || die "the verdict does not say the policy decides the rule"
 holds "the transfer rule follows the policy's runner, never the attestation's own claim"
 forget c7
 
@@ -1624,7 +1626,7 @@ holds "the stack moved whole onto main, and the landed change's commits dropped 
 # lower layer's landing evidence comes with per-layer landing, which lands
 # a stack as one commit per layer.
 VALLEY_ATTEST_KEY="$work/contributor" VALLEY_ATTEST_NAME="$contributor" \
-  valley approve --head "$nc" "$id27c" > "$work/approve.out" 2>&1 \
+  valley approve --build-here --head "$nc" "$id27c" > "$work/approve.out" 2>&1 \
   || die "approving the rebased top failed: $(cat "$work/approve.out")"
 integrate
 grep -q "^c-$id27c -> refs/heads/main .*: land$" "$work/last.out" || die "c-$id27c did not land"
@@ -2499,6 +2501,109 @@ reconcile --wake-floor-reader "$other" > "$work/last.out" 2>&1 \
   && die "a controller that does not serve the instance repository took --wake-floor-reader"
 grep -q "is for the controller that lands the floor" "$work/last.out" || die "the refusal said: $(cat "$work/last.out")"
 holds "only the controller serving the instance repository marks the floor's readers"
+
+# ----------------------------------------------------------------------
+say "34. evidence for the tree that would land stands where the change's own cannot transfer"
+
+# A note counts for a check only when it ran the computation the policy
+# requires. c34u's note is a known signer's passing note for check
+# prose-format, built from the code-build attribute, on the tip. The tree
+# has not moved, and the note is still no evidence for prose-format.
+change33 c34u
+attest_change c34u "" "" --check prose-format=code-build
+ready_change c34u
+before34="$(tip)"
+t="$EPOCHREALTIME"
+request "c-$readied" main "$(git rev-parse c34u)"
+when33 "$log" "$t" "^c-$readied -> refs/heads/main .*: stale$" > /dev/null \
+  || die "c34u was not stale on a note for another attribute: $(cat "$log")"
+when33 "$log" "$t" "check    prose-format .*attestation is for runner \"nix\", attribute \"code-build\", and the policy requires runner \"nix\", attribute \"prose-format\"" > /dev/null \
+  || die "the verdict did not name the attribute it refused: $(cat "$log")"
+[ "$(tip)" = "$before34" ] || die "main moved on a note for another attribute"
+holds "a passing note for the right check and another attribute is no evidence on an unmoved tree"
+
+# c34 is attested on the tip. Then a change lands that touches what
+# prose-format reads, so c34's evidence no longer transfers to the tree its
+# delta would land as. The controller of 33 is still watching.
+change33 c34
+attest_change c34 "" "" --check prose-format
+ready_change c34
+id34="$readied" x34="$(git rev-parse c34)"
+change33 c34-main
+attest_change c34-main "" "" --check prose-format
+t="$EPOCHREALTIME"
+request c34-main main "$(git rev-parse c34-main)"
+lands33 c34-main "$t" "the change that moves c34's inputs"
+before34="$(tip)"
+
+# c34-rebased is the version the restacker would make: c34's delta on the
+# new tip. Its tree is the tree c34 would land as. A stranger attests it
+# first, which the integrator does not accept.
+git fetch --quiet origin
+git checkout --quiet -B c34-rebased origin/main
+git cherry-pick "$x34" > /dev/null
+attest_change c34-rebased "$work/stranger" "$stranger" --check prose-format
+landing34="$(attest digest --repo "$repo" --rev c34-rebased | cut -d: -f2)"
+[ "$landing34" != "$(attest digest --repo "$repo" --rev "$x34" | cut -d: -f2)" ] \
+  || die "c34's tree is the landing tree; the scenario proves nothing"
+sleep 0.5
+t="$EPOCHREALTIME"
+request "c-$id34" main "$x34"
+when33 "$log" "$t" "^c-$id34 -> refs/heads/main .*: stale$" > /dev/null \
+  || die "c-$id34 was not stale with a stranger's evidence for its landing tree: $(cat "$log")"
+when33 "$log" "$t" "check    prose-format .*input closure changed.*tree that would land.*no signer the integrator holds" > /dev/null \
+  || die "the verdict did not report both sources refused: $(cat "$log")"
+[ "$(tip)" = "$before34" ] || die "main moved on a stranger's evidence"
+# The pass prints its verdict before it writes the outcome record, which
+# keeps the four fields every reader parses.
+for ((i = 0; i < 100; i++)); do
+  record34="$(git -C "$origin" cat-file blob "refs/the-valley/integration-outcomes/main/c-$id34" 2> /dev/null)" && break
+  sleep 0.05
+done
+grep -Eqx "$x34 [0-9a-f]{40} [0-9a-f]{16} stale" <<< "$record34" \
+  || die "the outcome record is not in the format its readers parse: $record34"
+holds "a stranger's evidence for the landing tree lands nothing"
+
+# A known signer's passing note for the landing tree, built from another
+# attribute, is no evidence for prose-format either.
+sleep 0.5
+t="$EPOCHREALTIME"
+attest_change c34-rebased "" "" --check prose-format=code-build
+when33 "$log" "$t" "^pass: due$" > /dev/null || die "the landing tree's evidence did not wake the controller"
+when33 "$log" "$t" "check    prose-format .*tree that would land.*attestation is for runner \"nix\", attribute \"code-build\"" > /dev/null \
+  || die "the verdict did not refuse the landing tree's note for another attribute: $(cat "$log")"
+[ "$(tip)" = "$before34" ] || die "main moved on a note for another attribute"
+holds "a passing note for the landing tree and another attribute is no evidence on a moved landing"
+
+# The host's worker then attests the landing tree under a known key, for
+# the attribute the policy names. Its ref replaces the one before it. The
+# push wakes the controller, which lands c34's delta on that evidence and
+# countersigns it under the landing tree.
+known34="refs/the-valley/attestations/$landing34/$(attest key --key "$work/contributor" --name "$contributor" | cut -d+ -f2)"
+git -C "$origin" update-ref -d "$known34"
+git update-ref -d "$known34"
+sleep 0.5
+t="$EPOCHREALTIME"
+attest_change c34-rebased "" "" --check prose-format
+when33 "$log" "$t" "^pass: due$" > /dev/null || die "the landing tree's evidence did not wake the controller"
+lands33 "c-$id34" "$t" "landing-tree evidence publication"
+[ "$(passes33 "$log" "$t")" -eq "$(awk -v a="$t" '$1 >= a && $2 == "pass:" && $3 == "due"' "$log" | wc -l)" ] \
+  || die "a pass other than a woken one ran: $(cat "$log")"
+when33 "$log" "$t" "check    prose-format .*transferred .unmoved, the landing tree's own evidence." > /dev/null \
+  || die "prose-format did not stand on the landing tree's evidence: $(cat "$log")"
+landed_as c34-rebased "$before34"
+note34="$(git -C "$origin" cat-file blob "refs/the-valley/attestations/$landing34/$ihash:prose-format/statement.note")" \
+  || die "the landing tree's evidence was not countersigned under the landing tree"
+grep -qx "subject.digest.valley-tree-v1 $landing34" <<< "$note34" || die "the countersigned note is not about the landing tree"
+grep -qF " $integrator_name " <<< "$note34" || die "the note under the landing tree carries no countersignature"
+git -C "$origin" cat-file blob \
+  "refs/the-valley/attestations/$landing34/$ihash:$(transfer_path "$(tip)")" > "$work/c34.transfer"
+grep -qx "predicate.checks.0.rule unmoved" "$work/c34.transfer" \
+  || die "the transfer statement does not record the landing tree's evidence as unmoved"
+grep -qx "predicate.checks.0.evidence.sha256 $(sed '/^$/,$d' <<< "$note34" | sha256sum | cut -d' ' -f1)" "$work/c34.transfer" \
+  || die "the transfer statement does not cite the landing tree's note"
+holds "a stale-for-evidence request lands when its landing tree's evidence arrives, woken by the push"
+holds "the landing countersigns that evidence and its transfer statement cites it"
 
 kill $(jobs -p) 2> /dev/null || true
 wait 2> /dev/null || true

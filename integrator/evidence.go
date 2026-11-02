@@ -108,6 +108,8 @@ func (in *integrator) classify(wt *worktree, rev string, note []byte) (verdict.E
 	ev := verdict.Evidence{
 		TextDigest: sha256hex(text),
 		Check:      statementValue(text, "predicate.check.name"),
+		Runner:     statementValue(text, "predicate.check.runner"),
+		Attribute:  statementValue(text, "predicate.check.attribute"),
 		Result:     statementValue(text, "predicate.result"),
 	}
 	switch statementValue(text, "predicateType") {

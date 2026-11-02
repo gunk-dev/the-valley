@@ -1801,8 +1801,8 @@ one check, one per signer. The integrator judges the check by one of them: the f
 verifies, with the refs in byte order, whatever that note records. Until a note verifies, the last
 one read stands, so a refusal is reported. This choice is `change.SelectNotes`
 (`change/evidence.go`), and approval makes the same choice. A required check is met when its note is
-signed by a known signer, says the check `passed`, and one of these holds
-(`integrator/verdict/verdict.go`):
+signed by a known signer, ran the runner and flake attribute the policy names for the check, says
+the check `passed`, and one of these holds (`integrator/verdict/verdict.go`):
 
 - **A pure check, unmoved tree.** The landed tree is the attested tree. No inputs are compared.
 - **A pure check, same inputs.** `attest inputs` on the candidate gives the same inputs digest and
@@ -1811,7 +1811,44 @@ signed by a known signer, says the check `passed`, and one of these holds
 - **An effectful check.** No class that requires it changed between the base and the tip, and the
   evidence is younger than the check's `validity` window.
 
+A note for the check's name that ran another runner or another attribute is no evidence for the
+check, whether or not the tree moved. Approval applies the same runner and attribute test before it
+reuses a note (`status/coverage.go`).
+
 Checked by `integrator-unit` (the verdict tests) and `integrator-e2e`.
+
+A moved landing has a second source of evidence: the tree that would land. When main has moved since
+the change's base, the delta applied to the tip gives a new tree. The host's check worker builds the
+restacker's newest version of the change, and that version's tree is this tree. So the integrator
+also reads the evidence stored for the landing tree's digest, with the landing commit as the
+revision its notes must name (`integrator/refs.go`). It reads and verifies those notes exactly as it
+reads the change's own: the same known signers, signer projects, check names, runners and
+attributes. It selects one note per check from the landing tree's notes by the same
+`change.SelectNotes` rule.
+
+A required check on a moved landing stands on either source (`integrator/verdict/verdict.go`):
+
+- **The landing tree's own evidence.** A passing note from a known signer, about the landing tree,
+  stands with no transfer rule to run. Its rule is `unmoved`, because the landed tree is the tree it
+  attests. For an effectful check only the `validity` window applies, because the observation
+  already saw every intervening landing.
+- **The change's own evidence**, carried by one of the rules above.
+
+So each source offers at most one note per check, its selected note. The integrator prefers the
+landing tree's selected note when it stands. A selected note that is tampered rejects the change,
+from either source. A tampered note is selected only when no note about the check in its source
+verifies, so a tampered note beside one that verifies is never judged. A selected note from an
+unknown signer, for another runner or attribute, or recording a failure, is no evidence, and the
+check then rests on the change's own selected note. A check that neither source carries makes the
+change stale for evidence. The landing countersigns the note it used under the tree that note
+attests: the change's tree, or the landing tree, beside the transfer statement
+(`integrator/transfer.go`).
+
+A request that is stale for evidence is judged again when any attestation ref moves, because the
+outcome record's evidence fingerprint covers every attestation ref (`integrator/refs.go`). So the
+push of the landing tree's evidence wakes the integrator, and the next pass lands the change.
+
+Checked by `integrator-unit` (the verdict tests) and `integrator-e2e` (scenario 34).
 
 The integrator recomputes inputs only when the landed tree is not the attested tree. Then it asks
 one `attest inputs` for every required pure check, which exports the tree once and evaluates the

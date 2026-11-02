@@ -512,11 +512,23 @@ git checkout --quiet -b lands main
 echo "a second source line" >> src/main.txt
 git commit --quiet -am 'a change the integrator lands'
 lands="$(attested lands --check code-build)"
-# Its evidence claims an effectful check where the policy runs a pure one.
+# Its evidence is edited after it was signed, so the signature no longer
+# verifies. The integrator rejects a tampered note. (A note of the wrong
+# kind, an unknown signer's note or a failing note is no evidence, and the
+# request is stale.)
 git checkout --quiet -b lies main
 echo "a readme whose evidence lies" > docs/readme.md
-git commit --quiet -am 'a change whose evidence lies about its kind'
-lies="$(attested lies --command prose-format=true)"
+git commit --quiet -am 'a change whose evidence lies about its signed result'
+lies="$(attested lies --check prose-format)"
+lies_ref="$(git -C "$served" for-each-ref --format='%(refname)' "refs/the-valley/attestations/$(attest digest --repo . --rev lies | cut -d: -f2)" | head -n1)"
+[ -n "$lies_ref" ] || fail "lies has no evidence on the served repository"
+git -C "$served" cat-file blob "$lies_ref:prose-format/statement.note" \
+  | sed 's/^predicate.result passed$/predicate.result failed/' > "$w/lies.note"
+cmp -s "$w/lies.note" <(git -C "$served" cat-file blob "$lies_ref:prose-format/statement.note") \
+  && fail 'the tamper changed nothing'
+lies_blob="$(git -C "$served" hash-object -w --stdin < "$w/lies.note")"
+lies_sub="$(printf '100644 blob %s\tstatement.note\n' "$lies_blob" | git -C "$served" mktree)"
+git -C "$served" update-ref "$lies_ref" "$(printf '040000 tree %s\tprose-format\n' "$lies_sub" | git -C "$served" mktree)"
 git checkout --quiet main
 echo moved > moved.txt
 git add moved.txt
@@ -541,8 +553,8 @@ judged "$lands" land
 git push --quiet "$(url requester "$served")" "lies:refs/the-valley/integration-requests/main/c-$lies"
 integrate
 judged "$lies" reject
-grep -q 'requires a pure check and the attestation claims an effectful check' "$w/integrator.out" \
-  || fail "the reject is not for the evidence's kind: $(cat "$w/integrator.out")"
+grep -q 'does not verify as the statement it claims to be' "$w/integrator.out" \
+  || fail "the reject is not for the tampered evidence: $(cat "$w/integrator.out")"
 
 # The planner, reading the shared verifier keys, sees the landed change
 # submitted: it is no layer. Without the keys, the same landing is only

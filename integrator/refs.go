@@ -339,6 +339,10 @@ type landing struct {
 	// notes are the contributor's attestations as stored, by check name.
 	// The verdict does not read them; what lands countersigns them.
 	notes map[string][]byte
+
+	// direct are the attestations stored for the landing tree itself, by
+	// check name, read only when that tree is not the attested tree.
+	direct map[string][]byte
 }
 
 // materialize gathers everything the verdict is a function of: the applied
@@ -461,7 +465,17 @@ func (in *integrator) materialize(r request, tip, floor string, watch *stopwatch
 
 	// The closures only have to be recomputed when the tree moved: an
 	// unmoved tree presents the identical computation by construction.
+	// A moved tree may also carry evidence of its own, as when a worker
+	// has built the change rebased onto this tip. It is read the way the
+	// change's own is, under the same signers and rules, with the landing
+	// commit as the revision its subject must name.
 	if land.digest != attested {
+		done = watch.stage(stageEvidence)
+		ch.Landed, land.direct, err = in.collectEvidence(wt, land.commit, land.digest)
+		done()
+		if err != nil {
+			return ch, snap, land, err
+		}
 		done = watch.stage(stageClosures)
 		snap.Closures, snap.ClosureErrors = in.closures(wt, land.commit, required)
 		done()
@@ -757,6 +771,10 @@ func (in *integrator) report(r request, tip string, v verdict.Verdict) {
 	fmt.Fprintf(in.out, "  %s\n", v.Reason)
 	for _, cv := range v.Checks {
 		if cv.Transferred {
+			if cv.Direct {
+				fmt.Fprintf(in.out, "  check    %-24s transferred (%s, the landing tree's own evidence)\n", cv.Name, cv.Rule)
+				continue
+			}
 			fmt.Fprintf(in.out, "  check    %-24s transferred (%s)\n", cv.Name, cv.Rule)
 			continue
 		}

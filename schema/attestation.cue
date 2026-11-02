@@ -174,9 +174,11 @@ package attestation
 	// The stream it landed on, as a full ref name.
 	target: #Line
 
-	// The tree the evidence was produced over — the base the
-	// contributor's attestations bind to (ida-cbcbb3c). The subject is
-	// the tree that landed; when the two are equal, nothing intervened.
+	// The approved head's tree, which the contributor's attestations
+	// bind to (ida-cbcbb3c). The subject is the tree that landed; when
+	// the two are equal, nothing intervened. Each statement in checks is
+	// cited with its own subject, which on a moved landing may be the
+	// landed tree rather than this one.
 	base: #DigestSet
 
 	// The policy the verdict was derived under, resolved from the
@@ -223,7 +225,8 @@ package attestation
 	// "untouched" is the effectful rule — no intervening landing touched
 	// the requiring class's paths, and the observation was inside the
 	// declared window. "unmoved" is neither rule needing to run, because
-	// the landed tree is the attested tree.
+	// the landed tree is the tree the cited statement attests: the change's
+	// tree, or on a moved landing the landing tree's own evidence.
 	rule: "closure" | "untouched" | "unmoved"
 
 	// The statement this verdict is about, cited by a digest of the

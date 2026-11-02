@@ -143,7 +143,8 @@ func (in *integrator) pipe(stdin []byte, name string, args ...string) ([]byte, e
 
 // countersign builds the note set a landing stores: every transferring
 // check's note with the integrator's sibling signature added, keyed by the
-// subject it is about, plus the transfer statement keyed by the landed tree
+// subject it is about (the change's tree, or the landing tree for evidence
+// stored for that tree), plus the transfer statement keyed by the landed tree
 // and the commit it landed as.
 func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landing, transfer []byte) (landedEvidence, error) {
 	out := landedEvidence{refs: map[string]map[string]string{}}
@@ -159,8 +160,16 @@ func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landin
 		return nil
 	}
 	original := fmt.Sprintf("%s/%s/%s", attestationPrefix, ch.Attested, in.keyHash)
+	landed := fmt.Sprintf("%s/%s/%s", attestationPrefix, l.digest, in.keyHash)
 	for _, cv := range v.Checks {
-		note, ok := l.notes[cv.Name]
+		// A check that stood on the landing tree's own evidence is
+		// countersigned under the landing tree, beside the transfer
+		// statement that cites it.
+		notes, ref := l.notes, original
+		if cv.Direct {
+			notes, ref = l.direct, landed
+		}
+		note, ok := notes[cv.Name]
 		if !ok || !cv.Transferred {
 			continue
 		}
@@ -168,11 +177,10 @@ func (in *integrator) countersign(ch verdict.Change, v verdict.Verdict, l landin
 		if err != nil {
 			return out, fmt.Errorf("countersigning %s: %w", cv.Name, err)
 		}
-		if err := add(original, cv.Name+"/"+statementNote, signed); err != nil {
+		if err := add(ref, cv.Name+"/"+statementNote, signed); err != nil {
 			return out, err
 		}
 	}
-	landed := fmt.Sprintf("%s/%s/%s", attestationPrefix, l.digest, in.keyHash)
 	// A check's name never holds a dot, so no check's directory is named
 	// change.TransferDir.
 	if err := add(landed, change.TransferPath(l.commit), transfer); err != nil {

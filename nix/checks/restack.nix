@@ -147,7 +147,7 @@ in
   # next pass takes the lock. In a repository served with the integrator's evidence fixtures
   # (integrator/e2e: the nix stand-in and a policy of pure checks), the
   # real integrator lands one change and rejects another whose signed
-  # evidence lies about its kind. The planner, reading the shared verifier
+  # evidence was tampered with. The planner, reading the shared verifier
   # keys, sees the landed change submitted, which it reads as uncertain
   # without them or while a signer projects file restricts the integrator
   # name, and releases the rejected change's family on the real outcome,

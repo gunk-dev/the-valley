@@ -43,9 +43,9 @@ package main
 //     file too, by a signer that counts in this project. An override can
 //     narrow what is reused, never widen it.
 //
-// The attribute test is stricter than the integrator's rule for an
-// unmoved tree, which compares no attribute. A command check is never
-// covered: approve runs it again. The integrator judges every note again
+// The integrator applies the same runner and attribute test to every
+// note it judges (integrator/verdict/verdict.go). A command check is
+// never covered: approve runs it again. The integrator judges every note again
 // when it decides the request, so coverage decides only what approve
 // builds, never what lands.
 //

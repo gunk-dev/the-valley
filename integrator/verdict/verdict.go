@@ -110,6 +110,12 @@ type Change struct {
 
 	// Evidence is the attestations found for this change, by check name.
 	Evidence map[string]Evidence
+
+	// Landed is the attestations found for the tree that would land, by
+	// check name, when that tree is not the attested tree. Their subject is
+	// exactly what lands, so a passing one stands for its check with no
+	// transfer rule to run.
+	Landed map[string]Evidence
 }
 
 // Evidence is one attestation as the integrator read it back.
@@ -117,6 +123,12 @@ type Evidence struct {
 	Check      string
 	Kind       Kind
 	Admissible Admissibility
+
+	// Runner and Attribute are the computation the signer says ran, as
+	// the note's predicate.check.runner and predicate.check.attribute
+	// hold them. A command check has no attribute.
+	Runner    string
+	Attribute string
 
 	// Result is what the statement recorded. A statement recording a
 	// failure is not evidence that a check passed.
@@ -232,10 +244,15 @@ type CheckVerdict struct {
 	Transferred bool
 
 	// Rule is which transfer rule carried it: "unmoved" when the landed
-	// tree is the attested tree, "closure" when the recomputed input
-	// closure equalled the attested one, "untouched" when an effectful
-	// observation's scope was untouched and it was inside its window.
+	// tree is the tree the evidence attests, the change's own or the
+	// landing tree's, "closure" when the recomputed input closure equalled
+	// the attested one, "untouched" when an effectful observation's scope
+	// was untouched and it was inside its window.
 	Rule string
+
+	// Direct says the evidence is the landing tree's own, from
+	// Change.Landed, rather than the change's.
+	Direct bool
 
 	// Reason says why it did not transfer, in words a contributor can act
 	// on. Empty when it did.
@@ -341,10 +358,44 @@ func Decide(ch Change, s Snapshot) Verdict {
 	return v
 }
 
-// judge is the second part of the commit rule, for one check.
+// judge is the second part of the commit rule, for one check. On a moved
+// landing a check stands on either of two sources: the landing tree's own
+// evidence, which needs no transfer, or the change's evidence carried by a
+// transfer rule. The landing tree's is preferred when both stand. The
+// evidence from each source is the one note the caller selected for the
+// check, and a forgery in either selected note rejects the change.
 func judge(ch Change, s Snapshot, r Required, unmoved bool) CheckVerdict {
+	own := weigh(ch.Evidence, s, r, unmoved)
+	if _, ok := ch.Landed[r.Name]; unmoved || !ok || own.Rule == "rejected" {
+		return own
+	}
+	// The landing tree's evidence is about the tree that lands, so no
+	// intervening landing is outside it: its scope is untouched by
+	// construction, and only an effectful check's window applies.
+	direct := weigh(ch.Landed, Snapshot{Now: s.Now}, Required{
+		Name: r.Name, Runner: r.Runner, Attribute: r.Attribute, Validity: r.Validity,
+	}, true)
+	direct.Direct = true
+	switch {
+	case direct.Transferred:
+		// The landed tree is the tree this evidence attests, whichever
+		// kind of check it is.
+		direct.Rule = "unmoved"
+		return direct
+	case direct.Rule == "rejected":
+		return direct
+	case own.Transferred:
+		return own
+	}
+	own.Reason += fmt.Sprintf("; the attestation for the tree that would land, %s, does not stand either: %s", Short(s.Apply.Tree), direct.Reason)
+	return own
+}
+
+// weigh judges one check's evidence from one source. unmoved says the
+// landed tree is the tree that source's evidence attests.
+func weigh(evidence map[string]Evidence, s Snapshot, r Required, unmoved bool) CheckVerdict {
 	cv := CheckVerdict{Name: r.Name}
-	ev, ok := ch.Evidence[r.Name]
+	ev, ok := evidence[r.Name]
 	if !ok {
 		cv.Reason = "no attestation for this check accompanies the change"
 		return cv
@@ -381,9 +432,19 @@ func judge(ch Change, s Snapshot, r Required, unmoved bool) CheckVerdict {
 		cv.Reason = fmt.Sprintf("the policy runs this check with %q, and no transfer rule is defined for that runner", r.Runner)
 		return cv
 	}
+	// A verified note is evidence for a check only when it ran the
+	// computation the policy requires: the same kind, runner and flake
+	// attribute. A passing note for another computation under the same check
+	// name says nothing about this one, on an unmoved tree as much as a moved
+	// one. It is no evidence rather than a rejection, so the verdict can fall
+	// back to the other source. This is the rule approve's coverage applies
+	// before it reuses a note (status/coverage.go).
 	if ev.Kind != want {
-		cv.Rule = "rejected"
-		cv.Reason = fmt.Sprintf("the policy requires %s and the attestation claims %s", article(want), article(ev.Kind))
+		cv.Reason = fmt.Sprintf("the policy requires %s and the attestation is for %s", article(want), article(ev.Kind))
+		return cv
+	}
+	if ev.Runner != r.Runner || ev.Attribute != r.Attribute {
+		cv.Reason = fmt.Sprintf("the attestation is for %s, and the policy requires %s", computation(ev.Runner, ev.Attribute), computation(r.Runner, r.Attribute))
 		return cv
 	}
 
@@ -438,6 +499,14 @@ func judge(ch Change, s Snapshot, r Required, unmoved bool) CheckVerdict {
 	}
 	cv.Transferred, cv.Rule = true, "untouched"
 	return cv
+}
+
+// computation reads a runner and attribute as a reader would say them.
+func computation(runner, attribute string) string {
+	if attribute == "" {
+		return fmt.Sprintf("runner %q with no attribute", runner)
+	}
+	return fmt.Sprintf("runner %q, attribute %q", runner, attribute)
 }
 
 // article reads a kind as a reader would say it.

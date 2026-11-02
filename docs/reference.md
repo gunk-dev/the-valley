@@ -1871,21 +1871,24 @@ predicate.checks.0.evidence.sha256 f1e2d3c4b5a6f7e8d9c0b1a2f3e4d5c6b7a8f9e0d1c2b
   - `predicateType`: `"the-valley/integration/transfer/v1"`.
   - `predicate.change`: Request name (`c-<change-id>` or `<branch-request-name>`).
   - `predicate.target`: Full target ref name (`refs/heads/main`).
-  - `predicate.base.valley-tree-v1`: The 64-hex `valley-tree-v1` digest of the attested commit's
-    tree (equal to `subject.digest.valley-tree-v1` when `main` did not move or merged to the
-    identical tree).
+  - `predicate.base.valley-tree-v1`: The 64-hex `valley-tree-v1` digest of the approved head's tree
+    (equal to `subject.digest.valley-tree-v1` when `main` did not move or merged to the identical
+    tree). It is not always the subject of the cited evidence: each cited note carries its own
+    subject, which on a moved landing may be the landing tree.
   - `predicate.policy.git-sha1` and `predicate.policy.sha256`: The target tip commit SHA-1 from
     which the project policy was read and the 64-hex SHA-256 digest of the composed policy
     rendering.
   - **Either `predicate.checks.<i>.*` (when >= 1 check was required) or `predicate.required none`
     (when 0 checks were required; never both):**
     - `predicate.checks.<i>.name`: Check name (`^[a-z0-9][a-z0-9-]*$`).
-    - `predicate.checks.<i>.rule`: `"unmoved"` (landed tree equals attested tree), `"closure"` (pure
-      check whose `valley-inputs-v1` and derivation `sha256` on the landed tree matched the attested
+    - `predicate.checks.<i>.rule`: `"unmoved"` (landed tree equals the tree the cited note attests:
+      the change's tree, or on a moved landing the landing tree itself), `"closure"` (pure check
+      whose `valley-inputs-v1` and derivation `sha256` on the landed tree matched the attested
       note's), or `"untouched"` (effectful check whose requiring path classes were untouched by
       `base..tip` on `main` and whose `observedAt` age is within `validity`).
     - `predicate.checks.<i>.evidence.sha256`: 64-hex SHA-256 of the signed statement text in the
-      contributor's attestation note.
+      attestation note the check stood on: the contributor's note about the change's tree, or a note
+      about the landing tree.
     - `predicate.checks.<i>.inputs.valley-inputs-v1`: Present when `rule == "closure"`; the
       recomputed 64-hex `valley-inputs-v1` digest on the landed tree.
 

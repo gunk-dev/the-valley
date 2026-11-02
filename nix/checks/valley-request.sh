@@ -1591,8 +1591,10 @@ if [ "$(requested raced)" != "$coverhead" ] || [ -s "$reusepushes" ]; then
 fi
 git -C "$served" update-ref -d refs/the-valley/integration-requests/main/raced
 
-# 20d. The worker covered one check. Its note for the other names another
-#      flake attribute, so it is not reused. Without --build-here, approve
+# 20d. The worker covered one check and has no note for the other. A worker
+#      note for the other check that names another flake attribute is not
+#      reused either (the attribute case below), and the integrator
+#      refuses it too. Without --build-here, approve
 #      files the request at once with the evidence origin holds: it builds
 #      nothing, pushes the request alone, names the missing check, and
 #      exits 0. review's [a]pprove files the same way. Each request is
@@ -1604,7 +1606,7 @@ git -C "$served" update-ref -d refs/the-valley/integration-requests/main/raced
 edited partial docs/readme.md src/main.txt
 partialhead="$(git rev-parse partial)"
 partialdigest="$(attest digest --rev partial | cut -d: -f2)"
-worker "$partialhead" --check prose-format --check code-build=prose-format
+worker "$partialhead" --check prose-format
 for filed in partial-filed partial-review; do
   if [ "$filed" = partial-filed ]; then
     approving "$filed" valley approve origin/partial
@@ -1630,7 +1632,6 @@ for filed in partial-filed partial-review; do
 done
 approving partial valley approve --build-here origin/partial
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out"
-grep -qxF "valley: not reusing code-build: the integrator judges it by refs/the-valley/attestations/$partialdigest/$workerhash:code-build/statement.note, and its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
 grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
 grep -qE '^check   code-build +nix +passed$' "$w/partial.out"
 if ! grep -qE '^nix build .*/code-build-[A-Za-z0-9]{6}\.drv\^\*$' "$nixlog" || grep -q 'prose-format' "$nixlog"; then
@@ -1847,13 +1848,14 @@ worker "$(git rev-parse failed)" --check prose-format
 unreused failed 'its predicate.result is "failed", not "passed"'
 judged failed stale 'the attestation records the check as failed'
 
-# The same, with an observation first: a note of the wrong kind.
+# The same, with an observation first: a note of the wrong kind is no
+# evidence, so the request is stale.
 edited kind docs/readme.md
 noted "$r/kind.note" "$r/keys/worker" "$workername" "$(git rev-parse kind)" prose-format --command prose-format=true
 planted "$(under kind 00000000)" prose-format "$r/kind.note"
 worker "$(git rev-parse kind)" --check prose-format
 unreused kind 'its predicateType is "the-valley/check/effectful/v1", not "the-valley/check/pure/v1"'
-judged kind reject 'the policy requires a pure check and the attestation claims an effectful check'
+judged kind stale 'the policy requires a pure check and the attestation is for an effectful check'
 
 # A malformed envelope: a note the worker signed, without its last newline.
 # approve reads it byte for byte, as the integrator does.
@@ -1896,12 +1898,13 @@ fi
 judged expired stale 'the observation is '
 
 # The attribute: the worker's note for prose-format names another flake
-# attribute. The integrator's rule for an unmoved tree compares none, so it
-# lands; approve compares it, and does not reuse the note.
+# attribute. Approve compares it, and builds rather than reuse; the
+# integrator compares it too, on an unmoved tree, and the note is no
+# evidence for prose-format.
 edited attribute docs/readme.md
 worker "$(git rev-parse attribute)" --check prose-format=code-build
 unreused attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
-judged attribute land 'transferred (unmoved)'
+judged attribute stale 'the attestation is for runner "nix", attribute "code-build", and the policy requires runner "nix", attribute "prose-format"'
 
 # 20h. A signer can be restricted to projects. The host publishes its
 #      signer projects file beside the known-signers file, and approve

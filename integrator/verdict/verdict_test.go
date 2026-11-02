@@ -29,7 +29,7 @@ func effectfulCheck(name string, window time.Duration) Required {
 }
 
 func pureEvidence(name, inputs string) Evidence {
-	return Evidence{Check: name, Kind: Pure, Admissible: Admissible, Result: "passed",
+	return Evidence{Check: name, Kind: Pure, Runner: "nix", Attribute: name, Admissible: Admissible, Result: "passed",
 		Inputs: inputs, Derivation: "drv-" + inputs, TextDigest: "d" + name}
 }
 
@@ -44,7 +44,7 @@ func closures(pairs ...string) map[string]Closure {
 }
 
 func effectfulEvidence(name string, at time.Time) Evidence {
-	return Evidence{Check: name, Kind: Effectful, Admissible: Admissible, Result: "passed", ObservedAt: at, TextDigest: "d" + name}
+	return Evidence{Check: name, Kind: Effectful, Runner: "command", Admissible: Admissible, Result: "passed", ObservedAt: at, TextDigest: "d" + name}
 }
 
 func change(evidence ...Evidence) Change {
@@ -289,23 +289,23 @@ func TestThePolicyDecidesWhichRuleApplies(t *testing.T) {
 		Closures: closures("build", "a completely different closure"),
 		Now:      observed.Add(time.Minute),
 	})
-	if v.Outcome != Reject {
-		t.Fatalf("outcome = %s, want reject", v.Outcome)
+	if v.Outcome != Stale {
+		t.Fatalf("outcome = %s, want stale", v.Outcome)
 	}
-	if !strings.Contains(v.Checks[0].Reason, "requires a pure check and the attestation claims an effectful check") {
+	if !strings.Contains(v.Checks[0].Reason, "requires a pure check and the attestation is for an effectful check") {
 		t.Fatalf("reason = %q", v.Checks[0].Reason)
 	}
 }
 
 func TestAPureClaimForAnEffectfulCheckIsAlsoRefused(t *testing.T) {
-	// The mismatch is refused in both directions: the rule follows the
-	// policy, and a statement that contradicts it is not judged at all.
+	// The mismatch is no evidence in both directions: the rule follows the
+	// policy, and a statement about another kind of check is not judged.
 	v := Decide(change(pureEvidence("reachable", closureA)), Snapshot{
 		Apply:    Applied{Clean: true, Tree: attestedTree},
 		Required: []Required{effectfulCheck("reachable", time.Hour)},
 		Now:      observed,
 	})
-	if v.Outcome != Reject || !strings.Contains(v.Checks[0].Reason, "requires an effectful check and the attestation claims a pure check") {
+	if v.Outcome != Stale || !strings.Contains(v.Checks[0].Reason, "requires an effectful check and the attestation is for a pure check") {
 		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Checks[0].Reason)
 	}
 }
@@ -347,5 +347,108 @@ func TestAChangeAlreadyInTheTargetSaysThatRatherThanNothing(t *testing.T) {
 	v := Decide(ch, Snapshot{Apply: Applied{Clean: true, Tree: attestedTree}})
 	if v.Outcome != Land || !strings.Contains(v.Reason, "already in the target's history") {
 		t.Fatalf("verdict = %s, reason = %q", v.Outcome, v.Reason)
+	}
+}
+
+func TestTheLandingTreesOwnEvidenceStandsOnAMovedLanding(t *testing.T) {
+	// On a moved landing a check stands on the landing tree's own passing
+	// evidence, preferred over the change's evidence even when that would
+	// transfer. Evidence for the landing tree that does not stand leaves the
+	// change's evidence to decide, and a forgery in either source rejects.
+	landed := func(e Evidence) map[string]Evidence {
+		e.TextDigest = "landed"
+		return map[string]Evidence{e.Check: e}
+	}
+	failing := pureEvidence("build", closureB)
+	failing.Result = "failed"
+	stranger := pureEvidence("build", closureB)
+	stranger.Admissible = UnknownSigner
+	forged := pureEvidence("build", closureB)
+	forged.Admissible = Tampered
+	effect := effectfulCheck("deploy", time.Hour)
+	for _, c := range []struct {
+		name     string
+		own      Evidence
+		landed   map[string]Evidence
+		required Required
+		outcome  Outcome
+		evidence string
+	}{
+		{"direct where the change's cannot transfer", pureEvidence("build", closureA), landed(pureEvidence("build", closureB)), pureCheck("build"), Land, "landed"},
+		{"direct preferred where both stand", pureEvidence("build", closureB), landed(pureEvidence("build", closureB)), pureCheck("build"), Land, "landed"},
+		{"the change's own where the landing tree's fails", pureEvidence("build", closureB), landed(failing), pureCheck("build"), Land, "dbuild"},
+		{"a failing landing-tree note is no evidence", pureEvidence("build", closureA), landed(failing), pureCheck("build"), Stale, ""},
+		{"a stranger's landing-tree note is no evidence", pureEvidence("build", closureA), landed(stranger), pureCheck("build"), Stale, ""},
+		{"a kind-mismatched landing-tree note falls back to the change's evidence", pureEvidence("build", closureB), landed(effectfulEvidence("build", observed)), pureCheck("build"), Land, "dbuild"},
+		{"a kind-mismatched landing-tree note alone is no evidence", pureEvidence("build", closureA), landed(effectfulEvidence("build", observed)), pureCheck("build"), Stale, ""},
+		{"a forged landing-tree note rejects", pureEvidence("build", closureB), landed(forged), pureCheck("build"), Reject, ""},
+		{"an effectful observation of the landing tree ignores the touched scope", effectfulEvidence("deploy", observed.Add(-2*time.Hour)), landed(effectfulEvidence("deploy", observed.Add(-time.Minute))), effect, Land, "landed"},
+		{"an effectful observation of the landing tree keeps its window", effectfulEvidence("deploy", observed.Add(-2*time.Hour)), landed(effectfulEvidence("deploy", observed.Add(-2*time.Hour))), effect, Stale, ""},
+	} {
+		ch := change(c.own)
+		ch.Landed = c.landed
+		v := Decide(ch, Snapshot{
+			Apply:    Applied{Clean: true, Tree: movedTree},
+			Required: []Required{c.required},
+			Closures: closures("build", closureB),
+			Touched:  map[string]bool{"deploy": true},
+			Now:      observed,
+		})
+		if v.Outcome != c.outcome {
+			t.Errorf("%s: outcome %s (%s), want %s", c.name, v.Outcome, v.Reason, c.outcome)
+			continue
+		}
+		if c.outcome == Land && v.Checks[0].Evidence != c.evidence {
+			t.Errorf("%s: landed on evidence %q, want %q", c.name, v.Checks[0].Evidence, c.evidence)
+		}
+		if c.evidence == "landed" && (v.Checks[0].Rule != "unmoved" || !v.Checks[0].Direct) {
+			t.Errorf("%s: the landing tree's evidence stood by rule %q, direct %v; want unmoved, direct", c.name, v.Checks[0].Rule, v.Checks[0].Direct)
+		}
+		if c.outcome == Stale && !strings.Contains(v.Checks[0].Reason, "tree that would land") {
+			t.Errorf("%s: the reason does not say what the landing tree's evidence was: %s", c.name, v.Checks[0].Reason)
+		}
+	}
+}
+
+func TestANoteForAnotherComputationIsNoEvidence(t *testing.T) {
+	// A note counts for a check only when it ran the computation the
+	// policy requires. A trusted signer's passing build of another
+	// attribute under the same check name is no evidence for that check,
+	// on the attested tree and on a moved landing's own tree alike.
+	smoke := pureEvidence("build", closureB)
+	smoke.Attribute = "smoke"
+	command := pureEvidence("build", closureB)
+	command.Runner = "command"
+	effectfulNix := effectfulEvidence("build", observed)
+	effectfulNix.Runner, effectfulNix.Attribute = "nix", "build"
+	for _, c := range []struct {
+		name    string
+		own     Evidence
+		landed  *Evidence
+		tree    string
+		outcome Outcome
+		reason  string
+	}{
+		{"another attribute on an unmoved tree", smoke, nil, attestedTree, Stale, `attribute "smoke"`},
+		{"another attribute on a moved landing's own tree", pureEvidence("build", closureA), &smoke, movedTree, Stale, `attribute "smoke"`},
+		{"another attribute carried to a moved landing", smoke, nil, movedTree, Stale, `attribute "smoke"`},
+		{"a pure claim from the command runner", command, nil, attestedTree, Stale, `runner "command"`},
+		{"an effectful claim from the nix runner", effectfulNix, nil, attestedTree, Stale, "is for an effectful check"},
+	} {
+		ch := change(c.own)
+		if c.landed != nil {
+			e := *c.landed
+			e.TextDigest = "landed"
+			ch.Landed = map[string]Evidence{e.Check: e}
+		}
+		v := Decide(ch, Snapshot{
+			Apply:    Applied{Clean: true, Tree: c.tree},
+			Required: []Required{pureCheck("build")},
+			Closures: closures("build", closureB),
+			Now:      observed,
+		})
+		if v.Outcome != c.outcome || !strings.Contains(v.Checks[0].Reason, c.reason) {
+			t.Errorf("%s: outcome %s (%s), want %s naming %s", c.name, v.Outcome, v.Checks[0].Reason, c.outcome, c.reason)
+		}
 	}
 }

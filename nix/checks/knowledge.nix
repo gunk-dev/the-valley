@@ -64,7 +64,20 @@ let
   # in that text are given by path alone, and stand empty in the tree the
   # check reads. Every link resolves as it does in the source, and an edit
   # to one of those files changes nothing here.
-  linkTargets = lib.filter (e: !(lib.hasSuffix ".md" e) && lib.hasInfix (baseNameOf e) linkingText) (
+  #
+  # The text is split once into words, at the characters a link's path
+  # cannot hold (whitespace, brackets, parentheses, quotes, #, :, comma and so on) and
+  # at slashes, so each path component of a link is a word. An entry is a
+  # target when its name is one of the words, which is a set lookup.
+  # Searching the text for each entry's name instead costs a minute.
+  linkWords = builtins.listToAttrs (
+    map (word: lib.nameValuePair word true) (
+      lib.filter (w: w != "" && lib.isString w) (
+        builtins.split "[][:space:]()<>\"'`#:,/*|]+" linkingText
+      )
+    )
+  );
+  linkTargets = lib.filter (e: !(lib.hasSuffix ".md" e) && linkWords ? ${baseNameOf e}) (
     entries root ""
   );
 in

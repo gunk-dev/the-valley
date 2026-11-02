@@ -23,14 +23,8 @@ import (
 // program's own main with real standard output and error.
 
 // TestMain runs this test binary as attest when ATTEST_AS_MAIN is set.
-// ATTEST_TEST_BUILD_SLOTS then sets how many builds that attest runs at
-// once, so a test decides the capacity rather than the machine's CPU
-// count.
 func TestMain(m *testing.M) {
 	if os.Getenv("ATTEST_AS_MAIN") != "" {
-		if slots, err := strconv.Atoi(os.Getenv("ATTEST_TEST_BUILD_SLOTS")); err == nil {
-			buildSlots = slots
-		}
 		main()
 		os.Exit(0)
 	}
@@ -277,7 +271,7 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []checkSpec{{name: "one", attribute: "one"}, {name: "broken", attribute: "broken"}, {name: "two", attribute: "two"}}
-	runs := runPure(tree, nixSystem(), specs, false, nil, nil)
+	runs := runPure(tree, nixSystem(), specs, false, defaultSlots, nil, nil)
 	for i, r := range runs {
 		if r.err != nil {
 			t.Fatalf("%s: %v", specs[i].name, r.err)
@@ -320,7 +314,7 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 
 // Two slow checks build side by side when attest may run two builds at
 // once: the run takes about as long as one of them. Allowed one build at a
-// time, the same run takes as long as both. The capacity is set here, so
+// time, the same run takes as long as both. --slots sets the capacity, so
 // the machine's CPU count does not decide either.
 func TestChecksBuildSideBySide(t *testing.T) {
 	// The sandbox's /bin/sh may have no sleep, so each check waits on a
@@ -340,9 +334,8 @@ func TestChecksBuildSideBySide(t *testing.T) {
 			"slow-one": fmt.Sprintf("check %q %q", "slow-one", script),
 			"slow-two": fmt.Sprintf("check %q %q", "slow-two", script),
 		})
-		f.env = append(f.env, fmt.Sprintf("ATTEST_TEST_BUILD_SLOTS=%d", c.slots))
 		began := time.Now()
-		stdout, stderr, err := f.attest(t, "--check", "slow-one", "--check", "slow-two")
+		stdout, stderr, err := f.attest(t, "--slots", strconv.Itoa(c.slots), "--check", "slow-one", "--check", "slow-two")
 		took := time.Since(began)
 		if err != nil {
 			t.Fatalf("the slow checks did not pass: %v\n%s%s", err, stdout, stderr)

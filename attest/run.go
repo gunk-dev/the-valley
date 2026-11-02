@@ -40,12 +40,16 @@ func cmdRun(args []string) (err error) {
 	telemetryDir := fs.String("telemetry", "", "a telemetry stream to record the run's progress in")
 	telemetryRun := fs.String("telemetry-run", "", "the run ID the progress records name")
 	project := fs.String("project", "", "the project the progress records name")
+	slots := fs.Int("slots", defaultSlots, "how many nix builds run at once")
 	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
 	fs.Var(&costs, "cost", "a check's declared cost class, for its timing")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *slots < 1 {
+		return fmt.Errorf("--slots %d: at least one build must run at a time", *slots)
 	}
 	classes, err := costClasses(costs)
 	if err != nil {
@@ -87,7 +91,7 @@ func cmdRun(args []string) (err error) {
 	tel := telemetry.NewEmitter(*telemetryDir, telemetry.Self("attest", ""), *telemetryRun)
 	tel.Correlate(telemetry.Record{Project: *project, Change: *changeID, Version: *changeVersion,
 		Head: subj.Digest["git-sha1"] + subj.Digest["git-sha256"], Tree: subj.Digest[subj.Primary]})
-	tel.Emit("run.start", telemetry.Record{}, map[string]any{"checks": append(append([]string{}, checks...), commands...), "slots": buildSlots, "system": *system})
+	tel.Emit("run.start", telemetry.Record{}, map[string]any{"checks": append(append([]string{}, checks...), commands...), "slots": *slots, "system": *system})
 	defer func() {
 		result := "passed"
 		if err != nil {
@@ -178,7 +182,7 @@ func cmdRun(args []string) (err error) {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	runPure(tree, *system, pure, *timings, report, obs)
+	runPure(tree, *system, pure, *timings, *slots, report, obs)
 	for _, spec := range effectful {
 		began := time.Now()
 		obs.emit("check.start", spec.name, nil)

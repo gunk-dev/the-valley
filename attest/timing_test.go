@@ -268,7 +268,7 @@ esac
 	run := func(probe bool) (checkOutcome, string) {
 		t.Helper()
 		os.Remove(calls)
-		runs := runPure(dir, "x86_64-linux", []checkSpec{{name: "tree-ok", attribute: "tree-ok"}}, probe, nil, nil)
+		runs := runPure(dir, "x86_64-linux", []checkSpec{{name: "tree-ok", attribute: "tree-ok"}}, probe, defaultSlots, nil, nil)
 		if len(runs) != 1 {
 			t.Fatalf("one check ran %d times", len(runs))
 		}

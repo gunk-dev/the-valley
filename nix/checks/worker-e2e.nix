@@ -5,9 +5,9 @@
 # An earlier start that was interrupted leaves nothing that stands in the
 # way. Until the registry holds the key, the worker cannot reach the
 # host's repositories. Once it does, a pass builds the nix checks a ready
-# change requires, one build at a time, through the machine's nix daemon,
-# and the evidence is on origin before anyone approves the change. The
-# timer runs the next pass.
+# change requires side by side, as many at once as the host gives it
+# slots, through the machine's nix daemon, and the evidence is on origin
+# before anyone approves the change. The timer runs the next pass.
 #
 # Then the wake directory. A move the worker reads starts a pass with the
 # timer stopped, and a move during a pass gets the next one. A landing by
@@ -90,9 +90,9 @@ let
   # Each check runs a script from the project's tree in the sandbox's
   # shell, and the script is the derivation's one input. The project's own
   # scripts spin for about half a second, several of the sampler's ticks,
-  # so two builds at once would be seen at once, and write the cores the
-  # daemon gave them. The runaway change's first script instead doubles a
-  # string until something stops it.
+  # so the two builds a pass runs at once are seen at once, and write the
+  # cores the daemon gave them. The runaway change's first script instead
+  # doubles a string until something stops it.
   flake = pkgs.writeText "flake.nix" ''
     {
       outputs =
@@ -181,8 +181,9 @@ in
     name = "valley-worker-e2e";
     nodes.host = {
       imports = [ self.nixosModules.default ];
-      # Six CPUs: attest could run six builds at once if the unit let it,
-      # and a build can want more CPUs than the slice's quota of four.
+      # Six CPUs: more than the worker's slots, so the slots and not the
+      # CPU count decide how many checks build at once, and a build can
+      # want more CPUs than the slice's quota of four.
       virtualisation.cores = 6;
       virtualisation.memorySize = 2048;
       environment.systemPackages = [
@@ -207,10 +208,15 @@ in
           instanceProject = "instance";
           signerProjects."worker/attestations" = [ "project" ];
         };
+        # Two checks at once, each told it may use two cores, rather
+        # than the defaults of one check at a time on four.
         worker = {
           enable = true;
           projects = [ "project" ];
           signerName = "worker/attestations";
+          buildSlots = 2;
+          maxJobs = 2;
+          cores = 2;
         };
       };
       # NixOS test machines panic on any OOM, a cgroup's included
@@ -372,7 +378,7 @@ in
           fingerprint = host.succeed(f"ssh-keygen -lf {state}/key").strip()
           assert attestations() == []
 
-      with subtest("enrolled in the registry, the worker builds the ready change's checks one at a time and publishes them"):
+      with subtest("enrolled in the registry, the worker builds the ready change's checks side by side and publishes them"):
           land_instance(" ".join(public.split()[:2]))
           host.succeed(f"grep -q '^worker/attestations+{keyhash}+' /var/lib/valley-identity/known-signers")
           host.wait_until_succeeds(
@@ -390,14 +396,14 @@ in
           assert f"published {refs[0]}" in said, said
           for check in ["first", "second"]:
               host.succeed(f"{git} -C /srv/git/project.git cat-file -e {refs[0]}:{check}/statement.note")
-          # One build at a time, each in the daemon's cgroup, inside the
-          # slice, each told it may use 4 cores.
+          # Both checks at once, each in the daemon's cgroup, inside the
+          # slice, each told it may use the 2 cores the host configures.
           builders = [int(n) for n in host.succeed("cat /tmp/builders").split()]
-          assert max(builders) == 1, builders
+          assert max(builders) >= 2, builders
           cgroups = set(host.succeed("cat /tmp/build-cgroups").split())
           assert cgroups and all(c.startswith("0::/valley.slice/valley-builds.slice/nix-daemon.service") for c in cgroups), cgroups
           for check in ["first", "second"]:
-              assert host.succeed(f"cat /nix/store/*-worker-{check}").strip() == "4", check
+              assert host.succeed(f"cat /nix/store/*-worker-{check}").strip() == "2", check
           for unit in ["valley-worker.service", "nix-daemon.service"]:
               assert host.succeed(f"systemctl show -p Slice --value {unit}").strip() == "valley-builds.slice", unit
 

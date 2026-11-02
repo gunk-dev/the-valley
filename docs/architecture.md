@@ -1533,30 +1533,43 @@ change records, and the plan graph, which a worker does not need. A permission t
 attestation pushes is **not built** (knot oc-6da5273). It must exist before a worker runs on more
 than one host.
 
-The worker's builds are capped at one check build at a time, 4 CPUs, and 8 GiB of memory
-(**deployment choice**). `valley-builds.slice` enforces the 4-CPU and 8-GiB limits across the Nix
-daemon and the worker (see [The build slice](#the-build-slice)), and `valley-worker.service`
-configures how the worker invokes Nix (`implemented`):
+How many checks the worker builds at once, and with how many CPUs and how much memory, is a
+**deployment choice**. Three worker options set its build capacity: `buildSlots`, `maxJobs` and
+`cores`. Their defaults allow one check build process at a time, with one local derivation job at a
+time and `NIX_BUILD_CORES=4`. Separately, the default slice limits are four CPUs' worth of CPU time
+and 8 GiB of memory. `valley-builds.slice` enforces those caps across the Nix daemon and the worker
+together (see [The build slice](#the-build-slice)), and `valley-worker.service` configures how the
+worker invokes Nix (`implemented`):
 
 - `valley-worker.service` runs inside `valley-builds.slice`, so the worker's own flake evaluation
-  shares the slice's CPU and memory caps with the daemon's builds.
-- `attest run` starts one `nix build` process per CPU available to it (`runtime.NumCPU()`).
-  `valley-worker.service` pins the worker to a single CPU (`CPUAffinity=0`), so `attest` runs one
-  check build at a time.
-- `NIX_CONFIG` sets `max-jobs = 1` and `cores = 4`. The Nix daemon applies both settings per client
-  connection, including connections from untrusted users. Each `nix build` therefore builds one
-  derivation at a time and passes `NIX_BUILD_CORES=4` to the builder. `NIX_BUILD_CORES` is only a
-  hint; the slice's `CPUQuota` is what enforces the CPU cap.
+  shares the slice's CPU and memory caps with the daemon's builds. The module sets no CPU affinity
+  for the worker. Its evaluation shares the slice's CPU-time quota with the daemon's builds.
+- The worker passes `--slots <buildSlots>` to `attest run`, which starts up to that many `nix build`
+  processes at once, one per distinct check derivation.
+- `NIX_CONFIG` sets `max-jobs = <maxJobs>` and `cores = <cores>`. The Nix daemon applies both
+  settings per client connection, including connections from untrusted users. Each `nix build`
+  therefore may run up to `maxJobs` local derivation jobs at once, including dependencies of its
+  check, and passes `NIX_BUILD_CORES=<cores>` to each builder. During the build phase the worker's
+  concurrent builds allow up to `buildSlots × maxJobs` such jobs. Other clients' jobs are
+  additional. `NIX_BUILD_CORES` is only a hint; the slice's `CPUQuota` limits aggregate CPU time.
+- The slice's `CPUQuota` and `MemoryMax` are aggregate CPU-time and memory limits for the worker,
+  its child processes, and the Nix daemon with its local builds for all users. Concurrent builds
+  share them, and the worker has no reserved share. Builds outside the slice are not covered.
+- If memory cannot be reclaimed below `MemoryMax`, the kernel kills a process in the slice. That may
+  be an unrelated build, a daemon process, or the worker. If `attest` returns a failure and the
+  worker survives to save it, later passes back off that batch. Killing the worker before it records
+  the failure does not establish that backoff.
 - `NIX_CONFIG` sets `builders =` and `accept-flake-config = false`, so the worker never delegates
   builds to remote machines and ignores `nixConfig` blocks in candidate flakes.
 
 Individual builds have no timeout. A check build that hangs holds the worker lock and blocks further
 passes until an operator stops `valley-worker.service`.
 
-Checked by `worker-e2e` and `module-eval`. On a six-CPU VM, `worker-e2e` runs the worker against a
-ready change with two required Nix checks and verifies that they build one at a time inside
-`valley-builds.slice` with `NIX_BUILD_CORES=4`. `module-eval` checks the rendered systemd units and
-`NIX_CONFIG`.
+Checked by `worker-e2e` and `module-eval`. On a six-CPU VM with `buildSlots = 2` and `cores = 2`,
+`worker-e2e` runs the worker against a ready change with two required Nix checks and verifies that
+they build at the same time inside `valley-builds.slice` with `NIX_BUILD_CORES=2`. `module-eval`
+checks the rendered systemd units, the worker's `--slots` and `NIX_CONFIG`, at the defaults and at
+non-default values.
 
 ## Policy
 
@@ -1750,18 +1763,19 @@ The reasons for CUE here, and for the mandatory-versus-default encoding, are in
 shell command in the exported tree. If every check passes, `attest` writes a statement per check,
 signs it, and stores it under `refs/the-valley/attestations/<tree>/<key-hash>`.
 
-The `nix` checks build side by side instead of one after another. One nix evaluation names every
-check's derivation. Each derivation is then built by a `nix build` of its own, with up to one build
-per CPU running at once. Nix applies `max-jobs` and `cores` within each build, so that bound is how
-many checks build at once. Each check's outcome is its own build's exit status, and a check that
-failed keeps its own build's `stderr` as its log. So a failed build stays failed even when another
-derivation produces the same output path, as two fixed-output derivations can. A check that does not
-evaluate is an error for that check alone, and the others are still built. The `command` checks run
-after the `nix` checks, one at a time. The statements are the ones a check built alone would get,
-and nothing is published unless every check passed. Checked by `attest-e2e`, through
-integrator-e2e's stand-in for nix, and against a real nix by the tests in `attest/run_test.go`. A
-nix build has no daemon to build with, so those tests run under `go test` on a machine with nix, and
-skip elsewhere.
+Distinct `nix` check builds can run concurrently, up to the configured slot limit. Checks are
+evaluated together where possible, and any check whose derivation the shared evaluation does not
+return is evaluated individually. Each derivation is then built by a `nix build` of its own, with up
+to `--slots` builds running at once. Without `--slots`, the bound is one build per CPU `attest` may
+run on. Nix applies `max-jobs` and `cores` within each build, not across them. Each check's outcome
+is its own build's exit status, and a check that failed keeps its own build's `stderr` as its log.
+So a failed build stays failed even when another derivation produces the same output path, as two
+fixed-output derivations can. A check that does not evaluate is an error for that check alone, and
+the others are still built. The `command` checks run after the `nix` checks, one at a time. The
+statements are the ones a check built alone would get, and nothing is published unless every check
+passed. Checked by `attest-e2e`, through integrator-e2e's stand-in for nix, and against a real nix
+by the tests in `attest/run_test.go`. A nix build has no daemon to build with, so those tests run
+under `go test` on a machine with nix, and skip elsewhere.
 
 A statement is line-based text that opens with `the-valley/attestation/v1` (`attest/text.go`,
 `schema/attestation.cue`). Its subject is the tree digest. A pure statement records the derivation,
@@ -2122,12 +2136,13 @@ each check, with its result, its duration, and whether nix found its output alre
 `$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
 names the repository, the change and version, the head, the check, its runner and declared cost, its
 result, and `duration_ms`. A `nix` check's line also gives its evaluation time, `eval_ms`, which is
-part of its `duration_ms`. The `nix` checks share one evaluation and build at the same time, so the
-sum of a run's `duration_ms` is more than the run took. The log stays local and is not evidence:
-nothing signs it or pushes it. A log that cannot be written is a warning, and approval continues.
-Timing never holds approval up: anything at the log's path that is not a regular file is refused at
-once, and a `time` line, warning or log line that cannot be written within a second is dropped. The
-reference describes [the timing log](reference.md#the-timing-log) field by field.
+part of its `duration_ms`. Per-check durations are not additive wall time. They can count shared
+evaluation repeatedly, and build durations can overlap when multiple slots are available. The log
+stays local and is not evidence: nothing signs it or pushes it. A log that cannot be written is a
+warning, and approval continues. Timing never holds approval up: anything at the log's path that is
+not a regular file is refused at once, and a `time` line, warning or log line that cannot be written
+within a second is dropped. The reference describes [the timing log](reference.md#the-timing-log)
+field by field.
 
 A change with a record is requested as `refs/the-valley/integration-requests/main/c-<change-id>`. A
 branch no record is on is requested under its name with each `/` replaced by `-`. A branch whose

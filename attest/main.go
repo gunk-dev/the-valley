@@ -57,10 +57,12 @@ run flags:
   --change-version N  the change version each timing names
   --cost NAME=CLASS   the cost class the policy declares for a check, for
                       its timing; repeatable
+  --slots N           how many nix builds run at once (default: one per
+                      CPU this process may run on)
 
 run evaluates every flake check in one nix evaluation, then builds each
-one's derivation in a nix build of its own, up to one per CPU at once,
-so the nix daemon builds them side by side. Each check's result is its
+one's derivation in a nix build of its own, up to --slots of them at
+once, so the nix daemon builds them side by side. Each check's result is its
 own build's, and a check that fails keeps its own build's output as its
 log. A check that does not evaluate is an error for that check alone.
 The --command checks run after the flake checks, one at a time.

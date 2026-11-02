@@ -372,14 +372,15 @@ let
 
   # The nix settings the worker's nix commands run with. The daemon applies
   # max-jobs and cores to every connection, a client's that is not trusted
-  # included: each nix build the worker starts builds one derivation at a
-  # time, and tells the builder it may use 4 cores. cores is a hint the
-  # builder reads as NIX_BUILD_CORES; the build slice is what holds a build
-  # to its CPUs. The worker uses no remote builder, and no flake's nixConfig.
+  # included: each nix build the worker starts builds up to worker.maxJobs
+  # derivations at once, and tells each builder it may use worker.cores
+  # cores. cores is a hint the builder reads as NIX_BUILD_CORES; the build
+  # slice is what holds a build to its CPUs. The worker uses no remote
+  # builder, and no flake's nixConfig.
   workerNixConfig = ''
     extra-experimental-features = nix-command flakes
-    max-jobs = 1
-    cores = 4
+    max-jobs = ${toString cfg.worker.maxJobs}
+    cores = ${toString cfg.worker.cores}
     builders =
     accept-flake-config = false
   '';
@@ -387,6 +388,22 @@ let
   # The build slice (services.valley.buildSlice): the one slice every
   # build of this machine's nix daemon runs in, under the host's caps.
   buildSlice = "valley-builds.slice";
+
+  # What each of the worker's capacity options says about the slice.
+  workerCapacityBound = ''
+    The build slice's {option}`services.valley.buildSlice.cpuQuota` and
+    {option}`services.valley.buildSlice.memoryMax` set aggregate CPU-time
+    and memory limits for the worker, its child processes, and the nix
+    daemon with its local builds for all users. Concurrent builds share
+    these limits, and the worker has no reserved share. Builds outside the
+    slice are not covered.
+
+    If memory cannot be reclaimed below `memoryMax`, the kernel kills a
+    process in the slice. That may be an unrelated build, a daemon
+    process, or the worker. If `attest` returns a failure and the worker
+    survives to save it, later passes back off that batch. Killing the
+    worker before it records the failure does not establish that backoff.
+  '';
 
   # What the service does each time it starts: make the key if there is
   # none, write its public halves and this host's ssh keys, make the
@@ -441,7 +458,7 @@ let
     cd "$origin"
     exec valley-worker ${
       lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
-    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir}
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots}
   '';
 
   # The name the controllers sign under, which the worker's must not be.
@@ -1788,7 +1805,8 @@ in
     # valley-worker over the projects listed, so ready changes have their
     # nix checks built before anyone approves them. Machine options only —
     # whether this host runs the worker, for which of its projects, under
-    # which signing name, how often, and where it keeps its state.
+    # which signing name, with how much build capacity, how often, and
+    # where it keeps its state.
     worker = {
       enable = lib.mkEnableOption ''
         the valley check worker: a timer that builds the nix checks ready
@@ -1822,6 +1840,49 @@ in
           Enrolled with the worker's key, it is what the known-signers file
           and the identity registry hold for the worker: the registry key's
           `signs`, and the name in the verifier line.
+        '';
+      };
+
+      buildSlots = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 1;
+        example = 3;
+        description = ''
+          The most `nix build` processes the worker runs at once for
+          distinct check derivations in one batch, as `valley-worker
+          --slots`. Checks with the same derivation share one process.
+
+          ${workerCapacityBound}
+        '';
+      };
+
+      maxJobs = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 1;
+        example = 2;
+        description = ''
+          Each worker `nix build` may run up to this many local derivation
+          jobs at once, including dependencies of its check, as nix's
+          `max-jobs` setting. During the build phase, the worker's
+          concurrent builds therefore allow up to
+          {option}`services.valley.worker.buildSlots` times this many such
+          jobs. Other clients' jobs are additional.
+
+          ${workerCapacityBound}
+        '';
+      };
+
+      cores = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 4;
+        example = 2;
+        description = ''
+          The `cores` hint each derivation's builder gets, as nix's `cores`
+          setting. The builder reads it as `NIX_BUILD_CORES`, and a build
+          that honours it may use that value to limit its own parallel
+          jobs. It caps nothing.
+
+          ${workerCapacityBound}
         '';
       };
 
@@ -2872,11 +2933,10 @@ in
     # by hand.
     #
     # The unit runs in the build slice, so its evaluation shares the caps
-    # with the builds. It runs on one CPU. attest runs one nix build per
-    # CPU it may run on, and NIX_CONFIG holds each of those to one
-    # derivation at a time, so the worker's builds run one at a time. The
-    # builds themselves run in the daemon, under the slice's quota,
-    # whatever CPU the worker is on.
+    # with the builds. attest builds worker.buildSlots checks at once, and
+    # NIX_CONFIG lets each of those builds build worker.maxJobs derivations
+    # at once. The builds themselves run in the daemon, under the slice's
+    # quota and memory cap, which they share with the worker.
     systemd.services.valley-worker = lib.mkIf cfg.worker.enable {
       description = "One pass of the valley check worker";
       after = [
@@ -2920,7 +2980,6 @@ in
         RestartForceExitStatus = "75";
         RestartSec = cfg.worker.interval;
         Slice = buildSlice;
-        CPUAffinity = "0";
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         # Its own directory, its wake directory, and the nix daemon's

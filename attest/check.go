@@ -240,13 +240,14 @@ func evalDrvPaths(tree, system string, attrs []string) map[string]string {
 	return drvs
 }
 
-// buildSlots is how many nix build processes runPure runs at once.
-var buildSlots = runtime.NumCPU()
+// defaultSlots is how many nix build processes attest run starts at once
+// when --slots does not say: one per CPU attest may run on.
+var defaultSlots = runtime.NumCPU()
 
 // runPure runs every pure check and returns their runs in the order given.
 // It evaluates them all together (evalClosures), then builds each
-// derivation that evaluated in a nix build of its own, buildSlots of them
-// at once, so the nix daemon builds them side by side (buildChecks).
+// derivation that evaluated in a nix build of its own, slots of them at
+// once, so the nix daemon builds them side by side (buildChecks).
 // Checks that evaluate to the same derivation share its one build. With
 // report, it hands each run to report in the order given, as soon as that
 // check and every one before it have ended.
@@ -260,7 +261,7 @@ var buildSlots = runtime.NumCPU()
 // A check is timed from the start of the shared evaluation. Its duration
 // is its evaluation, its probe, and its derivation's build. One that does
 // not evaluate ends at its evaluation error.
-func runPure(tree, system string, specs []checkSpec, probe bool, report func(ranCheck), obs *observer) []ranCheck {
+func runPure(tree, system string, specs []checkSpec, probe bool, slots int, report func(ranCheck), obs *observer) []ranCheck {
 	began := time.Now()
 	obs.emit("eval.start", "", map[string]any{"checks": specNames(specs)})
 	evals := evalClosures(tree, system, specs)
@@ -293,7 +294,7 @@ func runPure(tree, system string, specs []checkSpec, probe bool, report func(ran
 	if obs != nil {
 		build = func(drv string) (string, string, error) { return obs.nixBuild(tree, drv) }
 	}
-	buildChecks(runs, drvs, buildSlots, build, report, obs)
+	buildChecks(runs, drvs, slots, build, report, obs)
 	return runs
 }
 

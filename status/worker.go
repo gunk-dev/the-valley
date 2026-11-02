@@ -18,7 +18,8 @@ package main
 //     already holds evidence for. Command checks are left to approve.
 //  4. It runs the rest in one batch, with attest run --rev <head> under
 //     the worker's key, and pushes the one attestation ref attest stored.
-//     It pushes nothing else.
+//     It pushes nothing else. Given --slots, the batch builds that many
+//     checks at once; without it, attest's own default decides.
 //
 // The evidence is about the head's tree, so it stays true if the change
 // moves on while the batch runs. The pass does not read the change's
@@ -96,7 +97,7 @@ import (
 	"the-valley/telemetry"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>]"
+const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
@@ -114,6 +115,7 @@ const (
 // says, and what it has found going wrong.
 type worker struct {
 	key, name string
+	slots     int      // how many checks a batch builds at once, or 0 for attest's default
 	keyhash   string   // the key hash an attestation ref of this signer ends in
 	lock      *os.File // the state directory's lock, held for the pass
 	wake      *wake    // the wake directory's claim, or nil without --wake
@@ -128,9 +130,10 @@ type worker struct {
 func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	var repos []string
 	var key, name, state, wakeDir, telemetryDir string
+	slots := 0
 	for i := 0; i < len(args); i++ {
 		opt, value, inline := strings.Cut(args[i], "=")
-		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" && opt != "--telemetry" {
+		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" && opt != "--telemetry" && opt != "--slots" {
 			return failure(workUsage)
 		}
 		if !inline {
@@ -156,6 +159,12 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 			wakeDir = value
 		case "--telemetry":
 			telemetryDir = value
+		case "--slots":
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 {
+				return failure(fmt.Sprintf("--slots %s: not a whole number of at least 1", value))
+			}
+			slots = n
 		}
 	}
 	if len(repos) == 0 || key == "" {
@@ -227,7 +236,7 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 		return failure(fmt.Sprintf("could not read the signing key at %s: %s", key, refusalOf(out)))
 	}
 
-	w := &worker{key: key, name: name, keyhash: fields[1], lock: lock, wake: claim, stdout: stdout, stderr: stderr}
+	w := &worker{key: key, name: name, slots: slots, keyhash: fields[1], lock: lock, wake: claim, stdout: stdout, stderr: stderr}
 	w.tel = openWorkerTelemetry(telemetryDir)
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
@@ -448,6 +457,9 @@ func (w *worker) attest(g git, head string, checks []nixCheck, run, project stri
 	args := []string{"run", "--repo", repo, "--rev", head, "--key", w.key}
 	if w.name != "" {
 		args = append(args, "--name", w.name)
+	}
+	if w.slots > 0 {
+		args = append(args, "--slots", strconv.Itoa(w.slots))
 	}
 	for _, q := range checks {
 		args = append(args, "--check", q.name+"="+q.attribute)

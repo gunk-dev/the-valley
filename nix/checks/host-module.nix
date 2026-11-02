@@ -42,6 +42,7 @@ let
     unicodeSpacedSignerProjectsHost
     identityHost
     workerHost
+    capacityWorkerHost
     buildSliceHost
     noSliceWorkerHost
     unrestrictedWorkerHost
@@ -211,6 +212,7 @@ let
     ++ restrictedHost.config.assertions
     ++ identityHost.config.assertions
     ++ workerHost.config.assertions
+    ++ capacityWorkerHost.config.assertions
     ++ restackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
@@ -711,9 +713,10 @@ let
   # a slice that holds the worker and the nix daemon both, since a build
   # runs in the daemon's cgroup and never in the worker's; the slice and
   # the daemon set no device policy, so a NixOS test still gets /dev/kvm.
-  # The worker runs on one CPU, so attest, which runs one nix build per CPU
-  # it may run on, runs one at a time, and each nix build builds one
-  # derivation at a time with 4 cores. The account is not in the git
+  # The worker may run on any CPU. A host that sets no build capacity has
+  # the worker build one check at a time, each nix build building one
+  # derivation at a time with 4 cores. capacityWorkerHost's values reach
+  # the worker's --slots and its NIX_CONFIG. The account is not in the git
   # group, so the repositories on disk are not the worker's to read or
   # write, and it reaches them only through this host's sshd, checking the
   # host's key. Its timer starts the first pass a second after the timer
@@ -726,6 +729,7 @@ let
   workerMisrendered =
     let
       unit = workerHost.config.systemd.services.valley-worker;
+      capacity = capacityWorkerHost.config.systemd.services.valley-worker;
       service = unit.serviceConfig;
       daemon = workerHost.config.systemd.services.nix-daemon.serviceConfig;
       slice = workerHost.config.systemd.slices.valley-builds.sliceConfig;
@@ -747,9 +751,12 @@ let
     || slice.MemorySwapMax or null != "0"
     || devicePolicy slice
     || devicePolicy daemon
-    || service.CPUAffinity or null != "0"
+    || service ? CPUAffinity
     || !(lib.hasInfix "max-jobs = 1\n" unit.environment.NIX_CONFIG)
     || !(lib.hasInfix "cores = 4\n" unit.environment.NIX_CONFIG)
+    || !(lib.hasInfix "max-jobs = 2\n" capacity.environment.NIX_CONFIG)
+    || !(lib.hasInfix "cores = 2\n" capacity.environment.NIX_CONFIG)
+    || capacity.serviceConfig ? CPUAffinity
     || !(lib.hasInfix "builders =\n" unit.environment.NIX_CONFIG)
     || !(lib.hasInfix "-o StrictHostKeyChecking=yes -o HostKeyAlias=localhost" unit.environment.GIT_SSH_COMMAND)
     || service.ReadWritePaths or [ ] != [
@@ -757,7 +764,8 @@ let
       "/var/lib/valley-worker-wake"
       "/nix/var/nix/daemon-socket"
     ]
-    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake\n" unit.script)
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 1\n" unit.script)
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 3\n" capacity.script)
     || unit.wantedBy != [ ]
     || unit.unitConfig.StartLimitIntervalSec or null != 0
     || service.RestartForceExitStatus or null != "75"
@@ -1124,7 +1132,7 @@ in
     else if buildSliceMisrendered then
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
-      throw "valley module-eval: the check worker must run as its own account outside the git group, on one CPU, with one derivation built at a time on 4 cores, in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
+      throw "valley module-eval: the check worker must run as its own account outside the git group, free to run on any CPU, building as many checks at once as worker.buildSlots says (1 unset), each with nix's max-jobs and cores set from worker.maxJobs and worker.cores (1 and 4 unset), in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
     else if restackerRenderedWithoutEnable then
       throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
     else if restackerMisrendered then

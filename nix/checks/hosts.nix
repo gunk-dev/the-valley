@@ -438,6 +438,20 @@ in
     modules = [ { services.valley.integrator.signerProjects = lib.mkForce { }; } ];
   };
 
+  # The check worker given build capacity of its own: three checks at
+  # once, each building two derivations at once on two cores.
+  capacityWorkerHost = workerHost.extendModules {
+    modules = [
+      {
+        services.valley.worker = {
+          buildSlots = 3;
+          maxJobs = 2;
+          cores = 2;
+        };
+      }
+    ];
+  };
+
   # The check worker on a host whose builds are not capped: turning it on
   # must not be what caps every build of the daemon.
   noSliceWorkerHost = workerHost.extendModules {

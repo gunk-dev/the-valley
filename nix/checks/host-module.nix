@@ -55,6 +55,7 @@ let
     defaultRestackerHost
     unservedRestackerHost
     keylessRestackerHost
+    telemetryHost
     ;
 
   # The web publisher's module (nix/web-publisher.nix) beside the host
@@ -205,6 +206,21 @@ let
     ];
   };
 
+  # The same, with the source named as one of the module's own.
+  collidingTelemetryHost = telemetryHost.extendModules {
+    modules = [
+      {
+        services.valley.telemetry.localSources = [
+          {
+            name = "worker";
+            description = "a name the module already uses";
+            units = [ "converge.service" ];
+          }
+        ];
+      }
+    ];
+  };
+
   failedAssertions = builtins.filter (a: !a.assertion) (
     host.config.assertions
     ++ noBackupHost.config.assertions
@@ -220,6 +236,7 @@ let
     ++ defaultWorkerHost.config.assertions
     ++ narrowedWorkerHost.config.assertions
     ++ restackerHost.config.assertions
+    ++ telemetryHost.config.assertions
     ++ defaultRestackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
@@ -359,6 +376,11 @@ let
       host = noVerifierWebReceiverHost;
       says = "services.valley.webReceiver.verifiers names no verifier line";
       why = "the receiver pins no verifier";
+    }
+    {
+      host = collidingTelemetryHost;
+      says = "source names must be unique, and localSources or remoteSources repeats one: worker";
+      why = "a local source named as one of the module's own would make the catalog name two sources alike";
     }
     {
       host = noInstanceWebPublisherHost;
@@ -844,6 +866,23 @@ let
     || integratorHost.config.systemd.targets ? valley-restackers
     || integratorHost.config.users.users ? valley-restacker;
 
+  # The host's own unit is one more local source, enabled, with the units
+  # it lists, and the module's own sources stay beside it.
+  telemetrySourceMisrendered =
+    let
+      sources = telemetryHost.config.services.valley.telemetry.catalog.sources;
+      named = builtins.filter (s: s.name == "converge") sources;
+    in
+    lib.length named != 1
+    || (lib.head named) != {
+      name = "converge";
+      description = "the service that converges this host";
+      enabled = true;
+      units = [ "converge.service" ];
+      location = "local";
+    }
+    || !(lib.any (s: s.name == "worker") sources);
+
   restackerMisrendered =
     let
       unit = restackerHost.config.systemd.services."valley-restacker@";
@@ -1185,6 +1224,8 @@ in
       throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
     else if restackerMisrendered then
       throw "valley module-eval: each restacker controller must run valley-restacker run for its project as its own account outside the git group, with its own 0700 state directory as the only persistent path it may write, pushing over this host's sshd as its principal with the key systemd hands it as a credential, checking the host's own key, and reading the floor from the instance repository"
+    else if telemetrySourceMisrendered then
+      throw "valley module-eval: a unit the host lists in telemetry.localSources must be catalogued as an enabled local source with exactly those units, beside the module's own"
     else if webPublisherRenderedWithoutEnable then
       throw "valley module-eval: web publisher machinery rendered for a host that imports its module and never enabled it"
     else if webPublisherMisrendered then

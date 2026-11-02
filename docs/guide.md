@@ -767,6 +767,18 @@ A principal is named by its key's tag, as for a push. `observe` is host-wide: th
 span every project, so give it only to principals that may see every project's activity. `report`
 grants no reading. A workstation that should read its own reports back needs `observe` too.
 
+A unit of the host's own, such as the service that converges or deploys it, can be a source too:
+
+```nix
+services.valley.telemetry.localSources = [
+  { name = "converge"; description = "the service that converges this host"; units = [ "converge.service" ]; }
+];
+```
+
+`valley telemetry sources` then reports it with the state of its units, and
+`read --source converge --logs` shows what they printed, as for the valley's own services. A name
+that another source already uses is refused when the host is evaluated.
+
 A component on another machine, such as a web receiver, can report with a principal of its own:
 
 ```nix

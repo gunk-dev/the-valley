@@ -337,6 +337,24 @@ in
     };
   };
 
+  # The collector on, with one unit of the host's own declared as a source.
+  telemetryHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      telemetry = {
+        enable = true;
+        observers = [ "operator" ];
+        localSources = [
+          {
+            name = "converge";
+            description = "the service that converges this host";
+            units = [ "converge.service" ];
+          }
+        ];
+      };
+    };
+  };
+
   # The build slice alone, at caps of its own: every build of the daemon
   # capped, and no worker.
   buildSliceHost = mkHost {

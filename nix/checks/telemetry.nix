@@ -172,6 +172,13 @@ in
           telemetry = {
             enable = true;
             observers = [ "operator" ];
+            localSources = [
+              {
+                name = "host-probe";
+                description = "a service of the host's own, which fails";
+                units = [ "host-probe.service" ];
+              }
+            ];
             reporters = [
               "alice"
               "receiver"
@@ -184,6 +191,11 @@ in
               }
             ];
           };
+        };
+        # A unit of the host's own, which nothing starts and which fails.
+        systemd.services.host-probe = {
+          serviceConfig.Type = "oneshot";
+          script = "echo host-probe says why; exit 3";
         };
         systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
         nix.settings.experimental-features = [
@@ -378,6 +390,17 @@ in
           assert host.succeed("stat -c '%a %U %G' /var/lib/valley-telemetry/worker").strip() == "2750 valley-worker valley-telemetry"
           assert host.succeed("stat -c '%a %U %G' /var/lib/valley-worker").strip() == "700 valley-worker valley-worker"
           assert host.succeed("stat -c '%a %U' /run/valley-telemetry.sock").strip() == "600 git"
+
+      with subtest("a unit the host declares is a source, failed and logged as the module's own are"):
+          host.fail("systemctl start host-probe.service")
+          probe = source("host-probe")
+          assert probe["location"] == "local" and probe["state"] == "failed", probe
+          assert "host-probe.service" in probe["detail"] and probe["unit_states"][0]["ExecMainStatus"] == "3", probe
+          assert probe["unit_states"][0]["Id"] == "host-probe.service" and "Environment" not in probe["unit_states"][0], probe
+          assert [s for s in of(observe("sources"), "source") if s["name"] == "host-probe"][0]["state"] == "failed"
+          shown = host.succeed("valley telemetry --remote git@localhost:project.git read --source=host-probe --logs")
+          assert "host-probe says why" in shown and "untrusted output" in shown, shown
+          assert "host-probe says why" not in json.dumps(observe("read --source=host-probe")), "lifecycle only without --logs"
 
       with subtest("a reader sees a worker's slow check build while it builds, and its interruption after a kill"):
           good = ready("good", "good.txt")

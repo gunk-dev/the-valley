@@ -68,12 +68,7 @@ let
     }
     // extra;
 
-  manifest = pkgs.writeText "valley-telemetry-manifest.json" (
-    builtins.toJSON {
-      v = 1;
-      host = config.networking.hostName;
-      reporters = tcfg.reporters;
-      sources = [
+  ownSources = [
         (source "worker" "the check worker, and the attest runs its passes start" cfg.worker.enable
           [
             "valley-worker.service"
@@ -153,7 +148,18 @@ let
         (source "telemetry" "the collector's socket" true [ "valley-telemetry.socket" ] {
           configured.collector = "${package}";
         })
-      ]
+  ];
+
+  # The host's own units, catalogued as the module's local sources are.
+  hostSources = map (s: source s.name s.description true s.units { }) tcfg.localSources;
+
+  catalog = {
+    v = 1;
+    host = config.networking.hostName;
+    reporters = tcfg.reporters;
+    sources =
+      ownSources
+      ++ hostSources
       ++ map (r: {
         inherit (r) name description;
         enabled = true;
@@ -161,8 +167,15 @@ let
         reporter = r.principal;
         stale_after_s = r.staleAfter;
       }) tcfg.remoteSources;
-    }
-  );
+  };
+
+  manifest = pkgs.writeText "valley-telemetry-manifest.json" (builtins.toJSON catalog);
+
+  # Every name the catalog holds, each as many times as it is declared.
+  sourceNames =
+    map (s: s.name) ownSources
+    ++ map (s: s.name) tcfg.localSources
+    ++ map (s: s.name) tcfg.remoteSources;
 in
 {
   options.services.valley.telemetry = {
@@ -231,12 +244,50 @@ in
       '';
     };
 
+    localSources = lib.mkOption {
+      type = lib.types.listOf (
+        lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type = lib.types.strMatching "[a-z0-9][a-z0-9._@-]{0,95}";
+              description = "The source's name in the catalog. It must differ from every other source's.";
+            };
+            description = lib.mkOption {
+              type = lib.types.str;
+              description = "What the source is.";
+            };
+            units = lib.mkOption {
+              type = lib.types.nonEmptyListOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9:_.@-]*\\.[a-z]+");
+              example = [ "converge.service" ];
+              description = "The systemd units whose state, lifecycle and journal output the source reports.";
+            };
+          };
+        }
+      );
+      default = [ ];
+      description = ''
+        Units on this host that are not the valley's own, such as the
+        service that converges or deploys the host. Each is catalogued as a
+        local source and read as the module's own sources are: its units'
+        state, their lifecycle, and with logs their journal output. The
+        collector reads only the units listed here.
+      '';
+    };
+
     shellFlags = lib.mkOption {
       type = lib.types.str;
       default = "";
       internal = true;
       description = "The flags the git user's shell serves the telemetry command with; set by this module.";
     };
+  };
+
+  options.services.valley.telemetry.catalog = lib.mkOption {
+    type = lib.types.attrs;
+    internal = true;
+    readOnly = true;
+    default = catalog;
+    description = "The manifest the collector reads, before it is written as JSON; module-eval reads it.";
   };
 
   options.services.valley.packages.telemetry = lib.mkOption {
@@ -251,6 +302,16 @@ in
       {
         assertion = lib.all (r: lib.elem r.principal tcfg.reporters) tcfg.remoteSources;
         message = "services.valley.telemetry.remoteSources names a principal that is not in services.valley.telemetry.reporters.";
+      }
+      {
+        assertion = lib.length (lib.unique sourceNames) == lib.length sourceNames;
+        message = "services.valley.telemetry source names must be unique, and localSources or remoteSources repeats one: ${
+          lib.concatStringsSep ", " (lib.unique (lib.filter (n: lib.count (m: m == n) sourceNames > 1) sourceNames))
+        }";
+      }
+      {
+        assertion = lib.all (s: !lib.hasPrefix "report." s.name) (tcfg.localSources ++ tcfg.remoteSources);
+        message = "services.valley.telemetry source names must not start with \"report.\", which names a reporter's own stream.";
       }
     ];
 

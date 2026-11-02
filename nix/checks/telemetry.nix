@@ -462,7 +462,7 @@ in
               " --setenv=PATH=/run/wrappers/bin:/run/current-system/sw/bin"
               " --setenv=VALLEY_ATTEST_KEY=/home/alice/keys/alice --setenv=VALLEY_ATTEST_NAME=alice/attestations"
               " --working-directory=/home/alice/project --remain-after-exit"
-              f" valley approve --head {fresh} fresh"
+              f" valley approve --build-here --head {fresh} fresh"
           )
           seen: list = []
           for _ in range(120):
@@ -505,7 +505,7 @@ in
           # through a FIFO a sleeping writer holds open between them.
           review = shlex.quote(
               "sudo -u alice -H env VALLEY_ATTEST_KEY=/home/alice/keys/later VALLEY_ATTEST_NAME=alice/attestations"
-              " bash -c 'cd /home/alice/project && exec valley review reviewed'"
+              " bash -c 'cd /home/alice/project && exec valley review --build-here reviewed'"
               " < /tmp/review.fifo > /tmp/review.out 2>&1"
           )
           host.succeed("rm -f /tmp/review.fifo /home/alice/keys/later && mkfifo -m 600 /tmp/review.fifo")

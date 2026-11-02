@@ -113,7 +113,10 @@ _valley() {
   elif [[ ${words[2]} == ready && ${words[CURRENT-1]} == --(head|change|if-active) ]]; then
     return
   elif [[ ${words[2]} == approve && ${words[CURRENT]} == -* ]]; then
-    local -a opts=('--head:the exact head to approve, one of the change'"'"'s version heads')
+    local -a opts=(
+      '--head:the exact head to approve, one of the change'"'"'s version heads'
+      '--build-here:build the nix checks origin holds no evidence for on this machine'
+    )
     _describe -t options 'valley approve option' opts
   elif [[ ${words[2]} == approve && ${words[CURRENT-1]} == --head ]]; then
     return
@@ -153,7 +156,10 @@ _valley() {
     )
     _describe -t options 'valley rebase option' opts
   elif [[ ${words[2]} == review && ${words[CURRENT]} == -* ]]; then
-    local -a opts=('-v:say why no knot is shown')
+    local -a opts=(
+      '-v:say why no knot is shown'
+      '--build-here:let approve build the nix checks origin holds no evidence for on this machine'
+    )
     _describe -t options 'valley review option' opts
   elif [[ ${words[2]} == (review|approve|rebase|status|unready|withdraw) ]] \
     && { (( CURRENT == 3 )) || [[ ${words[2]} == (status|approve) ]]; }; then

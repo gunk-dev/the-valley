@@ -256,13 +256,15 @@ full diff, reject the remote branch, or skip.
 
 ```sh
 valley review kqxm
-valley review [-v] <change>
+valley review [-v] [--build-here] <change>
 ```
 
 - **Arguments and flags:**
   - `<change>`: Change ID, handle, or branch name. The change's active version must record a
     non-empty `branch`.
   - `-v`: Warns on `stderr` if the plan graph cannot be read.
+  - `--build-here`: Lets `[a]pprove` build, on this machine, the required `nix` checks that `origin`
+    holds no evidence for, as `valley approve --build-here` does.
 - **Comparison against the approved version (`valley-go compare`):**
   - Before paging a recorded change, `valley review` identifies the change's **approved version**:
     the greatest version `vM` below the shown version `vN` whose exact `head` commit is named on
@@ -284,8 +286,12 @@ valley review [-v] <change>
       against `origin/main` (or the layer below in a stack).
 - **Interactive prompt actions:**
   - `[a]pprove` (or `[a]pprove all <n>` at the top of a stack, or `[a]pprove <lands>` on a lower
-    layer): Runs all required checks in a temporary worktree of the shown head, signs attestations
-    with `VALLEY_ATTEST_KEY`, and pushes the attestations and
+    layer): Approves the shown head as [`valley approve`](#valley-approve) does. It reuses the
+    evidence `origin` holds for the required checks. When a required `nix` check has no evidence it
+    can reuse, it files the request all the same, builds nothing, and names the check; with
+    `--build-here` it builds that check instead. It runs the `command` checks, and any `nix` check
+    it builds, in a temporary worktree of the shown head, signs attestations with
+    `VALLEY_ATTEST_KEY`, and pushes the attestations and
     `refs/the-valley/integration-requests/main/<request>` in one atomic, leased `git push`. Not
     offered when the change (or any layer at or below it) is `draft` or `withdrawn`, or after its
     checks fail at that head.
@@ -305,13 +311,22 @@ valley review [-v] <change>
 ### `valley approve`
 
 `valley approve` files a change's integration request without paging the diff. It reuses the
-evidence `origin` already holds for the change's required checks, runs and signs the rest, and
-publishes the new evidence with the request in one atomic push.
+evidence `origin` already holds for the change's required checks, and runs and signs the `command`
+checks. The new evidence goes with the request in one atomic push.
+
+Without `--build-here`, a required `nix` check with no evidence `origin` holds does not stop the
+approval. `approve` builds nothing for that check and files the request after the required `command`
+checks pass and the remaining approval steps succeed. When evidence is published, an enabled
+integrator considers the request again. Landing still requires the change to apply cleanly and carry
+acceptable evidence for every required check. Whether a worker publishes depends on the worker
+serving the project and building that version, and on its own evidence ref for the tree not existing
+already. `--build-here` builds those checks on this machine instead.
 
 ```sh
 valley approve kqxm
 valley approve --head 99b5f2f7c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6 kqxm
-valley approve [--head <sha>] <change>
+valley approve --build-here kqxm
+valley approve [--head <sha>] [--build-here] <change>
 ```
 
 - **Arguments and flags:**
@@ -320,6 +335,8 @@ valley approve [--head <sha>] <change>
     record's version heads (active or prior); without `--head`, `approve` prompts on a terminal to
     confirm the active version's head and title, and refuses off a terminal. For an unrecorded
     branch, `<sha>` (if given) must match `origin/<branch>`'s current tip.
+  - `--build-here`: Builds the required `nix` checks that `origin` holds no evidence for on this
+    machine, and publishes their evidence with the request.
 - **Behavior:**
   - Requires the pushing SSH key's principal to hold the `approve` grant on the host (the grant that
     lets a principal approve, also accepted as `request`).
@@ -350,9 +367,38 @@ valley approve [--head <sha>] <change>
     check naming its signer. For each check whose note it does not reuse, it prints the reason on
     `stderr`, for example
     `valley: not reusing code-build: the integrator judges it by <ref>:code-build/statement.note, and its predicate.result is "failed", not "passed"`.
-  - Runs every other required check with `attest run` in a temporary worktree, using
-    `VALLEY_ATTEST_KEY` (and optional `VALLEY_ATTEST_NAME`). When every required check is reused,
-    nothing runs and no signing key is needed.
+  - Without `--build-here`, a required `nix` check with no evidence it reuses is not built.
+    `approve` files the request with the evidence `origin` holds, once the required `command` checks
+    pass and the remaining approval steps succeed, and exits 0. Missing signing credentials, a
+    failed check, a record change, or a refused push still fail the attempt. It publishes no
+    evidence for those checks. It says the approval is recorded and names the checks for which it
+    has no evidence it can reuse:
+
+    ```text
+    Origin holds no evidence yet for the nix check code-build, and nothing was built here.
+    When evidence is published, the integrator considers the request again.
+    Landing still requires a clean apply and acceptable evidence for every required check.
+    Waiting does not ensure that the missing evidence will be published.
+    To build it on this machine instead, approve with --build-here.
+    ```
+
+    If the request passes the record gates, applies cleanly, and has no evidence that requires
+    rejection, missing required evidence produces `stale` with reason `evidence`, and the request
+    remains outstanding. The integrator decides it again whenever evidence arrives on `origin`;
+    whether it then lands depends on those same conditions. An enabled worker serving the project
+    attempts only a ready change's unlanded active version, and skips a tree whose evidence ref of
+    its own lacks the check. A failed build publishes nothing. For an unrecorded branch, or for a
+    version that is not the active one, `approve` says that no worker builds it. When a `command`
+    check ran, `origin` holds this signer's evidence for the tree, so `approve` says that
+    `--build-here` cannot add the missing checks to it
+    ([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+    The attempt's telemetry lists those checks under `missing` in `approve.coverage`, and ends with
+    `approve.end` `filed`.
+
+  - Runs every required `command` check, and with `--build-here` every other required `nix` check,
+    with `attest run` in a temporary worktree, using `VALLEY_ATTEST_KEY` (and optional
+    `VALLEY_ATTEST_NAME`). When every required check is reused, nothing runs and no signing key is
+    needed.
   - Before running anything, refuses when `origin` already holds this signer's ref for the tree,
     `refs/the-valley/attestations/<tree-digest>/<key-hash>`. That namespace is create-only, so the
     new evidence would have nowhere to go
@@ -362,8 +408,8 @@ valley approve [--head <sha>] <change>
     `git push --atomic`. When the request already names the head and there is no new evidence, it
     makes no push.
   - Ends with a summary: `request` with the request ref and head, `evidence` for each attestation
-    ref it published, `reused` for each ref on `origin` whose evidence it reused, and `checks` for
-    every required check.
+    ref it published, `reused` for each ref on `origin` whose evidence it reused, `missing` for the
+    required `nix` checks it filed without evidence, and `checks` for every required check.
   - Prints a `time` line after each check's `check` line: the check's name, its result, how long it
     took, and how it was satisfied. It passes `--timings` to `attest run`, so each check is also
     logged to the local [timing log](#the-timing-log). The log is not evidence, and a log that

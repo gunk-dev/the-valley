@@ -290,9 +290,9 @@ EOF
 
 help_review() {
   cat <<'EOF'
-usage: valley review [-v] <change>
+usage: valley review [-v] [--build-here] <change>
 
-  review [-v] <change>
+  review [-v] [--build-here] <change>
                    page through the change's branch: its log and diff vs
                    origin/main, or a stack layer by layer (below). above
                    each change's diff, review shows every knot in the plan
@@ -300,9 +300,21 @@ usage: valley review [-v] <change>
                    <title>` (valley-go does). a missing or unreadable graph
                    shows no knots; -v warns on stderr. then choose:
                      [a]pprove    file an integration request for the
-                                  head shown. runs the
-                                  checks the composed policy requires of
-                                  this change over a throwaway worktree of
+                                  head shown, as approve does (valley
+                                  help approve). it reuses the evidence
+                                  origin holds for the checks the
+                                  composed policy requires of this
+                                  change. when a required nix check has
+                                  none, it files the request at once
+                                  all the same, builds nothing, and
+                                  names the check. when evidence is
+                                  published, the integrator considers
+                                  the request again; it may never be
+                                  published. given
+                                  --build-here, review's [a]pprove builds
+                                  those nix checks here instead. it runs
+                                  the command checks, and any nix check
+                                  it builds, over a throwaway worktree of
                                   that head, signs each result as an
                                   attestation, and publishes the evidence
                                   and the request ref to origin in ONE
@@ -329,10 +341,11 @@ usage: valley review [-v] <change>
                                   ref is leased, filing included, so an
                                   approval that lost a race is refused
                                   rather than clobbering the one that won.
-                                  needs the attest helper and
+                                  needs the attest helper whenever a
+                                  check is required, and
                                   VALLEY_ATTEST_KEY, the ed25519 key this
-                                  host signs with, whenever a check is
-                                  required; VALLEY_ATTEST_NAME is the name it
+                                  host signs with, whenever a check runs
+                                  here; VALLEY_ATTEST_NAME is the name it
                                   signs under, defaulting to this host's.
                      [v]iew full diff
                                   page the change's whole diff, with
@@ -474,9 +487,9 @@ EOF
 
 help_approve() {
   cat <<'EOF'
-usage: valley approve [--head <sha>] <change>
+usage: valley approve [--head <sha>] [--build-here] <change>
 
-  approve [--head <sha>] <change>
+  approve [--head <sha>] [--build-here] <change>
                    do what review's [a]pprove does for the change, without
                    paging it: the same checks, the same refusals, the same
                    leased request write and the same output. exits non-zero
@@ -513,12 +526,37 @@ usage: valley approve [--head <sha>] <change>
                    judged. a command check is never reused. a listing or a fetch of
                    origin's evidence that fails is refused, and nothing is
                    run.
-                   approve runs every other required check over a
-                   throwaway worktree of that head, signs each result as an
-                   attestation, and publishes the new evidence and the
-                   request ref to origin in ONE atomic push. when every
-                   required check is reused, nothing runs, no signing key
-                   is needed, and the push carries the request alone.
+                   a required nix check that origin holds no evidence for
+                   does not stop the approval. approve files the request at
+                   once, with the evidence origin holds, builds nothing,
+                   and publishes no evidence for that check. required
+                   command checks still run first, and a missing signing
+                   key, a failed check, or a refused push still fails the
+                   approval. approve says the approval is recorded and
+                   names the checks still missing. the integrator keeps the
+                   request and considers it again when evidence is
+                   published. landing still requires a clean apply and
+                   acceptable evidence for every required check. an
+                   enabled worker that serves the project attempts the nix
+                   checks of a ready change's active version, but cannot
+                   add checks to its own existing evidence ref for the
+                   same tree, and a failed build publishes nothing. waiting
+                   does not ensure the evidence will be published. no
+                   worker builds a branch no record is on, or a version
+                   that is not the active one, and approve says so. the
+                   evidence of an approval that ran a command check
+                   occupies this signer's ref for the tree, so use
+                   --build-here on the initial approval.
+                     --build-here build those nix checks on this
+                                  machine instead, and publish their
+                                  evidence with the request.
+                   approve runs every command check, and every nix check
+                   it builds, over a throwaway worktree of that head, signs
+                   each result as an attestation, and publishes the new
+                   evidence and the request ref to origin in ONE atomic
+                   push. when every required check is reused, nothing
+                   runs, no signing key is needed, and the push carries
+                   the request alone.
                    this files the request; it does not wait for
                    integration or update your local checkout. use status to
                    read the result. the policy comes from the target's tip
@@ -1553,6 +1591,11 @@ APPROVE_WT=""
 # The head approve last ran the checks over and saw them fail, for the
 # review prompt: see approve_failed_at.
 CHECKS_FAILED_AT=""
+# Set by --build-here, on approve and on review: approve builds the
+# required nix checks that origin holds no evidence for, on this machine.
+# Without it, approve files the request without their evidence, and the
+# host's check worker publishes it (approve_attempt).
+BUILD_HERE=""
 cleanup_approve_wt() {
   [ -n "$APPROVE_WT" ] || return 0
   git worktree remove --force "$APPROVE_WT" > /dev/null 2>&1 || true
@@ -1863,10 +1906,11 @@ approve_attempt() {
   # built again: a check worker, or an earlier approval, may have published
   # it. valley-go coverage (status/coverage.go) lists origin's attestation
   # refs for the head's tree, fetches them, and says which required nix
-  # checks they hold acceptable evidence for. Every other check, and every
-  # command check, runs here. A read of origin that fails ends the approval
-  # rather than reading as no evidence. When every check is covered,
-  # nothing runs and no key is needed, as when nothing is required.
+  # checks they hold acceptable evidence for. Every command check runs
+  # here, and so does every other nix check when --build-here asks for it.
+  # A read of origin that fails ends the approval rather than reading as no
+  # evidence. When every check is covered, nothing runs and no key is
+  # needed, as when nothing is required.
   local -a missing=() reused=()
   local -A stored=() covered=()
   if [ "${#required[@]}" -gt 0 ]; then
@@ -1911,6 +1955,27 @@ approve_attempt() {
         printf '  %-24s signed by %s\n' "$check" "${covered[$check]#* }"
       done
     fi
+  fi
+
+  # A required nix check with no evidence on origin is built here only when
+  # the operator asks for it with --build-here. The host's check worker
+  # builds the same checks for a ready change, and publishes the evidence
+  # when its batch ends. Approving a change and its checks passing are
+  # separate, so without the flag approve files the request at once,
+  # without that evidence, and leaves those checks out of what runs here.
+  # The integrator holds such a request as stale for want of evidence,
+  # keeps it, and judges it again when evidence arrives. Whether the
+  # change then lands depends on the other gates, and whether the worker
+  # publishes at all is not assured. A command check is never reused and no
+  # worker runs one, so it runs here either way. From here on, missing is
+  # what runs here, and unbuilt is what nothing here builds.
+  local -a unbuilt=()
+  if [ -z "$BUILD_HERE" ]; then
+    local -a here=()
+    for check in ${missing[@]+"${missing[@]}"}; do
+      if [ "${CHECK_RUNNER[$check]:-}" = nix ]; then unbuilt+=("$check"); else here+=("$check"); fi
+    done
+    missing=(${here[@]+"${here[@]}"})
   fi
 
   if [ "${#missing[@]}" -gt 0 ]; then
@@ -2143,6 +2208,8 @@ approve_attempt() {
     fi
     if [ "$made_push" = yes ]; then
       standing+=("the request already stood at this head; the evidence is what was published")
+    elif [ "${#unbuilt[@]}" -gt 0 ]; then
+      standing+=("the request already stood at this head, and nothing was built or published")
     elif [ "${#required[@]}" -gt 0 ]; then
       standing+=("the request already stood at this head and origin already held the evidence, so nothing needed publishing")
     else
@@ -2156,6 +2223,32 @@ approve_attempt() {
     "$what" "$(git rev-parse --short "$head")" "$target"
   printf 'The integrator will decide whether this change can land.\n'
   printf 'Your local checkout has not changed.\n\n'
+  # The approval is recorded either way. What has to happen before the
+  # change can land depends on whether a check worker builds this head:
+  # one builds only a ready change's active version.
+  if [ "${#unbuilt[@]}" -gt 0 ]; then
+    local these="the nix check" them=it
+    if [ "${#unbuilt[@]}" -gt 1 ]; then these="the nix checks" them=them; fi
+    printf 'Origin holds no evidence yet for %s %s, and nothing was built here.\n' \
+      "$these" "$(printf '%s\n' "${unbuilt[@]}" | join_lines)"
+    if [ -z "$CHANGE_ID" ]; then
+      printf 'No check worker builds a branch no record is on.\n'
+    elif [ "$head" != "$CHANGE_HEAD" ]; then
+      printf 'The host'"'"'s check worker builds only the active version, v%s.\n' "$CHANGE_VERSION"
+    else
+      printf 'An enabled check worker that serves this project attempts to build that evidence, unless it already holds its own evidence for the tree.\n'
+    fi
+    printf 'When evidence is published, the integrator considers the request again. Landing still requires a clean apply and acceptable evidence for every required check.\n'
+    printf 'Waiting does not ensure that the missing evidence will be published.\n'
+    # A command check that ran here put this signer's evidence for the
+    # tree on origin, and that namespace admits creations only, so an
+    # approval with --build-here could not add the nix checks to it.
+    if [ "${#missing[@]}" -gt 0 ]; then
+      printf 'This approval published this signer'"'"'s evidence for the tree, and that namespace admits creations only, so --build-here cannot add %s now (bd-7b7d58f).\n\n' "$them"
+    else
+      printf 'To build %s on this machine instead, approve with --build-here.\n\n' "$them"
+    fi
+  fi
   printf 'Check the result: valley status %q\n\n' "$named"
   printf '  request  %s -> %s\n' "$ref" "$(git rev-parse --short "$head")"
   [ "${#standing[@]}" -eq 0 ] || printf '  %s\n' "${standing[@]}"
@@ -2172,6 +2265,7 @@ approve_attempt() {
       shown["$spec"]=1
       printf '  reused   %s\n' "$spec"
     done
+    [ "${#unbuilt[@]}" -eq 0 ] || printf '  missing  %s\n' "$(printf '%s\n' "${unbuilt[@]}" | join_lines)"
     printf '  checks   %s\n' "$(printf '%s\n' "${required[@]}" | join_lines)"
   fi
 }
@@ -2972,17 +3066,19 @@ print_stack_notes() {
 
 cmd_review() {
   local name="" verbose=() arg
+  local usage="usage: valley review [-v] [--build-here] <change>"
   for arg in "$@"; do
     case "$arg" in
       -v) verbose=(-v) ;;
-      -*) die "usage: valley review [-v] <change>" ;;
+      --build-here) BUILD_HERE=yes ;;
+      -*) die "$usage" ;;
       *)
-        [ -z "$name" ] || die "usage: valley review [-v] <change>"
+        [ -z "$name" ] || die "$usage"
         name="$arg"
         ;;
     esac
   done
-  [ -n "$name" ] || die "usage: valley review [-v] <change>"
+  [ -n "$name" ] || die "$usage"
   set -- "$name"
   resolve_change "$1" || exit 1
   need_branch review
@@ -3021,12 +3117,18 @@ cmd_review() {
 # approve of a change with a record approves exactly one head (bind_head):
 # --head's, or the active version's once the operator confirms it on a
 # terminal. A plain branch is approved at its tip on origin, as the fetch
-# left it, and --head, when given, must be that tip.
+# left it, and --head, when given, must be that tip. --build-here, here and
+# on review, lets approve build the nix checks origin holds no evidence
+# for (approve_attempt).
 cmd_approve() {
   local name="" want=""
-  local usage="usage: valley approve [--head <sha>] <change>"
+  local usage="usage: valley approve [--head <sha>] [--build-here] <change>"
   while [ $# -gt 0 ]; do
     case "$1" in
+      --build-here)
+        BUILD_HERE=yes
+        shift
+        ;;
       --head)
         [ $# -ge 2 ] || die "$usage"
         want="$2"

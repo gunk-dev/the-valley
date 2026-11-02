@@ -1592,14 +1592,43 @@ fi
 git -C "$served" update-ref -d refs/the-valley/integration-requests/main/raced
 
 # 20d. The worker covered one check. Its note for the other names another
-#      flake attribute, so it is not reused, and that check runs here:
-#      exactly that one, signed by the operator, in one push with the
-#      request. The integrator lands it on the two signers' evidence.
+#      flake attribute, so it is not reused. Without --build-here, approve
+#      files the request at once with the evidence origin holds: it builds
+#      nothing, pushes the request alone, names the missing check, and
+#      exits 0. review's [a]pprove files the same way. Each request is
+#      taken away again before the integrator reads it. With --build-here,
+#      that check runs here: exactly that one, signed by the operator, in
+#      one push with the request. The integrator lands it on the two
+#      signers' evidence. 21f has the integrator hold a request filed
+#      without evidence, and land it once the evidence arrives.
 edited partial docs/readme.md src/main.txt
 partialhead="$(git rev-parse partial)"
 partialdigest="$(attest digest --rev partial | cut -d: -f2)"
 worker "$partialhead" --check prose-format --check code-build=prose-format
-approving partial valley approve origin/partial
+for filed in partial-filed partial-review; do
+  if [ "$filed" = partial-filed ]; then
+    approving "$filed" valley approve origin/partial
+  else
+    approving "$filed" bash -c 'printf "a\n" | valley review origin/partial'
+  fi
+  if ! grep -qx "Approved partial ($(git rev-parse --short partial)): its integration request for origin/main is filed." "$w/$filed.out" \
+    || ! grep -qx 'Origin holds no evidence yet for the nix check code-build, and nothing was built here.' "$w/$filed.out" \
+    || ! grep -qx 'No check worker builds a branch no record is on.' "$w/$filed.out" \
+    || ! grep -qx 'To build it on this machine instead, approve with --build-here.' "$w/$filed.out" \
+    || ! grep -qx '  missing  code-build' "$w/$filed.out" \
+    || ! grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/$filed.out" \
+    || grep -qE '^(checking|  evidence) ' "$w/$filed.out" || [ -s "$nixlog" ] \
+    || [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
+    || ! grep -q ' refs/the-valley/integration-requests/main/partial$' "$reusepushes" \
+    || grep -q ' refs/the-valley/attestations/' "$reusepushes" \
+    || [ "$(requested partial)" != "$partialhead" ]; then
+    echo "valley-request: $filed did not file the request alone while naming the missing nix check" >&2
+    cat "$w/$filed.out" "$w/$filed.err" "$nixlog" "$reusepushes" >&2
+    exit 1
+  fi
+  git -C "$served" update-ref -d refs/the-valley/integration-requests/main/partial
+done
+approving partial valley approve --build-here origin/partial
 grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/partial.out"
 grep -qxF "valley: not reusing code-build: the integrator judges it by refs/the-valley/attestations/$partialdigest/$workerhash:code-build/statement.note, and its predicate.check.attribute is \"prose-format\", not \"code-build\"" "$w/partial.err"
 grep -qx "checking partial at $(git rev-parse --short partial): code-build" "$w/partial.out"
@@ -1635,7 +1664,7 @@ occupieddigest="$(attest digest --rev occupied | cut -d: -f2)"
 attest run --rev "$occupiedhead" --key "$r/keys/operator" --name "$operatorname" --check code-build \
   > "$r/operator.out" 2>&1
 git push --quiet origin "refs/the-valley/attestations/$occupieddigest/$operatorhash:refs/the-valley/attestations/$occupieddigest/$operatorhash"
-if approving occupied valley approve origin/occupied; then
+if approving occupied valley approve --build-here origin/occupied; then
   echo "valley-request: approve built evidence that origin could not take" >&2
   exit 1
 fi
@@ -1706,10 +1735,11 @@ integrated unread
 
 # 20g. approve skips a check only where the integrator accepts the same
 #      evidence. Each case below stores one set of evidence on origin.
-#      Approve, with no signing key, reuses nothing for it and so refuses,
-#      naming the note the integrator judges the check by and why it is not
-#      reused. Then the request is filed by hand, and one pass of the real
-#      integrator decides it from the same refs. A note the hook would
+#      Approve, with no signing key, reuses nothing for it, naming the note
+#      the integrator judges the check by and why it is not reused. It files
+#      the request at once all the same, naming the check as missing and
+#      building nothing. Then one pass of the real integrator decides that
+#      request from the same refs. A note the hook would
 #      refuse is planted past it, straight into origin's storage. Two cases
 #      land: there approve is stricter than the integrator, on purpose.
 #
@@ -1745,23 +1775,21 @@ planted() {
   git -C "$served" update-ref "$1" "$(printf '040000 tree %s\t%s\n' "$sub" "$2" | git -C "$served" mktree)"
 }
 # unreused <branch> <reason>: approve, with no signing key, reuses nothing
-# for prose-format, says why, and refuses for want of a key.
+# for prose-format, says why, and files the request with prose-format
+# missing, building nothing.
 unreused() {
-  if approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"; then
-    echo "valley-request: approve reused evidence for $1 that the integrator would not accept" >&2
-    cat "$w/$1.out" >&2
-    exit 1
-  fi
+  approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"
   if ! grep -qF "valley: not reusing prose-format: the integrator judges it by " "$w/$1.err" \
-    || ! grep -qF -- "$2" "$w/$1.err" || ! grep -q 'no signing key' "$w/$1.err" \
-    || [ -n "$(requested "$1")" ] || [ -s "$nixlog" ]; then
+    || ! grep -qF -- "$2" "$w/$1.err" || grep -q 'reusing' "$w/$1.out" \
+    || ! grep -qx '  missing  prose-format' "$w/$1.out" \
+    || [ "$(requested "$1")" != "$(git rev-parse "$1")" ] || [ -s "$nixlog" ]; then
     echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
     cat "$w/$1.err" >&2
     exit 1
   fi
 }
 # judged <branch> <outcome> <reason> [<known-signers> [<signer projects>]]:
-# the branch's head is filed by hand, and one pass of the real integrator,
+# the branch's head is filed, by hand when approve has not, and one pass of the real integrator,
 # verifying with the known-signers file and given the signer projects file
 # when there is one, decides it as the outcome, giving the reason. A
 # request it does not land is taken away again.
@@ -1869,7 +1897,7 @@ judged expired stale 'the observation is '
 
 # The attribute: the worker's note for prose-format names another flake
 # attribute. The integrator's rule for an unmoved tree compares none, so it
-# lands; approve compares it, and builds rather than reuse.
+# lands; approve compares it, and does not reuse the note.
 edited attribute docs/readme.md
 worker "$(git rev-parse attribute)" --check prose-format=code-build
 unreused attribute 'its predicate.check.attribute is "code-build", not "prose-format"'
@@ -1889,16 +1917,13 @@ restricting() {
 }
 # unpublished <branch> <reason>: the publication is not used, so approve,
 # with no signing key, reuses none of origin's evidence, says why, and
-# refuses for want of a key.
+# files the request with prose-format missing, building nothing.
 unpublished() {
-  if approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"; then
-    echo "valley-request: approve reused evidence for $1 under a publication it cannot use" >&2
-    cat "$w/$1.out" >&2
-    exit 1
-  fi
+  approving "$1" env -u VALLEY_ATTEST_KEY valley approve "origin/$1"
   if ! grep -qxF "valley: $2, so none of the evidence on origin is reused" "$w/$1.err" \
-    || grep -q 'reusing' "$w/$1.out" || ! grep -q 'no signing key' "$w/$1.err" \
-    || [ -n "$(requested "$1")" ] || [ -s "$nixlog" ]; then
+    || grep -q 'reusing' "$w/$1.out" \
+    || ! grep -qx '  missing  prose-format' "$w/$1.out" \
+    || [ "$(requested "$1")" != "$(git rev-parse "$1")" ] || [ -s "$nixlog" ]; then
     echo "valley-request: approve did not refuse $1 for the reason: $2" >&2
     cat "$w/$1.err" >&2
     exit 1
@@ -1907,7 +1932,8 @@ unpublished() {
 
 # The worker restricted to another project: its note is a stranger's here.
 # approve does not reuse it, the integrator does not accept it, and an
-# approval with a signing key builds the check under the operator's key.
+# approval from review --build-here, with a signing key, builds the check
+# under the operator's key.
 printf '%s elsewhere\n' "$workername" > "$r/elsewhere.projects"
 restricting "$r/elsewhere.projects"
 edited elsewhere docs/readme.md
@@ -1916,7 +1942,7 @@ worker "$elsewherehead" --check prose-format
 unreused elsewhere \
   "none of its signers counts in project project: the published signer-projects lets $workername count only in elsewhere"
 judged elsewhere stale 'signed by no signer the integrator holds' "$r/known-signers" "$r/elsewhere.projects"
-approving elsewhere-built valley approve origin/elsewhere
+approving elsewhere-built bash -c 'printf "a\n" | valley review --build-here origin/elsewhere'
 grep -qF "valley: not reusing prose-format: the integrator judges it by $(under elsewhere "$workerhash"):prose-format/statement.note, and none of its signers counts in project project" "$w/elsewhere-built.err"
 grep -qx "checking elsewhere at $(git rev-parse --short elsewhere): prose-format" "$w/elsewhere-built.out"
 grep -qx "  evidence $(under elsewhere "$operatorhash")" "$w/elsewhere-built.out"
@@ -1971,6 +1997,46 @@ if [ -s "$nixlog" ] || [ "$(requested listed)" != "$listedhead" ]; then
 fi
 integrated listed "$r/here.projects"
 published "$r/known-signers"
+
+# 20i. The worker covered the one nix check, and the change requires a
+#      command check too. No worker runs a command check, so approve runs
+#      it here without --build-here, builds no nix check, and files.
+edited commanded docs/readme.md live/state.txt
+commandedhead="$(git rev-parse commanded)"
+worker "$commandedhead" --check prose-format
+approving commanded valley approve origin/commanded
+grep -qE "^  prose-format +signed by $workername\+$workerhash\$" "$w/commanded.out"
+grep -qx "checking commanded at $(git rev-parse --short commanded): live-ok" "$w/commanded.out"
+if grep -q '^nix build' "$nixlog" || [ "$(requested commanded)" != "$commandedhead" ]; then
+  echo "valley-request: an approval whose only uncovered check is a command check built nix or filed nothing" >&2
+  cat "$w/commanded.out" "$w/commanded.err" "$nixlog" >&2
+  exit 1
+fi
+integrated commanded
+
+# 20j. No worker has built the change, and it requires a command check and
+#      a nix check. approve without --build-here runs the command check
+#      here, builds no nix check, and publishes the command check's
+#      evidence with the request in one push, naming the nix check as
+#      missing. It does not offer --build-here, which that evidence now
+#      blocks (bd-7b7d58f).
+edited mixed docs/readme.md live/state.txt
+mixedhead="$(git rev-parse mixed)"
+mixeddigest="$(attest digest --rev mixed | cut -d: -f2)"
+approving mixed valley approve origin/mixed
+grep -qx "checking mixed at $(git rev-parse --short mixed): live-ok" "$w/mixed.out"
+grep -qx '  missing  prose-format' "$w/mixed.out"
+grep -qx "This approval published this signer's evidence for the tree, and that namespace admits creations only, so --build-here cannot add it now (bd-7b7d58f)." "$w/mixed.out"
+grep -qx "  evidence refs/the-valley/attestations/$mixeddigest/$operatorhash" "$w/mixed.out"
+if grep -q '^nix build' "$nixlog" || [ "$(requested mixed)" != "$mixedhead" ] \
+  || [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
+  || ! grep -q " refs/the-valley/attestations/$mixeddigest/$operatorhash\$" "$reusepushes" \
+  || ! grep -q ' refs/the-valley/integration-requests/main/mixed$' "$reusepushes"; then
+  echo "valley-request: an approval missing a nix check did not run the command check alone and file with its evidence" >&2
+  cat "$w/mixed.out" "$w/mixed.err" "$nixlog" "$reusepushes" >&2
+  exit 1
+fi
+git -C "$served" update-ref -d refs/the-valley/integration-requests/main/mixed
 
 # ----------------------------------------------------------------------
 # 21. The check worker builds what ready changes require before anyone
@@ -2285,20 +2351,58 @@ integrated "c-$id" "$r/worker.projects"
 
 # 21f. Origin already holds the worker's own ref for a tree, without one of
 #      the checks the change requires. The namespace admits creations
-#      only, so the pass says so and builds nothing. approve builds the
-#      rest under the operator's key, and the integrator lands it on the
-#      two signers' evidence.
+#      only, so the pass says so and builds nothing. approve without
+#      --build-here files the request at once, naming the missing check,
+#      and builds nothing. The real integrator holds that request as stale
+#      for want of evidence, and keeps it. approve --build-here then builds
+#      the rest under the operator's key and publishes the evidence alone,
+#      since the request already stands at that head. The integrator,
+#      judging again because evidence arrived, lands it on the two signers'
+#      evidence.
 readied worker-occupied docs/readme.md src/main.txt
 occupiedref="refs/the-valley/attestations/$(attest digest --rev worker-occupied | cut -d: -f2)/$workerhash"
 attest run --rev worker-occupied --key "$r/keys/worker" --name "$workername" --check prose-format > "$r/worker-occupied-attest.out" 2>&1
 git push --quiet origin "$occupiedref:$occupiedref"
 fresh
 working worker-occupied
-said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. That namespace admits creations only, so approve builds the rest (bd-7b7d58f)"
+said worker-occupied "$line: origin already holds $occupiedref, this worker's evidence for its tree, and it does not cover code-build. That namespace admits creations only, so approve --build-here builds the rest (bd-7b7d58f)"
 built nothing
 pushed none
-approving worker-occupied valley approve --head "$head" "$handle"
+approving worker-occupied-filed valley approve --head "$head" "$handle"
+grep -qx "Approved $handle v1 (${head:0:7}): its integration request for origin/main is filed." "$w/worker-occupied-filed.out"
+grep -qx 'Origin holds no evidence yet for the nix check code-build, and nothing was built here.' "$w/worker-occupied-filed.out"
+grep -qx 'Waiting does not ensure that the missing evidence will be published.' "$w/worker-occupied-filed.out"
+grep -qx '  missing  code-build' "$w/worker-occupied-filed.out"
+built nothing
+if [ "$(requested "c-$id")" != "$head" ] || grep -q ' refs/the-valley/attestations/' "$reusepushes"; then
+  echo "valley-request: approve without --build-here did not file the request alone" >&2
+  cat "$w/worker-occupied-filed.out" "$w/worker-occupied-filed.err" "$reusepushes" >&2
+  exit 1
+fi
+integrator reconcile --repo "$served" --key "$r/keys/integrator" --name "$integratorname" \
+  --known-signers "$r/known-signers" --signer-projects "$r/worker.projects" --instance "$r/floor" --schema "$schemaFile" \
+  --attest-schema "$attestSchema" --event-schema "$eventSchema" > "$r/integrator.out" 2>&1 || {
+  echo "valley-request: the integrator failed" >&2
+  cat "$r/integrator.out" >&2
+  exit 1
+}
+if ! grep -q "^c-$id -> refs/heads/main @ [0-9a-f]*: stale\$" "$r/integrator.out" \
+  || ! grep -qE '^  check +code-build +no attestation for this check accompanies the change$' "$r/integrator.out" \
+  || [ "$(requested "c-$id")" != "$head" ]; then
+  echo "valley-request: the integrator did not keep a request missing evidence as stale" >&2
+  cat "$r/integrator.out" >&2
+  exit 1
+fi
+approving worker-occupied valley approve --build-here --head "$head" "$handle"
 built code-build
+grep -qx '  the request already stood at this head; the evidence is what was published' "$w/worker-occupied.out"
+if [ "$(grep -c '^--- push' "$reusepushes")" != 1 ] \
+  || ! grep -q " refs/the-valley/attestations/[0-9a-f]*/$operatorhash\$" "$reusepushes" \
+  || grep -q ' refs/the-valley/integration-requests/' "$reusepushes"; then
+  echo "valley-request: approve --build-here over a standing request did not publish the evidence alone" >&2
+  cat "$reusepushes" >&2
+  exit 1
+fi
 integrated "c-$id" "$r/worker.projects"
 
 # 21g. A read of origin that fails stops the pass, before anything is

@@ -1266,7 +1266,9 @@ is published, and the next pass builds the new version.
 
 The attestation namespace admits creations only, so the worker never builds what it could not
 publish. When `origin` already holds the worker's own ref for the tree and that ref lacks a required
-check, the pass says so and builds nothing. Approval builds the rest under the operator's key
+check, the pass says so and builds nothing. Approval with `--build-here` builds the rest under the
+operator's key, but only on the initial approval: once this signer has published evidence for the
+tree, another approval cannot add checks to that ref
 ([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
 
 A push whose reply is lost is not built again. If the push landed, the next pass finds the evidence
@@ -1703,10 +1705,10 @@ A check also declares a `cost`, `quick` by default. A `slow` check takes minutes
 hardware such as KVM. `valley checks` reads the cost from the composition it derives from. After the
 report it prints two lines, `quick:` and `slow:`, each listing the required checks of that cost.
 `valley checks --names` prints the required check names alone, one per line, and `--cost quick` or
-`--cost slow` keeps one set. The integration gate does not read the cost. Approving runs every
-required check, and the integrator requires evidence for every required check, whatever its cost.
-The cost changes neither which checks a change requires nor what the integrator accepts. Checked by
-`policy-deriver` and `integrator-unit`.
+`--cost slow` keeps one set. The integration gate does not read the cost. The integrator requires
+acceptable evidence for every required check, whatever its cost, and approval may file the request
+without `nix` evidence. The cost changes neither which checks a change requires nor what the
+integrator accepts. Checked by `policy-deriver` and `integrator-unit`.
 
 Each class also declares a carry mode. The mode says how far an approval of a change touching the
 class carries when the change is rebased onto a target that has moved. An approval carries only when
@@ -2095,19 +2097,22 @@ far each version has landed for its listings. The package stamps its version on 
 | `valley --version`           | Prints the version stamp: the CLI's version and the commit its package was built from.                |
 
 `[a]pprove` is the operator's approval of a change. It reuses the evidence `origin` already holds
-for the head's tree, and runs the other required checks with `attest` in a worktree of the head it
-approves. Then one atomic push carries the new evidence refs and the integration request, with a
-lease on the request ref. When the request already names this head, the push leaves the request ref
-out. When there is no new evidence as well, there is no push. `[b]ase` rebases the change's whole
-stack in a temporary worktree, and pushes every layer's branch in one atomic push, with a lease on
-each. `[r]eject` deletes the remote branch after a prompt.
+for the head's tree, and runs the required `command` checks with `attest` in a worktree of the head
+it approves. A required `nix` check with no evidence on `origin` is built there too, but only when
+the operator passes `--build-here`; otherwise approval files the request without it. Then one atomic
+push carries the new evidence refs and the integration request, with a lease on the request ref.
+When the request already names this head, the push leaves the request ref out. When there is no new
+evidence as well, there is no push. `[b]ase` rebases the change's whole stack in a temporary
+worktree, and pushes every layer's branch in one atomic push, with a lease on each. `[r]eject`
+deletes the remote branch after a prompt.
 
 Evidence on `origin` comes from a check worker (see [The check worker](#the-check-worker)) or from
-an earlier approval. Approval skips a check only when the integrator will accept the same evidence.
-Approval reads the evidence with `valley-go coverage` (`status/coverage.go`). It lists `origin`'s
-attestation refs for the head's tree and fetches the objects they name. It reads the notes from
-those objects byte for byte, as the integrator reads them. A local ref that was never published does
-not count. A listing or a fetch that fails ends the approval, and nothing runs.
+an earlier approval. Approval reuses eligible `nix` evidence and leaves uncovered `nix` checks
+unbuilt unless `--build-here` is set. Approval reads the evidence with `valley-go coverage`
+(`status/coverage.go`). It lists `origin`'s attestation refs for the head's tree and fetches the
+objects they name. It reads the notes from those objects byte for byte, as the integrator reads
+them. A local ref that was never published does not count. A listing or a fetch that fails ends the
+approval, and nothing runs.
 
 Approval judges each required `nix` check by the note the integrator judges it by: the first note
 for the check that verifies under the `known-signers` file the host publishes (see
@@ -2134,16 +2139,44 @@ Comparing the attribute is stricter than the integrator's rule for an unmoved tr
 none. Coverage decides only what approval runs. The integrator judges every note again when it
 decides the request.
 
-A `command` check is never covered, so approval runs it again. Every check that is not covered runs
-under the operator's own key, so its evidence goes to a ref of its own beside the worker's. When
-every required check is covered, nothing runs and no key is needed. When `origin` already holds the
-operator's own ref for the tree and a check still has to run, approval refuses before running
-anything. The namespace is create-only, so the new evidence would have nowhere to go
-([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
-Checked by `valley-request`, which also lands a fully covered approval and a partly covered one with
-the real integrator.
+A `command` check is never covered, so approval runs it again. No check worker runs one either.
 
-Approval also measures how long each required check took. `attest run` prints a `time` line after
+Without `--build-here`, an uncovered `nix` check alone does not stop the approval. The operator's
+approval and the change's checks passing are separate things, so approval builds nothing for that
+check and files the request, with the evidence `origin` holds, after the required `command` checks
+pass and the remaining approval steps succeed. Missing signing credentials, a failed check, a record
+change, or a refused push still fail the attempt. Approval names the uncovered `nix` checks, meaning
+those with no evidence it can reuse. The integrator may judge the same evidence differently, because
+approval's signer restrictions and attribute comparison can be stricter.
+
+If the request passes the record gates, applies cleanly, and has no evidence that requires
+rejection, missing required evidence produces `stale` with reason `evidence`, and the request
+remains outstanding. The integrator's memo of a decision includes the state of the whole attestation
+namespace, so it decides the request again once evidence arrives, and the push that carries the
+evidence marks it due. Deciding again does not ensure landing: a conflict, changed check inputs,
+expired `command` check evidence, or a record refusal can still prevent it.
+
+Whether the worker publishes at all depends on the worker serving the project, on its building that
+version, and on its own create-only evidence ref for the tree not existing already. It attempts only
+a ready change's unlanded active version. A failed build publishes nothing. For a branch no record
+is on, or a version that is not the active one, no worker builds the checks, and approval says so.
+Waiting does not ensure that the missing evidence will be published. With `--build-here` on the
+initial approval, approval builds the uncovered `nix` checks itself.
+
+Every check that runs during approval runs under the operator's own key, so its evidence goes to a
+ref of its own beside the worker's. When every required check is covered, nothing runs and no key is
+needed. When `origin` already holds the operator's own ref for the tree and a check still has to
+run, approval refuses before running anything. The namespace is create-only, so the new evidence
+would have nowhere to go
+([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+Checked by `valley-request`, which also lands a fully covered approval, a partly covered one built
+with `--build-here`, and one whose only uncovered check is a `command` check, with the real
+integrator. It also checks that an approval missing a `nix` check's evidence files the request
+without `--build-here`, builds nothing and publishes no evidence, and that the real integrator holds
+that request as `stale`, then decides it again and lands it, in a case where nothing else prevents
+landing, once the evidence is published.
+
+Approval measures how long each locally executed check took. `attest run` prints a `time` line after
 each check, with its result, its duration, and whether nix found its output already built.
 `[a]pprove` passes `attest run --timings`, which appends one JSON line per check to
 `$XDG_STATE_HOME/valley/timings.jsonl` on the operator's machine (`attest/timing.go`). The line
@@ -4716,7 +4749,7 @@ on another machine is shown only through what it reports.
 3. The operator approves one head of the change: with `[a]pprove` in `valley review <handle>`, or
    with `valley approve <handle> --head <sha>` from a front end. Approval reuses eligible evidence
    `origin` already holds for that head's tree (see [The valley command](#the-valley-command)), runs
-   the remaining required checks over that head, and in one push files any new evidence and the
+   the required `command` checks over that head, and in one push files any new evidence and the
    integration request `refs/the-valley/integration-requests/main/c-<change-id>` at that head. The
    hook verifies each note and the `approve` grant.
 4. On its next pass the integrator reads the records. It refuses a request that would bring a

@@ -210,10 +210,13 @@ in
   # Its owning valley publishes the signers clients verify with. Evidence
   # for every required check is reused: approve runs no nix, needs no
   # signing key, and pushes the request alone, and approving that head
-  # again pushes nothing. Evidence for one check is reused and the other
-  # runs: the worker's note for it names another flake attribute, so it is
-  # not reused. The operator's evidence goes in one push with the request,
-  # and the real integrator lands it on the two signers' evidence. Origin
+  # again pushes nothing. Evidence for one check is reused and the other is
+  # not: the worker's note for it names another flake attribute. approve,
+  # and review's [a]pprove, file the request at once without --build-here,
+  # build nothing, publish no evidence, and name that nix check as missing.
+  # With --build-here it runs, the operator's evidence goes in one push
+  # with the request, and the real integrator lands it on the two signers'
+  # evidence. Origin
   # holding the operator's own ref for a tree, without the check still
   # missing, is refused before anything runs (bd-7b7d58f). A listing or a
   # fetch of origin's evidence that fails is refused, and nothing runs or
@@ -228,10 +231,14 @@ in
   # hook would refuse are planted past it. Then the host publishes a
   # signer projects file, and each integrator pass is given it: a note
   # whose only signer counts in another project is not reused, the
-  # integrator does not accept it, and approve builds that check; the same
-  # note countersigned by the integrator is not reused either; a published
-  # list that does not read, or is no file, reuses nothing; and a note
-  # from a signer restricted to this project is reused and lands.
+  # integrator does not accept it, and review --build-here builds that
+  # check; the same note countersigned by the integrator is not reused
+  # either; a published list that does not read, or is no file, reuses
+  # nothing; and a note
+  # from a signer restricted to this project is reused and lands. A change
+  # whose only uncovered check is a command check runs it without
+  # --build-here, and lands. A change missing a nix check and a command
+  # check runs the command check alone, and files with its evidence.
   #
   # Then the check worker, as packaged, over the same origin and ready
   # changes, with its key restricted to the project: it builds a change's nix checks and publishes the evidence
@@ -243,8 +250,9 @@ in
   # it on origin, or pushes the ref the first pass stored. A head
   # superseded while it is built still has its evidence published, and the
   # new version is built next. Origin holding the worker's own ref without a
-  # required check is reported and nothing is built, and approve builds the
-  # rest. An origin the pass cannot read stops it before it builds. On the
+  # required check is reported and nothing is built. approve files the
+  # request without it, the integrator holds that request as stale, and
+  # approve --build-here builds the rest, which lands. An origin the pass cannot read stops it before it builds. On the
   # real clock, a failed batch's wait runs from when the batch ended. A
   # failed push waits a minute, then two, by the object it publishes, so
   # two changes holding one tree try one push. A pass over another project

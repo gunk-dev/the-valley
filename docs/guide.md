@@ -76,7 +76,8 @@ to the valley host, and Nix with flakes enabled.
    ```
 
    When every required check already has eligible evidence on `origin` (for example, from a check
-   worker), approval needs no signing key. When a check has to run locally, the host must trust that
+   worker), approval needs no signing key. Approval runs `command` checks locally, and builds `nix`
+   checks only when you pass `--build-here`. When a check runs locally, the host must trust that
    signing key. Your SSH principal must also be allowed to approve. These are separate parts of
    [identity](./concepts.md#principals-and-grants); see
    [Environment variables and configuration](./reference.md#environment-variables-and-configuration)
@@ -220,9 +221,9 @@ valley review kqxm
 ```
 
 Use a handle from `pending`. Review pages the diff and offers actions at the terminal. Choose
-`[s]kip` to leave it alone or `[a]pprove` to run its required checks and approve the head you saw. A
-draft or withdrawn layer stops review from offering approval for that layer or anything above it. A
-stack is shown from the bottom up; approving its top includes the layers below.
+`[s]kip` to leave it alone or `[a]pprove` to approve the head you saw. A draft or withdrawn layer
+stops review from offering approval for that layer or anything above it. A stack is shown from the
+bottom up; approving its top includes the layers below.
 
 For a revised change, review automatically compares it with an earlier approved version when one can
 be identified. A clean restack gets a short summary. Use `[v]iew full diff` to see the whole change.
@@ -238,10 +239,32 @@ valley status kqxm
 
 On a terminal, `approve` asks you to confirm the head and title. For automation, pass the exact
 reviewed commit with `valley approve --head <sha> kqxm`. Approval reuses eligible evidence already
-on `origin` for the commit's content tree (see [`valley approve`](./reference.md#valley-approve)),
-runs and signs any remaining required checks, and publishes the new evidence and request together.
-When every required check is covered, nothing runs and no signing key is needed. It does not wait
-for landing. An enabled integrator processes the request; `status` tells you what happened.
+on `origin` for the commit's content tree (see [`valley approve`](./reference.md#valley-approve)).
+It runs and signs the required `command` checks, and publishes the new evidence and request
+together. When every required check is covered, nothing runs and no signing key is needed. Approval
+does not wait for landing. An enabled integrator processes the request; `status` tells you what
+happened.
+
+When a required `nix` check has no evidence on `origin` yet, approval still files the request at
+once, after the required `command` checks pass. Your approval is recorded, and no `nix` check is
+built on your machine. Approval names the checks still missing. The integrator keeps the request.
+When evidence is published, an enabled integrator considers the request again, and you do not need
+to approve again. Landing still requires the change to apply cleanly and carry acceptable evidence
+for every required check.
+
+An enabled worker that serves the project attempts the missing `nix` checks of a ready change's
+unlanded active version. It cannot add checks to its own existing evidence ref for the same tree,
+and a failed build publishes nothing. No worker builds a branch no record is on, or a version that
+is not the active one. Waiting does not ensure that the missing evidence will be published.
+
+Use `--build-here` on the initial approval if you need to build missing `nix` checks on your own
+machine. Once this signer has published evidence for the tree, another approval cannot add checks to
+that ref.
+
+```sh
+valley approve --build-here kqxm
+valley review --build-here kqxm
+```
 
 After a successful landing, update your local `main`:
 
@@ -390,7 +413,9 @@ help.
 ### A stale or rejected request
 
 A `stale` result means the change conflicts with `main` or required evidence is missing or does not
-transfer across `main` movement. Read the reason in `status`. If the base moved,
+transfer across `main` movement. Read the reason in `status`. Right after an approval that named
+missing `nix` checks, `stale` for missing evidence is expected: the integrator keeps the request and
+considers it again when evidence is published. If the base moved,
 [revoke the outstanding request](#withdraw-or-revoke-an-approval), restack the ready change, then
 ask for a fresh review and approval:
 
@@ -399,9 +424,11 @@ valley rebase kqxm
 valley status kqxm
 ```
 
-For missing or expired evidence, the approver must rerun approval with trusted signing settings. If
-approval reports that evidence from this signer already exists for the tree, follow its recovery
-message; retrying the same head does not replace that evidence.
+Missing evidence can be published independently of approval. Rerun approval when you need it to
+produce local evidence, with trusted signing settings, using `--build-here` for uncovered `nix`
+checks, and observing the same-tree signer restriction. If approval reports that evidence from this
+signer already exists for the tree, follow its recovery message; retrying the same head does not
+replace that evidence.
 
 A `reject` result means the evidence is invalid, such as a signature or statement that does not
 match what it claims. Keep the reason and ask the administrator to inspect the evidence and signing

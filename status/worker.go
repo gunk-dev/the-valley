@@ -2,7 +2,8 @@ package main
 
 // work is one pass of a check worker. It builds the nix checks that ready
 // changes require before anyone approves them, and publishes the evidence
-// on origin, where approve (bin/valley) reuses it instead of building it.
+// on origin, where approve (bin/valley) reuses it instead of building it,
+// and where the integrator finds it for a request approve filed without it.
 // A timer runs it; it keeps no queue, lease or schedule of its own.
 //
 // A pass reads each project named with --repo, and works through the
@@ -28,10 +29,10 @@ package main
 // The attestation namespace admits creations only, so the worker never
 // builds what it could not publish. When origin already holds this
 // worker's ref for a tree and the ref lacks a required check, the pass
-// reports it and builds nothing. approve builds the rest under the
-// operator's key (bd-7b7d58f). When the worker's ref is stored here but
-// not on origin, an earlier pass built it and its push was lost, so the
-// pass pushes that same ref again rather than building it again.
+// reports it and builds nothing. approve --build-here builds the rest
+// under the operator's key (bd-7b7d58f). When the worker's ref is stored
+// here but not on origin, an earlier pass built it and its push was lost,
+// so the pass pushes that same ref again rather than building it again.
 //
 // A batch that fails is not run again at once, and neither is a push that
 // fails. The pass records each failure in failures.json in the state
@@ -394,7 +395,7 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 	own := attestationRefs + e.digest + "/" + w.keyhash
 	if _, ok := e.listed[own]; ok {
 		say("origin already holds %s, this worker's evidence for its tree, and it does not cover %s. "+
-			"That namespace admits creations only, so approve builds the rest (bd-7b7d58f)", own, strings.Join(names, ", "))
+			"That namespace admits creations only, so approve --build-here builds the rest (bd-7b7d58f)", own, strings.Join(names, ", "))
 		return true, nil
 	}
 	if stored, found, err := r.g.ref(own); err == nil && found {

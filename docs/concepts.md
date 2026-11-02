@@ -30,8 +30,12 @@ differs, the range-diff between the two versions, and the shown version's diff o
 if there is no approved version or no comparison can be made, it pages the full diff
 (`[v]iew full diff` is available at the prompt in every case). The operator approves the change with
 `valley approve <change>` (or by selecting `[a]pprove` in `valley review`), which reuses eligible
-evidence already on `origin` for the commit's content tree, runs and signs the remaining required
-checks, and writes an integration request binding that one exact commit.
+evidence already on `origin` for the commit's content tree, runs and signs the required `command`
+checks, and writes an integration request binding that one exact commit. Approval and passing checks
+are separate. When a required `nix` check has no evidence on `origin` yet, the request is filed all
+the same. When evidence is published, an enabled integrator considers the request again. Landing
+still requires the change to apply cleanly and carry acceptable evidence for every required check.
+The operator can pass `--build-here` to build the missing `nix` evidence on this machine.
 
 Once the integrator verifies that commit's required check evidence and integrates it into `main`,
 the change version is **submitted**: `landed` when its commit is on `main`'s first-parent history
@@ -90,7 +94,7 @@ Checks come in two kinds: **pure checks**, which build Nix flake check targets v
 configuration), and **effectful checks**, which run commands (`runner: "command"`) that may touch
 external state and whose evidence is accepted only when its age is within a policy-defined
 `validity` window. To prove that a check passed on a specific source tree without re-running the
-check on the server, `valley approve` invokes `attest` to run each required check and produce
+check on the server, `valley approve` invokes `attest` for the checks it runs locally to produce
 **evidence**: a cryptographic **attestation** signed with the supplied SSH key (`--key` or
 `VALLEY_ATTEST_KEY`) over the content digest of the source tree (`valley-tree-v1`). On push,
 `valleyhook` verifies the note against the host's trusted signers and requires a verified signature

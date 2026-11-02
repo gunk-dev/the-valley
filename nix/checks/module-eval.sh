@@ -263,4 +263,20 @@ if ! grep -qF -- 'echo "valley-init:' "$integratorInitPath"; then
   echo "module-eval: a share the git user cannot apply must warn, not fail — valley-init failing takes every valley unit with it" >&2
   exit 1
 fi
+
+# The controllers of a worker host that writes neither of the worker's
+# lists read a signer projects file that restricts the worker's signer to
+# every project they serve. Narrowing the worker's projects alone narrows
+# the signer's line with them. Each file holds that one line.
+signerProjectsOf() {
+  printf '%s\n' "$1" | sed -n 's/.*--signer-projects \([^ ]*\).*/\1/p'
+}
+if [ "$(cat "$(signerProjectsOf "$defaultWorkerController")")" != "worker.valley.invalid/attestations guarded released sealed" ]; then
+  echo "module-eval: a worker host that writes neither list must restrict the worker's signer to every project its controllers serve" >&2
+  exit 1
+fi
+if [ "$(cat "$(signerProjectsOf "$narrowedWorkerController")")" != "worker.valley.invalid/attestations guarded" ]; then
+  echo "module-eval: a worker host that narrows the worker's projects must restrict the worker's signer to those projects" >&2
+  exit 1
+fi
 touch "$out"

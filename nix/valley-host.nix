@@ -1641,7 +1641,7 @@ in
         type = lib.types.attrsOf (lib.types.listOf lib.types.str);
         default = { };
         example = {
-          "worker/attestations" = [ "the-valley" ];
+          "worker/attestations" = [ "app" ];
         };
         description = ''
           Signers whose attestations count only in the projects listed for
@@ -1653,8 +1653,13 @@ in
 
           This is how a check worker's key, which every controller sharing
           the known-signers file would otherwise accept, is trusted only
-          for the projects it builds. The push hook still admits the
-          worker's evidence everywhere; only the controllers restrict it.
+          for the projects it builds. When
+          {option}`services.valley.worker.enable` is on, the module lists
+          {option}`services.valley.worker.projects` here under
+          {option}`services.valley.worker.signerName`. A host's own entry
+          for that name replaces the module's. The push hook still admits
+          the worker's evidence everywhere; only the controllers restrict
+          it.
 
           List every other controller whose key the known-signers file
           holds, such as another host's integrator, with an empty list.
@@ -1802,7 +1807,7 @@ in
     };
 
     # The check worker (oc-13c6bd6): a timer that runs one pass of
-    # valley-worker over the projects listed, so ready changes have their
+    # valley-worker over its projects, so ready changes have their
     # nix checks built before anyone approves them. Machine options only —
     # whether this host runs the worker, for which of its projects, under
     # which signing name, with how much build capacity, how often, and
@@ -1811,21 +1816,30 @@ in
       enable = lib.mkEnableOption ''
         the valley check worker: a timer that builds the nix checks ready
         changes require and publishes the evidence, under its own key, for
-        the projects listed'';
+        the projects selected by {option}`services.valley.worker.projects`,
+        which defaults to every Git-enabled project with a protection block'';
 
       projects = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
-        default = [ ];
-        example = [ "the-valley" ];
+        default = lib.attrNames integratedProjects;
+        defaultText = lib.literalMD "every Git-enabled project in the host declaration that has a protection block";
+        example = [ "app" ];
         description = ''
-          The projects the worker builds evidence for. Each is a project
-          this host serves, and no other project is read.
+          The projects the worker builds evidence for. Each is a Git
+          repository this host serves. Unset, the list is every Git-enabled
+          project in the host declaration that has a protection block. This
+          includes the instance project.
 
-          The controllers count the worker's evidence in these projects and
-          no others: {option}`services.valley.integrator.signerProjects`
-          must list exactly these projects under
-          {option}`services.valley.worker.signerName`, and the module
-          refuses a host where it does not.
+          The worker builds evidence only for these projects. It also reads
+          the instance repository for discovery, and any owning instance
+          repository needed to load a project's policy floor.
+
+          When the host and the worker are enabled, the module defaults
+          {option}`services.valley.integrator.signerProjects` for
+          {option}`services.valley.worker.signerName` to this list. An
+          explicit entry must name the same projects, or evaluation fails.
+          When the worker is disabled, this option does not configure signer
+          restrictions.
         '';
       };
 
@@ -2273,12 +2287,13 @@ in
         # The restriction (oc-13c6bd6). Every controller that shares the
         # known-signers file counts a key it holds in every project, so a
         # worker whose key is not restricted would be trusted for projects
-        # it never builds.
+        # it never builds. The module sets the entry to the worker's
+        # projects below; this holds a host that sets it itself.
         {
           assertion = listed != null && sorted listed == sorted cfg.worker.projects;
           message = "services.valley.integrator.signerProjects must restrict ${name}, the worker's signer, to exactly the worker's projects: without the restriction, every controller that holds the worker's key counts its evidence in every project. Set services.valley.integrator.signerProjects.\"${name}\" = [ ${
             lib.concatMapStringsSep " " (p: "\"${p}\"") cfg.worker.projects
-          } ];";
+          } ], or leave the entry unset and the module sets it to the worker's projects.";
         }
         {
           assertion = name != integratorName;
@@ -2319,6 +2334,17 @@ in
         }
       ]
     );
+
+    # The worker's signer counts in the worker's projects and no others
+    # (oc-e092038). On a host that sets neither list, the worker builds for
+    # every project the controllers serve, and the controllers count its
+    # evidence in exactly those. A host that narrows the worker's projects
+    # narrows the signer's entry with them. The entry is a default, so a
+    # host's own entry replaces it, and the assertion above holds that
+    # entry to the worker's projects.
+    services.valley.integrator.signerProjects = lib.mkIf cfg.worker.enable {
+      ${cfg.worker.signerName} = lib.mkDefault cfg.worker.projects;
+    };
 
     users.groups.${cfg.group} = { };
 

@@ -1388,8 +1388,10 @@ a hung bus by `integrator-e2e`.
 
 `services.valley.worker.enable` runs `valley-worker` on a timer so ready changes have their Nix
 checks built and signed before an operator approves them (`nix/valley-host.nix`). It is off by
-default, and turning it on is a **deployment choice**. When enabled, the module creates
-(`implemented`):
+default, and turning it on is a **deployment choice**. The worker builds for the projects in
+`worker.projects`. That list defaults to every Git-enabled project in the host declaration that has
+a protection block (`implemented`). A host can set the list to fewer projects (**deployment
+choice**). When enabled, the module creates (`implemented`):
 
 - the `valley-worker` system user and group, with a `0700` state directory at `worker.stateDir`
   (`/var/lib/valley-worker` by default);
@@ -1453,19 +1455,22 @@ A newly generated key has no access until the operator enrolls it (**deployment 
 then, `sshd` rejects the worker's connection and each pass stops at its first read of `origin`
 (`implemented`).
 
-1. Enable the build slice and the worker on the host, restrict `worker.signerName` in
-   `integrator.signerProjects` to the exact list in `worker.projects`, and deploy the host
-   configuration:
+1. Enable the build slice and the worker on the host, and deploy the host configuration:
 
    ```nix
    services.valley.buildSlice.enable = true;
    services.valley.worker = {
      enable = true;
-     projects = [ "the-valley" ];
      signerName = "worker/attestations";
    };
-   services.valley.integrator.signerProjects."worker/attestations" = [ "the-valley" ];
    ```
+
+   With the integrator enabled and `instanceProject` configured, leaving both lists unset selects
+   every Git-enabled project with a protection block. This includes the instance project. Once the
+   worker's key is trusted, its evidence can count in every selected project. To select fewer
+   projects, set `worker.projects` and leave its signer entry unset, as in `projects = [ "app" ];`.
+   An explicit signer entry must name the same projects. Setting only the signer entry does not
+   change `worker.projects`.
 
 2. After `valley-worker.service` has run once, read the worker's public key and verifier line:
 
@@ -1509,7 +1514,9 @@ At NixOS evaluation time, `services.valley.worker` refuses to build unless all o
   set.
 - `worker.projects` is non-empty and names only repositories this host serves.
 - `worker.signerName` differs from the integrator's signing name.
-- `integrator.signerProjects.<signerName>` lists the exact projects in `worker.projects`.
+- `integrator.signerProjects.<signerName>` lists the exact projects in `worker.projects`. The module
+  sets this entry to `worker.projects`. A host that sets the entry itself replaces the module's, and
+  must list the same projects.
 
 Once enrolled in the identity registry with a `git-push` grant (**deployment choice**), the worker's
 key authenticates as a named principal (`VALLEY_PRINCIPAL=worker`) on every repository the host
@@ -1834,12 +1841,15 @@ A signer can be restricted to projects. This is how a check worker's key can sit
 known-signers file that every controller on a host shares, while its evidence counts only in the
 projects it builds for. The controllers are given a signer projects file (`--signer-projects`,
 rendered from `integrator.signerProjects`) that names each restricted signer and its projects
-(`note/signerprojects.go`). In a project not listed for it, the controller classifies a note whose
-only verified signers are restricted elsewhere as signed by an unknown signer, as it classifies a
-stranger's note (`integrator/evidence.go`). A signer the file does not name is not restricted. The
-push hook does not read the file, so it admits a restricted signer's evidence in every project, and
-only the controllers refuse it. Approval reads the file the host publishes, so it does not skip a
-check on such a note, and builds that check instead (see [The valley command](#the-valley-command)).
+(`note/signerprojects.go`). On a host that runs the check worker, the module adds the worker's
+signer to that list with the worker's projects, unless the host lists the signer itself
+(`implemented`, `nix/valley-host.nix`). In a project not listed for it, the controller classifies a
+note whose only verified signers are restricted elsewhere as signed by an unknown signer, as it
+classifies a stranger's note (`integrator/evidence.go`). A signer the file does not name is not
+restricted. The push hook does not read the file, so it admits a restricted signer's evidence in
+every project, and only the controllers refuse it. Approval reads the file the host publishes, so it
+does not skip a check on such a note, and builds that check instead (see
+[The valley command](#the-valley-command)).
 
 A controller's own signature never makes a check's attestation count (`implemented`). When a change
 lands, the controller countersigns the attestations it carried (`integrator/transfer.go`). That

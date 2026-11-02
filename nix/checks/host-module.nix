@@ -43,6 +43,9 @@ let
     identityHost
     workerHost
     capacityWorkerHost
+    defaultWorkerHost
+    narrowedWorkerHost
+    mismatchedWorkerHost
     buildSliceHost
     noSliceWorkerHost
     unrestrictedWorkerHost
@@ -213,6 +216,8 @@ let
     ++ identityHost.config.assertions
     ++ workerHost.config.assertions
     ++ capacityWorkerHost.config.assertions
+    ++ defaultWorkerHost.config.assertions
+    ++ narrowedWorkerHost.config.assertions
     ++ restackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
@@ -292,6 +297,11 @@ let
       host = widerWorkerHost;
       says = "must restrict worker.valley.invalid/attestations, the worker's signer, to exactly the worker's projects";
       why = "a worker trusted in a project it does not build would be trusted where it does no work";
+    }
+    {
+      host = mismatchedWorkerHost;
+      says = "must restrict worker.valley.invalid/attestations, the worker's signer, to exactly the worker's projects";
+      why = "a host that writes the signer's list must write the worker's projects, and the module's own entry must not be merged into it";
     }
     {
       host = integratorNamedWorkerHost;
@@ -789,6 +799,33 @@ let
     || timer.timerConfig.OnUnitInactiveSec or null != "1m"
     || !(builtins.elem "timers.target" timer.wantedBy);
 
+  # The worker's projects when a host leaves them unwritten. A worker host
+  # that writes neither list builds for every project its controllers
+  # serve, one that narrows the worker's projects builds for those alone,
+  # and the signers publication carries the controllers' signer projects
+  # file. That file's lines are pinned by module-eval.sh.
+  workerDefaultsMisrendered =
+    let
+      unpublished =
+        host:
+        flagValue "signer-projects" host.config.systemd.services.valley-signers.serviceConfig.ExecStart
+        != flagValue "signer-projects"
+          host.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+    in
+    defaultWorkerHost.config.services.valley.worker.projects != [
+      "guarded"
+      "released"
+      "sealed"
+    ]
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo released --repo sealed --key "
+      defaultWorkerHost.config.systemd.services.valley-worker.script
+    )
+    || !(lib.hasInfix "exec valley-worker --repo guarded --key "
+      narrowedWorkerHost.config.systemd.services.valley-worker.script
+    )
+    || unpublished defaultWorkerHost
+    || unpublished narrowedWorkerHost;
+
   # The restacker. When disabled, it renders no units or user account on
   # integratorHost. When enabled, each configured project gets a
   # valley-restacker@<project>.service running valley-restacker run as the
@@ -1133,6 +1170,8 @@ in
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
       throw "valley module-eval: the check worker must run as its own account outside the git group, free to run on any CPU, building as many checks at once as worker.buildSlots says (1 unset), each with nix's max-jobs and cores set from worker.maxJobs and worker.cores (1 and 4 unset), in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
+    else if workerDefaultsMisrendered then
+      throw "valley module-eval: a check worker whose projects the host leaves unwritten must build for every project the controllers serve, one the host narrows must build for those alone, and the signers publication must carry the controllers' signer projects file"
     else if restackerRenderedWithoutEnable then
       throw "valley module-eval: restacker machinery rendered for a host that never enabled it"
     else if restackerMisrendered then
@@ -1162,6 +1201,10 @@ in
         integratorInit = integratorHost.config.systemd.services.valley-init.script;
         publishUnit = host.config.systemd.units."valley-publish@.service".text;
         identityInit = identityHost.config.systemd.services.valley-init.script;
+        defaultWorkerController =
+          defaultWorkerHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
+        narrowedWorkerController =
+          narrowedWorkerHost.config.systemd.services."valley-integrator@".serviceConfig.ExecStart;
         passAsFile = [
           "initScript"
           "sshdConfig"

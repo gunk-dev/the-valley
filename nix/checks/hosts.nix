@@ -63,11 +63,10 @@ let
       ];
     };
 
-  # The same controllers as restrictedHost's with the check worker on, for
-  # two of the projects they serve, its signer restricted to exactly those
-  # two, and the build slice on at its defaults. It is bound here so the
-  # hosts the module must refuse can be made from it.
-  workerHost = mkHost {
+  # The same controllers as restrictedHost's with the check worker on and
+  # the build slice on at its defaults, writing neither the worker's
+  # projects nor its signer's.
+  workerBase = {
     services.valley = {
       config = ../../examples/hosts/protected.cue;
       buildSlice.enable = true;
@@ -76,19 +75,28 @@ let
         signingKeyFile = "/run/agenix/valley-integrator-key";
         knownSignersFile = "/var/lib/valley-instance/known_signers";
         instanceProject = "sealed";
-        signerProjects."worker.valley.invalid/attestations" = [
-          "sealed"
-          "guarded"
-        ];
       };
       worker = {
         enable = true;
-        projects = [
-          "guarded"
-          "sealed"
-        ];
         signerName = "worker.valley.invalid/attestations";
       };
+    };
+  };
+
+  # The check worker for two of the projects the controllers serve, its
+  # signer restricted to exactly those two. It is bound here so the hosts
+  # the module must refuse can be made from it.
+  workerHost = mkHost {
+    imports = [ workerBase ];
+    services.valley = {
+      integrator.signerProjects."worker.valley.invalid/attestations" = [
+        "sealed"
+        "guarded"
+      ];
+      worker.projects = [
+        "guarded"
+        "sealed"
+      ];
     };
   };
 in
@@ -241,6 +249,31 @@ in
   };
 
   inherit workerHost;
+
+  # The check worker with neither list written: it builds for every project
+  # the controllers serve, and its signer counts in exactly those.
+  defaultWorkerHost = mkHost workerBase;
+
+  # The check worker narrowed to one project, its signer's list unwritten:
+  # the signer counts in that one project alone.
+  narrowedWorkerHost = mkHost {
+    imports = [ workerBase ];
+    services.valley.worker.projects = [ "guarded" ];
+  };
+
+  # Both lists written, the signer's narrower than the worker's. A module
+  # entry merged into the host's, rather than replaced by it, would make
+  # the two lists match.
+  mismatchedWorkerHost = mkHost {
+    imports = [ workerBase ];
+    services.valley = {
+      integrator.signerProjects."worker.valley.invalid/attestations" = [ "sealed" ];
+      worker.projects = [
+        "guarded"
+        "sealed"
+      ];
+    };
+  };
 
   # The restacker on for one of the projects the controllers serve, with
   # the floor read from the instance repository.

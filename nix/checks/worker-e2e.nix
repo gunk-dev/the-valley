@@ -21,7 +21,7 @@
 # wait, however many marks and timer passes come.
 #
 # Then the slice's caps, with builds that are not the worker's. A build
-# that wants six CPUs gets four. A change whose check eats memory without
+# that wants six CPUs is held to the slice's quota. A change whose check eats memory without
 # end is built while two unrelated builds hold memory of their own. The
 # kernel kills the process in the slice using the most memory, so the
 # unrelated build bigger than the runaway is killed with it, the smaller
@@ -682,7 +682,10 @@ in
           assert host.succeed(f"cat {cgroup}/memory.max").strip() == str(8 * 1024**3)
           assert host.succeed(f"cat {cgroup}/memory.swap.max").strip() == "0"
 
-      with subtest("a build that wants six CPUs gets the slice's four"):
+      with subtest("a build that wants six CPUs is held to the slice's quota"):
+          # The machine running this test may cap the VM's own CPU, and no
+          # quota above that can throttle. One CPU is always below it.
+          host.succeed("systemctl set-property --runtime valley-builds.slice CPUQuota=100%")
           unrelated("cpu")
           host.wait_until_succeeds("test \"$(ps -eo user= | grep -c '^nixbld')\" -ge 7", timeout=60)
           # The quota is enforced every 100 ms, so five seconds holds fifty
@@ -693,9 +696,11 @@ in
           host.sleep(5)
           after = stat()
           cpus = (int(after["usage_usec"]) - int(before["usage_usec"])) / 5e6
-          assert 3.0 < cpus < 4.5, cpus
+          assert 0.8 < cpus < 1.5, cpus
           assert int(after["nr_throttled"]) > int(before["nr_throttled"]), (before, after)
           host.succeed("systemctl stop unrelated-cpu")
+          host.succeed("systemctl set-property --runtime valley-builds.slice CPUQuota=400%")
+          assert host.succeed(f"cat {cgroup}/cpu.max").strip() == "400000 100000"
           host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
 
       with subtest("a runaway build is stopped at the memory cap, a bigger unrelated build is stopped with it, and the rest of the host stays healthy"):

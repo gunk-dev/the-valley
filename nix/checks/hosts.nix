@@ -294,6 +294,24 @@ in
     };
   };
 
+  # The restacker with no list of projects: it serves every project the
+  # host integrates.
+  defaultRestackerHost = mkHost {
+    services.valley = {
+      config = ../../examples/hosts/protected.cue;
+      integrator = {
+        enable = true;
+        signingKeyFile = "/run/agenix/valley-integrator-key";
+        knownSignersFile = "/var/lib/valley-instance/known_signers";
+        instanceProject = "sealed";
+      };
+      restacker = {
+        enable = true;
+        sshKeyFile = "/run/agenix/valley-restacker-key";
+      };
+    };
+  };
+
   # The restacker for a project this host does not serve.
   unservedRestackerHost = mkHost {
     services.valley = {

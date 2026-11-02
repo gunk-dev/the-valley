@@ -836,7 +836,8 @@ If the state directory holds an open journal from earlier operations, a write pa
 journal first. It then plans each family, builds the pass's writes, adds them to the journal, and
 pushes them (see [Publishing](#publishing)). `valley-restacker once --report-only` plans and builds
 the same writes and evaluates any existing journal, without writing a journal or pushing to origin.
-On a host, `services.valley.restacker` runs one controller for each configured project (see
+On a host, `services.valley.restacker` runs one controller for each project in its `projects`, which
+defaults to every Git-enabled project with a protection block (see
 [The restacker on the host](#the-restacker-on-the-host)).
 
 It is a git client of origin. It reads origin into a scratch repository under `--state`, with hooks
@@ -1190,10 +1191,12 @@ dropped.
 ### The restacker on the host
 
 `services.valley.restacker` runs one systemd service, `valley-restacker@<project>.service`, for each
-project in `projects` (`nix/valley-host.nix`). Each service runs `valley-restacker run` as the
-system user `valley-restacker` in its own group `valley-restacker`. That user belongs to no other
-group and cannot read or write the bare repositories under `services.valley.dataDir` (`/srv/git` by
-default) or the integrator's and worker's keys. Each project gets its own `0700` state directory at
+project in `projects` (`nix/valley-host.nix`). That list defaults to every Git-enabled project in
+the host declaration that has a protection block (`implemented`). A host can set the list to fewer
+projects (**deployment choice**). Each service runs `valley-restacker run` as the system user
+`valley-restacker` in its own group `valley-restacker`. That user belongs to no other group and
+cannot read or write the bare repositories under `services.valley.dataDir` (`/srv/git` by default)
+or the integrator's and worker's keys. Each project gets its own `0700` state directory at
 `/var/lib/valley-restacker/<project>`, which is the only persistent path the sandboxed unit can
 write (`ProtectSystem=strict`). The unit's private temporary directories (`PrivateTmp`) are writable
 too, and do not outlive the service.
@@ -4756,7 +4759,7 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | SSHSIG evidence                              | Attestations use the signed-note format.                                                                                                                                                                                                                                           |
 | Approvals                                    | The integrator checks evidence only. No approval is required for any path class.                                                                                                                                                                                                   |
 | Approval carry                               | `valley checks` reports a change's carry mode. Nothing acts on it.                                                                                                                                                                                                                 |
-| The restacker                                | The host module runs it on each project listed (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                                                                      |
+| The restacker                                | The host module runs it on every integrated project, or on the projects the host lists (`services.valley.restacker`). It is off by default, and a deployment registers its principal.                                                                                              |
 | The check worker                             | The host module runs it on a timer (`services.valley.worker`). It is off by default.                                                                                                                                                                                               |
 | The build slice                              | `services.valley.buildSlice` caps every build of the nix daemon. It is off by default.                                                                                                                                                                                             |
 | The web server and export                    | `valley-web-publish` uploads exports, `valley-web-receive` activates them, and `valley-web` serves them (`web/`). `services.valley.webReceiver` and the `valley-web-image` package run the receiver and `valley-web` on an edge. Whether an edge runs them is a deployment choice. |

@@ -1942,7 +1942,7 @@ in
       };
     };
 
-    # The restacker (restack/): one controller for each project listed,
+    # The restacker (restack/): one controller for each project it serves,
     # which rebases the project's ready changes onto main when main moves,
     # as its own principal. Machine options only. Registering the principal
     # (its key and its restack grant, in services.valley.authorizedKeys and
@@ -1950,17 +1950,20 @@ in
     # its private key are the operator's, and nothing here does either.
     restacker = {
       enable = lib.mkEnableOption ''
-        the valley restacker: one controller for each project listed, which
+        the valley restacker: one controller for each project it serves, which
         rebases the project's ready changes onto main when main moves,
         pushing over this host's sshd as its own principal'';
 
       projects = lib.mkOption {
         type = lib.types.listOf (lib.types.strMatching "[a-zA-Z0-9][a-zA-Z0-9._-]*");
-        default = [ ];
+        default = lib.attrNames integratedProjects;
+        defaultText = lib.literalExpression "every Git-enabled project with a protection block";
         example = [ "the-valley" ];
         description = ''
           The projects the restacker serves, each a project this host
-          serves. Each gets a controller of its own,
+          serves. By default it serves every Git-enabled project with a
+          protection block. Setting `projects` selects exactly the projects
+          listed, which must be non-empty. Each gets a controller of its own,
           `valley-restacker@<project>.service`, with a state directory of
           its own under `/var/lib/valley-restacker`.
         '';

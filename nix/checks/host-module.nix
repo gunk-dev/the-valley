@@ -52,6 +52,7 @@ let
     widerWorkerHost
     integratorNamedWorkerHost
     restackerHost
+    defaultRestackerHost
     unservedRestackerHost
     keylessRestackerHost
     ;
@@ -219,6 +220,7 @@ let
     ++ defaultWorkerHost.config.assertions
     ++ narrowedWorkerHost.config.assertions
     ++ restackerHost.config.assertions
+    ++ defaultRestackerHost.config.assertions
     ++ buildSliceHost.config.assertions
     ++ webPublisherHost.config.assertions
     ++ webPublisherOffHost.config.assertions
@@ -835,7 +837,8 @@ let
   # own SSH key, has its 0700 state directory as its only persistent
   # writable path (its private temporary directories are writable too),
   # and reads the floor from the instance repository over the same SSH
-  # connection.
+  # connection. A host that lists one project gets only that one; a host
+  # that lists none gets one for each project it integrates.
   restackerRenderedWithoutEnable =
     integratorHost.config.systemd.services ? "valley-restacker@"
     || integratorHost.config.systemd.targets ? valley-restackers
@@ -864,7 +867,13 @@ let
     || !(lib.hasInfix "/bin/valley-restacker run --repo git@localhost:%i.git --state %S/valley-restacker/%i --principal valley-restacker --interval 15s " command)
     || !(lib.hasInfix " --instance-repo git@localhost:sealed.git" command)
     || target.wants != [ "valley-restacker@guarded.service" ]
-    || !(builtins.elem "multi-user.target" target.wantedBy);
+    || !(builtins.elem "multi-user.target" target.wantedBy)
+    # A host that lists no projects serves every project it integrates.
+    || defaultRestackerHost.config.systemd.targets.valley-restackers.wants != [
+      "valley-restacker@guarded.service"
+      "valley-restacker@released.service"
+      "valley-restacker@sealed.service"
+    ];
 
   # The web publisher (nix/web-publisher.nix). Off, it renders nothing.
   # On, one pass is a oneshot on a five-minute timer whose first pass waits

@@ -118,9 +118,12 @@ type Snapshot struct {
 	landed      map[string]landingAt // head → its landing record, once read
 	reports     map[string]Report    // change ID → its restack report, once read
 	landings    map[string][2]string // "<change ID> <n>" → landing and commit
-	firstParent map[string]bool      // main's first-parent history, down to its first merge; nil until read
+	firstParent map[string]int       // main's first-parent history, down to its first merge, and each commit's number of parents; nil until read
 	reachesOf   map[string]bool
-	reachOf     map[string]map[string]bool
+	reachOf     map[string]reached
+	ancestorOf  map[[2]string]bool // "is a an ancestor of b", as git answered it
+	history     *history           // every commit main reaches; nil until read, or when it does not read
+	historyRead bool
 	digestOf    map[string]string
 	transfers   []transferStatement
 	read        bool // whether transfers has been read
@@ -186,13 +189,23 @@ func NewSnapshot(ctx context.Context, g Git, o Origin, all []Recorded, v Verifie
 		Origin: o, Tip: o.Refs["refs/heads/"+Target], Changes: all,
 		ctx: ctx, g: g, verify: v,
 		outcomes: map[string]Outcome{}, landed: map[string]landingAt{}, reports: map[string]Report{}, landings: map[string][2]string{},
-		reachesOf: map[string]bool{}, reachOf: map[string]map[string]bool{}, digestOf: map[string]string{},
+		reachesOf: map[string]bool{}, reachOf: map[string]reached{}, ancestorOf: map[[2]string]bool{}, digestOf: map[string]string{},
 	}
+	var records []string
 	for ref, oid := range o.Refs {
 		if strings.HasPrefix(ref, OutcomePrefix) {
-			data, err := g.output(ctx, true, "cat-file", "blob", oid)
-			if err != nil {
-				data = ""
+			records = append(records, oid)
+		}
+	}
+	read := g.blobs(ctx, records)
+	for ref, oid := range o.Refs {
+		if strings.HasPrefix(ref, OutcomePrefix) {
+			data, ok := read[oid]
+			if !ok {
+				var err error
+				if data, err = g.output(ctx, true, "cat-file", "blob", oid); err != nil {
+					data = ""
+				}
 			}
 			s.outcomes[ref] = ParseOutcome(data)
 		}
@@ -217,29 +230,42 @@ func (s *Snapshot) OnMain(oid string) bool {
 		return false
 	}
 	if s.firstParent == nil {
-		s.firstParent = map[string]bool{}
+		s.firstParent = map[string]int{}
 		if out, err := s.g.output(s.ctx, true, "rev-list", "--first-parent", "--parents", s.Tip); err == nil {
 			for _, line := range strings.Split(out, "\n") {
 				fields := strings.Fields(line)
 				if len(fields) == 0 {
 					continue
 				}
-				s.firstParent[fields[0]] = true
+				s.firstParent[fields[0]] = len(fields) - 1
 				if len(fields) > 2 {
 					break
 				}
 			}
 		}
 	}
-	return s.firstParent[oid]
+	_, on := s.firstParent[oid]
+	return on
 }
 
 // Reaches reports whether main reaches a commit by any path: whether the
 // commit is an ancestor of main, or main itself. That is ancestry, which
 // is not landing (OnMain).
+//
+// Main's history answers, once read. A commit outside it that Reach lists
+// is one main does not reach. Anything else, such as a name that is not a
+// commit's ID, git answers, once.
 func (s *Snapshot) Reaches(oid string) bool {
 	if s.Tip == "" || oid == "" {
 		return false
+	}
+	if h := s.mainHistory(); h != nil {
+		if h.has(oid) {
+			return true
+		}
+		if s.Reach(oid)[oid] {
+			return false
+		}
 	}
 	r, seen := s.reachesOf[oid]
 	if !seen {
@@ -396,8 +422,12 @@ func (s *Snapshot) landingRecord(head string) (landingAt, bool) {
 }
 
 // singleParent reports whether a commit has exactly one parent, as every
-// commit the integrator lands as does.
+// commit the integrator lands as does. For a commit on main (OnMain), the
+// read of main's first-parent history has its parents.
 func (s *Snapshot) singleParent(oid string) bool {
+	if n, on := s.firstParent[oid]; on {
+		return n == 1
+	}
 	out, err := s.g.output(s.ctx, true, "rev-list", "--parents", "-n", "1", oid)
 	return err == nil && len(strings.Fields(out)) == 2
 }
@@ -483,10 +513,14 @@ func (s *Snapshot) transferStatements() []transferStatement {
 			}
 		}
 	}
+	read := s.g.blobs(s.ctx, blobs)
 	for _, oid := range blobs {
-		note, err := s.g.output(s.ctx, true, "cat-file", "blob", oid)
-		if err != nil {
-			continue
+		note, ok := read[oid]
+		if !ok {
+			var err error
+			if note, err = s.g.output(s.ctx, true, "cat-file", "blob", oid); err != nil {
+				continue
+			}
 		}
 		note += "\n"
 		text, ok := noteText(note)
@@ -598,19 +632,43 @@ func (s *Snapshot) verified(t transferStatement) bool {
 	return true
 }
 
+// reached is what a commit reaches, as one rev-list read it.
+type reached struct {
+	commits map[string]bool // every commit it reaches that main does not
+	// below is each commit main reaches that is a parent of one in
+	// commits: where its own history meets main's.
+	below []string
+}
+
 // Reach is every commit reachable from oid that main does not reach.
 func (s *Snapshot) Reach(oid string) map[string]bool {
+	return s.reached(oid).commits
+}
+
+// reached reads what oid reaches, once.
+func (s *Snapshot) reached(oid string) reached {
 	if r, ok := s.reachOf[oid]; ok {
 		return r
 	}
-	args := []string{"rev-list", oid}
+	args := []string{"rev-list", "--parents", oid}
 	if s.Tip != "" {
 		args = append(args, "^"+s.Tip)
 	}
-	r := map[string]bool{}
+	r := reached{commits: map[string]bool{}}
 	if out, err := s.g.output(s.ctx, true, args...); err == nil {
-		for _, c := range strings.Fields(out) {
-			r[c] = true
+		var parents []string
+		for _, line := range strings.Split(out, "\n") {
+			if fields := strings.Fields(line); len(fields) > 0 {
+				r.commits[fields[0]] = true
+				parents = append(parents, fields[1:]...)
+			}
+		}
+		seen := map[string]bool{}
+		for _, p := range parents {
+			if !r.commits[p] && !seen[p] {
+				seen[p] = true
+				r.below = append(r.below, p)
+			}
 		}
 	}
 	s.reachOf[oid] = r
@@ -619,17 +677,68 @@ func (s *Snapshot) Reach(oid string) map[string]bool {
 
 // StrictAncestor reports whether a is an ancestor of b, and not b itself.
 // A commit main does not reach is an ancestor of b exactly when it is in
-// Reach(b), so git is asked only about a commit main reaches.
+// Reach(b). A commit main reaches is one exactly when b is a commit main
+// reaches and has it in its history, or when a commit where b's own
+// history meets main's has it. Main's history answers that. git is asked
+// only when the snapshot cannot tell, and each pair once.
 func (s *Snapshot) StrictAncestor(a, b string) bool {
 	switch {
 	case a == b:
 		return false
 	case s.Reach(b)[a]:
 		return true
-	case s.Reaches(a):
-		return s.g.succeeds(s.ctx, true, "merge-base", "--is-ancestor", a, b)
+	case !s.Reaches(a):
+		return false
 	}
-	return false
+	if r, known := s.mainAncestor(a, b); known {
+		return r
+	}
+	key := [2]string{a, b}
+	r, seen := s.ancestorOf[key]
+	if !seen {
+		r = s.g.succeeds(s.ctx, true, "merge-base", "--is-ancestor", a, b)
+		s.ancestorOf[key] = r
+	}
+	return r
+}
+
+// mainAncestor answers, from main's history, whether a, a commit main
+// reaches, is an ancestor of b. known is false when it cannot tell: when
+// main's history did not read, or b is not a commit Reach(b) or main's
+// history lists.
+func (s *Snapshot) mainAncestor(a, b string) (r, known bool) {
+	h := s.mainHistory()
+	if h == nil || !h.has(a) {
+		return false, false
+	}
+	if h.has(b) {
+		return h.reaches(b, a), true
+	}
+	at := s.reached(b)
+	if !at.commits[b] {
+		return false, false
+	}
+	for _, c := range at.below {
+		if !h.has(c) {
+			return false, false
+		}
+	}
+	for _, c := range at.below {
+		if h.reaches(c, a) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
+// mainHistory is every commit main reaches, read once. It is nil when
+// origin has no main, or its history does not read.
+func (s *Snapshot) mainHistory() *history {
+	if !s.historyRead && s.Tip != "" {
+		s.historyRead = true
+		s.history, _ = readHistory(s.ctx, s.g, s.Tip)
+	}
+	return s.history
 }
 
 // BranchHead is a branch on origin and the commit at its tip.

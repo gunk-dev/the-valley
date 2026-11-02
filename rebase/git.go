@@ -1,10 +1,12 @@
 package rebase
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -120,6 +122,51 @@ func (g Git) input(ctx context.Context, quiet bool, stdin io.Reader, args ...str
 	}
 	out, err := cmd.Output()
 	return strings.TrimRight(string(out), "\n"), finished(err)
+}
+
+// blobs reads blobs with one `git cat-file --batch`: for each name, what
+// output would return for `git cat-file blob <name>`. A name the batch does
+// not show as a blob is left out, and the caller reads it alone: one that
+// names nothing, or names a tag of a blob, which `cat-file blob` follows.
+func (g Git) blobs(ctx context.Context, names []string) map[string]string {
+	found := map[string]string{}
+	var asked []string
+	var stdin bytes.Buffer
+	for _, name := range names {
+		if name != "" && !strings.ContainsAny(name, " \t\n") {
+			asked = append(asked, name)
+			stdin.WriteString(name + "\n")
+		}
+	}
+	if len(asked) == 0 {
+		return found
+	}
+	cmd := g.command(ctx, "cat-file", "--batch")
+	cmd.Stdin = &stdin
+	out, err := cmd.Output()
+	if finished(err) != nil {
+		return found
+	}
+	for _, name := range asked {
+		header, rest, ok := bytes.Cut(out, []byte("\n"))
+		if !ok {
+			break
+		}
+		out = rest
+		fields := strings.Fields(string(header))
+		if len(fields) != 3 {
+			continue
+		}
+		size, err := strconv.Atoi(fields[2])
+		if err != nil || size < 0 || size >= len(out) {
+			break
+		}
+		if fields[1] == "blob" {
+			found[name] = strings.TrimRight(string(out[:size]), "\n")
+		}
+		out = out[size+1:]
+	}
+	return found
 }
 
 // succeeds reports whether git exits zero. A failure to run git at all is

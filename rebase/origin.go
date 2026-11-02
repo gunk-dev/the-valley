@@ -133,6 +133,11 @@ func ReadRecord(ctx context.Context, g Git, commit string) (*change.Record, erro
 	if err != nil {
 		return nil, fmt.Errorf("the change record %s holds no record.json", short(commit))
 	}
+	return parseRecord(commit, data)
+}
+
+// parseRecord parses the record.json a record commit holds.
+func parseRecord(commit, data string) (*change.Record, error) {
 	r, err := change.Parse([]byte(data + "\n"))
 	if err != nil {
 		return nil, fmt.Errorf("the change record %s does not read: %v", short(commit), err)
@@ -159,8 +164,19 @@ func ReadAll(ctx context.Context, g Git, o Origin) (all []Recorded, unread []Unr
 	if err := Fetch(ctx, g, commits...); err != nil {
 		return nil, nil, err
 	}
+	var files []string
+	for _, commit := range commits {
+		files = append(files, commit+":record.json")
+	}
+	read := g.blobs(ctx, files)
 	for i, id := range ids {
-		r, err := ReadRecord(ctx, g, commits[i])
+		var r *change.Record
+		var err error
+		if data, ok := read[commits[i]+":record.json"]; ok {
+			r, err = parseRecord(commits[i], data)
+		} else {
+			r, err = ReadRecord(ctx, g, commits[i])
+		}
 		if err != nil {
 			unread = append(unread, UnreadRecord{Ref: change.Ref(Target, id), Commit: commits[i], Why: err.Error()})
 			continue

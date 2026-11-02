@@ -43,7 +43,8 @@ import (
 	"time"
 )
 
-// passReason says why a pass started, in the line that opens it.
+// passReason says why a pass started, in the line that opens a woken
+// controller's pass and in every pass's timing lines (timing.go).
 type passReason string
 
 const (
@@ -52,6 +53,7 @@ const (
 	reasonTimer    passReason = "timer"     // the interval ran out
 	reasonFollowUp passReason = "follow-up" // the pass before it landed something
 	reasonWatcher  passReason = "watcher"   // the watch was restored after a failure
+	reasonOnce     passReason = "reconcile" // the one pass of reconcile, run by hand
 )
 
 const (

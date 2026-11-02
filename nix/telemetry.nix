@@ -99,9 +99,12 @@ let
           {
             stream = "${integratorDir}/stream";
             configured.integrator = "${derived.integratorPackage}";
-            instruments = [ "each decision's outcome and its stages, from when it began judging the request" ];
+            instruments = [
+              "each decision's outcome and its stages, from when it began judging the request"
+              "when its process first listed each request at its head, and the pass that decided it"
+            ];
             not_instrumented = [
-              "when a request was first seen, before its decision began: a follow-up to the integrator wakeup work"
+              "when the host accepted a request ref, and anything before the integrator's process started"
             ];
           }
         )

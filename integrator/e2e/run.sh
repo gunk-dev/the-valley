@@ -258,11 +258,17 @@ holds "the landing record and the outcome record name the landing"
 # The decision is followed by one timing line: JSON after a fixed label,
 # naming the request and what was decided, with the time each stage took.
 # Every stage a landing reaches is there, as a whole number of
-# milliseconds, and the stages add up to no more than the whole.
+# milliseconds, and the stages add up to no more than the whole. A pass
+# run by hand is its process's only pass, which first saw the request.
 [ "$(grep -c '^  timing   ' "$work/last.out")" = 1 ] || die "one decision did not print exactly one timing line"
 timing="$(sed -n 's/^  timing   //p' "$work/last.out")"
 jq -e --arg head "$(git rev-parse c1)" --arg tip "$before" '
-  keys == ["change", "duration_ms", "head", "outcome", "project", "request", "stages_ms", "target", "time", "tip"]
+  keys == ["change", "duration_ms", "first_seen", "first_seen_at_start", "first_seen_pass", "head", "listed_to_began_ms",
+    "outcome", "pass", "pass_listed", "pass_reason", "process", "project", "request", "seen_to_began_ms", "stages_ms",
+    "target", "time", "tip"]
+  and .pass == 1 and .pass_reason == "reconcile" and .first_seen_pass == 1 and .first_seen_at_start == true
+  and .first_seen == .pass_listed and .first_seen <= .time and .seen_to_began_ms == .listed_to_began_ms
+  and .seen_to_began_ms >= 0 and (.process | type == "string" and length > 0)
   and .request == "refs/the-valley/integration-requests/main/c1" and .change == "c1"
   and .head == $head and .target == "refs/heads/main" and .tip == $tip and .outcome == "land"
   and (.project | type == "string" and length > 0)
@@ -2082,6 +2088,7 @@ watch33() {
   local log="$1" served="$2" dir="$3"
   shift 3
   VALLEY_E2E_DURING_PASS="f=$work/during33; if [ -x \$f ]; then mv \$f \$f.ran && \$f.ran; fi" \
+    VALLEY_TELEMETRY_DIR="$stream33" \
     integrator watch \
     --repo "$served" \
     --key "$work/integrator" --name "$integrator_name" \
@@ -2109,6 +2116,24 @@ when33() {
   return 1
 }
 ms() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%d", (b - a) * 1000 }'; }
+# The controllers store their decision records in one telemetry stream,
+# which the checks below read as any reader of the stream would.
+stream33="$work/telemetry33"
+# decision33 CHANGE OUTCOME — the first decision record about CHANGE
+# with OUTCOME in the stream, waiting for it.
+decision33() {
+  local i rec
+  for ((i = 0; i < 100; i++)); do
+    rec="$(cat "$stream33"/seg-*.jsonl 2> /dev/null \
+      | jq -c --arg c "$1" --arg o "$2" 'select(.type == "decision" and .change == $c and .data.outcome == $o)' | head -n 1)"
+    if [ -n "$rec" ]; then
+      echo "$rec"
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
 passes33() { awk -v a="$2" '$1 >= a && $2 == "pass:"' "$1" | wc -l; }
 # restart33 [flag…] — the project's controller, stopped and started again;
 # t is the stamp before the start.
@@ -2176,6 +2201,19 @@ t="$EPOCHREALTIME"
 attest_change c33e "" "" --check prose-format
 lands33 c33e "$t" "evidence publication, warm"
 holds "evidence pushed for a stale request wakes the controller, which lands it"
+# The first two decisions about c33e say when this process first saw the request
+# at its head, which was before the stale one began. The landing began
+# in a later pass, the one c33e's evidence woke, at least the half second
+# the evidence waited after that sighting.
+stale="$(decision33 c33e stale)" || die "no stale decision about c33e in the stream"
+landed="$(decision33 c33e land)" || die "no landing decision about c33e in the stream"
+jq -e -s '.[0].data as $s | .[1].data as $l
+  | $s.process == $l.process and $s.first_seen == $l.first_seen and $s.first_seen_pass == $l.first_seen_pass
+  and $s.first_seen_at_start == false and $s.first_seen_pass == $s.pass and $s.seen_to_began_ms >= 0
+  and $l.pass > $l.first_seen_pass and $l.pass_reason == "due" and $l.seen_to_began_ms >= 500
+  and $l.seen_to_began_ms >= $l.listed_to_began_ms' <<< "$stale$landed" > /dev/null \
+  || die "c33e's decision records do not say when it was first seen: $stale $landed"
+holds "a request's decisions say when this process first saw it, and the landing began in a later pass"
 
 # Busy. A request is pushed while a pass works on another, after that pass
 # listed the requests. Its mark survives the pass, and the next pass starts
@@ -2202,8 +2240,14 @@ git -C "$repo" push --quiet origin "$(git rev-parse c33g):refs/the-valley/integr
 sleep 2
 EOF
 chmod +x "$work/during33"
+# c33i is requested with c33f, without evidence, so the busy pass lists
+# both and judges c33i once c33f is done. The 2s c33f's evaluation sleeps
+# fall between c33i's sighting and its decision.
+change33 c33i
 sleep 0.5
-request c33f main "$(git rev-parse c33f)"
+git push --quiet origin \
+  "$(git rev-parse c33f):refs/the-valley/integration-requests/main/c33f" \
+  "$(git rev-parse c33i):refs/the-valley/integration-requests/main/c33i"
 busy="$(when33 "$log" 0 "^c33f -> refs/heads/main .*: stale$")" || die "c33f was not judged"
 [ -e "$work/during33.ran" ] || die "the busy pass did not push c33g's request"
 t="$(cat "$work/during33.at")"
@@ -2211,6 +2255,13 @@ lands33 c33g "$t" "request publication while busy"
 reason="$(awk -v a="$busy" '$1 >= a && $2 == "pass:" { print $3; exit }' "$log")"
 [ "$reason" = due ] || die "the pass after the busy one started for $reason, not due"
 holds "a request pushed while a pass works is landed by the pass right after it"
+rec="$(decision33 c33i stale)" || die "no decision about c33i in the stream"
+jq -e '.data | .first_seen == .pass_listed and .first_seen_pass == .pass
+  and .listed_to_began_ms >= 2000 and .seen_to_began_ms == .listed_to_began_ms' <<< "$rec" > /dev/null \
+  || die "c33i's decision does not say it waited behind c33f: $rec"
+printf '  measured: c33i: first seen to decision start %sms, behind c33f in the same pass\n' "$(jq -r .data.seen_to_began_ms <<< "$rec")"
+holds "a request judged behind a slow one in the same pass says how long it waited after it was first seen"
+git -C "$origin" update-ref -d refs/the-valley/integration-requests/main/c33i
 
 # A landing is followed by another pass at once. c33-dep-a sorts first, so
 # it is judged against the tip before c33-dep-b lands, and it conflicts
@@ -2381,6 +2432,20 @@ lands33 c33m "$t" "dropped mark, on a 3s interval"
 reason="$(awk -v a="$t" '$1 >= a && $2 == "pass:" { print $3; exit }' "$log")"
 [ "$reason" = timer ] || die "the changed signers file and the dropped mark were read by a $reason pass, not the timer"
 holds "the interval's timer pass lands what a changed signers file and a dropped mark left waiting"
+# The restarted controller first saw c33l in its first pass, and says so:
+# it knows nothing of the stale decision the controller before it made.
+# It first saw c33m, filed after it started, in a later pass.
+stale="$(decision33 c33l stale)" || die "no stale decision about c33l in the stream"
+landed="$(decision33 c33l land)" || die "no landing decision about c33l in the stream"
+jq -e -s '.[0].data as $s | .[1].data as $l
+  | $s.process != $l.process and $l.first_seen_at_start == true and $l.first_seen_pass == 1
+  and $l.pass > 1 and $l.pass_reason == "timer" and $l.first_seen > $s.first_seen' <<< "$stale$landed" > /dev/null \
+  || die "c33l's landing does not say a restarted controller first saw it at its start: $stale $landed"
+rec="$(decision33 c33m land)" || die "no landing decision about c33m in the stream"
+jq -e --argjson p "$(jq .data.process <<< "$landed")" '.data
+  | .process == $p and .first_seen_at_start == false and .first_seen_pass > 1' <<< "$rec" > /dev/null \
+  || die "c33m's landing does not say the controller saw it after its start: $rec"
+holds "after a restart, a decision says its request was first seen at the start, and nothing from before it"
 
 # A due the controller cannot remove starts the pass it is found at, and
 # then none until the interval, however often it is marked.

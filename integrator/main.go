@@ -186,6 +186,9 @@ type integrator struct {
 	project string
 	out     io.Writer
 	timings io.Writer // where timing lines go (timing.go); nil prints none
+	// sightings is when this process first saw each request, which timing
+	// lines report and nothing else reads (timing.go). Nil sees none.
+	sightings *sightings
 
 	// The programs it drives. Every judgement about a statement or a note
 	// is attest's, and every judgement about what a policy says is the
@@ -304,6 +307,7 @@ func run(args []string, loop bool) error {
 		project:      *project,
 		out:          os.Stdout,
 		timings:      newDroppable(duplicate(syscall.Stdout, "stdout")),
+		sightings:    newSightings(),
 		attestSchema: *attestSchema,
 		eventSchema:  *eventSchema,
 		key:          *key,
@@ -394,7 +398,7 @@ func run(args []string, loop bool) error {
 	}
 
 	if !loop {
-		return in.reconcile()
+		return in.reconcile(reasonOnce)
 	}
 	// Only the looping controller sweeps. A one-shot run may be somebody
 	// running the integrator by hand beside a controller that is already
@@ -407,11 +411,11 @@ func run(args []string, loop bool) error {
 	// is checked again before every pass.
 	return serve(in.repo, sweepScratch, func(owned func() error) error {
 		if *wokenBy == "" {
-			for {
+			for reason := reasonStartup; ; reason = reasonTimer {
 				if err := owned(); err != nil {
 					return err
 				}
-				if err := in.reconcile(); err != nil {
+				if err := in.reconcile(reason); err != nil {
 					fmt.Fprintf(os.Stderr, "integrator: %v\n", err)
 				}
 				time.Sleep(*interval)
@@ -426,7 +430,7 @@ func run(args []string, loop bool) error {
 			pass: func(reason passReason) (bool, error) {
 				in.out = newPassOutput(os.Stdout, reason)
 				before := in.landings
-				err := in.reconcile()
+				err := in.reconcile(reason)
 				return in.landings > before, err
 			},
 		}

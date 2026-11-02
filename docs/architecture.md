@@ -646,7 +646,7 @@ journal keeps (`integrator/timing.go`). The line is the label `timing` and a JSO
 
 ```text
 $ journalctl -u valley-integrator@the-valley -o cat | sed -n 's/^  timing   //p' | tail -n 1
-{"time":"2026-10-20T12:00:00.000Z","project":"the-valley","request":"refs/the-valley/integration-requests/main/c1","change":"c1","head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","target":"refs/heads/main","tip":"9d1c0e2b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d","outcome":"land","duration_ms":2310,"stages_ms":{"checkout":40,"evidence":350,"land":3,"policy":1500,"publish":10,"record":30,"refusal":20,"sign":300}}
+{"time":"2026-10-20T12:00:00.000Z","project":"the-valley","request":"refs/the-valley/integration-requests/main/c1","change":"c1","head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","target":"refs/heads/main","tip":"9d1c0e2b7a6f5e4d3c2b1a0f9e8d7c6b5a4f3e2d","outcome":"land","duration_ms":2310,"stages_ms":{"apply":10,"checkout":40,"evidence":350,"land":3,"policy":1500,"publish":10,"record":30,"refusal":20,"sign":300},"process":"r20261020T115500-5b0c9e1d","pass":42,"pass_reason":"due","pass_listed":"2026-10-20T11:59:59.880Z","first_seen":"2026-10-20T11:59:31.205Z","first_seen_pass":40,"first_seen_at_start":false,"seen_to_began_ms":28795,"listed_to_began_ms":120}
 ```
 
 It names the request, the change, its head, the target and its tip, and the outcome. A decision that
@@ -657,9 +657,35 @@ the stages the decision reached: `refusal` (step 4, and the second reading of th
 transfer statement), `record` (building the landing's evidence trees, landing record and outcome
 record), `land` (the commit point's ref transaction), and `publish` (the publisher's queue and the
 bus). A voided request gets a timing line too. A refusal that repeats is not reported again, so it
-is not timed again either. The line is output only: no ref, record or event carries it. The line is
-printed after the decision's outcome is recorded. It is dropped when it cannot be written within a
-second, so a journal that stalls or goes away cannot keep an outcome from being recorded. Checked by
+is not timed again either.
+
+The line also says what happened before the decision began. `process` names this start of the
+integrator. `pass` counts this process's passes from 1. `pass_reason` says why the deciding pass
+started. For a controller run with `--woken-by`, it matches the reason in the pass header when that
+header is printed. A one-shot `reconcile` pass uses `reconcile`. `pass_listed` is when that pass
+listed the requests. `time` is when the decision began. `listed_to_began_ms` measures from
+`pass_listed` to `time`. It includes the pass's preparation after listing and any work on other
+requests before this decision began.
+
+A sighting is the process listing a request ref at its head. `first_seen` is when the process first
+listed the request at its head, and `first_seen_pass` is the pass that did. `seen_to_began_ms`
+measures from `first_seen` to `time`. The process resets a sighting when a listing finds a different
+head. After each successful listing, it retains one sighting for each request in that listing and
+forgets requests absent from it. A request listed after it was forgotten gets a new first sighting.
+A failed listing changes nothing.
+
+A sighting is the integrator's own observation. The workstation's `approve.*` records describe the
+approval, when workstation telemetry is enabled and its records are retained
+([the reference](./reference.md#telemetry-answers-valley-telemetryv1)). They use the workstation's
+clock. The integrator records neither the approval time nor the time the host accepted the request
+ref. Host acceptance time is not instrumented. The integrator knows nothing from before its process
+started, so a request first listed in its first pass has `first_seen_at_start` true, and may have
+waited longer.
+
+The line is output only: no ref, record or event carries it. Timing output follows the attempt to
+record the outcome. The caller waits at most one second for the timing write. A blocked write may
+finish later, and subsequent timing lines are skipped while it remains blocked. A journal that
+stalls or goes away therefore cannot keep an outcome from being recorded. Checked by
 `integrator-unit` and `integrator-e2e`.
 
 The security invariant is the operator's approval: only content the operator approved lands. The
@@ -762,8 +788,9 @@ meanwhile.
 
 Each pass prints `pass: <reason>` first, where the reason is `startup`, `due`, `timer`, `follow-up`
 or `watcher`. A timer pass with nothing else to say prints nothing, so an idle controller's journal
-does not grow by a line per interval. The decision's timing line (`integrator/timing.go`) is
-unchanged. It measures the decision's stages, and not the time the request waited before the pass.
+does not grow by a line per interval. The decision's timing line (`integrator/timing.go`) names the
+pass that made the decision, gives that pass's reason, and says when this process first listed the
+request at its head.
 
 The directories are owned by `services.valley.integrator.user` and the `valley-integrator-wake`
 group, mode `0770`, with no sticky bit. The group's members are `services.valley.user` and
@@ -4589,8 +4616,9 @@ The producers:
   builder prints, so the build output goes to the check's log as it is written, at most 256 KiB of
   it. nix's own messages remain the log a failed check shows.
 - **The integrator** ([`integrator/timing.go`](../integrator/timing.go)) records each decision: the
-  request, the outcome, and each stage's time from when it began judging the request. When it first
-  saw the request is not recorded.
+  request, the outcome, and each stage's time from when it began judging the request. For a decision
+  made in a pass, the record also says when this process first listed the request at its head and
+  which pass decided it.
 - **An approval attempt** on a workstation, from `valley approve` or `valley review`, records its
   steps and runs `attest run` with the same spool. The spool is the one of the destination the
   checkout named when the attempt began, and a background flusher sends each spool to its own
@@ -4718,4 +4746,4 @@ supplies the host configuration, the project declaration and the secrets (**depl
 | Registry compile on an instance landing      | The compiler runs on its 5-minute timer only.                                                                                                                                                                                                                                      |
 | Bus authentication                           | The bus listens on localhost with no authentication.                                                                                                                                                                                                                               |
 | Telemetry from remote components             | The collector takes reports from a remote component's reporter principal. No component of the-valley sends them; a web receiver is observed only when it runs on the host.                                                                                                         |
-| When the integrator first sees a request     | A decision record starts when the integrator begins judging the request. The wait before it is not recorded.                                                                                                                                                                       |
+| When the host accepted a request ref         | The integrator records when its process first listed the request at its head and the elapsed time until judging began. It does not record when the host accepted the ref or observations from an earlier process.                                                                  |

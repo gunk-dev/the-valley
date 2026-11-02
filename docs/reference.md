@@ -2311,20 +2311,49 @@ happened.
 
 The types:
 
-| Producer              | Types                                                                                                                                                           |
-| :-------------------- | :-------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| check worker          | `pass.start`, `pass.end`, `pass.interrupted` (inferred, at the next pass), `change.seen`, `batch.start`, `batch.end`, `backoff`, `publish.start`, `publish.end` |
-| `attest run`          | `run.start`, `run.end`, `eval.start`, `eval.end`, `check.queued`, `check.build-start`, `check.build-end`, `check.start`, `check.result`, `evidence.stored`      |
-| `valley approve`      | `approve.start`, `approve.policy`, `approve.coverage`, `approve.checks`, `approve.request`, `approve.end`                                                       |
-| a workstation's flush | `check.output`, a piece of a check's output, shown only with `--logs`                                                                                           |
-| integrator            | `decision`: the request, outcome, total time and each stage's time, from when judging began                                                                     |
-| collector             | `report.gap`: a sender's records that never arrived                                                                                                             |
+| Producer              | Types                                                                                                                                                                                              |
+| :-------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| check worker          | `pass.start`, `pass.end`, `pass.interrupted` (inferred, at the next pass), `change.seen`, `batch.start`, `batch.end`, `backoff`, `publish.start`, `publish.end`                                    |
+| `attest run`          | `run.start`, `run.end`, `eval.start`, `eval.end`, `check.queued`, `check.build-start`, `check.build-end`, `check.start`, `check.result`, `evidence.stored`                                         |
+| `valley approve`      | `approve.start`, `approve.policy`, `approve.coverage`, `approve.checks`, `approve.request`, `approve.end`                                                                                          |
+| a workstation's flush | `check.output`, a piece of a check's output, shown only with `--logs`                                                                                                                              |
+| integrator            | `decision`: the request, outcome, total duration and stage durations; for a decision made in a pass, also the deciding process and pass and when that process first listed the request at its head |
+| collector             | `report.gap`: a sender's records that never arrived                                                                                                                                                |
 
 A check's records come as its work happens, not in the order the checks were given: a fast check's
 `check.result` is stored while a slow one still builds. `slot_wait_ms` is how long a build waited
 for a build slot, `build_ms` how long its `nix build` ran, `eval_ms` the shared evaluation plus the
 check's own, and `check_ms` all three with the store probe. Checks build side by side, so their
 `check_ms` do not add up to a run's wall time.
+
+A `decision` record carries the timing information of the integrator's timing line
+([architecture](./architecture.md#the-integrator)) in its `data`: `request`, `target`, `tip`,
+`outcome`, `duration_ms`, `began` (when judging began, the timing line's `time`), and
+`stage_<name>_ms` for each stage the decision reached. `project`, `change` and `head` are top-level
+record fields. A decision made in a pass also carries what happened before it began.
+
+A sighting is the process listing a request ref at its head. The process resets the sighting when a
+listing finds a different head, and forgets it when a successful listing omits the request. A
+request listed after it was forgotten gets a new first sighting.
+
+- `process`: this start of the integrator, given a fresh name at every start.
+- `pass` and `pass_reason`: which pass decided the request and why that pass started. `pass` is
+  counted from 1 in its process. `pass_reason` is `startup`, `due`, `timer`, `follow-up`, `watcher`,
+  or `reconcile` for a pass run by hand.
+- `pass_listed`: when that pass listed the requests.
+- `first_seen` and `first_seen_pass`: when the process first listed the request at its head, and in
+  which pass.
+- `first_seen_at_start`: true when the remembered first sighting of this request at this head was in
+  the process's first pass. The request may already have been waiting before the process started.
+- `seen_to_began_ms` and `listed_to_began_ms`: how long the request waited before judging began.
+  `seen_to_began_ms` measures from `first_seen` to `began`, and `listed_to_began_ms` measures from
+  `pass_listed` to `began`.
+
+For one landing, a reader has `first_seen`, then `began`, then `began` plus `duration_ms`. These
+times come from the integrator's own clock. When workstation telemetry is enabled and its records
+are retained, the `approve.*` records in the table above describe the approval attempt using the
+workstation's clock. The integrator records neither the approval time nor the time the host accepted
+the request ref. Host acceptance time is not instrumented.
 
 ### Web export (`the-valley/web-export/v2`)
 

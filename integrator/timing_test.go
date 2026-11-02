@@ -137,3 +137,60 @@ func TestATimingLineNobodyReadsHoldsNothingUp(t *testing.T) {
 		t.Errorf("behind a timing line nobody reads, the outcome record says %q", record)
 	}
 }
+
+// A request is first seen once at each head, by the pass that first lists
+// it there. A moved head is seen anew, a request no longer listed is
+// forgotten, and a new process remembers nothing of the one before it.
+func TestARequestIsFirstSeenOnceAtEachHead(t *testing.T) {
+	a := request{ref: requestPrefix + "/main/a", head: "a1"}
+	b := request{ref: requestPrefix + "/main/b", head: "b1"}
+	s := newSightings()
+	pass := func(reason passReason, requests ...request) {
+		t.Helper()
+		s.start(reason)
+		s.list(requests)
+		time.Sleep(5 * time.Millisecond)
+	}
+	firstSeen := func(r request, wantPass int, wantAtStart bool) observation {
+		t.Helper()
+		o := s.of(r, time.Now())
+		if o.FirstSeenPass != wantPass || o.FirstSeenAtStart != wantAtStart || o.Process != s.process || o.Pass != s.passes {
+			t.Fatalf("%s at %s in pass %d: %+v, want first seen in pass %d", r.ref, r.head, s.passes, o, wantPass)
+		}
+		if o.SeenToBeganMS < o.ListedToBeganMS {
+			t.Errorf("%s was first seen after its pass listed it: %+v", r.ref, o)
+		}
+		return o
+	}
+
+	pass(reasonStartup, a)
+	firstSeen(a, 1, true)
+	if o := s.of(b, time.Now()); o != (observation{}) {
+		t.Errorf("a request the pass did not list has an observation: %+v", o)
+	}
+	pass(reasonDue, a, b)
+	seen := firstSeen(a, 1, true).FirstSeen
+	if o := firstSeen(b, 2, false); o.PassReason != string(reasonDue) || o.FirstSeen == seen {
+		t.Errorf("b, first listed by the due pass, says %+v", o)
+	}
+	moved := request{ref: b.ref, head: "b2"}
+	pass(reasonTimer, a, moved)
+	firstSeen(moved, 3, false)
+	if o := s.of(b, time.Now()); o != (observation{}) {
+		t.Errorf("a decision about b's old head has an observation: %+v", o)
+	}
+	pass(reasonFollowUp, a)
+	if len(s.seen) != 1 {
+		t.Errorf("after b was no longer listed, %d requests are remembered", len(s.seen))
+	}
+	pass(reasonDue, a, moved)
+	firstSeen(moved, 5, false)
+
+	restarted := newSightings()
+	if restarted.process == s.process {
+		t.Error("two starts share a process")
+	}
+	s = restarted
+	pass(reasonStartup, a)
+	firstSeen(a, 1, true)
+}

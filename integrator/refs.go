@@ -105,12 +105,15 @@ func (in *integrator) requests() ([]request, []string, error) {
 // that cannot read them judges nothing: which heads are versions of
 // changes that are not ready is what keeps those heads from landing. The
 // requests a withdrawn change voids are deleted before the rest are
-// judged.
-func (in *integrator) reconcile() error {
+// judged. reason is why the pass started, which its timing lines say
+// along with when this process first saw each request (timing.go).
+func (in *integrator) reconcile(reason passReason) error {
+	in.sightings.start(reason)
 	requests, malformed, err := in.requests()
 	if err != nil {
 		return err
 	}
+	in.sightings.list(requests)
 	for _, ref := range malformed {
 		fmt.Fprintf(in.out, "%s: not a request ref; one is %s/<target>/<change>. Skipped.\n", ref, requestPrefix)
 	}

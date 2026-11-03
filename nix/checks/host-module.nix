@@ -780,6 +780,12 @@ let
     || account.group != "valley-worker"
     || account.extraGroups != [ ]
     || service.Type or null != "oneshot"
+    # A switch must not wait on a running pass: the unit is neither
+    # restarted nor stopped when it changes, and no target starts it.
+    || unit.restartIfChanged != false
+    || unit.stopIfChanged != false
+    || unit.wantedBy != [ ]
+    || unit.requiredBy != [ ]
     || service.Slice or null != "valley-builds.slice"
     || daemon.Slice or null != "valley-builds.slice"
     || slice.CPUQuota or null != "400%"

@@ -3005,6 +3005,13 @@ in
       # path unit starts a pass at most once per pass that ends, and a pass
       # that could not claim due waits out RestartSec first.
       unitConfig.StartLimitIntervalSec = 0;
+      # A switch never starts, restarts or stops the worker. Restarting a
+      # oneshot that is mid-pass makes the switch wait for the pass to end,
+      # and a pass can run for many minutes. A pass already running ends on
+      # the binary and configuration it started with; the next pass, from
+      # the timer or the path unit, uses the new ones.
+      restartIfChanged = false;
+      stopIfChanged = false;
       # nix is the machine's own, for the reason the integrator's is.
       path = [
         workerPackage

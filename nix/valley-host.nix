@@ -458,7 +458,7 @@ let
     cd "$origin"
     exec valley-worker ${
       lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
-    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots}${
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots} --batches ${toString cfg.worker.batches} --interval ${lib.escapeShellArg cfg.worker.interval}${
       lib.optionalString (
         cfg.worker.keepOutputs != null
       ) " --keep-outputs ${toString (cfg.worker.keepOutputs * 24)}h"
@@ -1904,6 +1904,32 @@ in
         '';
       };
 
+      batches = lib.mkOption {
+        type = lib.types.ints.positive;
+        default = 2;
+        example = 3;
+        description = ''
+          The most batches a pass runs at once, as `valley-worker
+          --batches`. A batch is one ready change's missing checks, built by
+          one `attest run`. While a long batch runs, a pass starts the next
+          ready change's batch in a free slot, so a short change does not
+          wait behind a long one.
+
+          At worst, the worker has this many times
+          {option}`services.valley.worker.buildSlots` `nix build`
+          processes at once, and each may build
+          {option}`services.valley.worker.maxJobs` derivations at once:
+          `batches × buildSlots × maxJobs` local derivation builds, besides
+          the evaluations. They share {option}`services.valley.buildSlice.memoryMax`
+          with the worker and the nix daemon. Measure the slice's peak
+          memory under a real load before raising this:
+          `systemctl status valley-builds.slice` shows its memory now and
+          its peak.
+
+          ${workerCapacityBound}
+        '';
+      };
+
       keepOutputs = lib.mkOption {
         type = lib.types.nullOr lib.types.ints.positive;
         default = 7;
@@ -1932,7 +1958,11 @@ in
           worker reads starts a pass sooner, through the wake directory;
           the timer is the recovery scan, and what retries a failed batch
           or push once its wait is over. It is also the hold-off after a
-          pass that could not claim its wake mark.
+          pass that could not claim its wake mark. A pass whose batches
+          still run reads its projects again at this interval, passed as
+          `valley-worker --interval`, since the timer starts no pass while
+          one runs. It is a systemd time span, such as `1m` or `5min`;
+          the worker reads every span the timer reads.
         '';
       };
 
@@ -2985,10 +3015,12 @@ in
     # by hand.
     #
     # The unit runs in the build slice, so its evaluation shares the caps
-    # with the builds. attest builds worker.buildSlots checks at once, and
-    # NIX_CONFIG lets each of those builds build worker.maxJobs derivations
-    # at once. The builds themselves run in the daemon, under the slice's
-    # quota and memory cap, which they share with the worker.
+    # with the builds. A pass runs worker.batches batches at once, attest
+    # builds worker.buildSlots checks at once in each, and NIX_CONFIG lets
+    # each of those builds build worker.maxJobs derivations at once. The
+    # builds themselves run in the daemon, under the slice's quota and
+    # memory cap, which they share with the worker. A stop of the unit
+    # stops the pass and every attest it started.
     systemd.services.valley-worker = lib.mkIf cfg.worker.enable {
       description = "One pass of the valley check worker";
       after = [
@@ -3092,10 +3124,10 @@ in
       };
     };
 
-    # A pass whenever the wake directory holds due. PathExists, and not
-    # PathChanged: a mark made while a pass runs is seen when that pass
-    # ends, and starts the next one then, rather than being absorbed by
-    # the pass already running. claimed starts nothing.
+    # A pass whenever the wake directory holds due. A pass claims each mark
+    # made while it runs, and reads again. PathExists, and not PathChanged:
+    # a mark made after a pass's last claim is seen when that pass ends,
+    # and starts the next one then. claimed starts nothing.
     systemd.paths.valley-worker = lib.mkIf cfg.worker.enable {
       description = "Start the valley check worker when a ref it reads moves";
       wantedBy = [ "multi-user.target" ];

@@ -20,6 +20,12 @@
 # again before its wait, however many marks and timer passes come. Last,
 # the key is the same after many starts.
 #
+# Then the scheduler. One pass builds a short change beside a long one,
+# takes on changes readied while the long batch runs, builds two changes
+# with one tree once, and goes on past a failed batch, claiming the marks
+# made meanwhile itself. Its changes are then withdrawn, since every scan
+# after it would read them.
+#
 # The worker's interval here is 15 seconds rather than the module's
 # minute, so a scenario that waits for a timer pass or a hold-off waits
 # seconds. module-eval holds what the module renders: the minute, the
@@ -112,6 +118,15 @@ let
   '';
   # A build long enough to be killed in: about twenty seconds of spinning.
   slow = pkgs.writeText "slow.sh" ''
+    i=0
+    while [ $i -lt 10000000 ]; do i=$((i+1)); done
+    echo $NIX_BUILD_CORES > $out
+  '';
+  # The long batch beside which a pass builds others: as long as slow,
+  # and its own derivation, so the scenario that kills a pass during slow
+  # still finds slow unbuilt.
+  long = pkgs.writeText "long.sh" ''
+    # long
     i=0
     while [ $i -lt 10000000 ]; do i=$((i+1)); done
     echo $NIX_BUILD_CORES > $out
@@ -268,6 +283,14 @@ in
               "systemctl start valley-identity.service",
           )
 
+      # The contributor's push of a branch, and its ready. A unit that
+      # requires valley-init can start it again at any time, and the host
+      # refuses pushes, writing nothing, until it converges; so each is
+      # tried until the host takes it.
+      def push_ready(branch):
+          host.wait_until_succeeds(f"{contributor} git push --quiet origin {branch}", timeout=60)
+          host.wait_until_succeeds(f"{contributor} valley ready {branch}", timeout=60)
+
       # A branch of the project with the first check's script given,
       # pushed by the contributor and readied.
       def ready(branch, first):
@@ -275,9 +298,8 @@ in
               f"cd /root/project && git checkout --quiet -b {branch} origin/main",
               f"cp {first} /root/project/first.sh && echo {branch} >> /root/project/README.md",
               f"cd /root/project && git add -A && {commit} -m {branch}",
-              f"{contributor} git push --quiet origin {branch}",
-              f"{contributor} valley ready {branch}",
           )
+          push_ready(branch)
 
       with subtest("the instance and the project are seeded, and a change is ready"):
           host.succeed("mkdir /srv/hung.git && chown git:git /srv/hung.git", f"{git} init --quiet --bare /srv/hung.git")
@@ -361,9 +383,13 @@ in
               assert host.succeed(f"systemctl show -p Slice --value {unit}").strip() == "valley-builds.slice", unit
 
       with subtest("the timer runs the next pass, which finds the evidence on origin and builds nothing"):
+          # The pass above read the change again after publishing, and said
+          # this line once already.
+          covered = journal().count("origin holds evidence for every nix check it requires")
           host.succeed("systemctl start valley-worker.timer")
           host.wait_until_succeeds(
-              "journalctl -u valley-worker -o cat | grep -q 'origin holds evidence for every nix check it requires'",
+              "test $(journalctl -u valley-worker -o cat | grep -c 'origin holds evidence for every nix check it requires')"
+              f" -gt {covered}",
               timeout=150,
           )
           host.succeed("systemctl stop valley-worker.timer")
@@ -397,28 +423,82 @@ in
           host.succeed(f"test ! -e {wake}/claimed")
           assert len(attestations()) == 1
 
-      with subtest("a ready push starts a pass at once with no timer, and a change readied during it gets the next pass"):
+      def head(branch):
+          return host.succeed(f"git -C /root/project rev-parse --short=7 {branch}").strip()
+
+      def told(commit, what):
+          return journal().count(f" at {commit}: {what}")
+
+      def wait_said(commit, what, timeout):
+          host.wait_until_succeeds(f"journalctl -u valley-worker -o cat | grep -qF ' at {commit}: {what}'", timeout=timeout)
+
+      with subtest("a ready push starts a pass at once with no timer"):
           import time
           host.fail("systemctl is-active valley-worker.timer")
-          building = journal().count("building first, second")
-          evidence = len(attestations())
           ready("wake-first", "${spin}")
           readied = time.monotonic()
-          host.wait_until_succeeds(
-              f"test $(journalctl -u valley-worker -o cat | grep -c 'building first, second') -gt {building}",
-              timeout=120,
-          )
+          wait_said(head("wake-first"), "building", 120)
           print(f"ready to building: {time.monotonic() - readied:.1f}s")
-          assert unit_property("valley-worker.service", "ActiveState") == "activating"
-          ready("wake-second", "${spin}")
-          host.wait_until_succeeds(f"test -e {wake}/due -a -e {wake}/claimed")
-          host.wait_until_succeeds(
-              f"test $({git} -C /srv/git/project.git for-each-ref refs/the-valley/attestations/ | wc -l) -eq {evidence + 2}",
-              timeout=600,
-          )
+          wait_said(head("wake-first"), "published", 120)
           idle()
-          host.fail("systemctl is-active valley-worker.timer")
-          assert journal().count("building first, second") == building + 2
+          host.succeed(f"test ! -e {wake}/claimed")
+
+      # One pass, started by hand with the timer and the path unit stopped,
+      # so every change readied after it starts is built by that pass or by
+      # none. Each ready push marks due, and the pass claims the mark
+      # itself and reads again. The long change builds for about twenty
+      # seconds; meanwhile the short change is built and published in the
+      # pass's second slot, a broken change fails, two changes with one
+      # tree are built once, and the long change publishes after the
+      # failure. The pass acknowledges every mark it claimed.
+      with subtest("a pass builds a short change beside a long one, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
+          host.succeed("systemctl stop valley-worker.path")
+          ready("long", "${long}")
+          long = head("long")
+          host.succeed("systemctl start --no-block valley-worker.service")
+          wait_said(long, "building", 120)
+          mark = started()
+          ready("short", "${spin}")
+          short = head("short")
+          ready("early-broken", "${broken}")
+          early_broken = head("early-broken")
+          wait_said(short, "published", 120)
+          # The short change's evidence is on origin while the long batch
+          # still builds.
+          assert told(long, "published") == 0, journal()
+          assert unit_property("valley-worker.service", "ActiveState") == "activating"
+          # Two branches with one tree, readied one right after the other.
+          ready("twin-a", "${spin}")
+          host.succeed(
+              "cd /root/project && git checkout --quiet -b twin-b origin/main && git checkout --quiet twin-a -- .",
+              f"cd /root/project && {commit} -m twin-b",
+          )
+          push_ready("twin-b")
+          trees = host.succeed("git -C /root/project rev-parse twin-a^{tree} twin-b^{tree}").split()
+          assert trees[0] == trees[1], trees
+          twins = [head("twin-a"), head("twin-b")]
+          wait_said(early_broken, "the batch did not pass", 120)
+          wait_said(long, "published", 300)
+          host.wait_until_succeeds(
+              "test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating", timeout=300
+          )
+          said = journal()
+          assert started() == mark, "a second pass ran"
+          for change in [long, short, early_broken]:
+              assert told(change, "building") == 1, (change, said)
+          assert said.index(f" at {early_broken}: the batch did not pass") < said.index(f" at {long}: published"), said
+          assert sum(told(t, "building") for t in twins) == 1, said
+          assert sum(told(t, "published") for t in twins) == 1, said
+          assert any(told(t, "origin holds evidence for every nix check it requires") for t in twins), said
+          host.succeed(f"test ! -e {wake}/due -a ! -e {wake}/claimed")
+          # Every scan reads each ready change, so the changes this pass
+          # built are withdrawn, and the passes below read no more changes
+          # than they did before this scenario.
+          for branch in ["long", "short", "early-broken", "twin-a", "twin-b"]:
+              host.succeed(f"{contributor} valley withdraw {branch}")
+          host.succeed("systemctl start valley-worker.path")
+          idle()
+          host.succeed(f"test ! -e {wake}/claimed")
 
       with subtest("marks from the git user and the integrator's user are one file, and a stale mark builds nothing"):
           host.succeed("systemctl stop valley-worker.path")
@@ -483,15 +563,6 @@ in
           host.succeed(f"test -e {wake}/due")
           host.succeed("systemctl start valley-worker.path")
           idle()
-
-      def head(branch):
-          return host.succeed(f"git -C /root/project rev-parse --short=7 {branch}").strip()
-
-      def told(commit, what):
-          return journal().count(f" at {commit}: {what}")
-
-      def wait_said(commit, what, timeout):
-          host.wait_until_succeeds(f"journalctl -u valley-worker -o cat | grep -qF ' at {commit}: {what}'", timeout=timeout)
 
       with subtest("with the mirror and the bus hung, a landing by the integrator's service and a ready push mark the worker at once"):
           # The mirror takes the drain's push of main and never answers it,

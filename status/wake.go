@@ -13,15 +13,20 @@ package main
 //     again". What a pass builds still comes from the refs it reads.
 //   - claimed, which due becomes when a pass takes it. A pass renames due
 //     to claimed under the lock, before it reads any ref. A writer that
-//     marks due after the rename leaves a new due beside claimed, for the
-//     next pass.
+//     marks due after the rename leaves a new due beside claimed. The pass
+//     looks for it while it runs, and claims it the same way before it
+//     reads the refs again: the rename replaces the claimed already there,
+//     which loses nothing, since a mark says only "read the refs again"
+//     and the claimed that is left stands for both. A due made after a
+//     pass's last claim is left for the next pass.
 //   - lock, the consumer's lock. A pass holds it from the claim to the
 //     acknowledgement, so two passes over one wake directory take turns,
 //     whatever state directories they were given.
 //
-// A pass removes claimed once it has read every project and recorded
-// every failure it met (worker.go's handled). It never removes due:
-// removing claimed by name cannot touch a mark made since the claim. A
+// A pass removes claimed when it ends, once it has read every project
+// and recorded every failure it met (worker.go's handled). It never
+// removes due: removing claimed by name cannot touch a mark made since
+// the last claim. A
 // pass that read less, or a pass that was killed, leaves claimed. Nothing
 // watches claimed; it says that the last claim was not handled, and the
 // next pass to handle everything removes it. That pass reads the refs as
@@ -89,6 +94,33 @@ func (w *wake) ack() error {
 		return err
 	}
 	return nil
+}
+
+// again claims a mark made since the last claim, for a pass that holds
+// the lock and is about to read the refs again. It does not take the lock
+// again, since the pass holds it. A rename that fails is kept in err, and
+// the pass claims nothing more. Without a claim to build on it does
+// nothing.
+func (w *wake) again(stderr io.Writer) {
+	if w == nil || w.err != nil || w.lock == nil {
+		return
+	}
+	err := os.Rename(filepath.Join(w.dir, "due"), filepath.Join(w.dir, "claimed"))
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		w.err = fmt.Errorf("could not claim %s: %w", filepath.Join(w.dir, "due"), err)
+		fmt.Fprintf(stderr, "valley: %v; the pass claims nothing more\n", w.err)
+	}
+}
+
+// marked reports whether a mark was made since the last claim, for a pass
+// that can claim it. A pass that could not claim does not look, since the
+// due it leaves would read as a new mark for as long as it ran.
+func (w *wake) marked() bool {
+	if w == nil || w.err != nil || w.lock == nil {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(w.dir, "due"))
+	return err == nil
 }
 
 func (w *wake) close() {

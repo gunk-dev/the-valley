@@ -1227,9 +1227,9 @@ The check worker builds the checks a ready change requires before anyone approve
 the evidence on `origin`, where approval reuses it instead of building it (see
 [The valley command](#the-valley-command)). `valley-worker` runs one pass of it. It is
 `valley-go work` (`status/worker.go`), packaged with this flake's git, cue and `attest` and the
-verification schema (`nix/packages.nix`). It keeps no queue, lease or schedule, and nothing connects
-to it. A host that turns the worker on runs a pass on a timer (see
-[The worker on the host](#the-worker-on-the-host)).
+verification schema (`nix/packages.nix`). Within a pass it schedules batches; between passes it
+keeps nothing but its record of failures, and nothing connects to it. A host that turns the worker
+on runs a pass on a timer (see [The worker on the host](#the-worker-on-the-host)).
 
 A pass builds evidence only for the projects named with `--repo`. It reads each project as
 `valley pending --repo` does, so it can run from a clone of any project the host serves. To find a
@@ -1249,6 +1249,12 @@ names. For each project it follows approval's steps:
    the worker's own key. Then it pushes the one ref `attest` stored,
    `refs/the-valley/attestations/<tree>/<key-hash>`, and nothing else.
 
+A pass runs up to `--batches` batches at once, in the order their versions became ready, and one
+batch at a time for each attestation ref. It reads every project again when a batch ends, when a
+wake mark arrives, and every `--interval` while batches run, so a change readied while a long batch
+runs is built in the same pass. It ends when no batch runs and a read finds nothing to start
+(`implemented`, `status/worker.go`).
+
 The hook admits that ref as it admits any evidence. Every note must verify under the host's known
 signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the
 worker's notes like any other. Where the host restricts the worker's key to projects (see
@@ -1258,7 +1264,7 @@ module refuses a host that runs the worker without that restriction.
 
 The evidence is about the head's tree, so it stays true if the change moves on while the batch runs.
 The pass does not read the change's record again before it publishes. A superseded head's evidence
-is published, and the next pass builds the new version.
+is published, and the pass builds the new version once it reads the change again.
 
 The attestation namespace admits creations only, so the worker never builds what it could not
 publish. When `origin` already holds the worker's own ref for the tree and that ref lacks a required
@@ -1290,10 +1296,11 @@ runs, even when the pass that started the batch is killed. A second pass waits f
 it reads `origin` after the first has published, or finds the ref the batch stored and publishes it.
 
 A read of `origin` that fails stops the pass, because a read that did not happen must not read as no
-changes or no evidence. Anything else that goes wrong with one change is reported, and the pass goes
-on to the next. The pass exits 1 when anything went wrong, with one exception. When `failures.json`
-cannot be read or does not parse, the pass prints a warning on `stderr`, starts the record empty,
-and goes on, and that alone does not make it exit 1.
+changes or no evidence. The pass starts nothing more, lets its running batches end, and publishes
+and records what they did. Anything else that goes wrong with one change or one batch is reported,
+and the pass goes on with the rest. The pass exits 1 when anything went wrong, with one exception.
+When `failures.json` cannot be read or does not parse, the pass prints a warning on `stderr`, starts
+the record empty, and goes on, and that alone does not make it exit 1.
 
 Checked by `valley-request`, which runs the packaged worker through the protected host's hook and
 lands its evidence with the real integrator.
@@ -1322,24 +1329,26 @@ number of moves leave one file. The directory never holds more than `due`, `clai
 none of them is a temporary file.
 
 A pass claims the mark before it reads any ref. It takes `lock` in the wake directory and renames
-`due` to `claimed`. A move marked after the rename leaves a new `due` beside `claimed`. When the
-pass ends, the path unit sees that `due` and starts the next pass. A mark made while a pass builds
-is therefore never absorbed by that pass. The pass then reads the refs as they are, as a pass the
-timer starts does.
+`due` to `claimed`. A move marked after the rename leaves a new `due` beside `claimed`. While the
+pass runs, it looks for that `due` every second, and claims it the same way before it reads every
+project again. The rename replaces the `claimed` already there. That loses nothing, since a mark
+says only "read the refs again". A mark made after the pass's last claim is left as `due`, and when
+the pass ends the path unit sees it and starts the next pass. Each read takes the refs as they are,
+as a pass the timer starts does.
 
-A pass acknowledges its claim by removing `claimed`, and only when it has handled what it read. It
-has handled it when it read every project and every failure it met is a failed batch or push whose
-wait it recorded. A policy that did not read, checks that did not derive, a read of `origin` that
-failed, or a record that was not written leaves `claimed` in place. So does a pass that is killed.
-Nothing watches `claimed`. It records that the last claim was not handled, and the next pass that
-handles everything removes it. A pass never removes `due`.
+A pass acknowledges its claim by removing `claimed` when it ends, and only when it has handled what
+it read. It has handled it when every read covered every project and every failure it met is a
+failed batch or push whose wait it recorded. A policy that did not read, checks that did not derive,
+a read of `origin` that failed, or a record that was not written leaves `claimed` in place. So does
+a pass that is killed. Nothing watches `claimed`. It records that the last claim was not handled,
+and the next pass that handles everything removes it. A pass never removes `due`.
 
 `due` is a prompt and nothing more. It carries no content, and nothing reads it as code, a path or a
 ref. What a pass builds still comes from the change records, `main`, the floor and the evidence it
 reads, and the pushes it makes still pass the pre-receive hook. A pass that a stale or duplicate
 mark starts finds nothing to build and pushes nothing. It still reads every project's records,
-policy and coverage. The worker's own evidence push marks `due` once, and the pass that follows
-finds the evidence and builds nothing, so it stops there.
+policy and coverage. The worker's own evidence push marks `due` once, and the pass claims that mark
+and reads once more, finds the evidence and builds nothing, so it stops there.
 
 The worker's timer remains the recovery scan (`implemented`):
 
@@ -1347,9 +1356,10 @@ The worker's timer remains the recovery scan (`implemented`):
   two. The timer's first pass after activation, and every later one, reads everything.
 - A failed batch or push waits out its recorded wait (`firstBuildWait`, `firstPushWait`, doubled for
   each failure in a row). A mark does not retry it sooner: the pass finds it still waiting. It runs
-  again in the first pass that starts after its wait is over. That pass starts at most
-  `worker.interval` plus the timer's accuracy after the pass before it ended, so a retry comes
-  within one interval, one accuracy window and one pass's runtime of its deadline.
+  again in the first read after its wait is over: in the same pass if that pass is still busy, and
+  otherwise in the next pass. That pass starts at most `worker.interval` plus the timer's accuracy
+  after the pass before it ended, so a retry comes within one interval, one accuracy window and one
+  pass's runtime of its deadline.
 - A pass that could not read `origin`, or its policy, is not retried at once either. The service has
   no `Restart=`, so the next pass is the timer's, or one a new mark starts.
 
@@ -1376,14 +1386,16 @@ Where the timer still does the work (`not built`):
   [The integrator's wakeups](#the-integrators-wakeups).
 
 Checked by `worker-e2e`, which runs the real units on a host, and by `module-eval`. In `worker-e2e`,
-with the timer stopped, a ready push starts a pass. So does a landing by the integrator's own
-service while the project's mirror and the bus hang, and so does a floor landing in the instance
-project, which is not a worker project. A pass killed during a build leaves its claim, and so does a
-pass that cannot reach the repositories over SSH. In both cases the timer's next pass builds the
-change with no new mark. A failed batch is not built again before its wait, however many marks and
-timer passes arrive. The claim and acknowledgement under concurrent writers is checked by
-`TestWakeLosesNoMark` (`status/wake_test.go`), and the landing's mark ahead of a hung bus by
-`integrator-e2e`.
+with the timer stopped, a ready push starts a pass. One pass builds a short change beside a long
+one, takes on changes readied while the long batch runs, builds two changes with one tree once, and
+goes on past a failed batch. So does a landing by the integrator's own service while the project's
+mirror and the bus hang, and so does a floor landing in the instance project, which is not a worker
+project. A pass killed during a build leaves its claim, and so does a pass that cannot reach the
+repositories over SSH. In both cases the timer's next pass builds the change with no new mark. A
+failed batch is not built again before its wait, however many marks and timer passes arrive. The
+claim and acknowledgement under concurrent writers is checked by `TestWakeLosesNoMark` and
+`TestWakeHolderLosesNoMarkMadeDuringAScan` (`status/wake_test.go`), and the landing's mark ahead of
+a hung bus by `integrator-e2e`.
 
 ### The worker on the host
 
@@ -1397,7 +1409,8 @@ choice**). When enabled, the module creates (`implemented`):
 - the `valley-worker` system user and group, with a `0700` state directory at `worker.stateDir`
   (`/var/lib/valley-worker` by default);
 - `valley-worker.service`, a oneshot unit that runs one pass of `valley-worker` over
-  `worker.projects` as `valley-worker`, inside `valley-builds.slice`;
+  `worker.projects` as `valley-worker`, inside `valley-builds.slice`, with up to `worker.batches`
+  (`2` by default) batches at once. A stop of the unit stops the pass and every `attest` it started;
 - `valley-worker.timer`, which starts `valley-worker.service` 1 second after activation and waits
   `worker.interval` (`1m` by default, plus up to 1 minute of systemd timer slack) after each pass
   finishes before starting the next;
@@ -4697,11 +4710,12 @@ The producers:
 
 - **The check worker** ([`status/workertelemetry.go`](../status/workertelemetry.go)) records each
   pass, the change, version, head and tree it reads, each batch it builds and each publication, and
-  each backoff with its reason and next retry. It keeps `state.json` beside its stream: the pass
-  running now, its last 20 attempts, and every failure waiting out its backoff, with what it was
-  about. `failures.json` in its private directory stays what decides a backoff. A pass that is
-  killed cannot record its end, so the next pass finds the open pass in `state.json` and records it
-  as interrupted, marked as inferred.
+  each backoff with its reason and next retry. Each record about a batch or a push names its own
+  project, change, version, head and tree. It keeps `state.json` beside its stream: the pass running
+  now with every batch it runs, its last 20 attempts, and every failure waiting out its backoff,
+  with what it was about. `failures.json` in its private directory stays what decides a backoff. A
+  pass that is killed cannot record its end, so the next pass finds the open pass in `state.json`
+  and records it, and each batch it was running, as interrupted, marked as inferred.
 - **`attest run`** ([`attest/progress.go`](../attest/progress.go)) records the shared evaluation,
   each check queued, its build starting after its slot wait, its build ending and its result, when
   each happens. Checks are still reported to the terminal and decided in the order given; only the

@@ -2314,11 +2314,11 @@ said tagged "$line: published $taggedref"
 pushed "$taggedref"
 
 # 21e. A head superseded while it is built. A stand-in hook readies a new
-#      version of the change in the middle of the batch. The pass does not
-#      read the record again: it publishes the evidence for the head it
-#      pinned, which the hook admits, since it is true of that tree. The
-#      next pass builds the new version, which approve then reuses, and
-#      the real integrator lands.
+#      version of the change in the middle of the batch. The batch runs to
+#      its end, and the pass publishes the evidence for the head it pinned,
+#      which the hook admits, since it is true of that tree. The pass then
+#      reads the change again and builds the new version, which approve
+#      reuses, and the real integrator lands. The next pass builds nothing.
 readied superseded docs/readme.md
 oldline="$line"
 oldref="refs/the-valley/attestations/$(attest digest --rev superseded | cut -d: -f2)/$workerhash"
@@ -2340,13 +2340,20 @@ fresh
 working superseded-1 VALLEY_E2E_DURING_PASS="$r/supersede"
 grep -qx "project $handle v2 ready" "$r/superseded-v2.ready"
 said superseded-1 "$oldline: published $oldref"
-pushed "$oldref"
 newhead="$(git rev-parse superseded)"
 newref="refs/the-valley/attestations/$(attest digest --rev superseded | cut -d: -f2)/$workerhash"
+said superseded-1 "project: $handle v2 at ${newhead:0:7}: published $newref"
+if [ "$(grep -c '^--- push' "$reusepushes")" != 2 ] || ! grep -q " $oldref\$" "$reusepushes" \
+  || ! grep -q " $newref\$" "$reusepushes"; then
+  echo "valley-request: the pass did not publish the superseded version and then the new one" >&2
+  cat "$reusepushes" "$r/superseded-1.log" >&2
+  exit 1
+fi
 fresh
 working superseded-2
-said superseded-2 "project: $handle v2 at ${newhead:0:7}: published $newref"
-built prose-format
+said superseded-2 "project: $handle v2 at ${newhead:0:7}: origin holds evidence for every nix check it requires"
+built nothing
+pushed none
 approving superseded env -u VALLEY_ATTEST_KEY valley approve --head "$newhead" "$handle"
 built nothing
 [ "$(requested "c-$id")" = "$newhead" ]
@@ -2459,9 +2466,9 @@ said slow-2 "$line: published refs/the-valley/attestations/$slowdigest/$workerha
 
 # 21i. A failed push waits too, by the object it would publish. Two changes
 #      whose heads hold the same tree share one attestation ref, and origin
-#      takes no push. The first pass builds once and tries one push, and the
-#      other change's push waits behind that failure. A pass within the
-#      minute tries no push. The next failure doubles the wait. Past it, the
+#      takes no push. The first pass builds once and tries one push. It
+#      then reads both changes again, and each one's push waits behind that
+#      failure. A pass within the minute tries no push. The next failure doubles the wait. Past it, the
 #      ref is published once, and the record of it is gone.
 cat > "$r/counted" <<EOF
 #!$(command -v bash)
@@ -2499,7 +2506,7 @@ if working twins-1 VALLEY_NOW=2026-10-24T09:00:00Z "${refusing[@]}"; then
   exit 1
 fi
 built prose-format
-attempts 1 twins-1 1 1 2026-10-24T09:01:00Z
+attempts 1 twins-1 1 2 2026-10-24T09:01:00Z
 working twins-2 VALLEY_NOW=2026-10-24T09:00:59Z "${refusing[@]}"
 attempts 1 twins-2 0 2 2026-10-24T09:01:00Z
 if working twins-3 VALLEY_NOW=2026-10-24T09:01:00Z "${refusing[@]}"; then

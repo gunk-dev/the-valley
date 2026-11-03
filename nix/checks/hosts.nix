@@ -507,13 +507,16 @@ in
     modules = [ { services.valley.integrator.signerProjects = lib.mkForce { }; } ];
   };
 
-  # The check worker given build capacity of its own: three checks at
-  # once, each building two derivations at once on two cores, and keeping
-  # no outputs.
+  # The check worker given build capacity of its own: three batches at
+  # once, three checks at once in each, each building two derivations at
+  # once on two cores, read again every five minutes, and keeping no
+  # outputs.
   capacityWorkerHost = workerHost.extendModules {
     modules = [
       {
         services.valley.worker = {
+          batches = 3;
+          interval = "5min";
           buildSlots = 3;
           maxJobs = 2;
           cores = 2;

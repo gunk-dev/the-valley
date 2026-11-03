@@ -11,15 +11,22 @@ package main
 //     and of the attest runs a pass starts, whose progress attest records
 //     itself;
 //   - state.json, the worker's state now: the pass running and what it is
-//     doing, the last attempts and how each ended, and every failure
-//     waiting out its backoff, with the change, version, head and tree it
-//     was about and why it failed.
+//     doing, each batch it runs, the last attempts and how each ended, and
+//     every failure waiting out its backoff, with the change, version,
+//     head and tree it was about and why it failed.
+//
+// Batches run at once, so nothing a record says about a batch or a push
+// comes from what else the pass is doing: each names its own project,
+// change, version, head and tree (identity), and a batch's records name
+// its attest run too. The pass's own fields in state.json describe the
+// change it reads during a scan, and otherwise its newest running batch;
+// batches lists every running batch.
 //
 // failures.json in the state directory stays what decides a backoff, in
 // its own format; state.json only describes it. A pass that starts and
 // finds state.json naming a pass that never ended records that pass as
-// interrupted: a pass that is killed cannot say so itself, so this is an
-// inference, and is marked as one.
+// interrupted, and each batch it was running: a pass that is killed
+// cannot say so itself, so this is an inference, and is marked as one.
 
 import (
 	"encoding/json"
@@ -59,6 +66,9 @@ type passState struct {
 	Head    string   `json:"head,omitempty"`
 	Tree    string   `json:"tree,omitempty"`
 	Checks  []string `json:"checks,omitempty"`
+	// Batches is every batch running, oldest first, each with the result
+	// running.
+	Batches []attempt `json:"batches,omitempty"`
 }
 
 type attempt struct {
@@ -72,9 +82,22 @@ type attempt struct {
 	Checks   []string `json:"checks,omitempty"`
 	Started  string   `json:"started,omitempty"`
 	Ended    string   `json:"ended,omitempty"`
-	Result   string   `json:"result"` // passed, failed or interrupted
+	Result   string   `json:"result"` // passed, failed or interrupted, or running in batches
 	Reason   string   `json:"reason,omitempty"`
 	Inferred bool     `json:"inferred,omitempty"`
+	// AttestRun is a batch's attest run, which names its progress records.
+	AttestRun string `json:"attest_run,omitempty"`
+}
+
+// identity is what a batch or a push is about.
+type identity struct {
+	project, change string
+	cv              int
+	head, tree      string
+}
+
+func (id identity) record() telemetry.Record {
+	return telemetry.Record{Project: id.project, Change: id.change, Version: id.cv, Head: id.head, Tree: id.tree}
 }
 
 type failureState struct {
@@ -109,8 +132,15 @@ func openWorkerTelemetry(dir string) *workerTelemetry {
 		reason := fmt.Sprintf("pass %s (pid %d) recorded no end: it was killed, or the host stopped, during its %s", prev.Run, prev.PID, prev.Phase)
 		t.remember(attempt{Kind: "pass", Run: prev.Run, Project: prev.Project, Change: prev.Change, CV: prev.CV,
 			Head: prev.Head, Tree: prev.Tree, Checks: prev.Checks, Started: prev.Started, Result: "interrupted", Reason: reason, Inferred: true})
+		var runs []string
+		for _, b := range prev.Batches {
+			b.Result, b.Inferred = "interrupted", true
+			b.Reason = fmt.Sprintf("batch %s of pass %s (pid %d) recorded no end: it was killed, or the host stopped, while it ran", b.AttestRun, prev.Run, prev.PID)
+			t.remember(b)
+			runs = append(runs, b.AttestRun)
+		}
 		t.tel.Emit("pass.interrupted", telemetry.Record{Project: prev.Project, Change: prev.Change, Version: prev.CV, Head: prev.Head},
-			map[string]any{"previous_run": prev.Run, "previous_pid": prev.PID, "phase": prev.Phase, "inferred": true})
+			map[string]any{"previous_run": prev.Run, "previous_pid": prev.PID, "phase": prev.Phase, "inferred": true, "batches": runs})
 	}
 	t.state.V = 1
 	t.state.Pass = &passState{Run: t.tel.Run(), PID: self.PID, Exe: self.Exe, Version: self.Version,
@@ -131,57 +161,98 @@ func (t *workerTelemetry) remember(a attempt) {
 	}
 }
 
-// change says which change the pass is reading now.
-func (t *workerTelemetry) change(project string, c jsonChange, v jsonVersion) {
+// reading says which change a scan is reading now. The pass says it saw
+// the change only the first time it reads the change's version.
+func (t *workerTelemetry) reading(project string, c jsonChange, v jsonVersion, first bool) {
 	if t == nil {
 		return
 	}
 	p := t.state.Pass
 	p.Phase, p.Project, p.Change, p.CV, p.Head, p.Tree, p.Checks = "deriving", project, c.ChangeID, v.N, v.Head, "", nil
-	t.tel.Correlate(telemetry.Record{Project: project, Change: c.ChangeID, Version: v.N, Head: v.Head})
-	t.tel.Emit("change.seen", telemetry.Record{}, map[string]any{"handle": c.Handle})
+	if first {
+		t.tel.Emit("change.seen", telemetry.Record{Project: project, Change: c.ChangeID, Version: v.N, Head: v.Head},
+			map[string]any{"handle": c.Handle})
+	}
 	t.save()
 }
 
-// begin says the pass is building or publishing, and returns the attempt
-// it makes.
-func (t *workerTelemetry) begin(kind, tree string, checks []string, data map[string]any) *attempt {
+// settle says what the pass is doing between scans: building, as its
+// newest running batch, or reading.
+func (t *workerTelemetry) settle() {
+	if t == nil {
+		return
+	}
+	p := t.state.Pass
+	if len(p.Batches) == 0 {
+		p.Phase = "reading"
+	} else {
+		b := p.Batches[len(p.Batches)-1]
+		p.Phase, p.Project, p.Change, p.CV, p.Head, p.Tree, p.Checks = "build", b.Project, b.Change, b.CV, b.Head, b.Tree, b.Checks
+	}
+	t.save()
+}
+
+// begin says the pass is building or publishing for id, and returns the
+// attempt it makes. A batch names its attest run.
+func (t *workerTelemetry) begin(kind string, id identity, checks []string, attestRun string, data map[string]any) *attempt {
 	if t == nil {
 		return nil
 	}
 	p := t.state.Pass
-	p.Phase, p.Tree, p.Checks = kind, tree, checks
-	a := &attempt{Kind: kind, Run: t.tel.Run(), Project: p.Project, Change: p.Change, CV: p.CV, Head: p.Head, Tree: tree,
-		Checks: checks, Started: telemetry.Stamp(time.Now())}
+	p.Phase, p.Project, p.Change, p.CV, p.Head, p.Tree, p.Checks = kind, id.project, id.change, id.cv, id.head, id.tree, checks
+	a := &attempt{Kind: kind, Run: t.tel.Run(), Project: id.project, Change: id.change, CV: id.cv, Head: id.head, Tree: id.tree,
+		Checks: checks, Started: telemetry.Stamp(time.Now()), AttestRun: attestRun}
+	if kind == "build" {
+		running := *a
+		running.Result = "running"
+		p.Batches = append(p.Batches, running)
+	}
 	if data == nil {
 		data = map[string]any{}
 	}
 	data["checks"] = checks
-	t.tel.Emit(map[string]string{"build": "batch.start", "push": "publish.start"}[kind], telemetry.Record{Tree: tree}, data)
+	t.tel.Emit(map[string]string{"build": "batch.start", "push": "publish.start"}[kind], id.record(), data)
 	t.save()
 	return a
 }
 
-// end records how an attempt ended, and its backoff when it failed.
-func (t *workerTelemetry) end(a *attempt, err error, reason string, project, key string, f *backoff) {
+// end records how an attempt ended, and its backoff when it failed. A
+// batch's records name its attest run, so each attempt pairs with its
+// start from its own records.
+func (t *workerTelemetry) end(a *attempt, err error, reason string, key string, f *backoff) {
 	if t == nil || a == nil {
 		return
 	}
+	id := identity{project: a.Project, change: a.Change, cv: a.CV, head: a.Head, tree: a.Tree}
 	a.Ended, a.Result = telemetry.Stamp(time.Now()), "passed"
 	data := map[string]any{"result": "passed"}
+	if a.AttestRun != "" {
+		data["attest_run"] = a.AttestRun
+	}
 	if err != nil {
 		a.Result, a.Reason = "failed", reason
 		data["result"], data["reason"] = "failed", reason
 	}
 	t.remember(*a)
-	t.tel.Emit(map[string]string{"build": "batch.end", "push": "publish.end"}[a.Kind], telemetry.Record{Tree: a.Tree}, data)
+	if a.Kind == "build" {
+		p := t.state.Pass
+		for i, b := range p.Batches {
+			if b.AttestRun == a.AttestRun {
+				p.Batches = append(p.Batches[:i:i], p.Batches[i+1:]...)
+				break
+			}
+		}
+	}
+	t.tel.Emit(map[string]string{"build": "batch.end", "push": "publish.end"}[a.Kind], id.record(), data)
 	if f != nil {
-		t.tel.Emit("backoff", telemetry.Record{Tree: a.Tree}, map[string]any{"key": key, "failures": f.Failures,
-			"retry": telemetry.Stamp(f.Retry), "reason": reason})
-		t.failure(failureState{Project: project, Key: key, Failures: f.Failures, Retry: telemetry.Stamp(f.Retry),
+		backoff := map[string]any{"key": key, "failures": f.Failures, "retry": telemetry.Stamp(f.Retry), "reason": reason}
+		if a.AttestRun != "" {
+			backoff["attest_run"] = a.AttestRun
+		}
+		t.tel.Emit("backoff", id.record(), backoff)
+		t.failure(failureState{Project: a.Project, Key: key, Failures: f.Failures, Retry: telemetry.Stamp(f.Retry),
 			FailedAt: a.Ended, Change: a.Change, CV: a.CV, Head: a.Head, Tree: a.Tree, Reason: reason})
 	}
-	t.state.Pass.Phase = "reading"
 	t.save()
 }
 
@@ -225,7 +296,6 @@ func (t *workerTelemetry) finish(r *failureRecord, troubles int, err error) {
 	}
 	t.remember(attempt{Kind: "pass", Run: p.Run, Started: p.Started, Ended: telemetry.Stamp(time.Now()), Result: result, Reason: reason})
 	t.state.Pass = nil
-	t.tel.Correlate(telemetry.Record{})
 	t.tel.Emit("pass.end", telemetry.Record{}, map[string]any{"result": result, "troubles": troubles, "waiting": len(kept)})
 	t.save()
 }
@@ -258,18 +328,27 @@ func (t *workerTelemetry) save() {
 	}
 }
 
-// failedChecks names the checks an attest run recorded as not passing.
-func (t *workerTelemetry) failedChecks(run string, after int64) []string {
-	if t == nil {
+// failedChecks names the checks an attest run recorded as not passing in
+// the stream at dir, among the records after the one numbered after. It
+// reads files and nothing else, so a batch's goroutine calls it. Other
+// batches' records come between a run's own, so it reads to the end.
+func failedChecks(dir, run string, after int64) []string {
+	if dir == "" {
 		return nil
 	}
-	st := &telemetry.Stream{Dir: t.stream()}
-	recs, _, _ := st.Read(after, 1000, 1<<20)
+	st := &telemetry.Stream{Dir: dir}
 	var failed []string
-	for _, r := range recs {
-		if r.Run == run && r.Type == "check.result" && r.Data["result"] != "passed" {
-			failed = append(failed, fmt.Sprintf("%s %v", r.Check, r.Data["result"]))
+	for pages := 0; pages < 100; pages++ {
+		recs, _, err := st.Read(after, 1000, 1<<20)
+		if err != nil || len(recs) == 0 {
+			break
 		}
+		for _, r := range recs {
+			if r.Run == run && r.Type == "check.result" && r.Data["result"] != "passed" {
+				failed = append(failed, fmt.Sprintf("%s %v", r.Check, r.Data["result"]))
+			}
+		}
+		after = recs[len(recs)-1].Seq
 	}
 	return failed
 }

@@ -176,3 +176,81 @@ func TestWakeClaimFailure(t *testing.T) {
 		t.Fatal("a failed claim lost due")
 	}
 }
+
+// One pass holds the lock while writers move a counter and mark due, as
+// pushes do while a long batch runs. Whenever it finds a mark, it claims
+// it again and reads the counter, as a scan does. Once the writers stop,
+// it runs until it finds no mark, and acknowledges. It must have read the
+// last move: a mark made during a scan is claimed by the next one, never
+// acknowledged away. And the directory never holds more than its three
+// files.
+func TestWakeHolderLosesNoMarkMadeDuringAScan(t *testing.T) {
+	dir := t.TempDir()
+	wakeDir := filepath.Join(dir, "wake")
+	if err := os.Mkdir(wakeDir, 0o770); err != nil {
+		t.Fatal(err)
+	}
+	counter := filepath.Join(dir, "counter")
+	var moved atomic.Int64
+	var write sync.Mutex
+	move := func() {
+		write.Lock()
+		defer write.Unlock()
+		n := moved.Add(1)
+		os.WriteFile(counter+".new", []byte(strconv.FormatInt(n, 10)), 0o600)
+		os.Rename(counter+".new", counter)
+	}
+	read := func() int64 {
+		b, _ := os.ReadFile(counter)
+		n, _ := strconv.ParseInt(string(b), 10, 64)
+		return n
+	}
+
+	w := claimWake(wakeDir, io.Discard)
+	defer w.close()
+	if w.err != nil {
+		t.Fatal(w.err)
+	}
+	var writers sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			for j := 0; j < 200; j++ {
+				move()
+				mark(t, wakeDir)
+			}
+		}()
+	}
+	var stopped atomic.Bool
+	go func() { writers.Wait(); stopped.Store(true) }()
+	var seen int64
+	scan := func() {
+		w.again(io.Discard)
+		seen = read()
+		entries, _ := os.ReadDir(wakeDir)
+		for _, e := range entries {
+			if e.Name() != "due" && e.Name() != "claimed" && e.Name() != "lock" {
+				t.Errorf("the wake directory holds %s", e.Name())
+			}
+		}
+	}
+	scan()
+	for !stopped.Load() || w.marked() {
+		if w.marked() {
+			scan()
+		}
+	}
+	if w.err != nil {
+		t.Fatal(w.err)
+	}
+	if err := w.ack(); err != nil {
+		t.Fatal(err)
+	}
+	if seen != moved.Load() {
+		t.Errorf("the pass last read move %d of %d, and no mark was left for the rest", seen, moved.Load())
+	}
+	if _, err := os.Stat(filepath.Join(wakeDir, "due")); err == nil {
+		t.Error("due is still there after the pass found no mark")
+	}
+}

@@ -1250,10 +1250,13 @@ names. For each project it follows approval's steps:
    `refs/the-valley/attestations/<tree>/<key-hash>`, and nothing else.
 
 A pass runs up to `--batches` batches at once, in the order their versions became ready, and one
-batch at a time for each attestation ref. It reads every project again when a batch ends, when a
-wake mark arrives, and every `--interval` while batches run, so a change readied while a long batch
-runs is built in the same pass. It ends when no batch runs and a read finds nothing to start
-(`implemented`, `status/worker.go`).
+batch at a time for each attestation ref. Batches overlap their builds, but their evaluations take
+turns. One evaluation can need most of the build slice's memory, so the pass hands every
+`attest run` a lock file in its state directory, and `attest` holds it only while it evaluates
+(`implemented`, `status/worker.go`, `attest/check.go`). It reads every project again when a batch
+ends, when a wake mark arrives, and every `--interval` while batches run, so a change readied while
+a long batch runs is built in the same pass. It ends when no batch runs and a read finds nothing to
+start (`implemented`, `status/worker.go`).
 
 The hook admits that ref as it admits any evidence. Every note must verify under the host's known
 signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the

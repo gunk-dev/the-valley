@@ -32,6 +32,15 @@ package main
 //
 // Up to --batches batches run at once; without it, one. The loop starts
 // the batches a scan found in the order their versions became ready.
+// Batches overlap their builds, but their evaluations take turns. One
+// evaluation can need most of the memory the worker's slice has, so two
+// at once could get one of them killed. The pass hands every attest it
+// starts the file eval.lock in the state directory, and attest holds an
+// exclusive flock on it while it evaluates the flake checks, and releases
+// it before it builds them. The flock is released when its holder exits,
+// so a pass or an attest killed during an evaluation leaves nothing held.
+// The time a batch waits for the lock is recorded apart from its
+// evaluation's.
 // Change records carry no time, so that order is the order in which this
 // pass first saw each version ready. Versions first seen in the same scan
 // go by project name, then by change ID. A pass started by a timer or a
@@ -195,6 +204,7 @@ type worker struct {
 	batches   int           // how many batches run at once
 	interval  time.Duration // how often a pass with batches running scans again
 	roots     string        // the directory attest roots the outputs it builds in, or "" to root nothing
+	evalLock  string        // the lock file every attest holds while it evaluates
 	keyhash   string        // the key hash an attestation ref of this signer ends in
 	lock      *os.File      // the state directory's lock, held for the pass
 	wake      *wake         // the wake directory's claim, or nil without --wake
@@ -442,6 +452,11 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	// state the telemetry finishes with.
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
+	// attest runs in each project's repository, so the evaluation lock is
+	// named absolutely, as the roots are.
+	if w.evalLock, err = filepath.Abs(filepath.Join(state, "eval.lock")); err != nil {
+		return failure(fmt.Sprintf("--state %s: %v", state, err))
+	}
 	if keep > 0 {
 		// attest runs in each project's repository, so the roots are
 		// named absolutely, where this pass prunes them.
@@ -1039,6 +1054,9 @@ func (w *worker) attest(b *batch) {
 	}
 	if w.roots != "" {
 		args = append(args, "--gc-roots", w.roots)
+	}
+	if w.evalLock != "" {
+		args = append(args, "--eval-lock", w.evalLock)
 	}
 	for _, q := range j.missing {
 		args = append(args, "--check", q.name+"="+q.attribute)

@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -263,13 +264,20 @@ var defaultSlots = runtime.NumCPU()
 // is its evaluation, its probe, and its derivation's build. One that does
 // not evaluate ends at its evaluation error.
 //
+// With an evaluation lock, the evaluation waits for that lock and holds it
+// until the evaluation ends, and the builds run after it is released
+// (takeEvalLock). The wait is not part of any check's time: eval.end
+// records it apart, as eval_wait_ms.
+//
 // With roots, every output path a build prints is rooted under that
 // directory (rootOutputs), whether nix built it or found it valid.
-func runPure(tree, system string, specs []checkSpec, probe bool, slots int, roots string, report func(ranCheck), obs *observer) []ranCheck {
+func runPure(tree, system string, specs []checkSpec, probe bool, slots int, roots string, evalLock *os.File, report func(ranCheck), obs *observer) []ranCheck {
+	waited, release := takeEvalLock(evalLock)
 	began := time.Now()
 	obs.emit("eval.start", "", map[string]any{"checks": specNames(specs)})
 	evals := evalClosures(tree, system, specs)
-	obs.emit("eval.end", "", map[string]any{"eval_ms": time.Since(began).Milliseconds()})
+	obs.emit("eval.end", "", map[string]any{"eval_ms": time.Since(began).Milliseconds(), "eval_wait_ms": waited.Milliseconds()})
+	release()
 	runs := make([]ranCheck, len(specs))
 	for i, spec := range specs {
 		e := evals[i]
@@ -308,6 +316,31 @@ func runPure(tree, system string, specs []checkSpec, probe bool, slots int, root
 	}
 	buildChecks(runs, drvs, slots, build, report, obs)
 	return runs
+}
+
+// takeEvalLock waits for an exclusive flock on lock and returns how long
+// it waited, and the function that releases it. Runs handed the same lock
+// file evaluate one at a time, so their evaluations never need memory
+// together; their builds still overlap. Without a lock it waits for
+// nothing. The flock belongs to the open file, which attest's children do
+// not inherit, so it is released when attest exits, however it ends: a run
+// killed during its evaluation leaves nothing held. A lock that cannot be
+// taken is warned about, and the evaluation runs without it.
+func takeEvalLock(lock *os.File) (time.Duration, func()) {
+	if lock == nil {
+		return 0, func() {}
+	}
+	began := time.Now()
+	err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	for err == syscall.EINTR {
+		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
+	}
+	waited := time.Since(began)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "attest: warning: evaluating without the lock %s: %v\n", lock.Name(), err)
+		return waited, func() {}
+	}
+	return waited, func() { syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }
 }
 
 // rootOutputs registers an indirect garbage-collector root in dir for each

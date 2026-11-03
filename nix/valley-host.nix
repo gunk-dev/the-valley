@@ -1921,7 +1921,9 @@ in
           {option}`services.valley.worker.maxJobs` derivations at once:
           `batches × buildSlots × maxJobs` local derivation builds, besides
           the evaluations. They share {option}`services.valley.buildSlice.memoryMax`
-          with the worker and the nix daemon. Measure the slice's peak
+          with the worker and the nix daemon. Batches overlap their builds,
+          but their evaluations take turns, so the slice holds one batch's
+          evaluation at a time. Measure the slice's peak
           memory under a real load before raising this:
           `systemctl status valley-builds.slice` shows its memory now and
           its peak.

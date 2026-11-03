@@ -20,11 +20,12 @@
 # again before its wait, however many marks and timer passes come. Last,
 # the key is the same after many starts.
 #
-# Then the scheduler. One pass builds a short change beside a long one,
-# takes on changes readied while the long batch runs, builds two changes
-# with one tree once, and goes on past a failed batch, claiming the marks
-# made meanwhile itself. Its changes are then withdrawn, since every scan
-# after it would read them.
+# Then the scheduler. One pass starts a short change's batch and a long
+# one's at once, and their evaluations take turns. It builds the short
+# change beside the long one, takes on changes readied while the long
+# batch runs, builds two changes with one tree once, and goes on past a
+# failed batch, claiming the marks made meanwhile itself. Its changes are
+# then withdrawn, since every scan after it would read them.
 #
 # The worker's interval here is 15 seconds rather than the module's
 # minute, so a scenario that waits for a timer pass or a hold-off waits
@@ -204,6 +205,11 @@ in
       # systemd's accuracy later.
       systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
       systemd.timers.valley-worker.timerConfig.AccuracySec = "1s";
+      # The worker and every attest it starts record their progress in a
+      # stream in the worker's own directory, where the scheduler scenario
+      # reads when each batch's evaluation began and ended.
+      systemd.services.valley-worker.environment.VALLEY_TELEMETRY_DIR = "/var/lib/valley-worker/telemetry";
+      systemd.tmpfiles.rules = [ "d /var/lib/valley-worker/telemetry 0700 valley-worker valley-worker - -" ];
       # The machine has no network. Without these, every new build waits
       # for the daemon's lookups in cache.nixos.org to fail, and every boot
       # waits for a DHCP lease on an interface nothing here uses.
@@ -443,23 +449,43 @@ in
           idle()
           host.succeed(f"test ! -e {wake}/claimed")
 
+      def eval_spans():
+          # When each attest run's evaluation began and ended, from its
+          # eval.start and eval.end records, in the order they began.
+          import datetime
+          import json
+          spans = {}
+          for line in host.succeed(f"cat {state}/telemetry/stream/seg-*.jsonl 2>/dev/null || true").splitlines():
+              r = json.loads(line)
+              if r["type"] in ("eval.start", "eval.end"):
+                  spans.setdefault(r["run"], {})[r["type"]] = r
+          return sorted(
+              (datetime.datetime.fromisoformat(s["eval.start"]["time"].replace("Z", "+00:00")),
+               datetime.datetime.fromisoformat(s["eval.end"]["time"].replace("Z", "+00:00")),
+               s["eval.end"]["data"]["eval_wait_ms"])
+              for s in spans.values() if len(s) == 2
+          )
+
       # One pass, started by hand with the timer and the path unit stopped,
       # so every change readied after it starts is built by that pass or by
-      # none. Each ready push marks due, and the pass claims the mark
-      # itself and reads again. The long change builds for about twenty
-      # seconds; meanwhile the short change is built and published in the
-      # pass's second slot, a broken change fails, two changes with one
-      # tree are built once, and the long change publishes after the
-      # failure. The pass acknowledges every mark it claimed.
-      with subtest("a pass builds a short change beside a long one, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
+      # none. Its first scan finds the long and the short change, and it
+      # starts both batches at once; their evaluations take turns. Each
+      # ready push marks due, and the pass claims the mark itself and reads
+      # again. The long change builds for about twenty seconds; meanwhile
+      # the short change is built and published in the pass's second slot,
+      # a broken change fails, two changes with one tree are built once,
+      # and the long change publishes after the failure. No two batches'
+      # evaluations overlap. The pass acknowledges every mark it claimed.
+      with subtest("a pass builds a short change beside a long one, evaluating one at a time, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
           host.succeed("systemctl stop valley-worker.path")
+          evaluated = len(eval_spans())
           ready("long", "${long}")
           long = head("long")
+          ready("short", "${spin}")
+          short = head("short")
           host.succeed("systemctl start --no-block valley-worker.service")
           wait_said(long, "building", 120)
           mark = started()
-          ready("short", "${spin}")
-          short = head("short")
           ready("early-broken", "${broken}")
           early_broken = head("early-broken")
           wait_said(short, "published", 120)
@@ -484,6 +510,13 @@ in
           )
           said = journal()
           assert started() == mark, "a second pass ran"
+          # The long, short and broken batches and the twins' one batch
+          # each evaluated, and each evaluation ended before the next began.
+          spans = eval_spans()[evaluated:]
+          print(f"evaluations: {[(str(b), str(e), w) for b, e, w in spans]}")
+          assert len(spans) >= 4, spans
+          for (_, ended, _), (began, _, _) in zip(spans, spans[1:]):
+              assert ended <= began, spans
           for change in [long, short, early_broken]:
               assert told(change, "building") == 1, (change, said)
           assert said.index(f" at {early_broken}: the batch did not pass") < said.index(f" at {long}: published"), said

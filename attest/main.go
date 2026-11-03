@@ -61,6 +61,8 @@ run flags:
                       CPU this process may run on)
   --gc-roots DIR      root every output the flake checks build in DIR,
                       so nix's garbage collection keeps them
+  --eval-lock FILE    hold an exclusive lock on FILE while the flake
+                      checks evaluate, and release it before they build
 
 run evaluates every flake check in one nix evaluation, then builds each
 one's derivation in a nix build of its own, up to --slots of them at
@@ -68,6 +70,12 @@ once, so the nix daemon builds them side by side. Each check's result is its
 own build's, and a check that fails keeps its own build's output as its
 log. A check that does not evaluate is an error for that check alone.
 The --command checks run after the flake checks, one at a time.
+
+With --eval-lock, the evaluation first waits for an exclusive flock on
+FILE, which it makes if it is missing, and releases the lock before the
+first build. Runs handed the same file evaluate one at a time, and their
+builds still overlap. A check's time does not count the wait. The lock is
+released when attest exits, however it ends.
 
 run prints one time line per check after it finishes: its name, its
 result, how long it took, and how it was satisfied. A flake check's time

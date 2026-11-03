@@ -43,6 +43,7 @@ func cmdRun(args []string) (err error) {
 	project := fs.String("project", "", "the project the progress records name")
 	slots := fs.Int("slots", defaultSlots, "how many nix builds run at once")
 	gcRoots := fs.String("gc-roots", "", "a directory to root every built output in")
+	evalLockFlag := fs.String("eval-lock", "", "a lock file the flake checks' evaluation holds")
 	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
@@ -65,6 +66,14 @@ func cmdRun(args []string) (err error) {
 		if err := os.MkdirAll(roots, 0o755); err != nil {
 			return fmt.Errorf("--gc-roots %s: %v", *gcRoots, err)
 		}
+	}
+
+	var evalLock *os.File
+	if *evalLockFlag != "" {
+		if evalLock, err = os.OpenFile(*evalLockFlag, os.O_CREATE|os.O_RDWR, 0o600); err != nil {
+			return fmt.Errorf("--eval-lock %s: %v", *evalLockFlag, err)
+		}
+		defer evalLock.Close()
 	}
 
 	root, err := repoRoot(*repo)
@@ -193,7 +202,7 @@ func cmdRun(args []string) (err error) {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	runPure(tree, *system, pure, *timings, *slots, roots, report, obs)
+	runPure(tree, *system, pure, *timings, *slots, roots, evalLock, report, obs)
 	for _, spec := range effectful {
 		began := time.Now()
 		obs.emit("check.start", spec.name, nil)

@@ -2188,9 +2188,10 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `active`.
   - `versions` (`array` of
     `{ "n", "head" (40-hex OID without git-sha1: prefix), "title", "branch", "uploader", "landing" ("landed"|"landed-recorded"|"uncertain"|"not-landed"), "landed_commit" (<oid or null>), "request" ({"ref","commit"} or null), "outcome" ({"decision","head","tip"} or null) }`).
-  - `includes` (`array` of `string`): Change IDs of other changes in the candidate set (all changes
-    in `valley-changes/v1`; unlanded changes in `valley-pending/v1`) whose active version head is a
-    strict ancestor of this change's active version head in `main..head`.
+  - `includes` (`array` of `string`): Change IDs of other changes whose active version has not
+    landed and whose active version head is a strict ancestor of this change's active version head
+    in `main..head`. A change whose active version has landed is never named, even though
+    `valley-changes/v1` still lists it.
   - `restack` (`jsonRestack` or `null`) and `knots` (`array` of
     `{ "id", "type", "status", "title" }`).
 

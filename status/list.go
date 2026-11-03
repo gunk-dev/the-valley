@@ -736,7 +736,7 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
 	for _, r := range repos {
-		view := r.repoView(h, everyChange, everyChange)
+		view := r.repoView(h, everyChange, unlanded)
 		utf8Branches(&view, stderr)
 		doc.Repos = append(doc.Repos, view)
 	}

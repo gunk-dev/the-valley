@@ -86,7 +86,7 @@ done
 id() { printf '%s%s' "$1" "$(printf 'k%.0s' $(seq $((32 - ${#1}))))"; }
 A="$(id nxvpwlkm)" B="$(id mmmm)" C="$(id pppp)" D="$(id qqqq)" E="$(id rrrr)"
 W="$(id ssss)" F="$(id tttt)" G="$(id uuuu)" U="$(id vvvv)" H="$(id wwww)"
-X="$(id oooo)" I="$(id zzzz)" J="$(id lmlm)" X2="$(id pqpq)"
+K="$(id kkkk)" X="$(id oooo)" I="$(id zzzz)" J="$(id lmlm)" X2="$(id pqpq)"
 R="$(id nxvpwlkz)" D2="$(id xxxx)" E2="$(id yyyy)"
 
 # A checkout of a project, whose main names sealed as its owning valley.
@@ -275,6 +275,12 @@ git push --quiet --force origin "$jprime:refs/heads/ffrec"
 ready "$J" ffrec
 ok valley unready "$J"
 
+# K is built on main after F, whose active version landed by ancestry
+# while its record is still ready. K's branch starts at main's tip, so F's
+# head is below it, and F has landed: K includes nothing.
+branch after-landing moved-on after-landing
+ready "$K" after-landing
+
 # ----------------------------------------------------------------------
 # guarded: a ready change whose ID shares seven letters with A's, a draft
 # and a withdrawn change.
@@ -331,7 +337,7 @@ ok valley changes --json
 [ "$(wc -l < "$w/out")" = 1 ] || fail "changes printed more than one line"
 holds '.schema == "valley-changes/v1"' '.host == "localhost"' '(.repos | length) == 1' \
   '.repos[0].repo == "open"' ".repos[0].url == \"$data/open.git\"" '.repos[0].error == null' \
-  '(.repos[0].changes | length) == 12' '.repos[0] | has("drafts") | not'
+  '(.repos[0].changes | length) == 13' '.repos[0] | has("drafts") | not'
 c() { printf '.repos[0].changes[] | select(.change_id == "%s")' "$1"; }
 holds "$(c "$A") | .handle == \"nxvp\" and .state == \"ready\" and .owner == \"alice\" and .target == \"main\" and .active == 1 and .seq == 1" \
   "$(c "$A") | .record == \"$(git -C "$data/open.git" rev-parse "refs/the-valley/changes/main/$A")\"" \
@@ -356,7 +362,8 @@ holds "$(c "$F") | .versions[0] | .landing == \"landed\" and .landed_commit == \
   "$(c "$I") | .state == \"draft\" and .active == 2"
 # includes is ancestry, nearest only.
 holds "$(c "$A") | .includes == []" "$(c "$B") | .includes == [\"$A\"]" \
-  "$(c "$C") | .includes == [\"$B\"]" "$(c "$W") | .includes == [\"$E\"]"
+  "$(c "$C") | .includes == [\"$B\"]" "$(c "$W") | .includes == [\"$E\"]" \
+  "$(c "$F") | .state == \"ready\" and .versions[0].landing == \"landed\"" "$(c "$K") | .includes == []"
 # The one branch no record is on, and no branch main reaches.
 holds '.repos[0].branches == [{branch: "loose", head: "'"$(git rev-parse loose)"'"}]'
 
@@ -481,7 +488,7 @@ no_line $'\x1b'
 cache="$(git rev-parse --git-common-dir)/valley/handles"
 [ -f "$cache" ] || fail "pending wrote no handle cache at $cache"
 cut -f1,2 "$cache" > "$w/out"
-[ "$(cat "$w/out")" = "$(printf '%s\t%s\n' mmmm ready nxvp ready pppp ready ssss ready vvvv ready wwww ready lmlm draft qqqq draft zzzz draft)" ] ||
+[ "$(cat "$w/out")" = "$(printf '%s\t%s\n' kkkk ready mmmm ready nxvp ready pppp ready ssss ready vvvv ready wwww ready lmlm draft qqqq draft zzzz draft)" ] ||
   fail "the handle cache lists other changes than the ready and the drafts"
 grep -qE "^pppp"$'\t'"ready"$'\t'"[^"$'\t'"]*"$'\t'"stack-c$" "$cache" || fail "the handle cache has no line for pppp with its title"
 grep -qE "^qqqq"$'\t'"draft"$'\t'"paused"$'\t' "$cache" || fail "the handle cache has no line for qqqq with its branch"
@@ -528,7 +535,7 @@ after '^lmlm v2 on ffrec  ' '^  ffrec$' '^  1 commit · 1 file \+0 −1$'
 # changes alone in changes, and the drafts in drafts.
 ok valley pending --json
 holds '.schema == "valley-pending/v1"' \
-  '[.repos[0].changes[].handle] == ["mmmm", "nxvp", "pppp", "ssss", "vvvv", "wwww"]' \
+  '[.repos[0].changes[].handle] == ["kkkk", "mmmm", "nxvp", "pppp", "ssss", "vvvv", "wwww"]' \
   '[.repos[0].changes[].state] | unique == ["ready"]' \
   '[.repos[0].drafts[] | [.handle, .state]] == [["lmlm", "draft"], ["qqqq", "draft"], ["zzzz", "draft"]]' \
   '[.repos[0].branches[].branch] == ["a-parked", "atop-lost", "deep-1", "deep-2", "deep-3", "deep-4", "fork-base", "fork-left", "fork-right", "loose"]'
@@ -654,7 +661,7 @@ junk="$(printf 'junk\n' | git -C "$data/open.git" hash-object -w --stdin)"
 junk_tree="$(printf '100644 blob %s\tjunk.txt\n' "$junk" | git -C "$data/open.git" mktree)"
 git -C "$data/open.git" update-ref refs/the-valley/knots "$(git -C "$data/open.git" commit-tree "$junk_tree" -m junk)"
 ok valley changes --json
-holds '(.repos[0].changes | length) == 12' '[.repos[0].changes[].knots] | unique == [[]]'
+holds '(.repos[0].changes | length) == 13' '[.repos[0].changes[].knots] | unique == [[]]'
 if grep -q 'plan graph' "$w/err"; then fail 'changes spoke of a broken plan graph without -v'; fi
 ok valley pending
 line '^      stack-a$'

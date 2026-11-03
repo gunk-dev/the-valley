@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -41,6 +42,7 @@ func cmdRun(args []string) (err error) {
 	telemetryRun := fs.String("telemetry-run", "", "the run ID the progress records name")
 	project := fs.String("project", "", "the project the progress records name")
 	slots := fs.Int("slots", defaultSlots, "how many nix builds run at once")
+	gcRoots := fs.String("gc-roots", "", "a directory to root every built output in")
 	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
@@ -54,6 +56,15 @@ func cmdRun(args []string) (err error) {
 	classes, err := costClasses(costs)
 	if err != nil {
 		return err
+	}
+	roots := ""
+	if *gcRoots != "" {
+		if roots, err = filepath.Abs(*gcRoots); err != nil {
+			return fmt.Errorf("--gc-roots %s: %v", *gcRoots, err)
+		}
+		if err := os.MkdirAll(roots, 0o755); err != nil {
+			return fmt.Errorf("--gc-roots %s: %v", *gcRoots, err)
+		}
 	}
 
 	root, err := repoRoot(*repo)
@@ -182,7 +193,7 @@ func cmdRun(args []string) (err error) {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	runPure(tree, *system, pure, *timings, *slots, report, obs)
+	runPure(tree, *system, pure, *timings, *slots, roots, report, obs)
 	for _, spec := range effectful {
 		began := time.Now()
 		obs.emit("check.start", spec.name, nil)

@@ -17,6 +17,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -261,7 +262,10 @@ var defaultSlots = runtime.NumCPU()
 // A check is timed from the start of the shared evaluation. Its duration
 // is its evaluation, its probe, and its derivation's build. One that does
 // not evaluate ends at its evaluation error.
-func runPure(tree, system string, specs []checkSpec, probe bool, slots int, report func(ranCheck), obs *observer) []ranCheck {
+//
+// With roots, every output path a build prints is rooted under that
+// directory (rootOutputs), whether nix built it or found it valid.
+func runPure(tree, system string, specs []checkSpec, probe bool, slots int, roots string, report func(ranCheck), obs *observer) []ranCheck {
 	began := time.Now()
 	obs.emit("eval.start", "", map[string]any{"checks": specNames(specs)})
 	evals := evalClosures(tree, system, specs)
@@ -294,8 +298,32 @@ func runPure(tree, system string, specs []checkSpec, probe bool, slots int, repo
 	if obs != nil {
 		build = func(drv string) (string, string, error) { return obs.nixBuild(tree, drv) }
 	}
+	if roots != "" {
+		built := build
+		build = func(drv string) (string, string, error) {
+			out, errText, err := built(drv)
+			rootOutputs(roots, out)
+			return out, errText, err
+		}
+	}
 	buildChecks(runs, drvs, slots, build, report, obs)
 	return runs
+}
+
+// rootOutputs registers an indirect garbage-collector root in dir for each
+// store path in built, which is what nix build --print-out-paths printed.
+// A root is a symlink named by its path's basename, so an output is rooted
+// once however many trees use it. nix-store makes the symlink afresh each
+// time, so its modification time is when the output was last used. The
+// daemon records the root, so a user who is not root can add one. A root
+// that cannot be added is warned about and changes no check's outcome.
+func rootOutputs(dir, built string) {
+	for _, path := range strings.Fields(built) {
+		root := filepath.Join(dir, filepath.Base(path))
+		if _, errText, err := nixStore(context.Background(), "--add-root", root, "--realise", path); err != nil {
+			fmt.Fprintf(os.Stderr, "attest: warning: %s is not rooted: %v: %s\n", path, err, strings.TrimSpace(errText))
+		}
+	}
 }
 
 func specNames(specs []checkSpec) []string {

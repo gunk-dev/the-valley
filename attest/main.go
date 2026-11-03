@@ -59,6 +59,8 @@ run flags:
                       its timing; repeatable
   --slots N           how many nix builds run at once (default: one per
                       CPU this process may run on)
+  --gc-roots DIR      root every output the flake checks build in DIR,
+                      so nix's garbage collection keeps them
 
 run evaluates every flake check in one nix evaluation, then builds each
 one's derivation in a nix build of its own, up to --slots of them at
@@ -78,6 +80,15 @@ asked, which only a run with --timings does, or did not answer within 5s.
 A timing is not evidence: nothing signs, stores or pushes it. Timing
 output that cannot be written within a second is dropped, and a timing
 log that cannot be written is a warning, never a failure.
+
+With --gc-roots, every output of every flake check that builds, or was
+already in the store, gets an indirect garbage-collector root in DIR: a
+symlink named by the output's store path basename, registered with the
+nix daemon. An output is rooted once however many trees use it. Each run
+that uses an output makes its symlink afresh, so the symlink's
+modification time is when the output was last used. Removing the symlink
+lets nix collect the output. A root that cannot be added is a warning,
+never a failure. Without --gc-roots, run roots nothing.
 
 verify flags:
   --note FILE         the signed note, as stored

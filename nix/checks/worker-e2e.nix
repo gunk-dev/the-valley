@@ -770,6 +770,48 @@ in
           assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
           assert host.succeed(f"cat {state}/verifier").strip() == verifier
           host.fail("journalctl -b -u valley-worker -o cat | grep -q 'verifier line is'")
+
+      with subtest("the worker roots the outputs it builds, prunes the roots it has not used, and a later change with the same checks reuses them without building"):
+          import json
+          roots = f"{state}/roots"
+          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
+          # The test machine's writable store does not survive a reboot,
+          # and its store database does, so the paths a reboot lost are
+          # dropped from the database first.
+          host.succeed("nix-store --verify")
+
+          def rooted():
+              links = host.succeed(f"find {roots} -mindepth 1 -maxdepth 1 -type l -printf '%f\\n'").split()
+              return {link: host.succeed(f"readlink {roots}/{link}").strip() for link in links}
+
+          def registered(paths):
+              info = json.loads(host.succeed("nix --extra-experimental-features nix-command path-info --json " + " ".join(paths)))
+              if isinstance(info, dict):
+                  info = [dict(v, path=k) for k, v in info.items()]
+              return {i["path"]: i["registrationTime"] for i in info}
+
+          def publish(branch):
+              # Every root's last use is set long past, so the pass prunes
+              # each one, and its batch roots again only what it uses.
+              host.succeed(f"find {roots} -mindepth 1 -maxdepth 1 -type l -exec touch -h -d @1 {{}} +")
+              ready(branch, "${spin}")
+              host.succeed("systemctl start valley-worker.service")
+              assert told(head(branch), "published") == 1
+              now = rooted()
+              assert now, f"the batch for {branch} rooted no output"
+              for link in now:
+                  assert int(host.succeed(f"stat -c %Y {roots}/{link}")) > 1, f"{link} was not used by the batch for {branch}, and was not pruned"
+              return now
+
+          first = publish("kept")
+          known = host.succeed("nix-store --gc --print-roots")
+          for link, path in first.items():
+              assert link == path.removeprefix("/nix/store/"), (link, path)
+              assert f"{roots}/{link} -> {path}" in known, f"the daemon does not know {roots}/{link}"
+          built = registered(first.values())
+          again = publish("kept-again")
+          assert again == first, (first, again)
+          assert registered(again.values()) == built, "an output was built again"
     '';
   };
 }

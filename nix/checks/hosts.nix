@@ -508,7 +508,8 @@ in
   };
 
   # The check worker given build capacity of its own: three checks at
-  # once, each building two derivations at once on two cores.
+  # once, each building two derivations at once on two cores, and keeping
+  # no outputs.
   capacityWorkerHost = workerHost.extendModules {
     modules = [
       {
@@ -516,6 +517,7 @@ in
           buildSlots = 3;
           maxJobs = 2;
           cores = 2;
+          keepOutputs = null;
         };
       }
     ];

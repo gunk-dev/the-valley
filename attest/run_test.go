@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -271,7 +272,7 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []checkSpec{{name: "one", attribute: "one"}, {name: "broken", attribute: "broken"}, {name: "two", attribute: "two"}}
-	runs := runPure(tree, nixSystem(), specs, false, defaultSlots, nil, nil)
+	runs := runPure(tree, nixSystem(), specs, false, defaultSlots, "", nil, nil)
 	for i, r := range runs {
 		if r.err != nil {
 			t.Fatalf("%s: %v", specs[i].name, r.err)
@@ -410,5 +411,93 @@ func TestACheckWithTwoOutputsIsAnError(t *testing.T) {
 	}
 	if refs := f.published(t); refs != "" {
 		t.Errorf("a run with a two-output check published:\n%s", refs)
+	}
+}
+
+// A run with --gc-roots roots every output of every flake check it builds
+// in the directory it names, one symlink per output named by its store
+// path's basename, and a later run that finds the outputs already built
+// makes each symlink afresh. A run without it roots nothing.
+func TestGCRootsRootEveryOutputAndAreRefreshedOnReuse(t *testing.T) {
+	f := newNixFixture(t, map[string]string{
+		"one": `check "one" "echo one > $out"`,
+		"split": `derivation {
+          name = "split";
+          inherit system;
+          builder = "/bin/sh";
+          args = [ (builtins.toFile "split.sh" "echo a > $out; echo b > $dev") ];
+          outputs = [ "out" "dev" ];
+        }`,
+	})
+	checks := []string{"--check", "one", "--check", "split"}
+	// The two-output check is an error, but it is built all the same.
+	if stdout, stderr, err := f.attest(t, checks...); !strings.Contains(stdout, checkLine("one", "passed")) {
+		t.Fatalf("the run without --gc-roots did not pass one: %v\n%s%s", err, stdout, stderr)
+	}
+	var outputs []string
+	for _, attr := range []string{"one.out", "split.out", "split.dev"} {
+		out, errb, err := nix(f.repo, "eval", "--raw", ".#checks."+nixSystem()+"."+attr+".outPath")
+		if err != nil {
+			t.Fatalf("evaluating %s: %v: %s", attr, err, errb)
+		}
+		outputs = append(outputs, out)
+	}
+	roots := func(path string) string {
+		out, errb, err := nixStore(context.Background(), "--query", "--roots", path)
+		if err != nil {
+			t.Fatalf("nix-store --query --roots %s: %v: %s", path, err, errb)
+		}
+		return out
+	}
+	for _, path := range outputs {
+		if r := roots(path); r != "" {
+			t.Errorf("a run without --gc-roots rooted %s:\n%s", path, r)
+		}
+	}
+
+	dir := filepath.Join(t.TempDir(), "roots")
+	rooted := func(run string) map[string]time.Time {
+		t.Helper()
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != len(outputs) {
+			t.Errorf("the %s run left %d roots for %d outputs: %v", run, len(entries), len(outputs), entries)
+		}
+		times := map[string]time.Time{}
+		for _, path := range outputs {
+			link := filepath.Join(dir, filepath.Base(path))
+			if target, err := os.Readlink(link); err != nil || target != path {
+				t.Errorf("after the %s run, %s points to %q (%v), not %s", run, link, target, err, path)
+				continue
+			}
+			if r := roots(path); !strings.Contains(r, link) {
+				t.Errorf("after the %s run, the daemon does not know %s as a root of %s:\n%s", run, link, path, r)
+			}
+			info, err := os.Lstat(link)
+			if err != nil {
+				t.Fatal(err)
+			}
+			times[link] = info.ModTime()
+		}
+		return times
+	}
+	if stdout, stderr, _ := f.attest(t, append(checks, "--gc-roots", dir)...); strings.Contains(stderr, "is not rooted") {
+		t.Fatalf("the run could not root an output:\n%s%s", stdout, stderr)
+	}
+	for link := range rooted("first") {
+		if out, err := exec.Command("touch", "-h", "-d", "2000-01-01", link).CombinedOutput(); err != nil {
+			t.Fatalf("touch %s: %v: %s", link, err, out)
+		}
+	}
+	reused := time.Now().Add(-time.Minute)
+	if stdout, stderr, _ := f.attest(t, append(checks, "--gc-roots", dir)...); !strings.Contains(stdout, checkLine("one", "passed")) {
+		t.Fatalf("the second run did not pass one:\n%s%s", stdout, stderr)
+	}
+	for link, used := range rooted("second") {
+		if used.Before(reused) {
+			t.Errorf("the second run used %s but left its last use at %s", link, used)
+		}
 	}
 }

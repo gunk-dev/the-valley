@@ -78,6 +78,18 @@ package main
 // its recent attempts and the failures waiting out their backoff with
 // what each was about (workertelemetry.go). It hands attest the same
 // stream for each batch's progress.
+//
+// Given --keep-outputs, a pass keeps the outputs of the checks it builds
+// alive against nix's garbage collection, so a later batch whose checks
+// have the same derivations finds them built. It hands attest
+// --gc-roots with the directory roots in its state directory, where
+// attest makes one indirect root per output, named by the output's store
+// path basename, and makes it afresh whenever a batch uses the output.
+// Before its batches, the pass removes each root there that no batch has
+// used for longer than the age --keep-outputs gives (pruneRoots). It
+// removes only the symlink; nix's own garbage collection frees the output
+// later. Without --keep-outputs, attest roots nothing and the pass prunes
+// nothing.
 
 import (
 	"context"
@@ -98,7 +110,7 @@ import (
 	"the-valley/telemetry"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>]"
+const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>] [--keep-outputs <age>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
@@ -117,6 +129,7 @@ const (
 type worker struct {
 	key, name string
 	slots     int      // how many checks a batch builds at once, or 0 for attest's default
+	roots     string   // the directory attest roots the outputs it builds in, or "" to root nothing
 	keyhash   string   // the key hash an attestation ref of this signer ends in
 	lock      *os.File // the state directory's lock, held for the pass
 	wake      *wake    // the wake directory's claim, or nil without --wake
@@ -132,9 +145,10 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	var repos []string
 	var key, name, state, wakeDir, telemetryDir string
 	slots := 0
+	var keep time.Duration
 	for i := 0; i < len(args); i++ {
 		opt, value, inline := strings.Cut(args[i], "=")
-		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" && opt != "--telemetry" && opt != "--slots" {
+		if opt != "--repo" && opt != "--key" && opt != "--name" && opt != "--state" && opt != "--wake" && opt != "--telemetry" && opt != "--slots" && opt != "--keep-outputs" {
 			return failure(workUsage)
 		}
 		if !inline {
@@ -166,6 +180,12 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 				return failure(fmt.Sprintf("--slots %s: not a whole number of at least 1", value))
 			}
 			slots = n
+		case "--keep-outputs":
+			d, err := time.ParseDuration(value)
+			if err != nil || d <= 0 {
+				return failure(fmt.Sprintf("--keep-outputs %s: not a positive duration, such as 168h", value))
+			}
+			keep = d
 		}
 	}
 	if len(repos) == 0 || key == "" {
@@ -241,6 +261,17 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	w.tel = openWorkerTelemetry(telemetryDir)
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
+	if keep > 0 {
+		// attest runs in each project's repository, so the roots are
+		// named absolutely, where this pass prunes them.
+		if w.roots, err = filepath.Abs(filepath.Join(state, "roots")); err != nil {
+			return failure(fmt.Sprintf("--state %s: %v", state, err))
+		}
+		if err := pruneRoots(w.roots, keep, clock()); err != nil {
+			fmt.Fprintf(stderr, "valley: could not prune the roots in %s: %v\n", w.roots, err)
+			w.troubles++
+		}
+	}
 	for _, repo := range repos {
 		if err := w.project(g, repo); err != nil {
 			return err
@@ -272,6 +303,41 @@ func stateDirectory() (string, error) {
 		state = filepath.Join(home, ".local", "state")
 	}
 	return filepath.Join(state, "valley", "worker"), nil
+}
+
+// pruneRoots removes each symlink in dir whose modification time is more
+// than keep before now. attest makes a root afresh each time a batch uses
+// its output, so that time is the output's last use. Only symlinks are
+// removed, never what they point to, and a dir that does not exist yet
+// holds nothing to prune.
+func pruneRoots(dir string, keep time.Duration, now time.Time) error {
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink == 0 {
+			continue
+		}
+		info, err := e.Info()
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if now.Sub(info.ModTime()) > keep {
+			if err := os.Remove(filepath.Join(dir, e.Name())); err != nil && !errors.Is(err, os.ErrNotExist) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // lockState takes the lock file at path, waiting for whoever holds it, and
@@ -461,6 +527,9 @@ func (w *worker) attest(g git, head string, checks []nixCheck, run, project stri
 	}
 	if w.slots > 0 {
 		args = append(args, "--slots", strconv.Itoa(w.slots))
+	}
+	if w.roots != "" {
+		args = append(args, "--gc-roots", w.roots)
 	}
 	for _, q := range checks {
 		args = append(args, "--check", q.name+"="+q.attribute)

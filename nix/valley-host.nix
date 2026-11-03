@@ -458,7 +458,11 @@ let
     cd "$origin"
     exec valley-worker ${
       lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
-    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots}
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots}${
+      lib.optionalString (
+        cfg.worker.keepOutputs != null
+      ) " --keep-outputs ${toString (cfg.worker.keepOutputs * 24)}h"
+    }
   '';
 
   # The name the controllers sign under, which the worker's must not be.
@@ -1900,6 +1904,23 @@ in
         '';
       };
 
+      keepOutputs = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = 7;
+        example = 30;
+        description = ''
+          How many days the worker keeps the outputs of the checks it
+          builds, counted from the last batch that used each, as
+          `valley-worker --keep-outputs`. The worker roots every output in
+          `roots/` in its state directory, so the host's garbage collection
+          keeps it, and a later change whose check has the same derivation
+          finds it built instead of building it again. Each pass first
+          removes the roots no batch has used for longer than this; nix's
+          garbage collection then frees those outputs. `null` roots
+          nothing.
+        '';
+      };
+
       interval = lib.mkOption {
         type = lib.types.str;
         default = "1m";
@@ -1937,7 +1958,9 @@ in
           `valley-worker` user. It holds the worker's key, made on the
           first start and readable by the worker alone; its public halves,
           `key.pub` and `verifier`; the lock and the record of failed
-          batches; and the clones the worker reads projects through.
+          batches; the clones the worker reads projects through; and
+          `roots/`, the garbage-collector roots of the check outputs it
+          keeps.
         '';
       };
     };
@@ -3012,7 +3035,9 @@ in
         NoNewPrivileges = true;
         ProtectSystem = "strict";
         # Its own directory, its wake directory, and the nix daemon's
-        # socket, which a client writes to connect.
+        # socket, which a client writes to connect. The roots attest adds
+        # are symlinks in its own directory, which the daemon records
+        # through the socket.
         ReadWritePaths = [
           workerDir
           workerWakeDir

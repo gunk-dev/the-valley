@@ -20,7 +20,7 @@ let
   # anywhere: the machine that trusts them exists for one test run.
   keys = pkgs.runCommand "valley-ssh-e2e-keys" { nativeBuildInputs = [ pkgs.openssh ]; } ''
     mkdir $out
-    for who in integrator contributor requester operator stranger; do
+    for who in integrator contributor requester operator reader stranger; do
       ssh-keygen -q -t ed25519 -N "" -C "$who" -f "$out/$who"
     done
   '';
@@ -99,6 +99,12 @@ in
               principal = "operator";
               key = pub "operator";
             }
+            # A principal that holds no grant anywhere, which is what a
+            # host renders for a key that only reads.
+            {
+              principal = "reader";
+              key = pub "reader";
+            }
             # A key that names no principal.
             (pub "stranger")
           ];
@@ -164,6 +170,25 @@ in
           refused(push("contributor", "HEAD:refs/heads/main"), "a protected ref of project")
           refused(push("stranger", "HEAD:refs/heads/main", repo="instance"), "<untagged key> may not write")
           host.succeed(push("integrator", "HEAD:refs/heads/main", repo="instance"))
+
+      with subtest("a key that holds no grant can fetch, is refused the writes that need one, and gets no shell"):
+          reader = (
+              "ssh -i /root/keys/reader -o IdentitiesOnly=yes -o BatchMode=yes"
+              " -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+          )
+          host.succeed(
+              f"GIT_SSH_COMMAND={shlex.quote(reader)} git ls-remote git@localhost:project.git refs/heads/topic | grep -q topic",
+              f"rm -rf /root/reader-clone && GIT_SSH_COMMAND={shlex.quote(reader)} git clone --quiet git@localhost:project.git /root/reader-clone",
+              "git -C /root/reader-clone rev-parse --verify --quiet origin/topic",
+          )
+          refused(push("reader", "HEAD:refs/heads/main"), "reader may not write refs/heads/main")
+          refused(push("reader", "HEAD:refs/tags/v1"), "reader may not write refs/tags/v1")
+          refused(push("reader", f"HEAD:{request}"), "reader holds none")
+          # Topic branches are open to any named key, and git-shell serves
+          # git-upload-archive, so neither is refused here.
+          # git-shell has no interactive mode, and runs no command but git's.
+          refused(f"{reader} git@localhost </dev/null 2>&1", "Interactive git shell is not enabled")
+          refused(f"{reader} git@localhost env 2>&1", "unrecognized command 'env'")
 
       with subtest("a client cannot supply the principal itself"):
           spoof = "VALLEY_PRINCIPAL=integrator"

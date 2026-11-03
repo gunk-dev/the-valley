@@ -213,12 +213,14 @@ project: {
 	}
 
 	// The attestation helper, and the conformance vectors under
-	// attest/conformance/ that hold its written form fixed.
+	// attest/conformance/ that hold its written form fixed. restack-e2e
+	// signs the changes' evidence with attest run.
 	classes: attest: {
 		paths: "attest/**":             true
 		requires: "attest-unit":        true
 		requires: "attest-conformance": true
 		requires: "attest-e2e":         true
+		requires: "restack-e2e":        true
 	}
 
 	// The strict JSON reader. The hook reads its push policy with it, the
@@ -292,13 +294,15 @@ project: {
 
 	// The integrator, the end-to-end scenarios under integrator/e2e/, and the
 	// verification schema, which the integrator composes every policy under
-	// and both checks read.
+	// and both checks read. restack-e2e runs the real integrator too: it
+	// lands one change and rejects another.
 	classes: integrator: {
 		paths: "integrator/**":           true
 		paths: "composed/**":             true
 		paths: "schema/verification.cue": true
 		requires: "integrator-unit":      true
 		requires: "integrator-e2e":       true
+		requires: "restack-e2e":          true
 	}
 
 	// The security-key signature verifier.
@@ -400,6 +404,7 @@ project: {
 		requires: "derive-unit":        true
 		requires: "web-unit":           true
 		requires: "web-push-e2e":       true
+		requires: "integrator-e2e":     true
 	}
 
 	// The push path as it ships: web-push-e2e runs the publisher, the

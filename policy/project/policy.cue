@@ -252,7 +252,9 @@ project: {
 	// attest, the worker and the integrator write its streams, and the CLI
 	// reads and reports with it, so a change to it requires their unit
 	// tests as well as its own. telemetry-e2e drives all of it on a NixOS
-	// machine, and module-eval evaluates the module it is part of.
+	// machine. module-eval evaluates the module in nix/telemetry.nix, so the
+	// module-eval class requires it for that file. It runs none of the
+	// collector's code, so a change under telemetry/ does not require it.
 	classes: telemetry: {
 		paths: "telemetry/**":       true
 		paths: "nix/telemetry.nix":  true
@@ -262,7 +264,6 @@ project: {
 		requires: "attest-unit":     true
 		requires: "valley-go-unit":  true
 		requires: "integrator-unit": true
-		requires: "module-eval":     true
 	}
 
 	// The producers and the CLI that record and send telemetry: attest's
@@ -467,7 +468,8 @@ project: {
 
 	// The web publisher's module, which runs the publisher on a timer in a
 	// sandbox of its own. web-publisher-e2e runs the unit it renders in a
-	// NixOS machine. module-eval, in the nix class, holds what it renders.
+	// NixOS machine. module-eval, in the module-eval class, holds what it
+	// renders.
 	classes: "web-publisher": {
 		paths: "nix/web-publisher.nix": true
 		requires: "web-publisher-e2e":  true
@@ -486,19 +488,46 @@ project: {
 		requires: "own-policy":           true
 	}
 
+	// What module-eval evaluates: the NixOS modules, the host declarations
+	// it renders and the files they are exported from, and the wiring that
+	// hands them to the check. Nothing else changes its derivation. An edit
+	// to another check's script or definition, to the packages, or to a
+	// program's code leaves it unchanged, so those paths are not here. That
+	// holds for nix/checks/ in general: each file there is its own check's,
+	// by the per-check classes below, and module-eval's own files are
+	// nix/checks/module-eval.sh, nix/checks/host-module.nix and
+	// nix/checks/hosts.nix.
+	classes: "module-eval": {
+		paths: "nix/valley-host.nix":          true
+		paths: "nix/telemetry.nix":            true
+		paths: "nix/web-publisher.nix":        true
+		paths: "nix/web-receiver.nix":         true
+		paths: "nix/checks.nix":               true
+		paths: "nix/checks/hosts.nix":         true
+		paths: "nix/checks/host-module.nix":   true
+		paths: "schema/valley.cue":            true
+		paths: "flake.nix":                    true
+		paths: "flake.lock":                   true
+		paths: "examples/host.cue":            true
+		paths: "examples/hosts/protected.cue": true
+		paths: "examples/hosts/no-backup.cue": true
+		paths: "examples/hosts/bus.cue":       true
+		paths: "examples/hosts/mirrors.cue":   true
+		requires: "module-eval":               true
+	}
+
 	// The flake, the NixOS module, the packages and the check definitions,
 	// and the host declarations the module checks are evaluated over.
 	// own-policy is here because renaming or removing a flake check would
 	// leave this layer naming a check that no longer exists. A change to
-	// flake.nix or flake.lock requires these alone, so a nixpkgs bump boots no
-	// machine.
+	// flake.nix or flake.lock requires these and module-eval, which boots
+	// no machine, so a nixpkgs bump boots none.
 	classes: nix: {
 		paths: "nix/**":                true
 		paths: "flake.nix":             true
 		paths: "flake.lock":            true
 		paths: "examples/host.cue":     true
 		paths: "examples/hosts/**":     true
-		requires: "module-eval":        true
 		requires: "valley-darwin-eval": true
 		requires: "cue-vet":            true
 		requires: "own-policy":         true

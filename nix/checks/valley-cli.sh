@@ -79,7 +79,7 @@ COMP_WORDS=(valley help '')
 COMP_CWORD=2
 _valley
 for v in $verbs; do
-  printf '%s\n' "${COMPREPLY[@]}" | grep -qx "$v"
+  printf '%s\n' "${COMPREPLY[@]}" | grep -x -- "$v" > /dev/null
 done
 test -f "$valley/share/bash-completion/completions/valley"
 test -f "$valley/share/zsh/site-functions/_valley"

@@ -52,7 +52,11 @@
 // names a change its head contains that is not an entry here, such as a
 // withdrawn one. uncertain says the active version may have landed without
 // its evidence being stored. With --checks, it says how many checks the
-// policy requires of the change, by cost.
+// policy requires of the change, by cost, and for a ready change how many
+// of its required checks passed, failed and are pending, as valley
+// changes --checks lists them (versionchecks.go), naming those that
+// failed: "checks: 18 passed, 1 failed (valley-request)". --json then
+// carries the same checks objects.
 //
 // Within a section, the stack with the latest commit comes first, and
 // within a stack the entry with the latest commit does. Every line fits
@@ -126,6 +130,9 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}
 		for _, r := range repos {
 			view := r.pendingView(h)
+			if l.checks {
+				r.addChecks(&view, stderr)
+			}
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
 		}
@@ -136,7 +143,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
-		writePending(r, h, l, stdout, len(repos) > 1 || l.all || l.repo != "", t)
+		writePending(r, h, l, stdout, stderr, len(repos) > 1 || l.all || l.repo != "", t)
 	}
 	return nil
 }
@@ -173,7 +180,7 @@ type entry struct {
 
 // writePending prints one repository's entries, section by section.
 // Several repositories are each headed by their name.
-func writePending(r listed, h handleMap, l listing, w io.Writer, headed bool, t terminal) {
+func writePending(r listed, h handleMap, l listing, w, stderr io.Writer, headed bool, t terminal) {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	if r.err != nil {
 		p("%s: %v\n", r.name, r.err)
@@ -182,7 +189,11 @@ func writePending(r listed, h handleMap, l listing, w io.Writer, headed bool, t 
 	if headed {
 		p("%s\n%s\n", r.name, strings.Repeat("─", min(columns(r.name), t.width)))
 	}
-	all := r.entries(r.pendingView(h), h, l)
+	view := r.pendingView(h)
+	if l.checks {
+		r.addChecks(&view, stderr)
+	}
+	all := r.entries(view, h, l)
 	tops := r.snap.stack(all)
 	gap := false
 	for _, sec := range sections {
@@ -249,6 +260,9 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 		}
 		if l.checks {
 			e.notes = append(e.notes, s.checks(v.Head))
+		}
+		if v.Checks != nil {
+			e.notes = append(e.notes, checksLine(v.Checks))
 		}
 		all = append(all, e)
 	}

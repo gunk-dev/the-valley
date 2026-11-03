@@ -86,6 +86,9 @@ type jsonVersion struct {
 	LandedCommit *string         `json:"landed_commit"`
 	Request      *jsonRequest    `json:"request"`
 	Outcome      *versionOutcome `json:"outcome"`
+	// Checks is given, with --checks, for the active version of a ready
+	// change that has not landed (versionchecks.go).
+	Checks *jsonVersionChecks `json:"checks,omitempty"`
 }
 
 // versionOutcome is an outcome record about a version. Its head is the
@@ -696,6 +699,13 @@ func walkStrings(doc any, f func(string)) {
 				f(v.Title)
 				f(v.Branch)
 				f(v.Uploader)
+				if v.Checks != nil {
+					for _, q := range v.Checks.Required {
+						f(q.Name)
+						f(q.Signer)
+						f(q.Why)
+					}
+				}
 			}
 		}
 		for _, b := range d.Branches {
@@ -719,7 +729,7 @@ func utf8Branches(r *jsonRepo, stderr io.Writer) {
 }
 
 func runChanges(g git, args []string, stdout, stderr io.Writer) error {
-	l, err := parseListing("changes", args, false)
+	l, err := parseListing("changes", args, true)
 	if err != nil {
 		return err
 	}
@@ -737,6 +747,9 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, unlanded)
+		if l.checks {
+			r.addChecks(&view, stderr)
+		}
 		utf8Branches(&view, stderr)
 		doc.Repos = append(doc.Repos, view)
 	}

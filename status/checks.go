@@ -87,18 +87,9 @@ func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (j
 	if !g.succeeds(true, "rev-parse", "--git-dir") {
 		return jsonChecks{}, failure("not a git repository")
 	}
-	// The schema ships with the package, which names it in
-	// VALLEY_VERIFICATION_SCHEMA; only the-valley's own tree carries one,
-	// as `valley checks` reads it.
-	if schema == "" {
-		schema = os.Getenv("VALLEY_VERIFICATION_SCHEMA")
-	}
-	if schema == "" {
-		root, err := g.output(true, "rev-parse", "--show-toplevel")
-		if err != nil {
-			return jsonChecks{}, failure("no schema: name one with --schema or VALLEY_VERIFICATION_SCHEMA")
-		}
-		schema = filepath.Join(root, "schema", "verification.cue")
+	schema, err := schemaFile(g, schema)
+	if err != nil {
+		return jsonChecks{}, err
 	}
 	var commits [2]string
 	for i, rev := range []string{baseRev, headRev} {
@@ -108,16 +99,49 @@ func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (j
 		}
 		commits[i] = oid
 	}
-	base, head := commits[0], commits[1]
-	if _, err := exec.LookPath("cue"); err != nil {
-		return jsonChecks{}, failure("this verb needs the cue CLI; nix run .#valley bundles it")
-	}
-
-	ctx := context.Background()
-	model, err := composed.Read(ctx, "cue", schema, instance, project)
+	model, err := policyModel(schema, instance, project)
 	if err != nil {
-		return jsonChecks{}, failure(err.Error() + "; nothing derived")
+		return jsonChecks{}, err
 	}
+	return deriveUnder(g, model, commits[0], commits[1])
+}
+
+// schemaFile is the verification schema named, or when none is, the
+// packaged one, or else the one in this repository's tree.
+func schemaFile(g git, schema string) (string, error) {
+	// The schema ships with the package, which names it in
+	// VALLEY_VERIFICATION_SCHEMA; only the-valley's own tree carries one,
+	// as `valley checks` reads it.
+	if schema == "" {
+		schema = os.Getenv("VALLEY_VERIFICATION_SCHEMA")
+	}
+	if schema == "" {
+		root, err := g.output(true, "rev-parse", "--show-toplevel")
+		if err != nil {
+			return "", failure("no schema: name one with --schema or VALLEY_VERIFICATION_SCHEMA")
+		}
+		schema = filepath.Join(root, "schema", "verification.cue")
+	}
+	return schema, nil
+}
+
+// policyModel is the policy the schema and the two layers compose, read
+// once for every change derived under it.
+func policyModel(schema, instance, project string) (*composed.Model, error) {
+	if _, err := exec.LookPath("cue"); err != nil {
+		return nil, failure("this verb needs the cue CLI; nix run .#valley bundles it")
+	}
+	model, err := composed.Read(context.Background(), "cue", schema, instance, project)
+	if err != nil {
+		return nil, failure(err.Error() + "; nothing derived")
+	}
+	return model, nil
+}
+
+// deriveUnder is the valley-checks/v1 document for the change between two
+// commits, given as object IDs, under a policy read.
+func deriveUnder(g git, model *composed.Model, base, head string) (jsonChecks, error) {
+	ctx := context.Background()
 	paths, err := derive.Diff(ctx, g.dir, g.env, base, head)
 	if err != nil {
 		return jsonChecks{}, failure(err.Error() + "; nothing derived")

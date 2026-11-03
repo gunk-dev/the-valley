@@ -572,10 +572,15 @@ git -C "$w/floor" commit --quiet -m floor
 git -C "$w/floor" push --quiet "$instance" HEAD:refs/heads/floor
 git -C "$instance" update-ref refs/heads/main "$(git -C "$w/floor" rev-parse HEAD)"
 ok valley pending --checks --all
-after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  approving it lands the 2 below too$' \
-  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   requires 1 quick check, 0 slow$' '^  └ nxvpwlkm v1  ' \
-  '^      stack-a$' '^      1 commit · ' '^      requires 1 quick check, 0 slow$'
-after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$'
+after '^pppp v1  ' '^  stack-c$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$' \
+  '^  approving it lands the 2 below too$' \
+  '^  ├ open:mmmm v1  ' '^  │   stack-b$' '^  │   1 commit · ' '^  │   requires 1 quick check, 0 slow$' \
+  '^  │   checks: 1 pending$' '^  └ nxvpwlkm v1  ' \
+  '^      stack-a$' '^      1 commit · ' '^      requires 1 quick check, 0 slow$' '^      checks: 1 pending$'
+after '^nxvpwlkz v1  ' '^  g-ready$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
+# Without --checks, no change lists its checks.
+ok valley changes --json --all
+holds '[.repos[].changes[].versions[] | select(has("checks"))] == []'
 
 # ----------------------------------------------------------------------
 # A branch name is used again once its change has landed: ff now names no
@@ -672,6 +677,74 @@ ok valley changes --json -v
 grep -qF "open's plan graph could not be read, so no change shows a knot" "$w/err" \
   || fail 'changes -v did not say why it shows no knot'
 git -C "$data/open.git" update-ref refs/the-valley/knots "$graph_tip"
+
+# ----------------------------------------------------------------------
+# --checks: each ready change's required checks, passed, failed or
+# pending by the note the integrator would judge each by. The host
+# publishes its signers in the instance, as its publisher writes them,
+# and a check worker's key is among them. The floor requires prose-format
+# of each change here. The worker's note for one head's tree records a
+# pass, for another a failure, and a third head has none. A note is
+# stored on origin as attest run stores one: <check>/statement.note at
+# refs/the-valley/attestations/<tree digest>/<key hash>.
+cd "$w/open"
+ssh-keygen -q -t ed25519 -N '' -C worker -f "$w/worker.key"
+workerhash="$(attest key --key "$w/worker.key" --name worker | cut -d+ -f2)"
+{
+  cat "$w/known-signers"
+  attest key --key "$w/worker.key" --name worker
+} > "$w/host-signers"
+keysblob="$(git -C "$instance" hash-object -w "$w/host-signers")"
+nameblob="$(printf 'integrator\n' | git -C "$instance" hash-object -w --stdin)"
+git -C "$instance" update-ref refs/the-valley/signers \
+  "$(printf '100644 blob %s\tintegrator-name\n100644 blob %s\tknown-signers\n' "$nameblob" "$keysblob" | git -C "$instance" mktree)"
+
+# evidence <branch> <result>: the worker's note about prose-format for the
+# branch head's tree, stored on origin.
+evidence() {
+  local head digest blob tree
+  head="$(git rev-parse "$1")"
+  digest="$(tree_digest "$head")"
+  jq -n --arg tree "$digest" --arg commit "$head" --arg result "$2" '{
+      statementType: "the-valley/attestation/v1",
+      subject: {primary: "valley-tree-v1", digest: {"valley-tree-v1": $tree, "git-sha1": $commit}},
+      predicateType: "the-valley/check/pure/v1",
+      predicate: {check: {name: "prose-format", runner: "nix", attribute: "prose-format"}, result: $result,
+        inputs: {"valley-inputs-v1": ("cd" * 32)}, derivation: {sha256: ("ef" * 32)}, output: {sha256: ("01" * 32)}}
+    }' > "$w/statement.json"
+  attest render "$w/statement.json" | attest sign --key "$w/worker.key" --name worker > "$w/check.note"
+  blob="$(git -C "$data/open.git" hash-object -w "$w/check.note")"
+  tree="$(printf '100644 blob %s\tstatement.note\n' "$blob" | git -C "$data/open.git" mktree)"
+  tree="$(printf '040000 tree %s\tprose-format\n' "$tree" | git -C "$data/open.git" mktree)"
+  git -C "$data/open.git" update-ref "refs/the-valley/attestations/$digest/$workerhash" "$tree"
+}
+K1="$(id klkl)" K2="$(id kmkm)" K3="$(id knkn)"
+git fetch --quiet origin
+branch chk-pass origin/main chk-pass
+ready "$K1" chk-pass
+evidence chk-pass passed
+branch chk-fail origin/main chk-fail
+ready "$K2" chk-fail
+evidence chk-fail failed
+branch chk-none origin/main chk-none
+ready "$K3" chk-none
+
+ok valley changes --json --checks
+checks() { printf '.repos[0].changes[] | select(.change_id == "%s") | .versions[.active-1].checks' "$1"; }
+holds "$(checks "$K1") | .state == \"passed\" and .tree == \"$(tree_digest chk-pass)\"" \
+  "$(checks "$K1") | .required == [{name: \"prose-format\", state: \"passed\", signer: \"worker+$workerhash\"}]" \
+  "$(checks "$K2") | .state == \"failed\" and (.required | length) == 1" \
+  "$(checks "$K2") | .required[0] | .name == \"prose-format\" and .state == \"failed\" and .signer == \"worker+$workerhash\"" \
+  "$(checks "$K2") | .required[0].why | contains(\"predicate.result\")" \
+  "$(checks "$K3") | .state == \"pending\" and .required == [{name: \"prose-format\", state: \"pending\"}]" \
+  '[.repos[0].changes[] | select(.state != "ready") | .versions[] | select(has("checks"))] == []' \
+  '[.repos[0].changes[] | .versions[] | select(.landing == "landed" or .landing == "landed-recorded") | select(has("checks"))] == []'
+ok valley pending --json --checks
+holds "$(checks "$K2") | .state == \"failed\""
+ok valley pending --checks
+after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 passed$'
+after '^kmkm v1  ' '^  chk-fail$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 failed \(prose-format\)$'
+after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
 
 # valley help names the verbs front ends look for.
 valley help > "$w/out"

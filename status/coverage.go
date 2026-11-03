@@ -159,27 +159,43 @@ func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (eviden
 		repo = "."
 	}
 
-	out, err := attestTool(g, "digest", "--repo", repo, "--rev", head)
-	digest, ok := strings.CutPrefix(strings.TrimSpace(out), "valley-tree-v1:")
-	if err != nil || !ok || digest == "" {
-		return evidence{}, failure("could not digest the tree of " + head)
+	digest, err := treeDigest(g, repo, head)
+	if err != nil {
+		return evidence{}, err
 	}
 
 	// Every attestation ref origin holds for the tree, signer by signer.
-	prefix := attestationRefs + digest + "/"
-	o, err := listOrigin(g, prefix+"*")
+	o, err := listOrigin(g, attestationRefs+digest+"/*")
 	if err != nil {
 		return evidence{}, failure("could not list the evidence origin holds for this tree")
 	}
-	e := evidence{digest: digest, listed: o.refs}
-	for ref := range e.listed {
-		if rest, ok := strings.CutPrefix(ref, prefix); ok && rest != "" {
-			e.stored = append(e.stored, ref)
-		}
-	}
-	sort.Strings(e.stored)
+	e := evidence{digest: digest, listed: o.refs, stored: storedFor(digest, o.refs)}
 	e.covered, err = cover(g, repo, head, e.stored, e.listed, checks, stderr)
 	return e, err
+}
+
+// treeDigest is the valley-tree-v1 digest of a commit's tree, as attest
+// digests it, without its scheme.
+func treeDigest(g git, repo, head string) (string, error) {
+	out, err := attestTool(g, "digest", "--repo", repo, "--rev", head)
+	digest, ok := strings.CutPrefix(strings.TrimSpace(out), "valley-tree-v1:")
+	if err != nil || !ok || digest == "" {
+		return "", failure("could not digest the tree of " + head)
+	}
+	return digest, nil
+}
+
+// storedFor is every attestation ref listed for a tree, in byte order.
+func storedFor(digest string, listed map[string]string) []string {
+	prefix := attestationRefs + digest + "/"
+	var stored []string
+	for ref := range listed {
+		if rest, ok := strings.CutPrefix(ref, prefix); ok && rest != "" {
+			stored = append(stored, ref)
+		}
+	}
+	sort.Strings(stored)
+	return stored
 }
 
 // cover is the checks the stored refs hold reusable evidence for, each
@@ -205,11 +221,7 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 	defer os.Remove(keys)
 	here := counting{project: project(g), integrator: p.name, projects: p.projects}
 
-	asked := map[string]bool{}
-	for _, c := range checks {
-		asked[c.name] = true
-	}
-	notes, why, err := readNotes(g, stored, listed, asked)
+	judged, why, err := judge(g, repo, head, keys, os.Getenv("VALLEY_KNOWN_SIGNERS"), here, stored, listed, checks)
 	if err != nil {
 		return nil, err
 	}
@@ -217,10 +229,47 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		fmt.Fprintf(stderr, "valley: %s, so the integrator cannot judge this tree's evidence, and none of it is reused\n", why)
 		return covered, nil
 	}
+	for _, c := range checks {
+		j, ok := judged[c.name]
+		if !ok {
+			continue // origin holds no note about this check
+		}
+		if j.why != "" {
+			fmt.Fprintf(stderr, "valley: not reusing %s: the integrator judges it by %s:%s, and %s\n", c.name, j.note.ref, j.note.path, j.why)
+			continue
+		}
+		covered[c.name] = j.note.ref + " " + j.note.signer
+	}
+	return covered, nil
+}
+
+// judgment is the note the integrator judges a check by, and why approve
+// may not skip the check on it, or "" when it may.
+type judgment struct {
+	note storedNote
+	why  string
+}
+
+// judge reads the notes the stored refs hold about the checks asked, whose
+// objects have been fetched, and verifies each under keys, the host's
+// known-signers file. It returns the note the integrator judges each check
+// by, for each check origin holds a note about, with why it is not
+// reusable. local is a known-signers file that narrows what is reusable,
+// or "" for none. unjudged says why the integrator cannot judge the tree's
+// evidence at all.
+func judge(g git, repo, head, keys, local string, here counting, stored []string, listed map[string]string, checks []nixCheck) (judged map[string]judgment, unjudged string, err error) {
+	asked := map[string]bool{}
+	for _, c := range checks {
+		asked[c.name] = true
+	}
+	notes, why, err := readNotes(g, stored, listed, asked)
+	if err != nil || why != "" {
+		return nil, why, err
+	}
 	for i := range notes {
 		signers, refusal, err := verify(g, repo, head, keys, notes[i].note)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if refusal != "" {
 			notes[i].refusal = "attest verify refuses it under the host's signers: " + refusal
@@ -232,23 +281,19 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 		func(n storedNote) string { return n.check },
 		func(n storedNote) bool { return n.refusal == "" })
 
-	local := os.Getenv("VALLEY_KNOWN_SIGNERS")
+	judged = map[string]judgment{}
 	for _, c := range checks {
 		n, ok := picked[c.name]
 		if !ok {
-			continue // origin holds no note about this check
+			continue
 		}
 		why, err := reusable(g, repo, head, local, here, c, n)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		if why != "" {
-			fmt.Fprintf(stderr, "valley: not reusing %s: the integrator judges it by %s:%s, and %s\n", c.name, n.ref, n.path, why)
-			continue
-		}
-		covered[c.name] = n.ref + " " + n.signer
+		judged[c.name] = judgment{note: n, why: why}
 	}
-	return covered, nil
+	return judged, "", nil
 }
 
 // storedNote is one note an attestation ref on origin holds, as read: where

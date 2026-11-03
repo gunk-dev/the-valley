@@ -124,7 +124,7 @@ _valley() {
     local -a opts=(
       '--all:every project the serving host publishes'
       '--repo:that one project'
-      '--checks:the checks each change requires, by cost'
+      '--checks:the checks each change requires, by cost, and their state'
       '--json:print valley-pending/v1 JSON'
       '-v:say why no change shows a knot'
       '--known-signers:the known-signers file a transfer statement is verified with'
@@ -134,6 +134,7 @@ _valley() {
   elif [[ ${words[2]} == changes && ${words[CURRENT]} == -* ]]; then
     local -a opts=(
       '--json:print valley-changes/v1 JSON'
+      '--checks:the state of the checks each ready change requires'
       '--all:every project the serving host publishes'
       '--repo:that one project'
       '-v:say why no change shows a knot'

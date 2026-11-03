@@ -194,8 +194,11 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
     the local repository directly without discovery; when passed together with `--all`, `--repo`
     takes precedence.
   - `--checks`: Appends a line to each change in human output showing how many checks the composed
-    verification policy requires of it, grouped by `quick` and `slow` cost (ignored when combined
-    with `--json`).
+    verification policy requires of it, grouped by `quick` and `slow` cost. Each ready change also
+    gets a line with the state of those checks, as `valley changes --checks` reads it, naming each
+    check that failed: `checks: 18 passed, 1 failed (valley-request)` or
+    `checks: 12 passed, 7 pending`. With `--json`, the active version of each ready change carries
+    the same [`checks`](#version-checks) object.
   - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON.
   - `-v`: Warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
@@ -218,12 +221,16 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
 
 ```sh
 valley changes --json
-valley changes --json [--all] [--repo <name>] [-v] [--known-signers <file>] [--integrator-name <name>]
+valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <file>] [--integrator-name <name>]
 ```
 
 - **Flags:** `--json` (required; running `valley changes` without `--json` exits `1` and suggests
   `valley pending` for human output), `--all`, `--repo <name>`, `-v`, `--known-signers <file>` and
   `--integrator-name <name>` (as for [`valley pending`](#valley-pending)).
+  - `--checks`: Adds a [`checks`](#version-checks) object to the active version of each ready change
+    whose active version has not landed. It says which of the checks the policy requires passed,
+    failed or are pending. It costs a few seconds for each project that has such a change. Most of
+    that time goes to reading the policy with `cue`, and the rest to `attest verify` for each note.
 
 ### `valley status`
 
@@ -2209,12 +2216,65 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `active`.
   - `versions` (`array` of
     `{ "n", "head" (40-hex OID without git-sha1: prefix), "title", "branch", "uploader", "landing" ("landed"|"landed-recorded"|"uncertain"|"not-landed"), "landed_commit" (<oid or null>), "request" ({"ref","commit"} or null), "outcome" ({"decision","head","tip"} or null) }`).
+    With `--checks`, the active version of a ready change that has not landed also carries
+    [`checks`](#version-checks).
   - `includes` (`array` of `string`): Change IDs of other changes whose active version has not
     landed and whose active version head is a strict ancestor of this change's active version head
     in `main..head`. A change whose active version has landed is never named, even though
     `valley-changes/v1` still lists it.
   - `restack` (`jsonRestack` or `null`) and `knots` (`array` of
     `{ "id", "type", "status", "title" }`).
+
+##### Version checks
+
+`checks` says whether the checks a ready change's active version requires have passed. It is the
+state of the evidence the integrator would judge each check by. A client reads it to see a failed
+check as soon as the host's check worker records it.
+
+```json
+"checks": {
+  "state": "failed",
+  "tree": "<valley-tree-v1 digest of the head's tree>",
+  "required": [
+    {"name": "valley-request", "state": "failed", "signer": "<signer>+<key hash>", "why": "its predicate.result is \"failed\", not \"passed\""},
+    {"name": "integrator-unit", "state": "passed", "signer": "<signer>+<key hash>"},
+    {"name": "web-unit", "state": "pending"},
+    {"name": "live-ok", "state": "other"}
+  ]
+}
+```
+
+- **Fields:**
+  - `state` (`string`): `"failed"` when any required check failed, else `"pending"` when any is
+    pending, else `"passed"`.
+  - `tree` (`string`): The `valley-tree-v1` digest of the head's tree, without its scheme. The
+    evidence is about this tree.
+  - `required` (`array`): Each check the policy requires of the version, in the order of `required`
+    in [`valley-checks/v1`](#valley-checks). Each has:
+    - `name` (`string`): The check's name.
+    - `state` (`string`): `"passed"`, `"failed"`, `"pending"` or `"other"`.
+    - `signer` (`string`, omitted when no signer counts): The signer of the note the check is judged
+      by, as `<name>+<key hash>`.
+    - `why` (`string`, omitted when passed): Why the check did not pass: attest's refusal, or why
+      the note judged is not evidence for this check.
+- **Where it comes from:** The required checks are derived as the host's check worker derives them:
+  over the head's merge base with `main`, under both policy layers read at `main`'s tip on `origin`.
+  Each check's note is chosen and read as `valley-go coverage` reads it. Only the attestation refs
+  `origin` holds for the head's tree count. The note judged is the first that verifies under the
+  known-signers file the host publishes, by a signer who counts in this project.
+  `VALLEY_KNOWN_SIGNERS` does not narrow it.
+  - `passed`: the note judged is pure evidence from the `nix` runner, for this check's name and
+    attribute, and records the check as passed.
+  - `failed`: the note judged records the check as failed, or is the wrong kind, runner or
+    attribute. `why` says which.
+  - `pending`: no note about the check verifies and is signed by a signer who counts. When a note is
+    there that does not count, `why` says why.
+  - `other`: the check's runner is not `nix`. The host's check worker does not run it, so it does
+    not count toward `state`.
+- **Logs:** A check's logs stay in the worker's telemetry, read with
+  `valley telemetry --json read --source worker --logs`.
+- **Failures:** When the policy does not read, or `origin`'s evidence cannot be listed or fetched,
+  the versions it was for carry no `checks`, and `stderr` says why.
 
 #### `valley-plan/v1`
 

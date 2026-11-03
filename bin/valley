@@ -220,7 +220,12 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-
                      --repo NAME  that one project
                      --checks     add a line to each change with the
                                   checks the policy requires of it, by
-                                  cost, as checks derives them
+                                  cost, as checks derives them, and to
+                                  each ready change a line saying how
+                                  many of them passed, failed and are
+                                  pending, naming those that failed, as
+                                  changes --checks lists them. with
+                                  --json, the same checks objects
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the
                                   pending changes in changes and the
@@ -237,9 +242,9 @@ EOF
 
 help_changes() {
   cat <<'EOF'
-usage: valley changes --json [--all] [--repo <name>] [-v] [--known-signers <file>] [--integrator-name <name>]
+usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <file>] [--integrator-name <name>]
 
-  changes --json [--all] [--repo <name>] [-v]
+  changes --json [--all] [--repo <name>] [--checks] [-v]
           [--known-signers <file>] [--integrator-name <name>]
                    print every change origin holds a record of, in every
                    state, as one JSON object, valley-changes/v1, for front
@@ -250,7 +255,14 @@ usage: valley changes --json [--all] [--repo <name>] [-v] [--known-signers <file
                    refs/the-valley/knots that link it
                    (valley:<project>/<change id>, active first), and
                    the branches no change is on. -v warns on stderr when a
-                   plan graph is missing or unreadable.
+                   plan graph is missing or unreadable. --checks adds
+                   checks to the active version of each ready change that
+                   has not landed: each check the policy requires of it,
+                   passed, failed or pending by the note the integrator
+                   would judge it by on origin, and other for a check the
+                   host's worker does not run (docs/reference.md). it
+                   costs a few seconds for each project with such a
+                   change.
                    handles are unique across
                    everything listed: a change id recorded in more than
                    one repository listed has the handle <repo>:<prefix>

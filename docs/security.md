@@ -627,9 +627,7 @@ outside the unit, the same check fails because root's datagram reaches `198.51.1
 verifies that Git accepts a declared repository and refuses an undeclared repository as dubiously
 owned. It verifies that repository writes fail and that the git SSH key, backup SSH key, and raw
 token file cannot be read. It also verifies that the unit can connect to a listener on its allowed
-address while connections to disallowed IPv4 and IPv6 listeners fail, and that the C library
-resolves a name served by a DNS server on a disallowed address while direct UDP packets from the
-unit to that DNS server fail with `EPERM`.
+address, and that the C library resolves a name served by a DNS server on a disallowed address.
 
 ## The edge's receiver
 

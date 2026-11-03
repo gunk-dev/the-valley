@@ -785,6 +785,10 @@ let
     || slice.CPUQuota or null != "400%"
     || slice.MemoryMax or null != "8G"
     || slice.MemorySwapMax or null != "0"
+    # The daemon's unit delegates its cgroup, so systemd's OOM policy for
+    # it is continue: a build the kernel's OOM killer kills leaves the
+    # daemon running. Nothing here may set another.
+    || daemon.OOMPolicy or "continue" != "continue"
     || devicePolicy slice
     || devicePolicy daemon
     || service ? CPUAffinity
@@ -1186,6 +1190,16 @@ in
       throw "valley module-eval: each controller's landings are published by a path unit of its own, not ${lib.concatStringsSep ", " publishers}"
     else if integratorHost.config.systemd.services."valley-publish@".serviceConfig.User != "git" then
       throw "valley module-eval: a landing is published as the git user, which holds the mirror credentials"
+    else if
+      let
+        drain = integratorHost.config.systemd.services."valley-publish@".serviceConfig;
+      in
+      drain.Restart or null != "on-failure"
+      || drain.RestartSec or null != "30s"
+      || drain.RestartSteps or null != 5
+      || drain.RestartMaxDelaySec or null != "15min"
+    then
+      throw "valley module-eval: a failed drain must be run again 30 seconds later, each later retry waiting longer, up to 15 minutes from the fifth, so a queued move reaches its mirror once the mirror is back"
     else if integratorUser == integratorHost.config.services.valley.user then
       throw "valley module-eval: the integrator must not run as the git user — it has its own (bd-500adf7)"
     else if !(integratorHost.config.users.users ? ${integratorUser}) then
@@ -1219,7 +1233,7 @@ in
     else if buildSliceMisrendered then
       throw "valley module-eval: the build slice must put the nix daemon in valley-builds.slice at the quota and memory cap the host names, with no swap, and render nothing of the worker"
     else if workerMisrendered then
-      throw "valley module-eval: the check worker must run as its own account outside the git group, free to run on any CPU, building as many checks at once as worker.buildSlots says (1 unset), keeping their outputs for worker.keepOutputs days (7 unset, none when null), each with nix's max-jobs and cores set from worker.maxJobs and worker.cores (1 and 4 unset), in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
+      throw "valley module-eval: the check worker must run as its own account outside the git group, free to run on any CPU, building as many checks at once as worker.buildSlots says (1 unset), keeping their outputs for worker.keepOutputs days (7 unset, none when null), each with nix's max-jobs and cores set from worker.maxJobs and worker.cores (1 and 4 unset), in a slice that holds it and the nix daemon to 4 CPUs and 8 GiB with no swap and no device policy, leaving the daemon's OOM policy at continue, reaching this host's projects through its sshd under the host's own key, on a timer whose first pass waits five minutes after the timer starts and whose later passes are counted from the end of each pass"
     else if workerDefaultsMisrendered then
       throw "valley module-eval: a check worker whose projects the host leaves unwritten must build for every project the controllers serve, one the host narrows must build for those alone, and the signers publication must carry the controllers' signer projects file"
     else if restackerRenderedWithoutEnable then

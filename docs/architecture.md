@@ -223,14 +223,10 @@ daemon's own processes from being chosen. When a child build is killed, `nix-dae
 up because its unit delegates its cgroup, which sets systemd's `OOMPolicy` to `continue`. Services
 outside the slice are unaffected.
 
-Checked by `worker-e2e` and `module-eval`. In `worker-e2e`, a build that tries to use six CPUs is
-throttled to four. The test then runs two unrelated builds alongside a worker check that allocates
-memory without bound. Once the larger unrelated build has settled, the test sets the slice's memory
-cap at runtime to the anonymous and shared memory the slice already holds plus half of that build's
-resident memory, then starts the worker. The kernel kills at least two processes. The worker's
-runaway build fails, the larger unrelated build fails, and the smaller unrelated build finishes.
-`sshd`, `nix-daemon`, and the integrator controllers stay up, and no other unit fails. `module-eval`
-checks that the slice renders the quota and memory cap the host configures.
+Checked by `module-eval` and `worker-e2e`. `module-eval` checks that the slice renders the quota and
+memory cap the host configures, with no swap, and that the module sets no `OOMPolicy` on
+`nix-daemon.service` other than `continue`. `worker-e2e` checks that the worker's builds run in the
+daemon's cgroup inside the slice.
 
 The slice does not cap:
 
@@ -529,8 +525,8 @@ git push <url> --delete <ref>...  # delete each one that should not be published
 The service deletes the files it listed only after every mirror push succeeds. When a push or a
 deletion fails, the service fails and the files stay. systemd then runs the service again after a
 delay that grows from 30 seconds to 15 minutes. A run that lasts 15 minutes is stopped with
-everything it started. Checked by `publish-e2e`. Because the integrator publishes its events itself,
-a mirror outage never delays an event on the bus.
+everything it started. Checked by `publish-e2e`, and the retry delays by `module-eval`. Because the
+integrator publishes its events itself, a mirror outage never delays an event on the bus.
 
 Having one publisher is what keeps a mirror from being rewound. git reads the local refs before it
 contacts the mirror. So when two pushes run at once, one can read an old `main`, stall, and then
@@ -1382,12 +1378,12 @@ Where the timer still does the work (`not built`):
 Checked by `worker-e2e`, which runs the real units on a host, and by `module-eval`. In `worker-e2e`,
 with the timer stopped, a ready push starts a pass. So does a landing by the integrator's own
 service while the project's mirror and the bus hang, and so does a floor landing in the instance
-project, which is not a worker project. With the timer at its minute, a pass killed during a build
-leaves its claim, and so does a pass that cannot reach the repositories over SSH. In both cases the
-timer's next pass builds the change with no new mark. A failed batch is not built again before its
-wait, however many marks and timer passes arrive. The claim and acknowledgement under concurrent
-writers is checked by `TestWakeLosesNoMark` (`status/wake_test.go`), and the landing's mark ahead of
-a hung bus by `integrator-e2e`.
+project, which is not a worker project. A pass killed during a build leaves its claim, and so does a
+pass that cannot reach the repositories over SSH. In both cases the timer's next pass builds the
+change with no new mark. A failed batch is not built again before its wait, however many marks and
+timer passes arrive. The claim and acknowledgement under concurrent writers is checked by
+`TestWakeLosesNoMark` (`status/wake_test.go`), and the landing's mark ahead of a hung bus by
+`integrator-e2e`.
 
 ### The worker on the host
 
@@ -4664,8 +4660,7 @@ Checked by:
   address filter rendered by the NixOS modules, and checks that evaluation fails when the publisher
   has no allowed address; `web-publisher-e2e`, which checks in a NixOS VM that the token reaches the
   publisher unit as a credential while the source file stays readable only by root, and that the
-  unit can connect to a listener on its allowed address while connections to disallowed IPv4 and
-  IPv6 listeners fail (even though root can reach them); and `web-image`, which unpacks the
+  unit can connect to a listener on its allowed address; and `web-image`, which unpacks the
   container image and checks its programs, users, volume, and default user.
 - `web-push-e2e`, which runs the full push path in the build sandbox as a single user using the
   packaged `valley-web-publish`, `valley-web-receive`, `valley-web` (as built and wrapped by

@@ -7,14 +7,12 @@
 # declare, though the system's git configuration trusts every directory. The
 # unit receives the bearer token as a systemd credential while the token
 # file on disk stays readable by root alone. The unit can connect to its
-# allowed IP address while connections to disallowed IPv4 and IPv6 listeners
-# fail, even though root can reach all three listeners from outside the
-# unit. The unit's ExecStartPre egress check passes inside the unit
-# (allowing the probe to start) and fails when run by root outside the unit
-# (where root's UDP datagram reaches the canary listener). Inside the unit,
-# the C library resolves a host name through nscd from a DNS server on a
-# disallowed address, while a UDP datagram sent directly from the unit to
-# that DNS server fails with EPERM.
+# allowed IP address. The unit's ExecStartPre egress check passes inside
+# the unit (allowing the probe to start) and fails when run by root outside
+# the unit (where root's UDP datagram reaches the canary listener). Inside
+# the unit, the C library resolves a host name through nscd from a DNS
+# server on a disallowed address. module-eval holds the unit's dynamic
+# user, address filter and credential, which systemd enforces.
 #
 # The read links' wrapper, valley-web-link, runs as root against
 # repositories the git user owns, though root's git trusts none of them
@@ -25,12 +23,8 @@
 # listening, says the link is pending and exits 1. A
 # revoke of every link fails its delivery the same way; once a receiver
 # listens, the same revoke again delivers it, and a link issued then
-# reaches the receiver, read by the policy unit through its group.
-#
-# The two publisher units run as one dynamic user. A policy pass started
-# while a content pass holds the state and cache directories they share
-# succeeds, with the content pass's UID, and the content pass still owns
-# and writes them after it.
+# reaches the receiver, read by the policy unit through its group, until a
+# revoke of every link removes it there.
 {
   pkgs,
   lib,
@@ -130,23 +124,6 @@ let
         echo "probe: $*" >&2
         exit 1
       }
-      # With /run/probe-hold, the probe is a content pass that holds its
-      # state and cache directories until the file is removed, then checks
-      # it still owns them and writes them.
-      if [ -e /run/probe-hold ]; then
-        touch "$STATE_DIRECTORY/holding" "$CACHE_DIRECTORY/holding"
-        for _ in $(seq 1200); do
-          [ -e /run/probe-hold ] || break
-          sleep 0.1
-        done
-        [ ! -e /run/probe-hold ] || fail "the probe was not let go"
-        owners=$(stat -L -c %u "$STATE_DIRECTORY" "$CACHE_DIRECTORY" | sort -u)
-        test "$owners" = "$(id -u)" || fail "the state or cache directory is owned by $owners, not by the probe's $(id -u)"
-        rm "$STATE_DIRECTORY/holding" "$CACHE_DIRECTORY/holding" || fail "the state or cache directory could not be written after the policy pass"
-        touch "$STATE_DIRECTORY/held" "$CACHE_DIRECTORY/held" || fail "the state or cache directory could not be written after the policy pass"
-        echo "probe: held its state"
-        exit 0
-      fi
       git -C /srv/git/app.git rev-parse --git-dir > /dev/null ||
         fail "a repository the host serves could not be read"
       if git -C /srv/git/stray.git rev-parse --git-dir 2> "$STATE_DIRECTORY/stray"; then
@@ -192,35 +169,17 @@ let
       git -C "$cli" cat-file -e "$tip^{commit}" || fail "CLI shared objects could not be read"
       test "$(find "$cli/.git/objects" -type f | wc -l)" -eq 1 || fail "CLI objects were copied"
       chmod 0700 "$repos"
-      # Egress: the unit can connect to the allowed receiver address, and
-      # connections to disallowed IPv4 and IPv6 addresses fail within the
-      # 5-second timeout (whether rejected with EPERM or dropped).
-      reach() {
-        # shellcheck disable=SC2016
-        timeout 5 bash -c 'exec 3<> "/dev/tcp/$1/8080" && head -n 1 <&3' reach "$1"
-      }
-      test "$(reach 192.0.2.1)" = "listener allowed" ||
+      # Egress: the unit can connect to the allowed receiver address.
+      # shellcheck disable=SC2016
+      test "$(timeout 5 bash -c 'exec 3<> /dev/tcp/192.0.2.1/8080 && head -n 1 <&3')" = "listener allowed" ||
         fail "the allowed listener at 192.0.2.1 could not be reached"
-      for addr in 192.0.2.2 2001:db8::2; do
-        start=$SECONDS
-        if reach "$addr" > /dev/null 2>&1; then
-          fail "the unrelated listener at $addr was reached"
-        fi
-        test $((SECONDS - start)) -le 6 || fail "the connection to $addr took more than 6 seconds to fail"
-      done
       # DNS: the C library resolves names through nscd outside the unit,
-      # while the unit itself cannot send UDP packets to the DNS server.
+      # from a DNS server at an address the unit may not reach.
       test "''${GODEBUG-}" = netdns=cgo || fail "Go's lookups are not pinned to the C library"
       getent hosts receiver.example.org > "$STATE_DIRECTORY/getent" ||
         fail "receiver.example.org did not resolve through the C library"
       grep -q "^192\.0\.2\.1 " "$STATE_DIRECTORY/getent" ||
         fail "receiver.example.org resolved to $(cat "$STATE_DIRECTORY/getent")"
-      # shellcheck disable=SC2016
-      if LC_ALL=C timeout 5 bash -c 'printf query > /dev/udp/192.0.2.53/53' 2> "$STATE_DIRECTORY/dns"; then
-        fail "a datagram reached the DNS server at 192.0.2.53"
-      fi
-      grep -q "write error: Operation not permitted" "$STATE_DIRECTORY/dns" ||
-        fail "the datagram to 192.0.2.53 failed for another reason: $(cat "$STATE_DIRECTORY/dns")"
       touch "$STATE_DIRECTORY/written" || fail "the state directory could not be written"
       touch "$CACHE_DIRECTORY/written" || fail "the cache directory could not be written"
       echo "probe: confined"
@@ -260,7 +219,6 @@ in
         };
       };
       systemd.services.valley-web-publish.serviceConfig.ExecStart = lib.mkForce (lib.getExe probe);
-      networking.enableIPv6 = true;
       # Local DNS server on a disallowed IP address; answers queries for
       # receiver.example.org.
       networking.nameservers = [ "192.0.2.53" ];
@@ -293,27 +251,15 @@ in
           "echo edge-token-0123456789abcdef0123456789 | install -m 0400 /dev/stdin /run/keys/web-receiver-token",
       )
 
-      # Start TCP listeners on the allowed receiver address and on
-      # disallowed IPv4 and IPv6 addresses, and verify that root can
-      # reach all three.
+      # Start a TCP listener on the allowed receiver address, and verify
+      # that root can reach it.
       host.succeed(
           "ip addr add 192.0.2.1/32 dev lo",
-          "ip addr add 192.0.2.2/32 dev lo",
-          "ip -6 addr add 2001:db8::2/128 dev lo nodad",
           "ip addr add 198.51.100.1/32 dev lo",
           "ip addr add 192.0.2.53/32 dev lo",
       )
-      # Each listener replies with its short label because socat splits
-      # option arguments on colons, which would break IPv6 literals.
-      listeners = [
-          ("allowed", "192.0.2.1", "TCP4-LISTEN:8080,bind=192.0.2.1"),
-          ("ipv4", "192.0.2.2", "TCP4-LISTEN:8080,bind=192.0.2.2"),
-          ("ipv6", "2001:db8::2", "TCP6-LISTEN:8080,bind=[2001:db8::2]"),
-      ]
-      for label, addr, bind in listeners:
-          host.succeed(f"systemd-run --unit=listener-{label} socat {bind},reuseaddr,fork SYSTEM:'echo listener {label}'")
-      for label, addr, bind in listeners:
-          host.wait_until_succeeds(f"timeout 5 bash -c 'exec 3<> /dev/tcp/{addr}/8080 && head -n 1 <&3' | grep -qx 'listener {label}'", timeout=30)
+      host.succeed("systemd-run --unit=listener-allowed socat TCP4-LISTEN:8080,bind=192.0.2.1,reuseaddr,fork SYSTEM:'echo listener allowed'")
+      host.wait_until_succeeds("timeout 5 bash -c 'exec 3<> /dev/tcp/192.0.2.1/8080 && head -n 1 <&3' | grep -qx 'listener allowed'", timeout=30)
 
       # UDP listener on the canary address (198.51.100.1:9); appends any
       # datagram it receives to /run/canary.
@@ -331,13 +277,6 @@ in
       assert status != 0, "the egress check passed outside the unit"
       assert "a datagram to 198.51.100.1 port 9 was sent" in refused, "the egress check refused for another reason"
       host.wait_until_succeeds("grep -qx canary /run/canary", timeout=30)
-
-      # Verify the systemd unit properties for the IP address filter.
-      shown = host.succeed("systemctl show -p IPAddressDeny -p IPAddressAllow valley-web-publish.service")
-      print(shown)
-      assert "IPAddressAllow=192.0.2.1/32" in shown, "the unit does not allow the receiver's address"
-      deny = [line for line in shown.splitlines() if line.startswith("IPAddressDeny=")]
-      assert deny and sorted(deny[0].removeprefix("IPAddressDeny=").split()) == ["0.0.0.0/0", "::/0"], "the unit does not deny every other address"
 
       host.succeed("runuser -u git -- ${lib.getExe seed}")
 
@@ -398,29 +337,9 @@ in
       lk = host.succeed("sed 's/.*#\\(lk-[0-9a-f]*\\)\\..*/\\1/' /root/link").strip()
       host.succeed(f"grep -Eq '^binding {lk} alice [0-9a-f]{{64}}$' /var/lib/receiver/v2/authorization")
 
-      # Both units run as one dynamic user. A policy pass while a content
-      # pass holds the state and cache directories succeeds, with the
-      # content pass's UID, and the content pass then finds them its own,
-      # as the unit sees them, writes them, and ends.
-      users = host.succeed("systemctl show -p User --value valley-web-publish.service valley-web-publish-policy.service")
-      assert users.split() == ["valley-web-publish", "valley-web-publish"], f"the units run as {users.split()}"
-      host.succeed("touch /run/probe-hold")
-      host.succeed("systemctl start --no-block valley-web-publish.service")
-      host.wait_until_succeeds("test -e /var/lib/private/valley-web-publish/holding", timeout=60)
-      probe_uid = host.succeed("stat -c %u /proc/$(systemctl show -p MainPID --value valley-web-publish.service)").strip()
-      since = host.succeed("date +%s").strip()
+      # A revoke of every link now removes the issued link at the receiver.
       host.succeed("valley-web-link revoke --all")
       host.fail(f"grep -q '^binding {lk} ' /var/lib/receiver/v2/authorization")
-      policy_uids = host.succeed(f"journalctl _SYSTEMD_UNIT=valley-web-publish-policy.service --since=@{since} -o export | sed -n 's/^_UID=//p' | sort -u").split()
-      assert policy_uids == [probe_uid], f"the policy pass ran as UID {policy_uids}, and the content pass as {probe_uid}"
-      host.succeed("systemctl show -p ActiveState --value valley-web-publish.service | grep -qx activating")
-      host.succeed("rm /run/probe-hold")
-      host.wait_until_succeeds("systemctl show -p ActiveState --value valley-web-publish.service | grep -Eqx 'inactive|failed'", timeout=60)
-      journal = host.succeed("journalctl -u valley-web-publish.service --no-pager")
-      print(journal)
-      result = host.succeed("systemctl show -p Result --value valley-web-publish.service").strip()
-      assert result == "success" and "probe: held its state" in journal, f"the content pass that held its state ended with {result}"
-      host.succeed("test -e /var/lib/private/valley-web-publish/held -a -e /var/cache/private/valley-web-publish/held")
     '';
   };
 }

@@ -28,6 +28,7 @@ project: {
 		"protect-e2e",
 		"knots-e2e",
 		"note-unit",
+		"exactjson-unit",
 		"change-unit",
 		"knot-unit",
 		"knot-agree",
@@ -220,6 +221,21 @@ project: {
 		requires: "attest-e2e":         true
 	}
 
+	// The strict JSON reader. The hook reads its push policy with it, the
+	// identity compiler its registry, read access a policy/read, and the
+	// web export, publisher, server and receiver what they are sent, so a
+	// change to it requires their unit tests as well as its own.
+	classes: exactjson: {
+		paths: "exactjson/**":          true
+		requires: "exactjson-unit":     true
+		requires: "valleyhook-unit":    true
+		requires: "identity-unit":      true
+		requires: "readaccess-unit":    true
+		requires: "web-unit":           true
+		requires: "web-server-unit":    true
+		requires: "web-receiver-unit":  true
+	}
+
 	// The identity registry compiler, and the registries it is driven over.
 	classes: identity: {
 		paths: "identity/**":          true
@@ -256,6 +272,22 @@ project: {
 		paths: "status/workertelemetry.go": true
 		paths: "bin/valley":                true
 		requires: "telemetry-e2e":          true
+	}
+
+	// The check worker's own code: its pass and its records in status/, the
+	// wake directory it claims, and attest's run, which runs each check a
+	// pass builds, signs and stores the evidence, and reports its progress.
+	// worker-e2e runs those passes on a NixOS machine. The rest of status/
+	// and attest/ serves other commands too, and their classes require
+	// their own checks.
+	classes: worker: {
+		paths: "status/worker.go":          true
+		paths: "status/workertelemetry.go": true
+		paths: "status/wake.go":            true
+		paths: "attest/run.go":             true
+		paths: "attest/check.go":           true
+		paths: "attest/progress.go":        true
+		requires: "worker-e2e":             true
 	}
 
 	// The integrator, the end-to-end scenarios under integrator/e2e/, and the

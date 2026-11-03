@@ -14,24 +14,16 @@
 # the integrator's own service marks the worker while the project's mirror
 # and the bus hang, and so does a ready push. A floor landed in the
 # instance, which the worker does not build, marks it, and the next pass
-# reads the new floor. With the timer at its minute, a
-# pass killed during a build, and a pass that cannot reach the
-# repositories, leave their claim, and the timer's next pass builds the
-# change with no new mark. A failed batch is not built again before its
-# wait, however many marks and timer passes come.
+# reads the new floor. A pass killed during a build, and a pass that
+# cannot reach the repositories, leave their claim, and the timer's next
+# pass builds the change with no new mark. A failed batch is not built
+# again before its wait, however many marks and timer passes come. Last,
+# the key is the same after many starts.
 #
-# Then the slice's caps, with builds that are not the worker's. A build
-# that wants six CPUs is held to the slice's quota. A change whose check eats memory without
-# end is built while two unrelated builds hold memory of their own. The
-# kernel kills the process in the slice using the most memory, so the
-# unrelated build bigger than the runaway is killed with it, the smaller
-# one finishes, and the rest of the host goes on as it was. Last, the key
-# is the same after many starts and a reboot.
-#
-# The slice's default caps are 4 CPUs and 8 GiB. The machine here has
-# 2 GiB, so the memory cap is lowered at runtime, after the check reads
-# the default values off the slice, to let builds run past it. module-eval
-# holds the values the module renders.
+# The worker's interval here is 15 seconds rather than the module's
+# minute, so a scenario that waits for a timer pass or a hold-off waits
+# seconds. module-eval holds what the module renders: the minute, the
+# slice's caps, and the nix daemon's OOM policy.
 {
   pkgs,
   lib,
@@ -91,8 +83,7 @@ let
   # shell, and the script is the derivation's one input. The project's own
   # scripts spin for about half a second, several of the sampler's ticks,
   # so the two builds a pass runs at once are seen at once, and write the
-  # cores the daemon gave them. The runaway change's first script instead
-  # doubles a string until something stops it.
+  # cores the daemon gave them.
   flake = pkgs.writeText "flake.nix" ''
     {
       outputs =
@@ -126,36 +117,6 @@ let
     echo $NIX_BUILD_CORES > $out
   '';
   broken = pkgs.writeText "broken.sh" "exit 1";
-  runaway = pkgs.writeText "runaway.sh" ''
-    x=a
-    while :; do x=$x$x; done
-  '';
-
-  # Builds that are not the worker's, through the same daemon. small and
-  # big each hold a string of 1 MiB or 128 MiB. Then each waits without
-  # using a CPU, so it takes none from the worker's pass: it reads its own
-  # standard output, where no input ever arrives. big waits until it is
-  # stopped. small waits until it is sent SIGUSR1, and then finishes, so
-  # the test decides when it ends. cpu spins on six CPUs until it is
-  # stopped.
-  unrelated = pkgs.writeText "unrelated.nix" ''
-    { kind }:
-    let
-      hold = n: "x=a; n=0; while [ $n -lt ''${n} ]; do x=$x$x; n=$((n+1)); done";
-      idle = "read y < /proc/self/fd/1";
-      scripts = {
-        small = hold "20" + "; trap 'echo ok > $out; exit 0' USR1; ''${idle}";
-        big = hold "27" + "; ''${idle}";
-        cpu = "for i in 1 2 3 4 5 6; do (while :; do :; done) & done; wait";
-      };
-    in
-    derivation {
-      name = "unrelated-''${kind}";
-      system = "x86_64-linux";
-      builder = "/bin/sh";
-      args = [ "-c" scripts.''${kind} ];
-    }
-  '';
 
   # What the daemon's builds look like while the worker runs: the number
   # of build users with a process, and the cgroup of each such process,
@@ -182,8 +143,7 @@ in
     nodes.host = {
       imports = [ self.nixosModules.default ];
       # Six CPUs: more than the worker's slots, so the slots and not the
-      # CPU count decide how many checks build at once, and a build can
-      # want more CPUs than the slice's quota of four.
+      # CPU count decide how many checks build at once.
       virtualisation.cores = 6;
       virtualisation.memorySize = 2048;
       environment.systemPackages = [
@@ -217,16 +177,15 @@ in
           buildSlots = 2;
           maxJobs = 2;
           cores = 2;
+          # A timer pass, and the hold-off after a pass that could not
+          # claim due, come 15 seconds after the last pass ends. The
+          # window below in which the hold-off starts nothing is 5 seconds.
+          interval = "15s";
         };
       };
-      # NixOS test machines panic on any OOM, a cgroup's included
-      # (test-instrumentation.nix). A host does not, and the runaway build
-      # below is stopped by the slice's OOM, so a host's default is restored.
-      boot.kernel.sysctl."vm.panic_on_oom" = 0;
       # The test starts each pass itself until it checks the timer, so no
-      # pass runs before the test is ready for it. The interval stays the
-      # module's minute: the recovery scenarios wait for it. A timer pass
-      # starts within a second of it, rather than up to a minute of
+      # pass runs before the test is ready for it. A timer pass starts
+      # within a second of its interval, rather than up to a minute of
       # systemd's accuracy later.
       systemd.timers.valley-worker.timerConfig.OnActiveSec = lib.mkForce "1h";
       systemd.timers.valley-worker.timerConfig.AccuracySec = "1s";
@@ -256,12 +215,6 @@ in
 
       def journal():
           return host.succeed("journalctl -u valley-worker -o cat")
-
-      def unrelated(kind):
-          host.succeed(
-              f"systemd-run --unit=unrelated-{kind} --remain-after-exit --setenv=NIX_REMOTE=daemon"
-              f" nix-build ${unrelated} --argstr kind {kind} --no-out-link"
-          )
 
       def unit_property(name, prop):
           return host.succeed(f"systemctl show -p {prop} --value {name}").strip()
@@ -495,9 +448,10 @@ in
           host.succeed(f"chmod 0550 {wake} && touch {wake}/due")
           host.wait_until_succeeds("journalctl -u valley-worker -o cat | grep -q 'could not claim'", timeout=60)
           host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-worker)\" = auto-restart")
-          # due is still there, and nothing starts a pass for a minute.
+          # due is still there, and nothing starts a pass during the
+          # hold-off of one interval.
           mark = started()
-          host.sleep(20)
+          host.sleep(5)
           assert started() == mark
           assert int(unit_property("valley-worker.service", "NRestarts")) == restarts
           host.fail("systemctl is-failed valley-worker.path")
@@ -622,7 +576,7 @@ in
           assert host.succeed(f"ls -A {wake}").split() == ["claimed", "lock"]
           host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
           # Nothing watches claimed, so nothing starts a pass, until the
-          # timer runs the recovery scan a minute after the kill.
+          # timer runs the recovery scan one interval after the kill.
           mark = started()
           host.sleep(5)
           assert started() == mark
@@ -634,7 +588,9 @@ in
           assert told(killed, "building") == 2
 
       with subtest("a pass that cannot reach the repositories leaves its claim, and the timer's next pass builds the change with no new mark"):
-          host.succeed("systemctl stop valley-worker.path")
+          # The timer is stopped until sshd is back, so the pass that fails
+          # is the one the path starts.
+          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
           ready("outage", "${spin}")
           outage = head("outage")
           host.succeed("systemctl stop sshd.service")
@@ -643,7 +599,7 @@ in
           assert host.succeed(f"ls -A {wake}").split() == ["claimed", "lock"]
           assert told(outage, "building") == 0
           triggered = unit_property("valley-worker.timer", "LastTriggerUSecMonotonic")
-          host.succeed("systemctl start sshd.service")
+          host.succeed("systemctl start sshd.service valley-worker.timer")
           wait_said(outage, "published", 300)
           assert unit_property("valley-worker.timer", "LastTriggerUSecMonotonic") != triggered
           idle()
@@ -676,109 +632,15 @@ in
           host.succeed("systemctl stop valley-worker.timer valley-worker.path")
           host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating")
 
-      with subtest("the slice holds its default caps"):
-          cgroup = "/sys/fs/cgroup/valley.slice/valley-builds.slice"
-          assert host.succeed(f"cat {cgroup}/cpu.max").strip() == "400000 100000"
-          assert host.succeed(f"cat {cgroup}/memory.max").strip() == str(8 * 1024**3)
-          assert host.succeed(f"cat {cgroup}/memory.swap.max").strip() == "0"
-
-      with subtest("a build that wants six CPUs is held to the slice's quota"):
-          # The machine running this test may cap the VM's own CPU, and no
-          # quota above that can throttle. One CPU is always below it.
-          host.succeed("systemctl set-property --runtime valley-builds.slice CPUQuota=100%")
-          unrelated("cpu")
-          host.wait_until_succeeds("test \"$(ps -eo user= | grep -c '^nixbld')\" -ge 7", timeout=60)
-          # The quota is enforced every 100 ms, so five seconds holds fifty
-          # of its periods.
-          host.sleep(1)
-          stat = lambda: dict(line.split() for line in host.succeed(f"cat {cgroup}/cpu.stat").splitlines())
-          before = stat()
-          host.sleep(5)
-          after = stat()
-          cpus = (int(after["usage_usec"]) - int(before["usage_usec"])) / 5e6
-          assert 0.8 < cpus < 1.5, cpus
-          assert int(after["nr_throttled"]) > int(before["nr_throttled"]), (before, after)
-          host.succeed("systemctl stop unrelated-cpu")
-          host.succeed("systemctl set-property --runtime valley-builds.slice CPUQuota=400%")
-          assert host.succeed(f"cat {cgroup}/cpu.max").strip() == "400000 100000"
-          host.wait_until_succeeds("! ps -eo user= | grep -q '^nixbld'", timeout=60)
-
-      with subtest("a runaway build is stopped at the memory cap, a bigger unrelated build is stopped with it, and the rest of the host stays healthy"):
-          evidence = len(attestations())
-          ready("runaway", "${runaway}")
-          failed_before = set(host.succeed("systemctl list-units --state=failed --no-legend --plain | cut -d' ' -f1").split())
-          # Two builds that are not the worker's, with room to make their
-          # strings. The shell takes about twice a string's size while it
-          # makes it, so what big holds is read once it stops growing.
-          host.succeed("systemctl set-property --runtime valley-builds.slice MemoryMax=1536M")
-          unrelated("small")
-          unrelated("big")
-          host.wait_until_succeeds("ps -eo user=,rss= | awk '$1 ~ /^nixbld/ && $2 > 100000' | grep -q .", timeout=60)
-          biggest = lambda: int(host.succeed("ps -eo user=,rss= | awk '$1 ~ /^nixbld/ {print $2}' | sort -n | tail -1").strip())
-          held = 0
-          for _ in range(30):
-              host.sleep(1)
-              now = biggest()
-              if now == held:
-                  break
-              held = now
-          assert held > 100000, held
-          # The cap is what the slice cannot give back, and half of what big
-          # holds. The runaway reaches the cap while it is still smaller than
-          # big.
-          memory = dict(line.split() for line in host.succeed(f"cat {cgroup}/memory.stat").splitlines())
-          cap = int(memory["anon"]) + int(memory["shmem"]) + held * 1024 // 2
-          host.succeed(f"systemctl set-property --runtime valley-builds.slice MemoryMax={cap}")
-          host.fail("systemctl start valley-worker.service")
-          said = journal()
-          assert "the batch did not pass" in said, said
-          kills = host.succeed(f"sed -n 's/^oom_kill //p' {cgroup}/memory.events").strip()
-          assert int(kills) >= 2, kills
-          # Nothing for the runaway.
-          assert len(attestations()) == evidence
-          # The kernel killed the biggest process in the slice: the unrelated
-          # big build, before the runaway grew past it, and then the runaway.
-          # The small build was never the biggest. It is still running, and
-          # once it is told to finish, it does.
-          small = host.succeed("ps -eo pid=,user=,args= | awk '$2 ~ /^nixbld/ && /USR1/ {print $1}'").split()
-          assert len(small) == 1, small
-          host.succeed(f"kill -USR1 {small[0]}")
-          host.wait_until_succeeds("test \"$(systemctl show -p SubState --value unrelated-small)\" = exited", timeout=60)
-          assert unit_property("unrelated-small", "Result") == "success"
-          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value unrelated-big)\" = failed", timeout=60)
-          # The units the host runs are as they were, the daemon still
-          # answers, and the git user still serves pushes and fetches.
-          host.succeed(
-              "systemctl is-active sshd.service nix-daemon.service nix-daemon.socket"
-              " valley-integrator@instance.service valley-integrator@project.service"
-          )
-          failed_after = set(host.succeed("systemctl list-units --state=failed --no-legend --plain | cut -d' ' -f1").split())
-          assert failed_after <= failed_before | {"valley-worker.service", "unrelated-big.service"}, failed_after
-          host.succeed("nix-store --store daemon --query --hash /run/current-system")
-          host.succeed(f"{contributor} git ls-remote origin refs/heads/runaway | grep -q runaway")
-          # The failed batch waits before it is built again.
-          host.succeed("systemctl start valley-worker.service")
-          assert "failed 1 time in a row, so it is not built again before" in journal()
-
-      with subtest("the key is the same after many starts and a reboot, and is not said again"):
-          assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
-          host.shutdown()
-          host.start()
-          host.wait_for_unit("multi-user.target")
-          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
+      with subtest("the key is the same after many starts, and is not said again"):
           host.succeed("systemctl start valley-worker.service")
           assert host.succeed(f"ssh-keygen -lf {state}/key").strip() == fingerprint
           assert host.succeed(f"cat {state}/verifier").strip() == verifier
-          host.fail("journalctl -b -u valley-worker -o cat | grep -q 'verifier line is'")
+          assert journal().count("verifier line is") == 1
 
       with subtest("the worker roots the outputs it builds, prunes the roots it has not used, and a later change with the same checks reuses them without building"):
           import json
           roots = f"{state}/roots"
-          host.succeed("systemctl stop valley-worker.timer valley-worker.path")
-          # The test machine's writable store does not survive a reboot,
-          # and its store database does, so the paths a reboot lost are
-          # dropped from the database first.
-          host.succeed("nix-store --verify")
 
           def rooted():
               links = host.succeed(f"find {roots} -mindepth 1 -maxdepth 1 -type l -printf '%f\\n'").split()

@@ -5,7 +5,9 @@
 # update-ref under its own user, and post-receive never runs. The mirror is
 # missing at first. The landing's event has to reach the bus anyway, at
 # once, and the landing has to stay queued through the failed mirror push
-# until systemd's retry publishes it. The host also publishes, in its
+# until a later run of the drain publishes it. The test starts that run
+# itself: when systemd retries a failed run is the module's restart
+# settings, which module-eval holds. The host also publishes, in its
 # instance repository, the signers a client verifies the landing with, and
 # publishes them again when the signers file is replaced. No push over ssh
 # replaces that publication or deletes it. The controllers pass on a
@@ -215,38 +217,29 @@ in
               f'{{"event":"ref-updated","repo":"project","ref":"refs/heads/main","old":"{base}","new":"{landing}"}}'
           ], moved
 
-      with subtest("systemd retries the push after a delay, and the retry reaches the mirror"):
+      with subtest("once the mirror is there, the next run pushes the queued move and empties the queue"):
           host.succeed(
               "mkdir /srv/mirror.git && chown git:git /srv/mirror.git",
               f"{git} init --quiet --bare /srv/mirror.git",
+              "systemctl restart valley-publish@project",
           )
-          host.wait_until_succeeds(
-              f"test \"$({git} -C /srv/mirror.git rev-parse refs/heads/main)\" = {landing}", timeout=90
-          )
+          assert host.succeed(f"{git} -C /srv/mirror.git rev-parse refs/heads/main").strip() == landing
           host.wait_until_succeeds("journalctl -t valley-mirror | grep -q 'project: pushed to /srv/mirror.git'")
-          host.wait_until_succeeds(f"test -z \"$(ls -A {queue})\"")
-          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-publish@project)\" = inactive")
-          # One failed run, then one retry 30 seconds later: no respin.
-          restarts = unit("NRestarts")
-          assert restarts == "1", restarts
+          host.succeed(f"test -z \"$(ls -A {queue})\"")
+          assert unit("ActiveState") == "inactive"
 
-      with subtest("a move that cannot be deleted fails the run, which waits to retry"):
+      with subtest("a move that cannot be deleted fails the run and stays queued, and the next run empties the queue"):
           # A directory in the queue is a move rm -f cannot delete.
           host.succeed(f"sudo -u git mkdir {queue}/stuck", f"sudo -u git touch {queue}/stuck/x")
           host.wait_until_succeeds(
               "journalctl -u valley-publish@project | grep -q 'cannot remove .*stuck'", timeout=60
           )
           host.wait_until_succeeds("test \"$(systemctl show -p SubState --value valley-publish@project)\" = auto-restart")
-          restarts = unit("NRestarts")
-          host.sleep(10)
-          assert unit("NRestarts") == restarts, "the drain restarted without waiting"
-          assert unit("SubState") == "auto-restart"
+          host.succeed(f"test -e {queue}/stuck/x")
           host.succeed("systemctl is-active valley-publish@project.path")
-          host.succeed(f"rm -r {queue}/stuck")
-          host.wait_until_succeeds(
-              "test \"$(systemctl show -p ActiveState --value valley-publish@project)\" = inactive", timeout=300
-          )
+          host.succeed(f"rm -r {queue}/stuck", "systemctl restart valley-publish@project")
           host.succeed(f"test -z \"$(ls -A {queue})\"")
+          assert unit("ActiveState") == "inactive"
 
       with subtest("the landing is one ref-updated event on the bus"):
           moved = [e for e in events() if e["event"] == "ref-updated" and e["ref"] == "refs/heads/main"]

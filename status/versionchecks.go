@@ -83,7 +83,10 @@ type jsonCheckState struct {
 	Cached     *bool  `json:"cached,omitempty"`
 	BaselineMS *int64 `json:"baseline_ms,omitempty"`
 	New        bool   `json:"new,omitempty"`
-	Grown      bool   `json:"grown,omitempty"`
+	// OtherCapacity says the check is new because its builds so far ran on
+	// other capacity.
+	OtherCapacity bool `json:"other_capacity,omitempty"`
+	Grown         bool `json:"grown,omitempty"`
 }
 
 // addChecks gives the active version of each pending change in view its

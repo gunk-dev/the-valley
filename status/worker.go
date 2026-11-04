@@ -136,7 +136,8 @@ package main
 // it, and keeps its recent attempts, its running batches and the failures
 // waiting out their backoff with what each was about
 // (workertelemetry.go). It hands attest the same stream for each batch's
-// progress.
+// progress, and the capacity it builds on (capacity.go), which each check
+// build's records carry.
 //
 // Given --keep-outputs, a pass keeps the outputs of the checks it builds
 // alive against nix's garbage collection, so a later batch whose checks
@@ -215,6 +216,8 @@ type worker struct {
 	out, errs io.Writer // the files attest writes to: the pass's own stdout and stderr
 	troubles  int       // things that went wrong that did not stop the pass
 	waits     int       // of the troubles, the failures whose wait was recorded
+
+	capacity string // what the pass builds on (capacity.go), or "" without telemetry
 
 	scans   int                        // the scans so far
 	seen    map[string]int             // the scan that first saw each version ready, by job.version
@@ -448,6 +451,9 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	w.read, w.launch = w.project, w.attest
 	w.recheck = func(j *job) (bool, error) { return w.assess(j, nil) }
 	w.tel = openWorkerTelemetry(telemetryDir)
+	if w.tel != nil {
+		w.capacity = measureCapacity(slots, batches)
+	}
 	// The loop returns only once no batch runs, so nothing changes the
 	// state the telemetry finishes with.
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
@@ -1065,7 +1071,7 @@ func (w *worker) attest(b *batch) {
 	if w.tel != nil {
 		stream = w.tel.stream()
 		args = append(args, "--telemetry", stream, "--telemetry-run", b.run, "--project", j.r.name,
-			"--change", j.c.ChangeID, "--change-version", strconv.Itoa(j.v.N))
+			"--change", j.c.ChangeID, "--change-version", strconv.Itoa(j.v.N), "--capacity", w.capacity)
 	}
 	// attest writes to the pass's own output files, not through a pipe the
 	// pass reads: an attest that outlives a killed pass must still be able

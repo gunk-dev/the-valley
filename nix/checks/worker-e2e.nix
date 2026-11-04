@@ -377,6 +377,16 @@ in
           assert f"published {refs[0]}" in said, said
           for check in ["first", "second"]:
               host.succeed(f"{git} -C /srv/git/project.git cat-file -e {refs[0]}:{check}/statement.note")
+          # Each check's result records the capacity the pass built on: the
+          # slots, the default two batches, nix's max-jobs and cores, and
+          # the machine's CPUs.
+          import json
+          results = [
+              r for r in map(json.loads, host.succeed(f"cat {state}/telemetry/stream/seg-*.jsonl").splitlines())
+              if r["type"] == "check.result"
+          ]
+          assert sorted(r["check"] for r in results) == ["first", "second"], results
+          assert all(r["data"]["capacity"] == "slots=2 batches=2 max_jobs=2 cores=2 cpus=6" for r in results), results
           # Both checks at once, each in the daemon's cgroup, inside the
           # slice, each told it may use the 2 cores the host configures.
           builders = [int(n) for n in host.succeed("cat /tmp/builders").split()]

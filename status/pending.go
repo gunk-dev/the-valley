@@ -57,7 +57,8 @@
 // changes --checks lists them (versionchecks.go), naming those that
 // failed: "checks: 18 passed, 1 failed (valley-request)". When the host's
 // worker telemetry holds the version's builds, the line goes on with what
-// they cost and the checks that grew against their recent cost
+// they cost and the checks that grew against their recent cost on the
+// same capacity
 // (checkcost.go): "checks: 21 passed in 9m10s (eval 24s); worker-e2e
 // 431s, +68s against its recent 363s". --json then carries the same
 // checks objects.

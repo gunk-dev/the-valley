@@ -785,15 +785,16 @@ chmod +x "$tel/bin/ssh"
 export TELEMETRY_DIR="$tel" PATH="$tel/bin:$PATH"
 git config valley.telemetry.remote ssh://git@valley-host/open.git
 
-# build <seq> <project> <change> <version> <tree> <result> <build ms> <eval ms> <log bytes> [<cached>]:
+# build <seq> <project> <change> <version> <tree> <result> <build ms> <eval ms> <log bytes> [<cached> [<capacity>]]:
 # a check.result record of prose-format, as attest stores one.
 build() {
   jq -n -c --argjson seq "$1" --arg project "$2" --arg change "$3" --argjson version "$4" --arg tree "$5" \
-    --arg result "$6" --argjson build "$7" --argjson eval "$8" --argjson log "$9" --arg cached "${10:-}" '
+    --arg result "$6" --argjson build "$7" --argjson eval "$8" --argjson log "$9" --arg cached "${10:-}" --arg capacity "${11:-}" '
     {seq: $seq, type: "check.result", time: (1762128000 + $seq | todate), run: "r\($seq)", project: $project,
       change: $change, version: $version, tree: $tree, check: "prose-format",
       data: ({result: $result, build_ms: $build, eval_ms: $eval, slot_wait_ms: 0, log_bytes: $log}
-        + (if $cached == "" then {} else {cached: ($cached == "true")} end))}'
+        + (if $cached == "" then {} else {cached: ($cached == "true")} end)
+        + (if $capacity == "" then {} else {capacity: $capacity} end))}'
 }
 # filler <from> <to>: the records of passes that built nothing.
 filler() {
@@ -858,6 +859,18 @@ holds "$(pf "$K1") | .build_ms == 100000 and .new == true and (has(\"baseline_ms
 ok valley pending --checks
 after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
   '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new$'
+
+# Builds on another capacity are no baseline: the check of a resized host
+# has no comparable history, and has not grown.
+{
+  build 1 open "$O1" 1 "" passed 10000 20000 10 false "slots=1 cpus=4"
+  build 2 open "$K1" 1 "$t1" passed 100000 24000 20 false "slots=2 cpus=8"
+} > "$tel/worker.jsonl"
+ok valley changes --json --checks
+holds "$(pf "$K1") | .new == true and .other_capacity == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
+ok valley pending --checks
+after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
+  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new on this capacity$'
 
 # A host that refuses leaves every build time out, says why once, and
 # lists the check states all the same.

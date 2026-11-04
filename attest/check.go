@@ -418,6 +418,9 @@ func buildChecks(runs []ranCheck, drvs []string, slots int, build func(drv strin
 					runs[i].err = pureOutcome(b, &runs[i].out)
 					if obs != nil {
 						d := buildData(b, wait, began, ended, obs.logOf(b.drv))
+						if obs.capacity != "" {
+							d["capacity"] = obs.capacity
+						}
 						obs.emit("check.build-end", runs[i].out.spec.name, d)
 						d["result"] = resultOf(runs[i])
 						d["eval_ms"] = runs[i].eval.Milliseconds()

@@ -25,11 +25,17 @@ package main
 //   - build_ms is the newest build of the check for this version, and
 //     cached says whether its output was already in the host's store;
 //   - baseline_ms is the median build time of the check's newest
-//     baselineBuilds uncached, passing builds in the same project, the
+//     baselineBuilds uncached, passing builds in the same project and on
+//     the same capacity as the version's own build, the
 //     builds of every version of this change left out;
-//   - new says no such build is among the records read;
+//   - new says no such build is among the records read, and
+//     other_capacity says there are builds, but only on other capacity:
+//     the host was resized, so the check starts afresh and is not grown;
 //   - grown says the build took longer than its baseline by more than
 //     both grownShare of it and grownBy (grew).
+//
+// A build's capacity is the line the worker gave attest (capacity.go).
+// Records with none compare only with each other.
 //
 // A record from an attest that does not say whether the output was
 // cached counts as cached when its build wrote no log: nix writes the
@@ -100,6 +106,7 @@ type checkBuild struct {
 	result          string
 	buildMS, evalMS int64
 	cached          bool
+	capacity        string
 }
 
 // costs reads the worker's telemetry of each host a listing serves, once
@@ -312,6 +319,7 @@ func parsePage(r io.Reader) (page workerPage, refused string, err error) {
 			if eval, ok := m.Data["eval_ms"].(float64); ok {
 				b.evalMS = int64(eval)
 			}
+			b.capacity, _ = m.Data["capacity"].(string)
 			if cached, ok := m.Data["cached"].(bool); ok {
 				b.cached = cached
 			} else {
@@ -341,19 +349,26 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 			continue
 		}
 		var own *checkBuild
+		for j := range builds {
+			b := &builds[j]
+			if b.project == project && b.check == s.Name && b.change == changeID && b.version == n && (b.tree == "" || b.tree == out.Tree) {
+				own = b
+				break
+			}
+		}
 		var recent []int64
+		other := false
 		for j := range builds {
 			b := &builds[j]
 			if b.project != project || b.check != s.Name {
 				continue
 			}
-			if b.change == changeID {
-				if own == nil && b.version == n && (b.tree == "" || b.tree == out.Tree) {
-					own = b
-				}
+			if b.change == changeID || b.cached || b.result != checkPassed {
 				continue
 			}
-			if !b.cached && b.result == checkPassed && len(recent) < baselineBuilds {
+			if own != nil && b.capacity != own.capacity {
+				other = true
+			} else if len(recent) < baselineBuilds {
 				recent = append(recent, b.buildMS)
 			}
 		}
@@ -365,7 +380,7 @@ func addCosts(out *jsonVersionChecks, required []jsonRequired, project, changeID
 			evals[own.run] = max(evals[own.run], own.evalMS)
 		}
 		if len(recent) == 0 {
-			s.New = true
+			s.New, s.OtherCapacity = true, other
 			continue
 		}
 		base := median(recent)
@@ -408,7 +423,11 @@ func costLine(c *jsonVersionChecks) string {
 		line += fmt.Sprintf("; %s %s, +%s against its recent %s", q.Name, seconds(*q.BuildMS), seconds(*q.BuildMS-*q.BaselineMS), seconds(*q.BaselineMS))
 	}
 	for _, q := range fresh {
-		line += fmt.Sprintf("; %s %s, new", q.Name, seconds(*q.BuildMS))
+		note := "new"
+		if q.OtherCapacity {
+			note = "new on this capacity"
+		}
+		line += fmt.Sprintf("; %s %s, %s", q.Name, seconds(*q.BuildMS), note)
 	}
 	return line
 }

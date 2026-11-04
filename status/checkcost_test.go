@@ -106,3 +106,30 @@ func TestAddCosts(t *testing.T) {
 		t.Errorf("checksLine:\n got %s\nwant %s", got, want)
 	}
 }
+
+// A build is compared only with builds on its own capacity. A check whose
+// builds so far ran on another is new, and is not grown.
+func TestAddCostsCapacity(t *testing.T) {
+	builds := []checkBuild{ // newest first
+		{run: "r", change: "me", version: 1, check: "same", buildMS: 200_000, capacity: "big"},
+		{run: "r", change: "me", version: 1, check: "resized", buildMS: 200_000, capacity: "big"},
+		{change: "o1", check: "same", buildMS: 100_000, capacity: "big"},
+		{change: "o1", check: "resized", buildMS: 10_000, capacity: "small"},
+	}
+	var states []jsonCheckState
+	var required []jsonRequired
+	for _, name := range []string{"same", "resized"} {
+		builds[len(states)].project, builds[len(states)+2].project = "app", "app"
+		builds[len(states)].result, builds[len(states)+2].result = checkPassed, checkPassed
+		states = append(states, jsonCheckState{Name: name, State: checkPassed})
+		required = append(required, jsonRequired{Name: name, Runner: "nix"})
+	}
+	out := &jsonVersionChecks{State: checkPassed, Required: states}
+	addCosts(out, required, "app", "me", 1, builds)
+	if same := out.Required[0]; !same.Grown || same.New || *same.BaselineMS != 100_000 {
+		t.Errorf("same: %+v", same)
+	}
+	if resized := out.Required[1]; !resized.New || !resized.OtherCapacity || resized.Grown || resized.BaselineMS != nil {
+		t.Errorf("resized: %+v", resized)
+	}
+}

@@ -2359,9 +2359,12 @@ a change makes its project's checks slower, before it is approved.
   - `cached` (`boolean`): `true` when that build found the check's outputs already in the host's
     store, so it built nothing.
   - `baseline_ms` (`integer`): The check's baseline: the median `build_ms` of its newest 20 uncached
-    builds that passed, in the same project. Builds of every version of this change are left out.
-    When fewer than 20 are found, the baseline is the median of those.
+    builds that passed, in the same project and on the same capacity as this version's build. Builds
+    of every version of this change are left out. When fewer than 20 are found, the baseline is the
+    median of those.
   - `new` (`true`, otherwise omitted): No such build of the check was found, so it has no baseline.
+  - `other_capacity` (`true`, otherwise omitted): With `new`: builds of the check exist, but only on
+    other capacity, so the host was resized and the check starts afresh. It is not `grown`.
   - `grown` (`true`, otherwise omitted): This version's uncached build took longer than the baseline
     by more than both 20% of it and 30 seconds. Both thresholds are `grownShare` and `grownBy` in
     `status/checkcost.go`.
@@ -2371,7 +2374,8 @@ a change makes its project's checks slower, before it is approved.
   and tree. The listing reads the `worker` source as `valley telemetry read` does, over `ssh` to the
   checkout's telemetry remote, once for each host it lists. It reads the newest 1000 records, then
   older pages from a cursor, up to the newest 5000 records. A record whose producer did not record
-  `cached` counts as cached when its build wrote no log, since building nothing writes none.
+  `cached` counts as cached when its build wrote no log, since building nothing writes none. A
+  record with no `capacity` is compared only with other records with none.
 - **Load:** Build times vary with the host's load. Batches build side by side and share the host's
   CPUs and memory, so the same check can take longer while other batches run. The thresholds of
   `grown` keep that noise from flagging every check.
@@ -2567,11 +2571,13 @@ A check's records come as its work happens, not in the order the checks were giv
 `check.result` is stored while a slow one still builds. `slot_wait_ms` is how long a build waited
 for a build slot, `build_ms` how long its `nix build` ran, `eval_ms` the shared evaluation plus the
 check's own, and `check_ms` all three with the store probe. `cached` is `true` when the build
-neither built nor fetched anything, because the check's outputs were already in the store. A run
-given `--eval-lock` waits for that lock before it evaluates. `eval.start` comes once the lock is
-held, and `eval.end` gives the evaluation's own time as `eval_ms` and the wait apart as
-`eval_wait_ms`; no `eval_ms` counts the wait. Checks build side by side, so their `check_ms` do not
-add up to a run's wall time.
+neither built nor fetched anything, because the check's outputs were already in the store.
+`capacity` is what the worker built on, as it gave it to attest (`--capacity`):
+`slots=2 batches=2 max_jobs=2 cores=2 cpus=6`, which is the worker's `--slots` (or one per CPU), its
+`--batches`, nix's `max-jobs` and `cores`, and the CPU count. A run given `--eval-lock` waits for
+that lock before it evaluates. `eval.start` comes once the lock is held, and `eval.end` gives the
+evaluation's own time as `eval_ms` and the wait apart as `eval_wait_ms`; no `eval_ms` counts the
+wait. Checks build side by side, so their `check_ms` do not add up to a run's wall time.
 
 A `decision` record carries the timing information of the integrator's timing line
 ([architecture](./architecture.md#the-integrator)) in its `data`: `request`, `target`, `tip`,

@@ -228,7 +228,7 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-
                                   goes on with what the checks cost the
                                   host's check worker to build, and each
                                   check that grew against its recent
-                                  builds or is new. with --json, the
+                                  builds on the same capacity or is new. with --json, the
                                   same checks objects
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the

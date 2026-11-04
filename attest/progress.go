@@ -36,10 +36,11 @@ import (
 
 // observer stores a run's progress. A nil observer stores nothing.
 type observer struct {
-	tel   *telemetry.Emitter
-	mu    sync.Mutex
-	names map[string]string // a derivation's log is named for the first check that builds it
-	logs  map[string]logged
+	tel      *telemetry.Emitter
+	capacity string // what the run builds on, as given by --capacity
+	mu       sync.Mutex
+	names    map[string]string // a derivation's log is named for the first check that builds it
+	logs     map[string]logged
 }
 
 type logged struct {

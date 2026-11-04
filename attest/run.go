@@ -41,6 +41,7 @@ func cmdRun(args []string) (err error) {
 	telemetryDir := fs.String("telemetry", "", "a telemetry stream to record the run's progress in")
 	telemetryRun := fs.String("telemetry-run", "", "the run ID the progress records name")
 	project := fs.String("project", "", "the project the progress records name")
+	capacity := fs.String("capacity", "", "the capacity the builds' progress records name")
 	slots := fs.Int("slots", defaultSlots, "how many nix builds run at once")
 	gcRoots := fs.String("gc-roots", "", "a directory to root every built output in")
 	evalLockFlag := fs.String("eval-lock", "", "a lock file the flake checks' evaluation holds")
@@ -120,6 +121,9 @@ func cmdRun(args []string) (err error) {
 		tel.Emit("run.end", telemetry.Record{}, map[string]any{"result": result})
 	}()
 	obs := newObserver(tel)
+	if obs != nil {
+		obs.capacity = *capacity
+	}
 
 	tree, err := os.MkdirTemp("", "valley-attest-tree")
 	if err != nil {

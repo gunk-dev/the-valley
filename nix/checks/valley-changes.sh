@@ -746,6 +746,131 @@ after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 
 after '^kmkm v1  ' '^  chk-fail$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 failed \(prose-format\)$'
 after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
 
+# --checks with the host's worker telemetry: each nix check's build time
+# for the version, the median of its recent uncached, passing builds in
+# the project, the other versions of the change left out, a check grown
+# past its baseline, and a check with no history. The host is reached
+# over ssh, here a fake ssh that answers the read valley telemetry read
+# makes from a file of the worker's records, paged as the collector pages
+# them: the newest 1000 without a cursor, else the 1000 after it. It
+# refuses while $tel/refuse exists, as a host refuses a principal with no
+# observe grant.
+tel="$w/telemetry"
+mkdir -p "$tel/bin"
+{
+  printf '#!%s\n' "$(command -v bash)"
+  cat << 'EOF'
+set -euo pipefail
+command="${*: -1}"
+printf '%s\n' "$command" >> "$TELEMETRY_DIR/ssh.log"
+if [ -e "$TELEMETRY_DIR/refuse" ]; then
+  printf '%s\n' '{"kind":"error","error":"alice holds no observe grant"}'
+  exit 1
+fi
+since=-1
+for word in $command; do
+  case "$word" in --since=worker=*) since="${word##*:}" ;; esac
+done
+jq -c -s --argjson since "$since" '
+  (map(.seq) | max) as $last
+  | (if $since < 0 then [$last - 1000, 0] | max else $since end) as $after
+  | [.[] | select(.seq > $after)][:1000] as $page
+  | {kind: "header", host: "valley-host", format: "valley-telemetry/v1"},
+    ($page[] | {kind: "record", stream: "worker"} + .),
+    {kind: "end", cursor: "worker=0123456789abcdef:\(($page | last | .seq) // $after)", truncated: false}
+' "$TELEMETRY_DIR/worker.jsonl"
+EOF
+} > "$tel/bin/ssh"
+chmod +x "$tel/bin/ssh"
+export TELEMETRY_DIR="$tel" PATH="$tel/bin:$PATH"
+git config valley.telemetry.remote ssh://git@valley-host/open.git
+
+# build <seq> <project> <change> <version> <tree> <result> <build ms> <eval ms> <log bytes> [<cached>]:
+# a check.result record of prose-format, as attest stores one.
+build() {
+  jq -n -c --argjson seq "$1" --arg project "$2" --arg change "$3" --argjson version "$4" --arg tree "$5" \
+    --arg result "$6" --argjson build "$7" --argjson eval "$8" --argjson log "$9" --arg cached "${10:-}" '
+    {seq: $seq, type: "check.result", time: (1762128000 + $seq | todate), run: "r\($seq)", project: $project,
+      change: $change, version: $version, tree: $tree, check: "prose-format",
+      data: ({result: $result, build_ms: $build, eval_ms: $eval, slot_wait_ms: 0, log_bytes: $log}
+        + (if $cached == "" then {} else {cached: ($cached == "true")} end))}'
+}
+# filler <from> <to>: the records of passes that built nothing.
+filler() {
+  jq -n -c --argjson from "$1" --argjson to "$2" \
+    'range($from; $to + 1) | {seq: ., type: "pass.start", time: (1762128000 + . | todate), run: "p\(.)"}'
+}
+O1="$(id lplp)" O2="$(id lqlq)" O3="$(id lrlr)" O4="$(id lsls)" O5="$(id ltlt)" O6="$(id lulu)"
+t1="$(tree_digest chk-pass)" t2="$(tree_digest chk-fail)"
+{
+  # The recent builds of prose-format in this project, older than the
+  # newest 1000 records, so a second page reads them. A cached build, one
+  # an older attest recorded with no log and so cached, a failed build and
+  # another project's are no baseline. Another version of K1's is no
+  # baseline for K1, and is for the other changes.
+  build 1 open "$O1" 1 "" passed 50000 20000 10 false
+  build 2 open "$O2" 1 "" passed 60000 20000 10
+  build 3 open "$O3" 3 "" passed 70000 20000 10 false
+  build 4 open "$O4" 1 "" passed 5 20000 0 true
+  build 5 open "$O5" 1 "" passed 10 20000 0
+  build 6 open "$O6" 1 "" failed 1000 20000 10 false
+  build 7 guarded "$O1" 1 "" passed 1 20000 10 false
+  build 8 open "$K1" 2 "" passed 900000 20000 10 false
+  filler 9 1499
+  # The versions' own builds.
+  build 1500 open "$K1" 1 "$t1" passed 100000 24000 20 false
+  build 1501 open "$K2" 1 "$t2" failed 61000 23000 20 false
+} > "$tel/worker.jsonl"
+
+ok valley changes --json --checks
+pf() { printf '%s | .required[] | select(.name == "prose-format")' "$(checks "$1")"; }
+holds "$(pf "$K1") | .build_ms == 100000 and .cached == false and .baseline_ms == 60000 and .grown == true and (has(\"new\") | not)" \
+  "$(checks "$K1") | .build_ms == 100000 and .eval_ms == 24000 and .state == \"passed\"" \
+  "$(pf "$K2") | .build_ms == 61000 and .baseline_ms == 70000 and (has(\"grown\") | not) and .state == \"failed\"" \
+  "$(pf "$K3") | (has(\"build_ms\") | not) and .baseline_ms == 70000 and .state == \"pending\"" \
+  "$(checks "$K3") | has(\"build_ms\") | not"
+[ "$(wc -l < "$tel/ssh.log")" = 2 ] || fail "the listing read the worker's telemetry otherwise than in two pages: $(cat "$tel/ssh.log")"
+grep -qx 'valley-telemetry read --source=worker --limit=1000' "$tel/ssh.log" || fail "the first page was not the newest: $(cat "$tel/ssh.log")"
+grep -qx 'valley-telemetry read --source=worker --since=worker=0123456789abcdef:0 --limit=1000' "$tel/ssh.log" ||
+  fail "the second page did not read on from the first's cursor: $(cat "$tel/ssh.log")"
+rm "$tel/ssh.log"
+ok valley pending --checks
+after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
+  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, \+40s against its rec…$'
+after '^kmkm v1  ' '^  chk-fail$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
+  '^  checks: 1 failed \(prose-format\) in 1m1s \(eval 23s\)$'
+after '^knkn v1  ' '^  chk-none$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 pending$'
+[ "$(wc -l < "$tel/ssh.log")" = 2 ] || fail "pending read the worker's telemetry otherwise than in two pages: $(cat "$tel/ssh.log")"
+# review shows the same line just before its prompt, whole: it is paged,
+# not fitted to a terminal. It reads the line while it shows the diff and
+# does not wait for it, so this run is told to wait.
+printf 's\n' | ok env VALLEY_REVIEW_CHECKS_WAIT=120 valley review "$K1"
+[ "$(grep -B1 '^chk-pass: \[a\]pprove' "$w/out" | head -1)" = 'checks: 1 passed in 1m40s (eval 24s); prose-format 100s, +40s against its recent 60s' ] \
+  || fail "review did not show the checks line before its prompt: $(cat "$w/out")"
+
+# A check with no recent build in the project is new.
+{
+  build 1 guarded "$O1" 1 "" passed 50000 20000 10 false
+  build 2 open "$K1" 1 "$t1" passed 100000 24000 20 false
+} > "$tel/worker.jsonl"
+ok valley changes --json --checks
+holds "$(pf "$K1") | .build_ms == 100000 and .new == true and (has(\"baseline_ms\") | not) and (has(\"grown\") | not)"
+ok valley pending --checks
+after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' \
+  '^  checks: 1 passed in 1m40s \(eval 24s\); prose-format 100s, new$'
+
+# A host that refuses leaves every build time out, says why once, and
+# lists the check states all the same.
+touch "$tel/refuse"
+ok valley changes --json --checks
+holds "$(checks "$K1") | .required == [{name: \"prose-format\", state: \"passed\", signer: \"worker+$workerhash\"}] and (has(\"build_ms\") | not)" \
+  "$(checks "$K2") | .required == [{name: \"prose-format\", state: \"failed\", signer: \"worker+$workerhash\", why: .required[0].why}]" \
+  "$(checks "$K3") | .required == [{name: \"prose-format\", state: \"pending\"}]"
+[ "$(grep -c 'no check lists its build times: .*alice holds no observe grant' "$w/err")" = 1 ] ||
+  fail "a refusing host was not said once on stderr: $(cat "$w/err")"
+ok valley pending --checks
+after '^klkl v1  ' '^  chk-pass$' '^  1 commit · ' '^  requires 1 quick check, 0 slow$' '^  checks: 1 passed$'
+
 # valley help names the verbs front ends look for.
 valley help > "$w/out"
 line '^  ready '

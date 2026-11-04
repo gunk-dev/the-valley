@@ -197,8 +197,12 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
     verification policy requires of it, grouped by `quick` and `slow` cost. Each ready change also
     gets a line with the state of those checks, as `valley changes --checks` reads it, naming each
     check that failed: `checks: 18 passed, 1 failed (valley-request)` or
-    `checks: 12 passed, 7 pending`. With `--json`, the active version of each ready change carries
-    the same [`checks`](#version-checks) object.
+    `checks: 12 passed, 7 pending`. When the host's worker telemetry holds the version's builds, the
+    line goes on with their [build times](#build-times): the total, the evaluation, each check that
+    grew against its baseline, and each new check, as in
+    `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
+    `--json`, the active version of each ready change carries the same [`checks`](#version-checks)
+    object.
   - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON.
   - `-v`: Warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
@@ -229,8 +233,9 @@ valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-signers <
   `--integrator-name <name>` (as for [`valley pending`](#valley-pending)).
   - `--checks`: Adds a [`checks`](#version-checks) object to the active version of each ready change
     whose active version has not landed. It says which of the checks the policy requires passed,
-    failed or are pending. It costs a few seconds for each project that has such a change. Most of
-    that time goes to reading the policy with `cue`, and the rest to `attest verify` for each note.
+    failed or are pending, and what each nix check cost to build ([build times](#build-times)). It
+    costs a few seconds for each project that has such a change. Most of that time goes to reading
+    the policy with `cue`, and the rest to `attest verify` for each note.
 
 ### `valley status`
 
@@ -259,7 +264,11 @@ valley status [--json] [-v] [--known-signers <file>] [--integrator-name <name>] 
 
 `valley review` pages a change's diff (or a stack layer by layer from bottom to top), shows linked
 knots and comparison against any prior approved version, and prompts to approve, rebase, view the
-full diff, reject the remote branch, or skip.
+full diff, reject the remote branch, or skip. Just before the prompt, a ready change shows the state
+of its checks and their [build times](#build-times) on one line, as `valley pending --checks` shows
+it. `valley review` reads them in the background while it shows the diff and never waits for them: a
+line not ready at the prompt is left out. `VALLEY_REVIEW_CHECKS_WAIT` sets how many seconds to wait
+for it.
 
 ```sh
 valley review kqxm
@@ -269,7 +278,7 @@ valley review [-v] [--build-here] <change>
 - **Arguments and flags:**
   - `<change>`: Change ID, handle, or branch name. The change's active version must record a
     non-empty `branch`.
-  - `-v`: Warns on `stderr` if the plan graph cannot be read.
+  - `-v`: Warns on `stderr` if the plan graph, or the checks and their build times, cannot be read.
   - `--build-here`: Lets `[a]pprove` build, on this machine, the required `nix` checks that `origin`
     holds no evidence for, as `valley approve --build-here` does.
 - **Comparison against the approved version (`valley-go compare`):**
@@ -1115,6 +1124,7 @@ export VALLEY_ATTEST_NAME=operator
 | `VALLEY_COMMAND`             | `pending --checks`                                              | Executable invoked by `valley-go pending --checks` to run `<valley> checks <base> <head>` (`bin/valley` sets `VALLEY_COMMAND` to its own path; defaults to `"valley"`).                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VALLEY_NOW`                 | `knot`, `plan`, `valley-worker`                                 | Optional UTC timestamp in `RFC 3339` format (`YYYY-MM-DDTHH:MM:SSZ`) overriding the system clock for knot `created` dates, comment stamps, comment edit times, claim timestamps, claim age calculations, and the check worker's waits after a failed batch. Invalid values exit `2`.                                                                                                                                                                                                                                                                                                                           |
 | `VALLEY_TELEMETRY_DIR`       | `valley-worker`, `integrator`                                   | Host-side: the directory a producer exports its telemetry to, set by the NixOS module ([Telemetry](architecture.md#telemetry)). Unset, the producer records nothing.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `VALLEY_REVIEW_CHECKS_WAIT`  | `review`                                                        | Whole seconds `valley review` waits, at most, for a change's checks line before the prompt (default `0`: it does not wait). The line takes about as long to read as `valley pending --checks` takes for one project, so a prompt that follows a short diff right away shows it only with a wait of a few seconds.                                                                                                                                                                                                                                                                                              |
 | `VALLEY_VERSION`             | `bin/valley`, `self-update`                                     | Package stamp (`<version>-<rev>`) baked into the Nix-wrapped `valley` script, captured into `VALLEY_STAMP` and unset on startup so child processes do not inherit it, and passed explicitly to `valley-go self-update`.                                                                                                                                                                                                                                                                                                                                                                                        |
 | `VALLEY_PRINCIPAL`           | `valleyhook shell`, host `pre-receive` wrapper                  | Host-side environment variable set by `valleyhook shell` after looking up the key named in `SSH_USER_AUTH` against the host's `authorized_keys` files. Any client-supplied `VALLEY_PRINCIPAL` or `GIT_*` environment variable is stripped by `valleyhook shell` before `git-shell` runs.                                                                                                                                                                                                                                                                                                                       |
 | `SSH_USER_AUTH`              | `valleyhook shell`                                              | Path to the file written by OpenSSH `sshd` (`ExposeAuthInfo yes`) containing the public key that authenticated the SSH session.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -2319,6 +2329,56 @@ check as soon as the host's check worker records it.
 - **Failures:** When the policy does not read, or `origin`'s evidence cannot be listed or fetched,
   the versions it was for carry no `checks`, and `stderr` says why.
 
+##### Build times
+
+Each nix check in `checks` also says how long the host's check worker took to build it for this
+version, and how long the same check took for other recent changes. A client reads these to see when
+a change makes its project's checks slower, before it is approved.
+
+```json
+"checks": {
+  "state": "passed",
+  "tree": "<valley-tree-v1 digest of the head's tree>",
+  "build_ms": 550000,
+  "eval_ms": 24000,
+  "required": [
+    {"name": "worker-e2e", "state": "passed", "signer": "<signer>+<key hash>", "build_ms": 431000, "cached": false, "baseline_ms": 331000, "grown": true},
+    {"name": "cue-vet", "state": "passed", "signer": "<signer>+<key hash>", "build_ms": 70, "cached": true, "baseline_ms": 2100},
+    {"name": "web-unit", "state": "pending", "new": true}
+  ]
+}
+```
+
+- **Fields:**
+  - `build_ms` (`integer`, on `checks`): The sum of the build times of the checks built for this
+    version. Checks build side by side, so the sum is more than the batch took.
+  - `eval_ms` (`integer`, on `checks`): The sum of the evaluations of the attest runs that built
+    them.
+  - `build_ms` (`integer`, on a check): How long the newest `nix build` of the check for this
+    version took.
+  - `cached` (`boolean`): `true` when that build found the check's outputs already in the host's
+    store, so it built nothing.
+  - `baseline_ms` (`integer`): The check's baseline: the median `build_ms` of its newest 20 uncached
+    builds that passed, in the same project. Builds of every version of this change are left out.
+    When fewer than 20 are found, the baseline is the median of those.
+  - `new` (`true`, otherwise omitted): No such build of the check was found, so it has no baseline.
+  - `grown` (`true`, otherwise omitted): This version's uncached build took longer than the baseline
+    by more than both 20% of it and 30 seconds. Both thresholds are `grownShare` and `grownBy` in
+    `status/checkcost.go`.
+- **Where it comes from:** The numbers are the host's check worker's own measurements, never
+  evidence. Each attest run the worker starts stores a `check.result` record for each check it
+  builds in the worker's [telemetry](#valley-telemetry) stream, naming the project, change, version
+  and tree. The listing reads the `worker` source as `valley telemetry read` does, over `ssh` to the
+  checkout's telemetry remote, once for each host it lists. It reads the newest 1000 records, then
+  older pages from a cursor, up to the newest 5000 records. A record whose producer did not record
+  `cached` counts as cached when its build wrote no log, since building nothing writes none.
+- **Load:** Build times vary with the host's load. Batches build side by side and share the host's
+  CPUs and memory, so the same check can take longer while other batches run. The thresholds of
+  `grown` keep that noise from flagging every check.
+- **Failures:** When the telemetry cannot be read, because the remote is not reached over `ssh`, the
+  principal holds no `observe` grant, or the host serves no worker telemetry, these fields are left
+  out. `stderr` says why once, and the check states are listed all the same.
+
 #### `valley-plan/v1`
 
 `valley plan --json` emits one indented `valley-plan/v1` JSON document.
@@ -2449,7 +2509,7 @@ Every telemetry operation answers with JSON lines, one object each, told apart b
 
 ```json
 {"kind":"header","format":"valley-telemetry/v1","op":"read","host":"valley-host","server_time":"2026-11-01T17:20:04.112Z","limits":{"follow_seconds":60,"read_limit":200,"response_bytes":4194304},"collector":{"name":"valley-telemetry","exe":"/nix/store/…-valley-telemetry-0/bin/valley-telemetry","pid":4242}}
-{"kind":"record","stream":"report.alice","seq":41,"type":"check.result","time":"2026-11-01T17:19:59.501Z","run":"r20261101T171940-9f3a1c22-checks","change":"kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz","version":2,"head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","tree":"9c1f…","check":"fast","data":{"result":"passed","build_ms":130,"slot_wait_ms":0,"eval_ms":2210,"check_ms":2340,"build_began":"2026-11-01T17:19:59.371Z","build_ended":"2026-11-01T17:19:59.501Z","log_bytes":5,"elapsed_ms":2400},"producer":{"name":"attest","exe":"/nix/store/…-valley-attest-unwrapped-0/bin/attest","pid":3121},"principal":"alice","received":"2026-11-01T17:20:01.006Z","client_id":"0123456789abcdef:41"}
+{"kind":"record","stream":"report.alice","seq":41,"type":"check.result","time":"2026-11-01T17:19:59.501Z","run":"r20261101T171940-9f3a1c22-checks","change":"kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz","version":2,"head":"4ae651e56c34b79b324aca341508cf35c3aaae8e","tree":"9c1f…","check":"fast","data":{"result":"passed","build_ms":130,"slot_wait_ms":0,"eval_ms":2210,"check_ms":2340,"build_began":"2026-11-01T17:19:59.371Z","build_ended":"2026-11-01T17:19:59.501Z","log_bytes":5,"cached":false,"elapsed_ms":2400},"producer":{"name":"attest","exe":"/nix/store/…-valley-attest-unwrapped-0/bin/attest","pid":3121},"principal":"alice","received":"2026-11-01T17:20:01.006Z","client_id":"0123456789abcdef:41"}
 {"kind":"end","cursor":"report.alice=fedcba9876543210:41,worker=0123456789abcdef:212","truncated":false,"bytes":1873}
 ```
 
@@ -2506,10 +2566,12 @@ The types:
 A check's records come as its work happens, not in the order the checks were given: a fast check's
 `check.result` is stored while a slow one still builds. `slot_wait_ms` is how long a build waited
 for a build slot, `build_ms` how long its `nix build` ran, `eval_ms` the shared evaluation plus the
-check's own, and `check_ms` all three with the store probe. A run given `--eval-lock` waits for that
-lock before it evaluates. `eval.start` comes once the lock is held, and `eval.end` gives the
-evaluation's own time as `eval_ms` and the wait apart as `eval_wait_ms`; no `eval_ms` counts the
-wait. Checks build side by side, so their `check_ms` do not add up to a run's wall time.
+check's own, and `check_ms` all three with the store probe. `cached` is `true` when the build
+neither built nor fetched anything, because the check's outputs were already in the store. A run
+given `--eval-lock` waits for that lock before it evaluates. `eval.start` comes once the lock is
+held, and `eval.end` gives the evaluation's own time as `eval_ms` and the wait apart as
+`eval_wait_ms`; no `eval_ms` counts the wait. Checks build side by side, so their `check_ms` do not
+add up to a run's wall time.
 
 A `decision` record carries the timing information of the integrator's timing line
 ([architecture](./architecture.md#the-integrator)) in its `data`: `request`, `target`, `tip`,

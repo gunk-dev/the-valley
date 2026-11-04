@@ -745,10 +745,11 @@ func runChanges(g git, args []string, stdout, stderr io.Writer) error {
 	h := handles(repos)
 	writeHandleCache(g, repos, h)
 	doc := jsonChanges{Schema: changesSchema, Host: host, Repos: []jsonRepo{}}
+	c := newCosts()
 	for _, r := range repos {
 		view := r.repoView(h, everyChange, unlanded)
 		if l.checks {
-			r.addChecks(&view, stderr)
+			r.addChecks(&view, c, stderr)
 		}
 		utf8Branches(&view, stderr)
 		doc.Repos = append(doc.Repos, view)

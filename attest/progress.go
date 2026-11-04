@@ -45,6 +45,7 @@ type observer struct {
 type logged struct {
 	bytes     int64
 	truncated bool
+	cached    bool // nix built and fetched nothing (nixLog.ran)
 }
 
 func newObserver(tel *telemetry.Emitter) *observer {
@@ -99,7 +100,7 @@ func (o *observer) nixBuild(tree, drv string) (string, string, error) {
 	stderr.Write([]byte("\n")) // whatever was left without a newline
 	written, truncated := log.Close()
 	o.mu.Lock()
-	o.logs[drv] = logged{written, truncated}
+	o.logs[drv] = logged{written, truncated, err == nil && !stderr.ran}
 	o.mu.Unlock()
 	return out.String(), stderr.text.String(), err
 }
@@ -108,12 +109,21 @@ func (o *observer) nixBuild(tree, drv string) (string, string, error) {
 // lines go to the check's log alone. nix's messages, and its activities
 // at the level it prints by default, go to the text a failed check shows
 // and to the log. A line that is not nix's framing is kept as text, as
-// nix printed it.
+// nix printed it. ran says nix started a build or a substitution: a
+// build that started neither found its outputs already in the store.
 type nixLog struct {
 	log     io.Writer
 	pending []byte
 	text    bytes.Buffer
+	ran     bool
 }
+
+// The types of nix's activities that make an output: building a
+// derivation and fetching a path from a substituter.
+const (
+	nixActBuild      = 105
+	nixActSubstitute = 108
+)
 
 // ansi matches the colour sequences nix writes into its messages.
 var ansi = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
@@ -152,6 +162,9 @@ func (l *nixLog) line(line string) {
 	if json.Unmarshal([]byte(payload), &m) != nil {
 		return
 	}
+	if m.Action == "start" && (m.Type == nixActBuild || m.Type == nixActSubstitute) {
+		l.ran = true
+	}
 	switch {
 	case m.Action == "result" && m.Type == 101 && len(m.Fields) > 0: // a line of build output
 		if s, ok := m.Fields[0].(string); ok {
@@ -175,6 +188,7 @@ func buildData(b *drvBuild, wait time.Duration, began, ended time.Time, lg logge
 		"build_began":  telemetry.Stamp(began),
 		"build_ended":  telemetry.Stamp(ended),
 		"log_bytes":    lg.bytes,
+		"cached":       lg.cached,
 	}
 	if lg.truncated {
 		d["log_truncated"] = true

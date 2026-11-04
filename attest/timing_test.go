@@ -370,3 +370,28 @@ func TestTheRepositoryNameCarriesNoCredentials(t *testing.T) {
 		t.Errorf("a repository whose origin is withheld is named %q, want %q", got, want)
 	}
 }
+
+// A build's outputs were cached when nix's structured log started no
+// build and no substitution: nix found them in the store.
+func TestNixLogRan(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		lines []string
+		ran   bool
+	}{
+		{"nothing to do", []string{`@nix {"action":"start","id":1,"level":4,"type":102,"text":""}`, `@nix {"action":"stop","id":1}`}, false},
+		{"a build", []string{`@nix {"action":"start","id":2,"level":3,"type":105,"text":"building '/nix/store/x.drv'","fields":["/nix/store/x.drv","",1,1]}`,
+			`@nix {"action":"result","id":2,"type":101,"fields":["ok"]}`}, true},
+		{"a substitution", []string{`@nix {"action":"start","id":3,"level":4,"type":108,"text":"copying"}`}, true},
+		{"a message", []string{`@nix {"action":"msg","level":1,"msg":"warning: something"}`}, false},
+	} {
+		var log bytes.Buffer
+		l := &nixLog{log: &log}
+		for _, line := range c.lines {
+			l.Write([]byte(line + "\n"))
+		}
+		if l.ran != c.ran {
+			t.Errorf("%s: ran is %v, want %v", c.name, l.ran, c.ran)
+		}
+	}
+}

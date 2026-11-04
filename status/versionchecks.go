@@ -32,12 +32,20 @@ package main
 // fetched in one fetch, and the host's signers are read once. A read that fails
 // leaves the changes it was for without check state, and says so on
 // stderr; it never reads as no evidence.
+//
+// Each nix check also says what it cost the host's check worker to build
+// for this version, against what it recently cost (checkcost.go), when
+// the host's worker telemetry can be read. That read runs while the
+// policy is read. When it cannot be read, the fields are left out, stderr
+// says why once, and the check states are listed all the same.
 
 import (
 	"fmt"
 	"io"
 	"os"
 	"strings"
+
+	"the-valley/change"
 )
 
 // The check states of a version's checks.
@@ -54,6 +62,11 @@ type jsonVersionChecks struct {
 	State    string           `json:"state"`
 	Tree     string           `json:"tree"`
 	Required []jsonCheckState `json:"required"`
+	// BuildMS is the sum of the build times of the checks built for this
+	// version, and EvalMS the sum of the evaluations of the runs that
+	// built them, when the worker's telemetry holds any (checkcost.go).
+	BuildMS *int64 `json:"build_ms,omitempty"`
+	EvalMS  *int64 `json:"eval_ms,omitempty"`
 }
 
 // jsonCheckState is one required check and the state of its note.
@@ -62,11 +75,21 @@ type jsonCheckState struct {
 	State  string `json:"state"`
 	Signer string `json:"signer,omitempty"`
 	Why    string `json:"why,omitempty"`
+	// What the check cost to build, from the worker's telemetry
+	// (checkcost.go): this version's build, whether its output was
+	// cached, the median of the check's recent builds, whether it has
+	// none, and whether this build grew against them.
+	BuildMS    *int64 `json:"build_ms,omitempty"`
+	Cached     *bool  `json:"cached,omitempty"`
+	BaselineMS *int64 `json:"baseline_ms,omitempty"`
+	New        bool   `json:"new,omitempty"`
+	Grown      bool   `json:"grown,omitempty"`
 }
 
 // addChecks gives the active version of each pending change in view its
-// check state. view is this repository's.
-func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
+// check state, and its build times from the host's worker telemetry,
+// read through c. view is this repository's.
+func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 	if l.err != nil {
 		return
 	}
@@ -77,10 +100,12 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 		}
 	}
 	var heads []*jsonVersion
+	changeOf := map[*jsonVersion]string{}
 	for i := range view.Changes {
-		c := &view.Changes[i]
-		if pending[[2]string{c.Target, c.ChangeID}] {
-			heads = append(heads, &c.Versions[c.Active-1])
+		ch := &view.Changes[i]
+		if pending[[2]string{ch.Target, ch.ChangeID}] {
+			heads = append(heads, &ch.Versions[ch.Active-1])
+			changeOf[heads[len(heads)-1]] = ch.ChangeID
 		}
 	}
 	if len(heads) == 0 {
@@ -93,6 +118,7 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 		warn("origin has no main to read the policy at, so no ready change lists its checks")
 		return
 	}
+	reading := c.start(l.g)
 	instance, layer, done, err := policyLayers(l.g, l.snap.tip)
 	defer done()
 	if err != nil {
@@ -117,6 +143,7 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 	// Each head's required checks and tree digest.
 	type head struct {
 		v        *jsonVersion
+		change   string
 		required []jsonRequired
 		asked    []nixCheck
 		digest   string
@@ -142,7 +169,7 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 			say("%v", err)
 			continue
 		}
-		h := head{v: v, required: doc.Required, digest: digest}
+		h := head{v: v, change: changeOf[v], required: doc.Required, digest: digest}
 		for _, q := range doc.Required {
 			if q.Runner == "nix" {
 				h.asked = append(h.asked, nixCheck{q.Name, q.Attribute})
@@ -179,6 +206,7 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 	if p != nil {
 		here = counting{project: project(l.g), integrator: p.name, projects: p.projects}
 	}
+	builds, timed := c.wait(reading, warn)
 
 	for _, h := range read {
 		stored := storedFor(h.digest, o.refs)
@@ -192,6 +220,9 @@ func (l listed) addChecks(view *jsonRepo, stderr io.Writer) {
 			}
 		}
 		h.v.Checks = checkStates(h.digest, h.required, judged, unsigned, unjudged)
+		if timed {
+			addCosts(h.v.Checks, h.required, l.name, h.change, h.v.N, builds)
+		}
 	}
 }
 
@@ -230,8 +261,9 @@ func checkStates(digest string, required []jsonRequired, judged map[string]judgm
 	return out
 }
 
-// checksLine is valley pending's line for a version's check state:
-// "checks: 18 passed, 1 failed (valley-request)".
+// checksLine is valley pending's line for a version's check state, with
+// what its checks cost to build when that is known (costLine):
+// "checks: 18 passed, 1 failed (valley-request) in 9m10s (eval 24s)".
 func checksLine(c *jsonVersionChecks) string {
 	if len(c.Required) == 0 {
 		return "checks: none required"
@@ -255,5 +287,46 @@ func checksLine(c *jsonVersionChecks) string {
 		}
 		parts = append(parts, part)
 	}
-	return "checks: " + strings.Join(parts, ", ")
+	return "checks: " + strings.Join(parts, ", ") + costLine(c)
+}
+
+// runCheckLine prints valley pending's checks line for the active version
+// of each change named, for review to show above its diff, one line each:
+//
+//	<change ID>	checks: 21 passed in 9m10s (eval 24s)
+//
+// A change that is not ready, or whose active version has landed, has no
+// check state, and so no line. What could not be read is said on stderr,
+// as valley pending --checks says it, and leaves the line out.
+func runCheckLine(g git, args []string, stdout, stderr io.Writer) error {
+	wanted := map[string]bool{}
+	for _, a := range args {
+		if !change.ValidID(a) {
+			return failure("usage: valley-go checkline <change ID>...")
+		}
+		wanted[a] = true
+	}
+	if !g.succeeds(true, "rev-parse", "--git-dir") {
+		return failure("not a git repository")
+	}
+	list, _, err := sources(g, listing{}, stderr)
+	if err != nil {
+		return err
+	}
+	repos := readSources(list, newVerifier())
+	r := repos[0]
+	if r.err != nil {
+		return r.err
+	}
+	named := func(s *snapshot, n recorded) bool { return wanted[n.id] && pendingChange(s, n) }
+	view := r.repoView(handles(repos), named, unlanded)
+	r.addChecks(&view, newCosts(), stderr)
+	var b strings.Builder
+	for _, c := range view.Changes {
+		if v := c.Versions[c.Active-1]; v.Checks != nil {
+			fmt.Fprintf(&b, "%s\t%s\n", c.ChangeID, readable(checksLine(v.Checks)))
+		}
+	}
+	_, err = io.WriteString(stdout, b.String())
+	return err
 }

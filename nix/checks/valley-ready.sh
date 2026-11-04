@@ -12,6 +12,8 @@ set -euo pipefail
 w="$TMPDIR/valley-ready"
 mkdir -p "$w"
 export HOME="$w"
+# review waits for the checks line, which it otherwise leaves out when it is slow.
+export VALLEY_REVIEW_CHECKS_WAIT=120
 export GIT_CONFIG_NOSYSTEM=1
 git config --global user.name valley-ready-check
 git config --global user.email valley-ready-check@localhost
@@ -1128,6 +1130,8 @@ grep -qx "$clean" "$w/out" || fail "review after [b]ase did not say v2 is a clea
 after "$w/out" "$clean" > "$w/clean"
 [ "$(sed -n 2,4p "$w/clean")" = "$(printf '%s\n' "File delta unchanged. Base ${base1:0:7} -> ${landing:0:7}." \
   'Landings between bases:' "  ${landing:0:7} cmp-landing")" ] || fail "the clean restack did not list the landing: $(cat "$w/clean")"
+# The change's checks line comes just before the prompt.
+[ "$(sed -n 5p "$w/clean")" = 'checks: none required' ] || fail "the clean restack did not show the checks line before the prompt: $(cat "$w/clean")"
 grep -qx "cmp/topic: \[a\]pprove, \[v\]iew full diff, \[r\]eject, \[s\]kip? skipped cmp/topic; nothing done" "$w/clean" \
   || fail 'the prompt after a clean restack did not offer [v]iew full diff'
 if grep -q '^diff --git' "$w/clean"; then fail 'review paged the diff of a clean restack'; fi

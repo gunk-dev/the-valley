@@ -224,8 +224,12 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-
                                   each ready change a line saying how
                                   many of them passed, failed and are
                                   pending, naming those that failed, as
-                                  changes --checks lists them. with
-                                  --json, the same checks objects
+                                  changes --checks lists them. the line
+                                  goes on with what the checks cost the
+                                  host's check worker to build, and each
+                                  check that grew against its recent
+                                  builds or is new. with --json, the
+                                  same checks objects
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the
                                   pending changes in changes and the
@@ -260,9 +264,12 @@ usage: valley changes --json [--all] [--repo <name>] [--checks] [-v] [--known-si
                    has not landed: each check the policy requires of it,
                    passed, failed or pending by the note the integrator
                    would judge it by on origin, and other for a check the
-                   host's worker does not run (docs/reference.md). it
-                   costs a few seconds for each project with such a
-                   change.
+                   host's worker does not run (docs/reference.md). each nix
+                   check also gives its build time for this version, and
+                   the median of its recent builds, from the host's
+                   worker telemetry; when that cannot be read, those
+                   fields are left out and stderr says why. it costs a
+                   few seconds for each project with such a change.
                    handles are unique across
                    everything listed: a change id recorded in more than
                    one repository listed has the handle <repo>:<prefix>
@@ -310,7 +317,16 @@ usage: valley review [-v] [--build-here] <change>
                    each change's diff, review shows every knot in the plan
                    graph that links the change, as `does oc-6335749 (open):
                    <title>` (valley-go does). a missing or unreadable graph
-                   shows no knots; -v warns on stderr. then choose:
+                   shows no knots; -v warns on stderr. before the prompt, a
+                   ready change shows the state of its checks and what
+                   they cost the host's check worker to build, as pending
+                   --checks shows it: `checks: 21 passed in 9m10s (eval
+                   24s); worker-e2e 431s, +100s against its recent 331s`.
+                   review reads them while it shows the diff and never
+                   waits for them: a line not read by the prompt is not
+                   shown, unless VALLEY_REVIEW_CHECKS_WAIT=<seconds> says
+                   how long to wait for it. checks that cannot be read show no line; -v
+                   warns on stderr. then choose:
                      [a]pprove    file an integration request for the
                                   head shown, as approve does (valley
                                   help approve). it reuses the evidence
@@ -1457,10 +1473,28 @@ under_first() {
 
 # DOES caches the output of `valley-go does` for the review (status/does.go):
 # one `<change ID>\tdoes <knot ID> (<status>): <title>` line per knot.
+# The checks line takes seconds to read: it reads the policy and the host's
+# telemetry. So read_does starts `valley-go checkline`
+# (status/versionchecks.go) in the background, and it writes one
+# `<change ID>\tchecks: …` line for each ready change into REVIEW_CHECKS_TMP: the
+# state of its checks and what they cost the host's check worker to build,
+# as pending --checks shows it. The diff is shown without waiting for it.
+# checks_line prints a change's line when the read has finished, just
+# before the prompt, and prints nothing when it has not (it waits at most
+# VALLEY_REVIEW_CHECKS_WAIT seconds, 0 unless set). REVIEW_CHECKS_PID is the
+# background read, REVIEW_CHECKS_SHOWN the change IDs whose line is not shown
+# again, REVIEW_CHECKS_IDS the changes it reads, and
+# REVIEW_CHECKS_VERBOSE whether to pass on what the read said on stderr.
 DOES=""
+REVIEW_CHECKS_TMP=""
+REVIEW_CHECKS_PID=""
+REVIEW_CHECKS_SHOWN=" "
+REVIEW_CHECKS_VERBOSE=""
+REVIEW_CHECKS_IDS=()
 
-# read_does [-v]: read the plan graph once for every change in the review.
-# A missing or unreadable graph leaves DOES empty; -v warns on stderr.
+# read_does [-v]: read the plan graph once for every change in the review,
+# and start reading their checks. A missing or unreadable graph leaves DOES
+# empty; -v warns on stderr.
 read_does() {
   local ids=() k
   DOES=""
@@ -1473,6 +1507,57 @@ read_does() {
   fi
   [ "${#ids[@]}" -gt 0 ] || return 0
   DOES="$(valley-go does "$@" "${ids[@]}")" || DOES=""
+  REVIEW_CHECKS_IDS=("${ids[@]}")
+  REVIEW_CHECKS_VERBOSE="${1:-}"
+  start_checks_read
+}
+
+# start_checks_read: read the checks of REVIEW_CHECKS_IDS in the background,
+# in place of any read already started.
+start_checks_read() {
+  cleanup_checks_tmp
+  REVIEW_CHECKS_TMP="$(mktemp -d)"
+  REVIEW_CHECKS_SHOWN=" "
+  valley-go checkline "${REVIEW_CHECKS_IDS[@]}" > "$REVIEW_CHECKS_TMP/out" 2> "$REVIEW_CHECKS_TMP/err" &
+  REVIEW_CHECKS_PID=$!
+}
+
+# checks_line <change ID>: print the `checks: …` line of one change, once,
+# if the background read has finished and gave it one. It never waits.
+checks_line() {
+  local line
+  [ -n "$REVIEW_CHECKS_PID" ] && [ -n "$1" ] || return 0
+  case "$REVIEW_CHECKS_SHOWN" in *" $1 "*) return 0 ;; esac
+  # Normally the read has had the whole time the diff was read in. A host
+  # that wants the line at the prompt can have review wait for it.
+  local waited=0 limit="${VALLEY_REVIEW_CHECKS_WAIT:-0}"
+  case "$limit" in '' | *[!0-9]*) limit=0 ;; esac
+  while kill -0 "$REVIEW_CHECKS_PID" 2> /dev/null; do
+    [ "$waited" -lt "$((limit * 10))" ] || return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+  if [ -n "$REVIEW_CHECKS_VERBOSE" ] && [ -s "$REVIEW_CHECKS_TMP/err" ]; then
+    cat "$REVIEW_CHECKS_TMP/err" >&2
+    : > "$REVIEW_CHECKS_TMP/err"
+  fi
+  while IFS= read -r line; do
+    if [ "${line%%$'\t'*}" = "$1" ]; then
+      printf '%s\n' "${line#*$'\t'}"
+      REVIEW_CHECKS_SHOWN+="$1 "
+    fi
+  done < "$REVIEW_CHECKS_TMP/out"
+}
+
+# cleanup_checks_tmp: stop the background read of the checks, if it still
+# runs, and remove what it wrote.
+cleanup_checks_tmp() {
+  if [ -n "$REVIEW_CHECKS_PID" ]; then
+    kill "$REVIEW_CHECKS_PID" 2> /dev/null || true
+    REVIEW_CHECKS_PID=""
+  fi
+  [ -z "$REVIEW_CHECKS_TMP" ] || rm -rf "$REVIEW_CHECKS_TMP"
+  REVIEW_CHECKS_TMP=""
 }
 
 # does_of <change ID>: print the `does ...` lines for one change from DOES.
@@ -1514,6 +1599,7 @@ show_review() {
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "$CHANGE_ID" "$CHANGE_VERSION" "$head"
   show_compared "$branch" "$head" "$held" "$(does_of "$CHANGE_ID")" full_diff "$branch" "$head"
+  checks_line "$CHANGE_ID"
 }
 
 # view_full <branch>: [v]iew full diff for a change alone. It pages the
@@ -1550,6 +1636,7 @@ cleanup_scratch() {
   cleanup_instance_tmp
   cleanup_project_tmp
   cleanup_review_tmp
+  cleanup_checks_tmp
 }
 
 # [b]ase and the rebase verb are one piece of code, valley-go rebase
@@ -1565,7 +1652,9 @@ cleanup_scratch() {
 # rebase_shown <head>: [b]ase for the change under review, while it is
 # still at <head>, the head review showed of it.
 rebase_shown() {
-  valley-go rebase --head "$1" "${CHANGE_ID:-$CHANGE_NAME}"
+  valley-go rebase --head "$1" "${CHANGE_ID:-$CHANGE_NAME}" || return
+  # What the checks read was for the heads before the rebase.
+  [ -z "$REVIEW_CHECKS_PID" ] || start_checks_read
 }
 
 # ----------------------------------------------------------------------
@@ -2953,6 +3042,7 @@ page_layer() {
   REVIEW_TMP="$(mktemp -d)"
   compare_shown "${L_ID[k]}" "${L_VERSION[k]}" "${L_HEAD[k]}"
   show_compared "$(notes_key "$k")" "${L_HEAD[k]}" "$heading" "$(does_of "${L_ID[k]}")" layer_diff "$k"
+  checks_line "${L_ID[k]}"
   keep_layer_notes "$k"
 }
 

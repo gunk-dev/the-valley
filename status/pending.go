@@ -55,8 +55,12 @@
 // policy requires of the change, by cost, and for a ready change how many
 // of its required checks passed, failed and are pending, as valley
 // changes --checks lists them (versionchecks.go), naming those that
-// failed: "checks: 18 passed, 1 failed (valley-request)". --json then
-// carries the same checks objects.
+// failed: "checks: 18 passed, 1 failed (valley-request)". When the host's
+// worker telemetry holds the version's builds, the line goes on with what
+// they cost and the checks that grew against their recent cost
+// (checkcost.go): "checks: 21 passed in 9m10s (eval 24s); worker-e2e
+// 431s, +68s against its recent 363s". --json then carries the same
+// checks objects.
 //
 // Within a section, the stack with the latest commit comes first, and
 // within a stack the entry with the latest commit does. Every line fits
@@ -128,10 +132,11 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 	defer warnUnverified(repos, stderr)
 	if l.asJSON {
 		doc := jsonChanges{Schema: pendingSchema, Host: host, Repos: []jsonRepo{}}
+		c := newCosts()
 		for _, r := range repos {
 			view := r.pendingView(h)
 			if l.checks {
-				r.addChecks(&view, stderr)
+				r.addChecks(&view, c, stderr)
 			}
 			utf8Branches(&view, stderr)
 			doc.Repos = append(doc.Repos, view)
@@ -139,11 +144,12 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 		return writeDocument(stdout, doc)
 	}
 	t := terminalOf(stdout)
+	c := newCosts()
 	for i, r := range repos {
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
-		writePending(r, h, l, stdout, stderr, len(repos) > 1 || l.all || l.repo != "", t)
+		writePending(r, h, l, c, stdout, stderr, len(repos) > 1 || l.all || l.repo != "", t)
 	}
 	return nil
 }
@@ -180,7 +186,7 @@ type entry struct {
 
 // writePending prints one repository's entries, section by section.
 // Several repositories are each headed by their name.
-func writePending(r listed, h handleMap, l listing, w, stderr io.Writer, headed bool, t terminal) {
+func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Writer, headed bool, t terminal) {
 	p := func(format string, args ...any) { fmt.Fprintf(w, format, args...) }
 	if r.err != nil {
 		p("%s: %v\n", r.name, r.err)
@@ -191,7 +197,7 @@ func writePending(r listed, h handleMap, l listing, w, stderr io.Writer, headed 
 	}
 	view := r.pendingView(h)
 	if l.checks {
-		r.addChecks(&view, stderr)
+		r.addChecks(&view, c, stderr)
 	}
 	all := r.entries(view, h, l)
 	tops := r.snap.stack(all)

@@ -8,7 +8,8 @@
 // rebase, which rebases a change's whole stack onto main, and brings, which
 // lists the changes a head would bring that have not landed, for approve
 // (rebase.go), for does, which lists the knots each change does, for review
-// (does.go), for knot, the plan graph's API (knot.go), which reads and
+// (does.go), for checkline, which says what review shows of a change's
+// checks and their build times (versionchecks.go), for knot, the plan graph's API (knot.go), which reads and
 // writes a project's knots at refs/the-valley/knots, for plan, which
 // shows that graph as a view (plan.go), for compare, which sets a
 // version review shows against the change's approved version
@@ -56,6 +57,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go resolve <change>
        valley-go stack <change>
        valley-go does [-v] <change ID>...
+       valley-go checkline <change ID>...
        valley-go rebase [--head <sha>] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
@@ -119,6 +121,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runStack(g, args, stdout)
 	case "does":
 		err = runDoes(g, args, stdout, stderr)
+	case "checkline":
+		err = runCheckLine(g, args, stdout, stderr)
 	case "rebase":
 		return runRebase(g, args, stdout, stderr)
 	case "brings":

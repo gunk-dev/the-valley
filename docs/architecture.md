@@ -2130,9 +2130,9 @@ far each version has landed for its listings. The package stamps its version on 
 | ---------------------------- | ----------------------------------------------------------------------------------------------------- |
 | `valley pending`             | Lists the ready changes not yet landed, then the branches no change is on, then the drafts.           |
 | `valley changes --json`      | Prints every change in every state, across the host with `--all`, as `valley-changes/v1`.             |
-| `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject`, `[s]kip`, `[b]ase` if stale. |
+| `valley review <change>`     | Shows a change, then offers `[a]pprove`, `[v]iew full diff`, `[r]eject` and `[s]kip`.                 |
 | `valley approve <change>`    | Approves one head of the change, as `[a]pprove` does. `--head <sha>` names the head.                  |
-| `valley rebase <change>`     | Rebases the change's whole stack, as `[b]ase` does, and adds each rebased head as a new version.      |
+| `valley rebase <change>`     | Rebases the change's whole stack, and adds each rebased head as a new version.                        |
 | `valley checks`              | Reports the checks the policy requires of a change, grouped by declared cost. It runs nothing.        |
 | `valley status [--json] <c>` | Reads the request and outcome record for a change. `--json` prints the `valley-status/v1` object.     |
 | `valley ready [<branch>]`    | Marks a head of the branch ready as a new version of its change, in the change's record.              |
@@ -2151,9 +2151,15 @@ it approves. A required `nix` check with no evidence on `origin` is built there 
 the operator passes `--build-here`; otherwise approval files the request without it. Then one atomic
 push carries the new evidence refs and the integration request, with a lease on the request ref.
 When the request already names this head, the push leaves the request ref out. When there is no new
-evidence as well, there is no push. `[b]ase` rebases the change's whole stack in a temporary
-worktree, and pushes every layer's branch in one atomic push, with a lease on each. `[r]eject`
-deletes the remote branch after a prompt.
+evidence as well, there is no push. `[r]eject` deletes the remote branch after a prompt.
+
+A change behind `main` is approved as it is: the integrator applies the change's delta onto `main`
+as `main` stands, and the host's restacker rebases ready changes itself. So `review` asks nothing
+more of the operator for such a change. It shows one line above the usual prompt, which says the
+change is behind `main`, or, while the change's current restack report says a conflict, that its
+owner is resolving it. `review` offers no rebase of a change alone. An author rebases their own
+change with `valley rebase`, which rebases the change's whole stack in a temporary worktree and
+pushes every layer's branch in one atomic push, with a lease on each.
 
 Evidence on `origin` comes from a check worker (see [The check worker](#the-check-worker)) or from
 an earlier approval. Approval reuses eligible `nix` evidence and leaves uncovered `nix` checks
@@ -2244,10 +2250,9 @@ branch no record is on is requested under its name with each `/` replaced by `-`
 name maps to `c-<change-id>` is refused, by `approve` and by `status`: that name is the change's.
 
 When the checks fail under `[a]pprove`, approving the same head again can only fail again. So the
-prompt then says approving needs a new head. It offers only `[r]eject` and `[s]kip`, plus `[b]ase`
-where it is offered. `[a]pprove` comes back once the change is at another head, as it is after
-`[b]ase`. A refusal that is not a check failure, such as a lost lease race, keeps the prompt as it
-was.
+prompt then says approving needs a new head. It offers only `[v]iew full diff`, `[r]eject` and
+`[s]kip`. `[a]pprove` comes back once the change is at another head. A refusal that is not a check
+failure, such as a lost lease race, keeps the prompt as it was.
 
 `review` reads the change's state from its record before it shows the change. A change that is not
 ready says so on the first line shown, above its diff, and again in place of the usual prompt:
@@ -2258,12 +2263,15 @@ ready says so on the first line shown, above its diff, and again in place of the
 
 The prompt then offers only `[v]iew full diff` and `[s]kip`. A change is often a draft because an
 agent is working on it: an agent runner unreadies a change while its run works, and readies the new
-head when the run finishes. `[a]pprove` would be refused. `[b]ase` is not offered either, since
-adding the rebased head as a version would ready the change behind its owner's back. `[r]eject` is
-not offered, because it records nothing on the change. It only deletes the branch, which the owner
-may still be working on. The state can change while the review is open, so `[a]pprove` and `[b]ase`
-still read the record again when they act, and refuse a change that is not ready. A branch no record
-is on has no state, and is offered the usual prompt.
+head when the run finishes. `[a]pprove` would be refused. `[r]eject` is not offered, because it
+records nothing on the change. It only deletes the branch, which the owner may still be working on.
+
+The change can move while the review is open: it can return to draft, gain a new version, be
+withdrawn, or land. So before `[a]pprove` or `[r]eject` acts, `review` reads the change again with
+`valley-go standing`. When the change differs from what review showed, `review` says what changed in
+one line, acts on nothing, and moves on without asking again. It never tells the operator to ready a
+change: readying is for the change's owner, and `approve` suggests it only to the owner. A branch no
+record is on has no state, and is offered the usual prompt.
 
 `review` also shows the knots a change does. These are the knots in the project's plan graph whose
 `changes` lists `valley:<project>/<change ID>` (see [The plan graph](#the-plan-graph)). The project
@@ -2362,15 +2370,15 @@ showed. Just before it publishes, it reads the branch on origin, and refuses whe
 that head, naming both heads. The operator reviewed the branch, and the commits it has moved to have
 not been read.
 
-`valley rebase <change>`, and `[b]ase` in a review, rebase the change's whole stack. The verb is
-`status/rebase.go`, and the rebase engine (`rebase/`) does the work. The stack is the change and the
-layers `valley-go stack` lists under it. A change with nothing under it is a stack of one. In a
-throwaway worktree, bottom first, each layer's own commits are rebased onto the rebased layer below
-it, and the bottom's onto `main`. So each layer keeps its own delta. Commits under the bottom that a
-lower change landed drop out, since the integrator landed them as one new commit and their content
-is on `main`. So does a branch below such a change: it is no layer. The rebase reads that landing as
-`valley changes` does, and verifies the transfer statement with the same signers (see
-[Listing changes](#listing-changes)).
+`valley rebase <change>`, and `[b]ase all` before a stale stack's review, rebase the change's whole
+stack. The verb is `status/rebase.go`, and the rebase engine (`rebase/`) does the work. The stack is
+the change and the layers `valley-go stack` lists under it. A change with nothing under it is a
+stack of one. In a throwaway worktree, bottom first, each layer's own commits are rebased onto the
+rebased layer below it, and the bottom's onto `main`. So each layer keeps its own delta. Commits
+under the bottom that a lower change landed drop out, since the integrator landed them as one new
+commit and their content is on `main`. So does a branch below such a change: it is no layer. The
+rebase reads that landing as `valley changes` does, and verifies the transfer statement with the
+same signers (see [Listing changes](#listing-changes)).
 
 The rebase refuses, and changes nothing, when the stack cannot move whole:
 
@@ -2405,8 +2413,8 @@ rebase says so, prints the manifest, and says how to check: `git ls-remote origi
 
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with
-the `valley rebase` that moves it, and does not move it. After `[b]ase`, the review goes on at the
-new heads. An interrupt or a SIGTERM while the stack is being prepared kills git and any hook it
+the `valley rebase` that moves it, and does not move it. After `[b]ase all`, the review goes on at
+the new heads. An interrupt or a SIGTERM while the stack is being prepared kills git and any hook it
 started, removes the worktree, pushes nothing, and exits 130.
 
 The rebase engine is a Go package that a program imports, such as a service that keeps ready changes
@@ -2496,10 +2504,11 @@ active version's head. `approve` files the request at exactly the head bound to 
 branch is. `rebase` and `review`'s `[r]eject` act on the branch itself, so they refuse when the
 branch's tip on origin is another commit than the active version's head, and the refusal names both
 commits. `[r]eject` deletes the branch under a lease on the recorded head. `approve`, `rebase`, and
-`review`'s `[a]pprove` and `[b]ase` refuse a change whose record is not `ready`, and the refusal
-names its state. `review` does not offer them for a change that is not ready when it shows it.
+`review`'s `[a]pprove` refuse a change whose record is not `ready`, and the refusal names its state.
+`review` does not offer `[a]pprove` for a change that is not ready when it shows it.
 `valley-go resolve` gives these verbs the change's ID, handle, active version, recorded head,
-branch, state and owner on one line, and `valley-go versions` lists every version, for `approve`.
+branch, state and owner on one line, `valley-go versions` lists every version, for `approve`, and
+`valley-go standing` says where a change stands now, for `review`.
 
 The record can change while one of these verbs runs. Another principal may unready or withdraw the
 change, or ready a new version, while a review is open or the checks run. So `approve` reads the

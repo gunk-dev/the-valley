@@ -345,12 +345,14 @@ in
   # is no branch name is refused. Then a
   # draft: unready, ready again at the same head and at a new one, listed
   # apart by pending, refused by approve and rebase, and shown by review
-  # as a draft, with neither [a]pprove, [b]ase nor [r]eject offered,
+  # as a draft, with neither [a]pprove nor [r]eject offered,
   # whether it is named by its handle or its branch, and a request pending
   # under either name warned of by unready and withdraw, a request for an
   # earlier version's branch too. review shows a withdrawn change the same
-  # way. A review left open while another principal unreadies the change,
-  # or readies a new version, refuses to act on it. A branch no record is
+  # way. A change behind main is asked the ordinary prompt under a line
+  # that says so, with no [b]ase, and is approved as it is. A review left
+  # open while another principal unreadies the change, or readies a new
+  # version, says so in one line and acts on nothing. A branch no record is
   # on is acted on as a branch, and one two records are on is refused.
   # Last, stacks rebased whole: every layer moved and each change given a
   # version, by ancestry and by trees; a
@@ -361,7 +363,7 @@ in
   # old head. review of a stack whose middle layer is a draft, then
   # withdrawn, offers [a]pprove under it and neither at it nor above it.
   # Then review set against a change's approved version: a clean
-  # restack after [b]ase, with the landing between the bases listed and no
+  # restack after a rebase, with the landing between the bases listed and no
   # diff paged; a later version with an edited file, paged with the
   # range-diff and its own diff of that file; a version whose message
   # alone changed and one whose author alone did, each flagged; a change

@@ -272,13 +272,14 @@ grep -qE '^  phantom +mandatory' "$w/example.out"
 grep -qx 'policy: examples/policy/instance + examples/policy/project' "$w/example.out"
 
 # ----------------------------------------------------------------------
-# 3. main moves on, so the next branch is stale. [a]pprove is offered there
-#    too — the integrator applies a delta to the tip rather than
-#    fast-forwarding — and a branch whose check fails publishes nothing
-#    and leaves the review loop usable. Approving the same head again
-#    would only fail again, so after the failure the prompt says approving
-#    needs a new head and offers [b]ase, [r]eject and [s]kip alone, and an
-#    answer of a is not taken.
+# 3. main moves on, so the next branch is behind main. It is offered the
+#    ordinary prompt under one line that says so — the integrator applies
+#    a delta to the tip rather than fast-forwarding, so nothing is asked of
+#    the operator — and a branch whose check fails publishes nothing and
+#    leaves the review loop usable. Approving the same head again would
+#    only fail again, so after the failure the prompt says approving needs
+#    a new head and offers [v]iew full diff, [r]eject and [s]kip alone, and
+#    an answer of a is not taken. Review never offers [b]ase.
 git checkout --quiet main
 echo "a note" > docs/notes.md
 git add -A
@@ -298,11 +299,17 @@ valley review topic/two < "$w/answers" > "$w/fail.out" 2> "$w/fail.err"
 # The prompt is the whole of what the operator is offered, so it is pinned
 # character for character: a verb that stops being offered, or one that
 # starts, is a change to the review loop and not an incidental one.
-grep -qF 'topic/two does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/fail.out"
+behind='topic/two is behind main; the integrator lands it onto main as main stands (no rebase needed).'
+grep -qx "$behind" "$w/fail.out"
+grep -qF 'topic/two: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/fail.out"
+if grep -qF '[b]ase' "$w/fail.out"; then
+  echo "valley-request: review offered [b]ase for a branch behind main" >&2
+  exit 1
+fi
 grep -q '^checking topic/two at .*: no-secrets$' "$w/fail.out"
 twohead="$(git rev-parse --short topic/two)"
-grep -qF "topic/two does not fast-forward from main. Its checks failed at $twohead, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? " "$w/fail.out"
-grep -qF 'answer v, b, r, or s' "$w/fail.out"
+grep -qF "topic/two: its checks failed at $twohead, so approving needs a new head: [v]iew full diff, [r]eject, [s]kip? " "$w/fail.out"
+grep -qF 'answer v, r, or s' "$w/fail.out"
 offers="$(grep -oF '[a]pprove' "$w/fail.out" | wc -l)"
 checked="$(grep -c '^checking topic/two at ' "$w/fail.out" || true)"
 if [ "$offers" != 1 ] || [ "$checked" != 1 ]; then
@@ -362,7 +369,7 @@ grep -q 'no signing key: set VALLEY_ATTEST_KEY' "$w/nokey.err"
 grep -q 'skipped topic/two; nothing done' "$w/nokey.out"
 # A refusal that is no check failure leaves the prompt as it was, [a]pprove
 # and all: a new session starts with no check failed.
-offers="$(grep -oF 'topic/two does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
+offers="$(grep -oF 'topic/two: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/nokey.out" | wc -l)"
 if [ "$offers" != 2 ]; then
   echo "valley-request: a refusal that was no check failure changed the prompt" >&2
   cat "$w/nokey.out" >&2
@@ -419,11 +426,10 @@ if [ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/top
 fi
 
 # ----------------------------------------------------------------------
-# 6. [b]ase, and the prompt it comes back to. A stale branch is rebased
-#    onto main in a throwaway worktree and re-reviewed, and the prompt the
-#    loop then prints is the fast-forward one — the path a reader of
-#    bin/valley has to trace two loops to reach, so it is exercised here
-#    rather than argued about.
+# 6. A branch behind main is approved as it is. Review offers no [b]ase:
+#    an answer of b is not taken, and approving files the branch's own
+#    head, not a rebased one, while main and the branch stay where they
+#    were.
 git checkout --quiet main
 git checkout --quiet -b topic/three "$first"
 echo "another readme" > docs/readme.md
@@ -431,16 +437,20 @@ git commit --quiet -am "another readme"
 git push --quiet origin topic/three
 before_base="$(git -C "$origin" rev-parse refs/heads/main)"
 
-printf 'b\ns\n' > "$w/answers"
+printf 'b\na\n' > "$w/answers"
+: > "$pushlog"
 valley review topic/three < "$w/answers" > "$w/base.out" 2>&1
-grep -qF 'topic/three does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' "$w/base.out"
-grep -qF 'rebased topic/three onto origin/main, pushed with --force-with-lease' "$w/base.out"
-# The post-[b]ase prompt: the branch fast-forwards now, so the loop falls
-# through to the prompt that has no [b]ase in it.
-grep -qF 'topic/three: [a]pprove, [v]iew full diff, [r]eject, [s]kip? ' "$w/base.out"
-grep -q 'skipped topic/three; nothing done' "$w/base.out"
-git merge-base --is-ancestor refs/remotes/origin/main refs/remotes/origin/topic/three \
-  || { echo "valley-request: [b]ase left the branch stale" >&2; exit 1; }
+grep -qx 'topic/three is behind main; the integrator lands it onto main as main stands (no rebase needed).' "$w/base.out"
+grep -qF 'topic/three: [a]pprove, [v]iew full diff, [r]eject, [s]kip? answer a, v, r, or s' "$w/base.out"
+if grep -qF -e '[b]ase' -e 'rebased topic/three' "$w/base.out"; then
+  echo "valley-request: review offered or ran a rebase of a branch behind main" >&2
+  cat "$w/base.out" >&2
+  exit 1
+fi
+[ "$(git -C "$origin" rev-parse refs/the-valley/integration-requests/main/topic-three)" = "$(git rev-parse topic/three)" ] \
+  || { echo "valley-request: approving a branch behind main did not file its own head" >&2; exit 1; }
+git merge-base --is-ancestor refs/remotes/origin/main topic/three \
+  && { echo "valley-request: the branch behind main was rebased" >&2; exit 1; }
 if [ "$(git -C "$origin" rev-parse refs/heads/main)" != "$before_base" ]; then
   echo "valley-request: the review loop moved main" >&2
   exit 1
@@ -2804,23 +2814,24 @@ cd "$repo" || exit 1
 
 # ----------------------------------------------------------------------
 # The verbs the loop offers are the whole of what an operator can do to a
-# branch, so no path may offer one outside the set: [a]pprove, [b]ase,
-# [r]eject, [s]kip, and [v]iew full diff, which only shows. Every stream this check captured is scanned at the end,
-# which is what makes the claim about paths rather than about the two
+# branch, so no path may offer one outside the set: [a]pprove, [r]eject,
+# [s]kip, and [v]iew full diff, which only shows. A change alone is never
+# offered [b]ase. Every stream this check captured is scanned at the end,
+# which is what makes the claim about paths rather than about the
 # prompts pinned character for character above — the fast-forward prompt,
-# the stale one, the one [b]ase comes back to, and the ones a refused [a]pprove
+# the one under the behind-main line, and the ones a refused [a]pprove
 # returns to are all in here. A verb that writes the protected ref from the
 # operator's own checkout — the retired [i]ntegrate, or any successor to
 # it — fails this wherever it is printed.
 offered="$(cat "$w"/*.out | grep -o '\[[a-z]\][a-z]*' | sort -u || true)"
-outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]pprove|\[b\]ase|\[r\]eject|\[s\]kip|\[v\]iew' || true)"
+outside="$(printf '%s\n' "$offered" | grep -vxE '\[a\]pprove|\[r\]eject|\[s\]kip|\[v\]iew' || true)"
 if [ -n "$outside" ]; then
   echo "valley-request: a review path offered a verb outside the set:" >&2
   printf '%s\n' "$outside" >&2
   exit 1
 fi
 # The scan is only worth something if it saw the offers at all.
-for verb in '[a]pprove' '[b]ase' '[r]eject' '[s]kip' '[v]iew'; do
+for verb in '[a]pprove' '[r]eject' '[s]kip' '[v]iew'; do
   printf '%s\n' "$offered" | grep -qxF "$verb" \
     || { echo "valley-request: no captured session offered $verb" >&2; exit 1; }
 done

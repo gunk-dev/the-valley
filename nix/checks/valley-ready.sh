@@ -475,8 +475,12 @@ for verb in review rebase; do
   refused "change qqqq v1 records no branch, and $verb acts on a change's branch" valley "$verb" qqqq
 done
 ok as contributor valley unready qqqq
-refused "change qqqq v1 is draft, not ready; nothing published. Ready it first: valley ready --change $bare_id" \
+# Only the change's owner is told how to ready it again.
+refused "change qqqq v1 is draft, not ready; nothing published" \
   as requester valley approve --head "$branchless" qqqq
+if grep -qF 'Ready it first' "$w/err"; then fail "approve told someone other than the change's owner to ready it"; fi
+refused "change qqqq v1 is draft, not ready; nothing published. Ready it first: valley ready --change $bare_id" \
+  as contributor valley approve --head "$branchless" qqqq
 if grep -qF "''" "$w/err"; then fail "approve suggested readying a change with no branch on the branch ''"; fi
 
 # A name no record is on is acted on as a branch only when it is a branch
@@ -634,10 +638,11 @@ if grep -qF -e '[a]pprove' -e '[b]ase' -e '[r]eject' "$w/out"; then fail "review
 
 # ----------------------------------------------------------------------
 # review, approve and rebase read the record again just before they act.
-# A review opened while the change is ready refuses to approve or rebase
-# it once another principal has unreadied it, and refuses to approve it
-# once it has a new version. Its branch starts behind main, so the review
-# offers [b]ase as well.
+# The change's branch starts behind main. Review asks it the ordinary
+# prompt under one line that says so, and offers no [b]ase. When another
+# principal returns the change to draft while the review is open, the
+# review says so in one line, does nothing, and does not ask again. It
+# never tells the operator to ready the change.
 #
 # review_while <change> <answers> <command…>: review the change as the
 # operator, run the command once the review waits at its prompt, then
@@ -674,22 +679,31 @@ rh="$(sed -n 's/^project \([k-z]*\) v1 ready$/\1/p' "$w/out")"
 if [ "${#rid}" != 32 ] || [ -z "$rh" ]; then fail 'ready did not name the new change'; fi
 raced_request="refs/the-valley/integration-requests/main/c-$rid"
 
-review_while "$rh" 'a\nb\ns\n' as contributor valley unready "$rh"
-grep -qF "change $rh v1 is draft, not ready; nothing published" "$w/review.err" \
-  || fail "review's [a]pprove went ahead for a change unreadied while the review was open"
-grep -qF "change $rh v1 is draft, not ready; nothing rebased" "$w/review.err" \
-  || fail "review's [b]ase went ahead for a change unreadied while the review was open"
+prompt="drafts/raced: [a]pprove, [v]iew full diff, [r]eject, [s]kip? "
+behind='drafts/raced is behind main; the integrator lands it onto main as main stands (no rebase needed).'
+review_while "$rh" 'a\ns\n' as contributor valley unready "$rh"
+grep -qxF "$behind" "$w/review.out" || fail 'review did not say the change is behind main'
+# The answer's prompt is followed by the one line, and nothing comes after.
+last="$(tail -n 1 "$w/review.out")"
+[ "${last#"$prompt"}" != "$last" ] \
+  || fail "review of a change unreadied while it was open did not end on its prompt and one line: $(cat "$w/review.out")"
+printf '%s\n' "${last#"$prompt"}" | grep -qE "^$rh changed while you were reviewing: it was returned to draft \(since ([0-9]{4}-[0-9]{2}-[0-9]{2} )?[0-9]{2}:[0-9]{2}Z\), so there is nothing to approve now\. It comes back when it is ready again\.\$" \
+  || fail "review did not say plainly that the change went back to draft: $(cat "$w/review.out")"
+[ "$(grep -cF '[v]iew full diff' "$w/review.out")" = 1 ] || fail 'review asked again about a change that moved'
+if grep -qF -e '[b]ase' -e 'skipped drafts/raced' "$w/review.out"; then fail 'review offered [b]ase, or went on, for a change that moved'; fi
+if grep -qF 'Ready it first' "$w/review.out" "$w/review.err"; then fail 'review told the operator to ready the change'; fi
 if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
   fail 'review filed a request for a change unreadied while it was open'
 fi
 [ "$(git -C "$origin" rev-parse refs/heads/drafts/raced)" = "$raced" ] \
   || fail 'review rebased a change unreadied while it was open'
-# Shown as a draft from the start, the change is offered neither
-# [a]pprove nor [b]ase, though its branch does not fast-forward from main.
+# Shown as a draft from the start, the change is offered no [a]pprove,
+# and is not said to be behind main.
 printf 'b\ns\n' | as requester valley review "$rh" > "$w/out" 2> "$w/err" || fail "review of the draft $rh failed"
 grep -qF "$rh v1 is a draft: its owner (contributor) hasn't marked it ready, so it can't be approved yet. [v]iew full diff, [s]kip? answer v or s" "$w/out" \
   || fail 'review of a stale draft did not say it is a draft in place of its prompt'
 if grep -qF -e '[a]pprove' -e '[b]ase' "$w/out"; then fail 'review offered a stale draft [a]pprove or [b]ase'; fi
+if grep -qF 'behind main' "$w/out"; then fail 'review said a draft is behind main'; fi
 [ "$(git -C "$origin" rev-parse refs/heads/drafts/raced)" = "$raced" ] || fail 'review rebased a draft'
 
 ok as contributor valley ready --change "$rid"
@@ -698,13 +712,22 @@ raced_again="$(git rev-parse HEAD)"
 new_version() {
   as contributor git push --quiet origin drafts/raced && as contributor valley ready --change "$rid"
 }
-# A version added while the review is open changes nothing [a]pprove
-# files: it approves the head the review showed, which is still a version.
+# A version added while the review is open is said plainly, and nothing
+# is approved: the operator reviews the change again to approve what
+# would land.
 review_while "$rh" 'a\ns\n' new_version
-grep -q "^Approved $rh v1 " "$w/review.out" \
-  || fail "review's [a]pprove did not approve the head it showed: $(cat "$w/review.err")"
-[ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced" ] \
+grep -qxF "$prompt$rh moved to v2 while you were reviewing; review it again to approve what would land." "$w/review.out" \
+  || fail "review did not say the change moved to v2: $(cat "$w/review.out")"
+if git -C "$origin" rev-parse --verify --quiet "$raced_request" > /dev/null; then
+  fail 'review filed a request for a change that moved while it was open'
+fi
+# Reviewed again, the change behind main is approved as it is, at v2.
+printf 'a\n' | as requester valley review "$rh" > "$w/out" 2> "$w/err" || fail "review of $rh failed"
+grep -qxF "$behind" "$w/out" || fail 'review did not say the change is behind main'
+grep -q "^Approved $rh v2 " "$w/out" || fail "review did not approve a change behind main: $(cat "$w/err")"
+[ "$(git -C "$origin" rev-parse "$raced_request")" = "$raced_again" ] \
   || fail 'review filed another head than the one it showed'
+if grep -qF 'Ready it first' "$w/out" "$w/err"; then fail 'review told the operator to ready the change'; fi
 
 # rebase rebases the active version's head, pushes the branch, and adds
 # the rebased head as a new version, as the operator. ready --if-active,
@@ -1108,7 +1131,7 @@ after() {
   awk -v l="$2" '$0 == l { on = 1 } on' "$1"
 }
 
-# v1 is approved, another change lands, and review's [b]ase makes v2. The
+# v1 is approved, another change lands, and valley rebase makes v2. The
 # rebased version has v1's file delta, so review prints a clean restack
 # of v1, its two bases, and the landing between them, and pages no diff.
 git checkout --quiet -b cmp/topic main
@@ -1123,10 +1146,11 @@ grep -q "^Approved $ch v1 " "$w/out" || fail "approve did not approve $ch v1"
 base1="$(at refs/heads/main)"
 move_main cmp-landing
 landing="$(at refs/heads/main)"
-printf 'b\ns\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
+ok as requester valley rebase "$ch"
+printf 's\n' | as requester valley review "$ch" > "$w/out" 2> "$w/err" || fail "review of $ch failed"
 cv2="$(at refs/heads/cmp/topic)"
 clean="$ch v2 at ${cv2:0:7}: clean restack of approved v1 at ${cv1:0:7}."
-grep -qx "$clean" "$w/out" || fail "review after [b]ase did not say v2 is a clean restack of v1"
+grep -qx "$clean" "$w/out" || fail "review after a rebase did not say v2 is a clean restack of v1"
 after "$w/out" "$clean" > "$w/clean"
 [ "$(sed -n 2,4p "$w/clean")" = "$(printf '%s\n' "File delta unchanged. Base ${base1:0:7} -> ${landing:0:7}." \
   'Landings between bases:' "  ${landing:0:7} cmp-landing")" ] || fail "the clean restack did not list the landing: $(cat "$w/clean")"

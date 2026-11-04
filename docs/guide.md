@@ -225,6 +225,18 @@ Use a handle from `pending`. Review pages the diff and offers actions at the ter
 stops review from offering approval for that layer or anything above it. A stack is shown from the
 bottom up; approving its top includes the layers below.
 
+A change behind `main` is approved as it is. The integrator applies the change onto `main` as `main`
+stands, and a host that runs the restacker rebases ready changes itself. Review shows one line above
+the prompt, such as
+`kqxm is behind main; the integrator lands it onto main as main stands (no rebase needed).` When the
+restacker reports a conflict, the line says `kqxm conflicts with main; its owner is resolving it.`
+instead. Review offers no rebase; an author rebases their own change with `valley rebase`.
+
+A change can move while you read it: its owner may return it to draft, ready a new version, or
+withdraw it, and it may land. Review reads the change again before `[a]pprove` or `[r]eject` acts.
+When the change has moved, review says what changed in one line, does nothing, and moves on. For
+example: `kqxm moved to v4 while you were reviewing; review it again to approve what would land.`
+
 For a revised change, review automatically compares it with an earlier approved version when one can
 be identified. A clean restack gets a short summary. Use `[v]iew full diff` to see the whole change.
 The [comparison rules](./architecture.md#review-against-the-approved-version) explain what can be

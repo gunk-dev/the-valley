@@ -31,7 +31,8 @@
 // records only to refuse: it lands no request that would bring a version
 // of a change that is not ready, and it voids a withdrawn change's
 // requests. The integration request stays the only way
-// to main. versions lists a change's versions, for approve.
+// to main. versions lists a change's versions, for approve, and standing
+// says where a change stands now, for review (standing.go).
 //
 // A change is named by its full change ID, by its handle (the shortest
 // prefix of the ID, four letters at least, that no other change on origin
@@ -61,6 +62,7 @@ const usage = `usage: valley-go status [--json] [-v] <change>
        valley-go rebase [--head <sha>] <change>
        valley-go brings [--change <id>] <head>
        valley-go versions <change ID>
+       valley-go standing <change ID>
        valley-go compare --tip <commit> <change ID> <version> <head>
        valley-go checks [--schema <file>] --instance <dir> --project <dir> <base> <head>
        valley-go coverage --head <sha> [--check <name>=<attribute>]...
@@ -129,6 +131,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = runBrings(g, args, stdout)
 	case "versions":
 		err = runVersions(g, args, stdout)
+	case "standing":
+		err = runStanding(g, args, stdout)
 	case "compare":
 		err = runCompare(g, args, stdout)
 	case "checks":

@@ -311,15 +311,35 @@ valley review [-v] [--build-here] <change>
     `refs/the-valley/integration-requests/main/<request>` in one atomic, leased `git push`. Not
     offered when the change (or any layer at or below it) is `draft` or `withdrawn`, or after its
     checks fail at that head.
-  - `[b]ase` (or `[b]ase all <n>` before paging a stack whose bottom does not fast-forward from
-    `origin/main`): Rebases the change or stack onto `origin/main` via `valley-go rebase`, then
-    re-reads and re-pages the rebased commits.
+  - `[b]ase all <n>`: Offered only before paging a stack whose bottom does not fast-forward from
+    `origin/main`. Rebases the stack onto `origin/main` via `valley-go rebase`, then re-reads and
+    re-pages the rebased commits. A change alone is never offered a rebase.
   - `[v]iew full diff`: Pages the full log and diff against `origin/main` (or the layer below)
     regardless of approved-version comparison.
   - `[r]eject`: Confirms and deletes the remote branch `refs/heads/<branch>` on `origin`, leased on
     the recorded head (offered only on a single change or the ready top of a stack).
   - `[n]ext layer`: In a stack review, advances to the next layer up.
   - `[s]kip` / `[s]top`: Exits without modifying `origin`.
+- **A change behind `main`:** A ready change whose head does not fast-forward from `origin/main` is
+  offered the ordinary prompt, with one line above it:
+  `<branch> is behind main; the integrator lands it onto main as main stands (no rebase needed).`
+  The integrator applies the change's delta onto `main` as it stands. While the change's restack
+  report is current and its `result` is `"conflict"`, the line reads
+  `<branch> conflicts with main; its owner is resolving it.` instead, and `[a]pprove` is still
+  offered.
+- **A change that moves during review:** Before `[a]pprove` or `[r]eject` acts on a change with a
+  record, `valley review` reads the change again with `valley-go standing`. When the change differs
+  from what review showed, it prints one line, acts on nothing, and ends the review of that change
+  without asking again:
+  - `<change> changed while you were reviewing: it was returned to draft (since <time>), so there is nothing to approve now. It comes back when it is ready again.`
+  - `<change> changed while you were reviewing: it was withdrawn (since <time>), so there is nothing to approve.`
+  - `<change> moved to v<n> while you were reviewing; review it again to approve what would land.`
+  - `<change> landed while you were reviewing; there is nothing left to approve.`
+
+  `<time>` is the record commit's committer time in UTC, as `HH:MMZ` on the current day and
+  `YYYY-MM-DD HH:MMZ` otherwise. Review never suggests `valley ready` for a change that is not
+  ready; only `valley approve`, run by the change's owner, does.
+
 - **Inline review notes:** Pressing `v` inside `less` opens the diff buffer in `$EDITOR`. Any lines
   inserted by the reviewer are anchored to their file and new-side line number, appended to
   `$XDG_STATE_HOME/valley/notes/<branch>.md`, and printed at the end of the review.

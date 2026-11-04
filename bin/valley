@@ -122,11 +122,14 @@ that head and its [a]pprove approves it, and rebase and review's
 [r]eject refuse, naming both, when the branch's tip on origin is another
 commit. approve approves the head bound to it, wherever the branch is.
 [r]eject deletes the branch under a lease on the recorded head. approve,
-rebase, and review's [a]pprove and [b]ase refuse a change whose record is
-not ready, naming its state, and review offers none of them for a change
-that is not ready when it shows it. Each reads the record again just before it
-acts, and again before approve files or rebase pushes, and refuses when
-the change is not ready. rebase also refuses when the change's
+and rebase refuse a change whose record is not ready, naming its state,
+and review offers neither [a]pprove nor [r]eject for a change that is not
+ready when it shows it. approve and rebase read the record again just
+before they act, and again before approve files or rebase pushes, and
+refuse when the change is not ready. review reads the change again before
+its [a]pprove or [r]eject acts. When the change has moved since review
+showed it, returned to draft, withdrawn, given a new version or landed,
+review says so in one line and moves on, without asking again. rebase also refuses when the change's
 record has changed at all since it began, and approve when the head it
 approves is not a version's. A name that read as a plain branch is
 read again before approve files or rebase pushes. If it names a change by
@@ -410,14 +413,18 @@ usage: valley review [-v] [--build-here] <change>
                    without the pager.
                    Nothing in this script writes the protected ref: the
                    integrator does, having judged the request.
-                   a stale branch (won't fast-forward from main) is first
-                   offered:
-                     [b]ase       rebase it onto origin/main, as rebase
-                                  does (valley help rebase), then re-review
-                                  the diff that would actually land
-                   [a]pprove is offered there too: a stale branch is nothing
-                   the integrator cannot apply, so it need not be rebased
-                   first.
+                   a change behind main (one that does not fast-forward
+                   from it) is asked the same prompt, under one line:
+                     `<branch> is behind main; the integrator lands it
+                     onto main as main stands (no rebase needed).`
+                   the integrator applies the change's delta onto main as
+                   it stands, and the host's restacker rebases ready
+                   changes itself, so review asks nothing more of it.
+                   while the restacker reports a conflict for the change,
+                   the line says `<branch> conflicts with main; its owner
+                   is resolving it.` instead. [a]pprove is still offered,
+                   and the integrator decides whether the change applies.
+                   to rebase a change of your own, use valley rebase.
                    a change whose record is not ready says so above its
                    diff, and again in place of the prompt, which then
                    offers only [v]iew full diff and [s]kip:
@@ -425,13 +432,25 @@ usage: valley review [-v] [--build-here] <change>
                      marked it ready, so it can't be approved yet.`
                      `<change> is withdrawn: there is nothing to approve.`
                    a draft is often a change an agent is still working on.
-                   [a]pprove would be refused, and so would [b]ase, since
-                   adding the rebased head as a version would ready the
-                   change behind its owner's back. [r]eject records
-                   nothing on the change: it would only delete a branch
-                   its owner may still be working on. a change unreadied
-                   or withdrawn while the review is open is still refused
-                   by [a]pprove and [b]ase, which read the record again.
+                   [a]pprove would be refused. [r]eject records nothing
+                   on the change: it would only delete a branch its owner
+                   may still be working on.
+                   before [a]pprove or [r]eject acts, review reads the
+                   change again. when it moved while you read it, review
+                   says what changed in one line, does nothing, and moves
+                   on to the next change or ends:
+                     `<change> changed while you were reviewing: it was
+                     returned to draft (since <time>), so there is
+                     nothing to approve now. It comes back when it is
+                     ready again.`
+                     `<change> changed while you were reviewing: it was
+                     withdrawn (since <time>), so there is nothing to
+                     approve.`
+                     `<change> moved to v<n> while you were reviewing;
+                     review it again to approve what would land.`
+                     `<change> landed while you were reviewing; there is
+                     nothing left to approve.`
+                   <time> is when the record last changed, in UTC.
                    a branch no record is on has no state, and is offered
                    the usual prompt.
                    while paging, press v: less opens the diff in $EDITOR.
@@ -443,8 +462,9 @@ usage: valley review [-v] [--build-here] <change>
                    end of the page. each note is then appended to
                    $XDG_STATE_HOME/valley/notes/<branch>.md (default
                    ~/.local/state) and printed after the verdict. notes
-                   survive [b]ase. lines you change or delete instead of
-                   inserting are ignored, with a warning.
+                   survive a stack's [b]ase all. lines you change or
+                   delete instead of inserting are ignored, with a
+                   warning.
                    a change whose active version names no branch is
                    refused, since notes and [r]eject act on a branch;
                    approve files its head without one.
@@ -642,7 +662,7 @@ usage: valley rebase [--known-signers <file>] [--integrator-name <name>] <change
 
   rebase [--known-signers <file>] [--integrator-name <name>] <change>
                    rebase the change's whole stack onto origin/main, as
-                   review's [b]ase does: the layers valley-go stack lists
+                   review's [b]ase all does: the layers valley-go stack lists
                    under the change, and the change itself. in a throwaway
                    worktree, bottom first, each layer's own commits go onto
                    the rebased layer below it, and the bottom's onto
@@ -1202,6 +1222,9 @@ reject() {
   read -r answer || answer=""
   case "$answer" in
     y | Y | yes)
+      # The change may have moved while the confirmation waited: say so,
+      # and delete nothing.
+      ! moved || return 0
       if ! git push --quiet "${lease[@]}" origin --delete "$branch"; then
         refuse "origin did not delete $branch, which may have moved since the fetch; nothing deleted"
         return 1
@@ -1223,8 +1246,8 @@ reject() {
 # it, which is the pair a reviewer would otherwise have to copy out by hand.
 
 # The scratch directory holding the buffer and its pristine copy, and the
-# notes taken so far in this review — a global because [b]ase pages a second
-# time and the notes from the first pass are not thereby withdrawn.
+# notes taken so far in this review — a global because [b]ase all pages a
+# second time and the notes from the first pass are not thereby withdrawn.
 REVIEW_TMP=""
 NOTES=()
 
@@ -1639,9 +1662,10 @@ cleanup_scratch() {
   cleanup_checks_tmp
 }
 
-# [b]ase and the rebase verb are one piece of code, valley-go rebase
-# (status/rebase.go). It rebases the change's whole stack in a throwaway
-# worktree of its own — the user's checkout is never touched — pushes
+# A stack's [b]ase all and the rebase verb are one piece of code,
+# valley-go rebase (status/rebase.go). It rebases the change's whole
+# stack in a throwaway worktree of its own — the user's checkout is never
+# touched — pushes
 # every layer's branch in one atomic push, leased on the tips it read, and
 # adds each change's rebased head to its record as a new version. A
 # change alone prints what rebase always has; a stack prints a manifest
@@ -1649,8 +1673,8 @@ cleanup_scratch() {
 # with the human, back at the review prompt or in whatever front end ran
 # the rebase verb.
 #
-# rebase_shown <head>: [b]ase for the change under review, while it is
-# still at <head>, the head review showed of it.
+# rebase_shown <head>: [b]ase all for the stack under review, while its
+# top is still at <head>, the head review showed of it.
 rebase_shown() {
   valley-go rebase --head "$1" "${CHANGE_ID:-$CHANGE_NAME}" || return
   # What the checks read was for the heads before the rebase.
@@ -1685,7 +1709,7 @@ rebase_shown() {
 # the objects with it.
 
 # The tree the checks run over: a throwaway worktree of the branch, as
-# [b]ase uses, so that what is checked is the branch's tree and not the
+# a rebase uses, so that what is checked is the branch's tree and not the
 # operator's working copy. A global, so the traps clean it up whatever
 # happens.
 APPROVE_WT=""
@@ -2416,10 +2440,20 @@ read_resolved() {
   IFS=$'\x1f' read -r "$@" <<< "${resolved//$'\t'/$'\x1f'}"
 }
 
-# ready_hint <change ID> <branch>: the valley ready line that readies the
-# change again, naming the branch unless its version records none.
+# Set by cmd_review. A review is the operator's, and the change under it
+# is usually someone else's, so review never tells the operator to ready
+# it: that is for the change's owner.
+REVIEWING=""
+
+# ready_hint <change ID> <branch> <owner>: what a refusal of a change that
+# is not ready adds for the caller: the valley ready line that readies the
+# change again, naming the branch unless its version records none. Only
+# the change's owner, as git config valley.principal names them, is told
+# it, and never in a review. Prints nothing for anyone else.
 ready_hint() {
-  printf 'valley ready --change %s' "$1"
+  [ -z "$REVIEWING" ] || return 0
+  [ -n "$3" ] && [ "$(git config valley.principal || true)" = "$3" ] || return 0
+  printf '. Ready it first: valley ready --change %s' "$1"
   [ -z "$2" ] || printf ' %q' "$2"
 }
 
@@ -2528,7 +2562,7 @@ check_record() {
     read_resolved "$line" kind id handle version head branch state owner
     [ "$kind" = change ] || return 0
     if [ "$state" != ready ]; then
-      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone. Ready it first: $(ready_hint "$id" "$branch")"
+      refuse "$CHANGE_NAME is now change $handle v$version, which is $state, not ready; $undone$(ready_hint "$id" "$branch" "$owner")"
       return 1
     fi
     if [ "$head" != "$acting" ]; then
@@ -2547,7 +2581,7 @@ check_record() {
     return 1
   fi
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone. Ready it first: $(ready_hint "$CHANGE_ID" "$branch")"
+    refuse "change $CHANGE_HANDLE v$version is $state, not ready; $undone$(ready_hint "$CHANGE_ID" "$branch" "$owner")"
     return 1
   fi
   if [ -n "$bound" ]; then
@@ -2585,7 +2619,7 @@ check_version() {
     fi
   done <<< "$out"
   if [ "$state" != ready ]; then
-    refuse "change $CHANGE_HANDLE is $state, not ready; $undone. Ready it first: $(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH")"
+    refuse "change $CHANGE_HANDLE is $state, not ready; $undone$(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER")"
     return 1
   fi
   if [ -z "$APPROVE_VERSION" ]; then
@@ -2607,7 +2641,7 @@ bind_head() {
   local want="$1" sha answer
   APPROVE_HEAD=""
   if [ "$CHANGE_STATE" != ready ]; then
-    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published. Ready it first: $(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH")"
+    refuse "change $CHANGE_HANDLE v$CHANGE_VERSION is $CHANGE_STATE, not ready; nothing published$(ready_hint "$CHANGE_ID" "$CHANGE_BRANCH" "$CHANGE_OWNER")"
     return 1
   fi
   if [ -n "$want" ]; then
@@ -2687,12 +2721,11 @@ approve_failed_at() {
 # Prints nothing, and fails, for a ready change, and for a plain branch,
 # which has no record. A draft is often a change an agent is still working
 # on, so the prompt then offers only [v]iew full diff and [s]kip.
-# [a]pprove would be refused. [b]ase is not offered either: rebase refuses
-# such a change, since adding its rebased head as a version would ready it
-# behind its owner's back. Nor is [r]eject, which records nothing on the
-# change: it deletes the branch its owner may still be working on, and the
-# record says what it said before. approve still reads the record again
-# when it acts, since the state can change while the review is open.
+# [a]pprove would be refused. Nor is [r]eject offered, which records
+# nothing on the change: it deletes the branch its owner may still be
+# working on, and the record says what it said before. review still reads
+# the record again before it acts, since the state can change while the
+# review is open (moved).
 not_ready() {
   case "$3" in
     draft) printf "%s v%s is a draft: its owner (%s) hasn't marked it ready, so it can't be approved yet." "$1" "$2" "$4" ;;
@@ -2706,79 +2739,105 @@ shown_not_ready() {
   not_ready "$CHANGE_HANDLE" "$CHANGE_VERSION" "$CHANGE_STATE" "$CHANGE_OWNER"
 }
 
-# Show the branch and take the verdict. Split out of cmd_review so that
-# every way out of it — approve, reject, skip — is followed by the notes.
-# A change that is not ready is asked as decide asks it: it can be neither
-# approved nor rebased, so whether it fast-forwards from main changes
-# nothing.
-read_and_decide() {
-  local branch="$1" choice failed answers
-  show_review "$branch"
-  # A stale branch's pre-rebase diff is not what would land; offer to rebase it
-  # mechanically, then re-review what actually would. [a]pprove is offered
-  # here as well, because the integrator applies a delta to the tip rather
-  # than fast-forwarding: a stale branch is a request it can judge, and
-  # rebasing first is a convenience rather than a precondition.
-  while ! shown_not_ready > /dev/null \
-    && ! fast_forwards "$(change_head "$branch")"; do
-    if failed="$(approve_failed_at "$branch")"; then
-      printf '%s does not fast-forward from main. Its checks failed at %s, so approving needs a new head: [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
-        "$branch" "$failed"
-      answers="v, b, r, or s"
-    else
-      printf '%s does not fast-forward from main: [a]pprove, [v]iew full diff, [b]ase onto main, [r]eject, [s]kip? ' \
-        "$branch"
-      answers="a, v, b, r, or s"
-    fi
-    read -r choice || die "stdin closed before an answer; nothing done"
-    case "$choice" in
-      a)
-        if [ -n "$failed" ]; then
-          echo "answer $answers"
-        elif approve "$branch"; then
-          return
-        fi
-        ;;
-      v) view_full "$branch" ;;
-      b)
-        # A change with a record gains the rebased head as a new version,
-        # so the review goes on at that version, as it does at the rebased
-        # tip of a plain branch. A refused rebase has said why, and the
-        # prompt comes back.
-        if rebase_shown "$(change_head "$branch")"; then
-          if [ -n "$CHANGE_ID" ]; then
-            resolve_change "$CHANGE_ID" || die "could not read change $CHANGE_HANDLE again after the rebase"
-            bind_review
-          fi
-          fetch_origin
-          show_review "$branch"
-        fi
-        ;;
-      r) reject "$branch" && return ;;
-      s)
-        echo "skipped $branch; nothing done"
-        return
-        ;;
-      *) echo "answer $answers" ;;
-    esac
-  done
-  decide "$branch"
+# Where the change under review stands now, as valley-go standing reads
+# it from origin (status/standing.go), set by read_standing. The state,
+# the active version and its head; when the record last changed; whether
+# that version has landed; and STANDING_CONFLICT, which is "conflict"
+# while the host's restacker reports that rebasing the change onto main
+# conflicted.
+STANDING_STATE="" STANDING_VERSION="" STANDING_HEAD="" STANDING_SINCE=""
+STANDING_LANDED="" STANDING_CONFLICT=""
+
+# read_standing: read where the change under review stands now. A plain
+# branch has no record, and reads as nothing. Fails when origin cannot be
+# read.
+read_standing() {
+  local line
+  STANDING_STATE="" STANDING_VERSION="" STANDING_HEAD="" STANDING_SINCE=""
+  STANDING_LANDED="" STANDING_CONFLICT=""
+  [ -n "$CHANGE_ID" ] || return 0
+  line="$(valley-go standing "$CHANGE_ID")" || return 1
+  read_resolved "$line" STANDING_STATE STANDING_VERSION STANDING_HEAD STANDING_SINCE \
+    STANDING_LANDED STANDING_CONFLICT
 }
 
-# decide <branch> [<name> <n>]: the verdict on a change that fast-forwards
-# from main, and on the top of a stack, which is never offered [b]ase. A
-# change alone is asked about by its branch. The top of a stack of <n> is
-# asked about by its <name>, as the stack lists it, and its prompt says
-# that approving it lands all <n> layers. [v]iew full diff pages the
-# change's whole diff, or the top layer's.
+# moved: before review acts on an answer about a change with a record, it
+# reads the change again. Another principal may return it to draft, ready
+# a new version, or withdraw it while the operator reads, and it may land.
+# When it is no longer what review showed, moved says in one line what
+# changed and what happens next, and the review of that change ends: the
+# prompt's answers were about what was shown, so it is not asked again.
+# Fails when the change is still as shown, and for a plain branch, which
+# approve and reject check themselves.
+moved() {
+  local h="$CHANGE_HANDLE"
+  [ -n "$CHANGE_ID" ] || return 1
+  if ! read_standing; then
+    echo "could not read $h again from origin; nothing done"
+    return 0
+  fi
+  case "$STANDING_STATE" in
+    withdrawn)
+      echo "$h changed while you were reviewing: it was withdrawn (since $STANDING_SINCE), so there is nothing to approve."
+      return 0
+      ;;
+    draft)
+      echo "$h changed while you were reviewing: it was returned to draft (since $STANDING_SINCE), so there is nothing to approve now. It comes back when it is ready again."
+      return 0
+      ;;
+  esac
+  if [ "$STANDING_VERSION" != "$CHANGE_VERSION" ] || [ "$STANDING_HEAD" != "$CHANGE_HEAD" ]; then
+    echo "$h moved to v$STANDING_VERSION while you were reviewing; review it again to approve what would land."
+    return 0
+  fi
+  if [ -n "$STANDING_LANDED" ]; then
+    echo "$h landed while you were reviewing; there is nothing left to approve."
+    return 0
+  fi
+  return 1
+}
+
+# behind_main <branch> <label>: the line review shows above the prompt of
+# a change that does not fast-forward from main. Being behind main is
+# normal and asks nothing of the operator: the integrator applies the
+# change's delta onto main as main stands, with the evidence for the head
+# approved, and the host's restacker rebases ready changes itself. When
+# the restacker reports that rebasing the change conflicted, the line
+# says so instead, and [a]pprove stays offered: the integrator decides
+# whether the change applies. Prints nothing, and fails, for a change
+# that fast-forwards from main.
+behind_main() {
+  fast_forwards "$(change_head "$1")" && return 1
+  read_standing || STANDING_CONFLICT=""
+  if [ "$STANDING_CONFLICT" = conflict ]; then
+    printf '%s conflicts with main; its owner is resolving it.' "$2"
+  else
+    printf '%s is behind main; the integrator lands it onto main as main stands (no rebase needed).' "$2"
+  fi
+}
+
+# Show the branch and take the verdict. Split out of cmd_review so that
+# every way out of it — approve, reject, skip — is followed by the notes.
+read_and_decide() {
+  show_review "$1"
+  decide "$1"
+}
+
+# decide <branch> [<name> <n>]: the verdict on a change alone, and on the
+# top of a stack. A change alone is asked about by its branch. The top of
+# a stack of <n> is asked about by its <name>, as the stack lists it, and
+# its prompt says that approving it lands all <n> layers. [v]iew full
+# diff pages the change's whole diff, or the top layer's.
 #
 # A change that is not ready is asked about by the line not_ready gives,
 # in place of the label, and is offered only [v]iew full diff and
 # [s]kip, or [s]top. The top of a stack with a layer under it that is not
 # ready says why it can't be approved (layer_held), and is offered the
-# rest.
+# rest. A change that can be approved and does not fast-forward from main
+# has behind_main's line above its prompt. Before [a]pprove and [r]eject
+# act, moved reads the change again, and ends its review when it moved.
 decide() {
-  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers own held=""
+  local branch="$1" name="${2:-}" n="${3:-}" choice failed answers own held="" behind=""
   local label="$1" approve="[a]pprove" reject="[r]eject" stop="[s]kip"
   local stopped="skipped $1; nothing done"
   own="$(shown_not_ready)" || own=""
@@ -2787,8 +2846,12 @@ decide() {
     stopped="stopped reviewing $name at change $n of $n; nothing done"
     held="$(layer_held $((n - 1)))" || held=""
   fi
+  if [ -z "$own" ] && [ -z "$held" ]; then
+    behind="$(behind_main "$branch" "${name:-$branch}")" || behind=""
+  fi
   while true; do
     failed=""
+    [ -z "$behind" ] || printf '%s\n' "$behind"
     if [ -n "$own" ]; then
       if [ -n "$n" ]; then
         printf '%s: %s [v]iew full diff, %s? ' "$label" "$own" "$stop"
@@ -2812,11 +2875,13 @@ decide() {
       # A refusal from approve is not a verdict: it says what it did not do
       # and the prompt comes back, so the branch can still be rejected or
       # skipped. When the checks failed, approving the same head again is
-      # no longer offered, nor is approving a change that is not ready.
+      # no longer offered, nor is approving a change that is not ready. A
+      # change that moved since it was shown is not acted on, and its
+      # review ends.
       a)
         if [ -n "$failed" ] || [ -n "$own" ] || [ -n "$held" ]; then
           echo "answer $answers"
-        elif approve "$branch"; then
+        elif moved || approve "$branch"; then
           return
         fi
         ;;
@@ -2830,6 +2895,8 @@ decide() {
       r)
         if [ -n "$own" ]; then
           echo "answer $answers"
+        elif moved; then
+          return
         else
           reject "$branch" && return
         fi
@@ -3137,7 +3204,7 @@ review_stack() {
             continue
           fi
           use_layer "$k"
-          if approve "$CHANGE_BRANCH"; then
+          if moved || approve "$CHANGE_BRANCH"; then
             return
           fi
           use_layer "$top"
@@ -3182,6 +3249,7 @@ cmd_review() {
   done
   [ -n "$name" ] || die "$usage"
   set -- "$name"
+  REVIEWING=yes
   resolve_change "$1" || exit 1
   need_branch review
   local branch="$CHANGE_BRANCH"
@@ -3210,7 +3278,7 @@ cmd_review() {
   fi
 }
 
-# approve and rebase are review's [a]pprove and [b]ase without the pager,
+# approve and rebase are review's [a]pprove and [b]ase all without the pager,
 # for a front end that has shown the change its own way. Each runs the
 # code its key runs, approve and valley-go rebase, so the verb and the key
 # cannot drift apart. A change is named as resolve_change reads it, and

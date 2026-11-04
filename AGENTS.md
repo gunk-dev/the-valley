@@ -31,6 +31,29 @@ Write clearly, simply, and without compression that would tax a knowledgeable so
 The test for every paragraph: could an engineer new to this repo read it once and correctly say it
 back?
 
+## A platform, not a deployment
+
+the-valley is software that other operators run, on hosts of any size, for projects of any shape.
+The deployment that motivates a change is one user among many. Build the mechanism that serves all
+of them, not the fix that fits the hosts in front of you.
+
+- Derive behaviour from what the host and the project declare or measure, never from constants tuned
+  to one deployment. Read capacity, such as CPUs and memory limits, from the system or from a
+  documented option. Choose defaults that are safe on a small host and still scale on a large one.
+- Prefer a general mechanism to a special case. A fix that works only because of one project's
+  checks, one host's memory, or one workload's timing is a workaround. Find the mechanism that holds
+  whatever those numbers are, or state the limit as a documented constraint.
+- Make limits visible to the people who hit them. When a host lacks the capacity for what is asked,
+  say so in output or telemetry, rather than failing in a way that is hard to trace, such as a
+  killed process or a stalled queue.
+- Give every option an operator may need to change a default, a documented meaning, and guidance on
+  how to size it.
+- Treat measurements from a real deployment as evidence for a change, cited in its message and knots
+  without naming the deployment. They are never design constants.
+
+For example, a lock that lets one evaluation run at a time is safe on one host and wasteful on
+another. Admitting evaluations by the memory budget the host declares serves both.
+
 ## Document altitudes
 
 The docs are layered. Each document stays at its altitude:

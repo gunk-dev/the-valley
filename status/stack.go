@@ -30,13 +30,15 @@ import (
 // runStack prints the layers of a change's stack, bottom first, then the
 // change itself, one line each, of fields separated by tabs:
 //
-//	<kind> <name> <base> <head> <state> <title>
+//	<kind> <name> <base> <head> <state> <approved> <title>
 //
 // The kind is change or branch. The name is what review takes: a change's
 // handle, or a branch's name. The base is the head of the layer below, or
 // for the bottom layer its merge base with main. The head of a change is
 // the head its active version records. The state is ready, draft or
-// withdrawn, or - for a branch. The title is last: a change's is its
+// withdrawn, or - for a branch. The approved field is approved for a ready
+// change whose active version has an integration request, as pending reads
+// it (approvedVersion), and - for any other layer. The title is last: a change's is its
 // record's, and a branch's is the subject of its first own commit, as
 // pending reads it. No field holds a tab: git refuses control characters
 // in a ref name, and a title's are made spaces. A change with nothing
@@ -79,9 +81,12 @@ func runStack(g git, args []string, w io.Writer) error {
 		} else if base, err = s.g.output(true, "merge-base", s.tip, l.Head); err != nil {
 			return failure(fmt.Sprintf("%s and %s share no history", l.Name, recordTarget))
 		}
-		kind, state, title := "branch", "-", ""
+		kind, state, approved, title := "branch", "-", "-", ""
 		if l.ID != "" {
 			kind, state, title = "change", l.Record.State, readable(l.Record.ActiveVersion().Title)
+			if s.approvedVersion(l.ID, l.Record) {
+				approved = "approved"
+			}
 		} else {
 			not := []string{"^" + s.tip}
 			if l.Below != nil {
@@ -89,7 +94,7 @@ func runStack(g git, args []string, w io.Writer) error {
 			}
 			title = s.branchTitle(l.Head, not)
 		}
-		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\n", kind, l.Name, base, l.Head, state, title)
+		fmt.Fprintf(&b, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", kind, l.Name, base, l.Head, state, approved, title)
 	}
 	_, err = io.WriteString(w, b.String())
 	return err

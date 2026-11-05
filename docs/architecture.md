@@ -2962,6 +2962,11 @@ repository has a `drafts` array as well, holding the drafts, with the same entry
 `knots`. `branches` is the same as in `valley-changes/v1`. Its `includes` counts only changes that
 have not landed.
 
+Each change in `changes` has `approved`: `true` when its active version has an integration request
+at its head. The human view lists those changes under `approved`, one line each, apart from the
+`ready` changes that wait on an approval. A request that names an earlier head whose approval
+carries to the active version is not counted.
+
 ```text
 ready
 pppp v1                                                     1 minute ago · alice

@@ -176,9 +176,10 @@ valley withdraw <change>
 
 ### `valley pending`
 
-`valley pending` lists work waiting to land in three sections: `ready` changes whose active version
-has not landed, unrecorded `branches` ahead of `main` that no landed version's head reaches, and
-`drafts`.
+`valley pending` lists work waiting to land in four sections: `ready` changes whose active version
+has not landed and has no integration request, which wait on an approval; `approved` changes, which
+have a request and wait on their checks and the integrator; unrecorded `branches` ahead of `main`
+that no landed version's head reaches; and `drafts`.
 
 ```sh
 valley pending
@@ -203,7 +204,8 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
     `checks: 21 passed in 9m10s (eval 24s); worker-e2e 431s, +100s against its recent 331s`. With
     `--json`, the active version of each ready change carries the same [`checks`](#version-checks)
     object.
-  - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON.
+  - `--json`: Emits [`valley-pending/v1`](#valley-changesv1-and-valley-pendingv1) JSON. Each change
+    in `changes` has an `approved` field.
   - `-v`: Warns on `stderr` when a project's plan graph (`refs/the-valley/knots`) cannot be read.
   - `--known-signers <file>`, `--integrator-name <name>`: The known-signers file and the
     integrator's signing name a transfer statement is verified with. Each takes precedence over its
@@ -211,6 +213,13 @@ valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-signers
     [Environment variables](#environment-variables)). When either value comes from the publication,
     its `signer-projects` file is read too. While that file names the integrator name, no transfer
     statement is verified. A publication whose `signer-projects` does not read is not used.
+- **Approved changes:** A change is approved when its active version has an integration request at
+  its head. `valley pending` does not count a request that names an earlier head whose approval
+  carries to the active version, so such a version is listed under `ready` until a request names its
+  own head. The `approved` section prints one line for each change: its name, its title, and with
+  `--checks` its check state, as `kqxm  add greeting  checks: 12 passed, 7 pending`. A stack that
+  holds a change still waiting on an approval is drawn in full, with its approved layers marked
+  `(approved)`.
 - **Behavior:** Groups stacked entries under their top entry by commit ancestry, shows linked knots
   (`<title> · <knot-id>`), marks `includes <handle>` for unlanded non-entry changes (such as
   `withdrawn` changes) contained in a head, and marks `uncertain` when a version's landing cannot be
@@ -319,6 +328,9 @@ valley review [-v] [--build-here] <change>
   - `[r]eject`: Confirms and deletes the remote branch `refs/heads/<branch>` on `origin`, leased on
     the recorded head (offered only on a single change or the ready top of a stack).
   - `[n]ext layer`: In a stack review, advances to the next layer up.
+  - **Approved layers:** A stack review lists a layer below the top that is approved, as
+    [`valley pending`](#valley-pending) defines it, as `(approved, not paged)` and does not page it.
+    The top is always paged, even when approved.
   - `[s]kip` / `[s]top`: Exits without modifying `origin`.
 - **A change behind `main`:** A ready change whose head does not fast-forward from `origin/main` is
   offered the ordinary prompt, with one line above it:
@@ -2336,6 +2348,8 @@ Five `--json` commands emit versioned JSON documents for scripts and front ends.
     `{ "n", "head" (40-hex OID without git-sha1: prefix), "title", "branch", "uploader", "landing" ("landed"|"landed-recorded"|"uncertain"|"not-landed"), "landed_commit" (<oid or null>), "request" ({"ref","commit"} or null), "outcome" ({"decision","head","tip"} or null) }`).
     With `--checks`, the active version of a ready change that has not landed also carries
     [`checks`](#version-checks).
+  - `approved` (`boolean`, **present only on `changes` in `valley-pending/v1`**): Whether the active
+    version has an integration request at its head.
   - `includes` (`array` of `string`): Change IDs of other changes whose active version has not
     landed and whose active version head is a strict ancestor of this change's active version head
     in `main..head`. A change whose active version has landed is never named, even though

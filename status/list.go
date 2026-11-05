@@ -74,6 +74,9 @@ type jsonChange struct {
 	// Knots lists the knots in the project's plan graph that link the
 	// change, active knots first (does.go).
 	Knots []knotRef `json:"knots"`
+	// Approved is valley-pending/v1's alone, on a pending change: whether
+	// its active version has an integration request (approved, pending.go).
+	Approved *bool `json:"approved,omitempty"`
 }
 
 type jsonVersion struct {

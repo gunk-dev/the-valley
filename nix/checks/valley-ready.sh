@@ -910,6 +910,40 @@ grep -qx 's1/three already fast-forwards from origin/main; nothing rebased' "$w/
   || fail 'a stack that fast-forwards was not left alone'
 moved_nothing s1
 
+# An approved change asks nothing of the reader. With a request at the
+# head of the middle layer, pending marks it approved, and review walks the
+# stack without paging it. The top, which review was named, is still paged.
+req2="refs/the-valley/integration-requests/main/c-$id2"
+req3="refs/the-valley/integration-requests/main/c-$id3"
+as requester git push --quiet origin "$new2:$req2"
+ok valley pending --json
+jq -e --arg a "$h2" --arg b "$h3" '[.repos[0].changes[] | select(.handle == $a or .handle == $b) | [.handle, .approved]] == [[$b, false], [$a, true]]
+  or [.repos[0].changes[] | select(.handle == $a or .handle == $b) | [.handle, .approved]] == [[$a, true], [$b, false]]' "$w/out" > /dev/null \
+  || fail 'pending --json did not mark only the middle layer approved'
+ok valley pending
+grep -qE "^  (├|└) $h2 v2 \(approved\)  " "$w/out" || fail 'pending did not mark the approved layer under its top'
+printf 'n\ns\n' | as requester valley review "$h3" > "$w/out" 2> "$w/err" || fail 'review of the stack failed'
+grep -qF "$h2 (approved, not paged): " "$w/out" || fail 'review did not say it leaves the approved layer unpaged'
+if grep -qF "change 2 of 3: " "$w/out"; then fail 'review paged the approved layer'; fi
+grep -qF "change 1 of 3: " "$w/out" || fail 'review did not page the first layer'
+grep -qF "change 3 of 3: $h3 on " "$w/out" || fail 'review did not page the top'
+# Named itself, the approved layer is reviewed.
+printf 'n\ns\n' | as requester valley review "$h2" > "$w/out" 2> "$w/err" || fail 'review of the approved change failed'
+grep -qF "change 2 of 2: $h2 on " "$w/out" || fail 'review of a named approved change did not page it'
+# With the top approved too, nothing waits on the reader. pending lists
+# both under approved, one line each, and the top is still paged.
+as requester git push --quiet origin "$new3:$req3"
+ok valley pending
+grep -qx 'approved' "$w/out" || fail 'pending listed no approved section'
+grep -qE "^$h3 v2  s1-three-more$" "$w/out" || fail 'pending did not list the approved top on one line'
+grep -qE "^$h2 v2  s1-two$" "$w/out" || fail 'pending did not list the approved layer on one line'
+if grep -qE "^$h3 v2 .* ago · " "$w/out"; then fail 'pending listed an approved change as a block'; fi
+ok valley pending --json
+jq -e --arg a "$h2" --arg b "$h3" '[.repos[0].changes[] | select(.handle == $a or .handle == $b) | .approved] == [true, true]' "$w/out" > /dev/null || fail 'pending --json did not mark both approved'
+printf 'n\ns\n' | as requester valley review "$h3" > "$w/out" 2> "$w/err" || fail 'review of the approved stack failed'
+grep -qF "change 3 of 3: $h3 on " "$w/out" || fail 'review did not page an approved top it was named'
+as requester git push --quiet origin --delete "$req2" "$req3"
+
 # A conflict in the middle layer pushes nothing, records nothing, and
 # names the layer.
 build_stack s3

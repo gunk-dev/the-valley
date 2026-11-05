@@ -188,12 +188,16 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-
 
   pending [--all] [--repo <name>] [--checks] [--json] [-v]
           [--known-signers <file>] [--integrator-name <name>]
-                   list what is waiting to land, in three sections: ready,
-                   the ready changes whose active version has not landed;
-                   branches, each branch on origin that main does not
-                   reach and that is no change's active head; and drafts,
-                   the changes whose record says they are drafts. each
-                   entry is a block. its first line is its name, with its
+                   list what is waiting to land, in four sections: ready,
+                   the ready changes whose active version has not landed
+                   and that wait on an approval; approved, one line each
+                   for the ready changes whose active version has an
+                   integration request, which wait on their checks and
+                   the integrator and not on you; branches, each branch
+                   on origin that main does not reach and that is no
+                   change's active head; and drafts, the changes whose
+                   record says they are drafts. each other entry is a
+                   block. its first line is its name, with its
                    head's age and author: handle and version for a change,
                    the branch for a branch, and handle and version on its
                    branch for a draft. under it come its title (the
@@ -235,7 +239,8 @@ usage: valley pending [--all] [--repo <name>] [--checks] [--json] [-v] [--known-
                                   same checks objects
                      --json       print valley-pending/v1: the
                                   valley-changes/v1 shape, with the
-                                  pending changes in changes and the
+                                  pending changes in changes, each
+                                  marked approved or not, and the
                                   drafts in drafts
                      -v           warn on stderr when a plan graph is
                                   missing or unreadable
@@ -469,6 +474,9 @@ usage: valley review [-v] [--build-here] <change>
                    refused, since notes and [r]eject act on a branch;
                    approve files its head without one.
                    a stack is reviewed one layer at a time, bottom first.
+                   a layer below the top that is approved, as pending
+                   lists it, is named in the list and not paged: it asks
+                   nothing of you. the top is always paged.
                    its layers are what pending lists under the change: the
                    changes not landed and the branches no record is on
                    that its head contains (valley-go stack). review first
@@ -2923,7 +2931,7 @@ decide() {
 # name, or the branch a change's active version names. L_OWNER is a
 # change's owner, as its record names it. L_NOTES holds the notes taken on
 # each layer, for the print after the verdict.
-L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
+L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_APPROVED=() L_TITLE=()
 L_ID=() L_VERSION=() L_BRANCH=() L_OWNER=() L_NOTES=()
 # The name review was given, which the top is read again by.
 TOP_NAME=""
@@ -2935,19 +2943,19 @@ TOP_NAME=""
 # or the helper cannot read the stack. Called in a condition, so each step
 # is checked by hand.
 read_stack() {
-  local out line kind name base head state title k last
+  local out line kind name base head state approved title k last
   local rkind id handle version rhead branch rstate owner
-  L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_TITLE=()
+  L_KIND=() L_NAME=() L_BASE=() L_HEAD=() L_STATE=() L_APPROVED=() L_TITLE=()
   L_ID=() L_VERSION=() L_BRANCH=() L_OWNER=() L_NOTES=()
   out="$(valley-go stack "${CHANGE_ID:-origin/$CHANGE_BRANCH}")" || return 1
   while IFS= read -r line; do
-    read_resolved "$line" kind name base head state title
+    read_resolved "$line" kind name base head state approved title
     if ! [[ "$kind" =~ ^(change|branch)$ && "$base" =~ ^[0-9a-f]{40}$ && "$head" =~ ^[0-9a-f]{40}$ ]]; then
       refuse "valley-go stack answered $line, which this script does not read"
       return 1
     fi
     L_KIND+=("$kind") L_NAME+=("$name") L_BASE+=("$base") L_HEAD+=("$head")
-    L_STATE+=("$state") L_TITLE+=("$title") L_NOTES+=("")
+    L_STATE+=("$state") L_APPROVED+=("$approved") L_TITLE+=("$title") L_NOTES+=("")
     L_ID+=("") L_VERSION+=("") L_BRANCH+=("$name") L_OWNER+=("")
   done <<< "$out"
   last=$((${#L_NAME[@]} - 1))
@@ -2993,12 +3001,22 @@ notes_key() {
   printf '%s' "${L_BRANCH[$1]:-${L_NAME[$1]}}"
 }
 
+# layer_skipped <k>: succeeds for a layer below the top that is approved,
+# which asks nothing of the reviewer: the valley carries it to landing once
+# its checks pass. The walk does not page it. The top is the change review
+# was named, so it is always paged.
+layer_skipped() {
+  [ "$1" -lt $((${#L_NAME[@]} - 1)) ] && [ "${L_APPROVED[$1]}" = approved ]
+}
+
 # layer_label <k>: how a layer is named in the list: its name, then
 # branch, or the change's state.
 layer_label() {
   local k="$1"
   if [ "${L_KIND[k]}" = branch ]; then
     printf '%s (branch)' "${L_NAME[k]}"
+  elif layer_skipped "$k"; then
+    printf '%s (approved, not paged)' "${L_NAME[k]}"
   else
     printf '%s (%s)' "${L_NAME[k]}" "${L_STATE[k]}"
   fi
@@ -3172,6 +3190,7 @@ review_stack() {
   printf '\n'
   n="${#L_NAME[@]}" top=$((${#L_NAME[@]} - 1))
   for ((k = 0; k < top; k++)); do
+    layer_skipped "$k" && continue
     page_layer "$k"
     case "$k" in
       0) lands="${L_NAME[0]} alone" ;;

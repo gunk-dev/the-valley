@@ -220,10 +220,15 @@ valley pending
 valley review kqxm
 ```
 
+`pending` lists the changes waiting on an approval under `ready`. A change that already has an
+integration request is under `approved`, one line each, with its check state when you pass
+`--checks`. It waits on its checks and the integrator, not on you, so there is nothing to review.
+
 Use a handle from `pending`. Review pages the diff and offers actions at the terminal. Choose
 `[s]kip` to leave it alone or `[a]pprove` to approve the head you saw. A draft or withdrawn layer
 stops review from offering approval for that layer or anything above it. A stack is shown from the
-bottom up; approving its top includes the layers below.
+bottom up; approving its top includes the layers below. Review lists a layer below the top that is
+already approved but does not page it. Name that layer to review it.
 
 A change behind `main` is approved as it is. The integrator applies the change onto `main` as `main`
 stands, and a host that runs the restacker rebases ready changes itself. Review shows one line above

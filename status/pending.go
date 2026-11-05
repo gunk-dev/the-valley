@@ -1,8 +1,17 @@
 // valley pending: what is waiting to land, for a person to read.
 //
-// It prints three sections, in this order. ready holds the ready changes
+// It prints four sections, in this order. ready holds the ready changes
 // whose active version has not landed, by the first two landing rules
-// (inventory.go). branches holds each branch on origin, other than main,
+// (inventory.go), and that wait on an approval. approved holds those that
+// have an integration request at the active version's head. They wait on
+// their checks and the integrator, so each is one line: its name and
+// version, its title, and with --checks its check state. A request that
+// names an earlier head whose approval carries to the active version is
+// not counted: judging carry needs the delta between the two heads and
+// the policy's carry mode, so a version approved only by carry is listed
+// under ready. A stack that holds a ready change or a draft is drawn in
+// full wherever its top is, its approved layers marked "(approved)".
+// branches holds each branch on origin, other than main,
 // that main does not reach, that is no change's active head, and that no
 // landed version's head reaches. drafts
 // holds the changes whose record says they are drafts. When no ready
@@ -70,8 +79,8 @@
 // branch never is. On a terminal, names are bold, unless NO_COLOR is set.
 //
 // With --json it prints valley-pending/v1: valley-changes/v1's shape, with
-// the pending changes alone in changes, the drafts in an array of their
-// own, drafts, and the same branches.
+// the pending changes alone in changes, each marked approved or not, the
+// drafts in an array of their own, drafts, and the same branches.
 
 package main
 
@@ -94,6 +103,16 @@ func pendingChange(s *snapshot, n recorded) bool {
 	return n.record.State == change.Ready && !s.isLanded(n.id, n.record.ActiveVersion())
 }
 
+// approvedVersion reports whether a ready change's active version has an
+// integration request at its head. That is the simple rule: the integrator
+// also accepts a request that names an earlier head whose approval carries
+// to this version, which needs the delta between the two and the policy's
+// carry mode. A version approved only by carry is not counted here, so
+// valley pending lists it with the changes awaiting approval.
+func (s *snapshot) approvedVersion(id string, r *change.Record) bool {
+	return r.State == change.Ready && s.request(id, r.ActiveVersion()) != nil
+}
+
 // unlanded is a change in any state whose active version has not landed:
 // the changes a pending change may include.
 func unlanded(s *snapshot, n recorded) bool {
@@ -109,6 +128,12 @@ func isDraft(_ *snapshot, n recorded) bool {
 // the changes that have not landed.
 func (l listed) pendingView(h handleMap) jsonRepo {
 	r := l.repoView(h, pendingChange, unlanded)
+	if l.err == nil {
+		for i, c := range r.Changes {
+			approved := c.Versions[c.Active-1].Request != nil
+			r.Changes[i].Approved = &approved
+		}
+	}
 	drafts := []jsonChange{}
 	if l.err == nil {
 		drafts = l.repoView(h, isDraft, unlanded).Changes
@@ -158,7 +183,7 @@ func runPending(g git, args []string, stdout, stderr io.Writer) error {
 // sections are valley pending's sections, in the order they are printed,
 // each with the word a nested entry from it is marked with.
 var sections = []struct{ name, kind string }{
-	{"ready", "ready"}, {"branches", "branch"}, {"drafts", "draft"},
+	{"ready", "ready"}, {"approved", "approved"}, {"branches", "branch"}, {"drafts", "draft"},
 }
 
 // entry is one block of valley pending: a ready change, a branch no record
@@ -172,6 +197,7 @@ type entry struct {
 	knot     string   // ID of the first knot that links the change (does.go)
 	includes []string // what includes names that is no entry here
 	notes    []string // uncertain and checks
+	checks   string   // the check state line of a change, with --checks
 
 	when        int64 // the head's commit time
 	age, author string
@@ -222,6 +248,15 @@ func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Write
 			p("\n")
 		}
 		p("%s\n", sec.name)
+		if sec.name == "approved" {
+			for _, e := range here {
+				for _, line := range t.approvedLines(e) {
+					p("%s\n", line)
+				}
+			}
+			gap = true
+			continue
+		}
 		for i, e := range here {
 			if i > 0 {
 				p("\n")
@@ -232,6 +267,33 @@ func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Write
 		}
 		gap = true
 	}
+}
+
+// approvedLines is an approved stack, one line for each approved change:
+// its name, its title, and its check state when --checks gave one. These
+// changes wait on the checks and the integrator, not on the reader. A
+// branch in the stack is landed by the top's request and gets no line. A
+// stack that holds a ready change or a draft is drawn in full, since the
+// reader has something to do in it.
+func (t terminal) approvedLines(top *entry) []string {
+	list := append([]*entry{top}, top.below...)
+	var lines []string
+	for _, e := range list {
+		switch e.section {
+		case "approved":
+		case "branches":
+			continue
+		default:
+			return t.drawStack(top)
+		}
+		tail := ""
+		if e.checks != "" {
+			tail = "  " + e.checks
+		}
+		lead := e.name + "  "
+		lines = append(lines, t.strong(e.name)+"  "+fit(e.title, t.width-columns(lead+tail))+tail)
+	}
+	return lines
 }
 
 // entries are a repository's entries, as its pending view lists them, each
@@ -269,12 +331,17 @@ func (r listed) entries(view jsonRepo, h handleMap, l listing) []*entry {
 			e.notes = append(e.notes, s.checks(v.Head))
 		}
 		if v.Checks != nil {
-			e.notes = append(e.notes, checksLine(v.Checks))
+			e.checks = checksLine(v.Checks)
+			e.notes = append(e.notes, e.checks)
 		}
 		all = append(all, e)
 	}
 	for _, c := range view.Changes {
-		recorded("ready", c)
+		if c.Approved != nil && *c.Approved {
+			recorded("approved", c)
+		} else {
+			recorded("ready", c)
+		}
 	}
 	for _, b := range view.Branches {
 		name := branchName(b.Branch)

@@ -73,10 +73,10 @@ func TestStackListsLayersBottomFirst(t *testing.T) {
 	run1("ready", "--change", strings.Repeat("t", 32), "five")
 
 	want := strings.Join([]string{
-		"branch\tone\t" + base + "\t" + heads["one"] + "\t-\tlayer one",
-		"change\tqqqq\t" + heads["one"] + "\t" + heads["two"] + "\tready\tlayer two",
-		"change\trrrr\t" + heads["two"] + "\t" + heads["three"] + "\tdraft\tlayer three",
-		"change\tssss\t" + heads["three"] + "\t" + heads["four"] + "\tready\tlayer four",
+		"branch\tone\t" + base + "\t" + heads["one"] + "\t-\t-\tlayer one",
+		"change\tqqqq\t" + heads["one"] + "\t" + heads["two"] + "\tready\t-\tlayer two",
+		"change\trrrr\t" + heads["two"] + "\t" + heads["three"] + "\tdraft\t-\tlayer three",
+		"change\tssss\t" + heads["three"] + "\t" + heads["four"] + "\tready\t-\tlayer four",
 		"",
 	}, "\n")
 	if got := run1("stack", "ssss"); got != want {
@@ -86,7 +86,7 @@ func TestStackListsLayersBottomFirst(t *testing.T) {
 	if got := run1("stack", "four"); got != want {
 		t.Errorf("stack four:\n%s\nwant:\n%s", got, want)
 	}
-	if got, want := run1("stack", "one"), "branch\tone\t"+base+"\t"+heads["one"]+"\t-\tlayer one\n"; got != want {
+	if got, want := run1("stack", "one"), "branch\tone\t"+base+"\t"+heads["one"]+"\t-\t-\tlayer one\n"; got != want {
 		t.Errorf("stack one: %q, want %q", got, want)
 	}
 }

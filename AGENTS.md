@@ -1,5 +1,7 @@
 # Working in this repository
 
+Read [guidance/house-rules.md](./guidance/house-rules.md) for the rules shared across projects.
+
 ## A platform, not a deployment
 
 Build general mechanisms, not workarounds for one deployment's checks, memory, or timing; document

@@ -164,9 +164,15 @@ func TestAFailedReadStopsAdmissionAndDrainsTheRunningBatches(t *testing.T) {
 	mark()
 	claim := claimWake(wakeDir, io.Discard)
 	defer claim.close()
+	// The emitter drops a record it cannot store within its deadline, and
+	// every record emitted while that store is still under way, so on a
+	// loaded machine the records below would be missing. Each record is
+	// waited for instead.
+	tel := openWorkerTelemetry(telDir)
+	tel.tel.SetDeadline(time.Minute)
 	w := &worker{batches: 2, interval: time.Millisecond, wake: claim, stdout: io.Discard, stderr: io.Discard,
 		seen: map[string]int{}, running: map[string]*batch{}, said: map[string]map[string]bool{},
-		tel: openWorkerTelemetry(telDir), failures: readFailures(filepath.Join(state, "failures.json"), io.Discard)}
+		tel: tel, failures: readFailures(filepath.Join(state, "failures.json"), io.Discard)}
 	jobs := []*job{testJob("app", "a", 1, "refs/a", "build a"), testJob("app", "b", 1, "refs/b", "build b"),
 		testJob("app", "c", 1, "refs/c", "build c")}
 	var launched []*batch

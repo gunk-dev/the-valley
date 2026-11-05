@@ -29,6 +29,7 @@ type Emitter struct {
 	run      string
 	began    time.Time
 	busy     chan struct{}
+	deadline time.Duration
 
 	mu      sync.Mutex
 	dropped int
@@ -59,7 +60,22 @@ func NewEmitter(dir string, producer *Producer, run string) *Emitter {
 		run:      run,
 		began:    time.Now(),
 		busy:     make(chan struct{}, 1),
+		deadline: EmitDeadline,
 	}
+}
+
+// SetDeadline makes Emit wait up to d for each record, and for the
+// stream's lock, in place of EmitDeadline. It first waits for a store
+// still under way. A test that asserts what a producer recorded sets a
+// long deadline, so that a loaded machine delays the records rather than
+// dropping them.
+func (e *Emitter) SetDeadline(d time.Duration) {
+	if e == nil {
+		return
+	}
+	e.busy <- struct{}{}
+	e.deadline, e.stream.LockWait = d, d
+	<-e.busy
 }
 
 // Run is the run the emitter's records name.
@@ -137,12 +153,14 @@ func (e *Emitter) Emit(typ string, r Record, data map[string]any) {
 	e.mu.Unlock()
 	r.Data = data
 	done := make(chan error, 1)
+	// The store frees the emitter before it says it is done, so a record
+	// emitted the moment Emit returns is not dropped behind it.
 	go func() {
-		defer func() { <-e.busy }()
 		_, err := e.stream.Append(&r)
+		<-e.busy
 		done <- err
 	}()
-	timer := time.NewTimer(EmitDeadline)
+	timer := time.NewTimer(e.deadline)
 	defer timer.Stop()
 	select {
 	case err := <-done:

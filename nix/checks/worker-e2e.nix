@@ -12,7 +12,8 @@
 # Then the wake directory. A move the worker reads starts a pass with the
 # timer stopped, and a move during a pass gets the next one. A landing by
 # the integrator's own service marks the worker while the project's mirror
-# and the bus hang, and so does a ready push. A floor landed in the
+# and the bus hang, and so does a ready push. The worker's push, refused
+# while valley-init converges, is tried again once it has. A floor landed in the
 # instance, which the worker does not build, marks it, and the next pass
 # reads the new floor. A pass killed during a build, and a pass that
 # cannot reach the repositories, leave their claim, and the timer's next
@@ -132,13 +133,10 @@ let
     while [ $i -lt 10000000 ]; do i=$((i+1)); done
     echo $NIX_BUILD_CORES > $out
   '';
-  # The long batch beside which a pass builds others: as long as slow,
-  # and its own derivation, so the scenario that kills a pass during slow
-  # still finds slow unbuilt.
+  # The long batch beside which a pass builds others. Its build reads the
+  # gate, a fifo the scheduler scenario writes to when the build may end.
   long = pkgs.writeText "long.sh" ''
-    # long
-    i=0
-    while [ $i -lt 10000000 ]; do i=$((i+1)); done
+    read gate < /run/valley-worker-e2e-gate/long
     echo $NIX_BUILD_CORES > $out
   '';
   broken = pkgs.writeText "broken.sh" "exit 1";
@@ -221,7 +219,13 @@ in
       # stream in the worker's own directory, where the scheduler scenario
       # reads when each batch's evaluation began and ended.
       systemd.services.valley-worker.environment.VALLEY_TELEMETRY_DIR = "/var/lib/valley-worker/telemetry";
-      systemd.tmpfiles.rules = [ "d /var/lib/valley-worker/telemetry 0700 valley-worker valley-worker - -" ];
+      # The long check's gate, in a directory every build's sandbox holds.
+      nix.settings.extra-sandbox-paths = [ "/run/valley-worker-e2e-gate" ];
+      systemd.tmpfiles.rules = [
+        "d /var/lib/valley-worker/telemetry 0700 valley-worker valley-worker - -"
+        "d /run/valley-worker-e2e-gate 0755 root root - -"
+        "p /run/valley-worker-e2e-gate/long 0644 root root - -"
+      ];
       # The machine has no network. Without these, every new build waits
       # for the daemon's lookups in cache.nixos.org to fail, and every boot
       # waits for a DHCP lease on an interface nothing here uses.
@@ -472,6 +476,25 @@ in
           idle()
           host.succeed(f"test ! -e {wake}/claimed")
 
+      with subtest("a worker push refused while valley-init converges is tried again once it has"):
+          # valley-init deletes the converged record while it runs, and the
+          # host refuses every push until the record is back. The change is
+          # pushed and readied first, and the pass starts with pushes
+          # paused. The identity timer would start valley-init, which
+          # writes the record, so it stays stopped: the scenarios below
+          # start the compiler themselves when they land a registry.
+          host.succeed("systemctl stop valley-identity.timer valley-worker.path")
+          host.wait_until_succeeds("test \"$(systemctl show -p ActiveState --value valley-init)\" != activating", timeout=60)
+          ready("paused", "${spin}")
+          host.succeed("mv /srv/git/.valley-converged /tmp/valley-converged", "systemctl start valley-worker.path")
+          wait_said(head("paused"), "origin paused pushes while it converges", 120)
+          host.succeed("mv /tmp/valley-converged /srv/git/.valley-converged")
+          wait_said(head("paused"), "published", 120)
+          assert told(head("paused"), "could not publish") == 0
+          idle()
+          host.succeed(f"{contributor} valley withdraw paused")
+          idle()
+
       def eval_spans():
           # When each attest run's evaluation began and ended, how long it
           # waited to be admitted, and its peak memory, from its eval.start
@@ -512,10 +535,10 @@ in
       # starts both batches at once. Each evaluation is estimated at 600
       # MiB, and two do not fit the 1 GiB budget, so they take turns. Each
       # ready push marks due, and the pass claims the mark itself and reads
-      # again. The long change builds for about twenty seconds; meanwhile
-      # the short change is built and published in the pass's second slot,
-      # a broken change fails, two changes with one tree are built once,
-      # and the long change publishes after the failure. No two batches'
+      # again. The long change builds until the test opens its gate, once
+      # the broken change has failed. Meanwhile the short change is built
+      # and published in the pass's second slot, the broken change fails,
+      # and two changes with one tree are built once. No two batches'
       # evaluations overlap. The pass acknowledges every mark it claimed.
       with subtest("a pass builds a short change beside a long one, evaluating one at a time when two do not fit the budget, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
           host.succeed("systemctl stop valley-worker.path")
@@ -535,11 +558,6 @@ in
           # still builds.
           assert told(long, "published") == 0, journal()
           assert unit_property("valley-worker.service", "ActiveState") == "activating"
-          # The broken change takes the short change's slot before the
-          # twins are readied. A scan that first saw both would start them
-          # in change ID order, so the twins could take the slot, and the
-          # long change publish before the broken change fails.
-          wait_said(early_broken, "building", 120)
           # Two branches with one tree, readied one right after the other.
           ready("twin-a", "${spin}")
           host.succeed(
@@ -551,6 +569,8 @@ in
           assert trees[0] == trees[1], trees
           twins = [head("twin-a"), head("twin-b")]
           wait_said(early_broken, "the batch did not pass", 120)
+          # Writing to the gate waits until the long build reads it.
+          host.succeed("timeout 300 sh -c 'echo open > /run/valley-worker-e2e-gate/long'")
           wait_said(long, "published", 300)
           host.wait_until_succeeds(
               "test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating", timeout=300

@@ -270,3 +270,18 @@ func TestALogNeverWaitsForItsDisk(t *testing.T) {
 		t.Fatalf("Close = %d, %v", n, cut)
 	}
 }
+
+// A record emitted right after another has been stored is stored too: a
+// store frees the emitter before Emit returns, so only a store still
+// under way drops what follows it.
+func TestRecordsEmittedBackToBackAreAllStored(t *testing.T) {
+	e := NewEmitter(t.TempDir(), Self("test", ""), "r1")
+	e.SetDeadline(time.Minute)
+	for i := 0; i < 500; i++ {
+		e.Emit("check.queued", Record{Check: "c"}, nil)
+	}
+	recs, _, err := e.stream.Read(0, 1000, 0)
+	if err != nil || len(recs) != 500 {
+		t.Fatalf("the stream holds %d of 500 records (%v)", len(recs), err)
+	}
+}

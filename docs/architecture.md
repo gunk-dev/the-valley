@@ -1287,6 +1287,11 @@ A push whose reply is lost is not built again. If the push landed, the next pass
 on `origin`. If it did not land, the ref is still stored in the worker's clone, and a later pass
 pushes that same object again.
 
+A host refuses every push while `valley-init` converges, which takes seconds (see
+[valley-init and the push hold](#valley-init-and-the-push-hold)). The worker tries a push refused
+for that reason again every two seconds, for up to a minute, before it counts the push as failed.
+Checked by `worker-e2e`.
+
 After a failure, the same thing waits before it is tried again. A batch that fails waits 15 minutes
 at first, and a push that fails waits one minute. Each failure in a row doubles the wait, up to 24
 hours. A wait is measured from when the attempt ended, so a long build does not use up its own wait.

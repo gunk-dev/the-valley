@@ -113,6 +113,8 @@ func shell(args []string, stderr io.Writer) int {
 			}
 		}
 		if !hasConverged(*converged, *expect) {
+			// The check worker (status/worker.go) tries a push refused
+			// with these words again soon, so keep them as they are.
 			fmt.Fprintln(stderr, "valley: pushes to this host are paused until valley-init converges on its configuration; fetching is open")
 			return 1
 		}

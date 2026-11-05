@@ -294,6 +294,35 @@ in
               time.sleep(2)
           raise Exception(f"alice could not run {cmd}: {out}")
 
+      def side_by_side(head, ended):
+          """Reads alice's records until the observer sees the fast check of
+          her approval at head done while the slow one still prints, and
+          returns that read. It reads for as long as the approval runs, and
+          fails if the slow check ends first."""
+          deadline = time.monotonic() + 300
+          while time.monotonic() < deadline and not ended():
+              ls = observe("read --source=report.alice --limit=1000 --logs")
+              fast_done = [r for r in records(ls, type="check.result", check="fast") if r["head"] == head]
+              if fast_done:
+                  run = fast_done[0]["run"]
+                  assert not [r for r in records(ls, type="check.result", check="slow") if r["run"] == run], "the slow check ended before the observer saw the fast one end"
+                  if [r for r in records(ls, type="check.output", check="slow") if r["run"] == run and "slow tick" in r["data"]["text"]]:
+                      return ls
+              time.sleep(1)
+          raise Exception(f"never saw the fast check done while the slow one built, at {head}")
+
+      def filed(head):
+          """Flushes alice's records until the observer reads her approval at
+          head filed, and returns that read and those approve.end records."""
+          for _ in range(60):
+              as_alice("valley telemetry flush")
+              ls = observe("read --source=report.alice --limit=1000")
+              ends = [r for r in records(ls, type="approve.end") if r["head"] == head and r["data"]["result"] == "filed"]
+              if ends:
+                  return ls, ends
+              time.sleep(1)
+          raise Exception(f"the approval at {head} was never observed filed")
+
       def ready(branch, path, script=None, rebuild=False):
           """A change by alice: one new file, and the slow check's script
           given, or changed so that its derivation is built again."""
@@ -464,26 +493,15 @@ in
               " --working-directory=/home/alice/project --remain-after-exit"
               f" valley approve --build-here --head {fresh} fresh"
           )
-          seen: list = []
-          for _ in range(120):
-              ls = observe("read --source=report.alice --limit=1000 --logs")
-              fast_done = [r for r in records(ls, type="check.result", check="fast") if r["head"] == fresh]
-              slow_done = [r for r in records(ls, type="check.result", check="slow") if r["head"] == fresh]
-              slow_out = [r for r in records(ls, type="check.output", check="slow") if "slow tick" in r["data"]["text"]]
-              if fast_done and slow_out and not slow_done:
-                  seen = ls
-                  break
-              assert not slow_done, "the slow check ended before the observer saw the fast one end"
+          def fresh_ended():
               assert host.succeed("systemctl show -p Result --value approve-fresh").strip() == "success", "the approval failed"
-              time.sleep(1)
-          assert seen, "never saw the fast check done while the slow one built"
+              return host.succeed("systemctl show -p SubState --value approve-fresh").strip() == "exited"
+          seen = side_by_side(fresh, fresh_ended)
           assert all(r["data"]["untrusted"] for r in records(seen, type="check.output"))
           assert not records(observe("read --source=report.alice --limit=1000"), type="check.output")
           host.wait_until_succeeds("test \"$(systemctl show -p SubState --value approve-fresh)\" = exited", timeout=300)
           assert host.succeed("systemctl show -p ExecMainStatus --value approve-fresh").strip() == "0"
-          time.sleep(4)
-          host.succeed("sudo -u alice -H bash -c 'cd /home/alice/project && valley telemetry flush'")
-          ls = observe("read --source=report.alice --limit=1000")
+          ls, _ = filed(fresh)
           mine = [r for r in of(ls, "record") if r.get("head") == fresh]
           types = [r["type"] for r in mine]
           for want in ["approve.start", "approve.policy", "approve.coverage", "approve.checks", "run.start", "check.result", "evidence.stored", "run.end", "approve.request", "approve.end"]:
@@ -529,26 +547,10 @@ in
           host.succeed("install -m 600 -o alice ${keys}/alice /home/alice/keys/later")
           host.wait_until_succeeds("test $(grep -o 'pprove' /tmp/review.out | wc -l) -ge 2", timeout=60)
           host.succeed("echo a > /tmp/review.fifo")
-          live: list = []
-          for _ in range(120):
-              ls = observe("read --source=report.alice --limit=1000 --logs")
-              fast_done = [r for r in records(ls, type="check.result", check="fast") if r["head"] == reviewed]
-              if fast_done:
-                  checks = fast_done[0]["run"]
-                  slow_done = [r for r in records(ls, type="check.result", check="slow") if r["run"] == checks]
-                  slow_out = [r for r in records(ls, type="check.output", check="slow") if r["run"] == checks and "slow tick" in r["data"]["text"]]
-                  assert not slow_done, "the slow check ended before the observer saw the fast one end"
-                  if slow_out:
-                      live = ls
-                      break
-              time.sleep(1)
-          assert live, "never saw the fast check done while the slow one built, in an approval from review"
+          side_by_side(reviewed, lambda: host.execute("grep -q '^Approved ' /tmp/review.out")[0] == 0)
           host.wait_until_succeeds("grep -q '^Approved ' /tmp/review.out", timeout=300)
           host.succeed("kill $(cat /tmp/review.holder)")
-          time.sleep(4)
-          as_alice("valley telemetry flush")
-          ls = observe("read --source=report.alice --limit=1000")
-          second = [r for r in records(ls, type="approve.end") if r["head"] == reviewed and r["data"]["result"] == "filed"]
+          ls, second = filed(reviewed)
           assert len(second) == 1 and second[0]["run"] != first, second
           run = second[0]["run"]
           types = [r["type"] for r in of(ls, "record") if r.get("run") == run]
@@ -597,7 +599,10 @@ in
           as_alice("git config valley.telemetry.remote ssh://git@192.0.2.1/project.git")
           unreachable, head_away = timed_approve("away", "policy/away.txt")
           as_alice("git config --unset valley.telemetry.remote")
-          assert down < plain + 5 and unreachable < plain + 5, (plain, down, unreachable)
+          print(f"approve took {plain:.1f}s plain, {down:.1f}s with the collector down, {unreachable:.1f}s with it unreachable")
+          # A guest under load varies one approval by seconds; a wait on
+          # telemetry would be its 20-second flush deadline.
+          assert down < plain + 15 and unreachable < plain + 15, (plain, down, unreachable)
           pushing("git push --quiet origin HEAD:refs/heads/still-pushes")
           host.fail("sudo -u alice -H bash -c 'cd /home/alice/project && valley telemetry --remote origin flush'")
           host.succeed("systemctl start valley-telemetry.socket")

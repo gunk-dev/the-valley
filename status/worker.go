@@ -154,6 +154,7 @@ package main
 // nothing.
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -188,6 +189,14 @@ const (
 	firstBuildWait = 15 * time.Minute
 	firstPushWait  = time.Minute
 	longestWait    = 24 * time.Hour
+)
+
+// pausedPushes is what the host's ssh gate says when it refuses a push
+// because valley-init is converging (valleyhook/shell.go), and
+// pausedPushRetry is how soon the worker tries such a push again.
+const (
+	pausedPushes    = "pushes to this host are paused until valley-init converges"
+	pausedPushRetry = 2 * time.Second
 )
 
 // defaultInterval is how often a pass with batches running scans again
@@ -1215,7 +1224,7 @@ func (w *worker) publish(j *job, object string, met map[string]bool) {
 		return
 	}
 	a := w.tel.begin("push", j.identity(), nil, "", map[string]any{"ref": j.ref, "object": object})
-	if _, err := j.r.g.output(false, "push", "--quiet", "origin", object+":"+j.ref); err != nil {
+	if err := w.push(j, object); err != nil {
 		f := w.failed(j.r.name, key, clock(), firstPushWait)
 		w.tel.end(a, err, fmt.Sprintf("pushing %s to origin: %v", j.ref, err), key, &f)
 		w.say(j, "could not publish %s; it is not pushed again before %s", j.ref, f.Retry.Format(time.RFC3339))
@@ -1227,6 +1236,29 @@ func (w *worker) publish(j *job, object string, met map[string]bool) {
 	w.failures.passed(j.r.name, key)
 	w.tel.end(a, nil, "", key, nil)
 	w.say(j, "published %s", j.ref)
+}
+
+// push pushes object to the job's ref on origin. A host refuses every
+// push while valley-init converges on its configuration, which takes
+// seconds. A push refused for that is tried again every pausedPushRetry,
+// for up to firstPushWait, before it fails and waits as any failed push
+// does. The loop waits meanwhile; another batch's push would be refused
+// too.
+func (w *worker) push(j *job, object string) error {
+	g := j.r.g
+	var said bytes.Buffer
+	g.stderr = &said
+	if j.r.g.stderr != nil {
+		g.stderr = io.MultiWriter(j.r.g.stderr, &said)
+	}
+	for began := time.Now(); ; time.Sleep(pausedPushRetry) {
+		said.Reset()
+		_, err := g.output(false, "push", "--quiet", "origin", object+":"+j.ref)
+		if err == nil || !strings.Contains(said.String(), pausedPushes) || time.Since(began) >= firstPushWait {
+			return err
+		}
+		w.note(j, "origin paused pushes while it converges, so publishing %s is tried again", j.ref)
+	}
 }
 
 // say prints a line about what the pass did with a version. The version's

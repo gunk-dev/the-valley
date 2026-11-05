@@ -426,10 +426,8 @@ valley approve [--head <sha>] [--build-here] <change>
     its own lacks the check. A failed build publishes nothing. For an unrecorded branch, or for a
     version that is not the active one, `approve` says that no worker builds it. When a `command`
     check ran, `origin` holds this signer's evidence for the tree, so `approve` says that
-    `--build-here` cannot add the missing checks to it
-    ([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
-    The attempt's telemetry lists those checks under `missing` in `approve.coverage`, and ends with
-    `approve.end` `filed`.
+    `--build-here` cannot add the missing checks to it. The attempt's telemetry lists those checks
+    under `missing` in `approve.coverage`, and ends with `approve.end` `filed`.
 
   - Runs every required `command` check, and with `--build-here` every other required `nix` check,
     with `attest run` in a temporary worktree, using `VALLEY_ATTEST_KEY` (and optional
@@ -437,8 +435,7 @@ valley approve [--head <sha>] [--build-here] <change>
     needed.
   - Before running anything, refuses when `origin` already holds this signer's ref for the tree,
     `refs/the-valley/attestations/<tree-digest>/<key-hash>`. That namespace is create-only, so the
-    new evidence would have nowhere to go
-    ([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+    new evidence would have nowhere to go.
   - Pushes the attestation refs stored for the tree (when checks ran) and
     `refs/the-valley/integration-requests/main/<request>` (leased on the prior request value) in one
     `git push --atomic`. When the request already names the head and there is no new evidence, it

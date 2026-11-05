@@ -125,13 +125,13 @@ if findings:
 PY
 
 # The style lint: the rules of AGENTS.md's style section that a pattern can
-# catch. It prints one finding per rule broken on a line, as
+# catch. It prints a finding for each pattern a line breaks, as
 # file:line: rule: what it found, and exits 1 if it printed any. A line
 # allows one rule with the marker <!-- prose-allow: rule --> outside inline
 # code, and a marker that allows nothing is itself a finding.
 cat > "$TMPDIR/style.awk" <<'AWK'
 BEGIN {
-	split("line-number narration vocabulary", names, " ")
+	split("line-number narration provenance vocabulary", names, " ")
 	for (i in names) rules[names[i]]
 	marker = "<!--[[:space:]]*prose-allow:[^>]*-->"
 	# A source path is one with a directory, or a file name with an
@@ -140,6 +140,18 @@ BEGIN {
 	seg = "[[:alnum:]_.-]+"
 	path = seg "(/" seg ")+|" seg "\\.(go|sh|bash|nix|cue|py|md|txt|json|ya?ml|toml)"
 	cite = "(^|[^[:alnum:]_./-])(" path "):[0-9]+(-[0-9]+)?([^0-9]|$)"
+	# Where a passage came from: a date, a knot, a change or a commit
+	# given as its reason, or a person's view given as the project's. A
+	# date may carry a time.
+	date = "\\<[0-9]{4}-[0-9]{2}-[0-9]{2}(T[0-9:.]+Z?)?\\>"
+	knot = "\\<(oc|bd|ida|qn|dcr)-[0-9a-f]{7}\\>"
+	change = "\\<[k-z]{32}\\>"
+	short = "[^[:alnum:]_./:-][0-9a-f]{7,12}([^[:alnum:]_/-]|$)"
+	who = "(operator|user|maintainer|reviewer|author|planner|owner)s?"
+	some = "(the |an? )?([[:alnum:]'’]+ )?"
+	opinion = "\\<the ([[:alnum:]'’]+ )?(human )?operators? (said|says|wants|wanted|asked|decided|prefers|preferred|insisted|chose)\\>"
+	quote = "(\"|“|”)"
+	speech = "\\<(" who " (says|asks|writes)|said|asked|wrote|put it)[,:]?[[:space:]]*" quote "|" quote "[,.]?[[:space:]]+(said|says|asked|wrote|writes) " some who "\\>|\\<in " some who "'s words\\>"
 }
 
 function finding(rule, message) {
@@ -167,7 +179,41 @@ function word(rule, re, why, fold,    at) {
 		finding(rule, "\"" substr(s, at, RLENGTH) "\": " why)
 }
 
-FNR == 1 { fence = ""; tail = "" }
+# A short commit hash: seven to twelve hex digits, a digit and a letter
+# among them, which "defaced" and "1234567" lack. A curve name such as
+# ed25519 is not one. The space before s stands for the start of a line.
+function hash(rule, why,    t, start, h) {
+	t = " " s
+	for (start = 0; match(substr(t, start + 1), short); start += RSTART) {
+		h = substr(t, start + RSTART + 1, RLENGTH - 1)
+		sub(/[^0-9a-f]$/, "", h)
+		if (start + RSTART + RLENGTH - 2 > skip && h ~ /[0-9]/ && h ~ /[a-f]/ && h !~ /^ed[0-9]+$/) {
+			finding(rule, "\"" h "\": " why)
+			return
+		}
+	}
+}
+
+# The line t as the word rules read it, after prev, the last two words of
+# the line before it.
+function reading(t, prev) {
+	s = t
+	sub(/^[[:space:]]+/, "", s)
+	s = prev " " s
+	skip = length(prev) + 1
+	low = tolower(s)
+}
+
+# The last two words of t.
+function last(t,    w) {
+	if (!match(t, /([^[:space:]]+[[:space:]]+)?[^[:space:]]+[[:space:]]*$/))
+		return ""
+	w = substr(t, RSTART, RLENGTH)
+	sub(/[[:space:]]+$/, "", w)
+	return w
+}
+
+FNR == 1 { fence = ""; tail = ""; bareTail = "" }
 
 {
 	delete allowed
@@ -182,12 +228,17 @@ FNR == 1 { fence = ""; tail = "" }
 		if (rule in rules)
 			allowed[rule]
 		else
-			finding("allowance", "prose-allow names no rule \"" rule "\"; the rules are line-number, narration and vocabulary")
+			finding("allowance", "prose-allow names no rule \"" rule "\"; the rules are line-number, narration, provenance and vocabulary")
 	}
 	if (match($0, "^[[:space:]]*(([-*+>]|[0-9]+[.)])[[:space:]]+)?" marker))
 		finding("allowance", "a marker that begins a line begins an HTML block; put it after a word")
 	text = $0
 	gsub(marker, " ", text)
+	# Inline code quotes a value, such as a schema's cutoff date, an
+	# example knot ID or a digest, so the provenance rules read the line
+	# without it.
+	bare = text
+	gsub(/`[^`]*`/, " ", bare)
 
 	infence = fence != ""
 	if (!infence && match($0, /^[[:space:]]*(```+|~~~+)/)) {
@@ -207,11 +258,7 @@ FNR == 1 { fence = ""; tail = "" }
 	# Fenced code is exempt from the word rules. A phrase may wrap, so each
 	# line is read after the last two words of the line before it.
 	if (!infence) {
-		s = text
-		sub(/^[[:space:]]+/, "", s)
-		s = tail " " s
-		skip = length(tail) + 1
-		low = tolower(s)
+		reading(text, tail)
 		word("vocabulary", "\\<ow(e|es|ed)\\>", "a change requires checks", 1)
 		word("vocabulary", "\\<pull requests?\\>", "a valley change is a change", 1)
 		word("vocabulary", "\\<PRs?\\>", "a valley change is a change", 0)
@@ -219,12 +266,19 @@ FNR == 1 { fence = ""; tail = "" }
 		word("vocabulary", "\\<tickets?\\>", "a plan item is a knot in the plan graph", 1)
 		word("narration", "\\<(no longer|previously|was changed to|has been replaced|is now)\\>", "describe what HEAD does today", 1)
 		word("narration", "\\<((it|this|that|these|those|they|we|which|who) used to|used to be)\\>", "describe what HEAD does today", 1)
+		word("narration", "\\<((was|were|has been|have been) (added|introduced)|we (added|introduced))\\>", "describe what HEAD does today", 1)
+		word("narration", "\\<(anymore|now that)\\>", "describe what HEAD does today", 1)
+		word("narration", "\\<since (commit|release|v[0-9])", "describe what HEAD does today", 1)
+		reading(bare, bareTail)
+		word("provenance", date, "a date belongs in a commit message or a knot", 0)
+		word("provenance", knot, "state the reason itself; the knot belongs in a commit message", 0)
+		word("provenance", change, "state the reason itself; the change belongs in a commit message", 0)
+		hash("provenance", "state the reason itself; the commit belongs in a commit message")
+		word("provenance", opinion, "state the position as the project's own", 1)
+		word("provenance", speech, "state the position as the project's own, not as a quote", 1)
 	}
-	tail = ""
-	if (!infence && match(text, /([^[:space:]]+[[:space:]]+)?[^[:space:]]+[[:space:]]*$/)) {
-		tail = substr(text, RSTART, RLENGTH)
-		sub(/[[:space:]]+$/, "", tail)
-	}
+	tail = infence ? "" : last(text)
+	bareTail = infence ? "" : last(bare)
 
 	for (i = 1; i in names; i++)
 		if (names[i] in allowed && !(names[i] in used))
@@ -254,6 +308,18 @@ The flag has been replaced.
 The check used to be slow, and it used to time out.
 - A phrase can wrap: the hook is no
   longer a script.
+The flag was added for speed.
+The verb was introduced with it.
+We added a check, so it is not slow anymore.
+Now that the hook reads refs, the cap holds since v2.
+The cap is 64 since commit 4ae651e.
+It landed on 2026-11-05 (knot oc-03b6f8c).
+It fixes [the bug](../archive/.the-valley/bugs/bd-75c8721-replace-refs.md).
+Change kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz was the fix.
+The operator wants one worker, and the operator
+decided to keep it.
+As the reviewer wrote, "keep it small".
+"Keep it small," said the author.
 
 ```sh
 valley checks  # see status/ready.go:146
@@ -274,7 +340,23 @@ broken.md:9: narration: "was changed to": describe what HEAD does today
 broken.md:10: narration: "has been replaced": describe what HEAD does today
 broken.md:11: narration: "used to be": describe what HEAD does today
 broken.md:13: narration: "no longer": describe what HEAD does today
-broken.md:16: line-number: "status/ready.go:146": cite the file or a name in it, not a line
+broken.md:14: narration: "was added": describe what HEAD does today
+broken.md:15: narration: "was introduced": describe what HEAD does today
+broken.md:16: narration: "We added": describe what HEAD does today
+broken.md:16: narration: "anymore": describe what HEAD does today
+broken.md:17: narration: "Now that": describe what HEAD does today
+broken.md:17: narration: "since v2": describe what HEAD does today
+broken.md:18: narration: "since commit": describe what HEAD does today
+broken.md:18: provenance: "4ae651e": state the reason itself; the commit belongs in a commit message
+broken.md:19: provenance: "2026-11-05": a date belongs in a commit message or a knot
+broken.md:19: provenance: "oc-03b6f8c": state the reason itself; the knot belongs in a commit message
+broken.md:20: provenance: "bd-75c8721": state the reason itself; the knot belongs in a commit message
+broken.md:21: provenance: "kqxmrvtzkqxmrvtzkqxmrvtzkqxmrvtz": state the reason itself; the change belongs in a commit message
+broken.md:22: provenance: "The operator wants": state the position as the project's own
+broken.md:23: provenance: "the operator decided": state the position as the project's own
+broken.md:24: provenance: "wrote, "": state the position as the project's own, not as a quote
+broken.md:25: provenance: "" said the author": state the position as the project's own, not as a quote
+broken.md:28: line-number: "status/ready.go:146": cite the file or a name in it, not a line
 EOF
 if style broken.md > broken.got; then
   echo "prose-format: the style lint passed a doc that breaks every rule" >&2
@@ -301,12 +383,18 @@ style allowed.md >&2 || {
 
 # What the rules must pass: the words and the narration in a fenced code
 # block, a marker quoted in inline code, an address, a timestamp, a hash,
-# and "used to" that is not narration.
+# "used to" that is not narration, the operator named as the role that
+# acts, a curve name, values quoted in inline code, and a quote that is
+# what a page shows.
 cat > clean.md <<'EOF'
 Allow a word with `<!-- prose-allow: vocabulary -->` on its line.
-The bus listens on nats://127.0.0.1:4222, and the run began at 2026-10-14T21:30.
+The bus listens on nats://127.0.0.1:4222, and the run began at `2026-10-14T21:30`.
 A version is git-sha1:2222222222222222222222222222222222222222.
 The verifier keys used to verify a landing are the integrator's.
+The operator approves a change, and the operator's key signs it.
+An ed25519 key signs a note created after `2026-08-05`.
+A knot ID looks like `oc-1234567`, and a digest like `88a4e1f0`.
+The page says "The file is longer" when nothing has moved since the last read.
 
 ~~~
 A PR owes a ticket, and the hook no longer reads the tree.
@@ -326,7 +414,7 @@ A change has a version. <!-- prose-allow: words -->
 EOF
 cat > markers.want <<'EOF'
 markers.md:1: allowance: allows vocabulary, but nothing on this line breaks it
-markers.md:2: allowance: prose-allow names no rule "words"; the rules are line-number, narration and vocabulary
+markers.md:2: allowance: prose-allow names no rule "words"; the rules are line-number, narration, provenance and vocabulary
 markers.md:3: allowance: a marker that begins a line begins an HTML block; put it after a word
 EOF
 if style markers.md > markers.got; then

@@ -85,8 +85,11 @@ answers in docs and link the change from the knot.
    as code guarantees.
 2. List added or modified claims, their kinds, and `file:line` citations verified at HEAD before
    review in slice briefs and the head commit message, never in docs.
-3. Describe HEAD in present tense without transition narration; live plans and open questions belong
-   in `valley plan`, not prose docs. Never compare the-valley to other platforms.
+3. Describe HEAD in present tense, in the project's voice. Docs and comments say what the system is
+   and why; history belongs in commit messages and knots. A doc narrates no transition, cites no
+   date, knot, change, or commit as a reason, and gives no person's opinion or words as the
+   project's position: it states the reason itself. Live plans and open questions belong in
+   `valley plan`, not prose docs. Never compare the-valley to other platforms.
 4. Never call a change a PR, pull request, <!-- prose-allow: vocabulary --> or branch (one may carry
    it); changes are `draft`, `ready`, or `withdrawn`, versions `approved` or `submitted`. Never say
    a change owes checks (**requires**), <!-- prose-allow: vocabulary --> or call plan-graph
@@ -95,5 +98,10 @@ answers in docs and link the change from the knot.
 5. One light Taoist threshold sentence may introduce the valley or knots; keep metaphor out of
    procedures, error messages, and security invariants.
 
-Allow single-line `prose-format` exceptions with `<!-- prose-allow: line-number -->`, `narration`,
-or `vocabulary`.
+`prose-format` enforces what a pattern can catch of rules 2 to 4. It fails on a source path followed
+by a line number anywhere, and outside fenced code on transition phrases and the words rule 4 bans.
+Outside inline code, which quotes values, its `provenance` rule fails on an ISO date, a knot ID, a
+change ID, a short commit hash, and an opinion or quote attributed to a person. Allow single-line
+exceptions with `<!-- prose-allow: line-number -->`, `narration`, `provenance`, or `vocabulary`. A
+knot ID may stand, with the marker, only where it names the open knot for something the doc labels
+**not built**.

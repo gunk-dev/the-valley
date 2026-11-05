@@ -203,10 +203,9 @@ because it lands code there. Checked by `module-eval`, `signers-e2e` and `publis
 ### The build slice
 
 The build slice caps the total CPU and memory that all Nix daemon builds on a host can use at once.
-It keeps a runaway build from starving the host's other services (knot oc-03b6f8c). A host turns it
-on with `services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is off by default, and
-turning it on is a **deployment choice**. The check worker cannot be enabled without it
-(`implemented`).
+It keeps a runaway build from starving the host's other services. A host turns it on with
+`services.valley.buildSlice.enable` (`nix/valley-host.nix`). It is off by default, and turning it on
+is a **deployment choice**. The check worker cannot be enabled without it (`implemented`).
 
 Every user who builds through the Nix daemon shares one pool of CPU and memory. That pool covers the
 check worker's builds and evaluation, the daemon itself, and local builds through the daemon, such
@@ -278,9 +277,9 @@ two names are one grant. Its holders are the principals named under either name,
 writers write each holder as a `request <principal>` line, and the hook reads a line naming either
 name as the `approve` grant (`valleyhook/grants.go`). The `restack` grant is the host restacker's.
 It authorises two writes and nothing else: one version added to another principal's ready change,
-and the change's restack report. It grants nothing on integration requests. Why replace refs are
-closed is recorded in
-[bd-75c8721](../archive/.the-valley/bugs/bd-75c8721-pushes-could-write-any-namespace.md).
+and the change's restack report. It grants nothing on integration requests. Replace refs are closed
+because git honours them by default: a pushed `refs/replace/<blob>` would make git show a forged
+registry or floor in place of the real one, without moving any ref that anyone watches.
 
 ### Change records
 
@@ -451,12 +450,13 @@ the hook and the CLI share (`change/report.go`):
   `head` because the two can differ: the branch can be missing, or somewhere other than the head its
   version names.
 - `result` is `conflict`, `blocked`, `partial`, `complete` or `superseded`. A conflict names its
-  `failing_layer`. A conflict and a block publish nothing. `partial` means the branches moved and
-  not every version was added; `complete` means every layer gained a version. `superseded` means the
-  attempt was given up because its inputs moved while it ran.
+  `failing_layer`. A conflict and a block publish nothing. `partial` means the branches moved but
+  the attempt did not add every version; `complete` means every layer gained a version. `superseded`
+  means the attempt was given up because its inputs moved while it ran.
 - `published` is `null` for a layer whose branch did not move. Otherwise it is
   `{"head", "version", "record"}`: the head the branch moved to, and the version and record commit
-  that recorded it, both `null` when no version was added. A layer with no branch publishes nothing.
+  that recorded it, both `null` when the attempt added no version. A layer with no branch publishes
+  nothing.
 - `blocking_requests` are the integration requests that held the attempt back. Each is the request's
   ref, which is on `main`, and `tip`, the object the ref pointed at when the attempt read it. There
   are at most 64, each ref once.
@@ -468,9 +468,9 @@ A report is current while every ref it observed still holds what the report says
 are `main`, each layer's record ref and branch, and each blocking request. The comparison is exact,
 and absence counts: a branch the report saw missing must still be missing. A layer with no branch
 has no branch to compare. For a layer the attempt published, the branch must be at the published
-head, and the record ref at the published record when a version was added. Each comparison uses what
-the report recorded of that ref: a branch is compared with its `branch_tip`, never with the
-version's `head`. A report that is not current is historical (`rebase/report.go`).
+head, and the record ref at the published record when the attempt added a version. Each comparison
+uses what the report recorded of that ref: a branch is compared with its `branch_tip`, never with
+the version's `head`. A report that is not current is historical (`rebase/report.go`).
 
 The parser refuses what the record parser refuses: invalid UTF-8, a duplicate key, an unknown field,
 a field of another type, and data after the object.
@@ -538,9 +538,9 @@ that window: two pushers at once rewind the mirror, and the service ends at the 
 The bus is NATS with JetStream, listening on `127.0.0.1:4222`. `valley-bus-init` creates one stream,
 `valley`, over the subjects `valley.>`, with file storage and NATS defaults. The events are defined
 in `schema/events.cue`: `ref-updated`, `integration-succeeded` and `request-stale`. The bus has no
-authentication, so nothing treats an event as authoritative
-([bd-d853d9c](../archive/.the-valley/bugs/bd-d853d9c-bus-unauthenticated.md)). The integrator reads
-git directly.
+authentication, so any local process can publish a forged event. Nothing treats an event as
+authoritative: the only subscriber is `valley tail`, and the integrator reads git directly. A forged
+event can mislead someone reading the bus, but it changes no state.
 
 ## The integrator
 
@@ -979,7 +979,7 @@ fallback (`restack/report.go`):
 
 A family with more than 64 recorded changes still proceeds: each change's report keeps that change's
 own layer. A replacement report's result describes the whole family, whichever layers it keeps. It
-says `complete` when every version of the family was added, and `partial` when any was not. So a
+says `complete` when every version of the family is added, and `partial` when any is not. So a
 replacement that keeps only its own layer can say `partial` because of another layer's version, and
 the journal accepts it (see [The journal](#the-journal)). Checked by `restack-unit` and
 `restack-e2e`.
@@ -1066,7 +1066,7 @@ read, even if the branch or record on origin moves afterward (see [Publishing](#
 | --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The branch push | `main` is at the tip the family was rebased onto, every branch is at its lease, every record is at the record commit read, and nothing has been submitted | a branch moved, `main` moved, a record moved (an unready, a withdrawal, a new version), a submission, or a prepared head missing from the scratch repository  |
 | A version       | its branch is at the prepared head, or the branch push is still to finish, and its record is the record commit read                                       | the author moving the branch or the record, a withdrawal, an unready, a submission, a deleted branch, or a `main` that does not descend from the captured tip |
-| A report        | origin's report is the one it was built on, and what it says was published is on origin or is still to finish                                             | a version it says was added stopped, or origin's report moved                                                                                                 |
+| A report        | origin's report is the one it was built on, and what it says was published is on origin or is still to finish                                             | a version it counts as added stopped, or origin's report moved                                                                                                |
 | A replacement   | origin's report is still the commit it was built on, and its content still matches the current version decisions                                          | origin's report moved, or the replacement does not match the current version decisions (a new replacement is built in its place)                              |
 
 A related integration request that might still land is a stop that is not final: the branch push
@@ -1101,8 +1101,8 @@ family a report on origin that describes what happened. The initial reports buil
 say `complete`, which remains accurate when every change's new version is added. If any version is
 stopped or paused, the pass builds a replacement report for each change in the family. A
 replacement's result describes the whole family's versions: `partial` while any version of the
-family is not added, and `complete` once every one is. A replacement records the versions that were
-added on origin, and states in its refusal why each remaining version was not added. The restacker
+family is not added, and `complete` once every one is. A replacement records the versions that are
+added on origin, and states in its refusal why each remaining version is not added. The restacker
 builds replacements from the journal's observation and the latest snapshot of origin, and saves them
 to the journal before pushing them. Recovery evaluates replacements like any other write, so a
 replacement whose push fails or loses its reply stays in the journal for the next step. The
@@ -1125,8 +1125,8 @@ Before pushing or building replacements in a step, the pass records in `journal.
 push or version update that the latest read saw on origin (`accepted`). From then on, recovery
 treats those writes as `done` regardless of what happens to the branches or change records on origin
 later. Even if an author rewrites or deletes every branch the family moved, the journal remembers
-that the branches moved and which versions were added, and continues pushing the family's reports or
-replacements until origin accepts them.
+that the branches moved and which versions the restacker added, and continues pushing the family's
+reports or replacements until origin accepts them.
 
 Families in the journal advance independently. At each step, every family with a write marked
 `finish` pushes its next phase, while any other family whose branches moved builds replacements if
@@ -1280,8 +1280,8 @@ The attestation namespace admits creations only, so the worker never builds what
 publish. When `origin` already holds the worker's own ref for the tree and that ref lacks a required
 check, the pass says so and builds nothing. Approval with `--build-here` builds the rest under the
 operator's key, but only on the initial approval: once this signer has published evidence for the
-tree, another approval cannot add checks to that ref
-([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
+tree, another approval cannot add checks to that ref, because the ref already exists and the
+namespace admits no updates.
 
 A push whose reply is lost is not built again. If the push landed, the next pass finds the evidence
 on `origin`. If it did not land, the ref is still stored in the worker's clone, and a later pass
@@ -1561,8 +1561,8 @@ restrict which repositories the key can push to. An untagged key in `services.va
 has no principal name, because its session leaves `VALLEY_PRINCIPAL` unset. So the hook allows it to
 push only attestation refs and topic branches. A registry key can push to topic branches, its own
 change records, and the plan graph, which a worker does not need. A permission that limits a key to
-attestation pushes is **not built** (knot oc-6da5273). It must exist before a worker runs on more
-than one host.
+attestation pushes is **not built** (knot oc-6da5273). <!-- prose-allow: provenance --> It must
+exist before a worker runs on more than one host.
 
 How many checks the worker builds at once, and with how many CPUs and how much memory, is a
 **deployment choice**. Three worker options set its build capacity: `buildSlots`, `maxJobs` and
@@ -1783,9 +1783,11 @@ also requires the integrator's checks, because both compose a policy under it. T
 restacker's cap at 64. `own-policy` holds each scope to its mode, holds the paths the two mode
 classes cover to the checks of their other classes, and holds the cap to 64.
 
-The reasons for CUE here, and for the mandatory-versus-default encoding, are in
-[dcr-0f5d9b1](../archive/.the-valley/decisions/dcr-0f5d9b1-cue-config-host-module.md) and
-[dcr-f41f718](../archive/.the-valley/decisions/dcr-f41f718-declared-verification-policy.md).
+Policy is CUE because unification can only narrow. The form of a value alone decides whether a
+project may override it, so the schema needs no override flag of its own. A project can add classes
+and checks and turn off a template's default, but it can never remove what the floor requires. CUE
+is also the language of the instance configuration and the events, so tools in any runtime read one
+model.
 
 ## Evidence: attest and notes
 
@@ -1935,9 +1937,9 @@ back waits until its head, the target's tip or the stored evidence moves. Checke
 `integrator-e2e`, `integrator-unit`, `note-unit`, `module-eval`, `signers-e2e` and `restack-e2e`.
 
 Check definitions come from the change being judged. `attest` builds the flake checks of the
-exported tree, so a change can edit the check it is judged by
-([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md),
-[ida-a9e274c](../archive/.the-valley/ideas/ida-a9e274c-mandated-checks-come-from-the-instance.md)).
+exported tree, so a change can edit the check it is judged by. The policy that names the checks
+comes from the target's tip and the instance's `main`, so a change cannot drop a requirement, but it
+can change what a required check does.
 
 ## Reviews
 
@@ -2102,10 +2104,10 @@ would take the name for (see
 
 The compiler computes everything before it writes anything, so a refused registry leaves the last
 good files in place. Checked by `identity-e2e`, `identity-schema` and `exactjson-unit`, and by the
-Go tests in `identity/identity_test.go`. Why identity is a governed registry, and why machine keys
-expire, is in
-[dcr-b87f6e8](../archive/.the-valley/decisions/dcr-b87f6e8-identity-is-a-governed-registry.md) and
-[bd-8a591dc](../archive/.the-valley/bugs/bd-8a591dc-machine-credentials-never-expire.md).
+Go tests in `identity/identity_test.go`. Identity is a governed registry so that a grant changes
+only through the integration path, like any other change to the instance. Machine keys expire so
+that a machine's access ends on its date by itself, rather than lasting until someone removes the
+key.
 
 ## sigverify
 
@@ -2229,14 +2231,12 @@ Every check that runs during approval runs under the operator's own key, so its 
 ref of its own beside the worker's. When every required check is covered, nothing runs and no key is
 needed. When `origin` already holds the operator's own ref for the tree and a check still has to
 run, approval refuses before running anything. The namespace is create-only, so the new evidence
-would have nowhere to go
-([bd-7b7d58f](../archive/.the-valley/bugs/bd-7b7d58f-same-tree-re-attestation-cannot-be-published.md)).
-Checked by `valley-request`, which also lands a fully covered approval, a partly covered one built
-with `--build-here`, and one whose only uncovered check is a `command` check, with the real
-integrator. It also checks that an approval missing a `nix` check's evidence files the request
-without `--build-here`, builds nothing and publishes no evidence, and that the real integrator holds
-that request as `stale`, then decides it again and lands it, in a case where nothing else prevents
-landing, once the evidence is published.
+would have nowhere to go. Checked by `valley-request`, which also lands a fully covered approval, a
+partly covered one built with `--build-here`, and one whose only uncovered check is a `command`
+check, with the real integrator. It also checks that an approval missing a `nix` check's evidence
+files the request without `--build-here`, builds nothing and publishes no evidence, and that the
+real integrator holds that request as `stale`, then decides it again and lands it, in a case where
+nothing else prevents landing, once the evidence is published.
 
 Approval measures how long each locally executed check took. `attest run` prints a `time` line after
 each check, with its result, its duration, and whether nix found its output already built.
@@ -2411,12 +2411,12 @@ the rebase publishes in two phases:
    draft at its old head. A failure for one change does not stop the others.
 
 A change alone prints its new head. A stack prints a manifest: one line for each layer, with its old
-and new head, whether its branch was pushed, and whether a version was added. For each change left
-unfinished, the manifest gives the exact `valley ready --head … --change … <branch>` command that
-finishes it, and the rebase exits non-zero. Running the rebase again on a change whose branch holds
-a head no version records is refused by the recorded-tip check, which prints the same command. When
-the push's outcome is unknown, as after a transport error or when origin does not report it, the
-rebase says so, prints the manifest, and says how to check: `git ls-remote origin <branches>`.
+and new head, whether its branch was pushed, and whether the rebase added a version. For each change
+left unfinished, the manifest gives the exact `valley ready --head … --change … <branch>` command
+that finishes it, and the rebase exits non-zero. Running the rebase again on a change whose branch
+holds a head no version records is refused by the recorded-tip check, which prints the same command.
+When the push's outcome is unknown, as after a transport error or when origin does not report it,
+the rebase says so, prints the manifest, and says how to check: `git ls-remote origin <branches>`.
 
 After a rebase, any ready change or plain branch outside the stack whose head contains a layer's old
 head is still on that old head. A second stack on a lower layer is one. The rebase names each, with

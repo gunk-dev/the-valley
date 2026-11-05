@@ -19,10 +19,8 @@ ignores its instructions. The human act of authority is an approval made with th
 Whether that key must be a hardware key that needs a touch is a **deployment choice**. A policy
 requires one with `approval.hardware`, and enforcing that requirement is **not built** (see
 [Filing takes a touch](#3-filing-takes-a-touch-not-built)). An approval gate that the gated agent
-can administer is only a setting that agent controls
-([ida-b7025b5](../archive/.the-valley/ideas/ida-b7025b5-human-decisions-are-signed-acts.md)). A gate
-counts as done only when a check has shown it refusing what it should refuse
-([oc-9949561](../archive/.the-valley/outcomes/oc-9949561-push-replication.md)).
+can administer is only a setting that agent controls. A gate counts as done only when a check has
+shown it refusing what it should refuse.
 
 ## The path a change takes
 
@@ -821,13 +819,14 @@ effective read grants, which need both the project's consent and an instance gra
   credential enrollment. Passkeys stay the route to anything beyond reading. A principal with no
   keys may hold edge-read grants alone (`schema/identity.cue`, `implemented`).
 - **No edge-local emergency stop:** The edge's only access state is what the host signs.
-- **Placement:** For these read credentials alone, this decision supersedes dcr-b87f6e8's bans on
-  bearer secrets, its short-session rule and its bearer-expiry rule. Principals and grants stay in
-  the registry. Credential verifiers live in protected host state outside every repository, in a
-  credential file that only root writes and that never holds a secret (`implemented`). The secret of
-  a new link never reaches a core dump: the link command makes its process non-dumpable, and the
-  wrapper sets `ulimit -c 0` (`implemented`). At the edge, `valley-web` also marks itself
-  non-dumpable, so posted link secrets and session tokens never reach a core dump either.
+- **Placement:** The project's identity rules otherwise refuse bearer secrets, keep sessions short,
+  and give every bearer credential an expiry. These read credentials alone are exempt from those
+  three rules. Principals and grants stay in the registry. Credential verifiers live in protected
+  host state outside every repository, in a credential file that only root writes and that never
+  holds a secret (`implemented`). The secret of a new link never reaches a core dump: the link
+  command makes its process non-dumpable, and the wrapper sets `ulimit -c 0` (`implemented`). At the
+  edge, `valley-web` also marks itself non-dumpable, so posted link secrets and session tokens never
+  reach a core dump either.
 
 ## Secrets
 
@@ -882,8 +881,8 @@ themselves when to deploy.
   an escape through KVM or the hypervisor reaches the host that runs the valley.
 - **Every key of the operator's principal holds `approve`.** Filing needs no touch until step 3 is
   built.
-- **Check definitions come from the change.** A change can edit the flake check it is judged by
-  ([bd-eaefe82](../archive/.the-valley/bugs/bd-eaefe82-check-definitions-come-from-the-branch.md)).
+- **Check definitions come from the change.** A change can edit the flake check it is judged by,
+  though not the policy that requires it.
 - **Hosts must not update from an unsigned branch.** A host that upgrades itself from a branch
   without a signature check deploys whatever reaches that branch. When the branch is on a forge
   rather than on the valley, no gate in this document applies to it.

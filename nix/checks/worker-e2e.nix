@@ -139,6 +139,11 @@ let
     read gate < /run/valley-worker-e2e-gate/long
     echo $NIX_BUILD_CORES > $out
   '';
+  # A batch the pass stops: a build that never ends unless it is killed,
+  # in a builder that names itself, so the test sees its build end.
+  stopped = pkgs.writeText "stopped.sh" ''
+    exec /bin/sh -c 'while :; do :; done' valley-stopped-build
+  '';
   broken = pkgs.writeText "broken.sh" "exit 1";
 
   # What the daemon's builds look like while the worker runs: the number
@@ -627,6 +632,43 @@ in
           host.succeed("systemctl start valley-worker.path")
           idle()
           host.succeed(f"test ! -e {wake}/claimed")
+
+      # A change's first version builds a long batch, and the change gains
+      # a second version with another tree, as a restack makes one. The
+      # scan that finds it stops the long batch, whose build ends, and the
+      # second version builds and publishes. The stopped batch is recorded
+      # as cancelled, with its reason, and as no failure. Both versions'
+      # commits are pushed at once, so only the second ready marks the
+      # worker while the long batch runs.
+      with subtest("a running batch whose version another tree supersedes is stopped, and the new version builds"):
+          import json
+          change_id = "zyxwvutsrqponmlk" * 2
+          trailer = shlex.quote(f"Change-Id: {change_id}")
+          host.succeed(
+              "cd /root/project && git checkout --quiet -b superseded origin/main",
+              "cp ${stopped} /root/project/first.sh && echo superseded >> /root/project/README.md",
+              f"cd /root/project && git add -A && {commit} -m superseded -m {trailer}",
+              "cp ${spin} /root/project/first.sh",
+              f"cd /root/project && git add -A && {commit} -m superseded -m {trailer}",
+          )
+          host.wait_until_succeeds(f"{contributor} git push --quiet origin superseded", timeout=60)
+          old, new = head("superseded~1"), head("superseded")
+          first = host.succeed("git -C /root/project rev-parse superseded~1").strip()
+          host.wait_until_succeeds(f"{contributor} valley ready --head {first} superseded", timeout=60)
+          host.wait_until_succeeds("pgrep -f 'valley-stopped-buil[d]'", timeout=120)
+          host.wait_until_succeeds(f"{contributor} valley ready superseded", timeout=60)
+          wait_said(old, "the batch stopped; nothing is published", 60)
+          host.wait_until_fails("pgrep -f 'valley-stopped-buil[d]'", timeout=10)
+          wait_said(new, "published", 120)
+          host.succeed(f"{contributor} valley withdraw superseded")
+          idle()
+          assert told(old, "stopping the batch: v2 supersedes it") == 1, journal()
+          assert told(old, "published") == 0, journal()
+          worker = json.loads(host.succeed(f"cat {state}/telemetry/state.json"))
+          ended = [a for a in worker["recent"] if a["kind"] == "build" and a.get("change") == change_id]
+          assert [(a["change_version"], a["result"]) for a in ended] == [(2, "passed"), (1, "cancelled")], ended
+          assert "v2 supersedes it" in ended[1]["reason"], ended
+          assert not [f for f in worker["failures"] or [] if f.get("change") == change_id], worker["failures"]
 
       with subtest("marks from the git user and the integrator's user are one file, and a stale mark builds nothing"):
           host.succeed("systemctl stop valley-worker.path")

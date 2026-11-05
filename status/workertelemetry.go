@@ -82,7 +82,7 @@ type attempt struct {
 	Checks   []string `json:"checks,omitempty"`
 	Started  string   `json:"started,omitempty"`
 	Ended    string   `json:"ended,omitempty"`
-	Result   string   `json:"result"` // passed, failed or interrupted, or running in batches
+	Result   string   `json:"result"` // passed, failed, cancelled or interrupted, or running in batches
 	Reason   string   `json:"reason,omitempty"`
 	Inferred bool     `json:"inferred,omitempty"`
 	// AttestRun is a batch's attest run, which names its progress records.
@@ -216,22 +216,22 @@ func (t *workerTelemetry) begin(kind string, id identity, checks []string, attes
 	return a
 }
 
-// end records how an attempt ended, and its backoff when it failed. A
-// batch's records name its attest run, so each attempt pairs with its
-// start from its own records.
-func (t *workerTelemetry) end(a *attempt, err error, reason string, key string, f *backoff) {
+// end records how an attempt ended, as result: passed, failed, or
+// cancelled when the pass stopped a batch, with the reason for either of
+// the last two, and its backoff when it failed. A batch's records name its
+// attest run, so each attempt pairs with its start from its own records.
+func (t *workerTelemetry) end(a *attempt, result, reason string, key string, f *backoff) {
 	if t == nil || a == nil {
 		return
 	}
 	id := identity{project: a.Project, change: a.Change, cv: a.CV, head: a.Head, tree: a.Tree}
-	a.Ended, a.Result = telemetry.Stamp(time.Now()), "passed"
-	data := map[string]any{"result": "passed"}
+	a.Ended, a.Result, a.Reason = telemetry.Stamp(time.Now()), result, reason
+	data := map[string]any{"result": result}
 	if a.AttestRun != "" {
 		data["attest_run"] = a.AttestRun
 	}
-	if err != nil {
-		a.Result, a.Reason = "failed", reason
-		data["result"], data["reason"] = "failed", reason
+	if reason != "" {
+		data["reason"] = reason
 	}
 	t.remember(*a)
 	if a.Kind == "build" {

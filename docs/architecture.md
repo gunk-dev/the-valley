@@ -1273,8 +1273,11 @@ others (**deployment choice**). The controllers count the worker's evidence nowh
 module refuses a host that runs the worker without that restriction.
 
 The evidence is about the head's tree, so it stays true if the change moves on while the batch runs.
-The pass does not read the change's record again before it publishes. A superseded head's evidence
-is published, and the pass builds the new version once it reads the change again.
+A superseded head's evidence serves no landing, though: an approval lands the change as its active
+version stands. When a read finds a running batch's version superseded and no ready change's active
+version holds its tree, the pass stops the batch, publishes nothing, and builds the new version
+(`implemented`, `status/worker.go`). A batch whose tree a ready version still holds runs on and
+publishes.
 
 The attestation namespace admits creations only, so the worker never builds what it could not
 publish. When `origin` already holds the worker's own ref for the tree and that ref lacks a required

@@ -67,10 +67,22 @@ package main
 // stays true if the change moves on meanwhile. The pass ends when nothing
 // runs and a scan finds nothing to start.
 //
+// The exception is a batch whose version a scan finds superseded, as a
+// restack supersedes one, when no ready change's active version holds its
+// tree. An approval lands a change as its active version stands, so that
+// evidence would serve no landing. A scan that read the batch's project
+// whole stops it (stopSuperseded): the loop kills its attest alone, and
+// attest's nix processes die with it, which releases its evaluation's
+// reservation. git, which stores the ref in one update, is left to
+// finish, so no ref is left half written. A stopped batch publishes
+// nothing and records no failure, and its slot and destination are free
+// once attest has ended. A batch whose tree a ready version still holds,
+// as after a restack that left the tree as it was, runs on.
+//
 // When a batch ends, its slot takes the next job from the last scan's
 // queue at once, and the scan comes after. So a version superseded since
-// that scan can build once. That is accepted: its evidence is true of its
-// tree, and a free slot does not wait for a read of every project.
+// that scan can start a batch, which the next scan stops as above. A free
+// slot does not wait for a read of every project.
 //
 // A scan forgets each version it did not find ready that no batch builds:
 // when the pass first saw it, and the notes said about it. A pass lives as
@@ -233,6 +245,7 @@ type worker struct {
 	scans   int                        // the scans so far
 	seen    map[string]int             // the scan that first saw each version ready, by job.version
 	ready   map[string]bool            // the versions the scan under way has found ready, by job.version
+	wanted  map[string]bool            // the destinations of the ready versions the scan under way assessed, by job.dest
 	running map[string]*batch          // the batches running, by job.dest
 	queue   []*job                     // what the last scan found to build and has not started, in order
 	said    map[string]map[string]bool // the notes said about each version or project since the pass last acted on it
@@ -310,6 +323,8 @@ type batch struct {
 	estimate int64  // the peak memory its evaluation is expected to need, in bytes
 	budget   int64  // the budget its attest is handed beside the estimate, in bytes
 	attempt  *attempt
+	stop     func() // kills its attest run, or nil when none started
+	stopped  string // why the loop stopped it, or "" when it did not
 }
 
 // completion is what a batch did, as its goroutine hands it to the loop:
@@ -748,8 +763,7 @@ func (w *worker) loop(g git, repos []string) error {
 			// A freed slot takes the next job from the last scan's
 			// queue at once, before the scan that follows finds what
 			// changed meanwhile. A version superseded since that scan
-			// can build once this way; its evidence is about its tree,
-			// so it is still true.
+			// can start a batch this way, which that scan stops.
 			if err := w.reap(); stop == nil {
 				if stop = err; stop == nil {
 					stop = w.admit()
@@ -770,6 +784,7 @@ func (w *worker) scan(g git, repos []string) error {
 	w.scans++
 	w.fresh = map[string]map[string]bool{}
 	w.ready = map[string]bool{}
+	w.wanted = map[string]bool{}
 	var found []*job
 	for _, name := range repos {
 		jobs, err := w.read(g, name)
@@ -833,7 +848,8 @@ func (w *worker) order(found []*job) []*job {
 // project reads one project's ready changes, and returns the jobs that
 // need a batch. It returns an error only when a read of origin failed.
 // When it has read the project whole, it forgets the project's failures
-// it did not meet.
+// it did not meet, and stops the project's batches whose evidence would
+// serve no landing.
 func (w *worker) project(g git, name string) ([]*job, error) {
 	list, _, err := sources(g, listing{repo: name}, w.stderr)
 	if err != nil {
@@ -887,8 +903,31 @@ func (w *worker) project(g git, name string) ([]*job, error) {
 	}
 	if whole {
 		w.prune(name, met)
+		w.stopSuperseded(name, view.Changes)
 	}
 	return jobs, nil
+}
+
+// stopSuperseded stops each of the project's running batches whose
+// version is no longer its change's active version, when no ready version
+// the scan assessed holds its tree. changes are the project's ready
+// changes, as the scan read them whole. Each batch is stopped once; its
+// end is handled when attest has ended (complete).
+func (w *worker) stopSuperseded(project string, changes []jsonChange) {
+	active := map[string]int{}
+	for _, c := range changes {
+		active[c.ChangeID] = c.Versions[c.Active-1].N
+	}
+	for dest, b := range w.running {
+		j := b.job
+		n, ready := active[j.c.ChangeID]
+		if j.r.name != project || !ready || n == j.v.N || w.wanted[dest] || b.stop == nil || b.stopped != "" {
+			continue
+		}
+		b.stopped = fmt.Sprintf("v%d supersedes it, and no ready change's active version holds its tree", n)
+		w.say(j, "stopping the batch: %s", b.stopped)
+		b.stop()
+	}
 }
 
 // prune forgets the project's failures that a scan which read the project
@@ -987,8 +1026,11 @@ func (w *worker) change(r listed, instance, project string, c jsonChange, met ma
 // check, when a batch for its destination runs, when origin already holds
 // this worker's ref for the tree, when its batch is waiting out a
 // failure, or when a batch stored the ref here and origin lacks it, which
-// it publishes. met, when given, gets the failure keys it meets. It
-// returns an error only when a read of origin failed.
+// it publishes. met, when given, gets the failure keys it meets, and the
+// scan reading the job counts its destination as wanted, so a batch
+// building that tree is not stopped. A reassessment of a queued job gives
+// no met: its version may since have been superseded. It returns an error
+// only when a read of origin failed.
 func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
 	e, err := coverageOf(j.r.g, j.v.Head, j.asked, w.stderr)
 	if err != nil {
@@ -996,6 +1038,9 @@ func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
 	}
 	j.digest, j.missing = e.digest, nil
 	j.ref = attestationRefs + e.digest + "/" + w.keyhash
+	if met != nil {
+		w.wanted[j.dest()] = true
+	}
 	for _, q := range j.asked {
 		if _, ok := e.covered[q.name]; !ok {
 			j.missing = append(j.missing, q)
@@ -1146,6 +1191,10 @@ func (w *worker) attest(b *batch) {
 		go func() { w.done <- completion{b: b, err: err, ended: clock()} }()
 		return
 	}
+	// A stop kills attest alone, never its process group: its nix
+	// processes die with it (attest's dieWithParent), and a git storing
+	// the ref finishes its one update.
+	b.stop = func() { _ = cmd.Process.Kill() }
 	g, ref, run, mark := j.r.g, j.ref, b.run, b.mark
 	go func() {
 		err := cmd.Wait()
@@ -1168,16 +1217,22 @@ func (w *worker) attest(b *batch) {
 // complete handles what one batch did: it records a failure at once, with
 // its wait measured from when the batch ended, or publishes what the batch
 // stored. The batch's destination is held until its push has been tried.
+// A batch the loop stopped that did not pass is recorded as cancelled,
+// with why it was stopped, and nothing else: it backs nothing off, and
+// publishes nothing. One that passed before its stop took effect is
+// handled as any other.
 func (w *worker) complete(c completion) {
 	b, j := c.b, c.b.job
 	defer func() {
 		delete(w.running, j.dest())
 		w.tel.settle()
 	}()
+	cancelled := b.stopped != "" && c.err != nil
 	outcome := c.outcome
-	if outcome == "" && endedBySignal(c.err) {
+	if outcome == "" && endedBySignal(c.err) && !cancelled {
 		// attest was killed before it said how its evaluation ended,
-		// which may have been during the evaluation.
+		// which may have been during the evaluation. The loop's own stop
+		// says nothing of the evaluation's memory.
 		outcome = "killed"
 	}
 	if outcome != "" && w.evals != nil {
@@ -1185,13 +1240,18 @@ func (w *worker) complete(c completion) {
 			fmt.Fprintf(w.stderr, "valley: could not record the evaluation's peak memory in %s: %v\n", w.evals.path, err)
 		}
 	}
+	if cancelled {
+		w.tel.end(b.attempt, "cancelled", b.stopped, j.key, nil)
+		w.say(j, "the batch stopped; nothing is published")
+		return
+	}
 	if c.err != nil {
 		f := w.failed(j.r.name, j.key, c.ended, firstBuildWait)
 		reason := fmt.Sprintf("attest run %s: %v", b.run, c.err)
 		if len(c.failed) > 0 {
 			reason += "; " + strings.Join(c.failed, ", ")
 		}
-		w.tel.end(b.attempt, c.err, reason, j.key, &f)
+		w.tel.end(b.attempt, "failed", reason, j.key, &f)
 		w.say(j, "the batch did not pass (%v); it is not built again before %s", c.err, f.Retry.Format(time.RFC3339))
 		w.troubles++
 		w.waits++
@@ -1199,7 +1259,7 @@ func (w *worker) complete(c completion) {
 		return
 	}
 	w.failures.passed(j.r.name, j.key)
-	w.tel.end(b.attempt, nil, "", j.key, nil)
+	w.tel.end(b.attempt, "passed", "", j.key, nil)
 	w.save()
 	if c.stored == "" {
 		w.say(j, "attest stored no %s, so nothing is published", j.ref)
@@ -1226,7 +1286,7 @@ func (w *worker) publish(j *job, object string, met map[string]bool) {
 	a := w.tel.begin("push", j.identity(), nil, "", map[string]any{"ref": j.ref, "object": object})
 	if err := w.push(j, object); err != nil {
 		f := w.failed(j.r.name, key, clock(), firstPushWait)
-		w.tel.end(a, err, fmt.Sprintf("pushing %s to origin: %v", j.ref, err), key, &f)
+		w.tel.end(a, "failed", fmt.Sprintf("pushing %s to origin: %v", j.ref, err), key, &f)
 		w.say(j, "could not publish %s; it is not pushed again before %s", j.ref, f.Retry.Format(time.RFC3339))
 		w.troubles++
 		w.waits++
@@ -1234,7 +1294,7 @@ func (w *worker) publish(j *job, object string, met map[string]bool) {
 		return
 	}
 	w.failures.passed(j.r.name, key)
-	w.tel.end(a, nil, "", key, nil)
+	w.tel.end(a, "passed", "", key, nil)
 	w.say(j, "published %s", j.ref)
 }
 

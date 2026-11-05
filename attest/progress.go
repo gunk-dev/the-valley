@@ -86,6 +86,7 @@ func (o *observer) logOf(drv string) logged {
 }
 
 // nixBuild builds one derivation as runPure does, and streams its log.
+// Like runPure's own build, it is killed if attest dies (dieWithParent).
 func (o *observer) nixBuild(tree, drv string) (string, string, error) {
 	o.mu.Lock()
 	name := o.names[drv]
@@ -93,6 +94,7 @@ func (o *observer) nixBuild(tree, drv string) (string, string, error) {
 	log := o.tel.Log(name)
 	cmd := exec.Command("nix", "build", "--no-link", "--print-out-paths", "--log-format", "internal-json", "-L", drv+"^*")
 	cmd.Dir = tree
+	cmd.SysProcAttr = dieWithParent()
 	var out bytes.Buffer
 	stderr := &nixLog{log: log}
 	cmd.Stdout = &out

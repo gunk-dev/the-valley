@@ -904,9 +904,15 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - A version that a later read does not find ready, or finds superseded, is dropped if its batch
       has not started. A batch that has started runs to its end, and its evidence is published,
       because it is about the head's tree.
+    - The exception is a running batch whose version a read finds superseded, as a restack
+      supersedes one, when no ready change's active version holds its tree. An approval lands the
+      change as its active version stands, so that evidence would serve no landing. The pass stops
+      the batch once it has read the project whole: it kills that `attest run`, whose `nix`
+      processes die with it, and publishes nothing. The batch's `batch.end` says `cancelled`, with
+      the reason. It is not a failure and does not back off. Its slot goes to the queue.
     - When a batch ends, the pass starts the next queued batch at once, and reads every project
-      again after that. So a version superseded since the last read can build once. Its evidence is
-      still true of its tree.
+      again after that. So a version superseded since the last read can start a batch, which that
+      read stops.
     - A failed batch or push is recorded in `failures.json` at once. When its wait ends while the
       pass is still busy, the pass's next read starts it again.
     - Stopping the unit stops the pass and every `attest` it started.
@@ -924,6 +930,8 @@ valley-worker --repo the-valley --key ~/.ssh/valley-worker --name worker/attesta
     - `an earlier pass stored <ref>, and origin does not hold it`, then the line for publishing it
     - `its batch <checks> failed <n> times in a row, so it is not built again before <time>`
     - `the batch did not pass (<reason>); it is not built again before <time>`
+    - `stopping the batch: v<n> supersedes it, and no ready change's active version holds its tree`,
+      then `the batch stopped; nothing is published`
     - `publishing <ref> failed <n> times in a row, so it is not pushed again before <time>`
     - `could not publish <ref>; it is not pushed again before <time>`
   - A project with ready changes gets one line for the whole project instead when `origin` has no
@@ -2675,9 +2683,10 @@ it. No `eval_ms` counts the wait. Checks build side by side, so their `check_ms`
 run's wall time.
 
 The check worker's `batch.start` carries the batch's evaluation estimate and the evaluation budget
-as `eval_estimate_bytes` and `eval_budget_bytes`. A `capacity` record says a batch's estimate is
-larger than the whole budget, so its evaluation runs alone. It carries the same two fields and
-`budget_from`, where the budget came from.
+as `eval_estimate_bytes` and `eval_budget_bytes`. Its `batch.end` carries `result`: `passed`,
+`failed`, or `cancelled` for a batch the pass stopped, with `reason` for the last two. A `capacity`
+record says a batch's estimate is larger than the whole budget, so its evaluation runs alone. It
+carries the same two fields and `budget_from`, where the budget came from.
 
 A `decision` record carries the timing information of the integrator's timing line
 ([architecture](./architecture.md#the-integrator)) in its `data`: `request`, `target`, `tip`,

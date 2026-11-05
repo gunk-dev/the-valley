@@ -15,8 +15,11 @@ The document makes three kinds of statement:
 - **A gate that is not built** has a design but does not work yet. It is labelled **not built**.
 
 The main threat is an AI agent acting as the operator. So the gates must hold even when an agent
-ignores its instructions. The human act of authority is a touch on a hardware key. An approval gate
-that the gated agent can administer is only a setting that agent controls
+ignores its instructions. The human act of authority is an approval made with the operator's key.
+Whether that key must be a hardware key that needs a touch is a **deployment choice**. A policy
+requires one with `approval.hardware`, and enforcing that requirement is **not built** (see
+[Filing takes a touch](#3-filing-takes-a-touch-not-built)). An approval gate that the gated agent
+can administer is only a setting that agent controls
 ([ida-b7025b5](../archive/.the-valley/ideas/ida-b7025b5-human-decisions-are-signed-acts.md)). A gate
 counts as done only when a check has shown it refusing what it should refuse
 ([oc-9949561](../archive/.the-valley/outcomes/oc-9949561-push-replication.md)).

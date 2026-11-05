@@ -1250,13 +1250,20 @@ names. For each project it follows approval's steps:
    `refs/the-valley/attestations/<tree>/<key-hash>`, and nothing else.
 
 A pass runs up to `--batches` batches at once, in the order their versions became ready, and one
-batch at a time for each attestation ref. Batches overlap their builds, but their evaluations take
-turns. One evaluation can need most of the build slice's memory, so the pass hands every
-`attest run` a lock file in its state directory, and `attest` holds it only while it evaluates
-(`implemented`, `status/worker.go`, `attest/check.go`). It reads every project again when a batch
-ends, when a wake mark arrives, and every `--interval` while batches run, so a change readied while
-a long batch runs is built in the same pass. It ends when no batch runs and a read finds nothing to
-start (`implemented`, `status/worker.go`).
+batch at a time for each attestation ref. Batches overlap their builds, and their evaluations are
+admitted by a memory budget. The budget is a share of the most memory the worker may use, which on a
+host is the build slice's limit, or a size the host gives. Each evaluation is estimated from its
+project's last measured peaks. An evaluation starts when its estimate fits the budget beside the
+evaluations admitted before it, and otherwise waits. One estimated at more than the whole budget
+runs alone, and the pass reports it (`implemented`, `status/evalbudget.go`, `attest/admit.go`). Only
+a successful evaluation's peak trains its project's estimate. After a failed or killed one, the
+project's next evaluation runs alone. A pass that cannot find the worker's memory limit evaluates
+one batch at a time and says how to give a budget. A run that cannot make its reservation fails
+before it evaluates. Its reservation stays held until its `nix` evaluations are gone, and on Linux
+they die with it (`implemented`, `attest/check.go`). It reads every project again when a batch ends,
+when a wake mark arrives, and every `--interval` while batches run, so a change readied while a long
+batch runs is built in the same pass. It ends when no batch runs and a read finds nothing to start
+(`implemented`, `status/worker.go`).
 
 The hook admits that ref as it admits any evidence. Every note must verify under the host's known
 signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the

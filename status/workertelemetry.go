@@ -267,6 +267,15 @@ func (t *workerTelemetry) failure(f failureState) {
 	t.state.Failures = append(t.state.Failures, f)
 }
 
+// capacity says a batch's evaluation is estimated at more than the whole
+// evaluation budget, so it evaluates alone.
+func (t *workerTelemetry) capacity(id identity, estimate, budget int64, source string) {
+	if t == nil {
+		return
+	}
+	t.tel.Emit("capacity", id.record(), map[string]any{"eval_estimate_bytes": estimate, "eval_budget_bytes": budget, "budget_from": source})
+}
+
 // finish ends the pass, and keeps only the failures the failure record
 // still holds, with their waits as it holds them.
 func (t *workerTelemetry) finish(r *failureRecord, troubles int, err error) {

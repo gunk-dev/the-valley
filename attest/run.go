@@ -44,7 +44,10 @@ func cmdRun(args []string) (err error) {
 	capacity := fs.String("capacity", "", "the capacity the builds' progress records name")
 	slots := fs.Int("slots", defaultSlots, "how many nix builds run at once")
 	gcRoots := fs.String("gc-roots", "", "a directory to root every built output in")
-	evalLockFlag := fs.String("eval-lock", "", "a lock file the flake checks' evaluation holds")
+	evalReservations := fs.String("eval-reservations", "", "a directory of reservations the flake checks' evaluation is admitted by")
+	evalEstimate := fs.Int64("eval-estimate", 0, "the peak memory the evaluation is expected to need, in bytes")
+	evalBudget := fs.Int64("eval-budget", 0, "the memory the evaluations admitted by --eval-reservations share, in bytes")
+	evalPeak := fs.String("eval-peak", "", "a file to write the evaluation's peak memory to, in bytes")
 	var checks, commands, costs repeatable
 	fs.Var(&checks, "check", "flake check to run")
 	fs.Var(&commands, "command", "effectful check to run")
@@ -69,12 +72,30 @@ func cmdRun(args []string) (err error) {
 		}
 	}
 
-	var evalLock *os.File
-	if *evalLockFlag != "" {
-		if evalLock, err = os.OpenFile(*evalLockFlag, os.O_CREATE|os.O_RDWR, 0o600); err != nil {
-			return fmt.Errorf("--eval-lock %s: %v", *evalLockFlag, err)
+	var adm *admission
+	if *evalReservations != "" {
+		if *evalBudget < 1 {
+			return fmt.Errorf("--eval-reservations needs --eval-budget: the memory the evaluations share, in bytes")
 		}
-		defer evalLock.Close()
+		if *evalEstimate < 0 {
+			return fmt.Errorf("--eval-estimate %d: not a number of bytes", *evalEstimate)
+		}
+		dir, err := filepath.Abs(*evalReservations)
+		if err != nil {
+			return fmt.Errorf("--eval-reservations %s: %v", *evalReservations, err)
+		}
+		// An evaluation with no estimate counts as the whole budget, so it
+		// runs alone.
+		adm = &admission{dir: dir, estimate: *evalEstimate, budget: *evalBudget}
+		if adm.estimate == 0 {
+			adm.estimate = adm.budget
+		}
+	}
+	peakFile := ""
+	if *evalPeak != "" {
+		if peakFile, err = filepath.Abs(*evalPeak); err != nil {
+			return fmt.Errorf("--eval-peak %s: %v", *evalPeak, err)
+		}
 	}
 
 	root, err := repoRoot(*repo)
@@ -206,7 +227,9 @@ func cmdRun(args []string) (err error) {
 		fmt.Fprintln(timingStdout(), timingLine(t, r.took))
 		outcomes = append(outcomes, r.out)
 	}
-	runPure(tree, *system, pure, *timings, *slots, roots, evalLock, report, obs)
+	if _, err := runPure(tree, *system, pure, *timings, *slots, roots, adm, peakFile, report, obs); err != nil {
+		return err
+	}
 	for _, spec := range effectful {
 		began := time.Now()
 		obs.emit("check.start", spec.name, nil)

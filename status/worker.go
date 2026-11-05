@@ -32,15 +32,17 @@ package main
 //
 // Up to --batches batches run at once; without it, one. The loop starts
 // the batches a scan found in the order their versions became ready.
-// Batches overlap their builds, but their evaluations take turns. One
-// evaluation can need most of the memory the worker's slice has, so two
-// at once could get one of them killed. The pass hands every attest it
-// starts the file eval.lock in the state directory, and attest holds an
-// exclusive flock on it while it evaluates the flake checks, and releases
-// it before it builds them. The flock is released when its holder exits,
-// so a pass or an attest killed during an evaluation leaves nothing held.
-// The time a batch waits for the lock is recorded apart from its
-// evaluation's.
+// Batches overlap their builds, and their evaluations are admitted by a
+// memory budget (evalbudget.go). One evaluation can need most of the
+// memory the worker's slice has, so evaluations that together need more
+// than the slice holds could get one of them killed. A batch's evaluation
+// starts when its estimate fits the budget beside the evaluations
+// admitted before it, and otherwise waits. attest admits it through
+// reservations in the state directory, which a pass or an attest killed
+// during an evaluation does not leave counting once the evaluation is
+// gone. An attest that cannot make its reservation evaluates nothing and
+// fails, and its batch backs off like any other that failed. The time a batch waits to
+// be admitted is recorded apart from its evaluation's.
 // Change records carry no time, so that order is the order in which this
 // pass first saw each version ready. Versions first seen in the same scan
 // go by project name, then by change ID. A pass started by a timer or a
@@ -174,7 +176,7 @@ import (
 	"the-valley/telemetry"
 )
 
-const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>] [--batches <n>] [--interval <span>] [--keep-outputs <age>]"
+const workUsage = "usage: valley-go work --repo <name>... --key <file> [--name <name>] [--state <dir>] [--wake <dir>] [--telemetry <dir>] [--slots <n>] [--batches <n>] [--interval <span>] [--keep-outputs <age>] [--eval-budget <size>] [--eval-share <fraction>]"
 
 // projectLayer is the project's own policy layer, in main's tree.
 const projectLayer = "policy/project"
@@ -205,7 +207,7 @@ type worker struct {
 	batches   int           // how many batches run at once
 	interval  time.Duration // how often a pass with batches running scans again
 	roots     string        // the directory attest roots the outputs it builds in, or "" to root nothing
-	evalLock  string        // the lock file every attest holds while it evaluates
+	evals     *evaluations  // the evaluation budget and the record of peaks, or nil to admit evaluations by nothing
 	keyhash   string        // the key hash an attestation ref of this signer ends in
 	lock      *os.File      // the state directory's lock, held for the pass
 	wake      *wake         // the wake directory's claim, or nil without --wake
@@ -293,21 +295,25 @@ func jobBefore(a, b *job) bool {
 
 // batch is a job whose attest run has started.
 type batch struct {
-	job     *job
-	run     string // the attest run's ID
-	mark    int64  // the newest record in the telemetry stream when it started
-	attempt *attempt
+	job      *job
+	run      string // the attest run's ID
+	mark     int64  // the newest record in the telemetry stream when it started
+	estimate int64  // the peak memory its evaluation is expected to need, in bytes
+	budget   int64  // the budget its attest is handed beside the estimate, in bytes
+	attempt  *attempt
 }
 
 // completion is what a batch did, as its goroutine hands it to the loop:
 // how attest ended and when, the object it stored at the job's ref, and
 // the checks it recorded as not passing. It is not changed once sent.
 type completion struct {
-	b      *batch
-	err    error
-	ended  time.Time
-	stored string // "" when attest stored nothing there
-	failed []string
+	b       *batch
+	err     error
+	ended   time.Time
+	stored  string // "" when attest stored nothing there
+	failed  []string
+	peak    int64  // the evaluation's peak memory in bytes, or 0 when attest did not say
+	outcome string // how the evaluation ended, as attest said: "ok", "failed" or "killed", or empty when it did not say
 }
 
 func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
@@ -316,10 +322,12 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	slots, batches := 0, 1
 	interval := defaultInterval
 	var keep time.Duration
+	var evalBudget int64
+	evalShare := defaultEvalShare
 	for i := 0; i < len(args); i++ {
 		opt, value, inline := strings.Cut(args[i], "=")
 		switch opt {
-		case "--repo", "--key", "--name", "--state", "--wake", "--telemetry", "--slots", "--batches", "--interval", "--keep-outputs":
+		case "--repo", "--key", "--name", "--state", "--wake", "--telemetry", "--slots", "--batches", "--interval", "--keep-outputs", "--eval-budget", "--eval-share":
 		default:
 			return failure(workUsage)
 		}
@@ -370,6 +378,18 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 				return failure(fmt.Sprintf("--keep-outputs %s: not a positive duration, such as 168h", value))
 			}
 			keep = d
+		case "--eval-budget":
+			n, err := parseSize(value)
+			if err != nil {
+				return failure(fmt.Sprintf("--eval-budget %s: %v", value, err))
+			}
+			evalBudget = n
+		case "--eval-share":
+			f, err := strconv.ParseFloat(value, 64)
+			if err != nil || !(f > 0 && f <= 1) {
+				return failure(fmt.Sprintf("--eval-share %s: not a fraction greater than 0 and at most 1, such as 0.6", value))
+			}
+			evalShare = f
 		}
 	}
 	if len(repos) == 0 || key == "" {
@@ -458,10 +478,18 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	// state the telemetry finishes with.
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
-	// attest runs in each project's repository, so the evaluation lock is
-	// named absolutely, as the roots are.
-	if w.evalLock, err = filepath.Abs(filepath.Join(state, "eval.lock")); err != nil {
+	// attest runs in each project's repository, so the state directory is
+	// named absolutely for the reservations, as it is for the roots.
+	abState, err := filepath.Abs(state)
+	if err != nil {
 		return failure(fmt.Sprintf("--state %s: %v", state, err))
+	}
+	if w.evals, err = openEvaluations(abState, evalBudget, evalShare); err != nil {
+		return failure(fmt.Sprintf("the evaluation budget: %v", err))
+	}
+	if w.evals.budget == 0 {
+		fmt.Fprintf(stderr, "valley: the evaluation budget could not be found (%s), so this pass evaluates one batch at a time. "+
+			"Give the memory evaluations may hold together with services.valley.worker.evalMemoryBudget, such as \"12G\" (--eval-budget 12G)\n", w.evals.source)
 	}
 	if keep > 0 {
 		// attest runs in each project's repository, so the roots are
@@ -1035,10 +1063,28 @@ func (w *worker) admit() error {
 // so the lock stays held while attest runs, and while anything it started
 // that inherited the file runs, even when this pass is killed. A later
 // pass waits for all of it, and then finds the ref attest stored.
+//
+// The batch's evaluation is estimated from its project's record of peaks.
+// An estimate larger than the whole budget cannot fit beside anything, so
+// the evaluation runs alone, and the pass says so, once for the batch, in
+// its output and as a capacity record. A pass that found no budget hands
+// attest a budget equal to the estimate, so each evaluation runs alone,
+// and said so once when it began.
 func (w *worker) start(j *job) {
 	b := &batch{job: j, run: telemetry.NewRunID(), mark: w.tel.streamEnd()}
 	w.say(j, "building %s", strings.Join(j.names(), ", "))
-	b.attempt = w.tel.begin("build", j.identity(), j.names(), b.run, map[string]any{"attest_run": b.run})
+	data := map[string]any{"attest_run": b.run}
+	if w.evals != nil {
+		b.estimate = w.evals.estimate(j.r.name)
+		b.budget = w.evals.handed(b.estimate)
+		data["eval_estimate_bytes"], data["eval_budget_bytes"] = b.estimate, b.budget
+		if w.evals.budget > 0 && b.estimate > w.evals.budget {
+			w.say(j, "its evaluation is estimated at %s, more than the evaluation budget of %s (%s), so it evaluates alone; give the worker more memory, or a larger --eval-budget or --eval-share",
+				bytesText(b.estimate), bytesText(w.evals.budget), w.evals.source)
+			w.tel.capacity(j.identity(), b.estimate, w.evals.budget, w.evals.source)
+		}
+	}
+	b.attempt = w.tel.begin("build", j.identity(), j.names(), b.run, data)
 	w.running[j.dest()] = b
 	w.launch(b)
 }
@@ -1061,8 +1107,11 @@ func (w *worker) attest(b *batch) {
 	if w.roots != "" {
 		args = append(args, "--gc-roots", w.roots)
 	}
-	if w.evalLock != "" {
-		args = append(args, "--eval-lock", w.evalLock)
+	peak := ""
+	if w.evals != nil {
+		peak = filepath.Join(w.evals.dir, b.run+".peak")
+		args = append(args, "--eval-reservations", w.evals.dir, "--eval-estimate", strconv.FormatInt(b.estimate, 10),
+			"--eval-budget", strconv.FormatInt(b.budget, 10), "--eval-peak", peak)
 	}
 	for _, q := range j.missing {
 		args = append(args, "--check", q.name+"="+q.attribute)
@@ -1092,6 +1141,12 @@ func (w *worker) attest(b *batch) {
 	go func() {
 		err := cmd.Wait()
 		c := completion{b: b, err: err, ended: clock()}
+		if peak != "" {
+			if text, rerr := os.ReadFile(peak); rerr == nil {
+				c.peak, c.outcome = readPeak(string(text))
+			}
+			os.Remove(peak)
+		}
 		if err != nil {
 			c.failed = failedChecks(stream, run, mark)
 		} else if stored, found, rerr := g.ref(ref); rerr == nil && found {
@@ -1110,6 +1165,17 @@ func (w *worker) complete(c completion) {
 		delete(w.running, j.dest())
 		w.tel.settle()
 	}()
+	outcome := c.outcome
+	if outcome == "" && endedBySignal(c.err) {
+		// attest was killed before it said how its evaluation ended,
+		// which may have been during the evaluation.
+		outcome = "killed"
+	}
+	if outcome != "" && w.evals != nil {
+		if err := w.evals.record(j.r.name, c.peak, outcome); err != nil {
+			fmt.Fprintf(w.stderr, "valley: could not record the evaluation's peak memory in %s: %v\n", w.evals.path, err)
+		}
+	}
 	if c.err != nil {
 		f := w.failed(j.r.name, j.key, c.ended, firstBuildWait)
 		reason := fmt.Sprintf("attest run %s: %v", b.run, c.err)

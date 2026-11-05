@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -82,13 +83,78 @@ func nixSystem() string {
 }
 
 func nix(dir string, args ...string) (string, string, error) {
+	out, errb, _, err := nixPeak(dir, nil, args...)
+	return out, errb, err
+}
+
+// peak is what an evaluation's nix processes measured: the most memory
+// any of them held, in bytes, and how they ended. The outcome is "ok"
+// when every one exited successfully, "killed" when any was ended by a
+// signal, as the kernel's out-of-memory killer ends one, "failed" when
+// any other failed, and empty when none ran. Only an ok peak is the
+// evaluation's whole high-water mark: one that failed or was killed
+// stopped short of it.
+type peak struct {
+	bytes   int64
+	outcome string
+}
+
+// add takes in another process's measure: the larger peak, and the worse
+// outcome.
+func (p peak) add(q peak) peak {
+	rank := map[string]int{"": 0, "ok": 1, "failed": 2, "killed": 3}
+	if rank[q.outcome] > rank[p.outcome] {
+		p.outcome = q.outcome
+	}
+	p.bytes = max(p.bytes, q.bytes)
+	return p
+}
+
+// nixPeak runs nix as nix does, and also measures it: the most memory the
+// nix process held, in bytes, which is its maximum resident set size from
+// its resource usage once it exited, and how it ended. An evaluation runs
+// in the nix process itself, not in the daemon, so this is the
+// evaluation's peak. The process inherits held, the run's locked
+// reservation file when it has one, so the reservation stays held while
+// the process runs (admit), and it is killed if attest dies, so it never
+// outlives the run that counted it (dieWithParent).
+func nixPeak(dir string, held *os.File, args ...string) (string, string, peak, error) {
 	cmd := exec.Command("nix", args...)
 	cmd.Dir = dir
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
+	cmd.SysProcAttr = dieWithParent()
+	if held != nil {
+		cmd.ExtraFiles = []*os.File{held}
+	}
 	err := cmd.Run()
-	return out.String(), errb.String(), err
+	m := peak{bytes: maxRSS(cmd.ProcessState), outcome: "ok"}
+	if err != nil {
+		m.outcome = "failed"
+		if cmd.ProcessState != nil {
+			if ws, ok := cmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+				m.outcome = "killed"
+			}
+		}
+	}
+	return out.String(), errb.String(), m, err
+}
+
+// maxRSS is the maximum resident set size of a process that exited, in
+// bytes, or 0 when it is not known. Linux counts it in kibibytes.
+func maxRSS(ps *os.ProcessState) int64 {
+	if ps == nil {
+		return 0
+	}
+	ru, ok := ps.SysUsage().(*syscall.Rusage)
+	if !ok {
+		return 0
+	}
+	if runtime.GOOS == "darwin" {
+		return ru.Maxrss
+	}
+	return ru.Maxrss * 1024
 }
 
 // nixStore runs nix-store, and stops it when ctx is done.
@@ -128,14 +194,17 @@ type closure struct {
 }
 
 // evalClosure evaluates one flake check over an exported tree and digests
-// what the evaluation named. Nothing is built.
-func evalClosure(tree, system string, spec checkSpec) (closure, error) {
+// what the evaluation named. Nothing is built. It also returns the
+// evaluation's measure, as nixPeak takes it, whose nix process inherits
+// held.
+func evalClosure(tree, system string, spec checkSpec, held *os.File) (closure, peak, error) {
 	attr := tree + "#checks." + system + "." + spec.attribute
-	drv, errb, err := nix(tree, "eval", "--raw", attr+".drvPath")
+	drv, errb, peak, err := nixPeak(tree, held, "eval", "--raw", attr+".drvPath")
 	if err != nil {
-		return closure{}, fmt.Errorf("evaluating %s: %w: %s", attr, err, strings.TrimSpace(errb))
+		return closure{}, peak, fmt.Errorf("evaluating %s: %w: %s", attr, err, strings.TrimSpace(errb))
 	}
-	return closureOf(strings.TrimSpace(drv))
+	c, err := closureOf(strings.TrimSpace(drv))
+	return c, peak, err
 }
 
 // closureOf digests a derivation an evaluation named: the derivation file
@@ -175,8 +244,11 @@ var plainAttribute = regexp.MustCompile(`^[A-Za-z0-9_'+-]+$`)
 // check. A check that evaluation could not name is evaluated alone, as
 // evalClosure does, so an error is reported against the check that has it
 // and stops no other. Each check is timed as the shared evaluation plus
-// whatever was done for it alone.
-func evalClosures(tree, system string, specs []checkSpec) []evaluation {
+// whatever was done for it alone. The second answer measures every nix
+// evaluation it ran, the shared one and each alone, together (peak.add),
+// so a peak counts as the evaluation's whole high-water mark only when
+// none of them failed. Each nix process inherits held.
+func evalClosures(tree, system string, specs []checkSpec, held *os.File) ([]evaluation, peak) {
 	var attrs []string
 	shared := map[string]bool{}
 	for _, spec := range specs {
@@ -186,7 +258,7 @@ func evalClosures(tree, system string, specs []checkSpec) []evaluation {
 		}
 	}
 	began := time.Now()
-	drvs := evalDrvPaths(tree, system, attrs)
+	drvs, measured := evalDrvPaths(tree, system, attrs, held)
 	sharedTook := time.Since(began)
 
 	evals := make([]evaluation, len(specs))
@@ -197,14 +269,16 @@ func evalClosures(tree, system string, specs []checkSpec) []evaluation {
 		if drv, ok := drvs[spec.attribute]; ok {
 			c, err = closureOf(drv)
 		} else {
-			c, err = evalClosure(tree, system, spec)
+			var alone peak
+			c, alone, err = evalClosure(tree, system, spec, held)
+			measured = measured.add(alone)
 		}
 		evals[i] = evaluation{closure: c, err: err, took: time.Since(began)}
 		if shared[spec.attribute] {
 			evals[i].took += sharedTook
 		}
 	}
-	return evals
+	return evals, measured
 }
 
 // evalDrvPaths names the derivation of every check attribute given, in one
@@ -213,11 +287,12 @@ func evalClosures(tree, system string, specs []checkSpec) []evaluation {
 // cannot be caught inside nix, such as a type error, and they end the
 // whole evaluation; then the answer is empty, and every check is evaluated
 // alone. One attribute has nothing to share, so it is left to be evaluated
-// alone from the start.
-func evalDrvPaths(tree, system string, attrs []string) map[string]string {
+// alone from the start. The second answer is the evaluation's measure,
+// or an empty one when it did not run. Its nix process inherits held.
+func evalDrvPaths(tree, system string, attrs []string, held *os.File) (map[string]string, peak) {
 	drvs := map[string]string{}
 	if len(attrs) < 2 {
-		return drvs
+		return drvs, peak{}
 	}
 	quoted := make([]string, len(attrs))
 	for i, a := range attrs {
@@ -226,20 +301,20 @@ func evalDrvPaths(tree, system string, attrs []string) map[string]string {
 	apply := `checks: builtins.listToAttrs (map (name: { inherit name; value = ` +
 		`let r = builtins.tryEval (if checks ? ${name} && checks.${name} ? drvPath then checks.${name}.drvPath else null); ` +
 		`in if r.success then r.value else null; }) [ ` + strings.Join(quoted, " ") + ` ])`
-	out, _, err := nix(tree, "eval", "--json", "--apply", apply, tree+"#checks."+system)
+	out, _, peak, err := nixPeak(tree, held, "eval", "--json", "--apply", apply, tree+"#checks."+system)
 	if err != nil {
-		return drvs
+		return drvs, peak
 	}
 	var named map[string]any
 	if json.Unmarshal([]byte(out), &named) != nil {
-		return drvs
+		return drvs, peak
 	}
 	for _, a := range attrs {
 		if drv, ok := named[a].(string); ok && drv != "" {
 			drvs[a] = drv
 		}
 	}
-	return drvs
+	return drvs, peak
 }
 
 // defaultSlots is how many nix build processes attest run starts at once
@@ -264,20 +339,42 @@ var defaultSlots = runtime.NumCPU()
 // is its evaluation, its probe, and its derivation's build. One that does
 // not evaluate ends at its evaluation error.
 //
-// With an evaluation lock, the evaluation waits for that lock and holds it
-// until the evaluation ends, and the builds run after it is released
-// (takeEvalLock). The wait is not part of any check's time: eval.end
-// records it apart, as eval_wait_ms.
+// With an admission, the evaluation waits until its estimate fits the
+// memory budget beside the evaluations admitted before it, and its
+// reservation is removed when the evaluation ends, before the builds
+// (admit). The wait is not part of any check's time: eval.end records it
+// apart, as eval_wait_ms. An admission that fails is an error, and then
+// nothing is evaluated or built: no evaluation runs without being counted.
+// eval.end also records the evaluation's peak memory, as
+// eval_max_rss_bytes, and its outcome, as eval_outcome (peak). With
+// peakFile, the peak in bytes and the outcome are written there too, on
+// one line.
 //
 // With roots, every output path a build prints is rooted under that
 // directory (rootOutputs), whether nix built it or found it valid.
-func runPure(tree, system string, specs []checkSpec, probe bool, slots int, roots string, evalLock *os.File, report func(ranCheck), obs *observer) []ranCheck {
-	waited, release := takeEvalLock(evalLock)
+func runPure(tree, system string, specs []checkSpec, probe bool, slots int, roots string, adm *admission, peakFile string, report func(ranCheck), obs *observer) ([]ranCheck, error) {
+	waited, held, release, err := admit(adm)
+	if err != nil {
+		return nil, err
+	}
 	began := time.Now()
-	obs.emit("eval.start", "", map[string]any{"checks": specNames(specs)})
-	evals := evalClosures(tree, system, specs)
-	obs.emit("eval.end", "", map[string]any{"eval_ms": time.Since(began).Milliseconds(), "eval_wait_ms": waited.Milliseconds()})
+	start := map[string]any{"checks": specNames(specs)}
+	if adm != nil {
+		start["eval_estimate_bytes"], start["eval_budget_bytes"] = adm.estimate, adm.budget
+	}
+	obs.emit("eval.start", "", start)
+	evals, measured := evalClosures(tree, system, specs, held)
+	end := map[string]any{"eval_ms": time.Since(began).Milliseconds(), "eval_wait_ms": waited.Milliseconds(), "eval_max_rss_bytes": measured.bytes}
+	if measured.outcome != "" {
+		end["eval_outcome"] = measured.outcome
+	}
+	obs.emit("eval.end", "", end)
 	release()
+	if peakFile != "" && measured.outcome != "" {
+		if err := os.WriteFile(peakFile, []byte(strconv.FormatInt(measured.bytes, 10)+" "+measured.outcome+"\n"), 0o600); err != nil {
+			fmt.Fprintf(os.Stderr, "attest: warning: could not record the evaluation's peak memory: %v\n", err)
+		}
+	}
 	runs := make([]ranCheck, len(specs))
 	for i, spec := range specs {
 		e := evals[i]
@@ -315,32 +412,7 @@ func runPure(tree, system string, specs []checkSpec, probe bool, slots int, root
 		}
 	}
 	buildChecks(runs, drvs, slots, build, report, obs)
-	return runs
-}
-
-// takeEvalLock waits for an exclusive flock on lock and returns how long
-// it waited, and the function that releases it. Runs handed the same lock
-// file evaluate one at a time, so their evaluations never need memory
-// together; their builds still overlap. Without a lock it waits for
-// nothing. The flock belongs to the open file, which attest's children do
-// not inherit, so it is released when attest exits, however it ends: a run
-// killed during its evaluation leaves nothing held. A lock that cannot be
-// taken is warned about, and the evaluation runs without it.
-func takeEvalLock(lock *os.File) (time.Duration, func()) {
-	if lock == nil {
-		return 0, func() {}
-	}
-	began := time.Now()
-	err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
-	for err == syscall.EINTR {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX)
-	}
-	waited := time.Since(began)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "attest: warning: evaluating without the lock %s: %v\n", lock.Name(), err)
-		return waited, func() {}
-	}
-	return waited, func() { syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }
+	return runs, nil
 }
 
 // rootOutputs registers an indirect garbage-collector root in dir for each

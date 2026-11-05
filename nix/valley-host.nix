@@ -458,7 +458,12 @@ let
     cd "$origin"
     exec valley-worker ${
       lib.concatMapStringsSep " " (p: "--repo ${lib.escapeShellArg p}") cfg.worker.projects
-    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots} --batches ${toString cfg.worker.batches} --interval ${lib.escapeShellArg cfg.worker.interval}${
+    } --key "$key" --name ${lib.escapeShellArg cfg.worker.signerName} --state "$state" --wake ${lib.escapeShellArg workerWakeDir} --slots ${toString cfg.worker.buildSlots} --batches ${toString cfg.worker.batches} --interval ${lib.escapeShellArg cfg.worker.interval} ${
+      if cfg.worker.evalMemoryBudget != null then
+        "--eval-budget ${cfg.worker.evalMemoryBudget}"
+      else
+        "--eval-share ${builtins.toJSON cfg.worker.evalMemoryShare}"
+    }${
       lib.optionalString (
         cfg.worker.keepOutputs != null
       ) " --keep-outputs ${toString (cfg.worker.keepOutputs * 24)}h"
@@ -1922,13 +1927,55 @@ in
           `batches × buildSlots × maxJobs` local derivation builds, besides
           the evaluations. They share {option}`services.valley.buildSlice.memoryMax`
           with the worker and the nix daemon. Batches overlap their builds,
-          but their evaluations take turns, so the slice holds one batch's
-          evaluation at a time. Measure the slice's peak
+          and their evaluations run together only while their estimated
+          peaks fit {option}`services.valley.worker.evalMemoryBudget`, so
+          more batches overlap more builds but no more evaluation memory.
+          Measure the slice's peak
           memory under a real load before raising this:
           `systemctl status valley-builds.slice` shows its memory now and
           its peak.
 
           ${workerCapacityBound}
+        '';
+      };
+
+      evalMemoryShare = lib.mkOption {
+        type = lib.types.numbers.between 0.05 1;
+        default = 0.6;
+        example = 0.75;
+        description = ''
+          The share of the worker's memory limit that the evaluations of
+          its batches may hold together, as `valley-worker --eval-share`.
+          The limit is the smallest `memory.max` of the worker's cgroup and
+          its ancestors, which is
+          {option}`services.valley.buildSlice.memoryMax`, and never more
+          than the host's memory. When the worker cannot find that limit,
+          it evaluates one batch at a time and says so, and
+          {option}`services.valley.worker.evalMemoryBudget` should be set.
+          The rest is left to the builds of batches
+          that are past their evaluations, to the nix daemon and to the
+          worker. A batch's evaluation starts when its estimated peak fits
+          this budget beside the evaluations already running; otherwise it
+          waits. An evaluation estimated at more than the whole budget runs
+          alone, and the worker reports it.
+          {option}`services.valley.worker.evalMemoryBudget` overrides this.
+        '';
+      };
+
+      evalMemoryBudget = lib.mkOption {
+        type = lib.types.nullOr (lib.types.strMatching "[0-9]+[KMGT]?");
+        default = null;
+        example = "12G";
+        description = ''
+          The memory the evaluations of the worker's batches may hold
+          together, as `valley-worker --eval-budget`, in bytes or with a K,
+          M, G or T suffix for powers of 1024, as systemd's MemoryMax.
+          `null` takes {option}`services.valley.worker.evalMemoryShare` of
+          the worker's memory limit. Give a budget at least as large as the
+          largest project's evaluation peak, which the `eval.end`
+          telemetry records as `eval_max_rss_bytes`, and no more than
+          {option}`services.valley.buildSlice.memoryMax` less what the
+          builds of {option}`services.valley.worker.batches` batches need.
         '';
       };
 

@@ -509,8 +509,8 @@ in
 
   # The check worker given build capacity of its own: three batches at
   # once, three checks at once in each, each building two derivations at
-  # once on two cores, read again every five minutes, and keeping no
-  # outputs.
+  # once on two cores, read again every five minutes, keeping no outputs,
+  # and evaluating within a budget of its own.
   capacityWorkerHost = workerHost.extendModules {
     modules = [
       {
@@ -521,6 +521,7 @@ in
           maxJobs = 2;
           cores = 2;
           keepOutputs = null;
+          evalMemoryBudget = "12G";
         };
       }
     ];

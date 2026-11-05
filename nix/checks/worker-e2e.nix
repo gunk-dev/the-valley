@@ -21,11 +21,14 @@
 # the key is the same after many starts.
 #
 # Then the scheduler. One pass starts a short change's batch and a long
-# one's at once, and their evaluations take turns. It builds the short
-# change beside the long one, takes on changes readied while the long
-# batch runs, builds two changes with one tree once, and goes on past a
-# failed batch, claiming the marks made meanwhile itself. Its changes are
-# then withdrawn, since every scan after it would read them.
+# one's at once. Their evaluations are estimated at more than half the
+# evaluation budget, so they take turns. It builds the short change beside
+# the long one, takes on changes readied while the long batch runs, builds
+# two changes with one tree once, and goes on past a failed batch,
+# claiming the marks made meanwhile itself. A second pass starts two
+# batches whose estimates fit the budget together, and their evaluations
+# overlap. The changes of both are then withdrawn, since every scan after
+# them would read them.
 #
 # The worker's interval here is 15 seconds rather than the module's
 # minute, so a scenario that waits for a timer pass or a hold-off waits
@@ -90,8 +93,12 @@ let
   # shell, and the script is the derivation's one input. The project's own
   # scripts spin for about half a second, several of the sampler's ticks,
   # so the two builds a pass runs at once are seen at once, and write the
-  # cores the daemon gave them.
-  flake = pkgs.writeText "flake.nix" ''
+  # cores the daemon gave them. The slow flake's evaluation first hashes
+  # one MiB three thousand times, which takes over a second and little
+  # memory, so two evaluations started a moment apart are seen running at
+  # once.
+  slowEvaluation = ''builtins.seq (let s = builtins.concatStringsSep "" (builtins.genList (_: "0123456789abcdef") 65536); in builtins.foldl' (a: _: a + builtins.stringLength (builtins.hashString "sha256" s)) 0 (builtins.genList (i: i) 3000)) '';
+  flakeWith = slow: pkgs.writeText "flake.nix" ''
     {
       outputs =
         { self }:
@@ -104,13 +111,15 @@ let
           };
         in
         {
-          checks.x86_64-linux = {
+          checks.x86_64-linux = ${lib.optionalString slow slowEvaluation}{
             first = check "worker-first" ./first.sh;
             second = check "worker-second" ./second.sh;
           };
         };
     }
   '';
+  flake = flakeWith false;
+  slowFlake = flakeWith true;
   flakeLock = pkgs.writeText "flake.lock" ''{"nodes":{"root":{}},"root":"root","version":7}'';
   spin = pkgs.writeText "spin.sh" ''
     i=0
@@ -197,6 +206,9 @@ in
           # claim due, come 15 seconds after the last pass ends. The
           # window below in which the hold-off starts nothing is 5 seconds.
           interval = "15s";
+          # The scheduler scenarios seed each project's evaluation peaks
+          # against this budget, so two evaluations fit it or do not.
+          evalMemoryBudget = "1G";
         };
       };
       # The test starts each pass itself until it checks the timer, so no
@@ -297,12 +309,13 @@ in
           host.wait_until_succeeds(f"{contributor} git push --quiet origin {branch}", timeout=60)
           host.wait_until_succeeds(f"{contributor} valley ready {branch}", timeout=60)
 
-      # A branch of the project with the first check's script given,
-      # pushed by the contributor and readied.
-      def ready(branch, first):
+      # A branch of the project with the first check's script given, and
+      # the flake given, pushed by the contributor and readied.
+      def ready(branch, first, flake="${flake}"):
           host.succeed(
               f"cd /root/project && git checkout --quiet -b {branch} origin/main",
               f"cp {first} /root/project/first.sh && echo {branch} >> /root/project/README.md",
+              f"cp {flake} /root/project/flake.nix",
               f"cd /root/project && git add -A && {commit} -m {branch}",
           )
           push_ready(branch)
@@ -460,8 +473,9 @@ in
           host.succeed(f"test ! -e {wake}/claimed")
 
       def eval_spans():
-          # When each attest run's evaluation began and ended, from its
-          # eval.start and eval.end records, in the order they began.
+          # When each attest run's evaluation began and ended, how long it
+          # waited to be admitted, and its peak memory, from its eval.start
+          # and eval.end records, in the order they began.
           import datetime
           import json
           spans = {}
@@ -472,23 +486,41 @@ in
           return sorted(
               (datetime.datetime.fromisoformat(s["eval.start"]["time"].replace("Z", "+00:00")),
                datetime.datetime.fromisoformat(s["eval.end"]["time"].replace("Z", "+00:00")),
-               s["eval.end"]["data"]["eval_wait_ms"])
+               s["eval.end"]["data"]["eval_wait_ms"],
+               s["eval.end"]["data"]["eval_max_rss_bytes"])
               for s in spans.values() if len(s) == 2
           )
+
+      def seed_peaks(mib):
+          # The project's record of evaluation peaks, as if its last
+          # evaluation had peaked at mib MiB, so the next evaluations are
+          # estimated at that.
+          import json
+          record = json.dumps({"projects": {"project": [mib << 20]}})
+          host.succeed(
+              f"echo {shlex.quote(record)} > {state}/evaluations.json",
+              f"chown valley-worker:valley-worker {state}/evaluations.json",
+          )
+
+      def peaks():
+          import json
+          return json.loads(host.succeed(f"cat {state}/evaluations.json"))["projects"]["project"]
 
       # One pass, started by hand with the timer and the path unit stopped,
       # so every change readied after it starts is built by that pass or by
       # none. Its first scan finds the long and the short change, and it
-      # starts both batches at once; their evaluations take turns. Each
+      # starts both batches at once. Each evaluation is estimated at 600
+      # MiB, and two do not fit the 1 GiB budget, so they take turns. Each
       # ready push marks due, and the pass claims the mark itself and reads
       # again. The long change builds for about twenty seconds; meanwhile
       # the short change is built and published in the pass's second slot,
       # a broken change fails, two changes with one tree are built once,
       # and the long change publishes after the failure. No two batches'
       # evaluations overlap. The pass acknowledges every mark it claimed.
-      with subtest("a pass builds a short change beside a long one, evaluating one at a time, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
+      with subtest("a pass builds a short change beside a long one, evaluating one at a time when two do not fit the budget, takes on changes readied meanwhile, builds one tree once, and goes on past a failure"):
           host.succeed("systemctl stop valley-worker.path")
           evaluated = len(eval_spans())
+          seed_peaks(600)
           ready("long", "${long}")
           long = head("long")
           ready("short", "${spin}")
@@ -503,6 +535,11 @@ in
           # still builds.
           assert told(long, "published") == 0, journal()
           assert unit_property("valley-worker.service", "ActiveState") == "activating"
+          # The broken change takes the short change's slot before the
+          # twins are readied. A scan that first saw both would start them
+          # in change ID order, so the twins could take the slot, and the
+          # long change publish before the broken change fails.
+          wait_said(early_broken, "building", 120)
           # Two branches with one tree, readied one right after the other.
           ready("twin-a", "${spin}")
           host.succeed(
@@ -523,9 +560,10 @@ in
           # The long, short and broken batches and the twins' one batch
           # each evaluated, and each evaluation ended before the next began.
           spans = eval_spans()[evaluated:]
-          print(f"evaluations: {[(str(b), str(e), w) for b, e, w in spans]}")
+          print(f"evaluations: {[(str(b), str(e), w, p) for b, e, w, p in spans]}")
           assert len(spans) >= 4, spans
-          for (_, ended, _), (began, _, _) in zip(spans, spans[1:]):
+          assert all(p > 0 for _, _, _, p in spans), spans
+          for (_, ended, _, _), (began, _, _, _) in zip(spans, spans[1:]):
               assert ended <= began, spans
           for change in [long, short, early_broken]:
               assert told(change, "building") == 1, (change, said)
@@ -534,10 +572,37 @@ in
           assert sum(told(t, "published") for t in twins) == 1, said
           assert any(told(t, "origin holds evidence for every nix check it requires") for t in twins), said
           host.succeed(f"test ! -e {wake}/due -a ! -e {wake}/claimed")
+          # The record keeps the project's last five peaks: the four or
+          # more this pass measured, each a real evaluation's, and the
+          # seeded one before them while there is room.
+          kept = peaks()
+          assert len(kept) == 5 and all(0 < p < 600 << 20 for p in kept[-4:]), kept
           # Every scan reads each ready change, so the changes this pass
           # built are withdrawn, and the passes below read no more changes
           # than they did before this scenario.
           for branch in ["long", "short", "early-broken", "twin-a", "twin-b"]:
+              host.succeed(f"{contributor} valley withdraw {branch}")
+
+      # A pass whose first scan finds two changes, each estimated at 300
+      # MiB: both fit the 1 GiB budget, so their evaluations overlap. The
+      # pass starts the second batch a moment after the first, so each
+      # change's flake evaluates slowly.
+      with subtest("evaluations whose estimates fit the budget together run at once"):
+          evaluated = len(eval_spans())
+          seed_peaks(300)
+          ready("fit-a", "${spin}", "${slowFlake}")
+          ready("fit-b", "${spin}", "${slowFlake}")
+          host.succeed("systemctl start --no-block valley-worker.service")
+          wait_said(head("fit-a"), "published", 120)
+          wait_said(head("fit-b"), "published", 120)
+          host.wait_until_succeeds(
+              "test \"$(systemctl show -p ActiveState --value valley-worker)\" != activating", timeout=120
+          )
+          spans = eval_spans()[evaluated:]
+          print(f"evaluations: {[(str(b), str(e), w, p) for b, e, w, p in spans]}")
+          assert len(spans) == 2 and all(p > 0 for _, _, _, p in spans), spans
+          assert spans[1][0] < spans[0][1], spans
+          for branch in ["fit-a", "fit-b"]:
               host.succeed(f"{contributor} valley withdraw {branch}")
           host.succeed("systemctl start valley-worker.path")
           idle()

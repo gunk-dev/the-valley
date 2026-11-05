@@ -61,8 +61,15 @@ run flags:
                       CPU this process may run on)
   --gc-roots DIR      root every output the flake checks build in DIR,
                       so nix's garbage collection keeps them
-  --eval-lock FILE    hold an exclusive lock on FILE while the flake
-                      checks evaluate, and release it before they build
+  --eval-reservations DIR
+                      admit the flake checks' evaluation by memory, among
+                      the runs that share DIR (needs --eval-budget)
+  --eval-estimate N   the peak memory the evaluation is expected to
+                      need, in bytes (default: the whole budget)
+  --eval-budget N     the memory, in bytes, that the evaluations
+                      admitted through DIR share
+  --eval-peak FILE    write the evaluation's peak memory, in bytes, and
+                      how it ended, to FILE once it ends
 
 run evaluates every flake check in one nix evaluation, then builds each
 one's derivation in a nix build of its own, up to --slots of them at
@@ -71,11 +78,26 @@ own build's, and a check that fails keeps its own build's output as its
 log. A check that does not evaluate is an error for that check alone.
 The --command checks run after the flake checks, one at a time.
 
-With --eval-lock, the evaluation first waits for an exclusive flock on
-FILE, which it makes if it is missing, and releases the lock before the
-first build. Runs handed the same file evaluate one at a time, and their
-builds still overlap. A check's time does not count the wait. The lock is
-released when attest exits, however it ends.
+With --eval-reservations, the evaluation first makes a reservation in
+DIR, a file named by attest's pid that holds its estimate, and waits
+until its estimate plus those of every reservation made before it fit
+the budget, or until none was made before it. It removes the reservation
+before the first build. So the evaluations of runs that share DIR never
+expect more memory together than the budget, an evaluation whose
+estimate exceeds the budget runs alone, and the builds still overlap. A
+check's time does not count the wait. attest and its nix evaluations hold
+a lock on the reservation until they end, and on Linux each nix
+evaluation is killed when attest dies. A reservation that no running
+process holds does not count, so a run killed during its evaluation
+leaves nothing that counts once its evaluation is gone. So does a
+reservation file that is not a valid reservation. A reservation that
+cannot be made, or reservations that cannot be read, end the run with an
+error before anything is evaluated.
+
+An evaluation's peak memory is the largest maximum resident set size of
+the nix evaluations it ran. Its outcome is ok when every one of them
+succeeded, killed when a signal ended one, and failed otherwise.
+--eval-peak writes both on one line, such as "734003200 ok".
 
 run prints one time line per check after it finishes: its name, its
 result, how long it took, and how it was satisfied. A flake check's time

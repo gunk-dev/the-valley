@@ -51,7 +51,8 @@ func cmdInputs(args []string) error {
 	// The checks are evaluated together, and printed in the order asked
 	// for, up to the first that did not evaluate. Its error ends the
 	// command, as when each check was evaluated in turn.
-	for i, e := range evalClosures(tree, *system, specs) {
+	evals, _ := evalClosures(tree, *system, specs, nil)
+	for i, e := range evals {
 		if e.err != nil {
 			return e.err
 		}

@@ -750,9 +750,10 @@ let
   # The worker may run on any CPU. A host that sets no build capacity has
   # the worker run two batches at once and build one check at a time in
   # each, each nix build building one derivation at a time with 4 cores,
-  # and a pass whose batches run reads again every minute.
+  # and a pass whose batches run reads again every minute. Its
+  # evaluations share 0.6 of its memory limit (--eval-share 0.6).
   # capacityWorkerHost's values reach the worker's --batches, --slots,
-  # --interval and its NIX_CONFIG. The worker keeps check
+  # --interval, --eval-budget and its NIX_CONFIG. The worker keeps check
   # outputs for 7 days unless a host sets keepOutputs to null, as
   # capacityWorkerHost does. The account is not in the git
   # group, so the repositories on disk are not the worker's to read or
@@ -812,8 +813,8 @@ let
       "/var/lib/valley-worker-wake"
       "/nix/var/nix/daemon-socket"
     ]
-    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 1 --batches 2 --interval 1m --keep-outputs 168h\n" unit.script)
-    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 3 --batches 3 --interval 5min\n" capacity.script)
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 1 --batches 2 --interval 1m --eval-share 0.6 --keep-outputs 168h\n" unit.script)
+    || !(lib.hasInfix "exec valley-worker --repo guarded --repo sealed --key \"$key\" --name worker.valley.invalid/attestations --state \"$state\" --wake /var/lib/valley-worker-wake --slots 3 --batches 3 --interval 5min --eval-budget 12G\n" capacity.script)
     || unit.wantedBy != [ ]
     || unit.unitConfig.StartLimitIntervalSec or null != 0
     || service.RestartForceExitStatus or null != "75"

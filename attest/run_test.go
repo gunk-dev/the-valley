@@ -169,7 +169,7 @@ func (f nixFixture) published(t *testing.T) string {
 // checks must decide each one as this did.
 func sequentialOutcome(t *testing.T, tree string, spec checkSpec) checkOutcome {
 	t.Helper()
-	c, err := evalClosure(tree, nixSystem(), spec)
+	c, _, err := evalClosure(tree, nixSystem(), spec, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestEachCheckKeepsItsOwnOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	specs := []checkSpec{{name: "one", attribute: "one"}, {name: "broken", attribute: "broken"}, {name: "two", attribute: "two"}}
-	runs := runPure(tree, nixSystem(), specs, false, defaultSlots, "", nil, nil, nil)
+	runs, _ := runPure(tree, nixSystem(), specs, false, defaultSlots, "", nil, "", nil, nil)
 	for i, r := range runs {
 		if r.err != nil {
 			t.Fatalf("%s: %v", specs[i].name, r.err)

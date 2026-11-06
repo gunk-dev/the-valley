@@ -36,6 +36,11 @@ type Class struct {
 	// is true, with whether that requirement is mandatory.
 	Requires map[string]Pin
 
+	// Follows are the checks that follow the class: each check whose
+	// value is true, sorted. They run on main after a landing and gate
+	// nothing, so their pins are not read.
+	Follows []string
+
 	// Carry is the class's carry mode as the schema resolves it (_mode):
 	// exact, same-class or same-paths.
 	Carry string
@@ -107,6 +112,7 @@ func Read(ctx context.Context, cue, schema, instance, project string) (*Model, e
 		Classes map[string]struct {
 			Paths    map[string]bool `json:"paths"`
 			Requires map[string]bool `json:"requires"`
+			Follows  map[string]bool `json:"follows"`
 		} `json:"classes"`
 		Unclassified map[string]bool `json:"unclassified"`
 	}
@@ -137,7 +143,12 @@ func Read(ctx context.Context, cue, schema, instance, project string) (*Model, e
 		if !modes[mode] {
 			return nil, fmt.Errorf("class %s has no carry mode this deriver knows (%q)", name, mode)
 		}
-		class := Class{Paths: trueKeys(c.Paths), Requires: map[string]Pin{}, Carry: mode}
+		class := Class{Paths: trueKeys(c.Paths), Requires: map[string]Pin{}, Follows: trueKeys(c.Follows), Carry: mode}
+		for _, check := range class.Follows {
+			if _, ok := pol.Checks[check]; !ok {
+				return nil, fmt.Errorf("class %s follows check %s, which the composed policy does not define", name, check)
+			}
+		}
 		for _, check := range trueKeys(c.Requires) {
 			if _, ok := pol.Checks[check]; !ok {
 				return nil, fmt.Errorf("class %s requires check %s, which the composed policy does not define", name, check)

@@ -246,7 +246,7 @@ func TestDeriveOverAModel(t *testing.T) {
 			{Name: "a", Classes: []string{"loose", "strict"}, Pin: composed.Mandatory, Check: nix},
 			{Name: "b", Classes: []string{"strict"}, Pin: composed.Default, Check: nix},
 			{Name: "u", Classes: []string{}, Unclassified: true, Pin: composed.Mandatory, Check: nix},
-		},
+		}, Follows: []Follow{},
 	}
 	if !reflect.DeepEqual(res, want) {
 		t.Errorf("Derive = %+v\nwant     %+v", res, want)
@@ -260,6 +260,46 @@ func TestDeriveOverAModel(t *testing.T) {
 	m.Unclassified["ghost"] = composed.Mandatory
 	if _, err := Derive(m, []string{"elsewhere"}); err == nil || !strings.Contains(err.Error(), "defines no check") {
 		t.Errorf("a requirement of an undefined check derived: %v", err)
+	}
+}
+
+// TestFollowChecksAreNotRequired holds the schema, composed.Read and Derive
+// to `follows`: a check a class follows is set due and not required, a
+// check the floor requires stays required whatever follows it, and a
+// follow of a check the policy does not define does not compose.
+func TestFollowChecksAreNotRequired(t *testing.T) {
+	r := newRig(t)
+	follows := func(extra string) layers {
+		return newLayers(t, r.glob(t, "examples/policy/instance/*.cue"), r.glob(t, "examples/policy/project/*.cue"), map[string]string{
+			"follows.cue": "package verification\n" + extra,
+		})
+	}
+	m, err := r.read(follows(`project: classes: live: {paths: "deploy/**": true, follows: "install-vm": true, carry: exact: true}
+project: classes: scripts: follows: "install-vm": true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := m.Classes["live"].Follows; !reflect.DeepEqual(got, []string{"install-vm"}) {
+		t.Errorf("live follows %v", got)
+	}
+	vm := m.Checks["install-vm"]
+	res, err := Derive(m, []string{"deploy/x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []Follow{{Name: "install-vm", Classes: []string{"live"}, Check: vm}}; len(res.Required) != 0 || !reflect.DeepEqual(res.Follows, want) {
+		t.Errorf("deploy/x requires %+v and follows %+v", res.Required, res.Follows)
+	}
+	// The floor requires install-vm of scripts, so it gates the change.
+	if res, err = Derive(m, []string{"deploy/x", "bin/y"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Follows) != 0 || len(res.Required) != 2 || res.Required[0].Name != "install-vm" || res.Required[0].Pin != composed.Mandatory {
+		t.Errorf("deploy/x and bin/y require %+v and follow %+v", res.Required, res.Follows)
+	}
+	if _, err := r.read(follows(`project: classes: scripts: follows: ghost: true` + "\n")); err == nil {
+		t.Error("a follow of an undefined check composed")
 	}
 }
 

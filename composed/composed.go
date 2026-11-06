@@ -299,7 +299,7 @@ var (
 			"runner": text, "attribute": text, "command": text, "validity": text, "cost": text,
 		}}},
 		"classes": {kind: "object", each: &shape{kind: "object", fields: map[string]shape{
-			"paths": set, "requires": set, "carry": set,
+			"paths": set, "requires": set, "follows": set, "carry": set,
 		}}},
 		"unclassified": set,
 		"restack":      {kind: "object", fields: map[string]shape{"maxAutomaticVersions": number}},

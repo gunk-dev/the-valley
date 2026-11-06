@@ -1,8 +1,9 @@
 // Package derive says which checks a change requires. It takes the whole
 // composed policy, as composed.Read reads it, and every path the change's
 // diff touches (Diff), and returns each required check with the classes
-// requiring it, whether it is mandatory, and how it is run; the change's
-// carry mode; and the paths no class covers.
+// requiring it, whether it is mandatory, and how it is run; the checks the
+// change sets due on main, which follow a matched class and gate nothing;
+// the change's carry mode; and the paths no class covers.
 //
 // Matching is a set operation, never first-match. A change requires the
 // union of the checks of every class one of its paths matches, and a path
@@ -30,6 +31,15 @@ type Result struct {
 	Unclassified []string   // the paths no class covers, sorted
 	Carry        string     // the change's carry mode: exact, same-class or same-paths
 	Required     []Required // the required checks, sorted by name
+	Follows      []Follow   // the follow checks it sets due and does not require, sorted by name
+}
+
+// Follow is one check that follows a class the change touches. It runs on
+// main after the change lands, and does not gate the change.
+type Follow struct {
+	Name    string
+	Classes []string // the matched classes it follows, sorted
+	composed.Check
 }
 
 // Required is one check a change requires.
@@ -78,7 +88,7 @@ func Derive(m *composed.Model, paths []string) (*Result, error) {
 		}
 	}
 
-	r := &Result{Paths: sortedSet(paths), Classes: []string{}, Unclassified: []string{}, Carry: "same-paths", Required: []Required{}}
+	r := &Result{Paths: sortedSet(paths), Classes: []string{}, Unclassified: []string{}, Carry: "same-paths", Required: []Required{}, Follows: []Follow{}}
 	matched := map[string]bool{}
 	for _, path := range r.Paths {
 		hit := false
@@ -151,6 +161,31 @@ func Derive(m *composed.Model, paths []string) (*Result, error) {
 		r.Required = append(r.Required, *q)
 	}
 	sort.Slice(r.Required, func(i, j int) bool { return r.Required[i].Name < r.Required[j].Name })
+
+	// A check the change requires already runs at the gate, so following
+	// it as well sets nothing due.
+	follows := map[string]*Follow{}
+	for _, name := range r.Classes {
+		for _, check := range m.Classes[name].Follows {
+			if required[check] != nil {
+				continue
+			}
+			f := follows[check]
+			if f == nil {
+				def, ok := m.Checks[check]
+				if !ok {
+					return nil, fmt.Errorf("class %s follows %s, and the policy defines no check by that name", name, check)
+				}
+				f = &Follow{Name: check, Check: def}
+				follows[check] = f
+			}
+			f.Classes = append(f.Classes, name)
+		}
+	}
+	for _, f := range follows {
+		r.Follows = append(r.Follows, *f)
+	}
+	sort.Slice(r.Follows, func(i, j int) bool { return r.Follows[i].Name < r.Follows[j].Name })
 	return r, nil
 }
 

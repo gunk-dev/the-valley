@@ -166,6 +166,7 @@ type jsonChecks struct {
 	UnclassifiedPaths []jsonPath     `json:"unclassified_paths"`
 	Carry             string         `json:"carry"`
 	Required          []jsonRequired `json:"required"`
+	Follows           []jsonFollow   `json:"follows"`
 }
 
 // jsonRequired is one required check. attribute is given for the nix
@@ -183,6 +184,17 @@ type jsonRequired struct {
 	Validity     string   `json:"validity,omitempty"`
 }
 
+// jsonFollow is one check the change sets due on main without requiring
+// it, with the matched classes it follows.
+type jsonFollow struct {
+	Name      string   `json:"name"`
+	Classes   []string `json:"classes"`
+	Cost      string   `json:"cost"`
+	Runner    string   `json:"runner"`
+	Attribute string   `json:"attribute,omitempty"`
+	Command   string   `json:"command,omitempty"`
+}
+
 func checksDocument(base, head, digest string, r *derive.Result) jsonChecks {
 	doc := jsonChecks{
 		Schema:            "valley-checks/v1",
@@ -194,6 +206,7 @@ func checksDocument(base, head, digest string, r *derive.Result) jsonChecks {
 		UnclassifiedPaths: jsonPaths(r.Unclassified),
 		Carry:             r.Carry,
 		Required:          []jsonRequired{},
+		Follows:           []jsonFollow{},
 	}
 	for _, q := range r.Required {
 		doc.Required = append(doc.Required, jsonRequired{
@@ -206,6 +219,16 @@ func checksDocument(base, head, digest string, r *derive.Result) jsonChecks {
 			Attribute:    q.Attribute,
 			Command:      q.Command,
 			Validity:     q.Validity,
+		})
+	}
+	for _, f := range r.Follows {
+		doc.Follows = append(doc.Follows, jsonFollow{
+			Name:      f.Name,
+			Classes:   append([]string{}, f.Classes...),
+			Cost:      f.Cost,
+			Runner:    f.Runner,
+			Attribute: f.Attribute,
+			Command:   f.Command,
 		})
 	}
 	return doc

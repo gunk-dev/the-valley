@@ -123,6 +123,16 @@ import "list"
 	// be a key of the composed policy's `checks`.
 	requires: #Requires
 
+	// The checks that follow this class: they run on main after a change
+	// touching the class lands, and never gate the change. A check any
+	// matched class requires stays required, so a follow takes nothing
+	// from a floor's requirement. A project moves a check it may turn off
+	// from gating to following by writing `false` for it under `requires`
+	// and `true` under `follows`. Every name must be a key of the composed
+	// policy's `checks`. Left out, the class exports no `follows` field,
+	// and the field adds nothing to the policy digest.
+	follows?: #Requires
+
 	// How far an approval of a change touching this class carries when the
 	// change is rebased onto a target that has moved. #Carry spells out the
 	// modes.
@@ -332,8 +342,8 @@ project: #Policy
 let composed = floor & templates[type] & project
 policy: composed
 
-// Every check a class requires, and every check `unclassified` names, must
-// exist in the composed catalogue. A name that does not lands in `checks`
+// Every check a class requires or follows, and every check `unclassified`
+// names, must exist in the composed catalogue. A name that does not lands in `checks`
 // as an incomplete #Check, so `cue vet -c` fails with an error naming the
 // missing check. Without this, a typo is not a vet error — it is a check
 // that silently stops being required. The cross-check runs against the
@@ -341,6 +351,9 @@ policy: composed
 // require a check whose definition a template supplies.
 policy: {
 	for _, c in composed.classes for n, _ in c.requires {
+		checks: (n): _
+	}
+	for _, c in composed.classes if c.follows != _|_ for n, _ in c.follows {
 		checks: (n): _
 	}
 	for n, _ in composed.unclassified {

@@ -114,6 +114,7 @@ func TestChecksPrintsTheDerivation(t *testing.T) {
 		UnclassifiedPaths []path `json:"unclassified_paths"`
 		Carry             string
 		Required          []map[string]any
+		Follows           []map[string]any
 	}
 	dec := json.NewDecoder(strings.NewReader(out))
 	dec.DisallowUnknownFields()
@@ -164,7 +165,7 @@ func TestChecksPrintsTheDerivation(t *testing.T) {
 	// The same two commits with nothing between them require nothing, and
 	// every list is still a list.
 	out, _, code = r.checks("--schema", r.schema, "--instance", r.instance, "--project", r.project, r.head, r.head)
-	for _, field := range []string{`"paths": []`, `"classes": []`, `"unclassified_paths": []`, `"required": []`, `"carry": "same-paths"`} {
+	for _, field := range []string{`"paths": []`, `"classes": []`, `"unclassified_paths": []`, `"required": []`, `"follows": []`, `"carry": "same-paths"`} {
 		if code != 0 || !strings.Contains(out, field) {
 			t.Errorf("an empty change's document has no %s:\n%s", field, out)
 		}

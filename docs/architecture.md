@@ -1713,7 +1713,8 @@ valley-go checks --schema schema/verification.cue \
       "runner": "nix",
       "attribute": "prose-format"
     }
-  ]
+  ],
+  "follows": []
 }
 ```
 
@@ -1724,6 +1725,10 @@ valley-go checks --schema schema/verification.cue \
 - Each required check lists the classes requiring it. `unclassified` is `true` when the
   `unclassified` set requires it. `pin` is `mandatory` or `default`. `attribute` is given for the
   `nix` runner, `command` for the `command` runner, and `validity` when the policy declares one.
+- `follows` is each check that follows a matched class and that the change does not require, with
+  the classes it follows, its `cost`, `runner`, and `attribute` or `command`. It gates nothing: it
+  is due on `main` once the change lands. A check that any matched class requires is in `required`
+  alone.
 
 A failure prints nothing on stdout and exits 1. The document is a contract with a version, so a
 change to the name or meaning of any field is a new version. Checked by `valley-go-unit`.

@@ -36,6 +36,7 @@ func cmdRun(args []string) (err error) {
 	system := fs.String("system", nixSystem(), "flake system")
 	push := fs.String("push", "", "remote to publish to")
 	branch := fs.String("branch", "", "branch pushed alongside")
+	refOnly := fs.Bool("ref-only", false, "with --push, publish the attestation ref alone, without a branch")
 	timings := fs.Bool("timings", false, "append each check's timing to the timing log")
 	changeID := fs.String("change", "", "the change ID a timing names")
 	changeVersion := fs.Int("change-version", 0, "the change version a timing names")
@@ -303,6 +304,9 @@ func cmdRun(args []string) (err error) {
 
 	if *push == "" {
 		return nil
+	}
+	if *refOnly {
+		return publish(root, *push, "", ref, subtrees)
 	}
 	head := *branch
 	if head == "" {

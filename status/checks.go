@@ -99,7 +99,7 @@ func derivedChecks(g git, schema, instance, project, baseRev, headRev string) (j
 		}
 		commits[i] = oid
 	}
-	model, err := policyModel(schema, instance, project)
+	model, err := policyModel(schema, instance, project, true)
 	if err != nil {
 		return jsonChecks{}, err
 	}
@@ -126,12 +126,19 @@ func schemaFile(g git, schema string) (string, error) {
 }
 
 // policyModel is the policy the schema and the two layers compose, read
-// once for every change derived under it.
-func policyModel(schema, instance, project string) (*composed.Model, error) {
+// once for every change derived under it. pinned asks cue which
+// requirements are mandatory (composed.Read); a reader of paths and
+// follows alone leaves them unknown (composed.ReadUnpinned), which is
+// much quicker.
+func policyModel(schema, instance, project string, pinned bool) (*composed.Model, error) {
 	if _, err := exec.LookPath("cue"); err != nil {
 		return nil, failure("this verb needs the cue CLI; nix run .#valley bundles it")
 	}
-	model, err := composed.Read(context.Background(), "cue", schema, instance, project)
+	read := composed.Read
+	if !pinned {
+		read = composed.ReadUnpinned
+	}
+	model, err := read(context.Background(), "cue", schema, instance, project)
 	if err != nil {
 		return nil, failure(err.Error() + "; nothing derived")
 	}

@@ -23,6 +23,18 @@ package main
 //     Given --slots, the batch builds that many checks at once; without
 //     it, attest's own default decides.
 //
+// When a project has no ready change to build for, and no batch for a
+// ready change runs, a scan also reads which follow checks are due on the
+// project's main tip (mainstate.go). The due nix checks are one more
+// batch, a follow run: attest run --rev <main's tip> --push origin
+// --ref-only, which adds its notes to this worker's ref for main's tree,
+// beside any a gate batch published there. One run covers every landing
+// since each check's last pass. A scan that finds any ready change to
+// build for queues no follow run, so changes waiting to land always come
+// first. A follow run is never stopped because main moved: it goes on to
+// its end, and a later scan reads the new tip. It takes a slot, a
+// destination, an evaluation and a backoff as any batch does.
+//
 // That read of every project is a scan. A pass is one loop, the
 // scheduler, which runs scans and batches until there is nothing left to
 // do. The loop alone starts batches, publishes, writes the failure record
@@ -89,9 +101,10 @@ package main
 // long as work keeps arriving, and holds no more than the versions it
 // still meets.
 //
-// The worker publishes the ref a batch stores, which holds that batch's
-// notes alone, and origin takes an existing attestation ref only with
-// every note it holds kept. So a worker publishes a tree's evidence once,
+// The worker publishes the ref a gate batch stores, which holds that
+// batch's notes alone, and origin takes an existing attestation ref only
+// with every note it holds kept. So a gate batch publishes a tree's
+// evidence once,
 // and never builds what it could not publish: when origin already holds
 // this worker's ref for a tree and the ref lacks a required check, the
 // pass reports it and builds nothing. approve --build-here builds the rest
@@ -253,6 +266,8 @@ type worker struct {
 	said    map[string]map[string]bool // the notes said about each version or project since the pass last acted on it
 	fresh   map[string]map[string]bool // the failure keys recorded since the scan began, by project
 	done    chan completion            // how a batch's goroutine hands the loop what the batch did
+	quiet   *quietMains                // each project's main tip on which a pass found no follow run to start
+	mains   map[string]string          // the failure key of the follow run the pass last assessed, by project
 
 	// How the loop reads a project, reassesses a job right before its
 	// batch starts, and starts a batch's attest run: project, assess and
@@ -275,6 +290,8 @@ type job struct {
 	ref     string     // this worker's attestation ref for the tree
 	key     string     // the batch's key in the failure record
 	seen    int        // the scan that first saw the version ready
+	main    bool       // a follow run on main's tip, which v.Head is; c is empty
+	covers  []string   // for a follow run, the landings its checks cover, newest first
 }
 
 // version names the job's change version, project by project.
@@ -298,6 +315,9 @@ func (j *job) names() []string {
 
 // line opens every line said about the job's version.
 func (j *job) line() string {
+	if j.main {
+		return fmt.Sprintf("%s: main at %s", j.r.name, short(j.v.Head))
+	}
 	return fmt.Sprintf("%s: %s v%d at %s", j.r.name, j.c.Handle, j.v.N, j.v.Head[:min(7, len(j.v.Head))])
 }
 
@@ -504,6 +524,7 @@ func runWork(g git, args []string, stdout, stderr io.Writer) (err error) {
 	// state the telemetry finishes with.
 	defer func() { w.tel.finish(w.failures, w.troubles, err) }()
 	w.failures = readFailures(filepath.Join(state, "failures.json"), stderr)
+	w.quiet = readQuiet(filepath.Join(state, "main.json"), stderr)
 	// attest runs in each project's repository, so the state directory is
 	// named absolutely for the reservations, as it is for the roots.
 	abState, err := filepath.Abs(state)
@@ -796,6 +817,17 @@ func (w *worker) scan(g git, repos []string) error {
 		}
 		found = append(found, jobs...)
 	}
+	// Changes waiting to land come first: a follow run on main starts
+	// only when no ready change waits on checks.
+	var gates []*job
+	for _, j := range found {
+		if !j.main {
+			gates = append(gates, j)
+		}
+	}
+	if len(gates) > 0 {
+		found = gates
+	}
 	w.queue = w.order(found)
 	w.forget(repos)
 	return nil
@@ -867,8 +899,13 @@ func (w *worker) project(g git, name string) ([]*job, error) {
 		w.ready[versionName(name, c.ChangeID, c.Versions[c.Active-1].N)] = true
 	}
 	met := map[string]bool{} // the failures this scan met, by key
-	if len(view.Changes) == 0 {
+	if len(view.Changes) == 0 && r.snap.tip == "" {
 		w.prune(name, met)
+		return nil, nil
+	}
+	if len(view.Changes) == 0 && (w.gating() || w.quiet.holds(name, r.snap.tip, w.failures)) {
+		// Main is not read now, so its follow run's failure, if any, is
+		// kept.
 		return nil, nil
 	}
 	if r.snap.tip == "" {
@@ -903,11 +940,84 @@ func (w *worker) project(g git, name string) ([]*job, error) {
 			jobs = append(jobs, j)
 		}
 	}
+	if len(jobs) == 0 && !w.gating() {
+		j, read, err := w.follows(r, instance, project, handles(repos), met)
+		if err != nil {
+			return nil, err
+		}
+		whole = whole && read
+		if j != nil {
+			jobs = append(jobs, j)
+		}
+	} else {
+		// Main is not read now, so its follow run's failure, if any, is
+		// kept.
+		for _, key := range []string{w.mains[name], w.quiet.Projects[name].Wait} {
+			if key != "" {
+				met[key] = true
+			}
+		}
+	}
 	if whole {
 		w.prune(name, met)
 		w.stopSuperseded(name, view.Changes)
 	}
 	return jobs, nil
+}
+
+// gating reports whether a batch for a ready change runs.
+func (w *worker) gating() bool {
+	for _, b := range w.running {
+		if !b.job.main {
+			return true
+		}
+	}
+	return false
+}
+
+// follows reads which follow checks are due on the project's main tip
+// (mainstate.go), and returns the follow run that builds them when it
+// needs a batch, as change does for a ready change. A walk that did not
+// read is noted, and builds nothing. h names the landings a run covers.
+func (w *worker) follows(r listed, instance, project string, h handleMap, met map[string]bool) (j *job, read bool, err error) {
+	j = &job{r: r, v: jsonVersion{Head: r.snap.tip}, seen: w.scans, main: true}
+	walk, err := mainFollows(r.g, r.snap.tip, instance, project, w.stderr)
+	if err != nil {
+		if w.note(j, "its follow checks did not read, so none is built: %v", err) {
+			w.troubles++
+		}
+		return nil, false, nil
+	}
+	for _, q := range walk.checks {
+		if q.due {
+			j.asked = append(j.asked, q.nixCheck)
+		}
+	}
+	j.covers = walk.landings(h, r.name)
+	needed := false
+	if len(j.asked) > 0 {
+		if needed, err = w.assess(j, met); err != nil {
+			return nil, false, err
+		}
+		if w.mains == nil {
+			w.mains = map[string]string{}
+		}
+		w.mains[r.name] = j.key
+	}
+	// A pass that finds this tip again finds no follow run to start
+	// either, unless one runs now: it may fail.
+	quiet := quietMain{}
+	if _, running := w.running[j.dest()]; !needed && (len(j.missing) == 0 || !running) {
+		quiet = quietMain{Tip: r.snap.tip, Wait: j.key}
+	}
+	if err := w.quiet.set(r.name, quiet); err != nil {
+		fmt.Fprintf(w.stderr, "valley: could not write %s: %v\n", w.quiet.path, err)
+		w.troubles++
+	}
+	if !needed {
+		return nil, true, nil
+	}
+	return j, true, nil
 }
 
 // stopSuperseded stops each of the project's running batches whose
@@ -1059,12 +1169,12 @@ func (w *worker) assess(j *job, met map[string]bool) (bool, error) {
 		return false, nil
 	}
 	names := strings.Join(j.names(), ", ")
-	if _, ok := e.listed[j.ref]; ok {
+	if _, ok := e.listed[j.ref]; ok && !j.main {
 		w.note(j, "origin already holds %s, this worker's evidence for its tree, and it does not cover %s. "+
 			"A worker publishes a tree's evidence once, so approve --build-here builds the rest (bd-7b7d58f)", j.ref, names)
 		return false, nil
 	}
-	if stored, found, err := j.r.g.ref(j.ref); err == nil && found {
+	if stored, found, err := j.r.g.ref(j.ref); err == nil && found && !j.main {
 		w.note(j, "an earlier pass stored %s, and origin does not hold it", j.ref)
 		w.publish(j, stored, met)
 		return false, nil
@@ -1130,6 +1240,9 @@ func (w *worker) start(j *job) {
 	b := &batch{job: j, run: telemetry.NewRunID(), mark: w.tel.streamEnd()}
 	w.say(j, "building %s", strings.Join(j.names(), ", "))
 	data := map[string]any{"attest_run": b.run}
+	if j.main {
+		data["covers"] = j.covers
+	}
 	if w.evals != nil {
 		b.estimate = w.evals.estimate(j.r.name)
 		b.budget = w.evals.handed(b.estimate)
@@ -1172,11 +1285,18 @@ func (w *worker) attest(b *batch) {
 	for _, q := range j.missing {
 		args = append(args, "--check", q.name+"="+q.attribute)
 	}
+	if j.main {
+		// A follow run adds its notes to this worker's ref for main's
+		// tree, which a gate batch usually published already.
+		args = append(args, "--push", "origin", "--ref-only")
+	}
 	stream := ""
 	if w.tel != nil {
 		stream = w.tel.stream()
-		args = append(args, "--telemetry", stream, "--telemetry-run", b.run, "--project", j.r.name,
-			"--change", j.c.ChangeID, "--change-version", strconv.Itoa(j.v.N), "--capacity", w.capacity)
+		args = append(args, "--telemetry", stream, "--telemetry-run", b.run, "--project", j.r.name, "--capacity", w.capacity)
+		if !j.main {
+			args = append(args, "--change", j.c.ChangeID, "--change-version", strconv.Itoa(j.v.N))
+		}
 	}
 	// attest writes to the pass's own output files, not through a pipe the
 	// pass reads: an attest that outlives a killed pass must still be able
@@ -1263,6 +1383,10 @@ func (w *worker) complete(c completion) {
 	w.failures.passed(j.r.name, j.key)
 	w.tel.end(b.attempt, "passed", "", j.key, nil)
 	w.save()
+	if j.main {
+		w.say(j, "added %s to %s on origin", strings.Join(j.names(), ", "), j.ref)
+		return
+	}
 	if c.stored == "" {
 		w.say(j, "attest stored no %s, so nothing is published", j.ref)
 		w.troubles++
@@ -1499,6 +1623,81 @@ func (r *failureRecord) keep(project string, met map[string]bool) {
 	}
 }
 
+// quietMains is the worker's record, project by project, of the main tip
+// on which a pass found no follow run to start: no follow check was due,
+// origin held a pass for each one due, or the follow run was waiting out
+// a failure, whose key it keeps. A later pass that finds the same tip,
+// and that failure still waiting, would find the same, so it reads
+// neither the policy nor main for a project with no ready change. Once
+// the wait is over, or main moves, a pass reads main again. It is kept as
+// JSON at path; deleting it costs one read of each project's main.
+//
+// The record holds main's tip alone, so a floor or known signers that
+// change in the owning valley while main stays put are read at main's
+// next landing.
+type quietMains struct {
+	path     string
+	Projects map[string]quietMain `json:"projects"`
+}
+
+type quietMain struct {
+	Tip  string `json:"tip"`
+	Wait string `json:"wait,omitempty"` // the failure key of the follow run waiting out its backoff
+}
+
+// readQuiet reads the record at path. One that is not there, or does not
+// read, is empty.
+func readQuiet(path string, stderr io.Writer) *quietMains {
+	q := &quietMains{path: path}
+	data, err := os.ReadFile(path)
+	if err == nil {
+		err = json.Unmarshal(data, q)
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(stderr, "valley: %s does not read, so each project's main is read again\n", path)
+		q.Projects = nil
+	}
+	if q.Projects == nil {
+		q.Projects = map[string]quietMain{}
+	}
+	return q
+}
+
+// holds reports whether the project's main is quiet at tip: a pass found
+// no follow run to start there, and the failure it waited on, if any, is
+// still waiting.
+func (q *quietMains) holds(project, tip string, failures *failureRecord) bool {
+	m, ok := q.Projects[project]
+	if !ok || m.Tip != tip {
+		return false
+	}
+	if m.Wait == "" {
+		return true
+	}
+	_, waiting := failures.waiting(project, m.Wait, clock())
+	return waiting
+}
+
+// set records the project's main as m, or forgets it when m.Tip is "",
+// and writes the record when that changed it.
+func (q *quietMains) set(project string, m quietMain) error {
+	if old, ok := q.Projects[project]; ok == (m.Tip != "") && old == m {
+		return nil
+	}
+	if m.Tip == "" {
+		delete(q.Projects, project)
+	} else {
+		q.Projects[project] = m
+	}
+	if len(q.Projects) == 0 {
+		if err := os.Remove(q.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeState(q.path, q)
+}
+
 // save writes the record whole, through a file renamed into place, so a
 // pass that is killed leaves the last record or the new one. An empty
 // record is no file.
@@ -1514,11 +1713,17 @@ func (r *failureRecord) save() error {
 		}
 		return nil
 	}
-	data, err := json.MarshalIndent(r, "", "  ") // in key order
+	return writeState(r.path, r)
+}
+
+// writeState writes v as JSON at path, in key order, through a file
+// renamed into place.
+func writeState(path string, v any) error {
+	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(r.path), ".failures-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".record-*")
 	if err != nil {
 		return err
 	}
@@ -1527,7 +1732,7 @@ func (r *failureRecord) save() error {
 		err = cerr
 	}
 	if err == nil {
-		err = os.Rename(tmp.Name(), r.path)
+		err = os.Rename(tmp.Name(), path)
 	}
 	if err != nil {
 		os.Remove(tmp.Name())

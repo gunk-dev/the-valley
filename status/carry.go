@@ -111,7 +111,7 @@ func carryMode(g git, tip string, c comparison) (mode string, shared bool, err e
 	if err != nil {
 		return "", false, err
 	}
-	model, err := policyModel(schema, instance, project)
+	model, err := policyModel(schema, instance, project, true)
 	if err != nil {
 		return "", false, err
 	}

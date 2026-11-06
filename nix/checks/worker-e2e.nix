@@ -87,6 +87,14 @@ let
     }
   '';
   floor = floorWith false;
+  followsLayer = pkgs.writeText "follows.cue" ''
+    package verification
+
+    project: {
+    	checks: later: {runner: "nix", attribute: "second"}
+    	classes: docs: {paths: {"docs/**": true}, requires: {}, follows: {later: true}}
+    }
+  '';
   floorThird = floorWith true;
 
   # The project's flake, with no inputs, so the machine builds it offline.
@@ -915,6 +923,38 @@ in
           again = publish("kept-again")
           assert again == first, (first, again)
           assert registered(again.values()) == built, "an output was built again"
+
+      # The project's own layer, landed below, gives docs a class that a
+      # third check follows.
+      with subtest("a landing that touches a class sets the check that follows it due, which runs on main after the ready change's checks and adds its pass to the worker's ref for main's tree"):
+          # Each scan reads every ready change, so the ones earlier
+          # scenarios left ready are withdrawn first.
+          for branch in ["good", "wake-first", "hung", "killed", "outage", "broken", "unrelated", "kept", "kept-again"]:
+              host.execute(f"{contributor} valley withdraw {branch}")
+          host.succeed(
+              "cd /root/project && git checkout --quiet -b follows origin/main && mkdir -p policy/project docs",
+              "cp ${followsLayer} /root/project/policy/project/follows.cue && echo docs > /root/project/docs/a.md",
+              f"cd /root/project && git add -A && {commit} -m follows",
+          )
+          push_ready("follows")
+          host.succeed("systemctl start valley-worker.service")
+          main_tip = head("follows")
+          assert told(main_tip, "published") == 1
+          # A clean landing leaves main at the tree the worker attested at
+          # the gate. It is a local write, as an operator seeds main.
+          host.succeed(f"{git} -C /srv/git/project.git update-ref refs/heads/main $({git} -C /srv/git/project.git rev-parse follows)")
+          ready("after-follows", "${spin}")
+          main_state = host.succeed(f"{contributor} valley pending").splitlines()[0]
+          assert main_state.startswith("main  ◐ clearing · later due") and main_tip in main_state, main_state
+          host.succeed("systemctl start valley-worker.service")
+          journal_now = journal()
+          assert journal_now.index(f" at {head('after-follows')}: building") < journal_now.index(f": main at {main_tip}: building later"), journal_now
+          assert journal_now.count(f": main at {main_tip}: added later") == 1
+          notes = [host.succeed(f"{git} -C /srv/git/project.git ls-tree --name-only {ref}").split() for ref in attestations()]
+          # The gate's notes, as the floor stands by now, and the pass.
+          assert [n for n in notes if "later" in n] == [["first", "later", "second", "third"]], notes
+          main_state = host.succeed(f"{contributor} valley pending").splitlines()[0]
+          assert main_state == f"main  ✓ clear · checks passed at {main_tip}", main_state
     '';
   };
 }

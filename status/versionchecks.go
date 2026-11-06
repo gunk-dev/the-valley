@@ -133,7 +133,7 @@ func (l listed) addChecks(view *jsonRepo, c *costs, stderr io.Writer) {
 		warn("%v, so no ready change lists its checks", err)
 		return
 	}
-	model, err := policyModel(schema, instance, layer)
+	model, err := policyModel(schema, instance, layer, true)
 	if err != nil {
 		warn("the policy at main did not read, so no ready change lists its checks: %v", err)
 		return

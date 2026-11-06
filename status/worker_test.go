@@ -119,6 +119,36 @@ func TestPruneKeepsTheKeysOfRunningBatches(t *testing.T) {
 	}
 }
 
+// A pass reads neither the policy nor main where an earlier pass found no
+// follow run to start on the same tip, until main moves or the follow
+// run's wait is over. The record outlives the pass that wrote it.
+func TestQuietMainHoldsUntilMainMovesOrTheWaitEnds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "main.json")
+	failures := &failureRecord{Projects: map[string]map[string]backoff{}}
+	failures.failed("app", "build t1 e2e", clock(), time.Hour)
+	failures.failed("app", "build t1 old", clock().Add(-2*time.Hour), time.Hour)
+	q := readQuiet(path, io.Discard)
+	for _, m := range []struct{ project, tip, wait string }{
+		{"app", "c1", ""}, {"site", "c1", "build t1 e2e"}, {"web", "c1", "build t1 old"},
+	} {
+		if err := q.set(m.project, quietMain{Tip: m.tip, Wait: m.wait}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failures.Projects["site"], failures.Projects["web"] = failures.Projects["app"], failures.Projects["app"]
+	q = readQuiet(path, io.Discard)
+	for _, tc := range []struct {
+		project, tip string
+		want         bool
+	}{
+		{"app", "c1", true}, {"app", "c2", false}, {"site", "c1", true}, {"web", "c1", false}, {"other", "c1", false},
+	} {
+		if got := q.holds(tc.project, tc.tip, failures); got != tc.want {
+			t.Errorf("%s at %s: quiet %v, want %v", tc.project, tc.tip, got, tc.want)
+		}
+	}
+}
+
 // The time spans the host module passes as --interval read as systemd
 // reads a timer's, and the ones systemd refuses are refused.
 func TestTimeSpanReadsSystemdSpans(t *testing.T) {

@@ -265,8 +265,9 @@ func TestDeriveOverAModel(t *testing.T) {
 
 // TestFollowChecksAreNotRequired holds the schema, composed.Read and Derive
 // to `follows`: a check a class follows is set due and not required, a
-// check the floor requires stays required whatever follows it, and a
-// follow of a check the policy does not define does not compose.
+// check the floor requires stays required whatever follows it, a follow
+// of a check the policy does not define does not compose, and
+// composed.ReadUnpinned reads the same policy with its pins unknown.
 func TestFollowChecksAreNotRequired(t *testing.T) {
 	r := newRig(t)
 	follows := func(extra string) layers {
@@ -274,9 +275,10 @@ func TestFollowChecksAreNotRequired(t *testing.T) {
 			"follows.cue": "package verification\n" + extra,
 		})
 	}
-	m, err := r.read(follows(`project: classes: live: {paths: "deploy/**": true, follows: "install-vm": true, carry: exact: true}
+	l := follows(`project: classes: live: {paths: "deploy/**": true, follows: "install-vm": true, carry: exact: true}
 project: classes: scripts: follows: "install-vm": true
-`))
+`)
+	m, err := r.read(l)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -297,6 +299,16 @@ project: classes: scripts: follows: "install-vm": true
 	}
 	if len(res.Follows) != 0 || len(res.Required) != 2 || res.Required[0].Name != "install-vm" || res.Required[0].Pin != composed.Mandatory {
 		t.Errorf("deploy/x and bin/y require %+v and follow %+v", res.Required, res.Follows)
+	}
+	u, err := composed.ReadUnpinned(t.Context(), r.cue, r.schema, l.instance, l.project)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.Digest != m.Digest || !reflect.DeepEqual(u.Classes["live"], m.Classes["live"]) || u.Classes["scripts"].Requires["install-vm"] != composed.Unknown {
+		t.Errorf("an unpinned read gives digest %s and classes %+v", u.Digest, u.Classes)
+	}
+	if res, err = Derive(u, []string{"deploy/x", "bin/y"}); err != nil || len(res.Required) != 2 || res.Required[0].Pin != composed.Unknown || len(res.Follows) != 0 {
+		t.Errorf("deploy/x and bin/y unpinned require %+v and follow %+v: %v", res.Required, res.Follows, err)
 	}
 	if _, err := r.read(follows(`project: classes: scripts: follows: ghost: true` + "\n")); err == nil {
 		t.Error("a follow of an undefined check composed")

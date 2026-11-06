@@ -1265,6 +1265,42 @@ when a wake mark arrives, and every `--interval` while batches run, so a change 
 batch runs is built in the same pass. It ends when no batch runs and a read finds nothing to start
 (`implemented`, `status/worker.go`).
 
+### Follow runs and main's state
+
+A check that follows a class gates nothing. It is due on `main` when a landing since the newest
+`main` commit whose tree holds a pass for it touched a class it follows. The walk reads `main`'s
+first parent from its tip, at most 20 commits, under the policy at the tip; a check whose pass it
+does not reach within them is due. At each commit it judges the evidence `origin` holds for the tree
+with the coverage rules approval uses, and derives the commit's follows from its diff against its
+first parent, as `valley checks` does (`implemented`, `status/mainstate.go`). Only `nix` follow
+checks are read.
+
+When a scan finds no ready change to build for and no batch for a ready change runs, the worker runs
+a project's due follow checks on `main`'s tip in one batch:
+`attest run --rev <tip> --push origin --ref-only`. One run covers every landing since each check's
+last pass. Its notes are added to the worker's ref for `main`'s tree, beside the notes a gate batch
+published there; a gate batch publishes a tree's evidence once. A follow run takes a slot, a
+destination, an evaluation and a backoff like any batch, and is never stopped because `main` moved:
+the next scan reads the new tip (`implemented`, `status/worker.go`).
+
+The walk reads the policy without asking which requirements are mandatory, lists `origin`'s
+attestation refs once, and reads the host's signers once, so each commit costs about a tree digest
+(`implemented`, `status/mainstate.go`). Reading the floor from the owning valley and walking `main`
+still take a second or two, so a pass that finds no follow run to start on a tip records the tip in
+`main.json` in its state directory, with the failure key of a follow run waiting out its backoff. A
+later pass that finds the same tip, with that wait not over, reads neither for a project with no
+ready change, and ends after reading `origin` as an idle pass does. The record holds the tip alone,
+so a floor or known signers that change in the owning valley while `main` stays put are read at
+`main`'s next landing (`implemented`, `status/worker.go`).
+
+`valley pending` opens a project whose policy declares follow checks with one line on `main`:
+**clear** when no follow check is due, **clearing** when some are due or running and none failed,
+and **muddy** when a follow check's newest run on `main` failed to build or to evaluate since its
+last pass. It names the landings the due checks cover by their changes' handles, read from the
+`Change-Id` each landing on `main` carries. A pass is the attestation; a run and its result are the
+worker's telemetry, which `valley pending` reads as `valley telemetry read --source worker` does. No
+ref or record holds the state (`implemented`, `status/mainstate.go`).
+
 The hook admits that ref as it admits any evidence. Every note must verify under the host's known
 signers and name the ref's tree and key hash, whoever pushes it. The integrator then judges the
 worker's notes like any other. Where the host restricts the worker's key to projects (see

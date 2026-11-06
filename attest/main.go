@@ -50,6 +50,7 @@ run flags:
   --push REMOTE       publish: one atomic push of the branch and the refs,
                       adding this run's notes to a ref the remote holds
   --branch REF        branch pushed alongside (default: the current branch)
+  --ref-only          with --push, publish the attestation ref alone
   --timings           also append one JSON line per check to the timing
                       log, $XDG_STATE_HOME/valley/timings.jsonl
                       (default ~/.local/state/valley/timings.jsonl), a

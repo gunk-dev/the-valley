@@ -74,6 +74,7 @@ import (
 	"path"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"the-valley/change"
@@ -158,6 +159,16 @@ type evidence struct {
 // of the checks asked about it covers. The check worker (worker.go) calls
 // it as coverage does.
 func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (evidence, error) {
+	var keys hostKeys
+	defer keys.done()
+	return coverageIn(g, head, nil, checks, &keys, stderr)
+}
+
+// coverageIn is coverageOf for a reader that judges many trees, as the
+// main walk does (mainstate.go): listed is origin's attestation refs,
+// listed once for every tree, or nil to list this tree's alone, and keys
+// reads the host's signers once for every tree judged under it.
+func coverageIn(g git, head string, listed map[string]string, checks []nixCheck, keys *hostKeys, stderr io.Writer) (evidence, error) {
 	oid, err := g.output(true, "rev-parse", "--verify", "--quiet", "--end-of-options", head+"^{commit}")
 	if err != nil || !isObjectID(oid) {
 		return evidence{}, failure("no such commit: " + head)
@@ -174,12 +185,18 @@ func coverageOf(g git, head string, checks []nixCheck, stderr io.Writer) (eviden
 	}
 
 	// Every attestation ref origin holds for the tree, signer by signer.
-	o, err := listOrigin(g, attestationRefs+digest+"/*")
-	if err != nil {
-		return evidence{}, failure("could not list the evidence origin holds for this tree")
+	if listed == nil {
+		o, err := listOrigin(g, attestationRefs+digest+"/*")
+		if err != nil {
+			return evidence{}, failure("could not list the evidence origin holds for this tree")
+		}
+		listed = o.refs
 	}
-	e := evidence{digest: digest, listed: o.refs, stored: storedFor(digest, o.refs)}
-	e.covered, e.failed, err = cover(g, repo, head, e.stored, e.listed, checks, stderr)
+	e := evidence{digest: digest, listed: map[string]string{}, stored: storedFor(digest, listed)}
+	for _, ref := range e.stored {
+		e.listed[ref] = listed[ref]
+	}
+	e.covered, e.failed, err = cover(g, repo, head, e.stored, e.listed, checks, keys, stderr)
 	return e, err
 }
 
@@ -211,7 +228,7 @@ func storedFor(digest string, listed map[string]string) []string {
 // checks whose judged note records a failure, each mapped to
 // "<ref> <signer>". It fetches the refs' objects only when there are
 // checks to look for.
-func cover(g git, repo, head string, stored []string, listed map[string]string, checks []nixCheck, stderr io.Writer) (covered, failed map[string]string, err error) {
+func cover(g git, repo, head string, stored []string, listed map[string]string, checks []nixCheck, signers *hostKeys, stderr io.Writer) (covered, failed map[string]string, err error) {
 	covered, failed = map[string]string{}, map[string]string{}
 	if len(stored) == 0 || len(checks) == 0 {
 		return covered, failed, nil
@@ -223,12 +240,11 @@ func cover(g git, repo, head string, stored []string, listed map[string]string, 
 	if err := fetch(g, oids...); err != nil {
 		return nil, nil, failure("could not fetch the evidence origin holds for this tree")
 	}
-	keys, p, why := hostSigners(g)
+	keys, p, why := signers.read(g)
 	if why != "" {
 		fmt.Fprintf(stderr, "valley: %s, so none of the evidence on origin is reused\n", why)
 		return covered, failed, nil
 	}
-	defer os.Remove(keys)
 	here := counting{project: project(g), integrator: p.name, projects: p.projects}
 
 	judged, why, err := judge(g, repo, head, keys, os.Getenv("VALLEY_KNOWN_SIGNERS"), here, stored, listed, checks)
@@ -369,30 +385,40 @@ func (c counting) only(name string) string {
 // into a text and signatures stops it judging the tree's evidence at all,
 // so why names the first such note.
 func readNotes(g git, stored []string, listed map[string]string, asked map[string]bool) (notes []storedNote, why string, err error) {
+	type file struct{ ref, path string }
+	var files []file
+	var objects []string
 	for _, ref := range stored {
 		listing, err := g.output(true, "ls-tree", "-r", "--name-only", listed[ref])
 		if err != nil {
 			return nil, "", fmt.Errorf("could not list %s", ref)
 		}
-		for _, file := range strings.Fields(listing) {
-			if path.Base(file) != "statement.note" {
-				continue
+		for _, p := range strings.Fields(listing) {
+			if path.Base(p) == "statement.note" {
+				files = append(files, file{ref, p})
+				objects = append(objects, listed[ref]+":"+p)
 			}
-			note, err := blob(g, listed[ref]+":"+file)
-			if err != nil {
-				return nil, "", fmt.Errorf("could not read %s:%s", ref, file)
-			}
-			split := bytes.LastIndex(note, []byte("\n\n"))
-			if split < 0 {
-				return nil, fmt.Sprintf("%s:%s is not a note: no blank line separates its text from its signatures", ref, file), nil
-			}
-			check := statementValue(string(note[:split+1]), "predicate.check.name")
-			if check == "" {
-				check = "(unnamed)"
-			}
-			if asked[check] {
-				notes = append(notes, storedNote{ref: ref, path: file, note: note, check: check})
-			}
+		}
+	}
+	read, err := blobs(g, objects)
+	if err != nil {
+		return nil, "", err
+	}
+	for i, f := range files {
+		note := read[i]
+		if note == nil {
+			return nil, "", fmt.Errorf("could not read %s:%s", f.ref, f.path)
+		}
+		split := bytes.LastIndex(note, []byte("\n\n"))
+		if split < 0 {
+			return nil, fmt.Sprintf("%s:%s is not a note: no blank line separates its text from its signatures", f.ref, f.path), nil
+		}
+		check := statementValue(string(note[:split+1]), "predicate.check.name")
+		if check == "" {
+			check = "(unnamed)"
+		}
+		if asked[check] {
+			notes = append(notes, storedNote{ref: f.ref, path: f.path, note: note, check: check})
 		}
 	}
 	return notes, "", nil
@@ -476,6 +502,30 @@ func verify(g git, repo, head, keys string, note []byte) (signers []string, refu
 	return signers, "", nil
 }
 
+// hostKeys is the host's known-signers file, read by the first tree that
+// needs it and kept for every later one, until done removes it.
+type hostKeys struct {
+	keys, why string
+	p         *publishedSigners
+	once      bool
+}
+
+// read is hostSigners, read once.
+func (h *hostKeys) read(g git) (keys string, p *publishedSigners, why string) {
+	if !h.once {
+		h.keys, h.p, h.why = hostSigners(g)
+		h.once = true
+	}
+	return h.keys, h.p, h.why
+}
+
+// done removes the file read wrote, if it wrote one.
+func (h *hostKeys) done() {
+	if h.keys != "" {
+		os.Remove(h.keys)
+	}
+}
+
 // hostSigners writes out the known-signers file the serving host
 // publishes, for attest verify to read, and returns its path and the
 // publication it came from. why says why there is none.
@@ -505,14 +555,44 @@ func hostSigners(g git) (keys string, p *publishedSigners, why string) {
 	return f.Name(), p, ""
 }
 
-// blob is an object's content exactly as git stores it. g.output trims
-// trailing newlines, and a note's last newline is part of its envelope
-// (note.Split), so a note is never read through it.
-func blob(g git, object string) ([]byte, error) {
-	cmd := exec.Command("git", "cat-file", "blob", object)
+// blobs are the contents of the objects named, each exactly as git
+// stores it, read by one git cat-file --batch rather than a process each.
+// An object that is no blob is nil. g.output trims trailing newlines, and
+// a note's last newline is part of its envelope (note.Split), so a note is
+// never read through it.
+func blobs(g git, objects []string) ([][]byte, error) {
+	out := make([][]byte, len(objects))
+	if len(objects) == 0 {
+		return out, nil
+	}
+	cmd := exec.Command("git", "cat-file", "--batch")
 	cmd.Env = g.env
 	cmd.Dir = g.dir
-	return cmd.Output()
+	cmd.Stdin = strings.NewReader(strings.Join(objects, "\n") + "\n")
+	stdout, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("could not read the notes origin holds: %v", err)
+	}
+	for i := range objects {
+		header, rest, ok := bytes.Cut(stdout, []byte("\n"))
+		if !ok {
+			return nil, errors.New("git cat-file --batch ended early")
+		}
+		f := strings.Fields(string(header))
+		stdout = rest
+		if len(f) != 3 {
+			continue // "<object> missing" or "ambiguous"
+		}
+		size, err := strconv.Atoi(f[2])
+		if err != nil || size < 0 || len(stdout) < size+1 {
+			return nil, fmt.Errorf("git cat-file --batch gave an unreadable answer for %s", objects[i])
+		}
+		if f[1] == "blob" {
+			out[i] = stdout[:size:size]
+		}
+		stdout = stdout[size+1:]
+	}
+	return out, nil
 }
 
 // attestTool runs the attest helper in g's repository and environment,

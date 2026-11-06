@@ -1,5 +1,8 @@
 // valley pending: what is waiting to land, for a person to read.
 //
+// A project whose policy has classes that checks follow opens with one
+// line on main's state (mainstate.go): clear, clearing or muddy.
+//
 // It prints four sections, in this order. ready holds the ready changes
 // whose active version has not landed, by the first two landing rules
 // (inventory.go), and that wait on an approval. approved holds those that
@@ -222,6 +225,12 @@ func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Write
 	if headed {
 		p("%s\n%s\n", r.name, strings.Repeat("─", min(columns(r.name), t.width)))
 	}
+	if lines := r.mainState(h, c, stderr, t); len(lines) > 0 {
+		for _, line := range lines {
+			p("%s\n", line)
+		}
+		p("\n")
+	}
 	view := r.pendingView(h)
 	if l.checks {
 		r.addChecks(&view, c, stderr)
@@ -267,6 +276,36 @@ func writePending(r listed, h handleMap, l listing, c *costs, w, stderr io.Write
 		}
 		gap = true
 	}
+}
+
+// mainState is the project's main state (mainstate.go) as lines, or none
+// when origin has no main or the policy at its tip declares no nix follow
+// check. A policy or a walk that did not read, or worker telemetry that
+// did not, is said on stderr.
+func (r listed) mainState(h handleMap, c *costs, stderr io.Writer, t terminal) []string {
+	if r.snap.tip == "" {
+		return nil
+	}
+	instance, project, done, err := policyLayers(r.g, r.snap.tip)
+	defer done()
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s: the policy at main did not read, so main's state is not shown: %v\n", r.name, err)
+		return nil
+	}
+	walk, err := mainFollows(r.g, r.snap.tip, instance, project, io.Discard)
+	if err != nil {
+		fmt.Fprintf(stderr, "valley: %s: main's state did not read: %v\n", r.name, err)
+		return nil
+	}
+	if len(walk.checks) == 0 {
+		return nil
+	}
+	read := c.start(r.g)
+	<-read.done
+	if read.why != "" {
+		fmt.Fprintf(stderr, "valley: %s: main's state shows no worker runs: %s\n", r.name, read.why)
+	}
+	return t.mainLines(walk, r.name, h, read.builds, read.mains)
 }
 
 // approvedLines is an approved stack, one line for each approved change:

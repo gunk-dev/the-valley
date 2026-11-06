@@ -53,8 +53,9 @@ type Required struct {
 	// path no class covers is among the change's paths.
 	Unclassified bool
 
-	// Pin is Mandatory when any requirement of it is mandatory, and
-	// Default when every one is a default a project may turn off.
+	// Pin is Mandatory when any requirement of it is mandatory, Unknown
+	// when none is and the model did not read one's pin, and Default when
+	// every one is a default a project may turn off.
 	Pin composed.Pin
 
 	// How the check is run, how long an observation of it stays good, and
@@ -120,6 +121,10 @@ func Derive(m *composed.Model, paths []string) (*Result, error) {
 		switch pin {
 		case composed.Mandatory:
 			q.Pin = composed.Mandatory
+		case composed.Unknown:
+			if q.Pin != composed.Mandatory {
+				q.Pin = composed.Unknown
+			}
 		case composed.Default:
 		default:
 			return nil, fmt.Errorf("the policy's requirement of %s is neither mandatory nor a default (%q)", check, pin)

@@ -220,6 +220,11 @@ valley pending
 valley review kqxm
 ```
 
+A change can land on its fast checks while slower ones follow it: the host's worker runs those on
+`main` when nothing waits, one run covering every landing since their last pass. `pending` opens
+with whether `main` is `clear`, `clearing` while they run, or `muddy` when one failed, with the
+landings it covers.
+
 `pending` lists the changes waiting on an approval under `ready`. A change that already has an
 integration request is under `approved`, one line each, with its check state when you pass
 `--checks`. It waits on its checks and the integrator, not on you, so there is nothing to review.

@@ -97,7 +97,8 @@ func median(ms []int64) int64 {
 }
 
 // checkBuild is one check.result record of the worker's: one check built
-// for one version.
+// for one version or main's tip, or on main's tip one that did not
+// evaluate.
 type checkBuild struct {
 	time, run       string
 	project, change string
@@ -120,6 +121,7 @@ type costs struct {
 type costRead struct {
 	done   chan struct{}
 	builds []checkBuild // newest first
+	mains  []mainRun    // the batches run on main tips (mainstate.go)
 	why    string       // why there are none, when the read failed
 }
 
@@ -145,7 +147,7 @@ func (c *costs) start(g git) *costRead {
 	c.reads[dest.identity()] = r
 	go func() {
 		defer close(r.done)
-		r.builds, r.why = readBuilds(dest)
+		r.builds, r.mains, r.why = readBuilds(dest)
 	}()
 	return r
 }
@@ -168,11 +170,12 @@ func (c *costs) wait(r *costRead, warn func(format string, args ...any)) ([]chec
 }
 
 // readBuilds reads up to costRecords of the newest records of the worker
-// source at dest, and returns the check builds among them, newest first.
-func readBuilds(dest sshDest) ([]checkBuild, string) {
+// source at dest, and returns the check builds among them, newest first,
+// and the starts and ends of the batches run on main tips.
+func readBuilds(dest sshDest) ([]checkBuild, []mainRun, string) {
 	first, err := readPage(dest, "")
 	if err != nil {
-		return nil, err.Error()
+		return nil, nil, err.Error()
 	}
 	pages := []workerPage{first}
 	var mu sync.Mutex
@@ -205,7 +208,9 @@ func readBuilds(dest sshDest) ([]checkBuild, string) {
 	wg.Wait()
 	seen := map[string]bool{}
 	var builds []checkBuild
+	var mains []mainRun
 	for _, page := range pages {
+		mains = append(mains, page.mains...)
 		for _, b := range page.builds {
 			if key := b.key; !seen[key] {
 				seen[key] = true
@@ -214,13 +219,14 @@ func readBuilds(dest sshDest) ([]checkBuild, string) {
 		}
 	}
 	sort.SliceStable(builds, func(i, j int) bool { return builds[i].time > builds[j].time })
-	return builds, ""
+	return builds, mains, ""
 }
 
 // workerPage is one answer to a read of the worker source.
 type workerPage struct {
 	cursor telemetry.Cursor
 	builds []keyedBuild
+	mains  []mainRun
 }
 
 type keyedBuild struct {
@@ -306,13 +312,28 @@ func parsePage(r io.Reader) (page workerPage, refused string, err error) {
 			page.cursor = cur
 			return page, "", nil
 		case "record":
+			if m.Change == "" && (m.Type == "batch.start" || m.Type == "batch.end") {
+				run := mainRun{project: m.Project, tree: m.Tree, ended: m.Type == "batch.end"}
+				run.run, _ = m.Data["attest_run"].(string)
+				checks, _ := m.Data["checks"].([]any)
+				for _, c := range checks {
+					if name, ok := c.(string); ok {
+						run.checks = append(run.checks, name)
+					}
+				}
+				page.mains = append(page.mains, run)
+				continue
+			}
 			if m.Type != "check.result" {
 				continue
 			}
 			build, ok := m.Data["build_ms"].(float64)
-			if !ok {
+			if !ok && m.Change != "" {
 				continue // a check that did not evaluate built nothing
 			}
+			// A check on main that did not evaluate is kept as a run that
+			// failed, which main's state reads (mainstate.go). It passed
+			// no build, so no cost counts it.
 			b := checkBuild{time: m.Time, run: m.Run, project: m.Project, change: m.Change, version: m.Version,
 				tree: m.Tree, check: m.Check, buildMS: int64(build)}
 			b.result, _ = m.Data["result"].(string)

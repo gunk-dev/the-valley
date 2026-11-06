@@ -6,7 +6,8 @@ import (
 )
 
 // publish pushes the branch and the signer's attestation ref to remote in
-// one atomic push. notes holds this run's notes, one subtree per check.
+// one atomic push, or the ref alone when branchSpec is "". notes holds
+// this run's notes, one subtree per check.
 //
 // The remote takes an existing attestation ref only with added notes: an
 // update keeps every note the ref holds, byte for byte. So when the remote
@@ -76,7 +77,10 @@ func publishOnto(root, remote, at, branchSpec, ref, held string, notes map[strin
 	}
 
 	args := []string{"--atomic"}
-	specs := []string{branchSpec}
+	var specs []string
+	if branchSpec != "" {
+		specs = append(specs, branchSpec)
+	}
 	if added > 0 {
 		tree, err := gitInput(root, []byte(strings.Join(entries, "\n")+"\n"), "mktree")
 		if err != nil {
@@ -93,6 +97,9 @@ func publishOnto(root, remote, at, branchSpec, ref, held string, notes map[strin
 		// ref before this push reads it.
 		args = append(args, "--force-with-lease="+ref+":"+held)
 		specs = append(specs, tree+":"+ref)
+	}
+	if len(specs) == 0 {
+		return nil // the remote holds every note this run made
 	}
 	args = append(append(args, remote), specs...)
 	out, err := gitRemote(root, append([]string{"push"}, args...)...)

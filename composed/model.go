@@ -19,11 +19,13 @@ import (
 // the composed value is the bit. A concrete `true`, which the floor writes,
 // cannot be turned off: a project writing `false` conflicts. `bool |
 // *true`, which a template writes, is a default a project may turn off.
+// Unknown is the pin of a model read without asking (ReadUnpinned).
 type Pin string
 
 const (
 	Mandatory Pin = "mandatory"
 	Default   Pin = "default"
+	Unknown   Pin = "unknown"
 )
 
 // Class is one path class of the composed policy.
@@ -93,6 +95,19 @@ var (
 // refining `policy` directly, and a required check that nobody can run is
 // the one failure a policy must never have.
 func Read(ctx context.Context, cue, schema, instance, project string) (*Model, error) {
+	return readModel(ctx, cue, schema, instance, project, true)
+}
+
+// ReadUnpinned reads the policy as Read does, with the same digest and
+// refusals, but asks cue nothing about whether a requirement is mandatory:
+// every requirement's pin is Unknown. It saves Read's one cue vet per
+// requirement, which is most of Read's time, for a reader that needs the
+// classes' paths and follows and never a requirement's pin.
+func ReadUnpinned(ctx context.Context, cue, schema, instance, project string) (*Model, error) {
+	return readModel(ctx, cue, schema, instance, project, false)
+}
+
+func readModel(ctx context.Context, cue, schema, instance, project string, pinned bool) (*Model, error) {
 	if info, err := os.Stat(schema); err != nil || !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("no policy schema at %s", schema)
 	}
@@ -169,9 +184,14 @@ func Read(ctx context.Context, cue, schema, instance, project string) (*Model, e
 		probes = append(probes, probe{unclassified: true, check: check})
 	}
 
-	pins, err := pinAll(ctx, cue, docs, probes)
-	if err != nil {
-		return nil, err
+	pins := make([]Pin, len(probes))
+	for i := range pins {
+		pins[i] = Unknown
+	}
+	if pinned {
+		if pins, err = pinAll(ctx, cue, docs, probes); err != nil {
+			return nil, err
+		}
 	}
 	for i, p := range probes {
 		if p.unclassified {
